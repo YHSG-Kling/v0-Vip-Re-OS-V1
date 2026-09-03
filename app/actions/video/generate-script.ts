@@ -310,9 +310,20 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
   // this is a PURE filter over what already came back — not a second catalogue
   // read that could disagree with the first.
   redFlags.push(...detectProhibitedPhraseRedFlags(complianceWarnings ?? []))
-  const advisory = (complianceWarnings ?? []).filter(
-    (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
-  )
+  // THE SCRIPT QUALITY CHARTER'S DETERMINISTIC BACKSTOP (lib/ai/script-standards.ts
+  // lintScriptQuality). The charter rides the system prompt above, so this
+  // catches only the hard tells a model still ships — manufactured urgency,
+  // competitor-paste filler, exclamation stacking. ADVISORY BY DESIGN: it joins
+  // the warnings the agent sees and never a red flag, never a hold (the owner's
+  // "advisory passes" ruling). Wired 2026-09-03; it had no runtime caller.
+  const { lintScriptQuality } = await import("@/lib/ai/script-standards")
+  const qualityHits = lintScriptQuality(script).map((rule) => `Script quality: ${rule.replace(/_/g, " ")} — see the Script Quality Charter.`)
+  const advisory = [
+    ...(complianceWarnings ?? []).filter(
+      (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
+    ),
+    ...qualityHits,
+  ]
 
   // ── FAIL CLOSED: "we could not check" is a reason to summon a human ─────────
   // The gate can be unevaluatable three ways — the kernel evaluator threw, the

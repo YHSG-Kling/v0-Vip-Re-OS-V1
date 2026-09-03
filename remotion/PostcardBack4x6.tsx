@@ -14,7 +14,8 @@
  *   - Opt-out row: per-recipient QR + the same URL in words
  *   - Indicia zone right 52%: LEFT EMPTY for Lob to overlay address
  *
- * Branding sourced same as the front via resolveBrokerageBrandContext;
+ * Branding sourced same as the front via resolveBrandContext
+ * (lib/branding/resolve-brand-context.ts);
  * copy sourced via draftPostcardCopy (the SAME body string used on
  * the front, so the two sides feel coherent, not disjointed).
  *

@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_EXPRESSIVE_AVATARS } from "@/lib/video/assistant-options"
+import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_EXPRESSIVE_AVATARS, assistantVoiceLabel } from "@/lib/video/assistant-options"
 import {
   Select,
   SelectContent,
@@ -462,11 +462,13 @@ export function AIIdentityEditor({
                 </div>
               ))}
             </div>
-            {assistantVoiceId && !ASSISTANT_VOICE_OPTIONS.some((v) => v.voiceId === assistantVoiceId) && (
+            {/* assistantVoiceLabel is the ONE preset lookup (null = not a preset, i.e. a
+                custom/cloned id) — the inline `.some()` this replaced was a second spelling. */}
+            {assistantVoiceId && assistantVoiceLabel(assistantVoiceId) === null && (
               <p className="text-xs text-muted-foreground">Using a custom voice id: <code>{assistantVoiceId}</code></p>
             )}
             <p className="text-xs text-muted-foreground">
-              This voice answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
+              {assistantVoiceLabel(assistantVoiceId) ?? "This voice"} answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
             </p>
           </div>
 

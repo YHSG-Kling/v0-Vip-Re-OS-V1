@@ -32,8 +32,15 @@ export async function recordAdPerformanceSnapshot(snap: AdSnapshot, client?: Svc
       ctr: snap.ctr ?? null, impressions: snap.impressions ?? null, clicks: snap.clicks ?? null,
       leads: snap.leads ?? null, cost_per_lead: snap.costPerLead ?? null,
     })
+    // The refusal used to be swallowed into `false` with no message — a PGRST204
+    // (absent column) and an RLS refusal were indistinguishable from each other
+    // and from a network blip. Name it.
+    if (error) console.error("[creative-fatigue-runner] ad_performance_history insert refused:", error.message)
     return !error
-  } catch { return false }
+  } catch (e) {
+    console.error("[creative-fatigue-runner] ad_performance_history insert threw:", (e as Error).message)
+    return false
+  }
 }
 
 async function loadCtrSeries(svc: Svc, brokerageId: string, adCampaignId: string, sinceDays: number): Promise<CtrPoint[]> {

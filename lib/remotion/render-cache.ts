@@ -43,6 +43,7 @@ import {
   type CachePoisoningFinding,
 } from "./composition-cache"
 import { resolveCodeRevision } from "./code-revision"
+import { shouldApplyBookends } from "./render-decision"
 import { compositionSeconds } from "./composition-geometry"
 
 export { RENDER_CACHE_LEAK_SIGNAL }
@@ -63,7 +64,7 @@ export async function predictFinishInputs(
 ): Promise<FinishInputs> {
   const finish: FinishInputs = { ...NO_FINISH, narrationAudioUrl: opts.narrationAudioUrl ?? null }
   try {
-    const wantsBookends = opts.applyBookends ?? composition.supports_bookends
+    const wantsBookends = opts.applyBookends ?? shouldApplyBookends(composition)
     if (wantsBookends && (composition.stock_intro_category || composition.stock_outro_category)) {
       const [intro, outro] = await Promise.all([
         composition.stock_intro_category

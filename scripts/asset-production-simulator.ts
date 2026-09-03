@@ -424,9 +424,16 @@ async function main() {
     src("lib/kernel/approval-queue-aggregator.ts").includes('kind === "blog"')
     && src("app/api/cron/blog-cadence-tick/route.ts").includes('publish_status: "published"')
     && src("app/api/cron/blog-cadence-tick/route.ts").includes('["hosted", "embed"]'))
-  check("the SECOND social approval handler (handleContentApproved) also flips drafts publishable — both approval paths agree",
-    src("app/actions/social-publishing.ts").includes("needsScheduling")
-    && src("app/actions/social-publishing.ts").includes('status: "scheduled"'))
+  // handleContentApproved (social-publishing.ts) was DELETED 2026-09-03 onto
+  // approveSocialPost — there is ONE social approver now, and it must still
+  // flip drafts publishable AND (ported from the duplicate) tell the author.
+  check("the ONE social approval handler (approveSocialPost) flips drafts publishable — the second approver is gone",
+    src("app/actions/social-media-automation.ts").includes("needsScheduling")
+    && src("app/actions/social-media-automation.ts").includes('status: "scheduled"')
+    && !/function\s+handleContentApproved\s*\(/.test(src("app/actions/social-publishing.ts")))
+  check("approveSocialPost notifies the author (content_approved, recipient-tenant resolved) — ported from the deleted handleContentApproved",
+    src("app/actions/social-media-automation.ts").includes('type: "content_approved"')
+    && src("app/actions/social-media-automation.ts").includes("resolveRecipientBrokerageId("))
   check("ONE sequence worker: the duplicate /api/sequences/execute route is gone from disk + registry (campaign-sequence-steps carries the queue)",
     !existsSync(join(ROOT, "app/api/sequences/execute/route.ts"))
     && !src("lib/kernel/cron-dispatch.ts").includes("/api/sequences/execute")

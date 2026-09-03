@@ -314,6 +314,16 @@ export default function VideoKanbanBoard() {
     const video = videos.find(v => v.id === videoId)
     if (!video) return
 
+    // THE RETRY CEILING — ported from the deleted
+    // app/actions/video/create-video-project.ts retryVideoGeneration (orphan
+    // doctrine §1.1: the survivor gets what the duplicate had FIRST). The card
+    // already prints "Retries: n/3"; without this the count was decorative and a
+    // failed render could be resubmitted to D-ID indefinitely.
+    if ((video.retry_count ?? 0) >= 3) {
+      toast.error("Maximum retry attempts reached for this video. Please contact support.")
+      return
+    }
+
     try {
       // Reset status
       await supabase

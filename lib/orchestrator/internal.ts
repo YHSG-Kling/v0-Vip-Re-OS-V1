@@ -27,6 +27,7 @@ import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 // the same product. Moved to lib/video/video-thumbnail-embed.ts; this module is
 // far too heavy for the drip cron to import.
 import { videoThumbnailEmbed } from "@/lib/video/video-thumbnail-embed"
+import { isSellerAuthored } from "@/lib/video/memory-video-gate"
 
 interface ProcessingResult {
   success: boolean
@@ -836,7 +837,16 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     if (hasOwnDeliveryRail) {
       summary.push("per-contact drafts skipped — agent_intro_videos owns this delivery")
     }
-    if (couldDraft && !hasOwnDeliveryRail) {
+    // A MEMORY VIDEO IS DELIVERED ONLY WHEN IT IS THE SELLER'S OWN WORDS (§5;
+    // wired 2026-09-03). This branch is the keepsake's ONLY delivery rail, and
+    // the metadata is already in hand — isSellerAuthored is the one predicate
+    // that reads the stamp lib/video/memory-video.ts writes. Fail closed: a
+    // memory_video row that cannot prove authorship gets no draft.
+    const memoryVideoUnproven = video_type === "memory_video" && !isSellerAuthored(projectMeta)
+    if (couldDraft && memoryVideoUnproven) {
+      summary.push("per-contact drafts skipped — memory video is not provably seller-authored (video_metadata.authored_by/dictation missing)")
+    }
+    if (couldDraft && !hasOwnDeliveryRail && !memoryVideoUnproven) {
       try {
         const { data: contact } = await svc
           .from("contacts")

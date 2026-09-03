@@ -23,7 +23,10 @@
  * server-only — never import from a client component.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { redactPriceAmounts, scrubSuggestedPriceKeys } from "@/lib/cma/customer-facing-guard"
+import {
+  redactPriceAmounts, scrubSuggestedPriceKeys, containsPriceAmount, buildSellerSafeCma,
+  type PresentationLike,
+} from "@/lib/cma/customer-facing-guard"
 import { videoThumbnailEmbed } from "@/lib/video/video-thumbnail-embed"
 // THE resolver — one definition of "what is the playable URL + thumbnail for
 // this finished video?", across BOTH engines (D-ID ai_video_projects and
@@ -109,8 +112,12 @@ export function planPresentationSections(input: PlanInput): PlannedSection[] {
     const fraction = (i + 1) / N
     const at = windowMs > 0 ? now.getTime() + fraction * windowMs : now.getTime()
     // Merge the market narrative into the CMA section, then scrub any price keys.
-    const rawBody = s.key === "cma" && input.marketNarrative
-      ? { ...s.body, market_narrative: input.marketNarrative }
+    // The narrative is FREE TEXT (often AI-written) — the key scrub cannot see a
+    // number inside it, so it goes through the text redactor first (wired
+    // 2026-09-03; it used to land verbatim).
+    const narrative = input.marketNarrative ? redactPriceAmounts(input.marketNarrative) : null
+    const rawBody = s.key === "cma" && narrative
+      ? { ...s.body, market_narrative: narrative }
       : s.body
     return {
       presentation_id: input.presentationId,
@@ -336,6 +343,20 @@ export function composeSectionEmail(input: SectionEmailInput): ComposedSectionEm
     (note ? `\n${note}\n` : "") +
     `\n${buyer ? "See your plan" : "See the full plan"}: ${input.portalUrl}\n\nMore on the way before we meet.\n\n— ${input.agentName}\n${input.brokerageName}`
 
+  // FAIL CLOSED (wired 2026-09-03). Everything above REDACTS; nothing asserted.
+  // A redactor whose regex stops matching would ship the number silently, and
+  // "0 leaks" from a broken finder is byte-identical to a clean email (CLAUDE.md
+  // §2). So the finished pieces are checked with the guard's own detector, URLs
+  // set aside (a portal or video path can legitimately carry digit+letter runs),
+  // and a hit REFUSES the email rather than sending it. sendSectionEmail turns
+  // the throw into a recorded failure on the section row.
+  const withoutUrls = (t: string) => t.replace(/https?:\/\/\S+/g, "")
+  const leaked = [["subject", subject], ["previewText", previewText], ["text", withoutUrls(text)], ["html", withoutUrls(html)]]
+    .find(([, v]) => containsPriceAmount(v))
+  if (leaked) {
+    throw new Error(`section-drip: a currency amount reached the seller-facing ${leaked[0]} after redaction — email refused (price is presented in person, never dripped)`)
+  }
+
   return { subject, previewText, html, text }
 }
 
@@ -434,18 +455,29 @@ export async function materializePresentationSections(
 ): Promise<MaterializeResult> {
   const supabase = client ?? createServiceClient()
 
-  const { data: pres, error } = await supabase
+  const { data: presRow, error } = await supabase
     .from("listing_presentations")
-    .select("id, brokerage_id, contact_id, appointment_at, cma_narrative")
+    .select("id, brokerage_id, contact_id, appointment_at, cma_narrative, cma_low_value, cma_mid_value, cma_high_value, slide_deck")
     .eq("id", presentationId)
     .maybeSingle()
-  if (error || !pres) return { ok: false, inserted: 0, error: error?.message ?? "presentation not found" }
-  if (!pres.brokerage_id) return { ok: false, inserted: 0, error: "presentation has no brokerage_id" }
+  if (error || !presRow) return { ok: false, inserted: 0, error: error?.message ?? "presentation not found" }
+  if (!presRow.brokerage_id) return { ok: false, inserted: 0, error: "presentation has no brokerage_id" }
+
+  // THE SELLER-SAFE COPY, FIRST (wired 2026-09-03). Everything a section body
+  // is derived from below is read off `pres`, and `pres` is the presentation
+  // with its valuation fields nulled, any pricing slides dropped from
+  // slide_deck and residual price keys scrubbed (lib/cma/customer-facing-guard
+  // buildSellerSafeCma). The agent-facing row is untouched; only this rail's
+  // view of it is seller-safe by construction, so a future section that
+  // embeds the deck cannot carry the suggested price.
+  const pres = buildSellerSafeCma(presRow as PresentationLike & { brokerage_id: string | null; contact_id: string | null; appointment_at: string | null; cma_narrative: string | null })
+
+  const brokerageId = presRow.brokerage_id as string
 
   const appointmentAt = pres.appointment_at ?? new Date(Date.now() + DEFAULT_DRIP_WINDOW_DAYS * 86_400_000).toISOString()
   const planned = planPresentationSections({
     presentationId,
-    brokerageId:     pres.brokerage_id,
+    brokerageId,
     contactId:       pres.contact_id ?? null,
     appointmentAt,
     sections:        opts.sections,
@@ -982,20 +1014,27 @@ async function sendSectionEmail(
     : `${appUrl.replace(/\/$/, "")}/portal/listing-plan/${s.presentation_id}`
 
   const bodyNote = typeof (s.body ?? {})["note"] === "string" ? String((s.body as Record<string, unknown>).note) : null
-  const email = composeSectionEmail({
-    agentName:       ctx.agentName,
-    brokerageName:   ctx.brokerageName,
-    propertyAddress: ctx.propertyAddress,
-    sectionTitle:    s.title ?? s.section_key,
-    step:            s.section_order + 1,
-    totalSteps:      Math.max(ctx.sectionCount, s.section_order + 1),
-    portalUrl,
-    reel:            reel.state === "ready"
-      ? { videoUrl: reel.videoUrl, thumbnailUrl: reel.thumbnailUrl, reviewPending: reel.reviewPending }
-      : null,
-    note:            bodyNote,
-    presentationType: ctx.presentationType,
-  })
+  let email: ComposedSectionEmail
+  try {
+    email = composeSectionEmail({
+      agentName:       ctx.agentName,
+      brokerageName:   ctx.brokerageName,
+      propertyAddress: ctx.propertyAddress,
+      sectionTitle:    s.title ?? s.section_key,
+      step:            s.section_order + 1,
+      totalSteps:      Math.max(ctx.sectionCount, s.section_order + 1),
+      portalUrl,
+      reel:            reel.state === "ready"
+        ? { videoUrl: reel.videoUrl, thumbnailUrl: reel.thumbnailUrl, reviewPending: reel.reviewPending }
+        : null,
+      note:            bodyNote,
+      presentationType: ctx.presentationType,
+    })
+  } catch (e) {
+    // The composer REFUSED (a price amount survived redaction). Recorded on the
+    // row by the caller as a failed send — never retried into the seller's inbox.
+    return { ok: false, to, error: e instanceof Error ? e.message : String(e) }
+  }
 
   try {
     const { dispatchEmail } = await import("@/lib/providers/dispatch")

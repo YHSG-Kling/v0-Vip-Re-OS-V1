@@ -19,6 +19,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
   // Oldest queued row first (idx_remotion_renders_queued covers this).
   const { data: rows, error } = await svc.from("remotion_composition_renders")
     .select("id, composition_id, brokerage_id")
-    .eq("render_status", "queued")
+    .eq("render_status", PICKABLE_RENDER_STATUS)
     .order("created_at", { ascending: true })
     .limit(1)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

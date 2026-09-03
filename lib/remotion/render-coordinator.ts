@@ -47,6 +47,7 @@ import { mixBackgroundMusic } from "./music-mixer"
 import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
 import { stagesVoiceover } from "./content-contract"
+import { shouldApplyBookends, outputExtension, outputContentType } from "./render-decision"
 
 export interface RenderIntent {
   brokerageId:     string
@@ -156,7 +157,10 @@ export async function finalizeCoordinatedRender(
   let narrationAudioUrl: string | null = null
 
   // ─── Bookends ───
-  const wantsBookends = intent.applyBookends ?? composition.supports_bookends
+  // shouldApplyBookends is the registry flag AND the still rule (a <=1-frame
+  // composition never gets bookends) — one decision, shared with the cache
+  // predictor and proven by the render simulator.
+  const wantsBookends = intent.applyBookends ?? shouldApplyBookends(composition)
   if (wantsBookends && (composition.stock_intro_category || composition.stock_outro_category)) {
     const [introRow, outroRow] = await Promise.all([
       composition.stock_intro_category
@@ -287,8 +291,8 @@ export async function finalizeCoordinatedRender(
   // finished render. ───
   try {
     const { hostRenderedMedia } = await import("./media-host")
-    const path = `compositions/${intent.brokerageId}/${composition.composition_id}/${renderId}.mp4`
-    const uploaded = { url: await hostRenderedMedia(svc, path, working, "video/mp4") }
+    const path = `compositions/${intent.brokerageId}/${composition.composition_id}/${renderId}.${outputExtension(composition.duration_frames)}`
+    const uploaded = { url: await hostRenderedMedia(svc, path, working, outputContentType(composition.duration_frames)) }
 
     // The finish identity, from what actually landed — the second half of the
     // cache key. Stamped only when the caller supplied a frame key; a caller

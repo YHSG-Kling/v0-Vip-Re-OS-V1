@@ -9,6 +9,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { inferOutreachReason } from "@/lib/kernel/outreach-reasons"
+import { evalManagerMessage } from "@/lib/agents/manager-outbound-eval"
 
 export interface ProposeClientMessageInput {
   brokerageId:           string
@@ -35,6 +36,28 @@ export async function proposeClientMessage(
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const supabase = client ?? createServiceClient()
   if (!input.brokerageId || !input.body?.trim()) return { ok: false, error: "brokerageId + body required" }
+
+  // REVIEWER NOTES (wired 2026-09-03). evalManagerMessage is the deterministic
+  // audit instrument (superlatives / ungrounded numbers vs the rationale's
+  // facts / Fair-Housing patterns / auto-send). It is NOT a second gate — the
+  // runtime gate is evaluateOutbound, run by the producers and again before
+  // dispatch in approveClientMessage — so it never blocks. Its findings are put
+  // where the approver READS: appended to the rationale, so the human sees the
+  // flags beside the draft they are asked to approve.
+  let rationale = input.rationale ?? null
+  try {
+    const ev = evalManagerMessage({
+      managerKind: input.agentKind, subject: input.subject ?? null, body: input.body,
+      status: "proposed", allowedFacts: rationale ? [rationale] : [],
+    })
+    if (!ev.ok) {
+      const notes = ev.findings.map((f) => `[${f.dimension}/${f.severity}] ${f.detail}`).join(" ")
+      rationale = `${rationale ?? ""}${rationale ? " " : ""}Reviewer notes (automated, not a block): ${notes}`.slice(0, 4000)
+    }
+  } catch (e) {
+    console.error("[proposeClientMessage] outbound eval annotation failed (proposal continues):", (e as Error).message)
+  }
+
   const { data, error } = await supabase.from("agent_client_messages").insert({
     brokerage_id: input.brokerageId,
     managed_agent_session_id: input.managedAgentSessionId ?? null,
@@ -46,7 +69,7 @@ export async function proposeClientMessage(
     audience: input.audience,
     subject: input.subject ?? null,
     body: input.body,
-    rationale: input.rationale ?? null,
+    rationale,
     channel: input.channel ?? "portal",
     outreach_reason: input.outreachReason ?? inferOutreachReason({ rationale: input.rationale, subject: input.subject }),
     status: "proposed",

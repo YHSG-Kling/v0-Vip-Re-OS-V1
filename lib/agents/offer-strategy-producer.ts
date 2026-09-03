@@ -22,6 +22,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { buildCompsAnimationSpec } from "@/lib/video/comps-animation-spec"
 
 /** entity_type on the gate row — one vocabulary for both lanes. */
 export const OFFER_STRATEGY_BRIEF_ENTITY_TYPE = "offer_strategy_brief"
@@ -238,6 +239,8 @@ export async function produceOfferStrategyBrief(
   //    instead of "go pull comps yourself." Numbers are gateway-generated from real facts;
   //    a missing target/budget degrades honestly to the generic brief. ──
   let strategySummary: string | null = null
+  /** The deterministic fair-value sentence from stored comps (agent-facing only). */
+  let compsRead: string | null = null
   let targetUnusable = false
   // The address the plan was ACTUALLY grounded in — read off the row the strategy used, never
   // off the caller's input. Naming the clicked address over a plan built from a different home
@@ -304,6 +307,45 @@ export async function produceOfferStrategyBrief(
           strategySummary = `${summarizeOfferStrategy(strategy)} Budget ceiling $${maxBudget.toLocaleString()} per the buyer's pre-approval${lender ? ` from ${lender}` : ""}.`
         }
       }
+
+      // THE COMPS READ (wired 2026-09-03). buildCompsAnimationSpec is the
+      // deterministic "this home vs recent sales" brain — fair value, signed
+      // delta from the comp median, and a confidence that SOFTENS the sentence
+      // on a thin or scattered set. It is grounded in REAL comps the brokerage
+      // already stored for this address (cma_reports → cma_comparables, sold
+      // rows only) — no provider call, no model, no spend — and it is AGENT
+      // copy only: it lands in the rationale, never in the buyer-facing body.
+      // No stored CMA → no read; the plan says so rather than inventing one.
+      const targetAddress = (hotTarget.address ?? "").trim()
+      if (targetAddress) try {
+        const { data: cmaRow, error: cmaErr } = await supabase
+          .from("cma_reports")
+          .select("id, property_address")
+          .eq("brokerage_id", brokerageId)
+          .ilike("property_address", `${targetAddress}%`)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        if (cmaErr) console.error("[offer-strategy-producer] cma_reports read refused:", cmaErr.message)
+        const cmaId = (cmaRow as { id: string } | null)?.id ?? null
+        if (cmaId) {
+          const { data: compRows, error: compErr } = await supabase
+            .from("cma_comparables")
+            .select("address, sale_price, status")
+            .eq("cma_id", cmaId)
+            .limit(12)
+          if (compErr) console.error("[offer-strategy-producer] cma_comparables read refused:", compErr.message)
+          const comps = ((compRows ?? []) as Array<{ address: string | null; sale_price: number | null; status: string | null }>)
+            .filter((c) => typeof c.sale_price === "number" && c.sale_price > 0 && (c.status ?? "sold").toLowerCase() !== "active")
+            .map((c) => ({ label: c.address ?? "comp", soldPrice: c.sale_price as number }))
+          if (comps.length > 0) {
+            const spec = buildCompsAnimationSpec({ subjectLabel: targetAddress, subjectPrice: hotTarget.listPrice, comps })
+            compsRead = `Comps read (${comps.length} stored sales, confidence ${spec.confidence}): ${spec.agentRead}`
+          }
+        }
+      } catch (e) {
+        console.error("[offer-strategy-producer] comps read failed; plan continues without it:", (e as Error).message)
+      }
     }
   } catch (e) {
     console.error("[offer-strategy-producer] strategy assembly failed; generic brief:", e)
@@ -355,9 +397,10 @@ export async function produceOfferStrategyBrief(
   const unusableNote = targetUnusable
     ? " Their saved record for this home carries no usable list price, so the plan below is generic — confirm the price with them."
     : ""
-  const baseRationale = strategySummary
+  const baseRationale = (strategySummary
     ? `${opening} AI offer plan (review before sending): ${strategySummary}`
-    : `${opening} Propose the offer game plan before they write.${unusableNote}`
+    : `${opening} Propose the offer game plan before they write.${unusableNote}`)
+    + (compsRead ? ` ${compsRead}` : "")
   const rationale = letterNote ? `${baseRationale} ${letterNote}` : baseRationale
 
   // entity_id carries the PROPERTY when one was named — that is what makes the gate row

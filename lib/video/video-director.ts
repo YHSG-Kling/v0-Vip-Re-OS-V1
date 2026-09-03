@@ -55,6 +55,7 @@ import type { VideoQrKind } from "@/lib/video/video-qr"
 // value here — selectVideoFormatLearned uses recommendFormatAdjustment directly,
 // and selectVideoFormat itself never touches it (backward-compat preserved).
 import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
+import { finishForVideo } from "@/lib/video/finish-spec"
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 // ============================================================================
@@ -849,12 +850,19 @@ export async function commissionVideo(
     formatWhy = "Expert default (learning disabled for this commission)."
   }
   const spec = assemblySpec(situation, format)
+  // THE FINISH SPEC, CONSULTED (wired 2026-09-03). lib/video/finish-spec.ts is
+  // the owner's one definition of which category gets which stitching; until
+  // now it was asserted against the registry in CI and read by nothing at
+  // runtime, so the QR was minted for compositions the spec says carry none
+  // (TeammateExplainerReel bakes its own; internal report shows skip it) and a
+  // music mood was staged for narrated slide decks the spec keeps silent.
+  const finish = finishForVideo(format.compositionId)
 
   // 2. Read the composition's capabilities from the registry (source of truth).
   //    When the row is absent (e.g. EquityReportReel mid-registration by the
-  //    sibling agent) we fall back to the format's own flags so the Director
-  //    never hard-deps any single composition existing yet.
-  let supportsBookends = true
+  //    sibling agent) we fall back to the FINISH SPEC's bookend decision, so
+  //    the Director never hard-deps any single composition existing yet.
+  let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
   let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
@@ -890,9 +898,11 @@ export async function commissionVideo(
   }
 
   // 4. Mint the OUTRO QR (idempotent per entity×kind; null = render without QR).
-  //    Skipped on MLS-clean cuts (a tracked agent QR is branding).
+  //    Skipped on MLS-clean cuts (a tracked agent QR is branding) and on
+  //    compositions whose finish spec carries no QR — minting one there filed a
+  //    qr_codes row the reel never rendered.
   let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-  if (!opts.mlsClean) {
+  if (!opts.mlsClean && finish.qr) {
     try {
       const { mintVideoQr } = await import("@/lib/video/video-qr")
       qr = await mintVideoQr({
@@ -915,12 +925,13 @@ export async function commissionVideo(
   let hookLine = fallbackHook
   let complianceStatus: "passed" | "failed" = "passed"
   let violations: string[] = []
+  // Declared OUTSIDE the try: the same bounded fact set is stamped onto
+  // video_metadata.facts below so the eval harness can ground-check the reel.
+  const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
   try {
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
-
-    const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -1042,9 +1053,17 @@ export async function commissionVideo(
     target_channels: format.targetChannels,
     intro: introProps,
     outro: outroProps,
-    music_mood: effectiveMood,
+    // null when the finish spec keeps this composition silent (narrated slide
+    // decks, the teammate explainer) — the coordinator then mixes no bed.
+    music_mood: finish.music ? effectiveMood : null,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // THE BOUNDED FACT SET (stamped 2026-09-03) — the ONLY facts the hook was
+    // allowed to assert. lib/agents/manager-outbound-eval.ts
+    // evalBrokerageDirectorReels reads it so the Director eval harness can
+    // ground-check a staged reel's numbers/addresses instead of judging
+    // superlatives alone.
+    facts,
     // Lead-addressed intro reel: stamp the lead + audience so the completion publisher
     // (lib/kernel/video-coordination) routes the finished reel 1:1 to the Campaign
     // Orchestrator (campaign_orchestrator:lead_outreach_ready) instead of a SOCIAL
@@ -1114,7 +1133,7 @@ export async function commissionVideo(
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption: qrCaptionForSituation(situation.kind),
       mlsClean: opts.mlsClean ?? false,
-      music_mood: effectiveMood,
+      music_mood: finish.music ? effectiveMood : null,
       ...(format.needsBroll ? { brollClips } : {}),
     },
   }
@@ -1306,9 +1325,10 @@ export async function commissionVideoExperiment(
   //    about the HOOK, not the format; the format stays the deterministic choice).
   const format = selectVideoFormat(situation)
   const spec = assemblySpec(situation, format)
+  const finish = finishForVideo(format.compositionId) // same rule as commissionVideo
 
-  // 2. Read composition capabilities (registry is source of truth; format flags fallback).
-  let supportsBookends = true
+  // 2. Read composition capabilities (registry is source of truth; finish-spec fallback).
+  let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
   let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
@@ -1405,7 +1425,7 @@ export async function commissionVideoExperiment(
     // Mint this variant's OWN tracked QR (idempotent per (entity, kind, variant) via
     // a variant-suffixed campaignId-free label — distinct QR so scans attribute per variant).
     let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-    if (!opts.mlsClean) {
+    if (!opts.mlsClean && finish.qr) {
       try {
         const { mintVideoQr } = await import("@/lib/video/video-qr")
         qr = await mintVideoQr({
@@ -1449,7 +1469,7 @@ export async function commissionVideoExperiment(
       target_channels: format.targetChannels,
       intro: introProps,
       outro: outroProps,
-      music_mood: spec.music.mood,
+      music_mood: finish.music ? spec.music.mood : null,
       qr_code_id: qr?.qrCodeId ?? null,
       requested_via: "asset_manager",
       format_source: "default" as const,
@@ -1464,7 +1484,7 @@ export async function commissionVideoExperiment(
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
         qrCaption: qrCaptionForSituation(situation.kind),
         mlsClean: opts.mlsClean ?? false,
-        music_mood: spec.music.mood,
+        music_mood: finish.music ? spec.music.mood : null,
       },
     }
 

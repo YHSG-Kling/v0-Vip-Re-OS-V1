@@ -16,7 +16,7 @@
  * The composition is durationInFrames=1 (pure still — no animation;
  * Remotion needs an anchor frame).
  *
- * Branding sourced through lib/branding/resolve-brokerage-brand.ts so
+ * Branding sourced through lib/branding/resolve-brand-context.ts so
  * primary/accent colors, logo, license line, and Fair Housing
  * disclosure all flow from one resolver. Compositions never read DB
  * directly — props are passed at renderStill() time.

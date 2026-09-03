@@ -20,7 +20,8 @@
  * for the headline; 6×9 reserves it for the photo because at 6×9
  * sizes a photo HAS impact, where at 4×6 it just looks small.
  *
- * Branding sourced via resolveBrokerageBrandContext, copy via
+ * Branding sourced via resolveBrandContext
+ * (lib/branding/resolve-brand-context.ts), copy via
  * draftPostcardCopy. Same pipeline as the 4×6 — different layout.
  */
 import React from "react"

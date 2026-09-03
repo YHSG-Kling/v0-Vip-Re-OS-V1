@@ -45,6 +45,15 @@ export async function generateListingVideo(params: {
   propertyId?: string
   agentId: string
   videoType?: 'full_tour' | 'social_snippet' | 'instagram_story' | 'reel' | 'drone_highlight'
+  /**
+   * HOOK A/B (wired 2026-09-03). true → commissionVideoExperiment stages 3
+   * compliance-gated opening-hook variants sharing one experiment_id (each with
+   * its own tracked QR) instead of one reel, so format-learning's
+   * scoreHookOutcomes / recommendHookWinner — whose READER half the Content
+   * Studio already renders — finally has a WRITER. Same Director rail, same
+   * pending_review gate; nothing auto-publishes. Default false: one reel.
+   */
+  abTest?: boolean
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: 'Invalid agent ID' }
@@ -176,21 +185,41 @@ export async function generateListingVideo(params: {
     //    m365 trigger mirrors the terminal state. Idempotency discriminator
     //    'walkthrough' is shared with runWalkthroughPremieres so the button
     //    and the autonomous play converge on ONE reel per listing.
+    const situation = {
+      kind: 'photo_walkthrough' as const,
+      tier: 'brokerage' as const,
+      targetChannel: 'instagram' as const,
+      facts: { address: property.address },
+    }
+    const commissionOpts = {
+      brokerageId: videoBrokerageId,
+      agentUserId: agentRow.user_id as string,
+      listingId: property.id,
+      idempotencyDiscriminator: 'walkthrough',
+    }
+
+    if (params.abTest) {
+      // The hook A/B arm — see the param doc. Idempotent per (listing, kind) via
+      // the experiment_id the Director derives; a re-run reuses the experiment.
+      const { commissionVideoExperiment } = await import('@/lib/video/video-director')
+      const experiment = await commissionVideoExperiment(situation, commissionOpts, { variants: 3 })
+      if (!experiment.ok) {
+        return { success: false, error: experiment.reason ?? 'The hook experiment could not be commissioned' }
+      }
+      revalidatePath('/dashboard/marketing/videos')
+      return {
+        success: true,
+        // Variant 0 is the curiosity scroll-stopper — the row a caller that
+        // expects one id can hold; the experiment id names the whole set.
+        projectId: experiment.variants?.[0]?.videoProjectId,
+        experimentId: experiment.experimentId,
+        variantCount: experiment.variants?.length ?? 0,
+        status: experiment.status,
+      }
+    }
+
     const { commissionVideo } = await import('@/lib/video/video-director')
-    const commission = await commissionVideo(
-      {
-        kind: 'photo_walkthrough',
-        tier: 'brokerage',
-        targetChannel: 'instagram',
-        facts: { address: property.address },
-      },
-      {
-        brokerageId: videoBrokerageId,
-        agentUserId: agentRow.user_id as string,
-        listingId: property.id,
-        idempotencyDiscriminator: 'walkthrough',
-      },
-    )
+    const commission = await commissionVideo(situation, commissionOpts)
 
     if (!commission.ok) {
       return { success: false, error: commission.reason ?? 'The video could not be commissioned' }

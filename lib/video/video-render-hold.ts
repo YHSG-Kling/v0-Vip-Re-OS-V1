@@ -86,6 +86,7 @@ import {
   type ScriptComplianceActor,
   type ScriptComplianceState,
 } from "@/lib/video/script-compliance"
+import { isSellerAuthored } from "@/lib/video/memory-video-gate"
 
 /** Every hold reason carries this, so a caller can grep one prefix, not four. */
 export const VIDEO_HOLD_PREFIX = "Compliance HOLD:"
@@ -273,6 +274,38 @@ export async function evaluateVideoRenderHold(params: {
   const script = params.script ?? ""
 
   try {
+    // 0. A MEMORY VIDEO MUST BE THE SELLER'S OWN WORDS (CLAUDE.md §5; wired
+    //    2026-09-03). lib/video/memory-video.ts stamps
+    //    video_metadata.authored_by='seller' + the dictated segments, and
+    //    isSellerAuthored is the ONE predicate that reads the stamp. Every
+    //    render door passes through this gate, so a memory_video project whose
+    //    script cannot be proven seller-authored — an old row wearing the name,
+    //    or a script_content somebody edited into a model draft — is HELD here
+    //    as a red flag, not rendered. Fail closed: an unreadable project row is
+    //    an `unknown`, which also holds. Advisory never applies: there is no
+    //    "slightly" model-written family history.
+    if (params.projectId) {
+      const { data: proj, error: projErr } = await params.supabase
+        .from("ai_video_projects")
+        .select("video_type, video_metadata")
+        .eq("id", params.projectId)
+        .maybeSingle()
+      if (projErr) {
+        return {
+          hold: true, state: "unknown", redFlags: [], warnings: [], humanVerdict: "none",
+          reasons: [`${VIDEO_HOLD_PREFIX} the project row could not be read (${projErr.message}), so whether this is a seller-authored memory video cannot be established. Held.`],
+        }
+      }
+      const row = proj as { video_type?: string | null; video_metadata?: unknown } | null
+      if (row?.video_type === "memory_video" && !isSellerAuthored(row.video_metadata)) {
+        const reason = "memory_video: the script is not provably seller-authored (video_metadata.authored_by='seller' with dictated segments is missing). A memory video is the family's own account of their home and may never be model- or agent-written (CLAUDE.md §5)."
+        return {
+          hold: true, state: "red_flag", redFlags: [reason], warnings: [], humanVerdict: "none",
+          reasons: [`${VIDEO_HOLD_PREFIX} ${reason}`],
+        }
+      }
+    }
+
     // 1. DETERMINISTIC, no database, cannot be lost to an outage.
     const redFlags = detectFairHousingRedFlags(script, journeyType)
 

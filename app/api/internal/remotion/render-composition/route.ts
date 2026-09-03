@@ -44,6 +44,9 @@ import {
 } from "@/lib/remotion/render-cache"
 import {
   isStillComposition,
+  outputContentType,
+  outputExtension,
+  PICKABLE_RENDER_STATUS,
   buildRenderIntent,
   resolveInputProps,
   needsThumbnailPass,
@@ -89,7 +92,7 @@ export async function POST(req: NextRequest) {
   const claim = await svc.from("remotion_composition_renders")
     .update({ render_status: "rendering" })
     .eq("id", body.render_id)
-    .eq("render_status", "queued")
+    .eq("render_status", PICKABLE_RENDER_STATUS)
     .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, scope_type, scope_id, input_props")
     .maybeSingle()
   const row = claim.data as (QueuedRenderRow & { id: string }) | null
@@ -229,7 +232,9 @@ export async function POST(req: NextRequest) {
       //     have no audio to mix or bookends to concat).
       const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
       const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.png`, bytes, "image/png") }
+      // Extension + content type come from the ONE decision helper the
+      // simulator proves (render-decision.ts), not a literal restated here.
+      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.${outputExtension(composition.duration_frames)}`, bytes, outputContentType(composition.duration_frames)) }
       await recordRenderCompleted({
         renderId: row.id, compositionId: row.composition_id,
         status: "succeeded", outputUrl: uploaded.url, thumbnailUrl: uploaded.url,

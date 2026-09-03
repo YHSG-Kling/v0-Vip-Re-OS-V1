@@ -64,7 +64,6 @@
     "app/actions/reputation-kernel.ts:recordReviewAction",
     "app/actions/smart-insights.ts:regeneratePropertyCommute",
     "app/actions/social-media-automation.ts:trackPostPerformance",
-    "app/actions/social-publishing.ts:handleContentApproved",
     "app/actions/social/generate-social-post.ts:stampPostBrandCompliance",
     "app/actions/superadmin/parked-retention.ts:purgeStaleParkedLeadsAction",
     "app/actions/vendor-marketplace.ts:recalculateVendorRatings",
@@ -74,11 +73,7 @@
     "app/actions/video-repurposing.ts:getRepurposedContentLogs",
     "app/actions/video-repurposing.ts:getSnippetById",
     "app/actions/video-repurposing.ts:logRepurposedContent",
-    "app/actions/video/create-video-project.ts:generateAIScript",
     "app/actions/video/create-video-project.ts:getVideoProject",
-    "app/actions/video/create-video-project.ts:pollVideoStatus",
-    "app/actions/video/create-video-project.ts:retryVideoGeneration",
-    "app/actions/video/create-video-project.ts:submitAvatarVideoRender",
     "app/actions/workflows.ts:logUserActivity"
   ]
 }

@@ -85,6 +85,11 @@ const HOLD = "lib/video/video-render-hold.ts"
 const DID_ROUTE = "app/api/did/generate-video/route.ts"
 const KERNEL_VIDEO = "lib/kernel/video.ts"
 const VIDEO_GENERATION = "app/actions/video-generation.ts"
+// The wizard client — the ONE surface that reaches a script generator. After
+// generateAIScript (create-video-project.ts) was deleted 2026-09-03 onto
+// generate-script.ts:generateVideoScript, the construct worth pinning is that
+// the surface imports the SURVIVOR and the twin cannot come back.
+const CREATE_CLIENT = "app/dashboard/videos/create/video-create-client.tsx"
 const APPROVALS_ACTION = "app/actions/marketing-ai-approvals.ts"
 const APPROVALS_CLIENT = "app/dashboard/admin/marketing-approvals/marketing-approvals-client.tsx"
 
@@ -574,15 +579,15 @@ const SOURCE_CHECKS: SourceCheck[] = [
     mutate: (src) => src.replace(/await\s+precheckBriefForFairHousing\s*\(/, "await NOTHING_AT_ALL("),
   },
   {
-    id: "B2-PROJECT-PRECHECKS-BEFORE-GENERATING",
+    // RETARGETED 2026-09-03. This used to assert generateAIScript pre-checked
+    // before it spent. That function is DELETED onto generate-script.ts (B1
+    // asserts the pre-check on the survivor). What is worth pinning on the
+    // project file now is that the ungated twin does not return.
+    id: "B2-PROJECT-SCRIPT-TWIN-STAYS-DELETED",
     file: CREATE_PROJECT,
-    detail: "generateAIScript must pre-check the brief before generateText — it had NO pre-check at all",
-    predicate: (src) => {
-      const pre = callIndex(src, "precheckBriefForFairHousing")
-      const gen = callIndex(src, "generateText")
-      return pre >= 0 && gen >= 0 && pre < gen
-    },
-    mutate: (src) => src.replace(/await\s+precheckBriefForFairHousing\s*\(/, "await NOTHING_AT_ALL("),
+    detail: "generateAIScript was deleted onto generate-script.ts:generateVideoScript — a second script generator on the project file would be a second door with its own (unproven) gate",
+    predicate: (src) => !/function\s+generateAIScript\s*\(/.test(src),
+    mutate: (src) => src + "\nexport async function generateAIScript(params: any) { return generateText({ prompt: params.description }) }\n",
   },
 
   // ── 2. WRITTEN WITH: the steer blocks reach the MODEL ────────────────────
@@ -600,13 +605,16 @@ const SOURCE_CHECKS: SourceCheck[] = [
     mutate: (src) => src.replace(/\.\.\.complianceBlocks,/, ""),
   },
   {
-    id: "B4-PROJECT-STEER-REACHES-THE-MODEL",
-    file: CREATE_PROJECT,
-    detail: "generateAIScript's prompt must carry the compliance blocks — it carried none",
+    // RETARGETED 2026-09-03 (generateAIScript deleted). The steer reaching the
+    // model is B3 on the survivor; this now pins that the wizard SURFACE calls
+    // the survivor, so the steer B3 proves is the steer a user actually gets.
+    id: "B4-WIZARD-SURFACE-REACHES-THE-SURVIVOR",
+    file: CREATE_CLIENT,
+    detail: "video-create-client must import generateVideoScript from generate-script.ts (the gated survivor), never a script generator from create-video-project.ts",
     predicate: (src) =>
-      /const\s+complianceBlocks\s*=\s*await\s+buildComplianceSystemBlocks\s*\(/.test(src) &&
-      /const\s+prompt\s*=\s*`[\s\S]*?\$\{complianceBlocks\.join\([\s\S]*?`/.test(src),
-    mutate: (src) => src.replace(/\$\{complianceBlocks\.join\([^)]*\)\}/, ""),
+      /import\s*\{[^}]*\bgenerateVideoScript\b[^}]*\}\s*from\s*["']@\/app\/actions\/video\/generate-script["']/.test(src) &&
+      !/generateAIScript/.test(src),
+    mutate: (src) => src.replace(/@\/app\/actions\/video\/generate-script/, "@/app/actions/video/create-video-project"),
   },
 
   // ── 3. IF IT RUNS THOSE: no fail-open anywhere on this lane ──────────────
@@ -626,16 +634,18 @@ const SOURCE_CHECKS: SourceCheck[] = [
       ),
   },
   {
-    id: "B6-PROJECT-NO-LONGER-SWALLOWS-A-THROWN-EVALUATOR",
-    file: CREATE_PROJECT,
-    detail: "generateAIScript must not .catch() an evaluator into allowed:true, and must not call evaluateOutbound raw",
+    // RETARGETED 2026-09-03 (generateAIScript deleted): the same fail-open
+    // shape must never appear on the survivor either.
+    id: "B6-WIZARD-NO-LONGER-SWALLOWS-A-THROWN-EVALUATOR",
+    file: GENERATE_SCRIPT,
+    detail: "generateVideoScript must not .catch() an evaluator into allowed:true, and must not call evaluateOutbound raw — the shared gate carries the fail-closed 'unknown' state",
     predicate: (src) =>
       !/\.catch\s*\(\s*\(\s*\)\s*=>\s*\(\s*\{\s*allowed:\s*true/.test(src) &&
       !/\bevaluateOutbound\s*\(/.test(src),
     mutate: (src) =>
       src.replace(
-        /const\s+advisoryFindings\s*=/,
-        "const compliance = await evaluateOutbound({}).catch(() => ({ allowed: true, violations: [] }));\n  const advisoryFindings =",
+        /const\s+complianceWarnings\s*=/,
+        "const compliance = await evaluateOutbound({}).catch(() => ({ allowed: true, violations: [] }));\n  const complianceWarnings =",
       ),
   },
   {
@@ -724,14 +734,20 @@ const SOURCE_CHECKS: SourceCheck[] = [
 
   // ── 6. ONE journey/persona per evaluation (the seller/buyer mismatch) ────
   {
-    id: "B14-PROJECT-HAS-ONE-JOURNEY-TYPE",
-    file: CREATE_PROJECT,
-    detail: 'generateAIScript graded ONE text as journeyType "seller"/persona "seller" for brand voice and "buyer"/"first_time" for compliance — and "seller" is not even a member of the Persona union',
+    // RETARGETED 2026-09-03 (generateAIScript deleted): the survivor derives
+    // ONE journeyType from the video type and hands the SAME identifier to the
+    // pre-check and the post-check, so brand voice and compliance can never
+    // grade one text under two personas again.
+    id: "B14-WIZARD-HAS-ONE-JOURNEY-TYPE",
+    file: GENERATE_SCRIPT,
+    detail: 'generateVideoScript must derive journeyType once (from contactType) and pass that identifier to BOTH precheckBriefForFairHousing and postcheckScript — no literal "seller"/persona "seller" for one text',
     predicate: (src) =>
-      /const\s+journeyType\s*=\s*"buyer"\s+as\s+const/.test(src) &&
+      /const\s+journeyType\s*=\s*contactType\s*===\s*"seller"/.test(src) &&
+      /precheckBriefForFairHousing\(actor,\s*params\.description,\s*journeyType\)/.test(src) &&
+      /postcheckScript\(actor,\s*script,\s*journeyType\)/.test(src) &&
       !/journeyType:\s*"seller"/.test(src) &&
       !/persona:\s*"seller"/.test(src),
-    mutate: (src) => src.replace(/const\s+journeyType\s*=\s*"buyer"\s+as\s+const/, 'const journeyType = "buyer" as const\n  const _x = { journeyType: "seller", persona: "seller" }'),
+    mutate: (src) => src.replace(/postcheckScript\(actor,\s*script,\s*journeyType\)/, 'postcheckScript(actor, script, "seller")'),
   },
   {
     id: "B15-GATE-USES-ONE-PERSONA-CONSTANT",
@@ -802,9 +818,12 @@ const SOURCE_CHECKS: SourceCheck[] = [
     // carries the same shape (B30), so an unscoped predicate would keep passing
     // on the OTHER door's copy and this control would never flip.
     predicate: (src) => {
+      // The slice used to end at submitAvatarVideoRender, which was DELETED
+      // 2026-09-03; the next surviving export after createVideoProject is
+      // getVideoProject.
       const fn = src.slice(
         src.indexOf("export async function createVideoProject"),
-        src.indexOf("export async function submitAvatarVideoRender"),
+        src.indexOf("export async function getVideoProject("),
       )
       return (
         /await\s+evaluateVideoRenderHold\s*\(/.test(fn) &&
@@ -879,21 +898,20 @@ const SOURCE_CHECKS: SourceCheck[] = [
       src.replace(/scriptApproval\s*===\s*"pending_review"\s*\|\|\s*scriptApproval\s*===\s*"rejected"/, "false"),
   },
   {
-    id: "B30-THE-UNWIRED-RENDER-DOOR-IS-GATED-TOO",
+    // RETARGETED 2026-09-03. submitAvatarVideoRender (and its siblings
+    // pollVideoStatus / retryVideoGeneration) were DELETED onto
+    // lib/kernel/video.ts:submitVideoGenerationJob (B26 proves THAT door holds
+    // before its claim), the poll-did-videos finalizer and the board's retry.
+    // The hole an ungated door leaves is now closed by the door not existing —
+    // so pin that: no render-start function may return to the project file
+    // under any of the three names.
+    id: "B30-NO-THIRD-RENDER-DOOR-RETURNS",
     file: CREATE_PROJECT,
-    detail: "submitAvatarVideoRender is held unwired but is still a 'use server' export — a live HTTP endpoint that starts a D-ID render with no compliance gate. An ungated door is the hole the whole hold leaks through",
-    predicate: (src) => {
-      const fn = src.slice(src.indexOf("export async function submitAvatarVideoRender"))
-      const hold = callIndex(fn, "evaluateVideoRenderHold")
-      const claim = fn.indexOf('status: "generating"')
-      const spend = fn.indexOf("generateAvatarVideo(")
-      return hold >= 0 && claim >= 0 && spend >= 0 && hold < claim && hold < spend
-    },
+    detail: "create-video-project.ts must declare none of submitAvatarVideoRender / pollVideoStatus / retryVideoGeneration — a third writer of the ai_video_projects render slot was deleted, and the surviving doors (D-ID route, kernel submit) carry the hold",
+    predicate: (src) =>
+      !/function\s+(submitAvatarVideoRender|pollVideoStatus|retryVideoGeneration)\s*\(/.test(src),
     mutate: (src) =>
-      src.replace(
-        /(export async function submitAvatarVideoRender[\s\S]*?)await\s+evaluateVideoRenderHold\s*\(/,
-        "$1await NOTHING_AT_ALL(",
-      ),
+      src + "\nexport async function submitAvatarVideoRender(projectId: string) { return generateAvatarVideo({ projectId }) }\n",
   },
   {
     id: "B28-THE-HOLD-IS-ONE-VOCABULARY",
@@ -1016,7 +1034,7 @@ async function main() {
   const sources = new Map<string, string>()
   for (const f of [
     GENERATE_SCRIPT, CREATE_PROJECT, GATE,
-    HOLD, DID_ROUTE, KERNEL_VIDEO, VIDEO_GENERATION,
+    HOLD, DID_ROUTE, KERNEL_VIDEO, VIDEO_GENERATION, CREATE_CLIENT,
   ]) sources.set(f, stripComments(read(f)))
 
   for (const c of SOURCE_CHECKS) {

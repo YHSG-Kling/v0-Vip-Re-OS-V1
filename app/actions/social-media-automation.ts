@@ -16,6 +16,9 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 /**
  * Tenant guard — requires authenticated session with a brokerage.
@@ -480,12 +483,13 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
     // publishable, or the loop dead-ends: the publisher only picks up
     // status='scheduled' AND scheduled_for <= now, so approving without
     // scheduling silently strands the post forever.
-    const { data: current } = await supabase
+    const { data: current, error: currentError } = await supabase
       .from("social_posts")
-      .select("status, scheduled_for")
+      .select("status, scheduled_for, user_id")
       .eq("id", postId)
       .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
+    if (currentError) throw currentError
     // "pending_approval" was never a valid status, so this arm could never
     // match. Approval-pending posts are drafts; the gate is approval_status.
     const needsScheduling = current?.status === "draft"
@@ -508,6 +512,38 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
       .maybeSingle()
 
     if (error) throw error
+
+    // TELL THE AUTHOR — ported 2026-09-03 from the deleted duplicate
+    // app/actions/social-publishing.ts handleContentApproved (orphan doctrine
+    // §1.1: the survivor gets what the duplicate had first). The recipient's
+    // tenant is resolved from the RECIPIENT's users row, not copied from the
+    // post: badge-counts computes the brokerage from the session user's row, so
+    // a row stamped with any other value is filtered out as surely as an
+    // unstamped one. Best-effort — the approval already landed.
+    const recipientUserId = (current as { user_id?: string | null } | null)?.user_id ?? null
+    if (recipientUserId) {
+      const svc = createServiceClient()
+      const approvalTenant = await resolveRecipientBrokerageId(svc, recipientUserId)
+      if (!approvalTenant.ok) {
+        console.error(`[social-media-automation] approveSocialPost: ${approvalTenant.reason} — approval notification NOT written`)
+      } else if (!approvalTenant.brokerageId) {
+        console.error(`[social-media-automation] approveSocialPost: post ${postId}'s author has no brokerage — approval notification NOT written rather than written where the bell cannot count it`)
+      } else {
+        const { error: approvalNotifyError } = await svc.from("notifications").insert({
+          user_id: recipientUserId,
+          brokerage_id: approvalTenant.brokerageId,
+          type: "content_approved",
+          title: "Content Approved",
+          body: "Your social media content has been approved and is ready to publish.",
+          entity_type: "social_post",
+          entity_id: postId,
+          created_at: new Date().toISOString(),
+        })
+        if (approvalNotifyError) {
+          console.error("[social-media-automation] content_approved notification insert refused:", approvalNotifyError.message)
+        }
+      }
+    }
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }

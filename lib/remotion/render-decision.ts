@@ -34,11 +34,19 @@ export function outputExtension(durationFrames: number): "png" | "mp4" {
   return isStillComposition(durationFrames) ? "png" : "mp4"
 }
 
+/** THE ONE SPELLING of the pickable render_status (§6). The two SQL claims —
+ *  app/api/internal/remotion/render-composition/route.ts (`queued → rendering`)
+ *  and app/api/cron/composition-render-queue/route.ts (oldest queued first) —
+ *  filter on this token; `isPickableStatus` is the same rule as a predicate for
+ *  code that already holds a row. A status vocabulary change lands HERE and
+ *  reaches both claims and the simulator together. */
+export const PICKABLE_RENDER_STATUS = "queued" as const
+
 /** Statuses the queue picker is allowed to claim. A render is pickable
  *  only while 'queued'; 'rendering' rows are in-flight, terminal rows
  *  (succeeded/failed/cancelled) are done. */
 export function isPickableStatus(status: string): boolean {
-  return status === "queued"
+  return status === PICKABLE_RENDER_STATUS
 }
 
 /** Bookends + music only ever apply to moving renders. A still has no

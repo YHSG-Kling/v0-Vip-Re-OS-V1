@@ -49,6 +49,7 @@ import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
 import {
   assembleSellerDictatedScript,
   assessMemoryVideoTenure,
+  isSellerAuthored,
   qualifiesForMemoryVideo,
   MEMORY_VIDEO_MIN_TENURE_YEARS,
   MEMORY_VIDEO_PROMPTS,
@@ -313,12 +314,29 @@ export async function recordMemoryVideoDictation(input: {
 
   const { data: existing, error: existingErr } = await svc
     .from("ai_video_projects")
-    .select("id")
+    .select("id, script_content, video_metadata")
     .eq("brokerage_id", input.brokerageId)
     .eq("contact_id", input.contactId)
     .eq("video_type", "memory_video")
     .limit(1)
   if (existingErr) return { ok: false, status: "failed", reason: `project lookup: ${existingErr.message}` }
+
+  // ADOPT ONLY A ROW THIS RAIL WROTE (wired 2026-09-03). Before m565 the
+  // anniversary reactor borrowed the memory_video name, and the manual wizard
+  // once offered it as a MODEL-written type; a row like that carries a script
+  // with no seller stamp. Overwriting it here would launder an authored script
+  // under the seller's name (the update stamps authored_by='seller'). So a row
+  // that already holds words but cannot prove they are the seller's is REFUSED
+  // rather than adopted — the agent is told which row, and nothing is written.
+  {
+    const prior = (existing?.[0] ?? null) as { id: string; script_content?: string | null; video_metadata?: unknown } | null
+    if (prior && (prior.script_content ?? "").trim().length > 0 && !isSellerAuthored(prior.video_metadata)) {
+      return {
+        ok: false, status: "refused", missing: assembled.missing,
+        reason: `refused: an existing memory_video project (${prior.id}) for this seller holds a script that is not provably seller-authored — it was not written by this capture rail and will not be overwritten under the seller's name. Have an admin retire that row first.`,
+      }
+    }
+  }
 
   const shared = {
     title,

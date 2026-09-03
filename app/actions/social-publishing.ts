@@ -6,9 +6,9 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
-// The ONE way a notifications row gets its tenant — the recipient's
-// users.brokerage_id, the exact value badge-counts compares against.
-import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
+// resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
+// no longer imported here: its only user, handleContentApproved, was deleted
+// onto approveSocialPost, which now carries the import.
 
 // =====================================================
 // AUTH HELPER
@@ -41,7 +41,7 @@ async function resolveCaller(): Promise<
 }
 
 // =====================================================
-// EVENT HANDLERS - Called by orchestrator
+// EVENT HANDLERS — none remain (see the two tombstones below)
 // =====================================================
 
 // REMOVED (w4s1) — handleScheduledPost and handlePostPublished.
@@ -86,81 +86,19 @@ async function resolveCaller(): Promise<
 // social_engagement_tracking and is followed by the nightly
 // /api/cron/social-analytics-sync that writes measured platform numbers.
 
-export async function handleContentApproved(payload: any) {
-  const caller = await resolveCaller()
-  if (!caller.ok) return { success: false, error: "Unauthorized" }
-
-  const supabase = createServiceClient()
-  const { content_id } = payload
-
-  // Verify post belongs to caller's brokerage before mutating. `error` is
-  // destructured because this read is an OWNERSHIP GATE and also supplies the
-  // recipient of the notification below: supabase-js RESOLVES a refusal, so
-  // without it a refused read is indistinguishable from "no such post" — and a
-  // gate must fail closed for a reason it can name.
-  const { data: post, error: postLookupError } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id, status, scheduled_for")
-    .eq("id", content_id)
-    .maybeSingle()
-  if (postLookupError) {
-    console.error("[social-publishing] handleContentApproved: social_posts lookup refused:", postLookupError.message)
-    return { success: false, error: "Post not found" }
-  }
-  if (!post) return { success: false, error: "Post not found" }
-  if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
-
-  // Approval must leave the post PUBLISHABLE: the publisher only ships
-  // status='scheduled' + approved + due, so a draft (repurpose rail) has to
-  // flip to scheduled here or it strands forever (same contract as
-  // approveSocialPost in social-media-automation).
-  const needsScheduling = post.status === "draft" || post.status === "pending_approval"
-  await supabase
-    .from("social_posts")
-    .update({
-      approval_status: "approved",
-      approved_by: caller.userId,
-      approved_at: new Date().toISOString(),
-      ...(needsScheduling && {
-        status: "scheduled",
-        scheduled_for: post.scheduled_for ?? new Date().toISOString(),
-      }),
-    })
-    .eq("id", content_id)
-    .eq("brokerage_id", caller.brokerageId)
-
-  // TENANT — the RECIPIENT's `users.brokerage_id`, resolved once. It is NOT taken
-  // from `post.brokerage_id` even though that value is already in hand and was
-  // just checked equal to `caller.brokerageId`: badge-counts computes the
-  // brokerage from the SESSION USER's `users` row, so a row stamped with any
-  // other brokerage is filtered out exactly as surely as an unstamped one. The
-  // post's tenancy is the authorization question (answered above); the
-  // recipient's is the visibility question.
-  const approvalTenant = await resolveRecipientBrokerageId(supabase, post.user_id)
-  if (!approvalTenant.ok) {
-    console.error(`[social-publishing] handleContentApproved: ${approvalTenant.reason} — approval notification NOT written`)
-  } else if (!post.user_id || !approvalTenant.brokerageId) {
-    console.error(
-      `[social-publishing] handleContentApproved: post ${content_id} has no recipient user or the recipient has no brokerage — approval notification NOT written rather than written where the bell cannot count it`,
-    )
-  } else {
-    const { error: approvalNotifyError } = await supabase.from("notifications").insert({
-      user_id: post.user_id,
-      brokerage_id: approvalTenant.brokerageId,
-      type: "content_approved",
-      title: "Content Approved",
-      body: "Your social media content has been approved and is ready to publish.",
-      entity_type: "social_post",
-      entity_id: content_id,
-      created_at: new Date().toISOString(),
-    })
-    if (approvalNotifyError) {
-      console.error("[social-publishing] content_approved notification insert refused:", approvalNotifyError.message)
-    }
-  }
-
-  return { success: true }
-}
+// ─── handleContentApproved — DELETED (orphan doctrine §1.1, 2026-09-03) ──────
+//
+// TOMBSTONE — `handleContentApproved(payload)` is DELETED. Survivor:
+// app/actions/social-media-automation.ts `approveSocialPost`, wired from
+// app/actions/command-center.ts. The header above says "called by orchestrator";
+// nothing in lib/orchestrator or anywhere else ever dispatched it (no caller in
+// app/ or lib/), so it was a second, unreachable approver of the same
+// social_posts row. What it had that the survivor lacked — the `content_approved`
+// notification to the post's author, tenant-resolved through
+// resolveRecipientBrokerageId — was ported onto the survivor FIRST. What was not
+// ported, on purpose: its `pending_approval` scheduling arm (the survivor's own
+// note rules that status was never valid — approval-pending posts are drafts).
+// The header's "EVENT HANDLERS" label now describes nothing in this file.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all posts in brokerage

@@ -9,6 +9,8 @@ import {
   type EvalDimension,
 } from "@/lib/compliance/manager-governance-scorecard"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { evalBrokerageOutbound, evalBrokerageDirectorReels } from "@/lib/agents/manager-outbound-eval"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export const metadata = {
   title:       "Manager Compliance Eval | Kernel OS Admin",
@@ -44,11 +46,19 @@ export default async function ComplianceEvalPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/auth/login")
-  const { data: userData } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
+  const { data: userData } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!isAdminOrBroker({ user_type: userData?.user_type ?? "agent" })) redirect("/dashboard")
 
   const report = runManagerEval()
   const cleared = !report.releaseBlocked
+  // THE LIVE HALF (wired 2026-09-03): the same read-only audits the weekly cron
+  // runs, scoped to the SESSION's brokerage (§4) — the managers' proposed client
+  // messages and the Director-staged reels, scored on the autonomous-agent
+  // dimensions. Gate first (above), then the service client.
+  const brokerageId = (userData as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  const svc = createServiceClient()
+  const outbound = brokerageId ? await evalBrokerageOutbound(brokerageId, svc) : null
+  const reels = brokerageId ? await evalBrokerageDirectorReels(brokerageId, svc) : null
   // Structural companion to the behavioral eval above: which manager is authorized
   // for what, and the named mechanism enforcing each dimension.
   const cards = buildManagerGovernanceScorecard()
@@ -90,6 +100,64 @@ export default async function ComplianceEvalPage() {
               {RELEASE_BLOCKING.has(cat) && <Badge className="bg-slate-900 text-white mt-1">release-blocking</Badge>}
             </Card>
           ))}
+        </div>
+      </section>
+
+      {/* ── Live audits: what the managers are proposing RIGHT NOW ────────────── */}
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">Live autonomous egress — this brokerage</h2>
+        <p className="text-sm text-muted-foreground">
+          Read-only. The managers&apos; proposed client messages and the Director&apos;s staged reels, scored on the
+          same dimensions. Nothing here is sent or rendered until a person approves it.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Card className="p-4">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Proposed manager messages</div>
+            {!outbound ? (
+              <div className="text-sm text-muted-foreground mt-1">No brokerage on this session — not evaluated.</div>
+            ) : outbound.unreadable ? (
+              <div className="text-sm text-red-700 mt-1">Could not read the proposal queue: {outbound.unreadable}. Not clean — unchecked.</div>
+            ) : (
+              <>
+                <div className={`text-2xl font-bold ${outbound.flagged === 0 ? "text-green-700" : "text-red-700"}`}>{outbound.clean}/{outbound.evaluated} clean</div>
+                {outbound.findings.slice(0, 6).map((f, i) => (
+                  <div key={`${f.messageId}-${i}`} className="text-xs text-muted-foreground mt-1">
+                    <Badge className="bg-slate-100 text-slate-700 mr-1">{f.dimension}</Badge>{f.managerKind}: {f.detail}
+                  </div>
+                ))}
+              </>
+            )}
+          </Card>
+          <Card className="p-4">
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">Director-staged reels</div>
+            {!reels ? (
+              <div className="text-sm text-muted-foreground mt-1">No brokerage on this session — not evaluated.</div>
+            ) : reels.unreadable ? (
+              <div className="text-sm text-red-700 mt-1">Could not read the staged reels: {reels.unreadable}. Not clean — unchecked.</div>
+            ) : !reels.report ? (
+              <div className="text-sm text-muted-foreground mt-1">No Director-staged reels to evaluate.</div>
+            ) : (
+              <>
+                <div className={`text-2xl font-bold ${reels.report.pass ? "text-green-700" : "text-red-700"}`}>
+                  {reels.evaluated} reel(s) — {reels.report.pass ? "all dimensions pass" : "findings"}
+                </div>
+                {([
+                  ["Hallucination", reels.report.hallucination],
+                  ["Fair Housing", reels.report.fairHousing],
+                  ["Scope creep", reels.report.scopeCreep],
+                  ["Reward alignment", reels.report.rewardAlignment],
+                ] as const).map(([label, d]) => (
+                  <div key={label} className="text-xs mt-1">
+                    <Badge className={d.pass ? "bg-green-100 text-green-800 mr-1" : "bg-red-100 text-red-800 mr-1"}>{d.pass ? "PASS" : "FAIL"}</Badge>
+                    {label}{!d.pass && <span className="text-muted-foreground"> — {d.violations.slice(0, 2).join("; ")}</span>}
+                  </div>
+                ))}
+                {reels.ungroundedRows > 0 && (
+                  <div className="text-[11px] text-muted-foreground mt-1">{reels.ungroundedRows} reel(s) staged before facts were stamped — grounded on superlatives only.</div>
+                )}
+              </>
+            )}
+          </Card>
         </div>
       </section>
 

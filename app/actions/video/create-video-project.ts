@@ -4,20 +4,9 @@ import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import {
-  buildComplianceSystemBlocks,
-  precheckBriefForFairHousing,
-  postcheckScript,
-  detectFairHousingRedFlags,
-  detectProhibitedPhraseRedFlags,
-  escalateScriptToHumanReview,
-  COMPLIANCE_UNKNOWN_PREFIX,
-  type ScriptComplianceState,
-} from "@/lib/video/script-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
-import { VIDEO_FINISHED_STATUSES, type CanonicalVideoStatus } from "@/lib/video/video-status"
+import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 
 // ============================================
 // VIDEO PROJECT CREATION — ai_video_projects
@@ -198,271 +187,19 @@ export interface VideoProject {
   video_metadata: Record<string, unknown> | null
 }
 
-// ─── AI SCRIPT GENERATION ──────────────────────────────────────────────────
+// ─── AI SCRIPT GENERATION — DELETED (orphan doctrine §1.1, 2026-09-03) ───────
+//
+// TOMBSTONE — `generateAIScript(params)` is DELETED. Survivor:
+// app/actions/video/generate-script.ts `generateVideoScript`, wired to the
+// wizard (app/dashboard/videos/create/video-create-client.tsx). The merge ran
+// in the doctrine's direction BEFORE this deletion: the survivor's header
+// records that the session-derived tenant gate was ported FROM this function
+// onto it; everything else this function did (compliance blocks in the prompt,
+// brief pre-check, advisory post-check, red-flag escalation, fail-closed hold
+// on an unevaluated script, tri-state complianceState) the survivor already
+// did, plus saveToLibrary and nine video types against five. Vocabulary:
+// this function's `listing_tour` is the survivor's `property_tour` (§6).
 
-/**
- * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — named duplicate of
- *   app/actions/video/generate-script.ts:generateVideoScript (that file, line
- *   112), which is wired to /dashboard/videos/create (the wizard —
- *   app/dashboard/videos/create/video-create-client.tsx:57) and is strictly
- *   more complete: nine video types against five, saveToLibrary, listing
- *   context, the SCRIPT_QUALITY_CHARTER, and the human-review escalation.
- *
- * NOT DELETED, and this is a standing ruling, not an omission:
- * lib/kernel/manager-registry.ts video_repurpose_render_writers records it as
- * "deliberately left unwired … NOT deleted, because the capability could not be
- * shown to have MOVED rather than being an independent twin." Three sibling
- * functions in this file carry the same treatment. Deleting it would also
- * red-line scripts/video-repurpose-wiring-simulator.ts:597-602, which asserts
- * on this body, and contradict scripts/wired-surface-baseline.json.
- *
- * It IS still a live "use server" endpoint, so it is hardened rather than left
- * as written. THREE DEFECTS CLOSED HERE, all of them ways the compliance gate
- * was decorative:
- *
- *  1. FAIL-OPEN. It called evaluateOutbound raw with
- *     `.catch(() => ({ allowed: true, violations: [] }))`. A THROWN evaluator —
- *     a DB outage, a refused compliance_events insert — reported the script as
- *     ALLOWED. "We could not check" is not "it is clean". It now runs the
- *     shared gate, whose red-flag pass is deterministic and cannot be lost to
- *     a throw, and the return shape carries an explicit `unknown` state.
- *
- *  2. NO PRE-CHECK AND NO STEER. The brief went straight to the model with no
- *     Fair Housing block in the system prompt and no check on the brief itself,
- *     so the compliance-FIRST design the owner ruled for did not exist on this
- *     path at all — only a post-hoc opinion that was then discarded.
- *
- *  3. TWO PERSONAS FOR ONE TEXT. applyBrandVoice was called with journeyType
- *     "seller" / persona "seller", and evaluateOutbound with journeyType
- *     "buyer" / persona "first_time", for the SAME string. Worse, "seller" is
- *     not a member of the Persona union at all (lib/kernel/types.ts:139), so
- *     getPersonaBrandNotes matched nothing and that call contributed no notes.
- *     And applyBrandVoice returns `content: params.content` UNCHANGED — it is a
- *     checker, not a rewriter — so the whole `withVoice` dance applied no brand
- *     voice and then threw away the violations it found. Removed: brand voice
- *     now arrives PROACTIVELY in the system prompt via
- *     buildComplianceSystemBlocks, and its violations arrive as Gate 1 of the
- *     one gate call, under ONE journeyType and ONE persona.
- */
-export async function generateAIScript(params: {
-  description: string
-  videoType: "listing_tour" | "market_update" | "agent_intro" | "tips" | "testimonial"
-  tone: "professional" | "friendly" | "luxury" | "educational"
-  durationSeconds: number
-  /** ignored — derived from the session. Kept so existing callers compile. */
-  brokerageId?: string
-  /** ignored — derived from the session. USERS-class, never agents.id. */
-  agentId?: string
-  listingAddress?: string
-  listingPrice?: number
-  listingFeatures?: string[]
-}) {
-  // Burns paid AI inference and reads brand-voice/compliance config for a
-  // brokerage, so it authenticates before it spends. The caller-supplied
-  // brokerageId/agentId are ignored — they authenticated nothing.
-  const auth = await requireCaller()
-  if (!auth.ok) {
-    return {
-      error: auth.error,
-      script: "",
-      wordCount: 0,
-      complianceState: "unknown" as ScriptComplianceState,
-      complianceEscalated: false,
-      complianceViolations: [auth.error],
-    }
-  }
-  const brokerageId = auth.brokerageId
-  // USERS-class throughout: generateText's agentId and the gate's actor.userId
-  // are both users ids. Substituting an agents.id here would be a cross-class bug.
-  const actorUserId = auth.userId
-  const actor = { userId: actorUserId, brokerageId }
-
-  // ONE journeyType for the whole evaluation — see defect 3 in the header.
-  // All five of this path's video types are buyer-facing marketing (there is no
-  // seller_update / listing_presentation here, which are the two the wizard's
-  // videoTypeToContactType maps to "seller"), so this is a constant rather than
-  // a lookup that would always return the same answer.
-  const journeyType = "buyer" as const
-
-  // Word count target: ~150 words per 60s
-  const targetWords = Math.round((params.durationSeconds / 60) * 150)
-
-  const typeContext: Record<string, string> = {
-    listing_tour: "a property tour walkthrough highlighting the home's best features",
-    market_update: "a local real estate market update with current statistics and insights",
-    agent_intro: "an agent introduction presenting their expertise and value proposition",
-    tips: "actionable real estate tips or advice for buyers and sellers",
-    testimonial: "a client success story or testimonial about a positive real estate experience",
-  }
-
-  const toneContext: Record<string, string> = {
-    professional: "authoritative, polished, and data-driven",
-    friendly: "warm, conversational, and approachable",
-    luxury: "sophisticated, refined, and aspirational",
-    educational: "clear, informative, and helpful",
-  }
-
-  let listingContext = ""
-  if (params.listingAddress && params.videoType === "listing_tour") {
-    listingContext = `
-Property details:
-- Address: ${params.listingAddress}
-- Price: ${params.listingPrice ? `$${params.listingPrice.toLocaleString()}` : "Contact for price"}
-- Key features: ${params.listingFeatures?.join(", ") || "available upon request"}
-`
-  }
-
-  // ── COMPLIANCE FIRST (Gate 1/4/5, proactive) ───────────────────────────────
-  // Brand voice + ThemFirst + Fair Housing go INTO the system prompt, so the
-  // model complies while writing rather than being graded afterwards. This is
-  // the shared gate — the same blocks the wizard and the other three
-  // generators use (lib/video/script-compliance.ts).
-  const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
-
-  // ── PRE-CHECK the human's brief, BEFORE spending inference ─────────────────
-  // A brief that is itself a Fair Housing violation must not be turned into a
-  // script at all. This is the only hard block on the path; per the owner's
-  // ruling nothing after generation blocks.
-  const preCheck = await precheckBriefForFairHousing(actor, params.description, journeyType)
-  if (preCheck.blocked) {
-    return {
-      error: `Description contains a Fair Housing violation: ${preCheck.reason}`,
-      script: "",
-      wordCount: 0,
-      complianceState: "red_flag" as ScriptComplianceState,
-      complianceEscalated: false,
-      complianceViolations: preCheck.reason ? [preCheck.reason] : [],
-    }
-  }
-
-  const prompt = `Write a ${params.durationSeconds}-second video script (~${targetWords} words) for ${typeContext[params.videoType]}.
-
-Tone: ${toneContext[params.tone]}
-${listingContext}
-Topic: ${params.description}
-
-${complianceBlocks.join("\n\n")}
-
-Requirements:
-- Open with a strong hook in the first 5 seconds
-- Be natural and conversational — this will be spoken by an AI avatar
-- Include a clear call-to-action at the end
-- NO stage directions, NO camera instructions, NO [PAUSE] markers
-- Just the spoken words, ready to be read aloud
-- Target exactly ${targetWords} words
-
-Return only the script text.`
-
-  const raw = await generateText({
-    prompt,
-    feature: "video_script_generation",
-    agentId: actorUserId,
-    brokerageId,
-  })
-
-  const scriptContent = raw.text
-
-  // ── POST-CHECK: advisory, and it CANNOT fail open ──────────────────────────
-  // postcheckScript now returns an explicit `Compliance: UNKNOWN — …` line when
-  // the evaluator throws, instead of undefined, so "we could not check" is
-  // never mistaken for "clean". The red-flag pass beside it is deterministic
-  // and needs no database at all.
-  const advisoryFindings = (await postcheckScript(actor, scriptContent, journeyType)) ?? []
-  const redFlags = detectFairHousingRedFlags(scriptContent, journeyType)
-  // …plus this brokerage's OWN blocking words. Graded inside the shared gate and
-  // recovered here by prefix — a pure filter over the list already returned, not
-  // a second read of prohibited_phrases.
-  redFlags.push(...detectProhibitedPhraseRedFlags(advisoryFindings))
-  const evaluatorUnknown = advisoryFindings.some((w) => w.startsWith(COMPLIANCE_UNKNOWN_PREFIX))
-  const unknownReasons = advisoryFindings.filter((w) => w.startsWith(COMPLIANCE_UNKNOWN_PREFIX))
-  const advisory = advisoryFindings.filter(
-    (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
-  )
-  // The BRIEF's own evaluation can have failed too, and that failure is upstream
-  // of everything above — it was checked before a token was spent.
-  const unevaluated = evaluatorUnknown || preCheck.evaluatorFailed
-
-  // ── ESCALATE ONLY A BIG RED FLAG ───────────────────────────────────────────
-  // The script is returned either way — the ruling forbids compliance holding
-  // up video creation. A hard Fair Housing finding additionally files a row on
-  // the existing human lane (video_scripts_library approval_status
-  // 'pending_review' → /dashboard/admin/marketing-approvals).
-  let complianceEscalated = false
-  let humanReviewId: string | undefined
-  const escalationNotes: string[] = []
-  if (redFlags.length > 0) {
-    const escalation = await escalateScriptToHumanReview({
-      actor,
-      script: scriptContent,
-      videoType: params.videoType,
-      title: `AI Script — ${params.videoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`,
-      redFlags,
-      warnings: advisory,
-      brandVoiceTone: params.tone,
-      durationTargetSeconds: params.durationSeconds,
-    })
-    if (escalation.ok) {
-      complianceEscalated = true
-      humanReviewId = escalation.reviewId
-      escalationNotes.push(
-        "This script was sent to a human for Fair Housing review (Marketing Approvals). You still have the script — it is not blocked.",
-      )
-    } else {
-      escalationNotes.push(
-        `Compliance: ESCALATION FAILED — a hard Fair Housing finding could not be filed for human review (${escalation.error}). Do not publish this script until someone has looked at it.`,
-      )
-    }
-  } else if (unevaluated) {
-    // ── FAIL CLOSED ────────────────────────────────────────────────────────────
-    // No red flag was FOUND, but the gate did not fully run — the kernel
-    // evaluator threw, or the brokerage's prohibited-phrase catalogue could not
-    // be read or holds no active rows. "We could not check" is not "it is
-    // clean", and a label alone is not an escalation: it takes the same human
-    // lane, with a note saying what was NOT checked. The script is still
-    // returned, so nothing is held up.
-    const hold = await escalateScriptToHumanReview({
-      actor,
-      script: scriptContent,
-      videoType: params.videoType,
-      title: `AI Script (unchecked) — ${params.videoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`,
-      redFlags: [],
-      warnings: advisory,
-      holdReason: "unevaluated",
-      unknownReasons,
-      brandVoiceTone: params.tone,
-      durationTargetSeconds: params.durationSeconds,
-    })
-    if (hold.ok) {
-      complianceEscalated = true
-      humanReviewId = hold.reviewId
-      escalationNotes.push(
-        "Compliance could not be fully checked on this script, so it was sent to a human (Marketing Approvals). You still have the script — it is not blocked.",
-      )
-    } else {
-      escalationNotes.push(
-        `Compliance: HOLD FAILED — this script could not be compliance-checked AND could not be filed for human review (${hold.error}). Do not publish it until someone has looked at it.`,
-      )
-    }
-  }
-
-  // complianceAllowed was a BOOLEAN, and the fail-open made it `true` for a
-  // gate that never ran. A tri-state replaces it so the caller can tell
-  // "clean" from "we do not know" — there are no callers to break.
-  const complianceState: ScriptComplianceState =
-    redFlags.length > 0 ? "red_flag"
-      : unevaluated ? "unknown"
-        : advisory.length > 0 ? "advisory"
-          : "clean"
-
-  return {
-    script: scriptContent,
-    wordCount: scriptContent.split(/\s+/).filter(Boolean).length,
-    complianceState,
-    complianceEscalated,
-    humanReviewId,
-    complianceViolations: [...redFlags, ...unknownReasons, ...advisory, ...escalationNotes],
-  }
-}
 
 // ─── IMPROVE EXISTING SCRIPT ────────────────────────────────────────────────
 
@@ -512,7 +249,8 @@ Return only the improved script text, no explanations.`
     result = await generateText({
       prompt,
       feature: "video_script_generation",
-      // USERS-class id — same class generateAIScript feeds it.
+      // USERS-class id — the same class the script survivor
+      // (app/actions/video/generate-script.ts) feeds generateAIResponse.
       agentId: auth.userId,
       brokerageId: auth.brokerageId,
     })
@@ -776,302 +514,31 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   return { success: true, project: project as VideoProject }
 }
 
-// ─── SUBMIT AVATAR VIDEO RENDER (D-ID + ElevenLabs) ──────────────────────────
-// Named submitToHeyGen until the l39 rename. There is no HeyGen path: this
-// dispatches through the platform video provider, which resolveVideoProvider
-// hard-locks to D-ID. The error strings below said "HeyGen" too — an agent
-// whose render failed was told a vendor we do not use had failed them.
+// ─── SUBMIT AVATAR VIDEO RENDER — DELETED (orphan doctrine §1.1, 2026-09-03) ─
+//
+// TOMBSTONE — `submitAvatarVideoRender(projectId)` is DELETED. Survivor:
+// lib/kernel/video.ts `submitVideoGenerationJob` (via app/actions/video.ts
+// `submitVideoGenerationJobAction`, wired from
+// app/dashboard/videos/board/video-studio-dialog.tsx), which holds the same
+// evaluateVideoRenderHold gate AND the atomic `.neq("status","generating")`
+// slot claim this function never had. The survivor signals a missing avatar by
+// throwing "avatarId is required…" where this returned `requiresConfiguration`;
+// same fact, one spelling. The Fair-Housing hold that guarded this door lives
+// on in the survivor (scripts/video-script-compliance-simulator.ts B26).
 
-/**
- * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — third-render-writer hazard.
- *
- * Two paths already start a render against the SAME ai_video_projects row and
- * the owner has ruled they are NOT to be consolidated:
- *
- *   1. POST /api/did/generate-video  — writes status='generating',
- *      provider_job_id=<D-ID talk id>, provider_metadata.provider='did'
- *      (app/api/did/generate-video/route.ts:326). It is the path that also runs
- *      checkBrandCompliance and injects the required verbal disclosure before
- *      submitting (same file, ~line 191 refuses with status='failed' when the
- *      compliance gate fails).
- *   2. lib/kernel/video.ts:submitVideoGenerationJob via
- *      app/actions/video.ts:submitVideoGenerationJobAction — writes
- *      status='generating', provider_status='submitting' behind an ATOMIC slot
- *      claim (.neq("status","generating"), lib/kernel/video.ts) so two clicks
- *      cannot both submit.
- *
- * This function would be the THIRD. It writes the identical
- * (status='generating' + provider_job_id) shape via generateAvatarVideo →
- * lib/did:generateVideo, which is the same D-ID talk id space — so
- * app/api/cron/poll-did-videos (selector: status='generating' AND
- * provider_job_id IS NOT NULL) would immediately adopt rows this created and
- * finalize them, while this path has:
- *   · NO compliance/disclosure gate (unlike path 1), and
- *   · NO atomic slot claim (unlike path 2) — it stamps 'generating'
- *     unconditionally, so it can stomp a render already in flight.
- * Only ONE thing may claim a project's render slot, and two things already do.
- *
- * It is NOT deleted: it is the only render entry that returns
- * `requiresConfiguration`, and per the governing rule there is no named
- * duplicate that does its job MORE completely without losing that. It is
- * hardened here (real tenant gate, errors destructured) so that its existing
- * exposure as a browser-callable endpoint is safe, and left unreferenced.
- */
-export async function submitAvatarVideoRender(
-  projectId: string,
-  _brokerageId?: string  // ignored — derived from the session
-): Promise<{ success: boolean; providerVideoId?: string; error?: string; requiresConfiguration?: boolean }> {
-  const gate = await requireProjectInCallerBrokerage(projectId)
-  if (!gate.ok) return { success: false, error: gate.error }
-  const brokerageId = gate.brokerageId
 
-  const supabase = await createClient()
+// ─── POLL VIDEO STATUS — DELETED (orphan doctrine §1.1, 2026-09-03) ─────────
+//
+// TOMBSTONE — `pollVideoStatus(projectId)` is DELETED. Survivors:
+//   · app/api/cron/poll-did-videos/route.ts — the canonical async finalizer for
+//     status='generating' AND provider_job_id IS NOT NULL rows (writes the
+//     terminal 'completed'/'failed' tokens). This function was a THIRD writer
+//     racing it for the same row's terminal state.
+//   · `getVideoProject` below (WIRED) — the synchronous "is it done yet" read
+//     of status/video_url/thumbnail_url, without a browser-initiated vendor
+//     poll. It also carried a raw `lifecycle_events` insert, which the kernel
+//     rule (lib/kernel/emit.ts) forbids outside emitKernelEvent; that died here.
 
-  const { data: project, error: loadError } = await supabase
-    .from("ai_video_projects")
-    .select("*")
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  if (loadError || !project) {
-    return { success: false, error: "Video project not found" }
-  }
-
-  if (!project.provider_avatar_id || !project.provider_voice_id) {
-    return {
-      success: false,
-      error: "Avatar and voice must be configured before generating. Set them up in Settings.",
-    }
-  }
-
-  // ── THE FAIR HOUSING HOLD ──────────────────────────────────────────────────
-  //
-  // This function is UNWIRED but it is still a "use server" export, i.e. a live
-  // HTTP endpoint the browser can call by name — and the header above records
-  // that it has NO compliance gate, unlike the D-ID route. That was tolerable
-  // while nothing after generation blocked; under the refinement ("hold up the
-  // video creation if still have a big red flag needed for a human") an
-  // ungated render door is the hole the whole hold leaks through. Gated here
-  // for the same reason it was hardened rather than left as written.
-  //
-  // ADVISORY PASSES — the shared gate holds on red_flag and unknown only.
-  {
-    const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
-      await import("@/lib/video/video-render-hold")
-    const hold = await evaluateVideoRenderHold({
-      supabase,
-      actor: { userId: gate.userId, brokerageId },
-      script: (project.script_content as string | null) ?? "",
-      projectId,
-      title: "Held video script (render blocked)",
-    })
-    if (hold.hold) {
-      const stamped = await stampProjectComplianceHold(supabase, projectId, hold)
-      if (!stamped.ok) {
-        console.error("[create-video-project] compliance hold could not be stamped:", stamped.error)
-      }
-      return { success: false, error: holdErrorMessage(hold) }
-    }
-  }
-
-  // Mark as generating. supabase-js RESOLVES a refused update instead of
-  // throwing, so an un-destructured await here reported a claim that never
-  // landed and then spent money anyway.
-  const { error: claimError } = await supabase
-    .from("ai_video_projects")
-    .update({ status: "generating", provider_status: "pending", updated_at: new Date().toISOString() })
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-  if (claimError) {
-    console.error("[create-video-project] Could not claim render slot:", claimError)
-    return { success: false, error: claimError.message }
-  }
-
-  // Submit to D-ID (platform-locked engine; canonical provider_* columns)
-  const result = await generateAvatarVideo({
-    avatarId: project.provider_avatar_id,
-    voiceId: project.provider_voice_id,
-    script: project.script_content,
-    brokerageId,
-  })
-
-  if (!result.success) {
-    // Mark as failed
-    const { error: failError } = await supabase
-      .from("ai_video_projects")
-      .update({
-        status: "failed",
-        provider_status: "failed",
-        error_message: result.error ?? "Avatar video submission failed (D-ID)",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", projectId)
-      .eq("brokerage_id", brokerageId)
-    if (failError) {
-      console.error("[create-video-project] Could not record render failure:", failError)
-    }
-
-    return {
-      success: false,
-      error: result.error,
-      requiresConfiguration: (result as any).requiresConfiguration ?? false,
-    }
-  }
-
-  // Store the D-ID job id
-  const { error: jobIdError } = await supabase
-    .from("ai_video_projects")
-    .update({
-      provider_job_id: result.videoId,
-      provider_status: "processing",
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-  if (jobIdError) {
-    // The vendor render is already running; if we cannot persist its id nobody
-    // can ever finish this row, so say so rather than reporting success.
-    console.error("[create-video-project] Could not persist provider job id:", jobIdError)
-    return { success: false, error: `Render submitted but its job id could not be saved: ${jobIdError.message}` }
-  }
-
-  revalidatePath("/dashboard/videos")
-
-  return { success: true, providerVideoId: result.videoId }
-}
-
-// ─── POLL VIDEO STATUS ────────────────────────────────────────────────────────
-
-/**
- * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — competing terminal writer.
- *
- * app/api/cron/poll-did-videos is the canonical async finalizer for exactly the
- * rows this would poll. Its selector is `status='generating' AND
- * provider_job_id IS NOT NULL` and on completion it writes status='completed'
- * (route.ts:391); on vendor error, status='failed' (route.ts:541).
- *
- * ai_video_projects.status now has ONE vocabulary, enforced by the m374 CHECK,
- * so HALF of this hazard is gone: this function writes status='completed', the
- * same terminal token the cron writes and the same one the repurpose rail reads
- * (both the Omni-Presence source picker and
- * app/actions/podcast-generation.ts:getVideoProjects take the finished set from
- * lib/video/video-status.ts). What remains is the other half, which is reason
- * enough to leave it unwired: it would be a THIRD writer racing the cron for
- * the same row's terminal state.
- *
- * Not deleted (no named duplicate is reachable as a server action for a
- * synchronous "is it done yet" read), hardened, and left unreferenced.
- */
-export async function pollVideoStatus(
-  projectId: string,
-  _brokerageId?: string  // ignored — derived from the session
-): Promise<{
-  status: "generating" | "ready" | "failed"
-  videoUrl?: string
-  thumbnailUrl?: string
-  error?: string
-}> {
-  const gate = await requireProjectInCallerBrokerage(projectId)
-  if (!gate.ok) return { status: "failed", error: gate.error }
-  const brokerageId = gate.brokerageId
-
-  const supabase = await createClient()
-
-  const { data: project, error: loadError } = await supabase
-    .from("ai_video_projects")
-    .select("provider_job_id, status, video_url, thumbnail_url, error_message")
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  if (loadError) return { status: "failed", error: loadError.message }
-  if (!project) return { status: "failed", error: "Project not found" }
-
-  // Already resolved — 'completed' and 'published' both mean the asset exists.
-  if ((VIDEO_FINISHED_STATUSES as readonly string[]).includes(project.status) && project.video_url) {
-    return { status: "ready", videoUrl: project.video_url, thumbnailUrl: project.thumbnail_url ?? undefined }
-  }
-  if (project.status === "failed") {
-    return { status: "failed", error: project.error_message ?? "Generation failed" }
-  }
-
-  if (!project.provider_job_id) {
-    return { status: "generating" }
-  }
-
-  // Poll the D-ID render
-  const providerResult = await getAvatarVideoStatus(project.provider_job_id)
-
-  if (!providerResult.success) {
-    return { status: "generating" }
-  }
-
-  const providerStatus: string = providerResult.status ?? "processing"
-
-  if (providerStatus === "completed" && providerResult.videoUrl) {
-    // Update project to finished
-    const { error: readyError } = await supabase
-      .from("ai_video_projects")
-      .update({
-        status: "completed",
-        provider_status: "completed",
-        video_url: providerResult.videoUrl,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", projectId)
-      .eq("brokerage_id", brokerageId)
-    if (readyError) {
-      console.error("[create-video-project] Could not persist ready status:", readyError)
-      return { status: "generating", error: readyError.message }
-    }
-
-    // Emit kernel event
-    const { error: eventError } = await supabase.from("lifecycle_events").insert({
-      entity_type: "video_project",
-      entity_id: projectId,
-      brokerage_id: brokerageId,
-      event_type: KernelEvent.VIDEO_PREVIEW_READY,
-      metadata: { video_url: providerResult.videoUrl },
-    })
-    if (eventError) {
-      console.error("[create-video-project] lifecycle_events insert error:", eventError)
-    }
-
-    await processKernelEvent({
-      event: KernelEvent.VIDEO_PREVIEW_READY,
-      brokerageId,
-      entityType: "video_project",
-      entityId: projectId,
-    }).catch(() => {})
-
-    revalidatePath("/dashboard/videos")
-
-    return { status: "ready", videoUrl: providerResult.videoUrl }
-  }
-
-  if (providerStatus === "failed") {
-    const { error: failError } = await supabase
-      .from("ai_video_projects")
-      .update({
-        status: "failed",
-        provider_status: "failed",
-        error_message: "Avatar video generation failed (D-ID)",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", projectId)
-      .eq("brokerage_id", brokerageId)
-    if (failError) {
-      console.error("[create-video-project] Could not persist failed status:", failError)
-    }
-
-    return { status: "failed", error: "Avatar video generation failed (D-ID)" }
-  }
-
-  // Still processing
-  return { status: "generating" }
-}
 
 // ─── GET VIDEO PROJECT ────────────────────────────────────────────────────────
 
@@ -1173,78 +640,17 @@ export async function getVideoProjects(
   return (data ?? []) as VideoProject[]
 }
 
-// ─── RETRY VIDEO GENERATION ─���───────────────────────────────────────────────
+// ─── RETRY VIDEO GENERATION — DELETED (orphan doctrine §1.1, 2026-09-03) ────
+//
+// TOMBSTONE — `retryVideoGeneration(projectId)` is DELETED. Survivor:
+// app/dashboard/videos/board/page.tsx `handleRetry` (the "Retry Generation"
+// control on failed cards), which resets the row and re-submits through
+// app/api/did/generate-video — the compliance-gated door. The ONE thing this
+// function had that the survivor lacked — the retry_count ceiling of 3 — was
+// ported onto the survivor first. What did NOT move, on purpose: this function
+// NULLed provider_job_id before resubmitting, which severed an in-flight D-ID
+// job from app/api/cron/poll-did-videos; the survivor leaves it alone.
 
-/**
- * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — inherits the third-writer hazard.
- *
- * Its last statement is `submitAvatarVideoRender(projectId, ...)`, so it drives
- * the SAME render path documented on that function above, with the compliance
- * gate and the atomic slot claim both absent. It additionally NULLs
- * provider_job_id first, which severs the row from
- * app/api/cron/poll-did-videos — an in-flight D-ID render would be orphaned
- * with nothing left to finalize it.
- *
- * The surface that would host a "Retry" button — the video board — already has
- * its own start control on the kernel path, so wiring this would put a second
- * start button on a surface that already has one.
- *
- * Not deleted: nothing else implements the retry_count ceiling. Hardened and
- * left unreferenced.
- */
-export async function retryVideoGeneration(
-  projectId: string,
-  _brokerageId?: string  // ignored — derived from the session
-): Promise<{ success: boolean; error?: string }> {
-  const gate = await requireProjectInCallerBrokerage(projectId)
-  if (!gate.ok) return { success: false, error: gate.error }
-  const brokerageId = gate.brokerageId
-
-  const supabase = await createClient()
-
-  const { data: project, error: loadError } = await supabase
-    .from("ai_video_projects")
-    .select("retry_count, status")
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  if (loadError) return { success: false, error: loadError.message }
-  if (!project) return { success: false, error: "Project not found" }
-
-  const retryCount = (project.retry_count ?? 0) + 1
-  if (retryCount > 3) {
-    return { success: false, error: "Maximum retry attempts reached. Please contact support." }
-  }
-
-  // Reset status
-  const { error: resetError } = await supabase
-    .from("ai_video_projects")
-    .update({
-      status: "draft",
-      provider_status: null,
-      provider_job_id: null,
-      video_url: null,
-      error_message: null,
-      retry_count: retryCount,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", projectId)
-    .eq("brokerage_id", brokerageId)
-  if (resetError) {
-    console.error("[create-video-project] Could not reset project for retry:", resetError)
-    return { success: false, error: resetError.message }
-  }
-
-  // Resubmit
-  const submitResult = await submitAvatarVideoRender(projectId)
-
-  if (!submitResult.success) {
-    return { success: false, error: submitResult.error }
-  }
-
-  return { success: true }
-}
 
 // getUserAvatarConfig was REMOVED. It had zero callers while sitting in a
 // "use server" module, so it was a live RPC endpoint nobody used — and it was

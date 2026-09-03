@@ -8,8 +8,11 @@
  * Layer 1 (pure, always runs) reads the SOURCE and asserts the CONSTRUCT:
  *   · every orphan that was wired is reachable from a real surface,
  *   · every projectId-taking action carries a STRUCTURAL tenant gate,
- *   · the three render-ish actions are still unreferenced, i.e. no THIRD
- *     writer of ai_video_projects' render slot was introduced,
+ *   · the three render-ish actions (submitAvatarVideoRender / pollVideoStatus /
+ *     retryVideoGeneration) are GONE — deleted 2026-09-03 onto their named
+ *     survivors (tombstones in create-video-project.ts) — and nothing in the
+ *     app/lib trees names them, i.e. no THIRD writer of ai_video_projects'
+ *     render slot was introduced or re-introduced,
  *   · the surfaces report the SERVER's verdict rather than an optimistic one.
  *
  * Layer 2 (creds-gated) checks the same vocabulary against the LIVE database
@@ -148,6 +151,14 @@ const rawSnippets  = load(SNIPPETS_CLIENT)
 const rawWizard    = load(WIZARD_PANEL)
 const rawDash      = load(REPURPOSE_CLIENT)
 const rawVideoNew  = load(CREATE_CLIENT)
+// The script survivor: generateAIScript (create-video-project.ts) was deleted
+// 2026-09-03 onto generate-script.ts:generateVideoScript, so the spend gate is
+// asserted THERE now.
+const GENERATE_SCRIPT = "app/actions/video/generate-script.ts"
+const rawGenScript = load(GENERATE_SCRIPT)
+// The finalizer survivor for the deleted pollVideoStatus.
+const POLL_CRON = "app/api/cron/poll-did-videos/route.ts"
+const rawPollCron = load(POLL_CRON)
 
 // Two canonicalisations per file: identifiers-only (strings blanked) and
 // literals-preserved. Comments are gone from both.
@@ -156,6 +167,8 @@ const repurposeL = stripCommentsOnly(rawRepurpose)
 const utilsL     = stripCommentsOnly(rawUtils)
 const create     = strip(rawCreate)
 const createL    = stripCommentsOnly(rawCreate)
+const genScript  = strip(rawGenScript)
+const pollCronL  = stripCommentsOnly(rawPollCron)
 const snippets   = strip(rawSnippets)
 const snippetsL  = stripCommentsOnly(rawSnippets)
 const wizard     = strip(rawWizard)
@@ -222,12 +235,12 @@ console.log("\n[Layer 1 · tenant gate on ai_video_projects — structural]")
     /project\.brokerage_id\s*!==\s*caller\.brokerageId/.test(gate),
   )
 
-  // Every projectId-taking export in the file, wired or not — all of them are
-  // live RPC endpoints regardless of whether a surface calls them.
+  // Every projectId-taking export in the file — all of them are live RPC
+  // endpoints regardless of whether a surface calls them.
+  // submitAvatarVideoRender / pollVideoStatus / retryVideoGeneration were
+  // removed from this list 2026-09-03: they are DELETED (tombstones in the
+  // file name their survivors), so a presence check on them was a waypoint.
   const PROJECT_ID_ACTIONS = [
-    "submitAvatarVideoRender",
-    "pollVideoStatus",
-    "retryVideoGeneration",
     "getVideoProject",
     "getVideoProjectSnippetSource",
   ]
@@ -242,7 +255,7 @@ console.log("\n[Layer 1 · tenant gate on ai_video_projects — structural]")
 
   // The gate is worthless if the function then filters on the ARGUMENT it was
   // handed. Every one of these must have its brokerage parameter neutered.
-  for (const fn of ["submitAvatarVideoRender", "pollVideoStatus", "retryVideoGeneration", "getVideoProject"]) {
+  for (const fn of ["getVideoProject"]) {
     const decl = new RegExp(`function\\s+${fn}\\s*\\(([^)]*)\\)`)
     const m = decl.exec(create)
     check(
@@ -279,8 +292,11 @@ console.log("\n[Layer 1 · tenant gate on ai_video_projects — structural]")
 // has ruled they are not to be consolidated:
 //   · app/api/did/generate-video/route.ts  (status='generating' + provider_job_id)
 //   · lib/kernel/video.ts:submitVideoGenerationJob (atomic slot claim)
-// submitAvatarVideoRender / retryVideoGeneration / pollVideoStatus all drive
-// that same D-ID rail. None of them may acquire a caller.
+// submitAvatarVideoRender / retryVideoGeneration / pollVideoStatus drove that
+// same D-ID rail and were DELETED (2026-09-03) onto lib/kernel/video.ts
+// submitVideoGenerationJob, the poll-did-videos cron + getVideoProject, and the
+// board's handleRetry (which received the retry ceiling first). None of them
+// may acquire a caller — and none may come back under the same name.
 
 console.log("\n[Layer 1 · no THIRD writer of the render slot]")
 {
@@ -316,6 +332,13 @@ console.log("\n[Layer 1 · no THIRD writer of the render slot]")
     }
   }
   check(`scanned the app + lib trees (${scanned} files)`, scanned > 200)
+  // The defining file no longer DECLARES them either — a third render door
+  // returning under the old name is caught here, not by the referrer scan
+  // (which skips the defining file by design).
+  for (const fn of RENDER_ACTIONS) {
+    check(`${fn} is not declared in create-video-project.ts (deleted onto its survivor)`,
+      !new RegExp(`function\\s+${fn}\\s*\\(`).test(create))
+  }
   for (const fn of RENDER_ACTIONS) {
     check(
       `${fn} has ZERO referrers outside its own module`,
@@ -523,13 +546,19 @@ console.log("\n[Layer 1 · defect fixes hold]")
     }
   }
 
-  // (g) generateAIScript and improveScript burn paid inference — both gated.
-  check("generateAIScript authenticates before it spends", calls(body(create, "generateAIScript"), "requireCaller"))
+  // (g) the script generator and improveScript burn paid inference — both gated.
+  //     generateAIScript was deleted 2026-09-03 onto generate-script.ts:
+  //     generateVideoScript; the assertion follows the survivor.
+  const genBody = body(genScript, "generateVideoScript")
+  check("generateVideoScript (survivor) exists and authenticates before it spends",
+    genBody.length > 0 && calls(genBody, "requireCaller"))
   check("improveScript authenticates before it spends", calls(body(create, "improveScript"), "requireCaller"))
   check(
-    "generateAIScript no longer trusts a caller-supplied brokerageId",
-    !/brokerageId:\s*params\.brokerageId/.test(body(create, "generateAIScript")),
+    "generateVideoScript (survivor) does not trust a caller-supplied brokerageId",
+    genBody.length > 0 && !/brokerageId:\s*params\.brokerageId/.test(genBody),
   )
+  check("generateAIScript (the deleted twin) is not declared in create-video-project.ts",
+    !/function\s+generateAIScript\s*\(/.test(create))
 }
 
 // ─── 6. VOCABULARY — the constants match what the code enforces ─────────────
@@ -608,9 +637,11 @@ console.log("\n[Layer 1 · status vocabulary is one list, in a non-'use server' 
   // CHECK constraint now rejects anything else, so a regression here is a
   // runtime insert failure, not a silent mismatch. Anchor on the update's
   // neighbouring column so only the write, never the return object, satisfies it.
+  // pollVideoStatus was deleted 2026-09-03; the write it duplicated lives in
+  // the ONE finalizer, app/api/cron/poll-did-videos. Assert the token THERE.
   check(
-    "pollVideoStatus persists a canonical terminal token, not a private spelling",
-    /status:\s*"completed",\s*provider_status:/.test(body(createL, "pollVideoStatus")),
+    "poll-did-videos (the surviving finalizer) persists a canonical terminal token, not a private spelling",
+    /status:\s*"completed",\s*provider_status:/.test(pollCronL),
   )
 }
 
