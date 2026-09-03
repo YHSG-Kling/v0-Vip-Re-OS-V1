@@ -360,9 +360,10 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
   // update (when a template exists for the event), and downstream listeners
   // pick it up uniformly.
   try {
-    const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-    const { KernelEvent }       = await import("@/lib/kernel/events")
-    await fanOutKernelEvent({
+    // emitKernelEvent also writes the cd_received audit row this path never had.
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent }     = await import("@/lib/kernel/events")
+    await emitKernelEvent({
       event:           KernelEvent.CD_RECEIVED,
       brokerageId:     txn.brokerage_id,
       entityType:      "transaction",
@@ -372,6 +373,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       sellerContactId: (txnFull as any)?.seller_contact_id ?? undefined,
       contactId:       (txnFull as any)?.contact_id        ?? undefined,
       agentUserId:     auth.userId,
+      actorUserId:     auth.userId,
       metadata:        { cdaId, documentId: input.documentId },
     })
   } catch { /* fan-out is best-effort; agent + TC already notified above */ }
