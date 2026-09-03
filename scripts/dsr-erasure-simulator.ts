@@ -108,8 +108,22 @@ async function main() {
     /import\s*\{[^}]*\bcontactRedactionPatch\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/contact-pii-redaction["']/.test(actionSrc))
   check("the anonymize UPDATE applies contactRedactionPatch (not a hand-written field list)",
     /\.update\(\s*contactRedactionPatch\(/.test(actionSrc))
+  // BOUNDED to the update's OWN object literal. `[\s\S]*?` used to be unbounded,
+  // so the very first `.update({` anywhere in the file could reach a
+  // `first_name: audit_hash` eighty lines later and read as a stale hand-written
+  // patch. Wave 26 added exactly that: the post-erasure completeness check builds
+  // an EXPECTED-MARKER object naming the same three fields to verify the update
+  // actually cleared them — a read-back, the opposite of the defect this pins.
+  // `[^}]*` cannot cross the literal's closing brace, so the assertion stays on
+  // the update argument where the stale patch would live.
   check("no stale 5-field object left behind (no literal first_name: audit_hash in the update)",
-    !/\.update\(\s*\{[\s\S]*?first_name:\s*audit_hash/.test(actionSrc))
+    !/\.update\(\s*\{[^}]*first_name:\s*audit_hash/.test(actionSrc))
+  // POSITIVE CONTROL — the bounded matcher still recognises the defect it exists
+  // for: a hand-written patch passed straight to .update().
+  check("CONTROL the bounded matcher still catches a hand-written update patch",
+    /\.update\(\s*\{[^}]*first_name:\s*audit_hash/.test(
+      'await svc.from("contacts").update({ first_name: audit_hash, last_name: "[deleted]" })',
+    ))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
