@@ -19,6 +19,10 @@ import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/part
 import type { RoiLedger } from "@/lib/intelligence/roi-ledger"
 import type { ReelBrand } from "@/lib/video/reel-brand"
 import { geometryFor } from "@/lib/remotion/composition-geometry"
+// PURE (no DB, no server-only) — the companion-card gate, the hint cutter and
+// the sentence the refusal log names.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
 
 export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
 
@@ -158,11 +162,24 @@ export async function queueListingPitchReel(
       if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to get started" }
     }
   } catch { /* QR is additive */ }
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+  // producer omitted it, so a listing-pitch card printed the just-listed
+  // composition's SAMPLE sentence as its summary line and as the hero image's
+  // alt text. Cut verbatim from the pitch's own narration.
+  //
+  // CAPPED AT TWO SENTENCES (§5). buildListingPitchReelProps' third sentence is
+  // the ROI line — "…in closed volume across N deals" — brokerage money spoken
+  // to a prospective seller in the room, not something to publish as the page
+  // summary if this render is ever put on /v/[slug]. The first two sentences
+  // are the introduction and the promise, which is what the card is for.
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
     agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: seoHintFromNarration((props as { narration?: unknown }).narration as string | null, SEO_HINT_MAX_CHARS, 2),
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[listing-pitch-reel] no companion share card for appointment ${p.appointmentId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId, compositionId: LISTING_PITCH_COMPOSITION,

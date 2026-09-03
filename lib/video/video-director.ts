@@ -1143,6 +1143,32 @@ export async function commissionVideo(
     }
   }
 
+  // 6d. THE COMPANION SHARE CARD (§1.2 — the other half of the thumbnail
+  //     contract). Every composition the Director commissions declares a
+  //     thumbnail_composition_id, so render-composition renders a VideoCoverThumb
+  //     still beside the video and that PNG becomes thumbnail_url — the og:image
+  //     and the player poster on /v/[slug]. The Director staged no
+  //     thumbnail_props, so the card was completed from the composition's Studio
+  //     fixture: a fabricated address and price as the share image of a real
+  //     client's video. The backstop now SKIPS such a card instead of publishing
+  //     it, which is correct and leaves the reel with no share image at all —
+  //     so the facts are staged HERE, where they already exist. Nothing is
+  //     authored: the two lines are re-read from contentProps (resolved from
+  //     live rows above) and the seoHint is cut verbatim from the gated hook.
+  //     A refusal is a LOG, never a block: a video with no share image is a
+  //     degraded preview; a video that cannot be made is a missing deliverable,
+  //     and these are not the same failure.
+  //
+  //     ONE SPELLING of the audience rule (§6) — the row's audience_type below
+  //     reads this same const instead of restating the condition.
+  const audienceType: "customer_facing" | "in_house" =
+    situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing"
+  const { directorShareCard } = await import("@/lib/video/director-content")
+  const share = directorShareCard(format.compositionId, contentProps, { hookLine, audienceType })
+  if (share.skipReason) {
+    console.warn(`[video-director] no companion share card for ${format.compositionId} — ${share.skipReason}`)
+  }
+
   const providerMetadata = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
@@ -1150,6 +1176,11 @@ export async function commissionVideo(
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
       ...contentProps,
+      // Rides under the ONE key render-decision.ts resolveThumbnailProps reads,
+      // which is also where lib/geo/video-landing.ts seoHintFromRenderProps
+      // reads the hint back for the landing page's og:description. Absent when
+      // the card was refused — an absent key is what makes the backstop skip.
+      ...(share.card ? { thumbnail_props: share.card } : {}),
       intro: introProps,
       outro: outroProps,
       // FLAT outro-QR props — the compositions read qrCodeDataUrl/qrCaption/mlsClean at the TOP level
@@ -1179,8 +1210,7 @@ export async function commissionVideo(
       status: "queued",
       video_type: videoTypeForSituation(situation.kind),
       format: formatForAspect(format.aspect),
-      audience_type: situation.kind === "cma" || situation.kind === "presentation"
-        ? "in_house" : "customer_facing",
+      audience_type: audienceType,
       is_ai_generated: true,
       approval_status: "pending_review", // gated — a human approves before send
       compliance_status: "passed",       // hook pre-cleared the gate above

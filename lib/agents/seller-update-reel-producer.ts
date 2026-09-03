@@ -47,6 +47,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { missingContentProps, describeMissingContent, isSupplied } from "@/lib/remotion/content-contract"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const SELLER_UPDATE_COMPOSITION = "AgentTalkingHeadReel"
 /** Tags the render's input_props so delivery can distinguish seller updates from
@@ -306,11 +308,53 @@ export async function requestSellerUpdateReel(
   const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
 
+  // The seller-safe narration, composed ONCE (§6) — the avatar speaks it below
+  // and the companion card's seoHint is cut from it, so the two cannot drift
+  // into two different accounts of the same week.
+  const sellerScript = buildSellerUpdateMessage(gathered.stats, agentName).body
+
   const props: Record<string, unknown> = {
     ...buildSellerUpdateReelProps(gathered.stats, { agentName, brokerageName, agentPhone, agentPhotoUrl }),
     listing_id: listingId,
     seller_contact_id: gathered.sellerContactId,
   }
+
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // AgentTalkingHeadReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so render-composition renders a still beside the video and writes it
+  // to thumbnail_url — the og:image and the player poster on /v/[slug]. This
+  // producer staged none, so the card was completed from VideoCoverThumb's
+  // Studio fixture: "Just Listed — 123 Main Street", "$625K · 3 bd · 2 ba ·
+  // Brickell, FL", "Your Agent", published as the share image of a real
+  // seller's weekly update. Every value below is re-read from props this
+  // function already resolved from the listing row.
+  //
+  // THE HINT IS CAPPED AT THE FIRST SENTENCE. The second sentence reads the
+  // week's showing count and days-on-market — the seller's own marketing
+  // position, which belongs to the seller and not to a public summary of their
+  // address. The opening line is the whole honest description of the video.
+  //
+  // `agentName` refuses the literal "Your Agent" — which is BOTH this producer's
+  // own fallback (buildSellerUpdateReelProps) and VideoCoverThumb's sample
+  // value, so staging it would satisfy isSupplied while being byte-identical to
+  // the default the contract exists to keep off a client's card. The brokerage
+  // name takes its place; with neither, companionCard refuses and the video
+  // ships without a share image. (The same rule as the render-just-listed
+  // producer and consultation-render — one spelling of "a placeholder is not an
+  // attribution", §6.)
+  const cardAgentName = agentName && agentName !== "Your Agent" ? agentName : brokerageName
+  const card = companionCard(VIDEO_COVER_THUMB, {
+    kind: "agent_avatar",
+    title:    gathered.stats.listingAddress,
+    subtitle: props.caption,
+    eyebrow:  "WEEKLY UPDATE",
+    agentName: cardAgentName,
+    agentPhotoUrl,
+    brand: props.brand,
+    seoHint: seoHintFromNarration(sellerScript, SEO_HINT_MAX_CHARS, 1),
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[seller-update-reel] listing ${listingId} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
 
   // B-ROLL (owner rule: avatar videos carry cutaway footage) — the seller's OWN
   // listing photos behind the floating avatar; the most personal b-roll there is.
@@ -384,7 +428,7 @@ export async function requestSellerUpdateReel(
     agentUserId,
     renderId: r.renderId,
     props,
-    script: buildSellerUpdateMessage(gathered.stats, agentName).body,
+    script: sellerScript,
   })
   if (!avatar.requested) {
     console.warn(`[seller-update-reel] listing ${listingId} render ${r.renderId} ships as the agent-photo cut — ${avatar.reason}`)

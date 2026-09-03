@@ -16,6 +16,8 @@
 import type { BoardPacketData } from "./board-packet"
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
 import type { ReelQueueOutcome } from "@/lib/intelligence/partners-meeting"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const BOARD_PACKET_REEL_COMPOSITION = "PartnersMeetingReel"
 /** entity_type on the render row — the dedupe + delivery-sweep key. */
@@ -123,12 +125,27 @@ export async function queueBoardPacketReel(
     voiceId: identity.voiceId, renderKey: `packet-${p.brokerageId.slice(0, 8)}`,
   })
   if (vo) props.voiceover_url = vo.url
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+  // producer omitted it, so a BOARD PACKET card printed the just-listed
+  // composition's sample sentence as its summary line and as the hero image's
+  // alt text. Cut verbatim from this packet's own narration instead.
+  //
+  // CAPPED AT THE FRAMING SENTENCE (§5). buildBoardPacketReelProps' second
+  // sentence reads the month's closed VOLUME out loud and the attribution
+  // sentence reads the money the marketing closed; this card becomes the
+  // og:image the moment a broker publishes the render to /v/[slug]. The opening
+  // line — "<Month> at <Brokerage>, presented by your AI team." — is the whole
+  // honest summary and carries no figure.
+  const cardSeoHint = seoHintFromNarration((props as { narration?: unknown }).narration as string | null, SEO_HINT_MAX_CHARS, 1)
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: `${p.data.monthLabel} Board Packet`,
     subtitle: "Presented by your AI team", eyebrow: "BOARD PACKET",
     agentName: brand.brokerageName,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: cardSeoHint,
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[board-packet-reel] no companion share card for brokerage ${p.brokerageId} (${p.data.monthLabel}) — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId,

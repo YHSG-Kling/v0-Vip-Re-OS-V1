@@ -32,6 +32,9 @@
 // prove the mapping without a database.
 
 import type { SituationKind, VideoSituation } from "./video-director"
+// PURE imports only — this module is exercised by the simulator without a DB.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
 
 type AnyClient = any
 
@@ -54,6 +57,117 @@ export function brandBlock(id: DirectorIdentity): Record<string, unknown> {
     showEhoMark: true,
     ...(id.logoUrl ? { logoUrl: id.logoUrl } : {}),
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE COMPANION SHARE CARD — the Director's half of the thumbnail contract.
+//
+// Every moving composition the Director commissions declares a
+// thumbnail_composition_id (VideoCoverThumb), so render-composition renders a
+// still beside the video and writes it to thumbnail_url — the og:image and the
+// player poster on /v/[slug]. The Director staged NO thumbnail_props, so that
+// still was completed from VideoCoverThumb's Studio fixture: "Just Listed — 123
+// Main Street", "$625K · 3 bd · 2 ba · Brickell, FL", "Your Agent". The same
+// defect this whole module exists to close, one composition further down the
+// pipe. (The render backstop now SKIPS such a card rather than publishing it —
+// app/api/internal/remotion/render-composition/route.ts — which is why the
+// Director must supply one for its reels to have a share image at all.)
+//
+// THE RULE IS THE MODULE'S RULE: nothing here is authored. The title and
+// subtitle are the SAME resolved facts the video puts on screen, re-read out of
+// the props that were already established from live rows; the seoHint is cut
+// VERBATIM from the hook that already passed the compliance gate
+// (draftAndGateHook → evaluateOutbound). A composition whose facts do not yield
+// an honest title gets NO card, and the video ships without a share image.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "")
+
+/** kind + the two lines, per composition, read out of props this module built.
+ *  A composition absent from this table gets no card (see the two rulings
+ *  below it) — the safe direction, because the alternative is a card completed
+ *  from the fixture. */
+const SHARE_CARD_COPY: Record<
+  string,
+  { kind: string; eyebrow: string; title: (p: Record<string, unknown>) => string; subtitle: (p: Record<string, unknown>) => string }
+> = {
+  JustListedReel:           { kind: "listing", eyebrow: "JUST LISTED", title: (p) => str(p.address), subtitle: (p) => str(p.cityState) },
+  JustListedReelSquare:     { kind: "listing", eyebrow: "JUST LISTED", title: (p) => str(p.address), subtitle: (p) => str(p.cityState) },
+  JustListedReelHorizontal: { kind: "listing", eyebrow: "JUST LISTED", title: (p) => str(p.address), subtitle: (p) => str(p.cityState) },
+  PhotoWalkthroughReel:     { kind: "listing", eyebrow: "STEP INSIDE",  title: (p) => str(p.address), subtitle: (p) => str(p.cityState) },
+  JustSoldReelSquare:       { kind: "listing", eyebrow: "JUST SOLD",    title: (p) => str(p.address), subtitle: (p) => str(p.cityState) },
+  ComingSoonReel:           { kind: "coming_soon", eyebrow: "COMING SOON", title: (p) => str(p.address), subtitle: (p) => str(p.whenString) || str(p.cityState) },
+  OpenHouseAnnounceReel:    { kind: "open_house", eyebrow: "OPEN HOUSE", title: (p) => str(p.address), subtitle: (p) => [str(p.dateLabel), str(p.timeLabel)].filter(Boolean).join(" · ") },
+  MarketUpdateReel:         { kind: "market_update", eyebrow: "MARKET UPDATE", title: (p) => str(p.areaName), subtitle: (p) => str(p.period) },
+  NeighborhoodSpotlightReel:{ kind: "neighborhood", eyebrow: "NEIGHBORHOOD", title: (p) => str(p.neighborhood), subtitle: (p) => str(p.tagline) },
+  TestimonialReel:          { kind: "testimonial", eyebrow: "CLIENT REVIEW", title: (p) => str(p.clientName), subtitle: (p) => str(p.clientRole) || str(p.closingLabel) },
+  AgentTalkingHeadReel:     { kind: "agent_avatar", eyebrow: "FROM YOUR AGENT", title: (p) => str(p.agentName), subtitle: (p) => str(p.caption) || str(p.hook) },
+  AgentExplainerReel:       { kind: "explainer", eyebrow: "EXPLAINER", title: (p) => str(p.title), subtitle: (p) => str(p.eyebrow) },
+  TeammateExplainerReel:    { kind: "explainer", eyebrow: "EXPLAINER", title: (p) => str(p.title), subtitle: (p) => str(p.eyebrow) },
+  ExplainerAnimReel:        { kind: "explainer", eyebrow: "EXPLAINER", title: (p) => str(p.title), subtitle: (p) => str(p.caption) },
+}
+
+/**
+ * TWO COMPOSITIONS ARE DELIBERATELY ABSENT FROM THE TABLE, and the reason is
+ * CLAUDE.md §5, not a gap:
+ *
+ *   · EquityReportReel — the card would summarise ONE past client's equity
+ *     position in the home they live in. A share card is a public artefact
+ *     (og:image, player poster, the text an AI search engine quotes); a
+ *     person's financial position is not something the OS publishes on their
+ *     behalf, however true it is. The reel still ships; it ships without a
+ *     share image.
+ *   · CMAReel and the presentation slides — the Director marks these
+ *     `audience_type: 'in_house'` and the caller passes that through, so the
+ *     audience arm below refuses them before this table is consulted. A CMA's
+ *     card would carry a seller's valuation, which the composition itself
+ *     already refuses to show a customer (lib/charts/cma-reel-data.ts prices
+ *     the customer cut off the market median, never the subject).
+ */
+export function directorShareCard(
+  compositionId: string,
+  props: Record<string, unknown>,
+  opts: { hookLine: string; audienceType: "customer_facing" | "in_house" },
+): { card: Record<string, unknown> | null; skipReason: string | null } {
+  // An internal-audience reel is shown BY the agent, not broadcast. Its
+  // companion still would be published as a public summary of an in-house
+  // analysis, so there is none.
+  if (opts.audienceType === "in_house") {
+    return { card: null, skipReason: `${compositionId}: in-house audience — no public share card is produced for an in-house reel` }
+  }
+  const copy = SHARE_CARD_COPY[compositionId]
+  if (!copy) {
+    return { card: null, skipReason: `${compositionId}: no share-card copy is declared for this composition (see the ruling in lib/video/director-content.ts)` }
+  }
+  const brand = (props.brand && typeof props.brand === "object") ? props.brand as Record<string, unknown> : null
+  // `agentName` falls back to the BROKERAGE name, never to VideoCoverThumb's own
+  // sample "Your Agent": that string is the fixture, and staging it by hand
+  // would satisfy isSupplied while meaning exactly what the contract refuses.
+  const agentName = str(props.agentName) || str(brand?.brokerageName)
+  const images: unknown[] = Array.isArray(props.imageUrls) ? props.imageUrls : []
+  const firstImage: unknown = images.length > 0 ? images[0] : null
+  const hero: string | null = str(firstImage) || str(props.heroImageUrl) || null
+
+  const card: Record<string, unknown> = {
+    kind:     copy.kind,
+    title:    copy.title(props),
+    subtitle: copy.subtitle(props),
+    eyebrow:  copy.eyebrow,
+    agentName,
+    ...(props.agentPhotoUrl ? { agentPhotoUrl: props.agentPhotoUrl } : {}),
+    ...(hero ? { heroImageUrl: hero } : {}),
+    ...(brand ? { brand } : {}),
+    // The hook is the ONE line on this commission that has been through
+    // evaluateOutbound (and, on a violation, the one redraft) — see
+    // draftAndGateHook in lib/video/video-director.ts. Cutting the hint from it
+    // means the public summary cannot say anything the gate did not see.
+    seoHint:  seoHintFromNarration(opts.hookLine),
+  }
+  const decision = companionCard(VIDEO_COVER_THUMB, card)
+  if (!decision.card) {
+    return { card: null, skipReason: `${compositionId}: ${describeMissingContent(VIDEO_COVER_THUMB, decision.missing)}` }
+  }
+  return { card: decision.card, skipReason: null }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

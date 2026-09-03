@@ -31,6 +31,8 @@ import {
 import type { SectionSpec } from "@/lib/listing-presentation/section-drip"
 import type { BuyerSlideKind, BuyerSearchExample } from "@/remotion/BuyerConsultationSlide"
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { geometryFor } from "@/lib/remotion/composition-geometry"
 
 /**
@@ -398,6 +400,36 @@ export async function renderBuyerConsultationSlides(
       brand:           ctx.brand,
       ...r.extra,
     }
+    // ── THE COMPANION SHARE CARD (§1.2) ──────────────────────────────────────
+    // BuyerConsultationSlide declares thumbnail_composition_id='VideoCoverThumb'
+    // (m168), so render-composition renders a still beside each slide and writes
+    // it to thumbnail_url — the og:image and the player poster on /v/[slug].
+    // This producer staged none, so the still was completed from
+    // VideoCoverThumb's Studio fixture and a buyer's personal deck shipped a
+    // fabricated listing as its share image.
+    //
+    // `agentName` never falls back to the literal "Your Agent" the way the SLIDE
+    // props do (ctx.agentName's own default). That string is VideoCoverThumb's
+    // sample value, so staging it by hand would satisfy isSupplied while meaning
+    // precisely what the contract refuses; the brokerage name is a real name and
+    // is used instead, and when there is neither the card is refused.
+    // The hint is the slide's OWN narration, which the fair-housing belt in
+    // consultation-narration.ts has already cleared (a hard hit returns the
+    // deterministic script, so what is cut here is never un-screened text).
+    const brokerageName = String((ctx.brand as Record<string, unknown>).brokerageName ?? "").trim()
+    const cardAgentName = ctx.agentName && ctx.agentName !== "Your Agent" ? ctx.agentName : brokerageName
+    const slideCard = companionCard(VIDEO_COVER_THUMB, {
+      kind:     "presentation",
+      title:    r.section.title ?? "Your Home-Buying Plan",
+      subtitle: `Slide ${r.slideNumber} of ${total}`,
+      eyebrow:  "BUYER CONSULTATION",
+      agentName: cardAgentName,
+      agentPhotoUrl: ctx.agentPhotoUrl,
+      brand:    ctx.brand,
+      seoHint:  seoHintFromNarration(r.narration.script),
+    })
+    if (slideCard.card) inputProps.thumbnail_props = slideCard.card
+    else console.warn(`[consultation-render] ${presentationId} slide '${r.section.section_key}' ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, slideCard.missing)}`)
     // The SAME question the render backstop will ask, asked first — refusal by
     // name at staging, so no queue row or spend exists for an unrenderable slide.
     const missing = missingContentProps(BUYER_SLIDE_COMPOSITION, inputProps)

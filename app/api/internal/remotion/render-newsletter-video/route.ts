@@ -44,6 +44,10 @@ import { selectComposition, renderMedia } from "@remotion/renderer"
 import { runPersonaVariantPostPass } from "@/lib/video/persona-variant-post-pass"
 import { mintVideoQr } from "@/lib/video/video-qr"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+// PURE — the companion-card gate and the hint cutter (see the staging comment
+// below the render for why this route needs both).
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, NEWSLETTER_DIGEST_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
 import {
   narrationBudget,
   narrationLengthDirective,
@@ -372,6 +376,21 @@ Return ONLY the spoken text.${fix}`
     // storage-hosted URL, marketing-asset capture, audit trail: identical to
     // every generic-rail video. Blob fallback keeps a finish failure from
     // losing a finished render.
+    // The card, gated on the SAME contract the render backstop enforces: an
+    // incomplete one is not staged at all, because Remotion merges `{}` over
+    // defaultProps and an incomplete card does not render blank — it renders the
+    // fixture.
+    const newsletterCard = companionCard(NEWSLETTER_DIGEST_THUMB, {
+      subject:     inputProps.subject,
+      personaHook: seoHintFromNarration(script, SEO_HINT_MAX_CHARS, 1),
+      agentName:   br?.name ?? null,
+      brand:       inputProps.brand,
+      seoHint:     seoHintFromNarration(script),
+    })
+    if (!newsletterCard.card) {
+      console.warn(`[render-newsletter-video] campaign ${camp.id} ships without a share card — ${describeMissingContent(NEWSLETTER_DIGEST_THUMB, newsletterCard.missing)}`)
+    }
+
     let finishedUrl: string | null = null
     try {
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
@@ -384,7 +403,25 @@ Return ONLY the spoken text.${fix}`
         usedVoiceover: true,
         // NOTE: no voiceover_url in input_props — the narration is already the
         // composition's audio track; setting it would double the voice.
-        inputProps: { kind: "newsletter_digest", music_mood: "calm" },
+        //
+        // ── THE COMPANION CARD (§1.2) ────────────────────────────────────────
+        // NewsletterDigestVideo is the ONE composition whose registry row points
+        // at NewsletterDigestThumb rather than VideoCoverThumb (m168). This
+        // producer staged no thumbnail_props at all, so anything that rendered
+        // the card would have completed it from that composition's Studio
+        // fixture, and app/v/[slug] had no per-render hint to publish as
+        // og:description — it fell back to the registry's one generic sentence,
+        // identical on every newsletter video ever made.
+        //
+        // `personaHook` (the inbox preview a recipient decides to open on) and
+        // the seoHint are cut VERBATIM from `script`, which has already passed
+        // evaluateOutbound through runWithComplianceRedraft above — the same
+        // sentences the video speaks, never a second draft. `agentName` is the
+        // brokerage's real name, never NewsletterDigestThumb's sample value.
+        inputProps: {
+          kind: "newsletter_digest", music_mood: "calm",
+          ...(newsletterCard.card ? { thumbnail_props: newsletterCard.card } : {}),
+        },
         scopeType: "brokerage", scopeId: camp.brokerage_id, requestedVia: "cron",
       })
       if (rq.ok && rq.renderId) {

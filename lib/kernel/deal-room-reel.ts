@@ -19,6 +19,8 @@
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
 import { geometryFor } from "@/lib/remotion/composition-geometry"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const DEAL_ROOM_REEL_ENTITY = "deal_room_reel"
 
@@ -217,11 +219,21 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
             if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to reach your team" }
           }
         } catch { /* QR is additive */ }
-        props.thumbnail_props = {
+        // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+        // producer omitted it, so a Deal Room card printed the just-listed
+        // composition's sample sentence as its summary line and as the hero
+        // image's alt text. Cut verbatim from this update's own narration —
+        // the same sentences the client hears. No cap: buildDealRoomReelProps
+        // speaks no money (closing dates, cleared contingencies and an action
+        // count), so there is no §5 line to stop before.
+        const card = companionCard(VIDEO_COVER_THUMB, {
           kind: "presentation", title: address, subtitle: "Your deal this week", eyebrow: "DEAL ROOM",
           agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
           brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-        }
+          seoHint: seoHintFromNarration((props as { narration?: unknown }).narration as string | null),
+        })
+        if (card.card) props.thumbnail_props = card.card
+        else console.warn(`[deal-room-reel] no companion share card for transaction ${t.id} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
         const { recordRenderQueued } = await import("@/lib/remotion/registry")
         const q = await recordRenderQueued({
           brokerageId: b.id, compositionId: DEAL_ROOM_COMPOSITION, agentUserId,

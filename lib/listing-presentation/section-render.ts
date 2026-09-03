@@ -20,6 +20,8 @@ import {
 } from "@/lib/listing-presentation/section-narration"
 import { resolveMarketingSystem } from "@/lib/listing-presentation/marketing-system-resolver"
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
 export type SectionRenderResult =
@@ -265,6 +267,37 @@ export async function renderSectionsForPresentation(
       ...(narration.heldForReview ? { narrationHeldForReview: true } : {}),
       ...(narration.reviewId ? { narrationReviewId: narration.reviewId } : {}),
     }
+    // ── THE COMPANION SHARE CARD (§1.2) ──────────────────────────────────────
+    // ListingSectionReel declares thumbnail_composition_id='VideoCoverThumb'
+    // (m181), so a still is rendered beside every section and becomes the
+    // render's thumbnail_url — the og:image and the player poster on /v/[slug].
+    // This producer staged none, so that still was completed from
+    // VideoCoverThumb's Studio fixture and a pre-listing section shipped a
+    // fabricated address and price as its share image.
+    //
+    // A HELD SCRIPT IS NOT A SUMMARY (§5). When the fair-housing screen withheld
+    // the model's text, `narration.heldForReview` is set and a human owns the
+    // copy until they release it — publishing that same text as the card's
+    // seoHint (rendered under the subtitle AND as the hero image's alt) would
+    // route around the hold. No hint ⇒ companionCard refuses ⇒ the section keeps
+    // its video and ships with no share image, which is the honest outcome.
+    //
+    // `agentName` refuses the literal "Your Agent" (this function's own default
+    // when the presentation names no agent, and also VideoCoverThumb's sample
+    // value) — staging it would satisfy isSupplied while being byte-identical to
+    // the default the contract keeps off a client's card. Same rule as
+    // consultation-render and the render-just-listed producer (§6).
+    const sectionCard = companionCard(VIDEO_COVER_THUMB, {
+      kind: "presentation",
+      title:    s.title ?? "Your Listing Plan",
+      subtitle: pres.property_address ?? brand.brokerageName,
+      eyebrow:  "LISTING PLAN",
+      agentName: agentName === "Your Agent" ? brand.brokerageName : agentName,
+      brand,
+      seoHint: narration.heldForReview ? null : seoHintFromNarration(narration.script),
+    })
+    if (sectionCard.card) inputProps.thumbnail_props = sectionCard.card
+    else console.warn(`[section-render] ${presentationId} section ${s.section_key} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, sectionCard.missing)}`)
     // THE CONTENT GATE, before the insert. `bullets` is the pitch and the
     // contract requires it; a narration whose bullets came back empty (a held
     // script, a thin fallback) used to be staged anyway, the backstop cancelled

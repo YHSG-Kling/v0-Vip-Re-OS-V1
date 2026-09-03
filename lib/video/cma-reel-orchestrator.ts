@@ -78,6 +78,25 @@ export async function enqueueCmaReelRender(
     return { ok: false, error: describeMissingContent(CMA_REEL_COMPOSITION_ID, missing) }
   }
 
+  // ── NO COMPANION SHARE CARD IS STAGED HERE, AND THAT IS THE RULING ─────────
+  // CMAReel declares thumbnail_composition_id='VideoCoverThumb' (m177), so
+  // render-composition would render a still beside this video and publish it as
+  // thumbnail_url — the og:image and the player poster on /v/[slug]. Since
+  // 2026-09-03 that pass asks the content contract first and SKIPS a card it
+  // cannot complete, so this reel ships with no share image rather than with the
+  // composition's Studio fixture. Two reasons it stays that way:
+  //
+  //   1. §5. A CMA's only honest card would carry the subject home's valuation,
+  //      and this builder already refuses to show a customer that number
+  //      (lib/charts/cma-reel-data.ts prices the customer cut off the MARKET
+  //      MEDIAN, never the subject). A public og:image naming an address and a
+  //      value is the same disclosure through a different door.
+  //   2. There is nothing gated to cut a hint from. VideoCoverThumb REQUIRES
+  //      seoHint — the sentence an AI search engine quotes — and this producer
+  //      holds charts, not narration: no script passes through here, so any hint
+  //      would be a sentence THIS function wrote about a seller's home that no
+  //      compliance gate ever saw. An absent card is the honest outcome; an
+  //      invented one is the defect the contract exists to refuse.
   const supabase = client ?? createServiceClient()
   const { data, error } = await supabase
     .from("remotion_composition_renders")

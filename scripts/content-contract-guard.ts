@@ -35,12 +35,15 @@ import {
   VOICEOVER_CONSUMING_COMPOSITIONS, consumesVoiceover, stagesVoiceover,
 } from "../lib/remotion/content-contract"
 import { buildAvatarRenderRow } from "../lib/video/avatar-render-orchestrator"
-import { seoHintFromNarration, seoHintFromRenderProps, describeVideoForSearch, SEO_HINT_MAX_CHARS } from "../lib/geo/video-landing"
+import {
+  seoHintFromNarration, seoHintFromRenderProps, describeVideoForSearch,
+  SEO_HINT_MAX_CHARS, companionCard, VIDEO_COVER_THUMB,
+} from "../lib/geo/video-landing"
 import { explainerDiagramSpec } from "../lib/charts/explainer-diagram"
 import {
   listingReelProps, justSoldProps, comingSoonProps, openHouseProps,
   marketUpdateProps, neighborhoodProps, testimonialProps, equityProps,
-  formatTimeWindow, compactMoney, brandBlock, type DirectorIdentity,
+  formatTimeWindow, compactMoney, brandBlock, directorShareCard, type DirectorIdentity,
 } from "../lib/video/director-content"
 
 let pass = 0, fail = 0
@@ -962,6 +965,130 @@ console.log("\n═══ 17. seoHint — the producer supplies it, the contract 
     && /describeVideoForSearch\(\s*\{/.test(page))
   ok("...and no longer hand-rolls the old inline rule beside it (one ordering, not two)",
     !/const\s+descBase\s*=/.test(page))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 18. EVERY PRODUCER THAT STAGES A COMPANION CARD SUPPLIES ITS HINT.
+//
+// Section 17 proves ONE producer complete. This proves the RULE, because the
+// defect was never about that producer: a moving composition whose registry row
+// names a thumbnail_composition_id gets a still rendered beside it, and Remotion
+// merges `{}` over defaultProps — so a producer that staged nothing did not ship
+// a blank card, it shipped VideoCoverThumb's Studio fixture as a real client's
+// og:image, and a producer that staged a title and a subtitle but no seoHint
+// shipped ANOTHER composition's sample sentence as the summary line
+// (remotion/VideoCoverThumb.tsx renders the hint under the subtitle and as the
+// hero image's alt text). Both are silent successes.
+//
+// ASSERT THE RULE, DERIVE THE NUMBER (§2). The count of producers is PRINTED as
+// the measurement and never asserted: it more than doubled in one wave and will
+// move again, and an assertion pinned to it would go red on whoever adds the
+// next card — the waypoint trap. What is asserted is that the set of files
+// staging a card and the set that supplies a hint for it are the SAME set, which
+// holds at any count.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 18. every companion-card producer supplies a seoHint (the rule, not a count) ═══")
+{
+  /** A file STAGES a companion card if its CODE names the key the card rides on.
+   *  Comment-stripped: a tombstone or a header paragraph naming
+   *  `thumbnail_props` is prose, not a producer. (`resolveThumbnailProps` does
+   *  not match — the reader's identifier carries no underscore.) */
+  const stagesCard = (source: string) => /\bthumbnail_props\b/.test(source)
+  /**
+   * ...and it is HONEST about the hint if it either names `seoHint` itself, or
+   * routes the card through a gate that cannot admit one without it.
+   *
+   * The gate list is a VOCABULARY, not an exemption list (§6): both entries
+   * refuse a card whose required props are unsupplied, and `seoHint` is
+   * required on both thumbnail compositions — proved directly by the
+   * companionCard and directorShareCard assertions below, so a file that
+   * delegates to one of them is covered by those assertions instead of by a
+   * grep. A new gate has to be added here AND given its own refusal proof.
+   */
+  const gatedOrHinted = (source: string) =>
+    /\bseoHint\b/.test(source) || /\b(companionCard|directorShareCard)\s*\(/.test(source)
+
+  // PUBLISHED BLIND SPOTS (§2), not a silent skip:
+  //  · scripts/ is not walked at all — simulators name these keys as fixtures.
+  //  · these two files match `thumbnail_props` as READERS of the key, not
+  //    producers of a card: render-decision.ts resolves it off a render row and
+  //    video-landing.ts is the gate + the og:description reader.
+  const CARD_READERS = new Set([
+    "lib/remotion/render-decision.ts",
+    "lib/geo/video-landing.ts",
+  ])
+
+  const producerFiles: string[] = []
+  const walkSrc = (dir: string, depth = 0) => {
+    if (depth > 8) return
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith(".") || e.name === "node_modules") continue
+      const full = `${dir}/${e.name}`
+      if (e.isDirectory()) walkSrc(full, depth + 1)
+      else if (/\.tsx?$/.test(e.name)) producerFiles.push(full)
+    }
+  }
+  walkSrc("lib"); walkSrc("app")
+
+  const staging: string[] = []
+  const hintless: string[] = []
+  for (const f of producerFiles) {
+    const raw = src(f)
+    // Cheap pre-filter on the raw text so the stripper runs on candidates only;
+    // it can only ADD files to the scan, never remove one the stripper would keep.
+    if (!raw.includes("thumbnail_props")) continue
+    if (CARD_READERS.has(f)) continue
+    const stripped = stripComments(raw)
+    if (!stagesCard(stripped)) continue
+    staging.push(f)
+    if (!gatedOrHinted(stripped)) hintless.push(f)
+  }
+
+  console.log(`  … ${staging.length} companion-card producers under lib/ + app/ (readers excluded: ${[...CARD_READERS].join(", ")})`)
+  ok("every file that stages a companion card supplies its seoHint or routes the card through a gate\n    that refuses one without it — unsupplied, the card prints another composition's sample sentence",
+    hintless.length === 0, hintless.join(", ") || undefined)
+
+  // POSITIVE CONTROL — a finder that recognises nothing reports zero and reads
+  // as a clean tree. These fixtures prove it still discriminates.
+  const hintlessFixture = `props.thumbnail_props = { kind: "presentation", title: a, subtitle: b, agentName: c }`
+  const hintedFixture   = `props.thumbnail_props = { kind: "presentation", title: a, subtitle: b, agentName: c, seoHint: h }`
+  const gatedFixture    = `const d = companionCard(VIDEO_COVER_THUMB, card); if (d.card) props.thumbnail_props = d.card`
+  ok("...and the finder still DISCRIMINATES: a hand-built card with no seoHint is caught, one with a\n    hint is not, a gated one is not, and a file naming neither is not a producer at all",
+    stagesCard(hintlessFixture) && !gatedOrHinted(hintlessFixture)
+    && stagesCard(hintedFixture) && gatedOrHinted(hintedFixture)
+    && stagesCard(gatedFixture) && gatedOrHinted(gatedFixture)
+    && !stagesCard(`const x = resolveThumbnailProps(row.input_props)`))
+
+  // The GATE itself: an incomplete card must come back null with the missing
+  // props named, so a producer cannot stage a half-card by accident.
+  const complete = { kind: "listing", title: "812 Sunset Harbour Dr", subtitle: "Naples, FL", agentName: "Dana Reyes", seoHint: "Just listed in Naples." }
+  ok("companionCard admits a complete card and REFUSES an incomplete one by name, on the same\n    CONTENT_CONTRACT the render backstop enforces",
+    companionCard(VIDEO_COVER_THUMB, complete).card !== null
+    && companionCard(VIDEO_COVER_THUMB, { ...complete, seoHint: null }).card === null
+    && companionCard(VIDEO_COVER_THUMB, { ...complete, seoHint: null }).missing.join(",") === "seoHint"
+    && companionCard(VIDEO_COVER_THUMB, { ...complete, agentName: "" }).missing.join(",") === "agentName")
+
+  // §5 — the sentence cap that keeps brokerage money off a public summary.
+  // NOTE the fixture avoids "Co." and "$3.1M": an interior period that is not
+  // followed by whitespace is not a sentence end to the cutter, and a fixture
+  // that trips on its own punctuation would prove nothing about the cap.
+  const moneyScript = "August at Harbour and Company, presented by your AI team. You closed 4 transactions for $310,000 in gross commission."
+  ok("seoHintFromNarration caps at whole leading sentences when asked, so the internal-report\n    producers can cut a hint that stops before the commission line (§5)",
+    seoHintFromNarration(moneyScript, SEO_HINT_MAX_CHARS, 1) === "August at Harbour and Company, presented by your AI team."
+    && !(seoHintFromNarration(moneyScript, SEO_HINT_MAX_CHARS, 1) ?? "").includes("$310,000")
+    && (seoHintFromNarration(moneyScript) ?? "").includes("$310,000"))
+
+  // The Director's per-composition ruling: a card for a broadcast reel, NONE for
+  // an in-house analysis or for one client's financial position (§5).
+  const listingProps = { address: "812 Sunset Harbour Dr", cityState: "Naples, FL", brand: { brokerageName: "Harbour & Co." } }
+  const gatedHook = "Just listed in Naples with a deeded boat slip."
+  ok("directorShareCard stages a card for a broadcast reel from the props the video already shows,\n    and refuses one for an in-house reel and for EquityReportReel (§5)",
+    directorShareCard("JustListedReel", listingProps, { hookLine: gatedHook, audienceType: "customer_facing" }).card !== null
+    && directorShareCard("JustListedReel", listingProps, { hookLine: gatedHook, audienceType: "in_house" }).card === null
+    && directorShareCard("EquityReportReel", { ...listingProps, agentName: "Dana Reyes" }, { hookLine: gatedHook, audienceType: "customer_facing" }).card === null
+    && directorShareCard("JustListedReel", listingProps, { hookLine: "", audienceType: "customer_facing" }).card === null)
+  ok("...and never completes the card from the composition's own sample agent name — a listing reel\n    stages no agentName, so the BROKERAGE name is the attribution, never \"Your Agent\"",
+    (directorShareCard("JustListedReel", listingProps, { hookLine: gatedHook, audienceType: "customer_facing" }).card as Record<string, unknown>).agentName === "Harbour & Co.")
 }
 
 console.log(`\n${"═".repeat(70)}`)

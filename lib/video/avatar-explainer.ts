@@ -64,6 +64,10 @@ import {
   fitNarrationToBudget,
   spokenWords,
 } from "@/lib/video/script-structure"
+// PURE, like the two above (video-landing imports only video-status +
+// content-contract, both DB-free) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
 
 export { AVATAR_EXPLAINER_PRESETS }
 export type { AvatarExplainerPreset, ExplainerVoiceSource }
@@ -486,6 +490,35 @@ export async function commissionAvatarExplainer(
       showEhoMark: brand.showEhoMark,
     },
   }
+
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // Both explainer compositions declare thumbnail_composition_id='VideoCoverThumb'
+  // (m168 / m274), so render-composition renders a still beside the video and
+  // that PNG becomes thumbnail_url — the og:image and the player poster on
+  // /v/[slug]. This producer staged none, so the card came out as
+  // VideoCoverThumb's Studio fixture ("Just Listed — 123 Main Street", "$625K ·
+  // 3 bd · 2 ba · Brickell, FL") over an explainer about closing costs.
+  //
+  // Every value is the authored content this function already holds, and the
+  // hint is cut VERBATIM from `content.narration` — the copy that has been
+  // through authorExplainerContent's compliance redraft (the row below is
+  // inserted `compliance_status: 'passed'` on the strength of exactly that
+  // gate). `agentName` refuses the literal "Your Agent" — the resolver's own
+  // fallback above, and also VideoCoverThumb's sample value, so staging it
+  // would satisfy isSupplied while meaning what the contract refuses.
+  const cardAgentName = agentName === "Your Agent" ? brand.brokerageName : agentName
+  const explainerCard = companionCard(VIDEO_COVER_THUMB, {
+    kind: "explainer",
+    title:    content.title,
+    subtitle: content.eyebrow,
+    eyebrow:  "EXPLAINER",
+    agentName: cardAgentName,
+    agentPhotoUrl: readiness.agentPhotoUrl,
+    brand: inputProps.brand,
+    seoHint: seoHintFromNarration(content.narration),
+  })
+  if (explainerCard.card) inputProps.thumbnail_props = explainerCard.card
+  else console.warn(`[avatar-explainer] ${compositionId} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, explainerCard.missing)}`)
 
   // 4. Honest provider gate — no D-ID key means the job PARKS, visibly.
   const status = readiness.didConfigured ? "queued" : "generating"

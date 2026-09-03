@@ -705,12 +705,23 @@ async function main() {
       mutate: (s) => s.replace(/else\s+if\s*\(\s*unevaluated\s*\)\s*\{/, "else if (false) {"),
     },
     {
-      id: "6.8 PROJECT-HOLDS-AN-UNEVALUATABLE-SCRIPT",
+      // RETARGETED 2026-09-03. This asserted the hold on `generateAIScript`, the
+      // twin generator DELETED onto generate-script.ts (6.7 asserts the hold on
+      // that survivor). The rule did not disappear with the function: the twin
+      // file still runs PAID INFERENCE over a script — `improveScript` rewrites
+      // a gated script on request — and that rewrite reached the agent with no
+      // compliance blocks in its prompt and no post-check on its output, which
+      // made it the last script path outside the gate. So the assertion follows
+      // the RISK rather than the deleted name: the rewrite must be steered.
+      id: "6.8 PROJECT-REWRITE-IS-STEERED-BEFORE-IT-SPENDS",
       file: PROJECT,
-      detail: "the twin path must hold an unevaluatable script too — it is a live 'use server' endpoint",
-      predicate: (s) =>
-        /else\s+if\s*\(\s*unevaluated\s*\)\s*\{[\s\S]{0,900}?await\s+escalateScriptToHumanReview\s*\(\{[\s\S]{0,600}?holdReason:\s*"unevaluated"/.test(s),
-      mutate: (s) => s.replace(/else\s+if\s*\(\s*unevaluated\s*\)\s*\{/, "else if (false) {"),
+      detail: "improveScript must put buildComplianceSystemBlocks INTO the prompt before generateText — a rewrite of a gated script is a new script",
+      predicate: (s) => {
+        const blocks = idx(s, "buildComplianceSystemBlocks")
+        const gen = idx(s, "generateText")
+        return blocks >= 0 && gen >= 0 && blocks < gen && /\$\{complianceBlocks\.join\(/.test(s)
+      },
+      mutate: (s) => s.replace(/\$\{complianceBlocks\.join\([^)]*\)\}\n\n/, ""),
     },
     {
       id: "6.9 WIZARD-COUNTS-THE-BROKERAGE-BLOCKING-WORDS-AS-RED-FLAGS",
@@ -720,11 +731,21 @@ async function main() {
       mutate: (s) => s.replace(/redFlags\.push\(\s*\.\.\.detectProhibitedPhraseRedFlags\([^)]*\)\s*\)/, ""),
     },
     {
-      id: "6.10 PROJECT-COUNTS-THE-BROKERAGE-BLOCKING-WORDS-AS-RED-FLAGS",
+      // RETARGETED 2026-09-03, same reason as 6.8: the rule moved to the rewrite.
+      // A brokerage's blocking word must stop the REWRITE too, and the original
+      // script is untouched on screen, so refusing costs the agent nothing.
+      id: "6.10 PROJECT-REWRITE-REFUSES-A-BROKERAGE-BLOCKING-WORD",
       file: PROJECT,
-      detail: "same rule on the twin path",
-      predicate: (s) => /redFlags\.push\(\s*\.\.\.detectProhibitedPhraseRedFlags\(/.test(s),
-      mutate: (s) => s.replace(/redFlags\.push\(\s*\.\.\.detectProhibitedPhraseRedFlags\([^)]*\)\s*\)/, ""),
+      detail: "improveScript must post-check its output and refuse on a prohibited-phrase red flag — not hand back copy the brokerage marked blocking",
+      predicate: (s) => {
+        const post = idx(s, "postcheckScript")
+        // `idx` anchors on `await NAME(`; the red-flag filter is SYNCHRONOUS, so
+        // it is located by plain search rather than silently reading as absent.
+        const flags = s.indexOf("detectProhibitedPhraseRedFlags(")
+        return post >= 0 && flags >= 0 && post < flags &&
+          /if\s*\(\s*redFlags\.length\s*>\s*0\s*\)[\s\S]{0,400}?complianceBlocked:\s*true/.test(s)
+      },
+      mutate: (s) => s.replace(/if\s*\(\s*redFlags\.length\s*>\s*0\s*\)\s*\{/, "if (false) {"),
     },
     {
       id: "6.11 WIZARD-STEERS-BEFORE-IT-WRITES",
@@ -748,8 +769,12 @@ async function main() {
       },
       mutate: (s) =>
         s.replace(
-          /const\s+advisory\s*=\s*\(complianceWarnings\s*\?\?\s*\[\]\)\.filter\(/,
-          'if (redFlags.length) return { success: false, error: "blocked" }\n  const advisory = (complianceWarnings ?? []).filter(',
+          // Anchored on `const advisory = [`, not on the whole initializer: the
+          // advisory list gained a spread and moved onto two lines, so the old
+          // one-line anchor could not apply and the control silently proved
+          // nothing (it SAID so, which is how this was caught).
+          /const\s+advisory\s*=\s*\[/,
+          'if (redFlags.length) return { success: false, error: "blocked" }\n  const advisory = [',
         ),
     },
     {

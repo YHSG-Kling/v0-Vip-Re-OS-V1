@@ -7,6 +7,11 @@ import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import type { CanonicalVideoStatus } from "@/lib/video/video-status"
+import {
+  buildComplianceSystemBlocks,
+  postcheckScript,
+  detectProhibitedPhraseRedFlags,
+} from "@/lib/video/script-compliance"
 
 // ============================================
 // VIDEO PROJECT CREATION — ai_video_projects
@@ -210,6 +215,10 @@ export interface ImproveScriptResult {
   script?: string
   wordCount?: number
   error?: string
+  /** Post-check findings that are ADVISORY — shown, never blocking (§5). */
+  complianceWarnings?: string[]
+  /** True when the rewrite tripped a hard flag and was NOT returned. */
+  complianceBlocked?: boolean
 }
 
 export async function improveScript(params: {
@@ -237,7 +246,21 @@ export async function improveScript(params: {
     friendly: "Make this friendlier and more conversational, like talking to a friend.",
   }
 
-  const prompt = `${improvementPrompts[params.improvement]}
+  // COMPLIANCE-FIRST, ON THE REWRITE TOO (CLAUDE.md §5; integrator, wave 26).
+  // A script that passed the gate is handed to a model here and rewritten —
+  // "make it more engaging", "elevate the language" — and until now the rewrite
+  // was returned to the agent with no compliance blocks in its prompt and no
+  // post-check on its output. The gate the survivor runs was applied to text the
+  // model then replaced, so this was the last script path outside it.
+  //
+  // Same shape as generate-script.ts: STEER first (the blocks are inputs, not a
+  // verdict), then grade what came back. The tenant is the session's.
+  const actor = { userId: auth.userId, brokerageId: auth.brokerageId }
+  const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
+
+  const prompt = `${complianceBlocks.join("\n\n")}
+
+${improvementPrompts[params.improvement]}
 
 Original script:
 ${params.currentScript}
@@ -266,10 +289,29 @@ Return only the improved script text, no explanations.`
     return { success: false, error: "The model returned an empty script — nothing was changed." }
   }
 
+  // POST-CHECK the rewrite. `improvement` carries no buyer/seller context, so the
+  // journey is graded as "buyer" — the stricter of the two for fair-housing
+  // phrasing, which is the safe direction when the caller has not said.
+  const complianceWarnings = await postcheckScript(actor, text, "buyer")
+  const redFlags = detectProhibitedPhraseRedFlags(complianceWarnings ?? [])
+  if (redFlags.length > 0) {
+    // The ORIGINAL script is untouched and still on screen. Refusing here loses
+    // nothing the agent had; returning the rewrite would hand them copy the
+    // brokerage marked blocking.
+    return {
+      success: false,
+      complianceBlocked: true,
+      complianceWarnings: redFlags,
+      error: `The rewrite used wording your brokerage blocks: ${redFlags.join("; ")}`,
+    }
+  }
+
   return {
     success: true,
     script: text,
     wordCount: text.split(/\s+/).filter(Boolean).length,
+    // Warnings PASS THROUGH (§5: warnings pass, only a hard flag escalates).
+    ...(complianceWarnings && complianceWarnings.length > 0 ? { complianceWarnings } : {}),
   }
 }
 

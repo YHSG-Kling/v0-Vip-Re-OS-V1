@@ -16,6 +16,10 @@
 // video-status.ts is pure constants (no DB, no server-only), so importing it
 // here keeps this module unit-testable in the simulator without egress.
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
+// content-contract.ts is PURE (no DB, no server-only, no Remotion import), so
+// asking it whether a companion card is complete keeps this module unit-testable
+// in the simulator without egress — the same property the import above relies on.
+import { missingContentProps } from "@/lib/remotion/content-contract"
 
 /** AI + search crawler user-agents we explicitly welcome in robots. The
  *  whole point of GEO is to be readable by these — the opposite of the
@@ -303,17 +307,36 @@ export const SEO_HINT_MAX_CHARS = 160
  * boundary with an ellipsis rather than mid-word. Blank in ⇒ null out, so the
  * content contract refuses the card instead of a producer inventing one.
  *
+ * `maxSentences` (default: no cap) exists for ONE reason and it is a §5 rule,
+ * not a style knob. The internal-report narrations (the Partners' Meeting show,
+ * the Board Packet) open with a framing sentence and then read the brokerage's
+ * money out loud — composePartnersMeetingScript's Finance Manager line is
+ * literally "…in gross commission booked this week". Those shows are hosted for
+ * LEADERSHIP, but their companion card is the og:image / player poster the
+ * moment a broker publishes the render to /v/[slug], and commission is off every
+ * surface that is not the broker's own board. Capping the cut at the framing
+ * sentence keeps the hint verbatim (still no paraphrase, still no new claim)
+ * while keeping the money off a public summary. Producers whose narration
+ * carries no financial line pass no cap.
+ *
  * PURE.
  */
-export function seoHintFromNarration(script: string | null | undefined, maxChars = SEO_HINT_MAX_CHARS): string | null {
+export function seoHintFromNarration(
+  script: string | null | undefined,
+  maxChars = SEO_HINT_MAX_CHARS,
+  maxSentences = Number.POSITIVE_INFINITY,
+): string | null {
   const flat = (script ?? "").replace(/\s+/g, " ").trim()
   if (!flat) return null
   const sentences = flat.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g)?.map((s) => s.trim()).filter(Boolean) ?? [flat]
   let out = ""
+  let taken = 0
   for (const s of sentences) {
+    if (taken >= maxSentences) break
     const next = out ? `${out} ${s}` : s
     if (next.length > maxChars) break
     out = next
+    taken += 1
   }
   if (out) return out
   // The first sentence alone is over the ceiling: cut on a word boundary.
@@ -321,6 +344,63 @@ export function seoHintFromNarration(script: string | null | undefined, maxChars
   const cut = head.slice(0, maxChars - 1)
   const atWord = cut.lastIndexOf(" ") > maxChars / 2 ? cut.slice(0, cut.lastIndexOf(" ")) : cut
   return `${atWord.replace(/[\s.,;:—-]+$/, "")}…`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE COMPANION CARD — the other half of the same contract.
+//
+// A moving composition whose registry row names a `thumbnail_composition_id`
+// gets a still rendered beside it, and that PNG becomes
+// remotion_composition_renders.thumbnail_url → the og:image and the player
+// poster on /v/[slug]. The card's props ride the render row under the ONE key
+// render-decision.ts resolveThumbnailProps reads, `input_props.thumbnail_props`.
+//
+// WHY A GATE AND NOT A BUILDER. Every producer's card says something different
+// (an address, a week label, a slide title) and only the producer holds those
+// facts, so there is nothing honest to centralise about the COPY. What must be
+// identical everywhere is the ANSWER TO "may this card be rendered at all" —
+// because the failure mode is silent: Remotion merges `{}` over defaultProps, so
+// an incomplete card does not come out blank, it comes out as VideoCoverThumb's
+// Studio fixture ("Just Listed — 123 Main Street", "$625K · 3 bd · 2 ba ·
+// Brickell, FL", "Your Agent") published as a real client's share image. So the
+// question is asked in one place, by the same CONTENT_CONTRACT the render
+// backstop asks, and a producer that cannot answer it stages NO card rather
+// than a fabricated one.
+//
+// The two thumbnail compositions the registry actually names (m168 + the later
+// registry migrations): every moving composition points at VideoCoverThumb
+// except NewsletterDigestVideo, which points at NewsletterDigestThumb.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const VIDEO_COVER_THUMB = "VideoCoverThumb" as const
+export const NEWSLETTER_DIGEST_THUMB = "NewsletterDigestThumb" as const
+
+export interface CompanionCardDecision {
+  /** The props to stage under `input_props.thumbnail_props` — null when the
+   *  card would have been completed from the composition's sample data. */
+  card:    Record<string, unknown> | null
+  /** The required props the producer could not supply, for the log line that
+   *  says WHY a render shipped with no share image. Empty iff card !== null. */
+  missing: string[]
+}
+
+/**
+ * Gate a companion card on the SAME contract the render backstop enforces.
+ *
+ * Callers stage `decision.card` only when it is non-null, and log
+ * `decision.missing` otherwise — the skip is the designed outcome, not an
+ * error: a video with no share image degrades a preview, a video with a
+ * fabricated one misinforms the person who sees it (and the AI search engine
+ * that reads it, which is the whole point of the hint).
+ *
+ * PURE.
+ */
+export function companionCard(
+  thumbnailCompositionId: string,
+  card: Record<string, unknown>,
+): CompanionCardDecision {
+  const missing = missingContentProps(thumbnailCompositionId, card)
+  return missing.length > 0 ? { card: null, missing } : { card, missing: [] }
 }
 
 /**

@@ -229,6 +229,24 @@ export async function produceBuyerMatchReel(
     }
   } catch { /* QR is additive */ }
 
+  // ── NO COMPANION SHARE CARD IS STAGED HERE, AND THAT IS THE RULING ─────────
+  // AffordabilitySnapshotReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so render-composition would render a still beside this reel and
+  // publish it as thumbnail_url. Since 2026-09-03 that pass asks the content
+  // contract first and SKIPS a card it cannot complete, so this reel ships with
+  // no share image rather than with the composition's Studio fixture.
+  //
+  // It stays skipped because VideoCoverThumb REQUIRES `seoHint` — the sentence
+  // an AI search engine quotes to describe a video it cannot watch — and this
+  // producer holds NO narration. buildBuyerMatchReelProps composes fixed product
+  // chrome ("Fresh homes matching your search") around three property rows;
+  // there is no script, and nothing here has been through evaluateOutbound. A
+  // hint written at this line would be a new sentence about a named buyer's
+  // saved search that no compliance gate ever saw, published to the one surface
+  // the hint exists to win. The other three required props ARE available
+  // (title/subtitle from examples[0], agentName from the contact's agent), so
+  // the day this lane gains a gated narration the card is four lines away.
+  //
   // The LIVING identity — what this reel asserts, so the sweep can re-derive it.
   const { computeFactsKey } = await import("@/lib/video/living-video")
   const livingFacts = await buyerMatchFacts(supabase, brokerageId, contactId)

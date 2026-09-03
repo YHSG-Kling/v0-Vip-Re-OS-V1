@@ -56,6 +56,8 @@ import {
 // narration budget derives from. Not server-only; no cycle (consultation-*
 // modules import THIS file only via dynamic import at call sites).
 import { BUYER_SLIDE_COMPOSITION } from "@/lib/buyer-consultation/consultation-narration"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export interface AvatarRenderRowParams {
   brokerageId:      string
@@ -527,6 +529,31 @@ export function buildIntroCompositionRequest(
     ...(p.brand ? { brand: p.brand } : {}),
   }
   if (missingContentProps(INTRO_VIDEO_COMPOSITION, input_props).length > 0) return null
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // AgentTalkingHeadReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so the render endpoint renders a still beside the assembled cut and
+  // writes it to thumbnail_url — the og:image and the player poster on
+  // /v/[slug]. This request staged none, so a personal welcome from a real agent
+  // carried VideoCoverThumb's Studio fixture ("Just Listed — 123 Main Street")
+  // as its share image.
+  //
+  // Same rule as the caption strip directly above: NOTHING NEW IS AUTHORED. The
+  // eyebrow is the fixed chrome, the title is the agent's own name, the subtitle
+  // is the caption already cut from the gated script, and the hint is whole
+  // leading sentences of THAT SAME SCRIPT. The card is staged only when it is
+  // complete — a request with no brand block has no brokerage name to attribute
+  // to, and an incomplete card would be finished from the fixture.
+  const card = companionCard(VIDEO_COVER_THUMB, {
+    kind:     "agent_avatar",
+    title:    input_props.agentName,
+    subtitle: input_props.caption,
+    eyebrow:  chrome.hook,
+    agentName: input_props.agentName,
+    agentPhotoUrl: p.agentPhotoUrl ?? null,
+    ...(p.brand ? { brand: p.brand } : {}),
+    seoHint:  seoHintFromNarration(p.script ?? ""),
+  })
+  if (card.card) input_props.thumbnail_props = card.card
   return {
     target_composition_id: INTRO_VIDEO_COMPOSITION,
     input_props,

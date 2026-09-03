@@ -10,6 +10,13 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { runGoLiveReadiness, type GoLiveReadiness } from "@/lib/platform/go-live-readiness"
+import { seoHintFromNarration } from "@/lib/geo/video-landing"
+
+/** The probe's spoken script, named once so the companion card's seoHint can be
+ *  cut from THE SAME sentence the video says (§6) rather than written twice.
+ *  Platform-authored copy about the platform — no tenant fact, no client fact. */
+const PROBE_NARRATION =
+  "This is a staged proof render through the full production video pipeline. If you are hearing this narration over the finished video, text to speech, the audio mux, music, and storage hosting are all working end to end."
 
 export async function getGoLiveReadinessAction(): Promise<{ ok: true; readiness: GoLiveReadiness } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -66,13 +73,20 @@ export async function queueRenderPipelineProbeAction(): Promise<{ ok: true; rend
       { value: "OK", label: "SUPABASE-HOSTED DELIVERY", sub: "this video's URL is the proof", kind: "finance" },
     ],
     oneAsk: "If you can watch this, the video stack is production-ready",
-    narration: "This is a staged proof render through the full production video pipeline. If you are hearing this narration over the finished video, text to speech, the audio mux, music, and storage hosting are all working end to end.",
+    narration: PROBE_NARRATION,
     agentName: "Pipeline Probe", avatarVideoUrl: null, agentPhotoUrl: null,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, logoUrl: brand.logoUrl },
+    // `seoHint` is REQUIRED on VideoCoverThumb and this probe omitted it, so the
+    // probe's own card printed the just-listed composition's SAMPLE sentence as
+    // its summary line — which would have made the probe pass while proving the
+    // wrong thing about the thumbnail leg it exists to exercise. Cut verbatim
+    // from the probe narration two lines above (platform-authored copy about the
+    // platform: no tenant fact, no client fact, nothing for a gate to find).
     thumbnail_props: {
       kind: "presentation", title: "Render pipeline probe", subtitle: "Staged production proof", eyebrow: "PROBE",
       agentName: brand.brokerageName,
       brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true },
+      seoHint: seoHintFromNarration(PROBE_NARRATION),
     },
   }
   // Narration through the REAL TTS+storage path when a platform voice exists.

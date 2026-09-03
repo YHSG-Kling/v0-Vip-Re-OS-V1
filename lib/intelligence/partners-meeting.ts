@@ -16,6 +16,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { dealCommission, toPipeline, forecastGci } from "@/lib/kernel/commission-forecaster"
 import { summarizeComplianceLedger, PREFLIGHT_GATE } from "@/lib/kernel/compliance-ledger"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -374,11 +376,27 @@ export async function queuePartnersMeetingReel(
     voiceId: identity.voiceId, renderKey: `partners-${p.brokerageId.slice(0, 8)}`,
   })
   if (vo) props.voiceover_url = vo.url
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED by the content contract on
+  // VideoCoverThumb and this producer omitted it, so the card printed the
+  // just-listed composition's SAMPLE sentence as this show's summary line
+  // (remotion/VideoCoverThumb.tsx renders the hint under the subtitle and as the
+  // hero image's alt text). It is now cut VERBATIM from the show's own
+  // narration — the same script the cards show.
+  //
+  // CAPPED AT THE FRAMING SENTENCE (§5). composePartnersMeetingScript's second
+  // paragraph is the Finance Manager's line — "…in gross commission booked this
+  // week" — and this card is the og:image the moment a broker publishes the
+  // render to /v/[slug]. Commission belongs on the broker's own board and
+  // nowhere else, so the hint stops before the money is spoken.
+  const cardSeoHint = seoHintFromNarration(req.inputProps.narration, SEO_HINT_MAX_CHARS, 1)
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: "Partners' Meeting", subtitle: p.week.weekLabel, eyebrow: "THE AI TEAM'S WEEK",
     agentName: brand.brokerageName,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: cardSeoHint,
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[partners-meeting] no companion share card for brokerage ${p.brokerageId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId, compositionId: req.compositionId,
