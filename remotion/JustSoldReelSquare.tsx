@@ -25,13 +25,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -144,7 +139,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
           </div>
           {brand.logoUrl && (
             <div style={{ position: "absolute", top: 40, left: 40 }}>
-              <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
+              <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
             </div>
           )}
         </AbsoluteFill>
@@ -263,7 +258,7 @@ const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) 
   const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",

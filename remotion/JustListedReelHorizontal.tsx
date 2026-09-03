@@ -27,13 +27,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustListedReelHorizontalProps {
@@ -78,7 +73,7 @@ const BrandHeader: React.FC<{
     display: "flex", alignItems: "center", justifyContent: "space-between",
   }}>
     {logoUrl ? (
-      <Img src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
+      <SafeImg src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
     ) : <div />}
     <div style={{
       width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff", opacity: 0.5,
@@ -91,7 +86,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img src={url} style={{
+      <SafeImg src={url} style={{
         width: "100%", height: "100%", objectFit: "cover",
         scale, transformOrigin: "center center",
       }} />

@@ -18,7 +18,8 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import { AbsoluteFill, Img, Sequence, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { AbsoluteFill, Sequence, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 
@@ -30,7 +31,27 @@ export interface PartnersMeetingReelProps {
   weekLabel: string
   cards: ReelCard[]
   oneAsk: string
-  narration?: string | null
+  // TOMBSTONE (2026-09-03): `narration?: string | null` was declared here and
+  // read by NOTHING in this file. The narration TEXT rides in input_props as
+  // a CARRIER for the voiceover lane, which runs at queue time AFTER the row
+  // is built and reads it from the queued props — lib/intelligence/
+  // partners-meeting.ts (prepareReelVoiceover ← req.inputProps.narration),
+  // lib/kernel/board-packet-reel.ts, lib/kernel/deal-room-reel.ts and
+  // lib/video/listing-pitch-reel.ts — and lands as the snake-key
+  // `voiceover_url` the coordinator muxes AFTER the render (m313 tpad). The
+  // client-facing uses ALSO derive `captionsCues` from that same text
+  // upstream (deal-room-reel.ts / listing-pitch-reel.ts → buildCaptionPlan),
+  // which is the prop this composition actually renders (CaptionLayer below).
+  // A `<CaptionLayer script={narration}>` fallback was considered and
+  // REJECTED: the internal uses (partners_meeting_reel, board_packet_reel)
+  // are REPORT_INTERNAL with `captions: false` in lib/video/finish-spec.ts,
+  // and an in-composition fallback would have burned captions into exactly
+  // those. This matches how the other narrated compositions are shaped —
+  // ListingSectionReel and NewsletterDigestVideo declare only what they
+  // render (voiceoverUrl → <Audio>), never the script text. The producer
+  // type (lib/intelligence/partners-meeting-reel-props.ts) keeps `narration`
+  // because THAT is the input_props shape; this interface is the component's.
+  // test:remotion-setup §5 now refuses any declared-but-unread prop.
   agentName: string
   avatarVideoUrl: string | null
   agentPhotoUrl: string | null
@@ -76,7 +97,7 @@ const SceneBackground: React.FC<{ brand: Brand; accent?: string }> = ({ brand, a
 const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ brand, right }) => (
   <>
     <div style={{ position: "absolute", top: 44, left: 64, right: 64, display: "flex", alignItems: "center", gap: 20 }}>
-      {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
+      {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
       <div style={{ fontSize: 24, letterSpacing: 5, color: "#fff", opacity: 0.85, fontWeight: 700 }}>
         {brand.brokerageName.toUpperCase()}
       </div>
@@ -101,7 +122,7 @@ const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string
       {avatarVideoUrl ? (
         <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%" }} /></div>
       ) : agentPhotoUrl ? (
-        <div style={ring}><Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+        <div style={ring}><SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
       ) : (
         <div style={{ ...ring, backgroundColor: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 92, color: primaryColor, fontWeight: 800 }}>
           {(agentName[0] ?? "T").toUpperCase()}
@@ -173,7 +194,7 @@ const CoverScene: React.FC<{ brand: Brand; weekLabel: string; agentName: string 
     <AbsoluteFill>
       <SceneBackground brand={brand} />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center" }}>
-        {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 96, objectFit: "contain", marginBottom: 44, ...fadeUp(frame, 0, 14) }} />}
+        {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 96, objectFit: "contain", marginBottom: 44, ...fadeUp(frame, 0, 14) }} />}
         <div style={{
           display: "inline-block", padding: "12px 30px", borderRadius: 8, backgroundColor: brand.accentColor,
           color: brand.primaryColor, fontSize: 25, fontWeight: 800, letterSpacing: 6, textTransform: "uppercase",
@@ -219,7 +240,7 @@ const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: str
       <SceneBackground brand={brand} />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", color: "#fff", textAlign: "center" }}>
         <div>
-          {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
+          {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
           <div style={{ fontSize: 44, fontWeight: 800, ...fadeUp(frame, 4, 18) }}>{brand.brokerageName}</div>
           <div style={{ width: 90, height: 4, borderRadius: 2, backgroundColor: brand.accentColor, margin: "22px auto 0" }} />
           <div style={{ fontSize: 23, opacity: 0.65, marginTop: 22 }}>

@@ -27,13 +27,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -135,7 +130,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
-            {brand.logoUrl ? <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
+            {brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
           </div>
         </AbsoluteFill>
       </Sequence>
@@ -236,7 +231,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const scale = kenBurnsScale(frame, span)
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",

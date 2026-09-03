@@ -26,7 +26,8 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import { AbsoluteFill, Img, interpolate, useCurrentFrame } from "remotion"
+import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface BrollClip {
   /** Either an image URL OR a video URL. The helper detects by
@@ -113,7 +114,7 @@ const ClipFrame: React.FC<{
           style={{ width: "100%", height: "100%" }}
         />
       ) : (
-        <Img
+        <SafeImg
           src={clip.url}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />

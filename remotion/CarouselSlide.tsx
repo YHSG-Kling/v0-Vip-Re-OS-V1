@@ -18,7 +18,8 @@
  * copy rail; compositions never read the DB.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export type CarouselSlideRole = "hook" | "value" | "photo" | "stat" | "cta"
 
@@ -52,12 +53,18 @@ export interface CarouselSlideProps {
   }
 }
 
-const W = 1080, H = 1350
+// TOMBSTONE (2026-09-03): `const W = 1080, H = 1350` used to sit here — a
+// second copy of the geometry Root.tsx registers and
+// lib/remotion/composition-geometry.ts mirrors. Three copies of one number
+// is the §6 defect; the canvas now reads its own size from useVideoConfig(),
+// and test:remotion-setup §5 refuses a composition file that re-declares its
+// registered width or height as a literal.
 
 export const CarouselSlide: React.FC<CarouselSlideProps> = ({
   role, slideIndex, slideCount, kicker, title, body, photoUrl,
   statValue, statLabel, agentName, agentPhotoUrl, handleLine, brand,
 }) => {
+  const { width: W, height: H } = useVideoConfig()
   const isLast = slideIndex >= slideCount - 1
   const dark = brand.primaryColor
   const accent = brand.accentColor
@@ -73,7 +80,7 @@ export const CarouselSlide: React.FC<CarouselSlideProps> = ({
       {/* PHOTO field (photo + hook slides): full-bleed with a duotone press */}
       {photoUrl && (role === "photo" || role === "hook") && (
         <>
-          <Img src={photoUrl} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+          <SafeImg src={photoUrl} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
           <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, ${dark}55 0%, ${dark}e8 78%, ${dark} 100%)` }} />
         </>
       )}
@@ -81,7 +88,7 @@ export const CarouselSlide: React.FC<CarouselSlideProps> = ({
       {/* LOGO CHIP */}
       {brand.logoUrl && (
         <div style={{ position: "absolute", top: 54, left: 54, padding: "14px 20px", backgroundColor: "#ffffffea", borderRadius: 14 }}>
-          <Img src={brand.logoUrl} style={{ height: 52, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 52, objectFit: "contain" }} />
         </div>
       )}
 
@@ -109,7 +116,7 @@ export const CarouselSlide: React.FC<CarouselSlideProps> = ({
         {role === "cta" && (
           <div style={{ display: "flex", alignItems: "center", gap: 26, marginTop: 12 }}>
             {agentPhotoUrl ? (
-              <Img src={agentPhotoUrl} style={{ width: 120, height: 120, borderRadius: 60, objectFit: "cover", border: `5px solid ${accent}` }} />
+              <SafeImg src={agentPhotoUrl} style={{ width: 120, height: 120, borderRadius: 60, objectFit: "cover", border: `5px solid ${accent}` }} />
             ) : (
               <div style={{ width: 120, height: 120, borderRadius: 60, backgroundColor: accent, color: dark, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 54, fontWeight: 900 }}>
                 {(agentName[0] ?? "A").toUpperCase()}

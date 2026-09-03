@@ -35,13 +35,8 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -221,7 +216,7 @@ const AvatarPIP: React.FC<{
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -259,7 +254,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 64, objectFit: "contain", marginBottom: 36,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />

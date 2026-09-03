@@ -23,8 +23,9 @@
  *    If the markup is too complex for the Studio to make it interactive, then
  *    the values become grayed out."
  *
- * The 41 .tsx files under remotion/ (33 compositions registered below) use it
- * ZERO times, and that is a decision, not a gap:
+ * The .tsx files under remotion/ (every composition registered below and the
+ * shared components/ they compose) use it ZERO times, and that is a decision,
+ * not a gap:
  *
  *  1. Every benefit the skill names is a Studio / <Player> affordance, and this
  *     product has neither surface: `@remotion/player` and `@remotion/studio`
@@ -394,10 +395,25 @@ export const RemotionRoot: React.FC = () => {
           chains 5-12 of these with the avatar narrating each. PIP
           stays bottom-right on every slide so the homeowner watches
           the agent walk them through. 1920×1080 horizontal so a
-          tablet or TV viewing experience reads correctly. The slide
-          duration is set per-slide by the composer at chain time —
-          this Composition registers at a 6s default purely so the
-          studio preview renders without zero-frame errors.
+          tablet or TV viewing experience reads correctly.
+
+          DURATION IS FIXED AT THE REGISTERED 180 FRAMES; NOTHING SETS IT
+          PER SLIDE. Earlier prose here said the duration was "set
+          per-slide by the composer at chain time" — no such chain
+          exists. Both slide compositions render one slide per row at
+          exactly the geometry registered below, and the producers size
+          THEMSELVES to it rather than the other way round:
+          lib/buyer-consultation/consultation-render.ts reads
+          geometryFor("BuyerConsultationSlide").duration_frames (:44) and
+          pins the PIP window to it (:396), and ListingSectionReel — the
+          only thing that composes ListingPresentationSlide — takes its
+          window from useVideoConfig(). `calculateMetadata` is
+          DELIBERATELY not used anywhere in this file: the script is
+          sized to fixed geometry (the "DURATION IS THE SCRIPT LENGTH"
+          note on ListingSectionReel below), the render cache keys on the
+          registered geometry, and test:remotion-setup §3 compares these
+          literals against remotion_compositions field-for-field — a
+          duration that moved per render would defeat all three.
 
           ── ADJUDICATION (§1, 2026-09-01): KEPT. THE MANUAL/AGENT PATH
              IS THE PRODUCER, AND IT IS THE ONLY ONE. ───────────────────
@@ -631,7 +647,12 @@ export const RemotionRoot: React.FC = () => {
           closing. The "search" kind is the killer — renders 3
           example listings with photo + price inside the narrated
           video so the lead sees what their budget buys live.
-          1920×1080 / per-slide duration set by composer. */}
+          1920×1080 at the FIXED registered duration — the producer
+          (lib/buyer-consultation/consultation-render.ts:44,396) reads
+          duration_frames from the geometry mirror and sizes the slide
+          to it; nothing sets a per-slide duration, and calculateMetadata
+          is deliberately unused (see the ListingPresentationSlide note
+          above for why). */}
       <Composition
         id="BuyerConsultationSlide"
         component={BuyerConsultationSlide as unknown as React.FC<Record<string, unknown>>}
@@ -1175,7 +1196,9 @@ export const RemotionRoot: React.FC = () => {
             { value: "31", label: "OUTBOUND PRE-FLIGHTED", sub: "4 Fair-Housing/consent fixes caught · 1 released over objection", kind: "compliance" },
           ],
           oneAsk: "5 proposals waiting on you",
-          narration: null,
+          // `narration` is deliberately NOT a default here: it is the TTS
+          // carrier the producers put in input_props, not a prop the
+          // component reads — see the tombstone in PartnersMeetingReel.tsx.
           agentName: "Your Team",
           avatarVideoUrl: null,
           agentPhotoUrl: null,

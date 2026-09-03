@@ -13,15 +13,8 @@
  * pulse) · CTA 330–450.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface ProductPromoReelProps {
   hook: string
@@ -106,7 +99,7 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
   const scale = 1.06 + 0.10 * (frame / 120)
   return (
     <AbsoluteFill>
-      <Img src={src} style={{ width: "100%", height: "100%", objectFit: "cover", scale, opacity: 0.34 }} />
+      <SafeImg src={src} style={{ width: "100%", height: "100%", objectFit: "cover", scale, opacity: 0.34 }} />
       <AbsoluteFill style={{ background: `linear-gradient(${primary}d9, ${primary}f0)` }} />
     </AbsoluteFill>
   )

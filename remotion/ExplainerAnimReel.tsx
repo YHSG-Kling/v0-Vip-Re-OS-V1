@@ -29,16 +29,8 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-  Easing,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import {
   seriesToPoints,
   linePath,
@@ -128,7 +120,7 @@ const AvatarPIP: React.FC<{
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -342,7 +334,7 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />

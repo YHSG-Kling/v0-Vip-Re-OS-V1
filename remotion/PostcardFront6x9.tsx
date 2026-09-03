@@ -25,6 +25,7 @@
  */
 import React from "react"
 import { AbsoluteFill, Img } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface PostcardFront6x9Props {
   headline: string
@@ -71,7 +72,7 @@ export const PostcardFront6x9: React.FC<PostcardFront6x9Props> = ({
         overflow: "hidden",
       }}>
         {propertyPhotoUrl ? (
-          <Img src={propertyPhotoUrl} style={{
+          <SafeImg src={propertyPhotoUrl} style={{
             width: "100%", height: "100%", objectFit: "cover",
           }} />
         ) : (
@@ -105,7 +106,7 @@ export const PostcardFront6x9: React.FC<PostcardFront6x9Props> = ({
           padding: "12px 20px", borderRadius: 8,
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{ height: 44, width: "auto", objectFit: "contain" }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 44, width: "auto", objectFit: "contain" }} />
           )}
           <div style={{ fontSize: 24, fontWeight: 700 }}>{brand.brokerageName}</div>
         </div>

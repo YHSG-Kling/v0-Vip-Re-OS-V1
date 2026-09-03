@@ -19,13 +19,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -103,7 +98,7 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         }}>
           {heroImg && (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               {/* Tint so the headline reads */}
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}D9` }} />
             </AbsoluteFill>
@@ -132,7 +127,7 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
           </div>
           {brand.logoUrl && (
             <div style={{ position: "absolute", top: 32, left: 32 }}>
-              <Img src={brand.logoUrl} style={{
+              <SafeImg src={brand.logoUrl} style={{
                 height: 48, objectFit: "contain", opacity: 0.85,
               }} />
             </div>
@@ -148,14 +143,14 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
             restImgs.map((url, idx) => (
               <Sequence key={idx} from={idx * perPhoto} durationInFrames={perPhoto}>
                 <AbsoluteFill>
-                  <Img src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <SafeImg src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
                 </AbsoluteFill>
               </Sequence>
             ))
           ) : heroImg ? (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
             </AbsoluteFill>
           ) : null}

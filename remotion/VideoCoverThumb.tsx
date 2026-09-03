@@ -31,7 +31,8 @@
  * VIDEOS the tier can produce; the thumbnail follows.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export type VideoThumbKind =
   | "listing"           // address / price / hero photo
@@ -67,18 +68,35 @@ export interface VideoCoverThumbProps {
     /** EHO mark on the footer line. Defaults true. */
     showEhoMark?:    boolean
   }
-  /** SEO hint — passed to the page's og:title when this thumbnail
-   *  is used as the OG image. The composition itself doesn't render
-   *  it; the render endpoint reads it for the metadata header. */
+  /** SEO hint — the one-sentence description of the VIDEO that an AI
+   *  search engine reads when it cannot watch the video. It is REQUIRED by
+   *  lib/remotion/content-contract.ts ("a defaulted seoHint feeds a
+   *  fabricated summary to the exact surface the GEO work is trying to
+   *  win"), and until 2026-09-03 the composition never read it — the
+   *  contract refused renders over a prop that changed no pixel. It is
+   *  now rendered as the summary line under the subtitle AND carried as
+   *  the hero image's `alt`, so the required prop protects the card the
+   *  crawler actually sees. */
   seoHint?:       string
+}
+
+/** The summary line is shown only when it adds something: a hint that just
+ *  repeats the title or subtitle would print the same sentence twice. */
+export function seoHintLine(seoHint: string | undefined, title: string, subtitle: string | null | undefined): string | null {
+  const hint = (seoHint ?? "").trim()
+  if (!hint) return null
+  const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase()
+  if (norm(hint) === norm(title) || (subtitle && norm(hint) === norm(subtitle))) return null
+  return hint
 }
 
 export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
   kind, title, subtitle, eyebrow, heroImageUrl, agentPhotoUrl,
-  agentName, brand,
+  agentName, brand, seoHint,
 }) => {
   const showEho = brand.showEhoMark ?? true
   const hasHero = !!heroImageUrl
+  const summary = seoHintLine(seoHint, title, subtitle)
 
   // Eyebrow color follows kind so the AI search snippet picks up the
   // visual genre even from a low-resolution preview.
@@ -122,8 +140,9 @@ export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
             width: "44%", height: "100%", position: "relative",
             backgroundColor: brand.primaryColor,
           }}>
-            <Img
+            <SafeImg
               src={heroImageUrl as string}
+              alt={seoHint ?? title}
               style={{ width: "100%", height: "100%", objectFit: "cover" }}
             />
             {/* Subtle gradient overlay so the right-panel chrome
@@ -148,7 +167,7 @@ export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
               marginBottom: 28,
             }}>
               {brand.logoUrl ? (
-                <Img src={brand.logoUrl} style={{ height: 34, objectFit: "contain" }} />
+                <SafeImg src={brand.logoUrl} style={{ height: 34, objectFit: "contain" }} />
               ) : (
                 <div style={{ fontSize: 14, letterSpacing: 4, textTransform: "uppercase", opacity: 0.7 }}>
                   {brand.brokerageName}
@@ -189,6 +208,22 @@ export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
                 {subtitle}
               </div>
             )}
+
+            {/* Summary line — the seoHint, typeset small and muted under the
+                subtitle. This is the sentence the crawler reads off the card;
+                clamped to two lines so a long hint cannot push the agent chip
+                off the bottom of the 630px canvas. */}
+            {summary && (
+              <div style={{
+                fontSize: hasHero ? 15 : 17,
+                opacity: 0.62, lineHeight: 1.4, marginTop: 14,
+                maxWidth: hasHero ? "100%" : 720,
+                display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as never,
+                overflow: "hidden",
+              }}>
+                {summary}
+              </div>
+            )}
           </div>
 
           {/* Agent chip + footer */}
@@ -198,7 +233,7 @@ export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
               marginBottom: 16,
             }}>
               {agentPhotoUrl ? (
-                <Img src={agentPhotoUrl} style={{
+                <SafeImg src={agentPhotoUrl} style={{
                   width: 48, height: 48, borderRadius: 24, objectFit: "cover",
                   boxShadow: `0 0 0 3px ${accent}`,
                 }} />

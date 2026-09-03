@@ -101,8 +101,25 @@
  * Each is linked from its sub-skill's REFERENCE.md router, marked with an HTML
  * comment naming this tombstone, because a rule no router points at is an orphan
  * that no agent will ever load. THOSE ROUTER EDITS AND THESE FOUR FILES ARE THE
- * ONLY PLACES THE SURVIVOR DIVERGES FROM UPSTREAM 4.0.517 — a future re-vendor
- * must carry them forward rather than silently drop them again.
+ * ONLY PLACES THE SURVIVOR DIVERGES FROM THE UPSTREAM SNAPSHOT IT DECLARES — a
+ * re-vendor must carry them forward rather than silently drop them again.
+ *
+ * ── RE-VENDORED 2026-09-03 → skill version 4.0.520 ─────────────────────────
+ *
+ * Source: upstream remotion-dev/skills@54e9b19a612897171e0b3b242e01c2badba4a272
+ * (2026-09-01, the only commit whose SKILL.md declares 4.0.520; 7a3d0ca and
+ * 357a270/9875d9a between it and 7c5c10c declare .518 and .519). Same layout
+ * as before (SKILL.md router over REFERENCE.md-fronted sub-skills — the
+ * monorepo's packages/skills fronts them with SKILL.md, the published repo
+ * renames on the way out). What actually changed, beyond the version line in
+ * all thirteen frontmatters: remotion-captions/display-captions.md +
+ * REFERENCE.md gained `pageBreakAfter` and a tokenIndex key; the three
+ * remotion-multimedia get-*.md dropped `getRetryDelay: () => null` from
+ * UrlSource. Nothing was removed upstream. The four restored files and the two
+ * router blocks above were carried forward (their HTML comments now name
+ * 4.0.520). The .agents/ mirror was NOT touched by that lane (out of its
+ * write set) — section 6's byte-identity assertion is what tells the
+ * integrator to sync it, exactly as the paragraph below promises.
  *
  * Both sanctioned copies carry them: section 6 below enforces the byte-identical
  * mirror across ALL files, so a restore into one copy alone goes red.
@@ -836,6 +853,226 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
     && !voDecl.test(`defaultProps={{ voiceoverUrl: null }}`))
   ok(`every composition that DECLARES voiceoverUrl also renders it (${rendersVo.length} of\n    ${declaresVo.length}) — a declared-only prop is silence under a "narrated" ledger row`,
     declaredNeverRead.length === 0, declaredNeverRead.join(", "))
+
+  // ── GENERALISED: NO DECLARED-BUT-UNREAD PROP, IN ANY COMPOSITION (§1) ─────
+  //
+  // The voiceoverUrl rule above is one instance of a shape that recurred twice
+  // more on 2026-09-03: PartnersMeetingReel declared `narration` (the TTS
+  // carrier the producers put in input_props) and VideoCoverThumb declared
+  // `seoHint` (REQUIRED by the content contract — renders were being refused
+  // over a prop that changed no pixel). A prop in a composition's Props
+  // interface that the component never reads is a promise the render does not
+  // keep, and the contract cannot see it. The rule is derived over every
+  // registered composition's own `<Id>Props` interface, not a list.
+  //
+  // "READ" means the name occurs in the file outside the interface, with the
+  // component's destructuring pattern REMOVED first — `({ a, b }) => …{a}…`
+  // pulls `b` out and never uses it, and a finder that counted the pattern as
+  // a read would have passed exactly that. A whole-props spread (`{...props}`)
+  // forwards everything and counts as reading all. Read on comment-stripped,
+  // string-blanked source: a tombstone naming the retired prop (there is one
+  // in PartnersMeetingReel.tsx) is not a read.
+  //
+  // The voiceoverUrl assertion above STAYS beside this one: it is the stronger
+  // form for that prop (read is not enough — it must reach an <Audio src>).
+  // BLIND SPOTS: only depth-1 keys are checked (a nested `brand.logoUrl`
+  // nobody reads is invisible); a prop read only to be forwarded to a child
+  // that ignores it counts as read; only `export interface <Id>Props` is
+  // parsed, so a composition typing its props another way is reported as
+  // "no interface", never as clean.
+  type PropsDecl = { names: string[]; start: number; end: number }
+  const declaredProps = (src: string, id: string): PropsDecl | null => {
+    const m = src.match(new RegExp(`export\\s+interface\\s+${id}Props\\b[^{]*\\{`))
+    if (!m || m.index === undefined) return null
+    const open = m.index + m[0].length - 1
+    let depth = 0, i = open
+    for (; i < src.length; i++) { if (src[i] === "{") depth++; else if (src[i] === "}") { depth--; if (depth === 0) break } }
+    const names: string[] = []
+    let d = 0
+    for (const line of src.slice(open + 1, i).split("\n")) {
+      if (d === 0) { const k = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\??\s*:/); if (k) names.push(k[1]) }
+      for (const ch of line) { if (ch === "{") d++; else if (ch === "}") d-- }
+    }
+    return { names, start: m.index, end: i + 1 }
+  }
+  const unreadProps = (raw: string, id: string): { unread: string[]; declared: number } | null => {
+    const src = blankStrings(stripComments(raw))
+    const decl = declaredProps(src, id)
+    if (!decl) return null
+    const body = (src.slice(0, decl.start) + src.slice(decl.end))
+      .replace(/\(\s*\{[^{}]*\}\s*(?::\s*[^)]*)?\)\s*=>/g, "() =>")   // drop destructuring patterns
+    const spreadsAll = /\.\.\.(props|rest|p)\b/.test(body)
+    return { declared: decl.names.length, unread: spreadsAll ? [] : decl.names.filter((n) => !new RegExp(`\\b${n}\\b`).test(body)) }
+  }
+  // POSITIVE CONTROLS (§2) — a blind finder and a clean tree both report zero.
+  const FIX = (props: string, comp: string) => `export interface DemoProps {\n${props}\n}\nexport const Demo: React.FC<DemoProps> = ${comp}\n`
+  ok("the unread-prop finder catches a prop the component never mentions, and\n    lists nested keys under `brand` as ONE prop",
+    JSON.stringify(unreadProps(FIX("  a: string\n  b?: string | null\n  brand: {\n    c: string\n  }", "({ a, brand }) => <div style={{ color: brand.c }}>{a}</div>"), "Demo")?.unread) === '["b"]')
+  ok("...and a prop that is DESTRUCTURED but never used — the pattern is not a read",
+    JSON.stringify(unreadProps(FIX("  a: string\n  b: string", "({ a, b }) => <div>{a}</div>"), "Demo")?.unread) === '["b"]')
+  ok("...and does NOT accuse a `props.b` read, nor a whole-props spread",
+    unreadProps(FIX("  a: string\n  b: string", "(props) => <div>{props.a}{props.b}</div>"), "Demo")?.unread.length === 0
+    && unreadProps(FIX("  a: string\n  b: string", "(props) => <Child {...props} />"), "Demo")?.unread.length === 0)
+  ok("...and a COMMENT or STRING naming the prop is not a read (stripped source)",
+    JSON.stringify(unreadProps(FIX("  a: string\n  b: string", "({ a }) => <div>{a}</div> // b: string is read here, honest\nconst s = \"b\""), "Demo")?.unread) === '["b"]')
+  ok("...and a file with no `<Id>Props` interface reports null, never clean",
+    unreadProps("export const Demo = () => null", "Demo") === null)
+
+  const unreadByComposition: string[] = []
+  const noInterface: string[] = []
+  let propsDeclared = 0
+  for (const id of Object.keys(root)) {
+    const file = `remotion/${id}.tsx`
+    if (!existsSync(file)) { noInterface.push(`${id}: no remotion/${id}.tsx`); continue }
+    const r = unreadProps(readFileSync(file, "utf8"), id)
+    if (!r) { noInterface.push(`${id}: no export interface ${id}Props`); continue }
+    propsDeclared += r.declared
+    if (r.unread.length) unreadByComposition.push(`${id}: ${r.unread.join(", ")}`)
+  }
+  ok(`every registered composition has a parseable <Id>Props interface (${Object.keys(root).length - noInterface.length} of ${Object.keys(root).length},\n    ${propsDeclared} props declared) — one this finder cannot see is unchecked, not clean`,
+    noInterface.length === 0, noInterface.join(" | "))
+  ok("no composition declares a prop it never reads — a declared-only prop is a\n    promise the render does not keep (narration and seoHint were exactly that)",
+    unreadByComposition.length === 0, unreadByComposition.join(" | "))
+
+  // ── A REMOTE-src <Img> MUST DEGRADE, NOT CANCEL THE RENDER ────────────────
+  //
+  // The installed remotion's <Img> retries a failed load `maxRetries` times
+  // (default 2) and then calls cancelRender() UNLESS an `onError` prop exists
+  // — the branch is read out of node_modules below, not remembered. Measured
+  // 2026-09-03: ~89 <Img> elements under remotion/, 0 onError, so one rotated
+  // MLS photo or one moved brokerage logo failed the WHOLE render and the row
+  // went to `failed` with every good photo unseen. THE RULE: every <Img> whose
+  // src is a tenant/MLS URL is the SafeImg wrapper
+  // (remotion/components/SafeImg.tsx — onError → neutral fallback panel,
+  // delayRenderRetries for a hung CDN) or carries its own onError. Data-URL
+  // sites (a QR minted in-process) and staticFile() sites stay bare ON
+  // PURPOSE: those cannot fail unless the producer is broken, and a print
+  // piece with a blank square where the QR was is worse than a failed render.
+  //
+  // BLIND SPOT (§2): "remote" is decided by the NAME of the src expression —
+  // an identifier containing DataUrl/dataUrl, a staticFile() call, or a
+  // `data:` literal reads as local; everything else reads as remote. A data
+  // URL under a name like `qrPng` would be asked to wrap, which is the safe
+  // direction to be wrong in. Read on comment-BLANKED source (offsets kept
+  // for line numbers); prose that mentions <Img> is not an element.
+  const LOCAL_IMG_SRC = /DataUrl|dataUrl|staticFile\s*\(|^["'`]data:/
+  type ImgTag = { file: string; line: number; src: string; local: boolean; onError: boolean }
+  const imgTags = (file: string, raw: string): ImgTag[] => {
+    const code = blankComments(raw)
+    const out: ImgTag[] = []
+    for (const m of code.matchAll(/<Img\b/g)) {
+      const start = m.index!
+      let depth = 0, i = start
+      for (; i < code.length; i++) {
+        const ch = code[i]
+        if (ch === "{") depth++
+        else if (ch === "}") depth--
+        else if (ch === "/" && code[i + 1] === ">" && depth === 0) { i += 2; break }
+      }
+      const tag = code.slice(start, i)
+      // brace-balanced src expression, so `{{ … }}` siblings and `[idx % n]` survive
+      let src = tag.match(/\bsrc=(["'][^"']*["'])/)?.[1] ?? ""
+      const at = tag.search(/\bsrc=\{/)
+      if (at >= 0) {
+        let d = 0, j = at + "src=".length
+        for (; j < tag.length; j++) { if (tag[j] === "{") d++; else if (tag[j] === "}") { d--; if (d === 0) break } }
+        src = tag.slice(at + "src={".length, j).trim()
+      }
+      out.push({ file, line: code.slice(0, start).split("\n").length, src, local: LOCAL_IMG_SRC.test(src), onError: /\bonError=/.test(tag) })
+    }
+    return out
+  }
+  // POSITIVE CONTROLS (§2): a broken tag scanner and a clean tree both report zero.
+  const ctrlBare = imgTags("<c>", '<Img src={heroImageUrl} style={{ width: "100%" }} />')
+  ok("the <Img> finder recognises a bare remote-src element",
+    ctrlBare.length === 1 && !ctrlBare[0].local && !ctrlBare[0].onError && ctrlBare[0].src === "heroImageUrl")
+  const ctrlMulti = imgTags("<c>", "<Img\n  src={images[idx % images.length]}\n  style={{\n    width: 1,\n    objectFit: \"cover\",\n  }}\n/>\n<Img src={x} />")
+  ok("...across a multi-line tag with nested braces, as ONE element with its src",
+    ctrlMulti.length === 2 && ctrlMulti[0].src === "images[idx % images.length]" && ctrlMulti[0].line === 1 && ctrlMulti[1].line === 8)
+  ok("...and reads a data-URL / staticFile site as LOCAL, an onError site as handled",
+    imgTags("<c>", "<Img src={qrCodeDataUrl} />")[0].local
+    && imgTags("<c>", '<Img src={staticFile("logo.png")} />')[0].local
+    && imgTags("<c>", "<Img src={u} onError={fn} />")[0].onError)
+  ok("...and does NOT match the SafeImg wrapper, nor a COMMENT naming <Img>",
+    imgTags("<c>", "<SafeImg src={u} />").length === 0
+    && imgTags("<c>", "// <Img src={u} />\n/* <Img src={v} /> */").length === 0)
+
+  // The PREMISE, derived from the installed package rather than remembered:
+  // <Img> cancels the render after its retries unless onError exists. Fail
+  // closed (§4) — a guard that cannot read the file it reasons from must not
+  // report the rule as holding.
+  const imgJs = existsSync(`${RM}/Img.js`) ? readFileSync(`${RM}/Img.js`, "utf8") : ""
+  ok("the installed <Img> really does cancelRender() after its retries unless onError\n    exists (read from node_modules/remotion/dist/cjs/Img.js, so a package that\n    changes this behaviour changes this line, not the rule's premise silently)",
+    /if \(onError &&[\s\S]{0,400}?onError\(e\);[\s\S]{0,900}?cancelRender\('Error loading image with src: '/.test(imgJs),
+    imgJs ? "the cancelRender-unless-onError branch was not found" : "Img.js unreadable")
+
+  const allImgTags = files.flatMap((f) => imgTags(f, readFileSync(f, "utf8")))
+  const bareRemote = allImgTags.filter((t) => !t.local && !t.onError)
+  const wrapped = files.reduce((n, f) => n + (blankComments(readFileSync(f, "utf8")).match(/<SafeImg\b/g) ?? []).length, 0)
+  ok(`the scan saw real elements (${allImgTags.length} bare <Img> — ${allImgTags.filter((t) => t.local).length} local by name,\n    ${allImgTags.filter((t) => t.onError).length} with onError — plus ${wrapped} <SafeImg> wrappers across ${files.length} files)`,
+    allImgTags.length + wrapped >= 60 && wrapped >= 40)
+  ok("no remote-src <Img> is left to cancel the render — every one is the SafeImg\n    wrapper or carries onError (a stale tenant photo now degrades to a neutral\n    panel instead of failing the row)",
+    bareRemote.length === 0, bareRemote.slice(0, 8).map((t) => `${t.file}:${t.line} src=${t.src}`).join(", "))
+  {
+    // The wrapper itself must be what the rule assumes: it hands <Img> an
+    // onError, keeps state to swap in a fallback, and refuses `effects`
+    // (with effects <Img> renders a canvas that REJECTS onError).
+    // Comment-stripped but NOT string-blanked: the `Omit<…, "effects">` being
+    // looked for IS a string literal, and blanking would erase exactly it (the
+    // wrong-source finder in this section records paying for the same thing).
+    const safeImgSrc = stripComments(readFileSync("remotion/components/SafeImg.tsx", "utf8"))
+    ok("SafeImg passes onError to <Img>, keeps a failed state, and omits `effects`\n    from its prop type",
+      /<Img\b[^>]*\bonError=\{/.test(safeImgSrc) && /useState/.test(safeImgSrc) && /Omit<ImgProps,\s*(?:[^>]*\|\s*)?["']effects["']/.test(safeImgSrc))
+  }
+
+  // ── A COMPOSITION FILE MAY NOT RE-DECLARE ITS OWN REGISTERED GEOMETRY ────
+  //
+  // Root.tsx registers width/height; lib/remotion/composition-geometry.ts
+  // mirrors them and §3 proves the two agree. A THIRD copy typed into the
+  // component (`const W = 1080, H = 1350`; `width: 630, height: 630`;
+  // `1275 - Math.floor(1275 * 0.52)`) sits OUTSIDE that proof: re-register the
+  // composition and the canvas, the knob-hole centre or the indicia keep-out
+  // stays at the old number with everything green. useVideoConfig() is the
+  // one source. Measured 2026-09-03: the audit named 3 files; this scan found
+  // 6 (NewsletterDigestThumb's 630 pane and both postcard backs' keep-out
+  // arithmetic were the same defect under a different spelling — §2: the
+  // count that moved is the finding). All six now read useVideoConfig().
+  //
+  // THE RULE IS DERIVED per composition from its OWN registration, so a
+  // literal that merely equals SOME composition's dimension (EquityReportReel's
+  // 760×180 chart box inside a 1080×1080 canvas) is not an offence. Read on
+  // comment-stripped, string-blanked source: a spec block deriving
+  // "1350 × 3375 px @ 300 DPI" in prose is documentation, not a declaration.
+  // BLIND SPOTS: only 3-4 digit literals are compared, so a dimension reached
+  // through arithmetic (`675 * 2`) or a 2-digit canvas is invisible; and a
+  // literal that legitimately coincides with a dimension in another role
+  // would need an in-line rewrite to a named, derived value.
+  const ownGeometryLiterals = (rawSrc: string, g: Geo): string[] => {
+    const hits: string[] = []
+    blankStrings(stripComments(rawSrc)).split("\n").forEach((ln, i) => {
+      for (const m of ln.matchAll(/(?<![\w.])(\d{3,4})(?![\w.])/g)) {
+        const n = Number(m[1])
+        if (n === g.width || n === g.height) hits.push(`${i + 1}: ${n} (${n === g.width ? "width" : "height"})`)
+      }
+    })
+    return hits
+  }
+  const demoGeo: Geo = { width: 1080, height: 1350, fps: 30, duration_frames: 1 }
+  ok("the geometry-literal finder catches `const W = 1080, H = 1350` in a 1080×1350\n    composition, a style `height: 1350`, and keep-out arithmetic",
+    ownGeometryLiterals("const W = 1080, H = 1350\n", demoGeo).length === 2
+    && ownGeometryLiterals("style={{ width: \"100%\", height: 1350 }}", demoGeo).length === 1
+    && ownGeometryLiterals("const r = 1080 - Math.floor(1080 * 0.52)", demoGeo).length === 2)
+  ok("...and does NOT fire on another composition's size, a comment, a string, or a\n    longer number",
+    ownGeometryLiterals("const W = 760, H = 180", demoGeo).length === 0
+    && ownGeometryLiterals("// const W = 1080\nconst s = `1350px`\nconst n = 11080", demoGeo).length === 0)
+  const geometryLiterals: string[] = []
+  for (const [id, g] of Object.entries(root)) {
+    const file = `remotion/${id}.tsx`
+    if (!existsSync(file)) continue
+    for (const h of ownGeometryLiterals(readFileSync(file, "utf8"), g)) geometryLiterals.push(`${file}:${h}`)
+  }
+  ok(`no composition file re-declares its own registered width or height as a literal\n    (${Object.keys(root).length} files checked against their registrations) — useVideoConfig() is the one source`,
+    geometryLiterals.length === 0, geometryLiterals.slice(0, 8).join(", "))
 }
 
 console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream ═══")

@@ -1,7 +1,7 @@
 ---
 name: remotion-multimedia
 description: Interacting with Mediabunny
-version: 4.0.517
+version: 4.0.520
 ---
 
 Mediabunny is a multimedia library for dealing with audio and video in the browser.
@@ -19,8 +19,9 @@ See [get-video-dimensions.md](get-video-dimensions.md) for getting the width and
 
 See [get-video-duration.md](get-video-duration.md) for getting the duration of a video file in seconds with Mediabunny.
 
-<!-- LOCAL ADDITIONS, not upstream 4.0.517. Restored by owner ruling 2026-08-26;
-     see the tombstone in scripts/remotion-setup-guard.ts. Keep on re-vendor. -->
+<!-- LOCAL ADDITIONS, not upstream 4.0.520 (nor 4.0.517 before it). Restored by
+     owner ruling 2026-08-26; see the tombstone in scripts/remotion-setup-guard.ts.
+     Carried forward through the 2026-09-03 re-vendor. Keep on re-vendor. -->
 
 ## Checking whether a video can be decoded
 

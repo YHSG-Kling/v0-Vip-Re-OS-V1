@@ -24,13 +24,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -132,7 +127,7 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
         {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 96, margin: 0, fontWeight: 800, letterSpacing: -1 }}>
           {hook}
@@ -166,7 +161,7 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   if (!url) return null
   return (
     <AbsoluteFill>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%",
@@ -224,7 +219,7 @@ const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 80, margin: 0, fontWeight: 800 }}>DM me to tour.</h1>
       {brand.agentName && (

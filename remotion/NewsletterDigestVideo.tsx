@@ -23,13 +23,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface NewsletterDigestVideoProps {
@@ -90,7 +85,7 @@ const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) =>
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
       )}
       <p style={{ color: brand.accentColor, fontSize: 38, fontWeight: 600, marginBottom: 12 }}>
         {brand.brokerageName}
@@ -151,7 +146,7 @@ const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, 
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 180, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 180, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800, lineHeight: 1.1 }}>
         Open the email

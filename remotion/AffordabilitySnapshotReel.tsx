@@ -33,13 +33,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -124,7 +119,7 @@ const ExampleCard: React.FC<{
           opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           {ex.photoUrl ? (
-            <Img src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={ex.photoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{
               width: "100%", height: 540, display: "flex",
@@ -184,7 +179,7 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />

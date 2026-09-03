@@ -44,7 +44,8 @@
  * name two different people.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, Img, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface PostcardBack4x6Props {
   /** Same body as the front piece — coherence between sides. */
@@ -109,8 +110,11 @@ export const PostcardBack4x6: React.FC<PostcardBack4x6Props> = ({
   body, signoff, agentPhotoUrl, agentName, optOutLine, optOutQrDataUrl, brand,
 }) => {
   // Indicia keep-out: right 52% of the canvas is reserved for Lob's
-  // address block + barcode. Everything renders in the left 48%.
-  const messagePanelRight = 1275 - Math.floor(1275 * 0.52)  // ~612px
+  // address block + barcode. Everything renders in the left 48%. The canvas
+  // width comes from the registration (it used to be `1275` typed twice
+  // here; test:remotion-setup §5 refuses that literal now).
+  const { width } = useVideoConfig()
+  const messagePanelRight = width - Math.floor(width * 0.52)  // ~612px at 1275
 
   // The opt-out row sits between the fine print and the signature. Its height
   // is what pushes the signature up, so a piece with no opt-out (Studio
@@ -134,7 +138,7 @@ export const PostcardBack4x6: React.FC<PostcardBack4x6Props> = ({
         color: "#fff",
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 64, width: "auto", objectFit: "contain", marginRight: 18 }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 64, width: "auto", objectFit: "contain", marginRight: 18 }} />
         ) : (
           <div style={{
             width: 56, height: 56, borderRadius: 10, marginRight: 18,
@@ -171,7 +175,7 @@ export const PostcardBack4x6: React.FC<PostcardBack4x6Props> = ({
         display: "flex", alignItems: "center", gap: 18,
       }}>
         {agentPhotoUrl ? (
-          <Img src={agentPhotoUrl} style={{
+          <SafeImg src={agentPhotoUrl} style={{
             width: 90, height: 90, objectFit: "cover", borderRadius: 45,
             border: `3px solid ${brand.accentColor}`,
           }} />

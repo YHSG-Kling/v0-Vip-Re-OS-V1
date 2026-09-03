@@ -27,13 +27,8 @@
  */
 import React from "react"
 import { Video } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -90,7 +85,7 @@ const IntroCard: React.FC<{
       }}
     >
       {brand.logoUrl ? (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
           style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}
         />
@@ -176,7 +171,7 @@ const AvatarBody: React.FC<{
         // Honest fallback frame — the avatar clip has not been wired in.
         <AbsoluteFill style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 72, opacity: fadeIn }}>
           <div style={{ width: 460, height: 460, borderRadius: 230, overflow: "hidden", boxShadow: `0 0 0 8px ${brand.accentColor}` }}>
-            <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           </div>
           <div style={{ fontSize: 44, fontWeight: 700, color: "#fff", marginTop: 44, textAlign: "center", maxWidth: 860, lineHeight: 1.25 }}>
             {title}
@@ -192,7 +187,7 @@ const AvatarBody: React.FC<{
 
       {/* Logo watermark — top-right, subtle. */}
       {brand.logoUrl && (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
           style={{ position: "absolute", top: 40, right: 40, height: 52, objectFit: "contain", opacity: 0.85 }}
         />
@@ -227,7 +222,7 @@ const OutroCard: React.FC<{
       }}
     >
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
+        <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
       )}
       <div
         style={{

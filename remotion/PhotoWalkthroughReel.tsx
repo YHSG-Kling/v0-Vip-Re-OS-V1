@@ -35,15 +35,8 @@
  */
 import React from "react"
 import { Audio } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Easing,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
@@ -176,7 +169,7 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
         }}
       >
         {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 92, margin: 0, fontWeight: 800, letterSpacing: -1, fontFamily: FONT }}>
           {hook}
@@ -261,7 +254,7 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
 
   return (
     <AbsoluteFill style={{ opacity }}>
-      <Img
+      <SafeImg
         src={clip.url}
         style={{
           width: "100%",
@@ -345,7 +338,7 @@ const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 76, margin: 0, fontWeight: 800, fontFamily: FONT }}>
         {ctaLabel || "DM me to tour."}

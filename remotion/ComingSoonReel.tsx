@@ -29,13 +29,8 @@
  */
 import React from "react"
 import { Audio, Video } from "@remotion/media"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -130,7 +125,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
@@ -173,7 +168,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               boxShadow: `0 0 0 6px ${brand.accentColor}, 0 32px 64px rgba(0,0,0,0.45)`,
               filter: "blur(2px) saturate(1.05)",
             }}>
-              <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
           )}
           {address ? (
@@ -228,7 +223,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
                   trimBefore={0} trimAfter={CTA}
                   style={{ width: "100%", height: "100%" }} />
               ) : (
-                <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}
             </div>
           )}
