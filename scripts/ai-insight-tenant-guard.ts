@@ -2354,23 +2354,45 @@ function assertOneLeadTenantResolver(): boolean {
 // console removed the row from the queue and navigated to the contact page while
 // assigning nobody and notifying nobody. A live handoff that notifies nobody.
 //
-//   W1  ALL THREE users-FK COLUMNS IN THE PANEL COME FROM ONE IDENTIFIER. The
-//       original defect was one value used for three columns; the FIX is not
-//       three values, it is ONE value of the RIGHT CLASS. If a later edit splits
-//       them, the panel is back to answering "who is the human" twice.
-//   W2  NO CALLER FEEDS IT AN AGENTS-CLASS VALUE. The construct, not the name:
-//       the passed expression — and the local binding it names — must not
-//       resolve to `getAgentContext().agentId`, a `<row>.agent_id` column read,
-//       or an `agents` table read. This is C7a's rule applied to a prop.
-//   W3  AND IT MUST RESOLVE TO A USERS-CLASS SOURCE. W2 alone passes on a
-//       literal, on `""`, on anything unrecognised. The positive half is what
-//       makes it an assertion rather than a blocklist.
-//   W4  THE AMBIGUOUS PROP IS GONE FROM THE CONTRACT AND FROM EVERY CALL SITE.
-//       `agentId` on this component meant two different id spaces on two
-//       different pages; a caller that reintroduces it fails here.
-//   W5  EVERY WRITE IN THE PANEL DESTRUCTURES `error`. Two of the three did not,
-//       and the enclosing try/catch caught nothing, which is the entire reason
-//       three refused writes read as a successful handoff.
+// ── WAVE 26 (lane H2) MOVED THE THREE WRITES OUT OF THE BROWSER ──────────────
+//
+// The panel is a client component. Its direct `lifecycle_events` insert landed
+// in the audit table and never reached the kernel reactor (lib/kernel/emit.ts is
+// server-only), so AI_ISA_HANDOFF_TO_AGENT fired no notification_rules and no
+// handler. The three writes now live in `app/actions/ai-isa/claim-handoff.ts`,
+// which takes ONLY a qualification id: the claimant AND the tenant come from the
+// session (CLAUDE.md §4), never from a prop and never from the request body. The
+// panel no longer declares `assignedToUserId` at all, and both callers pass only
+// `queue`. The assertions below were re-pointed at that shape on 2026-09-03 —
+// the first version pinned the panel's pre-H2 layout (three writes in the
+// panel, a `users.id` prop on both callers) and went red BECAUSE the work
+// finished: a waypoint, §2's forbidden pin. Each rule below is stated against
+// the id-space contract, and each carries a control that re-introduces its
+// defect shape and must go red.
+//
+//   W1  ALL THREE users-FK COLUMNS THE CLAIM WRITES COME FROM ONE IDENTIFIER —
+//       `ai_isa_qualifications.assigned_to_agent_id`, `notifications.user_id`,
+//       and `lifecycle_events.actor_user_id` (reached through emitKernelEvent's
+//       `actorUserId`). The original defect was one value of the WRONG CLASS
+//       used for three columns; the fix is ONE value of the RIGHT class, and a
+//       later edit that splits them is back to answering "who is the human"
+//       twice. W1b: that identifier ROOTS AT THE SESSION — the binding it reads
+//       is `await getAgentContext()`, not the action's input.
+//   W2  NO CALLER PASSES AN IDENTITY. No `<HandoffQueuePanel>` element carries
+//       `assignedToUserId`, `agentId`, `brokerageId` or `userId` (W2a), and the
+//       action's input type declares no such field (W2b). A caller cannot feed
+//       an agents.id into a users(id) column when there is no prop to feed.
+//   W3  THE ACTION DERIVES THE CLAIMANT FROM THE SESSION and refuses when the
+//       session has no user or no tenant — the fail-closed gate, in the file.
+//   W4  THE AMBIGUOUS PROP IS GONE FROM THE CONTRACT. HandoffQueuePanelProps
+//       declares no identity prop at all; `agentId` on this component meant two
+//       different id spaces on two different pages.
+//   W5  EVERY WRITE IN THE ACTION DESTRUCTURES `error` (W5b); the action still
+//       does its three things — the assignment update, the notification insert,
+//       and the kernel emit whose result's `.error` is read (W5a); the PANEL
+//       makes no direct write (W5c — a browser write cannot reach the reactor);
+//       and the action inserts no `lifecycle_events` row itself (W5d — the
+//       spine, lib/kernel/emit.ts, is the one way an event is fired).
 //   W6  THE ISA ASSIGNMENT WRITER CROSSES THE SPACE THROUGH THE SHARED RESOLVER.
 //       `lib/ai-isa/qualification-evaluator.ts` wrote `evaluateAndAssignLead`'s
 //       return — an `agents.id` in every branch — straight into
@@ -2380,38 +2402,43 @@ function assertOneLeadTenantResolver(): boolean {
 //       a private copy of `agents.user_id` — E7's rule for a second table.
 
 const W27_PANEL = "app/dashboard/voice/isa/handoff-queue-panel.tsx"
+/** The server half: the three writes, the session-derived claimant and tenant. */
+const W27_ACTION = "app/actions/ai-isa/claim-handoff.ts"
 const W27_CALLERS = ["app/dashboard/voice/isa/page.tsx", "app/dashboard/isa/page.tsx"]
 const W27_ISA_ASSIGNMENT_WRITER = "lib/ai-isa/qualification-evaluator.ts"
 const W27_RECIPIENT_RESOLVER = "lib/notifications/recipient-tenant.ts"
 
-/** The prop the panel's contract now declares: a `users.id`, and only that. */
-const W27_PROP = "assignedToUserId"
-/** The prop it used to declare, which meant `agents.id` on one page and `users.id` on the other. */
+/**
+ * Every prop name under which a caller could hand the panel an identity. The
+ * panel used to declare the first two (one after the other); the contract now
+ * declares none, and the action's input declares none either.
+ */
+const W27_IDENTITY_PROPS = ["assignedToUserId", "agentId", "brokerageId", "userId"] as const
+/** The prop that meant `agents.id` on one page and `users.id` on the other. */
 const W27_AMBIGUOUS_PROP = "agentId"
+/** The one session resolver the action may take its identity from. */
+const W27_SESSION_RESOLVER = "getAgentContext"
 
 /**
- * The value written into each of the panel's three `users(id)` FK columns.
+ * The value written into each of the claim's three `users(id)` FK columns.
  *
- * Read out of the source rather than matched as a string: `assigned_to_agent_id`
- * and `actor_user_id` are properties of insert/update objects, `user_id` is a
- * property of the notifications insert. All three are found through the same
- * `topLevelProps` walker the rest of this guard uses, so a reformatted object or
- * a wrapped call is followed rather than missed.
+ * Read out of the action's source rather than matched as a string:
+ * `assigned_to_agent_id` is a property of the update object, `user_id` a
+ * property of the notifications insert, and `actor_user_id` is reached through
+ * emitKernelEvent's `actorUserId` option (lib/kernel/emit.ts is the one writer of
+ * lifecycle_events rows). All three are found through the same `topLevelProps`
+ * walker the rest of this guard uses, so a reformatted object is followed
+ * rather than missed.
  */
-function w27PanelRecipientValues(): Array<{ column: string; value: string }> {
-  if (!existsSync(resolve(ROOT, W27_PANEL))) return []
-  const src = blankComments(raw(W27_PANEL))
+function w27ActionRecipientValues(): Array<{ column: string; value: string }> {
+  if (!existsSync(resolve(ROOT, W27_ACTION))) return []
+  const src = blankComments(raw(W27_ACTION))
   const out: Array<{ column: string; value: string }> = []
 
-  // The two INSERTs resolve through the shared site walker.
-  for (const [table, column] of [
-    ["lifecycle_events", "actor_user_id"],
-    ["notifications", "user_id"],
-  ] as const) {
-    for (const s of insertSites(W27_PANEL, table)) {
-      const p = s.props.find((x) => x.key === column)
-      if (p) out.push({ column: `${table}.${column}`, value: p.value.trim() })
-    }
+  // The INSERT resolves through the shared site walker.
+  for (const s of insertSites(W27_ACTION, "notifications")) {
+    const p = s.props.find((x) => x.key === "user_id")
+    if (p) out.push({ column: "notifications.user_id", value: p.value.trim() })
   }
 
   // The UPDATE is not an insert site, so it is resolved directly: find the
@@ -2431,169 +2458,189 @@ function w27PanelRecipientValues(): Array<{ column: string; value: string }> {
     const p = topLevelProps(src, resolved.open).find((x) => x.key === "assigned_to_agent_id")
     if (p) out.push({ column: "ai_isa_qualifications.assigned_to_agent_id", value: p.value.trim() })
   }
+
+  // The kernel event: `emitKernelEvent({ …, actorUserId: <value>, … })`.
+  const emit = /\bemitKernelEvent\s*\(/g
+  while ((m = emit.exec(src)) !== null) {
+    const openParen = m.index + m[0].length - 1
+    const resolved = resolveRowObject(src, openParen)
+    if (!resolved) continue
+    const p = topLevelProps(src, resolved.open).find((x) => x.key === "actorUserId")
+    if (p) out.push({ column: "lifecycle_events.actor_user_id (emitKernelEvent actorUserId)", value: p.value.trim() })
+  }
   return out
 }
 
+/**
+ * The root binding of a member expression — `ctx` for `ctx.userId`,
+ * `ctx?.userId` or `ctx!.userId` — and what that root is bound to in `src`,
+ * one hop. One hop, deliberately: chasing further needs a type checker, and an
+ * assertion that quietly gives up on the second hop is worse than one that says
+ * so.
+ */
+function w27RootBinding(src: string, value: string): { root: string; boundTo: string | null } {
+  const root = /^([A-Za-z_$][A-Za-z0-9_$]*)/.exec(value)?.[1] ?? value
+  const bind = new RegExp(`\\b(?:const|let|var)\\s+${root}\\s*(?::[^=]+)?=\\s*([^\\n]+)`).exec(src)
+  return { root, boundTo: bind ? bind[1].trim() : null }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// W1 — one identifier feeds all three users-FK columns
+// W1 — one identifier feeds all three users-FK columns, and it roots at the session
 // ─────────────────────────────────────────────────────────────────────────────
 function assertHandoffWritesOneIdentity(): boolean {
-  const vals = w27PanelRecipientValues()
+  const vals = w27ActionRecipientValues()
   if (vals.length < 3) {
     return check(
-      "W1  the handoff panel still writes all three users-FK columns",
+      "W1  the claim action still writes all three users-FK columns",
       false,
       `found ${vals.length} of 3: ${vals.map((v) => v.column).join(", ") || "(none)"} — if a write was removed the handoff stopped doing one of the three things it exists to do`,
     )
   }
   const distinct = [...new Set(vals.map((v) => v.value))]
-  return check(
-    "W1  ai_isa_qualifications.assigned_to_agent_id, lifecycle_events.actor_user_id and notifications.user_id all come from ONE identifier",
+  const one = check(
+    "W1  ai_isa_qualifications.assigned_to_agent_id, notifications.user_id and lifecycle_events.actor_user_id all come from ONE identifier",
     distinct.length === 1,
     distinct.length === 1
       ? ""
       : `${vals.map((v) => `${v.column} ← ${v.value}`).join("; ")} — three users(id) columns describing one human must not be fed from more than one expression`,
   )
+  if (!one) return false
+
+  // W1b — and that identifier is the SESSION's, not the request's. The value is
+  // a member read off a binding; the binding must be the session resolver.
+  const src = blankComments(raw(W27_ACTION))
+  const { root, boundTo } = w27RootBinding(src, distinct[0])
+  const paramNames = [...src.matchAll(/function\s+claimHandoffAction\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/g)].map((x) => x[1])
+  const fromSession = boundTo !== null && new RegExp(`\\bawait\\s+${W27_SESSION_RESOLVER}\\s*\\(`).test(boundTo)
+  const fromInput = paramNames.includes(root) || (boundTo !== null && paramNames.some((p) => new RegExp(`\\b${p}\\b`).test(boundTo)))
+  return check(
+    `W1b the one identifier roots at \`await ${W27_SESSION_RESOLVER}()\` — the claimant comes from the session, never from the action's input (CLAUDE.md §4)`,
+    fromSession && !fromInput,
+    `${distinct[0]} ← ${root} = ${boundTo ?? "(no binding found)"}${fromInput ? " — bound from the request input" : ""}`,
+  )
 }
 
 /**
- * What a caller's `assignedToUserId={…}` expression RESOLVES to, following one
- * hop through a local binding in the same file.
- *
- * One hop, deliberately: both live callers are one hop (`user.id` direct;
- * `userIdForHandoff` ← `userId ?? ""` off the `getAgentContext()` destructuring).
- * Chasing further would need a type checker, and an assertion that quietly gives
- * up on the second hop is worse than one that says so.
+ * Every `<HandoffQueuePanel …>` element in a caller, as source text. Only that
+ * element: these pages legitimately pass `agentId` to OTHER components
+ * (CoachingInsightsPanel, ISAConfigSummary), where it really is an agents.id.
  */
-function w27ResolvePropExpression(file: string): { expr: string; resolved: string } | null {
-  if (!existsSync(resolve(ROOT, file))) return null
+function w27PanelElements(file: string): string[] {
+  if (!existsSync(resolve(ROOT, file))) return []
   const src = blankComments(raw(file))
-  const attr = new RegExp(`${W27_PROP}\\s*=\\s*\\{([^}]*)\\}`).exec(src)
-  if (!attr) return null
-  const expr = attr[1].trim()
-  const ident = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(expr) ? expr : null
-  if (!ident) return { expr, resolved: expr }
-  const bind = new RegExp(`\\b(?:const|let|var)\\s+${ident}\\s*(?::[^=]+)?=\\s*([^\\n]+)`).exec(src)
-  return { expr, resolved: bind ? `${expr} = ${bind[1].trim()}` : expr }
-}
-
-/** An AGENTS-class source, established by the schema rather than by spelling. */
-function w27LooksAgentsClass(text: string): boolean {
-  return (
-    // `<row>.agent_id` — every `.agent_id` column reached from these pages FKs
-    // agents(id). `.user_id` present means it has already been resolved across.
-    (/(?:^|[^A-Za-z0-9_$.])[A-Za-z0-9_$]+(?:\?)?\.agent_id\b/.test(text) && !/\.user_id\b/.test(text)) ||
-    // the `agentId` field of getAgentContext(), however it is aliased on the way
-    // out — AND `<result>.agentId` as a PROPERTY READ, which is how the live
-    // defect is actually spelled: `evaluateAndAssignLead` returns `{ agentId }`
-    // and every branch of it is an `agents.id`.
-    //
-    // The `.` is deliberately NOT excluded here, and that is the difference
-    // between this and C7a. C7a excludes it because it is looking for the
-    // snake_case COLUMN `<row>.agent_id`; the camelCase `.agentId` in this
-    // sub-tree is always the agents-side field of a resolver result
-    // (`getAgentContext().agentId`, `assignResult.agentId`). Leaving `.` in the
-    // exclusion made the W6a control STAY GREEN over exactly the write it exists
-    // to catch — `assigned_to_agent_id: assignResult.agentId ?? null`, the live
-    // defect, character for character.
-    /\bagentId\s*:/.test(text) ||
-    /(?:^|[^A-Za-z0-9_$])agentId(?:Raw)?\b/.test(text) ||
-    // read straight off the agents table
-    /\.from\(\s*["']agents["']\s*\)/.test(text)
-  )
-}
-
-/** A USERS-class source. */
-function w27LooksUsersClass(text: string): boolean {
-  return /\buser\.id\b/.test(text) || /\buserId\b/.test(text) || /\.user_id\b/.test(text)
+  return [...src.matchAll(/<HandoffQueuePanel\b[\s\S]*?\/>/g)].map((m) => m[0])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// W2 / W3 — the callers, both halves
+// W2 / W3 — no caller passes an identity; the action takes it from the session
 // ─────────────────────────────────────────────────────────────────────────────
-function assertHandoffCallersPassUsersId(): boolean {
-  const agentsClass: string[] = []
-  const unrecognised: string[] = []
-  let seen = 0
+function assertHandoffCallersPassNoIdentity(): boolean {
+  // W2a — the call sites.
+  const offenders: string[] = []
+  let elements = 0
   for (const f of W27_CALLERS) {
-    const r = w27ResolvePropExpression(f)
-    if (!r) continue
-    seen++
-    if (w27LooksAgentsClass(r.resolved)) agentsClass.push(`${f} → ${r.resolved}`)
-    else if (!w27LooksUsersClass(r.resolved)) unrecognised.push(`${f} → ${r.resolved}`)
+    for (const el of w27PanelElements(f)) {
+      elements++
+      for (const prop of W27_IDENTITY_PROPS) {
+        if (new RegExp(`(?:^|[\\s{])${prop}\\s*=`).test(el)) offenders.push(`${f}: <HandoffQueuePanel> passes \`${prop}\``)
+      }
+    }
   }
   const found = check(
-    `W2a both HandoffQueuePanel callers still pass \`${W27_PROP}\``,
-    seen === W27_CALLERS.length,
-    seen === W27_CALLERS.length ? "" : `found ${seen} of ${W27_CALLERS.length}`,
+    "W2  both HandoffQueuePanel callers still mount the panel",
+    elements >= W27_CALLERS.length,
+    `found ${elements} <HandoffQueuePanel> element(s) across ${W27_CALLERS.length} callers`,
   )
   const a = check(
-    "W2b no HandoffQueuePanel caller passes an AGENTS-class value (agents.id is DISJOINT from users.id — all three FKs refuse it 23503)",
-    agentsClass.length === 0,
-    agentsClass.join("; "),
+    `W2a no <HandoffQueuePanel> caller passes an identity prop (${W27_IDENTITY_PROPS.join(", ")}) — the claimant and the tenant are the session's, not the page's`,
+    offenders.length === 0,
+    offenders.join("; "),
   )
-  const b = check(
-    "W3  every HandoffQueuePanel caller passes a value resolvable to a USERS-class source",
-    unrecognised.length === 0,
-    unrecognised.length === 0
-      ? ""
-      : `${unrecognised.join("; ")} — a value this guard cannot place in an id space is not a value the FK will accept on trust`,
-  )
-  return found && a && b
+
+  // W2b — the action's input type. Fields are read out of the parameter's
+  // object type; any identity-shaped key is a request-supplied identity.
+  let b = true
+  if (!existsSync(resolve(ROOT, W27_ACTION))) {
+    b = check("W2b the claim action exists", false, `${W27_ACTION} is missing`)
+  } else {
+    const src = blankComments(raw(W27_ACTION))
+    const param = /function\s+claimHandoffAction\s*\(\s*[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*\{([\s\S]*?)\n\}\s*\)/.exec(src)
+    const keys = param ? [...param[1].matchAll(/(?:^|\n)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/g)].map((x) => x[1]) : []
+    const identityKeys = keys.filter((k) => /(user|agent|brokerage|tenant)_?id$/i.test(k))
+    b = check(
+      "W2b claimHandoffAction's input declares no identity field — a body-supplied user, agent or tenant id on a service client is the IDOR shape (CLAUDE.md §4)",
+      param !== null && identityKeys.length === 0,
+      param === null ? "could not read the input type of claimHandoffAction" : identityKeys.join(", "),
+    )
+  }
+
+  // W3 — the action resolves the session and refuses without a user AND a
+  // tenant. The gate is asserted as a construct: the resolver call, then a
+  // refusal that names both fields.
+  let c = true
+  if (existsSync(resolve(ROOT, W27_ACTION))) {
+    const src = blankComments(raw(W27_ACTION))
+    const { root: ctxRoot } = w27RootBinding(src, w27ActionRecipientValues()[0]?.value ?? "ctx.userId")
+    const resolves = new RegExp(`\\b(?:const|let)\\s+${ctxRoot}\\s*=\\s*await\\s+${W27_SESSION_RESOLVER}\\s*\\(`).test(src)
+    const gate = new RegExp(`if\\s*\\([^)]*!\\s*${ctxRoot}\\??\\.userId[^)]*!\\s*${ctxRoot}\\??\\.brokerageId[^)]*\\)\\s*\\{?\\s*return`).test(src)
+      || new RegExp(`if\\s*\\([^)]*!\\s*${ctxRoot}\\??\\.brokerageId[^)]*!\\s*${ctxRoot}\\??\\.userId[^)]*\\)\\s*\\{?\\s*return`).test(src)
+    c = check(
+      `W3  the claim action resolves \`${W27_SESSION_RESOLVER}()\` and returns before any write when the session has no userId or no brokerageId (fail closed)`,
+      resolves && gate,
+      `resolvesSession=${resolves} failClosedGate=${gate}`,
+    )
+  }
+  return found && a && b && c
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// W4 — the ambiguous prop is gone from the contract AND from every call site
+// W4 — the contract declares no identity prop (the ambiguous one included)
 // ─────────────────────────────────────────────────────────────────────────────
 function assertAmbiguousHandoffPropIsGone(): boolean {
   const offenders: string[] = []
-  if (existsSync(resolve(ROOT, W27_PANEL))) {
+  if (!existsSync(resolve(ROOT, W27_PANEL))) {
+    offenders.push(`${W27_PANEL} is missing`)
+  } else {
     const src = blankComments(raw(W27_PANEL))
     const iface = /interface\s+HandoffQueuePanelProps\s*\{([\s\S]*?)\n\}/.exec(src)
     if (!iface) offenders.push(`${W27_PANEL}: HandoffQueuePanelProps not found`)
     else {
-      if (new RegExp(`(?:^|\\n)\\s*${W27_AMBIGUOUS_PROP}\\s*[?:]`).test(iface[1])) {
-        offenders.push(`${W27_PANEL}: HandoffQueuePanelProps still declares \`${W27_AMBIGUOUS_PROP}\``)
-      }
-      if (!new RegExp(`(?:^|\\n)\\s*${W27_PROP}\\s*[?:]`).test(iface[1])) {
-        offenders.push(`${W27_PANEL}: HandoffQueuePanelProps does not declare \`${W27_PROP}\``)
+      for (const prop of W27_IDENTITY_PROPS) {
+        if (new RegExp(`(?:^|\\n)\\s*${prop}\\s*[?:]`).test(iface[1])) {
+          offenders.push(`${W27_PANEL}: HandoffQueuePanelProps declares \`${prop}\`${prop === W27_AMBIGUOUS_PROP ? " — the prop that meant two id spaces on two pages" : ""}`)
+        }
       }
     }
   }
   for (const f of W27_CALLERS) {
-    if (!existsSync(resolve(ROOT, f))) continue
-    const src = blankComments(raw(f))
-    // Only inside a <HandoffQueuePanel …> element: these pages legitimately pass
-    // `agentId` to OTHER components (CoachingInsightsPanel, ISAConfigSummary),
-    // where it really is an agents.id and is correct.
-    for (const el of src.matchAll(/<HandoffQueuePanel\b[\s\S]*?\/>/g)) {
-      if (new RegExp(`${W27_AMBIGUOUS_PROP}\\s*=`).test(el[0])) {
+    for (const el of w27PanelElements(f)) {
+      if (new RegExp(`(?:^|[\\s{])${W27_AMBIGUOUS_PROP}\\s*=`).test(el)) {
         offenders.push(`${f}: <HandoffQueuePanel> still passes \`${W27_AMBIGUOUS_PROP}\``)
       }
     }
   }
   return check(
-    `W4  the ambiguous \`${W27_AMBIGUOUS_PROP}\` prop is gone from HandoffQueuePanelProps and from every <HandoffQueuePanel> call site`,
+    `W4  HandoffQueuePanelProps declares no identity prop (the ambiguous \`${W27_AMBIGUOUS_PROP}\` included) and no <HandoffQueuePanel> call site passes it`,
     offenders.length === 0,
     offenders.join("; "),
   )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// W5 — every write in the panel reads its own refusal
+// W5 — every write in the action reads its own refusal; the panel writes nothing
 //
 // NOT `destructuresError`. That helper takes the LAST `const {…} = await` within
 // 400 characters and requires no `;` between it and the read — wave 24's rule,
 // written after an earlier statement was caught answering for a later one. THIS
-// TREE WRITES NO SEMICOLONS, so in a function with three consecutive supabase
-// writes the FIRST write's `const { error: … } = await` answers for the second
-// and third: the W5 control below (which strips the notification write's
+// TREE WRITES NO SEMICOLONS, so in a function with consecutive supabase writes
+// the FIRST write's `const { error: … } = await` answers for the second and
+// third: the W5 control below (which strips the notification write's
 // destructuring) STAYED GREEN under that helper. A false green on the exact
 // property the assertion exists to catch — the third of this family in this
 // sequence, and found the same way, by watching a control fail to go red.
 //
 // So W5 does not scan a window at all. It walks BACKWARDS from the `.from(` over
-// its own receiver — `… = await supabase` — and requires the destructuring that
+// its own receiver — `… = await svc` — and requires the destructuring that
 // binds THIS call, syntactically. An earlier statement cannot reach it.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2601,7 +2648,7 @@ function assertAmbiguousHandoffPropIsGone(): boolean {
  * True when the supabase call whose `.from(` starts at `fromIndex` is itself
  * bound to a destructuring containing `error`.
  *
- * Walks the receiver chain backwards: `.from(` ← `supabase` ← `await` ← `=` ←
+ * Walks the receiver chain backwards: `.from(` ← `svc` ← `await` ← `=` ←
  * `}` … `{`, and reads the bindings out of the braces it lands on. Every step is
  * an adjacency, so nothing that belongs to a previous statement can satisfy it.
  */
@@ -2611,7 +2658,7 @@ function w27ErrorBoundAt(src: string, fromIndex: number): boolean {
     while (i > 0 && /\s/.test(src[i - 1])) i--
   }
   backWs()
-  // the receiver identifier, e.g. `supabase`
+  // the receiver identifier, e.g. `svc`
   const idEnd = i
   while (i > 0 && /[A-Za-z0-9_$]/.test(src[i - 1])) i--
   if (i === idEnd) return false
@@ -2638,33 +2685,100 @@ function w27ErrorBoundAt(src: string, fromIndex: number): boolean {
   return /\berror\b/.test(src.slice(j + 1, close))
 }
 
-function assertHandoffWritesDestructureError(): boolean {
-  if (!existsSync(resolve(ROOT, W27_PANEL))) {
-    return check("W5  the handoff panel exists", false, `${W27_PANEL} is missing`)
-  }
-  const src = blankComments(raw(W27_PANEL))
-  const undestructured: string[] = []
-  let writes = 0
+/** Every `.from("<table>")` followed by a write verb, with its offset. */
+function w27WriteSites(src: string): Array<{ table: string; verb: string; index: number }> {
+  const out: Array<{ table: string; verb: string; index: number }> = []
   for (const m of src.matchAll(/\.from\(\s*["']([a-z_]+)["']\s*\)/g)) {
     const after = m.index! + m[0].length
     let window = src.slice(after, after + 4000)
     const nextFrom = window.search(/\.\s*from\s*\(/)
     if (nextFrom !== -1) window = window.slice(0, nextFrom)
-    if (!/^[\s\S]{0,400}?\.\s*(?:insert|upsert|update|delete)\s*\(/.test(window)) continue
-    writes++
-    if (!w27ErrorBoundAt(src, m.index!)) undestructured.push(`${m[1]} at offset ${m.index}`)
+    const verb = /^[\s\S]{0,400}?\.\s*(insert|upsert|update|delete)\s*\(/.exec(window)
+    if (!verb) continue
+    out.push({ table: m[1], verb: verb[1], index: m.index! })
   }
+  return out
+}
+
+function assertHandoffWritesDestructureError(): boolean {
+  if (!existsSync(resolve(ROOT, W27_ACTION))) {
+    return check("W5  the claim action exists", false, `${W27_ACTION} is missing`)
+  }
+  const src = blankComments(raw(W27_ACTION))
+  const writes = w27WriteSites(src)
+
+  // W5a — the three things the claim does, by NAME rather than by count: an
+  // update on the qualification, an insert on notifications, and a kernel emit
+  // of the handoff event whose result is bound and read for `.error`.
+  const hasAssign = writes.some((w) => w.table === "ai_isa_qualifications" && w.verb === "update")
+  const hasNotify = writes.some((w) => w.table === "notifications" && w.verb === "insert")
+  const emitBind = /\b(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+emitKernelEvent\s*\(/.exec(src)
+  const emitsHandoff = /emitKernelEvent\s*\(\s*\{[\s\S]{0,200}?\bevent\s*:\s*KernelEvent\.AI_ISA_HANDOFF_TO_AGENT\b/.test(src)
+  const emitErrorRead = emitBind !== null && new RegExp(`\\b${emitBind[1]}\\s*\\.\\s*error\\b`).test(src)
   const found = check(
-    "W5a the handoff panel still makes its three writes",
-    writes === 3,
-    writes === 3 ? "" : `found ${writes}`,
+    "W5a the claim action still does its three things — the assignment update, the notification insert, and the AI_ISA_HANDOFF_TO_AGENT emit whose result's `.error` is read",
+    hasAssign && hasNotify && emitsHandoff && emitErrorRead,
+    `assignmentUpdate=${hasAssign} notificationInsert=${hasNotify} handoffEmit=${emitsHandoff} emitErrorRead=${emitErrorRead}`,
   )
+
+  // W5b — every direct write is bound to a destructuring that reads `error`.
+  const undestructured = writes.filter((w) => !w27ErrorBoundAt(src, w.index)).map((w) => `${w.table}.${w.verb} at offset ${w.index}`)
   const ok = check(
-    "W5b every write in the handoff panel is bound to a destructuring containing `error` (supabase-js RESOLVES a refusal — the try/catch that used to wrap these caught NOTHING)",
+    "W5b every write in the claim action is bound to a destructuring containing `error` (supabase-js RESOLVES a refusal — the try/catch that used to wrap these caught NOTHING)",
     undestructured.length === 0,
     undestructured.join(", "),
   )
-  return found && ok
+
+  // W5c — the PANEL writes nothing. A browser write cannot reach the kernel
+  // reactor, and the panel's own writes were the defect's original home.
+  let panelOk = true
+  if (!existsSync(resolve(ROOT, W27_PANEL))) {
+    panelOk = check("W5c the handoff panel exists", false, `${W27_PANEL} is missing`)
+  } else {
+    const panelSrc = blankComments(raw(W27_PANEL))
+    const panelWrites = w27WriteSites(panelSrc).map((w) => `${w.table}.${w.verb}`)
+    const importsAction = new RegExp(`from\\s+['"]@/${W27_ACTION.replace(/\.ts$/, "")}['"]`).test(panelSrc)
+    panelOk = check(
+      `W5c the handoff panel makes no direct write and claims through ${W27_ACTION} (a client component cannot reach the reactor)`,
+      panelWrites.length === 0 && importsAction,
+      `${panelWrites.length ? `panel writes: ${panelWrites.join(", ")}` : ""}${importsAction ? "" : " — panel does not import the claim action"}`,
+    )
+  }
+
+  // W5d — the action fires the event through the spine, not a hand-rolled row.
+  const directLifecycle = writes.filter((w) => w.table === "lifecycle_events")
+  const spine = check(
+    "W5d the claim action inserts no `lifecycle_events` row itself — emitKernelEvent is the one way a kernel event is fired (row + fan-out)",
+    directLifecycle.length === 0,
+    directLifecycle.map((w) => `${w.table}.${w.verb} at offset ${w.index}`).join(", "),
+  )
+  return found && ok && panelOk && spine
+}
+
+/** An AGENTS-class source, established by the schema rather than by spelling. */
+function w27LooksAgentsClass(text: string): boolean {
+  return (
+    // `<row>.agent_id` — every `.agent_id` column reached from these files FKs
+    // agents(id). `.user_id` present means it has already been resolved across.
+    (/(?:^|[^A-Za-z0-9_$.])[A-Za-z0-9_$]+(?:\?)?\.agent_id\b/.test(text) && !/\.user_id\b/.test(text)) ||
+    // the `agentId` field of a resolver result, however it is aliased on the way
+    // out — AND `<result>.agentId` as a PROPERTY READ, which is how the live
+    // defect is actually spelled: `evaluateAndAssignLead` returns `{ agentId }`
+    // and every branch of it is an `agents.id`.
+    //
+    // The `.` is deliberately NOT excluded here, and that is the difference
+    // between this and C7a. C7a excludes it because it is looking for the
+    // snake_case COLUMN `<row>.agent_id`; the camelCase `.agentId` in this
+    // sub-tree is always the agents-side field of a resolver result
+    // (`getAgentContext().agentId`, `assignResult.agentId`). Leaving `.` in the
+    // exclusion made the W6a control STAY GREEN over exactly the write it exists
+    // to catch — `assigned_to_agent_id: assignResult.agentId ?? null`, the live
+    // defect, character for character.
+    /\bagentId\s*:/.test(text) ||
+    /(?:^|[^A-Za-z0-9_$])agentId(?:Raw)?\b/.test(text) ||
+    // read straight off the agents table
+    /\.from\(\s*["']agents["']\s*\)/.test(text)
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3208,7 +3322,7 @@ function main(): void {
   assertLifecycleHelperCallersStamp()
   assertOneLeadTenantResolver()
   assertHandoffWritesOneIdentity()
-  assertHandoffCallersPassUsersId()
+  assertHandoffCallersPassNoIdentity()
   assertAmbiguousHandoffPropIsGone()
   assertHandoffWritesDestructureError()
   assertIsaAssignmentResolvesRecipient()
@@ -4284,40 +4398,64 @@ function main(): void {
     //      original defect's SHAPE (one component answering "who is the human"
     //      more than one way), not its original spelling.
     controlled(
-      "the handoff panel notifies a different identity from the one it assigns",
+      "the claim action notifies a different identity from the one it assigns",
       {
-        file: W27_PANEL,
-        find: "      user_id: assignedToUserId,",
-        replace: "      user_id: brokerageId,",
+        file: W27_ACTION,
+        find: "    user_id:      ctx.userId,",
+        replace: "    user_id:      ctx.brokerageId,",
       },
       assertHandoffWritesOneIdentity,
     )
 
-    // W2b — THE DEFECT ITSELF, restored: the voice/isa console passing the
-    //       `agents.id` it holds. Proven live to be 23503 on all three writes.
+    // W1b — the one identifier still feeds all three columns, but its ROOT is
+    //       rebound to the request input. Every write still spells `ctx.userId`;
+    //       only the binding underneath crosses back to the body. This is the
+    //       hop that makes W1b a construct rather than a spelling test.
+    controlled(
+      "the session binding behind the claimant is quietly rebound to the request input",
+      {
+        file: W27_ACTION,
+        find: "  const ctx = await getAgentContext()",
+        replace: "  const ctx = { ...(input as unknown as { userId: string; brokerageId: string }), isAuthenticated: true }",
+      },
+      assertHandoffWritesOneIdentity,
+    )
+
+    // W2a — THE DEFECT ITSELF, restored: the voice/isa console passing the
+    //       `agents.id` it holds to the panel. Proven live to be 23503 on all
+    //       three writes when the panel wrote them; today there is no prop to
+    //       feed, and re-adding one must fail here.
     controlled(
       "the voice/isa console passes its agents.id to the handoff panel again",
       {
         file: "app/dashboard/voice/isa/page.tsx",
-        find: `assignedToUserId={userIdForHandoff}`,
-        replace: `assignedToUserId={agentId}`,
+        find: "<HandoffQueuePanel queue={(handoffQueue || []) as any[]} />",
+        replace: "<HandoffQueuePanel queue={(handoffQueue || []) as any[]} assignedToUserId={agentId} />",
       },
-      assertHandoffCallersPassUsersId,
+      assertHandoffCallersPassNoIdentity,
     )
 
-    // W2b — and the same defect ONE HOP BACK, where a name-based check cannot
-    //       see it: the JSX still reads `assignedToUserId={userIdForHandoff}`,
-    //       and only the binding underneath it crosses back into the agents
-    //       space. This is the hop that makes W2 a construct rather than a
-    //       spelling test.
+    // W2b — the action's input grows an identity field: the body-supplied
+    //       tenant/claimant on a service client, the IDOR shape (§4).
     controlled(
-      "the users.id binding behind the prop is quietly rebound to the agents.id",
+      "claimHandoffAction's input declares a request-supplied userId",
       {
-        file: "app/dashboard/voice/isa/page.tsx",
-        find: "const userIdForHandoff = userId ?? \"\"",
-        replace: "const userIdForHandoff = agentIdRaw ?? \"\"",
+        file: W27_ACTION,
+        find: "export async function claimHandoffAction(input: {\n  qualificationId: string\n})",
+        replace: "export async function claimHandoffAction(input: {\n  qualificationId: string\n  userId: string\n})",
       },
-      assertHandoffCallersPassUsersId,
+      assertHandoffCallersPassNoIdentity,
+    )
+
+    // W3 — the fail-closed gate stops checking the tenant.
+    controlled(
+      "the claim action no longer refuses a session without a brokerage",
+      {
+        file: W27_ACTION,
+        find: "  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {",
+        replace: "  if (!ctx.isAuthenticated || !ctx.userId) {",
+      },
+      assertHandoffCallersPassNoIdentity,
     )
 
     // W4 — the ambiguous prop reintroduced on the component's contract.
@@ -4325,21 +4463,45 @@ function main(): void {
       "HandoffQueuePanelProps re-declares the ambiguous `agentId`",
       {
         file: W27_PANEL,
-        find: "  assignedToUserId: string\n}",
-        replace: "  assignedToUserId: string\n  agentId: string\n}",
+        find: "  queue: QualifiedContact[]\n}",
+        replace: "  queue: QualifiedContact[]\n  agentId: string\n}",
       },
       assertAmbiguousHandoffPropIsGone,
     )
 
-    // W5 — the notification write stops reading its own refusal. This is the
-    //      exact shape that made three refused writes look like a completed
-    //      handoff: supabase-js resolves, so nothing throws and nothing is read.
+    // W5b — the notification write stops reading its own refusal. This is the
+    //       exact shape that made three refused writes look like a completed
+    //       handoff: supabase-js resolves, so nothing throws and nothing is read.
     controlled(
       "the handoff notification write stops destructuring `error`",
       {
+        file: W27_ACTION,
+        find: "const { error: notifyErr } = await svc.from(\"notifications\").insert({",
+        replace: "await svc.from(\"notifications\").insert({",
+      },
+      assertHandoffWritesDestructureError,
+    )
+
+    // W5c — the panel regains a direct write, in the browser, where the reactor
+    //       cannot be reached.
+    controlled(
+      "the handoff panel makes a direct browser write again",
+      {
         file: W27_PANEL,
-        find: "const { error: notifyErr } = await supabase.from(\"notifications\").insert({",
-        replace: "await supabase.from(\"notifications\").insert({",
+        find: "      result = await claimHandoffAction({ qualificationId })",
+        replace: "      const { error: _w5c } = await supabase.from(\"notifications\").insert({ user_id: qualificationId })\n      result = await claimHandoffAction({ qualificationId })",
+      },
+      assertHandoffWritesDestructureError,
+    )
+
+    // W5d — the action hand-rolls the lifecycle row beside the spine. The write
+    //       reads its error, so only the spine rule can catch it.
+    controlled(
+      "the claim action inserts its own lifecycle_events row beside emitKernelEvent",
+      {
+        file: W27_ACTION,
+        find: "  const emitted = await emitKernelEvent({",
+        replace: "  const { error: _w5d } = await svc.from(\"lifecycle_events\").insert({ event_type: \"ai_isa_handoff_to_agent\" })\n  const emitted = await emitKernelEvent({",
       },
       assertHandoffWritesDestructureError,
     )
@@ -4391,7 +4553,7 @@ function main(): void {
         try {
           writeFileSync(resolve(ROOT, file), patched)
           const marker = failures.length
-          stayedGreen = assertAmbiguousHandoffPropIsGone()
+          stayedGreen = assertHandoffCallersPassNoIdentity() && assertAmbiguousHandoffPropIsGone()
           while (failures.length > marker) failures.pop()
         } finally {
           writeFileSync(resolve(ROOT, file), before)
@@ -4409,27 +4571,27 @@ function main(): void {
       }
     }
 
-    // S6. SPECIFICITY FOR W2/W3. The `isa/page.tsx` caller passes `user.id`
-    //     DIRECTLY rather than through a local, and reformatting the JSX
-    //     attribute must not be enough to trip the resolver. If S6 goes red, W2
-    //     is testing layout rather than id class.
+    // S6. SPECIFICITY FOR W2b. The action's input may grow a NON-identity field
+    //     (a reason, a note) without tripping the identity rule. If S6 goes
+    //     red, W2b is flagging any new field rather than a request-supplied
+    //     identity.
     {
-      const file = "app/dashboard/isa/page.tsx"
+      const file = W27_ACTION
       const before = raw(file)
       const beforeSha = sha(file)
       const patched = before.replace(
-        "            assignedToUserId={user.id}",
-        "            assignedToUserId={ user.id }",
+        "export async function claimHandoffAction(input: {\n  qualificationId: string\n})",
+        "export async function claimHandoffAction(input: {\n  qualificationId: string\n  claimNote?: string\n})",
       )
       let stayedGreen = false
       if (patched === before) {
-        console.log("  ✗ SPECIFICITY CONTROL S6 reformatted prop expression — PATCH DID NOT APPLY")
-        failures.push("specificity control did not apply: reformatted prop expression")
+        console.log("  ✗ SPECIFICITY CONTROL S6 non-identity input field — PATCH DID NOT APPLY")
+        failures.push("specificity control did not apply: non-identity input field")
       } else {
         try {
           writeFileSync(resolve(ROOT, file), patched)
           const marker = failures.length
-          stayedGreen = assertHandoffCallersPassUsersId()
+          stayedGreen = assertHandoffCallersPassNoIdentity()
           while (failures.length > marker) failures.pop()
         } finally {
           writeFileSync(resolve(ROOT, file), before)
@@ -4439,10 +4601,10 @@ function main(): void {
           }
         }
         if (stayedGreen) {
-          console.log("  ✓ SPECIFICITY CONTROL S6 the prop expression reformatted — stayed GREEN (W2/W3 resolve the expression, they do not match a layout)")
+          console.log("  ✓ SPECIFICITY CONTROL S6 a non-identity field on the action's input — stayed GREEN (W2b flags request-supplied identities, not new fields)")
         } else {
-          console.log("  ✗ SPECIFICITY CONTROL S6 — went RED; W2/W3 are whitespace tests")
-          failures.push("W2/W3 specificity control went red: the check is layout-sensitive")
+          console.log("  ✗ SPECIFICITY CONTROL S6 — went RED; W2b is flagging every new input field")
+          failures.push("W2b specificity control went red: the check is not scoped to identity fields")
         }
       }
     }
