@@ -12,7 +12,7 @@ import { revalidatePath } from "next/cache"
 // act-as.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
-import { CONNECTOR_PROVIDERS, domainsForScope, candidateProvider } from "@/lib/connections/scope"
+import { selectableConnectionsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 
 export type PlatformCredential = {
@@ -48,13 +48,19 @@ export type ProviderOverride = {
 }
 
 /** The providers a BROKERAGE may connect, derived from the Connection OS.
- *  Deliberately computed, never restated — see upsertPlatformCredential. */
+ *  Deliberately computed, never restated — see upsertPlatformCredential.
+ *
+ *  ONE VOCABULARY (§6, wave 26): this used to walk domainsForScope() and index
+ *  CONNECTOR_PROVIDERS by hand, which is the entire body of
+ *  `selectableConnectionsForScope` (lib/connections/scope.ts:157) — the function
+ *  that module's own comment calls "the UI source of truth" for a scope. Two
+ *  computations of one answer, and the comment above already claimed the answer
+ *  was never restated while restating it. Flattened from the survivor now, so a
+ *  domain or provider added there cannot be admitted by one and refused by the
+ *  other. */
 function BROKERAGE_CONNECTABLE_PROVIDERS(): string[] {
-  const out = new Set<string>()
-  for (const domain of domainsForScope("brokerage")) {
-    for (const p of CONNECTOR_PROVIDERS[domain]) out.add(p)
-  }
-  return [...out].sort()
+  const byDomain = selectableConnectionsForScope("brokerage")
+  return [...new Set(Object.values(byDomain).flat())].sort()
 }
 
 /** Roles allowed to see or change a brokerage's provider credentials.

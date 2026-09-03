@@ -15,7 +15,7 @@ import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
 import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_NOT_CONFIGURED } from "@/lib/integrations/integration-status"
-import { encryptSecret } from "@/lib/security/secret-crypto"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 export type CrmProvider = "gohighlevel" | "lofty" | "followupboss"
 const CRM_PROVIDERS: CrmProvider[] = ["gohighlevel", "lofty", "followupboss"]
@@ -94,6 +94,27 @@ export async function connectCrmAction(params: {
   // connector-probe.ts:247) and produce a signed request that 401s at the
   // provider instead of an honest "not connected" here.
   const rawSecret = params.apiSecret?.trim()
+
+  // FAIL CLOSED (CLAUDE.md §4) — the half secret-crypto.ts:12-13 says a caller
+  // must supply and nobody had. `encryptSecret` is a DELIBERATE no-op with no
+  // SECRETS_ENCRYPTION_KEY, so that a missing key never blocks a write; that is
+  // right for the api_key-only path and WRONG here. With no key this line stored
+  // the operator's provider SECRET as plaintext into
+  // agent_api_credentials.api_secret / integration_credentials.api_secret and
+  // reported success — "nobody checked" rendering as "checked and fine".
+  //
+  // Scoped to the NEW-SECRET branch ONLY. Most CRMs (Follow Up Boss, Lofty,
+  // GoHighLevel) issue a single key and have no second half, and refusing that
+  // path would break every connect and contradict the module's fail-safe design.
+  if (rawSecret && !isEncryptionConfigured()) {
+    return {
+      ok: false,
+      error:
+        "Secret storage is not configured on this deployment, so the API secret cannot be stored safely. " +
+        "Connect with the API key alone, or ask an administrator to configure secret encryption first.",
+    }
+  }
+
   const apiSecret = rawSecret ? encryptSecret(rawSecret) : null
 
   if (member.agentScoped) {

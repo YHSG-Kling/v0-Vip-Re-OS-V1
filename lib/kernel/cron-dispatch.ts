@@ -249,6 +249,24 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
   { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
   { path: "/api/cron/task-overdue"                        , schedule: "20 * * * *" }, // TASK_OVERDUE had live notification_rules and no emitter (wave 26)
+  // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
+  // Each was reachable only from its own simulator; the capability had never run
+  // against a live tenant. Cadence is chosen from what each one WATCHES.
+  //
+  // Wire fraud is the one that cannot wait: a spoofed wire is a same-day,
+  // irreversible loss, so the sentinel ticks four times an hour on free minutes.
+  { path: "/api/cron/wire-fraud-sentinel"                 , schedule: "4,19,34,49 * * * *" },
+  // Pre-offer property red flags — a buyer's target list changes over days, and
+  // the runner spends an AI call per flagged property, so six-hourly + capped.
+  { path: "/api/cron/deal-killer-radar"                   , schedule: "40 */6 * * *" },
+  // Agent workload is a daily-grain fact; the output is a gated rebalance
+  // recommendation a broker reads once a day.
+  { path: "/api/cron/capacity-guardian"                   , schedule: "50 6 * * *" },
+  // The cross-lane "about to be dropped" digest — one gated card per tenant per day.
+  { path: "/api/cron/nothing-dropped-sweep"               , schedule: "8 13 * * *" },
+  // Move-up choreography: turns on a listing stage + close date, so six-hourly
+  // catches a morning stage change without waiting for tomorrow.
+  { path: "/api/cron/dual-transaction-timing"             , schedule: "28 */6 * * *" },
   // Offer expiry — the unattended door for PENDING → EXPIRED. `markOfferExpired`
   // is session-gated by design, so without this nothing ever expired an offer
   // whose `offers.response_deadline` had passed. Offset from deadline-watcher.

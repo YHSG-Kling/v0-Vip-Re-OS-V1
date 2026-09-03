@@ -9,6 +9,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 
 export async function GET(request: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -31,10 +32,17 @@ export async function GET(request: NextRequest) {
   try {
     const supabase = createServiceClient()
 
+    // ONE VOCABULARY (§6). This filter was the hand-rolled `["under_contract"]`
+    // that lib/transactions/transaction-status.ts:26-29 exists to retire: the
+    // deal ladder is under_contract → pending → clear_to_close, and a deal that
+    // has cleared its contingencies still has documents arriving right up to
+    // funding. Filtering on the first rung alone silently stopped syncing every
+    // loop the moment the deal progressed — the two later states did not exist
+    // when this line was written.
     const { data: transactions, error: txError } = await supabase
       .from("transactions")
       .select("id, external_provider_transaction_id, buyer_contact_id, seller_contact_id")
-      .in("status", ["under_contract"])
+      .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
       .eq("external_provider_source", "dotloop")
       .not("external_provider_transaction_id", "is", null)
 

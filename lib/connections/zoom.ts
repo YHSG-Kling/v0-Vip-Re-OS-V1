@@ -462,7 +462,13 @@ export async function readScopedZoom(
   ownerId: string,
 ): Promise<ScopedZoomStatus> {
   const offering = ZOOM_OFFERINGS[scope]
-  const cred = offering.status === "connectable"
+  // ONE VOCABULARY (§6, wave 26): this line hand-rolled
+  // `offering.status === "connectable"`, which is the entire body of
+  // `isZoomOffered` (line 124) — the predicate declared 340 lines above for
+  // exactly this question and reached by nothing. Two spellings of "is Zoom
+  // connectable at this scope" cannot be found from one another, and a change to
+  // the offering vocabulary would have had to be made in both.
+  const cred = isZoomOffered(scope)
     ? await loadScopedZoomCredential(svc, scope, ownerId)
     : null
   return {

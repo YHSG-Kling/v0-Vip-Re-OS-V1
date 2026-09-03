@@ -9,6 +9,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { DEADLINE_STATUSES } from "@/lib/transactions/coordination-status"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ============================================
@@ -36,8 +37,14 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 const TRANSACTION_TASK_PRIORITIES = ["critical", "high", "medium", "low"] as const
 type TransactionTaskPriority = (typeof TRANSACTION_TASK_PRIORITIES)[number]
 
-/** The live `transaction_deadlines_status_check` vocabulary (pg_constraint). */
-const TRANSACTION_DEADLINE_STATUSES = ["pending", "completed", "extended", "missed", "waived"] as const
+// TOMBSTONE (wave 26, CLAUDE.md §6): `TRANSACTION_DEADLINE_STATUSES` was declared
+// here as ["pending","completed","extended","missed","waived"] — BYTE-IDENTICAL to
+// the list that already existed at lib/transactions/coordination-status.ts:49.
+// Two spellings of one vocabulary is a defect, not a style choice: a scorer
+// cannot match a writer across them, and the guard that holds code and database
+// in agreement can only see the one the module exports. SURVIVOR:
+// `DEADLINE_STATUSES` (lib/transactions/coordination-status.ts:49), imported
+// above together with its `isDeadlineStatus` predicate. Do not redeclare it here.
 
 /** The live `transaction_communications_status_check` vocabulary (pg_constraint). */
 const TRANSACTION_COMMUNICATION_STATUSES = ["draft", "sent", "delivered", "failed"] as const
@@ -424,8 +431,10 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
         brokerage_id: scope.brokerageId,
         deadline_type: deadline.task,
         deadline_date: deadlineDate,
-        // 'pending' is in the live transaction_deadlines_status_check vocabulary.
-        status: TRANSACTION_DEADLINE_STATUSES[0],
+        // DEADLINE_STATUSES[0] is 'pending' — the first, open state of the live
+        // transaction_deadlines_status_check vocabulary, taken from the one
+        // module that declares it rather than a local copy.
+        status: DEADLINE_STATUSES[0],
         notes: deadline.reason,
       })
 

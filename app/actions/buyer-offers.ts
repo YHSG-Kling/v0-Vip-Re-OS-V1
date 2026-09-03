@@ -25,6 +25,7 @@ import {
 // disagree about whether this buyer may be making offers at all.
 import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { MAX_PENDING_OFFERS } from "@/lib/offers/multi-offer-rules"
+import { closeStrategyLoopForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 
 // ─── STAFF GATE ───────────────────────────────────────────────────────────────
 // Several exports below are agent-only writes on a buyer's file — creating the
@@ -1125,35 +1126,40 @@ export async function recordOfferOutcome(
   // as success and the caller's optimistic UI shows a status that never landed.
   if (statusError) return { success: false, error: statusError.message }
 
-  // Insert strategy outcome if there's a recommendation
+  // ── CLOSE THE LEARNING LOOP ────────────────────────────────────────────────
+  // MERGED onto the survivor (wave 26, CLAUDE.md §1). This block used to
+  // hand-roll the strategy_outcomes insert, and it was the weaker of the two
+  // copies in three ways the library function already handled:
+  //   · NOT IDEMPOTENT — no (recommendation_id, offer_id) existence check, so a
+  //     repeated outcome filed a duplicate learning row every time;
+  //   · it never moved strategy_recommendations.status to its terminal value; and
+  //   · it never closed the still-open negotiation_strategies row for the offer.
+  // It also discarded the insert's `error` (§3 — a refused write reports as
+  // success). The one thing it did better was the SAME-TENANT filter on the
+  // recommendation read, which was ported onto
+  // lib/strategy-learning/close-strategy-loop.ts:145-156 FIRST, so nothing was
+  // lost in the swap.
+  //
+  // SURVIVOR: lib/strategy-learning/close-strategy-loop.ts:97 closeStrategyLoopForOffer.
+  // Do not reintroduce a second strategy_outcomes writer here.
   if (recommendationId && isValidUUID(recommendationId)) {
-    const { data: rec } = await supabase
-      .from("strategy_recommendations")
-      .select("recommended_price")
-      .eq("id", recommendationId)
-      // Same tenant, or the learning corpus can be written across tenants.
-      .eq("brokerage_id", brokerageId)
-      .maybeSingle()
-
-    // No same-tenant recommendation → do NOT file an outcome against it. Writing
-    // one anyway would attribute this result to a recommendation we could not
-    // read, which is exactly how the learning corpus gets poisoned. The offer
-    // status change above still stands, and the lifecycle transition below still
-    // runs — only the strategy-learning row is withheld.
-    if (rec) {
-      const deviation = finalPrice != null
-        ? Math.abs(finalPrice - Number(rec.recommended_price))
-        : null
-
-      await supabase.from("strategy_outcomes").insert({
-        brokerage_id:               brokerageId,
-        recommendation_id:          recommendationId,
-        offer_id:                   offerId,
-        outcome,
-        final_price:                finalPrice ?? null,
-        deviation_from_recommendation: deviation,
-        notes,
-      })
+    const closed = await closeStrategyLoopForOffer(supabase, {
+      offerId,
+      brokerageId,
+      outcome,
+      finalPrice,
+      notes,
+    })
+    // Read the result rather than assuming it landed: a noop means neither a
+    // same-tenant recommendation nor an open negotiation strategy was reachable,
+    // which is worth seeing in the log. The offer status change above still
+    // stands and the lifecycle transition below still runs either way — only the
+    // strategy-learning rows are withheld.
+    if (closed.noop) {
+      console.warn(
+        `[recordOfferOutcome] strategy loop closed nothing for offer ${offerId} ` +
+        `(recommendation ${recommendationId} not readable in this tenant, and no open negotiation strategy)`,
+      )
     }
   }
 

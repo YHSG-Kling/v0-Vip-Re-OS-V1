@@ -48,7 +48,7 @@ import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { requiresAgentRow } from "./tenant-provisioning-spec"
+import { requiresAgentRow, requiresOnboardingRow, ownerNeedsTeamRow } from "./tenant-provisioning-spec"
 import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
 // Runtime-safe both ways: seat-usage imports only TYPES from this module
@@ -501,8 +501,13 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
     missing.push("transaction_coordinators")
   }
   // Onboarding is agent-scoped (agent_id NOT NULL) — expected exactly when an
-  // agents row is expected.
-  if (requiresAgentRow(userType as UserDomainRole, tier) && !onboardingData) {
+  // agents row is expected. ONE VOCABULARY (§6, wave 26): asked through
+  // `requiresOnboardingRow` (tenant-provisioning-spec.ts:31), the predicate
+  // declared for THIS question, rather than through the agents-row predicate
+  // plus a comment explaining that the two coincide. They coincide today because
+  // agent_onboarding.agent_id is NOT NULL; if that ever stops being true, the
+  // spec module is the one place that has to change.
+  if (requiresOnboardingRow(userType as UserDomainRole, tier) && !onboardingData) {
     missing.push("agent_onboarding")
   }
 
@@ -1038,7 +1043,11 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   // 4. Team tier → the team must exist (team = team_lead + teams row) so invited
   //    agents can be attached. Idempotent: reuse the brokerage's first live team.
   let teamId: string | null = null
-  if (tier === "team") {
+  // ONE VOCABULARY (§6, wave 26): `ownerNeedsTeamRow(tier)`
+  // (tenant-provisioning-spec.ts:36) is the declared answer to "does this tier
+  // require a teams row"; the inline `tier === "team"` was a second copy of it
+  // sitting in the provisioning path the spec module exists to describe.
+  if (ownerNeedsTeamRow(tier)) {
     const { data: existingTeam } = await service
       .from("teams").select("id").eq("brokerage_id", brokerageId).is("deleted_at", null)
       .order("created_at", { ascending: true }).limit(1).maybeSingle()

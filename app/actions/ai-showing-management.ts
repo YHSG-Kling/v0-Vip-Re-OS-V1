@@ -99,27 +99,30 @@ export async function getTours(
   }
 }
 
-export async function createTour(params: { agentId: string; tourDate: string; notes?: string }) {
-  try {
-    const supabase = await createClient()
-    const { data, error } = await supabase
-      .from("tours")
-      .insert({
-        agent_id: params.agentId,
-        tour_date: params.tourDate,
-        notes: params.notes || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
-        status: "planned",
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    revalidatePath("/dashboard")
-    return { success: true, tour: data }
-  } catch (error) {
-    return handleError(error, "createTour")
-  }
-}
+// TOMBSTONE (wave 26, merge-then-delete under CLAUDE.md §1): `createTour` was
+// REMOVED as a duplicate. SURVIVOR: app/actions/tour-planner.ts:249
+// createTourPlan, which is already the wired creator — the tour surface
+// (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:13)
+// imports the tour-planner family, and lib/workflow/adapters/schedule-tour.ts:50
+// is the workflow-side creator on the same table.
+//
+// This wrapper was not merely thinner, it was UNSAFE, and wiring it (which is
+// what the wave-26 orphan worklist proposed) would have been a product
+// regression on three counts:
+//   · it took `agentId` as a PARAMETER on a "use server" export — every export
+//     of such a file is a public HTTP endpoint, and §4 is explicit that the
+//     tenant/actor comes from the SESSION, never a parameter;
+//   · it wrote NO brokerage_id, though tours.brokerage_id exists and every
+//     reader filters on it — the row would have been untenanted; and
+//   · it bypassed the FINANCIAL-VERIFICATION GATE. createTourPlan refuses to
+//     create a tour for a buyer with no verified buyer_financial_profiles row
+//     (tour-planner.ts:288-300, "Previously this gate was UI-only"), and that
+//     refusal is the product ruling, not a nicety.
+// The survivor additionally resolves the caller's agents.id from agents.user_id
+// (the disjoint-id-space rule, §3 — the exact bug scripts/doc-kernel-simulator.ts
+// records as "the createTour bug class"), verifies contact ownership, and
+// creates the tour_stops. Nothing this held is missing there: `notes` is already
+// a CreateTourParams field. Do not reintroduce a second tours writer here.
 
 export async function updateTour(tourId: string, updates: any) {
   try {

@@ -13,6 +13,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
+import { isIntegrationConnected } from "@/lib/integrations/integration-status"
 import type { IntegrationStatus } from "@/lib/integrations/integration-status"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -124,12 +125,19 @@ export async function getIntegrationStatus(
 
     // Calculate required completion
     // Required: Twilio (sms) + SendGrid (email) + (DocuSign OR DotLoop) (esign)
-    const smsConnected = providers.some(p => p.providerType === "sms" && p.status === "connected")
-    const emailConnected = providers.some(p => p.providerType === "email" && p.status === "connected")
-    const esignConnected = providers.some(p => p.providerType === "esign" && p.status === "connected")
-    
+    // ONE VOCABULARY (§6, wave 26). These four were hand-rolled
+    // `p.status === "connected"` comparisons; `isIntegrationConnected`
+    // (lib/integrations/integration-status.ts:39) is the declared predicate for
+    // exactly this, and its module header names the trap it exists to stop:
+    // "The value 'active' was never one of these." A fifth spelling appearing
+    // anywhere would make an unusable provider read as ready and let onboarding
+    // report itself complete.
+    const smsConnected = providers.some(p => p.providerType === "sms" && isIntegrationConnected(p.status))
+    const emailConnected = providers.some(p => p.providerType === "email" && isIntegrationConnected(p.status))
+    const esignConnected = providers.some(p => p.providerType === "esign" && isIntegrationConnected(p.status))
+
     const requiredComplete = smsConnected && emailConnected && esignConnected
-    const connectedCount = providers.filter(p => p.status === "connected").length
+    const connectedCount = providers.filter(p => isIntegrationConnected(p.status)).length
     const totalRequired = 3 // SMS + Email + E-Sign
 
     return {

@@ -3,6 +3,7 @@ import { Badge } from '@/components/ui/badge'
 import { ShieldCheck, ShieldAlert, Clock, HelpCircle } from 'lucide-react'
 import {
   summarizeReconciliations,
+  isVerifiable,
   TRUTH_SOURCES,
   type OutcomeChannel,
   type ReconciliationVerdict,
@@ -154,11 +155,21 @@ export async function OutcomeProofPanel({ brokerageId }: OutcomeProofPanelProps)
             How each lane is proven
           </p>
           <div className="flex flex-wrap gap-1.5">
+            {/* ONE VOCABULARY (§6, wave 26): "can this lane be proven at all" is
+                `isVerifiable` (lib/outcomes/reconciliation.ts:163) — the exact
+                predicate this line used to inline as `?? 'no proof source'`.
+                Asking it by name also lets the unprovable lanes READ as
+                unprovable rather than as an ordinary badge with odd text, which
+                is what the comment above actually asks for. */}
             {(Object.keys(TRUTH_SOURCES) as OutcomeChannel[]).map((ch) => (
-              <Badge key={ch} variant="outline" className="text-xs font-normal">
+              <Badge
+                key={ch}
+                variant={isVerifiable(ch) ? 'outline' : 'secondary'}
+                className="text-xs font-normal"
+              >
                 {CHANNEL_LABEL[ch]}:{' '}
                 <span className="ml-1 text-muted-foreground">
-                  {TRUTH_SOURCES[ch].source ?? 'no proof source'}
+                  {isVerifiable(ch) ? TRUTH_SOURCES[ch].source : 'no proof source — cannot be verified'}
                 </span>
               </Badge>
             ))}

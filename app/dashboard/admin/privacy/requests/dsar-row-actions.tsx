@@ -25,10 +25,11 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select"
-import { BadgeCheck, Download, Ban, Loader2 } from "lucide-react"
+import { BadgeCheck, Download, Ban, Eraser, Loader2 } from "lucide-react"
 import {
   verifyDSARIdentityAction,
   fulfillExportRequestAction,
+  fulfillDeleteRequestAction,
   denyDSARRequestAction,
   type DSARIdentityMethod,
 } from "@/app/actions/privacy/data-subject-requests"
@@ -43,6 +44,13 @@ const IDENTITY_METHODS: Array<{ value: DSARIdentityMethod; label: string; hint: 
 // The request types fulfillExportRequestAction will answer. delete / opt_out_*
 // route to their own fulfillment action, so the button is not offered for them.
 const EXPORTABLE = new Set(["export", "access", "portability", "correction"])
+// ERASURE — the fourth capability. The header above said "the three fulfillment
+// capabilities existed as server actions with no caller"; there were FOUR, and
+// fulfillDeleteRequestAction (data-subject-requests.ts:553) was the one still
+// without a surface. A brokerage could watch the 45-day CCPA clock run out on a
+// deletion request with no way to answer it from the product. 'delete' is the
+// live request_type CHECK value (scripts/check-vocabularies.ts).
+const ERASABLE = new Set(["delete"])
 const OPEN_STATUSES = new Set(["received", "in_progress"])
 
 export interface DSARRowActionsProps {
@@ -67,6 +75,9 @@ export function DSARRowActions({
   const [denying, setDenying] = useState(false)
 
   const [exporting, setExporting] = useState(false)
+
+  const [eraseOpen, setEraseOpen] = useState(false)
+  const [erasing, setErasing] = useState(false)
 
   const isOpen = OPEN_STATUSES.has(status)
 
@@ -120,6 +131,31 @@ export function DSARRowActions({
     }
   }
 
+  async function handleErase() {
+    setErasing(true)
+    try {
+      const res = await fulfillDeleteRequestAction(requestId)
+      // Read the verdict before claiming anything. The server refuses an
+      // unverified erasure (data-subject-requests.ts:565) and refuses another
+      // tenant's request outright; a silent close here would report a deletion
+      // that never happened on a record with a legal clock on it.
+      if (!res.ok) {
+        toast.error(res.error ?? "Could not complete the erasure")
+        return
+      }
+      const n = res.contactsAnonymized ?? 0
+      toast.success(
+        `${n} contact record(s) anonymized. Transaction records retained per state real-estate retention rules.`,
+      )
+      setEraseOpen(false)
+      router.refresh()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not complete the erasure")
+    } finally {
+      setErasing(false)
+    }
+  }
+
   async function handleDeny() {
     setDenying(true)
     try {
@@ -152,6 +188,13 @@ export function DSARRowActions({
         <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={handleExport} disabled={exporting}>
           {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
           Export
+        </Button>
+      )}
+
+      {identityVerified && ERASABLE.has(requestType) && (
+        <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={() => setEraseOpen(true)}>
+          <Eraser className="h-3.5 w-3.5" />
+          Erase
         </Button>
       )}
 
@@ -225,6 +268,30 @@ export function DSARRowActions({
             >
               {denying && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               Record denial
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Erase (right to be forgotten) ────────────────────────────────── */}
+      <Dialog open={eraseOpen} onOpenChange={setEraseOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Erase {subjectEmail}&apos;s personal data</DialogTitle>
+            <DialogDescription>
+              This anonymizes the contact record in place — names, email, phones,
+              address, demographics, financial bands and enrichment data are
+              redacted per CCPA §1798.105 / GDPR Art. 17. It cannot be undone.
+              Transaction records are retained for NAR and state real-estate
+              retention rules (3&ndash;7 years post-close); only the personal data
+              is removed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setEraseOpen(false)}>Cancel</Button>
+            <Button size="sm" variant="destructive" onClick={handleErase} disabled={erasing} className="gap-1.5">
+              {erasing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              Erase permanently
             </Button>
           </DialogFooter>
         </DialogContent>

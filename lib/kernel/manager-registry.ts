@@ -909,6 +909,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   agent_scorecard:            { manager: "deal_coordinator", proof: "test:agent-scorecard", what: "Per-agent production + deal health + education completion + recruiting ROI (agent-scorecard.ts) — agent-management view" },
   mobile_approval_push:       { manager: "campaign_orchestrator", proof: "test:mobile-approval", what: "Two-tier approval push: agent (front line) on every pending approval, manager escalation at 4h (approval latency is the egress's critical path)" },
   nothing_dropped_sweep:      { manager: "campaign_orchestrator", proof: "test:nothing-dropped", what: "THE NOTHING-DROPPED SWEEP — the LIVE-DATA proof of the core promise (nothing falls through the cracks), and the antidote to the agent/team/broker anxiety 'what am I forgetting / about to lose?'. The per-entity safety nets (stale-contact monitor, lead ghost detection, deadline watcher, approval office-hours) each work ONE lane; NOTHING unifies them. This composes the awaiting states across entities — pending showings, proposed approvals, open inter-manager signals, never-first-touched leads (leads stay AI-ISA owned) — into ONE ranked card: everything past its SLA with no next action, worst-first. Pure findDroppingBalls (past-SLA AND no-next-action) + severity = overdue × criticality (an untouched OFFER outranks a stale lead); summarizeSweep caps the card. runNothingDroppedSweep is READ-ONLY (a sweep never writes; opt-in to escalate a gated digest). Contacts + transactions excluded — their dedicated monitors own them. The live-data complement to the governance egress_coverage_audit" },
+  dual_transaction_timing:    { manager: "listing_concierge", proof: "test:dual-transaction-timing", what: "DUAL-TRANSACTION TIMING — the MOVE-UP choreography. A client who is selling AND buying is two deals with one calendar, and the two halves were stewarded by different managers with nothing holding them to the same clock: the Listing Concierge worked the sale, the Shopping Agent worked the search, and neither owned the ORDER. That is how a client closes the sale with nowhere to go, or writes an offer they cannot fund until their own sale closes. planDualTransactionTiming is the pure play-picker over the seller stage (listing_active | under_contract | closing_soon | sold), the days to the sale close, and whether the buyer is actively touring or already holds an offer; coordinateDualTransaction gathers those facts from the real rows and publishes the coordination on the inter-manager bus with the from/to the play itself names, so the two sides act in one order instead of two. Only signals actually present decide: a contact with no live listing is not dual yet and produces silence, never a fabricated play. Idempotent per (contact, play) inside 14 days, so the six-hourly sweep re-times a stage change without re-announcing one. Owned by listing_concierge because the SELLER SIDE GATES THE WHOLE PLAY — the runner returns early without a live listing — and because MANAGER_COLLABORATIONS.listing_demand_bridge already catalogues this exact bus signal as the listing_concierge x shopping_agent edge. Trigger: /api/cron/dual-transaction-timing (wave 26; before that the runner had no caller anywhere in the tree and the choreography had never run)" },
   journey_conformance:        { manager: "data_steward", proof: "test:journey-conformance", what: "JOURNEY-CONFORMANCE MONITOR — the LIVE-DATA proof that the AI team provably FOLLOWS its own constitutional business process (JOURNEY_PROGRESS_CONTRACT): the live-data sibling of egress_coverage_audit (which only proves governance COVERAGE). Today the legal-transition map (BUYER_LIFECYCLE_STATES.allowedFrom) + the financial-verification HARD GATE are enforced only by CONVENTION (validateStateTransition validates, callers must honor it; admin overrides skip it) — NOTHING audits after the fact that an entity's ACTUAL transition history obeyed the contract. Pure checkJourneyConformance REPLAYS a transition history (from lifecycle_events from/to) against the legal order + gated states: an illegal STAGE SKIP (to not reachable from from) and a BYPASSED HARD GATE (reached a gated state without first passing BUYER_FINANCIALLY_VERIFIED) are violations; an authorized OVERRIDE is a logged exception (counted for visibility, never a violation — its ABSENCE on an illegal move IS the violation). Does NOT re-implement the state machine (legal map + gated states passed in from the canonical definitions); violations escalate via manager_signals to the broker. The go-to-market trust proof for shipping autonomous agents" },
   egress_coverage_audit:      { manager: "data_steward", proof: "test:egress-coverage", what: "Meta-audit: every burn domain's proof is runnable, every manager owns something, no dangling/orphan ownership — the governance graph stays whole" },
   seller_update_video:        { manager: "listing_concierge", proof: "test:seller-update-video", what: "Weekly seller-update D-ID avatar video proposed into the client-message gate (no HeyGen)" },
@@ -2100,6 +2101,11 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   // decks off booked buyer_consultation appointments. Buyer journey ⇒
   // shopping_agent (the same ruling that gave it tours and the offer lane).
   "/api/cron/buyer-consultation-prep": "shopping_agent",
+  // Pre-offer red flags on a BUYER's target property (wave 26) — same owner as
+  // MAINTENANCE_DOMAINS.deal_killer_radar. Deliberately NOT deal_coordinator:
+  // there is no deal yet, and the runner's own note says looping in the TC
+  // before an offer exists would be noise.
+  "/api/cron/deal-killer-radar": "shopping_agent",
   // ── Listing Concierge — the seller side ──
   "/api/cron/listing-health-scan": "listing_concierge",
   "/api/cron/listing-presentation-prep": "listing_concierge",
@@ -2116,11 +2122,22 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/showing-prep": "listing_concierge",
   "/api/cron/open-house-followup": "listing_concierge",
   "/api/cron/open-house-reminder": "listing_concierge",
+  // Move-up choreography (wave 26). The play is GATED BY THE SELLER SIDE — the
+  // runner returns early unless the contact has a live listing
+  // (dual-transaction-timing-runner.ts:36) — and MANAGER_COLLABORATIONS
+  // .listing_demand_bridge already catalogues the dual_transaction_timing bus
+  // signal as the listing_concierge ↔ shopping_agent edge. The seller side owns
+  // the schedule; the signal itself still routes to whichever pair the play names.
+  "/api/cron/dual-transaction-timing": "listing_concierge",
   // ── Deal Coordinator — under contract → close ──
   "/api/cron/deal-health-scan": "deal_coordinator",
   "/api/deal-health/cron": "deal_coordinator",
   "/api/cron/deadline-watcher": "deal_coordinator",
   "/api/cron/task-overdue": "deal_coordinator",
+  // The Deal Coordinator stands guard at the wire window (wave 26) — same owner
+  // as MAINTENANCE_DOMAINS.wire_fraud_sentinel, so the domain and the schedule
+  // that drives it cannot end up accountable to two different managers.
+  "/api/cron/wire-fraud-sentinel": "deal_coordinator",
   "/api/cron/contingency-scan": "deal_coordinator",
   "/api/cron/closing-orchestration": "deal_coordinator",
   "/api/cron/closing-watchtower": "deal_coordinator",
@@ -2154,6 +2171,11 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/publish-newsletters": "campaign_orchestrator",
   "/api/fatigue/cron": "campaign_orchestrator",
   "/api/fatigue/calculate": "campaign_orchestrator",
+  // The cross-lane "about to be dropped" digest (wave 26) — same owner as
+  // MAINTENANCE_DOMAINS.nothing_dropped_sweep. It unifies the lanes the
+  // per-entity monitors each work alone; contacts and transactions stay with
+  // stale-contact-monitor and deadline-watcher.
+  "/api/cron/nothing-dropped-sweep": "campaign_orchestrator",
   "/api/cron/consent-recovery": "compliance_officer",
   // ── Marketing Agent — content, publishing, farming, attribution ──
   "/api/cron/marketing-agent-weekly": "marketing_agent",
@@ -2204,6 +2226,10 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/competitor-ads-exa": "ads_manager",
   "/api/cron/content-intel-scan": "ads_manager", // competitor/keyword content intelligence — same lane as the ads scan
   // ── Recruiting Manager — talent in, talent kept, talent developed ──
+  // Capacity Guardian (wave 26) — same owner as MAINTENANCE_DOMAINS
+  // .capacity_guardian, which already reasons that agent management is this
+  // manager's, so no new ManagerKey was invented for it.
+  "/api/cron/capacity-guardian": "recruiting_manager",
   "/api/cron/recruit-outreach": "recruiting_manager",
   "/api/cron/agent-coaching": "recruiting_manager",
   "/api/cron/education-delivery": "recruiting_manager",

@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentId, requireAgentId } from "@/lib/kernel/agent-identity"
 
 // System callers (e.g. the daily lifetime-touchpoints cron) have no user session,
 // so they pass the owning agentId + a service-role client; UI callers pass neither
@@ -321,8 +321,11 @@ export async function calculateEngagementScore(contactId: string) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+  // ONE VOCABULARY (§6) — the second verbatim copy of requireAgentId
+  // (lib/kernel/agent-identity.ts:113). Merged onto the survivor; the message it
+  // throws also tells the caller what to do about it ("Please complete
+  // onboarding") instead of only naming the absence.
+  const agentId = await requireAgentId(supabase, user.id)
   // client_engagement_scores.brokerage_id is NOT NULL — resolve from the agent.
   const { data: agentRow } = await supabase
     .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()

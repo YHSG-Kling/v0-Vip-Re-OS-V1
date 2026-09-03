@@ -75,7 +75,7 @@ import {
   assignVendorToTransactionAction,
   updateVendorBookingStatusAction,
 } from "@/app/actions/vendors-kernel"
-import { recordVendorInsuranceAction } from "@/app/actions/vendor-verification"
+import { recordVendorInsuranceAction, submitVendorForVerification } from "@/app/actions/vendor-verification"
 import {
   readVendorInsurance,
   type InsurancePosture,
@@ -289,6 +289,19 @@ export function VendorDirectoryClient({
   const [insUrl, setInsUrl] = useState("")
   const [insuranceError, setInsuranceError] = useState("")
   const [insuranceNotice, setInsuranceNotice] = useState("")
+
+  // Submit-for-verification state (submitVendorForVerification). THE APPROVAL
+  // QUEUE HAD NO PRODUCER: app/dashboard/admin/vendor-approvals/approval-client.tsx
+  // lists status='pending' vendors and approves/rejects them, but
+  // submitVendorForVerification (app/actions/vendor-verification.ts:25) is the
+  // ONLY writer of status='pending' + ai_verification_score, and it had no
+  // caller anywhere in the tree — so that queue could only ever be empty. This
+  // is the producer. Broker/admin only; the action enforces that itself and
+  // THROWS on refusal, so the handler reads the thrown message rather than a
+  // result union.
+  const [verifyVendorId, setVerifyVendorId] = useState<string | null>(null)
+  const [verifyNotice, setVerifyNotice] = useState<string>("")
+  const [verifyError, setVerifyError] = useState<string>("")
 
   // Assign to Listing dialog state (assignVendorToListingAction)
   const [listingDialogOpen, setListingDialogOpen] = useState(false)
@@ -537,6 +550,32 @@ export function VendorDirectoryClient({
     setInsuranceError("")
     setInsuranceNotice("")
     setInsuranceDialogOpen(true)
+  }
+
+  const handleSubmitForVerification = (vendor: Vendor) => {
+    setVerifyVendorId(vendor.id)
+    setVerifyNotice("")
+    setVerifyError("")
+    startTransition(async () => {
+      try {
+        const result = await submitVendorForVerification(vendor.id)
+        // The server's own verdict, from the row it scored and staged.
+        setVerifyNotice(
+          `${vendor.name}: score ${result.score} — ${result.recommendation}. ` +
+          `Staged as ${result.status.toUpperCase()} and now waiting in the vendor approvals queue.`,
+        )
+        // No local row mutation: this directory's Vendor shape carries no
+        // `status` field and renders none, so there is nothing here to move.
+        // The queue at /dashboard/admin/vendor-approvals reads the staged row.
+      } catch (e) {
+        // submitVendorForVerification throws rather than returning a union:
+        // "Not authorized — vendor approval is broker/admin only", "Vendor not
+        // found in your brokerage", or the PostgREST message. Show its words.
+        setVerifyError(e instanceof Error ? e.message : "Could not submit this vendor for verification")
+      } finally {
+        setVerifyVendorId(null)
+      }
+    })
   }
 
   const handleRecordInsurance = () => {
@@ -1107,6 +1146,27 @@ export function VendorDirectoryClient({
             </div>
           )}
 
+          {/* Submit-for-verification verdict. The server's own words, either way:
+              the score + recommendation it computed, or the reason it refused
+              (not an admin, vendor outside your brokerage). Never a local
+              guess. */}
+          {(verifyNotice || verifyError) && (
+            <div
+              className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                verifyError ? "border-destructive/40 bg-destructive/10 text-destructive" : "bg-muted/40 text-muted-foreground"
+              }`}
+            >
+              <span>{verifyError || verifyNotice}</span>
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => { setVerifyNotice(""); setVerifyError("") }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Vendor Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {vendors.map((vendor) => {
@@ -1218,6 +1278,16 @@ export function VendorDirectoryClient({
                       title="Record this vendor's certificate of insurance — carrier, policy, limit and expiry"
                     >
                       Insurance
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleSubmitForVerification(vendor)}
+                      disabled={isPending && verifyVendorId === vendor.id}
+                      className="bg-transparent"
+                      title="Score this vendor's application and stage it as PENDING for broker approval — it then appears in the vendor approvals queue"
+                    >
+                      {isPending && verifyVendorId === vendor.id ? "Submitting…" : "Submit for verification"}
                     </Button>
                     <Button
                       size="sm"

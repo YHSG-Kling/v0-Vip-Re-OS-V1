@@ -1,6 +1,7 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
+import { DEADLINE_STATUSES, isDeadlineStatus } from "@/lib/transactions/coordination-status"
 import * as TransactionService from "@/lib/application/transactions"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -522,6 +523,24 @@ export async function updateDeadline(
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   if (!isValidUUID(deadlineId)) return { success: false, error: "Invalid deadline ID" }
+
+  // VOCABULARY GATE (wave 26). `status` arrives here as free text on a
+  // "use server" export — a public HTTP endpoint — and
+  // lib/application/transactions.ts:1101 passes it straight into
+  // transaction_deadlines.status, which is CHECK-constrained. An unadmitted
+  // value therefore reached the database and came back as a raw constraint
+  // error naming none of the valid states. Validated against the ONE canonical
+  // list (lib/transactions/coordination-status.ts:49), the same shape
+  // updateListingStatus already uses for listings.status, so the two cannot
+  // drift. `completeDeadline` below writes 'completed' as a literal and is
+  // unaffected.
+  if (updates.status !== undefined && !isDeadlineStatus(updates.status)) {
+    return {
+      success: false,
+      error: `'${String(updates.status)}' is not a deadline status. Valid: ${DEADLINE_STATUSES.join(", ")}`,
+    }
+  }
+
   return TransactionService.updateDeadline(deadlineId, updates)
 }
 

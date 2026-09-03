@@ -30,6 +30,7 @@ import {
   markFinanciallyVerified,
   connectBuyerToLender,
   getBrokerageLenders,
+  loadMortgageBrokers,
 } from "@/app/actions/buyer-financial"
 
 type FinanceType = "conventional" | "fha" | "va" | "cash" | "other"
@@ -64,6 +65,15 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
 
   // Lender intro — userId-based
   const [lenders, setLenders] = useState<LenderUser[]>([])
+  // The agent's OUTSIDE mortgage-broker referral partners. A DIFFERENT
+  // population from `lenders` above: getBrokerageLenders reads in-house
+  // users with user_type='lender', while loadMortgageBrokers
+  // (app/actions/buyer-financial.ts:508) reads referral_partners with
+  // partner_type='mortgage_broker', scoped to the SESSION's agent. Wired in wave
+  // 26 — it had no caller, so an agent's own broker partners were never shown
+  // anywhere in the product.
+  const [brokerPartners, setBrokerPartners] = useState<Array<{ id: string; partner_name: string | null; company_name: string | null; phone: string | null; email: string | null }>>([])
+  const [brokerPartnersNote, setBrokerPartnersNote] = useState<string | null>(null)
   const [selectedLenderId, setSelectedLenderId] = useState<string>("")
   const [lenderIntroOpen, setLenderIntroOpen] = useState(false)
   const [lenderIntroText, setLenderIntroText] = useState("")
@@ -74,9 +84,10 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
   async function load() {
     setLoading(true)
     try {
-      const [profileResult, lendersResult] = await Promise.all([
+      const [profileResult, lendersResult, brokersResult] = await Promise.all([
         loadFinancialProfile({ contactId }),
         getBrokerageLenders(),
+        loadMortgageBrokers(),
       ])
       if (profileResult.success && profileResult.profile) {
         setProfile(profileResult.profile)
@@ -103,6 +114,16 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
       }
       if (lendersResult.success) {
         setLenders(lendersResult.lenders ?? [])
+      }
+      // Read the verdict. This action refuses with a REASON for a seat that has
+      // no agent profile (referrals are kept per agent), and showing that reason
+      // is more honest than rendering an empty list as "you have no partners".
+      if (brokersResult.success) {
+        setBrokerPartners(brokersResult.partners ?? [])
+        setBrokerPartnersNote(null)
+      } else {
+        setBrokerPartners([])
+        setBrokerPartnersNote(brokersResult.error ?? null)
       }
     } finally {
       setLoading(false)
@@ -425,6 +446,34 @@ ${agentName ?? "[Agent Name]"}`
                   <Mail className="h-3.5 w-3.5" />
                   Draft Introduction
                 </Button>
+
+                {/* YOUR MORTGAGE-BROKER PARTNERS — read-only on purpose.
+                    referral_partners.id is a DIFFERENT ID CLASS from the
+                    users.id the picker above selects (§3): connectBuyerToLender
+                    takes `lenderUserId`, so folding these into that <Select>
+                    would send a referral_partners id where a users id is
+                    expected and match nothing. They are shown as contact details
+                    the agent acts on directly. */}
+                {(brokerPartners.length > 0 || brokerPartnersNote) && (
+                  <div className="pt-2 mt-1 border-t border-blue-200 space-y-1">
+                    <p className="text-xs font-medium text-blue-800">Your mortgage-broker partners</p>
+                    {brokerPartnersNote ? (
+                      <p className="text-xs text-blue-600">{brokerPartnersNote}</p>
+                    ) : (
+                      brokerPartners.map((b) => (
+                        <div key={b.id} className="text-xs text-blue-700">
+                          <span className="font-medium">{b.partner_name ?? "Unnamed partner"}</span>
+                          {b.company_name && <span className="text-blue-600"> · {b.company_name}</span>}
+                          {(b.phone || b.email) && (
+                            <span className="text-blue-600">
+                              {" — "}{[b.phone, b.email].filter(Boolean).join(" · ")}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}

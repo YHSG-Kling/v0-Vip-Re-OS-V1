@@ -117,6 +117,14 @@ export enum KernelEvent {
   // ── Compliance ────────────────────────────────────────────────────────────
   COMPLIANCE_VIOLATION      = 'compliance_violation',
   AUTHORITY_BLOCKED         = 'authority_blocked',
+  // The Wire-Fraud Sentinel's verdict on a wire-instructions document. Emitted
+  // ONLY by /api/cron/wire-fraud-sentinel, and only on a warn/block verdict —
+  // the escalation itself (CRITICAL agent notification + Deal-Coordinator bus
+  // signal) is done by runWireFraudSentinel; this row is the audit trail AND the
+  // cron's cross-run idempotency key (dedupe_key `wire_fraud:<documentId>`),
+  // which is why it is queried back with no time bound rather than relying on
+  // emitKernelEvent's short dedupe window.
+  WIRE_FRAUD_RISK_DETECTED  = 'wire_fraud_risk_detected',
 
   // ── Lead Acquisition (Track A — Lead-first) ───────────────────────────────
   LEAD_CAPTURED                  = 'lead_captured',

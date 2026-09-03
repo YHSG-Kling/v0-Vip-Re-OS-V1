@@ -3,10 +3,13 @@
 import { createServerClient } from "@/lib/supabase/server"
 // TOMBSTONE (dead-import tranche): `agentIdForUser` (lib/agents/agent-for-user.ts:13)
 // was imported here and never called. Survivor: `resolveAgentId`
-// (lib/kernel/agent-identity.ts:43), imported below and used at the one site that
-// needs the users.id → agents.id bridge. The two run the identical query; the
-// survivor is the safer one (`.order().limit(1)` rather than `.maybeSingle()`,
-// which ERRORS when a user has more than one agents row).
+// (lib/kernel/agent-identity.ts:43), which runs the identical query and is the
+// safer one (`.order().limit(1)` rather than `.maybeSingle()`, which ERRORS when
+// a user has more than one agents row).
+// UPDATE (wave 26): this file no longer calls `resolveAgentId` directly either —
+// its one site needed the agent profile to EXIST, so it now uses
+// `requireAgentId` (lib/kernel/agent-identity.ts:113), the throwing wrapper over
+// that same resolver, instead of re-implementing the throw inline (§6).
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { logVideoGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
@@ -17,7 +20,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 // (lib/marketing/video-provider-resolver.ts, called from
 // app/actions/video/create-video-project.ts:669) and the AI provider is chosen
 // inside `generateAIResponse` (lib/ai). Nothing was lost.
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { requireAgentId } from "@/lib/kernel/agent-identity"
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported and never called. This file's lifecycle emission goes through
 // `logVideoGenerated` (lib/events/event-helpers.ts:145 → logEventAndTrigger:29,
@@ -58,9 +61,12 @@ export async function generateVideoScript(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
-  // Resolve agent ID - never use user.id for agent_id column
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+  // Resolve agent ID - never use user.id for agent_id column.
+  // ONE VOCABULARY (§6): this was `resolveAgentId` + a hand-rolled throw, which
+  // is exactly what requireAgentId (lib/kernel/agent-identity.ts:113) IS. Two
+  // spellings of "the agent profile is required here" existed and neither could
+  // be found from the other; merged onto the survivor.
+  const agentId = await requireAgentId(supabase, user.id)
 
   // ── THE TIER GATE ──────────────────────────────────────────────────────────
   //
@@ -155,7 +161,7 @@ export async function handleVideoGenerated(payload: any) {
   //
   // TENANT — the RECIPIENT's `users.brokerage_id`, the one resolver (see
   // lib/notifications/recipient-tenant.ts). `user_id` here is a users.id; the
-  // `agents.id` this file resolves elsewhere via resolveAgentId is a DISJOINT
+  // `agents.id` this file resolves elsewhere via requireAgentId is a DISJOINT
   // space and is never substituted for it.
   if (user_id) {
     const readyTenant = await resolveRecipientBrokerageId(supabase, user_id)
