@@ -213,9 +213,36 @@ export async function getContactsNeedingLifeChangeCheck(limit = 25): Promise<{ c
  * were both invisible. Tenant from session (§4); rows are the caller's own
  * brokerage only. Read-only — this touches nothing in the orchestrator's
  * scraping-source logic.
+ *
+ * WHAT WAS ASKED AND WHAT CAME BACK (wave 26 lane C5). Two more columns the
+ * queue's writers stamp and nothing read:
+ *   · enrichments_needed — the list the queuer computed (email_append,
+ *     phone_append, life_events, …; lib/enrichment/lead-enrichment-core.ts:282,
+ *     contact-enrichment-core.ts:293/:406). Without it a failure row said
+ *     "skip_trace failed" and never WHICH gap it was trying to close.
+ *   · enrichment_results — the orchestrator's own account of what each lane did
+ *     (lane, person_enrichment: not_applicable | withheld_budget | no_match |
+ *     peopledata, free_osint; lib/lead-pipeline/enrichment-orchestrator.ts:245,
+ *     :371, :393, :429, :672, :824). A 'failed' row still carries the free
+ *     lane's answer, so the pane can say "the paid lookup found no match but
+ *     the OSINT lane did reach X" instead of a bare error string.
+ * Both are selected here and rendered by the Data Health panel
+ * (app/dashboard/admin/data-health/enrichment-backlog-panel.tsx).
  */
+export interface EnrichmentQueueFailureRow {
+  id: string
+  enrichment_type: string | null
+  error_message: string | null
+  retry_count: number | null
+  queued_at: string | null
+  /** What the queuer asked for — lead_enrichment_queue.enrichments_needed (text[]). */
+  enrichments_needed: string[] | null
+  /** What the drain recorded — lead_enrichment_queue.enrichment_results (jsonb). */
+  enrichment_results: Record<string, unknown> | null
+}
+
 export async function getEnrichmentQueueHealth(limit = 10): Promise<{
-  recentFailures: Array<{ id: string; enrichment_type: string | null; error_message: string | null; retry_count: number | null; queued_at: string | null }>
+  recentFailures: EnrichmentQueueFailureRow[]
   spend30d: number
   error?: string
 }> {
@@ -230,7 +257,7 @@ export async function getEnrichmentQueueHealth(limit = 10): Promise<{
   const [failuresRes, costRes] = await Promise.all([
     supabase
       .from("lead_enrichment_queue")
-      .select("id, enrichment_type, error_message, retry_count, queued_at")
+      .select("id, enrichment_type, error_message, retry_count, queued_at, enrichments_needed, enrichment_results")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("status", "failed")
       .order("queued_at", { ascending: false })
@@ -255,7 +282,19 @@ export async function getEnrichmentQueueHealth(limit = 10): Promise<{
     (sum, r: { enrichment_cost: number | null }) => sum + (typeof r.enrichment_cost === "number" ? r.enrichment_cost : 0),
     0,
   )
-  return { recentFailures: failuresRes.data ?? [], spend30d }
+  const recentFailures: EnrichmentQueueFailureRow[] = (failuresRes.data ?? []).map((r: Record<string, unknown>) => ({
+    id: r.id as string,
+    enrichment_type: (r.enrichment_type as string | null) ?? null,
+    error_message: (r.error_message as string | null) ?? null,
+    retry_count: (r.retry_count as number | null) ?? null,
+    queued_at: (r.queued_at as string | null) ?? null,
+    enrichments_needed: Array.isArray(r.enrichments_needed) ? (r.enrichments_needed as string[]) : null,
+    enrichment_results:
+      r.enrichment_results && typeof r.enrichment_results === "object" && !Array.isArray(r.enrichment_results)
+        ? (r.enrichment_results as Record<string, unknown>)
+        : null,
+  }))
+  return { recentFailures, spend30d }
 }
 
 /**

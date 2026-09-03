@@ -457,8 +457,8 @@ export async function archiveListing(listingId: string) {
       listingId,
       // The REAL accountable actor — under staff act-as this is the
       // impersonator, not the impersonated identity.
-      actorUserId: auth.actorUserId ?? null,
-      createdAt:   result.outcome.archivedAt,
+      actorUserId: auth.actorUserId ?? undefined,
+      createdAt:   result.outcome.archivedAt ?? undefined,
       metadata: {
         // The record's own status, READ BACK rather than written. Proof in the
         // audit trail that archiving did not rewrite what the listing was.
@@ -524,7 +524,7 @@ export async function unarchiveListing(listingId: string) {
       event:       KernelEvent.LISTING_UNARCHIVED,
       brokerageId: auth.brokerageId,
       listingId,
-      actorUserId: auth.actorUserId ?? null,
+      actorUserId: auth.actorUserId ?? undefined,
       metadata:    {},
     }).then(() => null, () => null)
 
