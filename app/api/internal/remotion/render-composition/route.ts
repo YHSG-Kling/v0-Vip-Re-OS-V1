@@ -289,18 +289,61 @@ export async function POST(req: NextRequest) {
     //     (ChatGPT browse / Perplexity / Google AI Overviews read the card
     //     since they don't index video). Best-effort: the video already
     //     succeeded, so a thumbnail failure must NOT fail the render.
+    //
+    //     THE COMPANION PASS ASKS THE CONTRACT TOO (2026-09-03). The backstop
+    //     at the top of this handler asks missingContentProps about the MOVING
+    //     composition and nothing asked about the CARD, so the one still this
+    //     route renders on its own initiative was the one still nothing gated.
+    //     resolveThumbnailProps returns undefined when a producer staged no
+    //     thumbnail_props, renderStillToBuffer passes `props ?? {}`, and Remotion
+    //     merges {} over defaultProps — so the card came out as VideoCoverThumb's
+    //     Studio fixture: "Just Listed — 123 Main Street", "$625K · 3 bd · 2 ba ·
+    //     Brickell, FL", "Your Agent", and the sample seoHint. That PNG becomes
+    //     remotion_composition_renders.thumbnail_url, which app/v/[slug] publishes
+    //     as og:image and the player poster — a fabricated address and price as
+    //     the share card of a real client's video, and a fabricated summary handed
+    //     to the AI-search surface the hint exists to win.
+    //     PARTIAL cards were the same defect quieter: the five producers that DO
+    //     stage thumbnail_props (partners-meeting, board-packet-reel,
+    //     deal-room-reel, listing-pitch-reel, go-live-readiness) stage a real
+    //     title/subtitle and NO seoHint, so a Board Packet card printed the
+    //     just-listed sample sentence as its summary line.
+    //     SKIPPED, NEVER FAILED: the video already succeeded and the rule above
+    //     stands — a thumbnail problem must not fail a render. The producer is
+    //     named the missing props so the fix lands where the facts are
+    //     (`seoHint: seoHintFromNarration(<gated script>)`, the move
+    //     render-just-listed already makes).
     let thumbnailUrl: string | null = null
+    let thumbnailSkipped: string | null = null
     if (needsThumbnailPass(composition)) {
+      // The whole pass stays inside ONE try, the contract question included:
+      // the outer handler's catch marks the RENDER failed, and the video has
+      // already succeeded by this line. Nothing about a card may reach it.
       try {
+        const thumbComposition = composition.thumbnail_composition_id!
         const thumbProps = resolveThumbnailProps(row.input_props)
-        const thumbBytes = await renderStillToBuffer(
-          bundleLocation, composition.thumbnail_composition_id!, thumbProps, executablePath, `${row.id}-thumb`,
-        )
-        const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-        thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
-        await svc.from("remotion_composition_renders")
-          .update({ thumbnail_url: thumbnailUrl })
-          .eq("id", row.id)
+        const thumbMissing = missingContentProps(thumbComposition, thumbProps)
+        if (thumbMissing.length > 0) {
+          thumbnailSkipped = contentContractError(thumbMissing)
+          console.warn(
+            `[render-composition] ${row.composition_id} render ${row.id}: companion ${thumbComposition} SKIPPED — `
+            + describeMissingContent(thumbComposition, thumbMissing),
+          )
+        } else {
+          const thumbBytes = await renderStillToBuffer(
+            bundleLocation, thumbComposition, thumbProps, executablePath, `${row.id}-thumb`,
+          )
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+          thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
+          const { error: thumbWriteError } = await svc.from("remotion_composition_renders")
+            .update({ thumbnail_url: thumbnailUrl })
+            .eq("id", row.id)
+          // A refused write leaves the PNG hosted and the row pointing at
+          // nothing, so /v/[slug] publishes no og:image over a card that exists.
+          if (thumbWriteError) {
+            console.warn(`[render-composition] thumbnail_url write REFUSED for render ${row.id} (${thumbWriteError.message}); the card at ${thumbnailUrl} is hosted but unreferenced`)
+          }
+        }
       } catch (e) {
         console.warn("[render-composition] thumbnail pass failed; video kept:", (e as Error).message)
       }
@@ -311,6 +354,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ok: true, render_id: row.id, kind: "video", output_url: result.outputUrl,
       thumbnail_url: thumbnailUrl,
+      ...(thumbnailSkipped ? { thumbnail_skipped: thumbnailSkipped } : {}),
       used_intro_asset_id: result.introAssetId,
       used_outro_asset_id: result.outroAssetId,
       used_music_asset_id: result.musicAssetId,

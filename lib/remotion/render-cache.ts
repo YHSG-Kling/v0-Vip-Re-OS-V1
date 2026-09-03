@@ -279,8 +279,20 @@ export async function loadCacheBoard(
     const econRows = rows.map((r) => {
       const c = comps.get(r.composition_id)
       const outputSeconds = c ? compositionSeconds(c) : 0
+      // composition_id IS THE POINT, not padding. estimateCompositionCost
+      // (lib/remotion/registry.ts) answers "is this composition narrated?" from
+      // the ONE set — consumesVoiceover, lib/remotion/content-contract.ts — and
+      // falls back to the row's `requires_voiceover` MIRROR only when the caller
+      // hands a partial row with no id. This was that caller: it built the row
+      // from four fields and dropped the id it had already used as the map key,
+      // so the cache board alone priced narration off the m168-seeded mirror
+      // while app/actions/composition-library.ts:99 (a whole row) priced it off
+      // the set. One fact, two answers (§6) — and a wrong one here is a wrong
+      // "$ avoided" on the Asset Manager's board. The id is `r.composition_id`
+      // by construction: it is the key that found `c`.
       const estimatedUsd = c
         ? estimateCompositionCost({
+            composition_id: r.composition_id,
             duration_frames: c.duration_frames, fps: c.fps,
             requires_did_avatar: c.requires_did_avatar, requires_voiceover: c.requires_voiceover,
           } as RemotionCompositionRow).totalUsd

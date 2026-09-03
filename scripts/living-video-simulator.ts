@@ -487,8 +487,22 @@ console.log("\n═══ 11. Wiring + ownership ═══")
   ok("the video-ops cron runs the refresh", cron.includes("refreshLivingVideos"))
   ok("it reports the result even when the render queue is empty",
     (cron.match(/living_refresh/g) ?? []).length >= 2)
+  // ORDER IS THE RULE, not the spelling of the predicate. This used to pin the
+  // literal `.eq("render_status", "queued")`; wave 26 replaced that hardcoded
+  // token with the shared PICKABLE_RENDER_STATUS constant (§6 — the queue route,
+  // this cron and render-decision had three copies of one word), and indexOf
+  // returned -1, so `54 < -1` read as "the refresh runs after the drain". The
+  // drain is located by its render_status filter however the value is spelled.
+  const drainAt = cron.search(/\.eq\(\s*["']render_status["']\s*,/)
+  const refreshAt = cron.indexOf("refreshLivingVideos")
+  ok("the drain query is still there to order against",
+    drainAt >= 0 && refreshAt >= 0)
   ok("the refresh runs BEFORE the drain, so a staged replacement is picked up next tick",
-    cron.indexOf("refreshLivingVideos") < cron.indexOf('.eq("render_status", "queued")'))
+    drainAt >= 0 && refreshAt >= 0 && refreshAt < drainAt)
+  // POSITIVE CONTROL — the locator still finds a drain written either way.
+  ok("CONTROL the drain locator matches both the literal and the shared token",
+    /\.eq\(\s*["']render_status["']\s*,/.test('.eq("render_status", "queued")') &&
+    /\.eq\(\s*["']render_status["']\s*,/.test('.eq("render_status", PICKABLE_RENDER_STATUS)'))
   ok("the domain has a declared owner", MAINTENANCE_DOMAINS.living_video?.manager === "asset_manager")
   ok("...and names its runnable proof", MAINTENANCE_DOMAINS.living_video?.proof === "test:living-video")
 }

@@ -1458,9 +1458,29 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
   // registration) — registered, geometry-mirrored, contract-classified, and
   // reachable only through the manual/agent start_render path. Derived, not
   // pinned: whichever registered compositions have no props producer are listed.
+  //
+  // RETARGETED 2026-09-03 (CLAUDE.md §2, "do not pin an assertion to a
+  // WAYPOINT"). The condition used to be `unstaged.length > 0`, i.e. "at least
+  // one registered composition still has no producer" — an assertion that could
+  // only pass WHILE the gap existed and would go red the day somebody closed
+  // it, which is the failure mode where finishing the work breaks the guard.
+  // Its companion `!propsStagers.NoSuchCompositionAtAll` was no control either:
+  // that key is not in REGISTRY, so the record has no such property and the
+  // expression is `!undefined` — true whatever the scanner does.
+  // The RULE that actually holds, and the one the classification rests on, is
+  // that the finder DISCRIMINATES: staging composition A must not register as
+  // staging composition B. Proved on a synthetic source, so it holds whether
+  // `unstaged` is [ListingPresentationSlide], empty, or ten names long — and
+  // the derived list is still PRINTED, which is the measurement (§2: a count
+  // that moves is the finding).
   const unstaged = Object.keys(REGISTRY).filter((id) => propsStagers[id].length === 0).sort()
+  // Fixture kept to ONE identifier on purpose: aliasPattern matches bare
+  // identifiers, so a fixture carrying short locals could collide with a
+  // composition-id constant and make the negative arm lie.
+  const discriminates = compositionsNamedIn(`{ composition_id: "TestimonialReel" }`)
   ok(`the finder can still say NO — ${unstaged.length} registered composition(s) have no\n    props producer at all: ${unstaged.join(", ") || "none"}`,
-    unstaged.length > 0 && !propsStagers.NoSuchCompositionAtAll)
+    discriminates.has("TestimonialReel") && !discriminates.has("CMAReel")
+    && compositionsNamedIn("").size === 0)
 
   // ── (b) THE NARRATION SET, DERIVED BY RUNNING THE CONTRACT ────────────────
   // The promo event vocabulary is the LIVE CHECK on listing_promo_videos.event_type,

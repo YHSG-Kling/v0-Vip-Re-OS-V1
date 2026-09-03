@@ -30,9 +30,14 @@
  *           of the way.
  *
  * Reused (NOT rebuilt) — referenced by ID-string + capability, never hard-deps:
- *   · the 24 registered Remotion compositions (remotion/Root.tsx) — by ID string,
+ *   · every registered Remotion composition (remotion/Root.tsx) — by ID string,
  *     read through lib/remotion/registry getComposition so the registry row is the
- *     source of truth for supports_bookends / requires_did_avatar / requires_voiceover.
+ *     source of truth for supports_bookends / requires_did_avatar. (The count is
+ *     deliberately not written here; a number in prose goes stale on the next
+ *     registration, and scripts/remotion-setup-guard.ts derives it. NOT
+ *     requires_voiceover: that column is a mirror of the content contract's
+ *     VOICEOVER_CONSUMING_COMPOSITIONS and the Director consulted it for nothing
+ *     — see the tombstone at commissionVideo step 2.)
  *   · lib/video/composite-attribution concatIntroOutro (intro+main+outro stitch).
  *   · lib/video/video-qr mintVideoQr + qrDestinationForKind (tracked outro QR).
  *   · lib/kernel/video createVideoProject contract (the ai_video_projects shape).
@@ -861,17 +866,37 @@ export async function commissionVideo(
   // 2. Read the composition's capabilities from the registry (source of truth).
   //    When the row is absent (e.g. EquityReportReel mid-registration by the
   //    sibling agent) we fall back to the FINISH SPEC's bookend decision, so
-  //    the Director never hard-deps any single composition existing yet.
+  //    never hard-deps any single composition existing yet.
+  //
+  // TOMBSTONE (§1.3, 2026-09-03): `requiresVoiceover` DELETED from both this
+  // function and commissionVideoExperiment. It was seeded from
+  // `format.needsAvatar || format.needsCharts`, overwritten from the row's
+  // `requires_voiceover`, and then read by NOTHING — no local, no
+  // video_metadata key, no provider_metadata key (the experiment twin had to
+  // write `void requiresVoiceover` to keep tsc quiet, which is the shape of a
+  // value nobody wants). It was also a read with NO CODE WRITER: the whole tree
+  // writes `remotion_compositions.requires_voiceover` only from migration SQL
+  // (m168's hand-seeded guess, corrected by m601), so this was the Director
+  // consulting a hand-seeded mirror and discarding the answer.
+  //
+  // THE SURVIVOR, which supplies the same fact and is what every live decision
+  // already uses: lib/remotion/content-contract.ts `consumesVoiceover` (does
+  // this composition render <Audio src={voiceoverUrl}>?) and `stagesVoiceover`
+  // (…and do THESE props carry one?). Read by lib/remotion/render-coordinator.ts
+  // and lib/agents/asset-manager-actions.ts to stamp `used_voiceover`; the
+  // column is that set's live mirror (m601), never its source. Nothing was
+  // ported: the deleted variable held no value the survivor lacks.
+  //
+  // If the Director ever needs to know, the call is
+  // `consumesVoiceover(format.compositionId)` — pure, no registry round-trip.
   let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
       requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
     }
   } catch { /* registry read is best-effort — the format flags are the fallback */ }
 
@@ -1328,19 +1353,22 @@ export async function commissionVideoExperiment(
   const finish = finishForVideo(format.compositionId) // same rule as commissionVideo
 
   // 2. Read composition capabilities (registry is source of truth; finish-spec fallback).
+  // TOMBSTONE (2026-09-03): `requiresVoiceover` deleted here too — same read,
+  // same reason. See commissionVideo's tombstone above; the survivor is
+  // lib/remotion/content-contract.ts consumesVoiceover / stagesVoiceover.
+  // This site is the one that PROVED it dead: the value's only remaining use
+  // was the `void requiresVoiceover` on the line after the try, written to
+  // silence the unused-variable error rather than to do anything.
   let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
       requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
     }
   } catch { /* registry read best-effort */ }
-  void requiresVoiceover
 
   // 3. Idempotency — one experiment per (entity, situation kind). Deterministic
   //    experiment_id so a re-run reuses the staged experiment instead of duplicating.

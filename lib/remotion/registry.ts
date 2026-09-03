@@ -199,9 +199,16 @@ export function estimateCompositionCost(
   // WHICH compositions carry that narration is read from the ONE set
   // (consumesVoiceover — lib/remotion/content-contract.ts), not from the row's
   // `requires_voiceover`, which is that set's live mirror (m601). The mirror is
-  // consulted only when a caller hands a PARTIAL row with no composition_id —
-  // lib/remotion/render-cache.ts:282 builds one from four fields — because a
-  // silent 0 there would understate the economics snapshot without saying so.
+  // consulted only when a caller hands a PARTIAL row with no composition_id,
+  // because a silent 0 there would understate the economics snapshot without
+  // saying so. NO LIVE CALLER IS IN THAT STATE as of 2026-09-03: the cache
+  // board used to be (it built a row from four fields and dropped the id it had
+  // already used as its map key) and now passes `composition_id`
+  // (lib/remotion/render-cache.ts loadCacheBoard), and the composition library
+  // passes the whole row (app/actions/composition-library.ts:99). The arm stays
+  // as the fail-safe for the next partial caller — it is the only branch here
+  // that can be reached without an id, and dropping it would answer "not
+  // narrated" for a row that never said.
   // BLIND SPOT, named: narration muxed through the snake `voiceover_url` finish
   // key (the Director's EquityReportReel / MarketUpdateReel / ExplainerAnimReel
   // lane) is TTS spend this estimate does not see; the real ledger is

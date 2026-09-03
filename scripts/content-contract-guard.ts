@@ -946,15 +946,22 @@ console.log("\n═══ 17. seoHint — the producer supplies it, the contract 
     && describeVideoForSearch({ ...gen, agentName: null }) === "Just Listed Reel produced by Harbour & Co..")
 
   // THE PAGE. The reader has to be CALLED from the landing page's metadata for
-  // og:description to change; that wiring is one line in app/v/[slug]/page.tsx.
-  // Reported, not faked: this prints the state it finds and fails nothing on
-  // its own, because the page is outside the lane that built the reader
-  // (2026-09-03) and a red guard here would block every other lane on a
-  // three-line edit. UNRESOLVED until the line reads ✓.
+  // og:description to change. This was ⏭ UNRESOLVED on 2026-09-03 ("writer
+  // built; reader half-wired") because the page was outside the lane that built
+  // the reader. IT IS WIRED NOW, so the report becomes an ASSERTION — the rule,
+  // not the waypoint: the page must SELECT input_props (without the column there
+  // is nothing to read back), hand it to the reader, and publish the result
+  // through the one preference function, so the page and describeVideoForSearch
+  // cannot drift into two orderings (§6).
+  // Comment-stripped source: a tombstone naming these functions is not a call.
   const page = code("app/v/[slug]/page.tsx")
-  const wired = page.includes("describeVideoForSearch(") || page.includes("seoHintFromRenderProps(")
-  if (wired) ok("app/v/[slug]/page.tsx reads the hint back into the page description", true)
-  else console.log("  ⏭  UNRESOLVED — app/v/[slug]/page.tsx:125 still builds its description from seo_description alone;\n     lib/geo/video-landing.ts seoHintFromRenderProps / describeVideoForSearch have no caller until\n     loadPage selects input_props and calls describeVideoForSearch. Writer built; reader half-wired.")
+  ok("app/v/[slug]/page.tsx SELECTS input_props — the column the hint rides on",
+    /\.select\([^)]*\binput_props\b[^)]*\)/.test(page))
+  ok("...reads the hint off the render row and publishes it through the ONE preference\n    function, so og:description prefers the render's gated copy over registry boilerplate",
+    /seoHintFromRenderProps\(\s*render\.input_props\s*\)/.test(page)
+    && /describeVideoForSearch\(\s*\{/.test(page))
+  ok("...and no longer hand-rolls the old inline rule beside it (one ordering, not two)",
+    !/const\s+descBase\s*=/.test(page))
 }
 
 console.log(`\n${"═".repeat(70)}`)

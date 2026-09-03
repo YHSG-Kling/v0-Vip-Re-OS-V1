@@ -22,6 +22,8 @@ import {
   buildBreadcrumbJsonLd,
   serializeJsonLd,
   framesToSeconds,
+  seoHintFromRenderProps,
+  describeVideoForSearch,
 } from "@/lib/geo/video-landing"
 
 export const dynamic = "force-dynamic"
@@ -41,6 +43,11 @@ interface RenderRow {
   output_url:     string | null
   thumbnail_url:  string | null
   published_at:   string | null
+  /** The staged props. Read ONLY for the seoHint the producer cut verbatim from
+   *  the compliance-gated narration (thumbnail_props.seoHint, or the top-level
+   *  key when the render IS a VideoCoverThumb) — never rendered as page copy.
+   *  Null on the ai_video_projects rail, which stages no Remotion props. */
+  input_props:    Record<string, unknown> | null
 }
 
 interface CompositionRow {
@@ -77,7 +84,7 @@ interface PageData {
 async function loadPage(slug: string): Promise<PageData | null> {
   const svc = createServiceClient()
   const { data: r } = await svc.from("remotion_composition_renders")
-    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, output_url, thumbnail_url, published_at")
+    .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, output_url, thumbnail_url, published_at, input_props")
     .eq("public_slug", slug)
     .eq("is_published", true)
     .maybeSingle()
@@ -122,8 +129,29 @@ async function loadPage(slug: string): Promise<PageData | null> {
   }
 
   const title = composition.seo_title || composition.display_name
-  const descBase = composition.seo_description || `${composition.display_name} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
-  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+  // THE SEO HINT, READ BACK (2026-09-03). The producer
+  // (app/api/internal/remotion/render-just-listed/route.ts) cuts `seoHint`
+  // VERBATIM from the narration that already cleared the compliance gate and
+  // files it under input_props.thumbnail_props — the text an AI search engine
+  // reads to describe a video it cannot watch. Until now this page built its
+  // description from the REGISTRY's seo_description alone, which is per
+  // COMPOSITION, not per render: every just-listed reel in the library
+  // published the same generic sentence to the exact surface the GEO work is
+  // trying to win, and the per-render hint had a writer and no reader.
+  // The preference order lives in ONE place (lib/geo/video-landing.ts
+  // describeVideoForSearch), so the page and the guard cannot disagree.
+  const seoHint = seoHintFromRenderProps(render.input_props)
+  const hasRegistryCopy = !!(composition.seo_description && composition.seo_description.trim())
+  const description = describeVideoForSearch({
+    seoHint,
+    seoDescription: composition.seo_description,
+    displayName:    composition.display_name,
+    // Only the GENERIC arm needs the platform name, so the platform_settings
+    // singleton read stays behind the same short-circuit the inline `||` chain
+    // gave it — a hint or registry copy means it is never queried.
+    producerName:   brokerageName ?? (seoHint || hasRegistryCopy ? "" : (await loadProductBrand(svc)).name),
+    agentName,
+  })
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
     brokerageId: render.brokerage_id,
@@ -189,9 +217,17 @@ async function loadProjectPage(
   }
 
   const title = proj.title || `${(proj.video_type ?? "video").replace(/_/g, " ")} reel`
-  const descBase = (proj.script_content && proj.script_content.trim())
-    || `${title} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
-  const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
+  // Same ONE rule as the render rail above (§6). This rail stages no Remotion
+  // input_props, so it has no per-render seoHint — its own gated script IS the
+  // description, and it takes the seoDescription slot.
+  const hasScript = !!(proj.script_content && proj.script_content.trim())
+  const description = describeVideoForSearch({
+    seoHint:        null,
+    seoDescription: proj.script_content,
+    displayName:    title,
+    producerName:   brokerageName ?? (hasScript ? "" : (await loadProductBrand(svc)).name),
+    agentName,
+  })
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
     brokerageId: proj.brokerage_id,
@@ -211,6 +247,9 @@ async function loadProjectPage(
     agent_user_id: projAgentUserId, entity_type: proj.listing_id ? "listing" : null,
     entity_id: proj.listing_id, output_url: proj.video_url, thumbnail_url: proj.thumbnail_url,
     published_at: proj.published_at,
+    // No Remotion props on this rail — seoHintFromRenderProps(null) is null, so
+    // the description above already took the script arm.
+    input_props: null,
   }
 
   return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: proj.id }
