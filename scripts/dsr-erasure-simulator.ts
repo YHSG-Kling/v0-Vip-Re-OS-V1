@@ -102,7 +102,10 @@ async function main() {
   console.log("\n[Layer 2 · the fulfilment action wires the patch]")
   const actionSrc = readFileSync(join(process.cwd(), "app/actions/privacy/data-subject-requests.ts"), "utf8")
   check("fulfillDeleteRequestAction imports contactRedactionPatch",
-    /import\s*\{\s*contactRedactionPatch\s*\}\s*from\s*["']@\/lib\/privacy\/contact-pii-redaction["']/.test(actionSrc))
+    // The import may carry sibling symbols (redactedContactFields joined it in
+    // wave 26 for the post-erasure completeness check); the intent is "the
+    // action imports the canonical patch", not "imports it alone".
+    /import\s*\{[^}]*\bcontactRedactionPatch\b[^}]*\}\s*from\s*["']@\/lib\/privacy\/contact-pii-redaction["']/.test(actionSrc))
   check("the anonymize UPDATE applies contactRedactionPatch (not a hand-written field list)",
     /\.update\(\s*contactRedactionPatch\(/.test(actionSrc))
   check("no stale 5-field object left behind (no literal first_name: audit_hash in the update)",

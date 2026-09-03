@@ -49,11 +49,26 @@ console.log("\n── the guard is wired into every duplicate-prone path ──"
   check("the autonomous chatter/gap path checks cross-path near-dupes before authoring",
     author.includes("hasNearDuplicateModule") && /if \(await hasNearDuplicateModule\([^)]*\)\) continue/.test(author))
 
+  // The manual kernel path. generateAIEducation was merged onto
+  // createEducationalResource (wave 26 — it wrote a placeholder body, and the
+  // real model path already reached the survivor); the survivor now carries the
+  // AI-draft branch (isAiGenerated → pending_review) BEHIND the same dedup. The
+  // checks read the survivor's FUNCTION BODY, not the whole file, so the
+  // tombstone that names the deleted function can never count as a call site
+  // (CLAUDE.md §2 — a tombstone is not a call site).
   const kernel = src("lib/kernel/education.ts")
-  check("the manual generateAIEducation returns the existing module instead of a duplicate",
-    (kernel.match(/findNearDuplicateModule/g) ?? []).length >= 2)
+  const bodyStart = kernel.indexOf("export async function createEducationalResource")
+  const bodyEnd = bodyStart >= 0 ? kernel.indexOf("\nexport ", bodyStart + 1) : -1
+  const survivorBody = bodyStart >= 0 ? kernel.slice(bodyStart, bodyEnd > bodyStart ? bodyEnd : undefined) : ""
+  // POSITIVE CONTROL: the slice must be the real function, not an empty string
+  // that would make every `.includes` below trivially false and read as a clean miss.
+  check("createEducationalResource is present in the kernel (control for the body slice)",
+    survivorBody.length > 200 && survivorBody.includes(".from(\"learning_modules\")"))
+  check("the manual AI path (isAiGenerated) lands pending_review through the survivor, behind the dedup",
+    survivorBody.includes("isAiGenerated") && survivorBody.includes('"pending_review"') &&
+    survivorBody.includes("is_ai_generated") && survivorBody.indexOf("findNearDuplicateModule") < survivorBody.indexOf(".from(\"learning_modules\")"))
   check("createEducationalResource dedups before publishing",
-    kernel.includes('findNearDuplicateModule(supabase, input.brokerageId, input.title'))
+    survivorBody.includes("findNearDuplicateModule(") && survivorBody.includes("input.title"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

@@ -424,10 +424,20 @@ Respond with ONLY the intent string, nothing else.`,
       // Video Director. Nothing auto-publishes — every reel lands at pending_review. The
       // spoken command IS the human trigger; approvals still happen one-by-one in the
       // Content Studio.
+      //
+      // DETERMINISTIC CONFIRM BEFORE MONEY MOVES. A studio session COMMISSIONS reels
+      // (video renders are spend) on the strength of one model label. The pure
+      // isStudioSessionCommand check is the floor: the transcript must also READ as a
+      // batch request (book/plan/schedule + content/reels + a duration) before the
+      // batch is planned. A label without the words asks for a rephrase — the model
+      // still decides intent; it just cannot spend alone.
+      const { voiceStudioSession, isStudioSessionCommand } = await import("@/lib/voice/studio-session")
       if (!brokerageId) {
         spokenResponse = "I can't book a studio session without a brokerage on your profile."
+      } else if (!isStudioSessionCommand(transcript)) {
+        spokenResponse = "That sounded like a content-calendar request, but I couldn't confirm the batch. Say something like \"book me a week of reels\" or \"plan a month of content\" and I'll stage it for your approval."
+        data = { held: "studio_session_unconfirmed" }
       } else {
-        const { voiceStudioSession } = await import("@/lib/voice/studio-session")
         const r = await voiceStudioSession({ brokerageId, agentUserId: user.id, transcript }, service)
         spokenResponse = r.spoken
         data = {

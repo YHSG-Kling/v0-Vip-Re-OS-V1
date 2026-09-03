@@ -12,6 +12,7 @@ import {
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { ISA_SERVICE_IDENTITY, isaTenantWorkQueue } from "@/lib/ai-isa/isa-acting-scope"
 import { scopeBrokerageId } from "@/lib/kernel/tenant-scope"
+import { resolveStaleThreshold } from "@/lib/ai-isa/reengagement-policy"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -103,11 +104,12 @@ export async function GET(request: NextRequest) {
     if (!brokerageId) continue
     const settings = settingsByBrokerage.get(brokerageId) ?? null
 
-    // Use brokerage-configured threshold or default 14 days
-    const staleDays =
-      typeof settings?.isa_ghost_threshold_days === 'number'
-        ? settings.isa_ghost_threshold_days
-        : 14
+    // Brokerage-configured threshold or the policy default (DEFAULT_STALE_DAYS).
+    // ONE reading of isa_ghost_threshold_days (§6): this and
+    // app/dashboard/stale/actions.ts used to carry their own `typeof === 'number'
+    // ? x : 14` — neither rejected 0 / a negative / NaN, which would have made
+    // every contact stale at once. resolveStaleThreshold does.
+    const staleDays = resolveStaleThreshold(settings?.isa_ghost_threshold_days)
 
     let reengaged = 0
     let skipped = 0

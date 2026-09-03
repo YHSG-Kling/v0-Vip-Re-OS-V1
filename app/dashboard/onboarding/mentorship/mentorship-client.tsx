@@ -9,6 +9,7 @@ import { toast } from "sonner"
 import Link from "next/link"
 import { matchMentor } from "@/app/actions/onboarding/mentorship"
 import { logMentorSession, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
+import { MIN_COHORT, type MentorLift } from "@/lib/recruiting/mentor-lift"
 
 interface MentorData {
   mentorId: string
@@ -30,9 +31,58 @@ interface Props {
   /** Set when the history read was REFUSED. Shown instead of an empty list, so
    *  an outage never renders as "you have never had a session". */
   sessionsError: string | null
+  /** The broker KPI (getMentorLift) — present only when the viewer administers
+   *  the tenant; null for an agent (the action refuses them, by design). */
+  mentorLift?: MentorLift | null
 }
 
-export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions, sessionsError }: Props) {
+function MentorLiftCard({ lift }: { lift: MentorLift }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base">Mentor lift — brokerage KPI</CardTitle>
+        <CardDescription>
+          Newer agents (&lt;2 years) with an active mentor vs. without, on YTD transactions and the latest
+          retention score. Visible to brokerage admins.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Mentored ({lift.mentored.count})</p>
+            <p className="font-medium">{lift.mentored.avgTransactions} avg transactions</p>
+            <p className="text-xs text-muted-foreground">retention {lift.mentored.avgRetention}</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">Unmentored ({lift.unmentored.count})</p>
+            <p className="font-medium">{lift.unmentored.avgTransactions} avg transactions</p>
+            <p className="text-xs text-muted-foreground">retention {lift.unmentored.avgRetention}</p>
+          </div>
+        </div>
+        {lift.hasVerdict ? (
+          <p className="text-sm">
+            Mentored agents average{" "}
+            <span className="font-semibold">
+              {lift.liftTransactionsPct == null ? "—" : `${lift.liftTransactionsPct > 0 ? "+" : ""}${lift.liftTransactionsPct}%`}
+            </span>{" "}
+            transactions and{" "}
+            <span className="font-semibold">
+              {lift.liftRetentionPts == null ? "—" : `${lift.liftRetentionPts > 0 ? "+" : ""}${lift.liftRetentionPts} pts`}
+            </span>{" "}
+            retention vs. unmentored peers.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No verdict yet — each cohort needs at least {MIN_COHORT} newer agents before the comparison means
+            anything. Thin data is never reported as a lift.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions, sessionsError, mentorLift = null }: Props) {
   const [mentor, setMentor] = useState<MentorData | null>(initialMentor)
   const [matching, setMatching] = useState(false)
 
@@ -67,6 +117,8 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions
           </p>
         </div>
       </div>
+
+      {mentorLift && <MentorLiftCard lift={mentorLift} />}
 
       {mentor ? (
         /* Mentor assigned */

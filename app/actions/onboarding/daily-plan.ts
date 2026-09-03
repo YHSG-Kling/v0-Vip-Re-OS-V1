@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import {
-  phaseForDay, journeyProgress, buildDailyActionPlan, fallBehindRisk,
+  PHASES, phaseForDay, journeyProgress, buildDailyActionPlan, fallBehindRisk, isPhaseUnlocked,
   type JourneyStep, type DailyActionPlan, type JourneyProgress, type FallBehindRisk,
 } from "@/lib/kernel/onboarding-journey"
 
@@ -14,6 +14,9 @@ export interface AgentJourney {
   plan: DailyActionPlan | null
   risk: FallBehindRisk
   phaseFocus: string
+  /** Phases still LOCKED by the anti-skip rule (a required step of an earlier
+   *  phase is not done) — empty when the agent may work any phase. */
+  lockedPhases: number[]
 }
 
 /**
@@ -51,7 +54,7 @@ async function requireCaller(): Promise<
  * which is what the card renders as nothing.
  */
 export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJourney> {
-  const empty: AgentJourney = { active: false, progress: null, plan: null, risk: "none", phaseFocus: "" }
+  const empty: AgentJourney = { active: false, progress: null, plan: null, risk: "none", phaseFocus: "", lockedPhases: [] }
   if (!agentId) return empty
   const caller = await requireCaller()
   if (!caller.ok) return empty
@@ -103,7 +106,19 @@ export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJou
     .map((s) => ({ id: s.id, name: s.step_name ?? "Onboarding step", dayNumber: s.day_number ?? 1, required: !!s.required, estimatedMinutes: s.estimated_minutes, instructions: s.instructions }))
   const completed = new Set(((doneRes.data ?? []) as any[]).map((r) => r.step_id))
   const progress = journeyProgress(day, steps, completed)
-  const pendingSteps = steps.filter((s) => !completed.has(s.id))
+  // THE ANTI-SKIP RULE, applied. isPhaseUnlocked was written for exactly this
+  // plan and never called: every pending step, whatever its phase, was eligible
+  // for today's three priorities, so a day-3 agent could be told to write their
+  // first offer (phase 3) while a required phase-1 setup step sat undone. A
+  // step is offered only when its phase is unlocked — every REQUIRED step of
+  // every earlier phase is complete.
+  const unlockedPhase = new Map<number, boolean>(
+    PHASES.map((p) => [p.phase, isPhaseUnlocked(p.phase, steps, completed)]),
+  )
+  const lockedPhases = PHASES.filter((p) => !unlockedPhase.get(p.phase)).map((p) => p.phase)
+  const pendingSteps = steps.filter(
+    (s) => !completed.has(s.id) && (unlockedPhase.get(phaseForDay(s.dayNumber).phase) ?? false),
+  )
   const agentName = (agentRes.data as any)?.users?.first_name ?? null
 
   const plan = buildDailyActionPlan({
@@ -111,5 +126,5 @@ export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJou
     contactsToFollow: (contactsRes as any)?.count ?? 0, activePipeline: (pipelineRes as any)?.count ?? 0,
   })
 
-  return { active: true, progress, plan, risk: fallBehindRisk(day, progress.overallPct), phaseFocus: phaseForDay(day).focus }
+  return { active: true, progress, plan, risk: fallBehindRisk(day, progress.overallPct), phaseFocus: phaseForDay(day).focus, lockedPhases }
 }

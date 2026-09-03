@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { MentorshipClient } from "./mentorship-client"
-import { listMentorSessions, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
+import { listMentorSessions, getMentorLift, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
+import type { MentorLift } from "@/lib/recruiting/mentor-lift"
 
 export const dynamic = "force-dynamic"
 
@@ -82,6 +83,18 @@ export default async function MentorshipPage() {
   const sessions: MentorSessionEntry[] = sessionsRes.ok ? sessionsRes.entries : []
   const sessionsError = sessionsRes.ok ? null : sessionsRes.error
 
+  // THE BROKER KPI — mentored vs unmentored production/retention lift. The
+  // action gates itself (requireCaller + resolveTenantAdmin, tenant from the
+  // session): a plain agent on this page gets the role refusal and no card —
+  // that is the expected outcome, not an error. Anything ELSE (a refused cohort
+  // read) is logged, because a broker shown no card over an outage would read
+  // it as "no verdict yet".
+  const liftRes = await getMentorLift()
+  const mentorLift: MentorLift | null = liftRes.ok ? liftRes.lift : null
+  if (!liftRes.ok && !/brokerage admin/i.test(liftRes.error)) {
+    console.error("[MentorshipPage] mentor lift read refused:", liftRes.error)
+  }
+
   return (
     <MentorshipClient
       agentId={agent.id}
@@ -89,6 +102,7 @@ export default async function MentorshipPage() {
       initialMentor={mentorData}
       sessions={sessions}
       sessionsError={sessionsError}
+      mentorLift={mentorLift}
     />
   )
 }

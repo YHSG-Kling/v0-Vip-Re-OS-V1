@@ -114,6 +114,9 @@ export async function createResourceAction(input: {
   estimatedMinutes: number
   /** @deprecated ignored — the tenant is resolved from the session. */
   brokerageId?: string
+  /** True when the body was written by a model — lands at pending_review for
+   *  admin approval instead of publishing (lib/kernel/education.ts). */
+  isAiGenerated?: boolean
 }) {
   const actor = await resolveActor()
   if (!actor.ok) throw new Error(actor.error)
@@ -128,6 +131,7 @@ export async function createResourceAction(input: {
     estimatedMinutes: input.estimatedMinutes,
     createdBy: actor.userId,
     brokerageId: actor.brokerageId,
+    isAiGenerated: !!input.isAiGenerated,
   })
 }
 

@@ -34,6 +34,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { bestEffort } from "@/lib/db/best-effort"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { CONTACT_STATUSES, canonicalContactStatus } from "@/lib/contact-promotion/qualification"
+import type { ComplianceGate } from "@/lib/voice/tool-registry"
 
 export const runtime = "nodejs"
 
@@ -142,24 +143,48 @@ export async function POST(request: NextRequest) {
     return jsonToolError("Session not found — try ending and re-opening the assistant.")
   }
 
-  // ── Per-intent role gate ───────────────────────────────────────────────
+  // ── GATE FIRST (CLAUDE.md §4) — registry → authority → declared gates → dispatch ──
   // VOICE ACCESS POLICY (owner): expanding the voice SURFACE to more staff
   // roles never widens per-intent permissions — every tool call is checked
   // against the canonical tool-registry authority for the session user's
   // role (agent sessions pass exactly as before; an expanded TC/compliance
   // session only gets the intents its role gates already permit).
+  //
+  // Three fail-open shapes this block used to carry, each closed here:
+  //   1. `if (voiceTools[toolName])` — a tool ABSENT from the registry skipped
+  //      the role gate entirely and went straight to runTool. run_team_command
+  //      (the bridge to every team command) was exactly that. An unregistered
+  //      name is now REFUSED before dispatch; the registry is the door.
+  //   2. `?? "agent"` — a missing or refused `users` read defaulted the caller
+  //      to agent. A role that cannot be read is a role that cannot be gated:
+  //      refuse, and say why.
+  //   3. The registry DECLARES each tool's gates (`gates: [...]`) and nothing
+  //      read them — four handlers re-implemented entity_owner by hand and the
+  //      rest trusted their backend. The IDENTITY gates (entity_owner,
+  //      assigned_party) are resolvable from session + params before the tool
+  //      runs, so they are resolved here, first. The CONTENT gates
+  //      (evaluate_outbound, tcpa_outbound, dnc_check, active_bba, ai_fair_use)
+  //      and service_role need the message/artifact the tool builds, so they
+  //      stay with the backends — named in `deferredToHandler`, never assumed.
   {
-    const { voiceTools, authorityAllows } = await import("@/lib/voice/tool-registry")
-    if (voiceTools[toolName]) {
-      const { data: sessionUser } = await supabase
-        .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
-      const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? "agent"
-      if (!authorityAllows(toolName, sessionUserType)) {
-        return jsonToolError(
-          `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
-        )
-      }
+    const { getVoiceTool, gatesFor, authorityAllows } = await import("@/lib/voice/tool-registry")
+    const tool = getVoiceTool(toolName)
+    if (!tool) {
+      return jsonToolError(`"${toolName.replace(/_/g, " ")}" isn't a registered voice tool, so I can't run it.`)
     }
+    const { data: sessionUser, error: sessionUserErr } = await supabase
+      .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
+    const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? null
+    if (sessionUserErr || !sessionUserType) {
+      return jsonToolError("I couldn't verify your role for that action — try re-opening the assistant.")
+    }
+    if (!authorityAllows(toolName, sessionUserType)) {
+      return jsonToolError(
+        `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
+      )
+    }
+    const preflight = await preflightDeclaredGates(gatesFor(toolName), params, session, supabase)
+    if (!preflight.ok) return jsonToolError(preflight.error)
   }
 
   // ── Dispatch ───────────────────────────────────────────────────────────
@@ -203,6 +228,73 @@ export async function POST(request: NextRequest) {
   // ElevenLabs accepts string or object as the tool response; we return the
   // tool's structured result so the LLM can quote details verbatim.
   return NextResponse.json({ result })
+}
+
+// ─── Declared-gate preflight — the registry's `gates` read BEFORE dispatch ─────
+//
+// Resolves the gates that are a pure function of (session, params) — who the
+// speaker is and whether the tenant / the vendor grant reaches the named row.
+// Every read destructures `error` (§3): a refused lookup is a refusal, not an
+// absent row. An ABSENT target id passes through: the handler owns the
+// "Which buyer?" clarification, and there is nothing to own yet.
+
+type GatePreflight =
+  | { ok: true; deferredToHandler: ComplianceGate[] }
+  | { ok: false; error: string }
+
+async function preflightDeclaredGates(
+  gates: ComplianceGate[],
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<GatePreflight> {
+  const deferredToHandler: ComplianceGate[] = []
+  for (const gate of gates) {
+    switch (gate) {
+      case "entity_owner": {
+        // The session's brokerage must OWN the target row. Contact ids and
+        // listing ids live in different tables — check whichever the params name.
+        const contactId = String(params.contact_id ?? params.buyer_id ?? params.seller_contact_id ?? "").trim()
+        const listingId = String(params.listing_id ?? params.listingId ?? "").trim()
+        if (contactId) {
+          const { data: ct, error } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+          if (error) return { ok: false, error: "I couldn't verify that contact belongs to your brokerage." }
+          if (!ct || (ct as { brokerage_id?: string | null }).brokerage_id !== session.brokerage_id) {
+            return { ok: false, error: "That contact isn't in your brokerage." }
+          }
+        }
+        if (listingId) {
+          const { data: lst, error } = await supabase.from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
+          if (error) return { ok: false, error: "I couldn't verify that listing belongs to your brokerage." }
+          if (!lst || (lst as { brokerage_id?: string | null }).brokerage_id !== session.brokerage_id) {
+            return { ok: false, error: "That listing isn't in your brokerage." }
+          }
+        }
+        break
+      }
+      case "assigned_party": {
+        // A vendor/lender USER reaches a contact only through an ACTIVE,
+        // unexpired vendor_contact_assignment (lib/vendor/assignment-access).
+        // The only assigned_party tool today confirms FINANCIALS, so the
+        // financial scope is required; the handler re-asserts inside the
+        // library call (defence in depth, not a second vocabulary).
+        const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+        if (contactId) {
+          const { assertVendorAssignedToContact } = await import("@/lib/vendor/assignment-access")
+          const check = await assertVendorAssignedToContact(supabase, {
+            vendorUserId: session.user_id,
+            contactId,
+            requiredScopes: ["financial"],
+          })
+          if (!check.ok) return { ok: false, error: check.error ?? "You're not assigned to that contact." }
+        }
+        break
+      }
+      default:
+        deferredToHandler.push(gate)
+    }
+  }
+  return { ok: true, deferredToHandler }
 }
 
 // ─── run_team_command — bridge the voice overlay to the shared team-command router ──

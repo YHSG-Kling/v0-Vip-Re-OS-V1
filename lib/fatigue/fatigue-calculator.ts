@@ -18,10 +18,12 @@ import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { BUYER_ACTIVE_STAGES } from "@/lib/contacts/buyer-stage"
 import { generateText }        from "ai"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { deriveRiskLevel, type FatigueRiskLevel } from "./fatigue-display"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
-export type RiskLevel = "fresh" | "moderate" | "high" | "critical"
+/** ONE vocabulary (§6): the same literal union the display module speaks. */
+export type RiskLevel = FatigueRiskLevel
 
 export interface FatigueFactors {
   total_showings:            number
@@ -42,12 +44,12 @@ export interface FatigueResult {
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-function toRiskLevel(score: number): RiskLevel {
-  if (score >= 75) return "critical"
-  if (score >= 50) return "high"
-  if (score >= 25) return "moderate"
-  return "fresh"
-}
+// TOMBSTONE (§6, wave 26, lane L4): `toRiskLevel` DELETED. It was a byte-identical
+// second spelling of the cut points (critical>=75 / high>=50 / moderate>=25) that
+// lib/fatigue/fatigue-display.ts:deriveRiskLevel already owns — and whose header
+// explicitly claims to MIRROR this file. Two copies of one threshold set is the
+// defect §6 names: a change to one silently desynchronises the badge from the
+// scorer. SURVIVOR: lib/fatigue/fatigue-display.ts:deriveRiskLevel (imported above).
 
 function riskLabel(r: RiskLevel): string {
   return r.charAt(0).toUpperCase() + r.slice(1)
@@ -156,7 +158,7 @@ export async function calculateFatigue(
     (engagementDeclineFactor * 20)
 
   const score     = Math.min(100, Math.round(rawScore))
-  const riskLevel = toRiskLevel(score)
+  const riskLevel = deriveRiskLevel(score)
 
   const factors: FatigueFactors = {
     total_showings:            totalShowings,

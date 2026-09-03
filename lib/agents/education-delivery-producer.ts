@@ -79,10 +79,9 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
-import {
-  getEducationDelivery,
-  type AgeSegment,
-} from "@/lib/kernel/education"
+import type { AgeSegment } from "@/lib/kernel/education"
+import type { EducationFormat } from "@/lib/kernel/types"
+import { isVideoFormat, resolveContactDeliveryFormat } from "@/lib/education/delivery-format"
 import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
 import {
   canDispatchToContact,
@@ -158,8 +157,13 @@ export interface EducationChannelChoice {
   /** Every rail considered and why it lost — so "we sent to portal" is never
    *  indistinguishable from "nothing else was tried" (CLAUDE.md §2). */
   rejected: string[]
-  /** The band's own format preference, carried for the rationale line. */
+  /** The format this contact is DELIVERED — the material's own format kept when the band accepts it,
+   *  the band's preference otherwise (lib/education/delivery-format.ts:resolveContactDeliveryFormat);
+   *  null when no band was measured. Carried for the rationale line. */
   preferredFormat: string | null
+  /** Whether the module is a video-format material (channels carry "video") — the explainer-render
+   *  pipeline's own predicate (isVideoFormat), so the rationale can say "video kept" vs "adapted". */
+  materialIsVideo: boolean
 }
 
 /**
@@ -178,8 +182,17 @@ export function pickEducationChannel(input: {
 }): EducationChannelChoice {
   const order = input.ageSegment ? CHANNEL_ORDER_BY_BAND[input.ageSegment] : CHANNEL_ORDER_UNBANDED
   const rejected: string[] = []
+  // ONE spelling of "what format does this cohort get" (§6). This used to read
+  // the band's primary format straight off DELIVERY_MATRIX, which ignores the
+  // MATERIAL: a lesson authored as a video for an emotional moment was reported
+  // as "prefers checklist" for an older band even when video is that band's
+  // secondary preference. lib/education/delivery-format.ts:resolveContactDeliveryFormat
+  // is the rule — keep the material's format when the cohort accepts it, adapt
+  // only when it does not; unknown band → the material's own format.
+  const materialFormat: EducationFormat = (input.moduleChannels ?? []).includes("video") ? "video" : "guide"
+  const materialIsVideo = isVideoFormat(materialFormat)
   const preferredFormat = input.ageSegment
-    ? getEducationDelivery({ ageSegment: input.ageSegment }).primaryFormat
+    ? resolveContactDeliveryFormat(input.ageSegment, materialFormat)
     : null
 
   for (const channel of order) {
@@ -190,10 +203,10 @@ export function pickEducationChannel(input: {
     if (!gate.allowed) { rejected.push(`${channel}:${gate.reason ?? "no_consent"}`); continue }
     const pref = honorsChannelPreference(input.preferredChannel, channel)
     if (!pref.allowed) { rejected.push(`${channel}:${pref.reason ?? "against_preference"}`); continue }
-    return { channel, ageSegment: input.ageSegment, rejected, preferredFormat }
+    return { channel, ageSegment: input.ageSegment, rejected, preferredFormat, materialIsVideo }
   }
   rejected.push("fell_through_to_portal")
-  return { channel: "portal", ageSegment: input.ageSegment, rejected, preferredFormat }
+  return { channel: "portal", ageSegment: input.ageSegment, rejected, preferredFormat, materialIsVideo }
 }
 
 // TOMBSTONE (wave 16 — the seller-signal education wire). `resolveClientAgeBand`

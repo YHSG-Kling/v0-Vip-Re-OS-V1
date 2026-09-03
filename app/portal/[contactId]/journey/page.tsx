@@ -15,6 +15,7 @@ import { getTaskCompletions, getStageProgress } from "@/app/actions/journey-task
 import { getClientJourneyPreferences } from "@/app/actions/multi-persona"
 import JourneyClient from "./journey-client"
 import JourneyChecklist, { type ChecklistStage } from "./journey-checklist"
+import JourneyPreferencesEditor from "./journey-preferences-editor"
 
 // Which getTaskFormFields() form a persona task gets. The mapping is decided ONCE,
 // here on the server, so the form shape the client renders and the task_type the
@@ -124,6 +125,11 @@ export default async function PortalJourneyPage({
   ])
 
   const prefRows: Array<{ label: string; value: string }> = []
+  // The client's OWN must-haves — editable through saveClientJourneyPreferences
+  // (gated on the contact's portal session; writes only must_have_features).
+  const clientMustHaves: string[] = Array.isArray((journeyPreferences as Record<string, any> | null)?.must_have_features)
+    ? ((journeyPreferences as Record<string, any>).must_have_features as string[])
+    : []
   if (journeyPreferences) {
     const p = journeyPreferences as Record<string, any>
     const money = (n: unknown) =>
@@ -135,8 +141,7 @@ export default async function PortalJourneyPage({
     if (p.bathrooms) prefRows.push({ label: "Bathrooms", value: `${p.bathrooms}+` })
     if (Array.isArray(p.preferred_locations) && p.preferred_locations.length > 0)
       prefRows.push({ label: "Areas", value: p.preferred_locations.join(", ") })
-    if (Array.isArray(p.must_have_features) && p.must_have_features.length > 0)
-      prefRows.push({ label: "Must-haves", value: p.must_have_features.join(", ") })
+    // must_have_features is rendered by the editor island below (the client's own list).
   }
 
   const journeyProgress = calculateJourneyProgress(
@@ -207,6 +212,7 @@ export default async function PortalJourneyPage({
           </dl>
         </div>
       )}
+      <JourneyPreferencesEditor contactId={contactId} initialMustHaves={clientMustHaves} />
       <JourneyChecklist
         contactId={contactId}
         transactionId={transaction?.id ?? null}

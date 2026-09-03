@@ -27,6 +27,28 @@ import { KernelEvent } from "@/lib/kernel/events"
 // write it was never meant to trigger.
 const VALID_KERNEL_EVENTS = new Set<string>(Object.values(KernelEvent))
 
+/**
+ * linkDualJourneys, best-effort. The linker (lib/kernel/dual-intent-linker.ts)
+ * is idempotent and an honest no-op for a single-sided contact; here it must
+ * never throw and never block the concierge fan-out that follows. Its failure
+ * is LOGGED with the contact id — a lost link is a move-up buyer whose Listing
+ * Concierge never wakes, which must not vanish silently.
+ */
+async function linkDualIntentBestEffort(
+  contactId: string,
+  svc: ReturnType<typeof createServiceClient>,
+): Promise<void> {
+  try {
+    const { linkDualJourneys } = await import("@/lib/kernel/dual-intent-linker")
+    const link = await linkDualJourneys(contactId, svc)
+    if (link.linked) {
+      console.log(`[event-reactor] dual-intent link ensured for contact ${contactId} (dependency ${link.dependency?.reason ?? "n/a"})`)
+    }
+  } catch (err) {
+    console.error(`[event-reactor] dual-intent link failed for contact ${contactId} (non-blocking):`, err)
+  }
+}
+
 export interface ReactorResult {
   matched:  number
   enrolled: number
@@ -188,6 +210,15 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // carry contact_type in metadata; read from the row directly.
         const { createServiceClient } = await import("@/lib/supabase/service")
         const svc = createServiceClient()
+        // DUAL-INTENT LINK — BEFORE the fan-out, so the contact_type read below sees
+        // 'both' when this contact genuinely sells AND buys. linkDualJourneys had no
+        // caller: the spine never writes contact_type='both' (motivationToContactType
+        // maps it to buyer), so the Listing Concierge never woke for a move-up buyer
+        // and the portal's dependency banner read a stamp nothing wrote. Idempotent
+        // (upsert on journey_states.user_id, 24h card dedupe), an honest no-op when
+        // only one side has signal; its failure is logged, never thrown — a broken
+        // link must not stop the concierge that was going to spawn anyway.
+        await linkDualIntentBestEffort(params.entityId, svc)
         const { data: c } = await svc
           .from("contacts").select("contact_type").eq("id", params.entityId).maybeSingle()
         const ct = (c?.contact_type as string | null) ?? null
@@ -211,6 +242,9 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         const { data: l } = await svc
           .from("listings").select("seller_contact_id").eq("id", params.entityId).maybeSingle()
         if (l?.seller_contact_id) {
+          // A seller listing appearing is the OTHER half of dual intent — the
+          // seller who is also shopping. Same best-effort link as the contact side.
+          await linkDualIntentBestEffort(l.seller_contact_id as string, svc)
           const { spawnListingConciergeForSeller } = await import("@/lib/agents/listing-concierge")
           await spawnListingConciergeForSeller({ brokerageId: params.brokerageId, contactId: l.seller_contact_id as string })
         }

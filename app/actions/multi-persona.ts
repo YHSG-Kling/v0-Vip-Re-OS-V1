@@ -11,6 +11,7 @@ import {
   DEADLINE_OPEN_STATUSES,
   isMilestoneStatus,
 } from "@/lib/transactions/coordination-status"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
 // Multi-persona file covers brokerage admin, TC, lender, vendor, compliance,
 // team, agent, and client surfaces. Every dashboard read in this file used
@@ -712,17 +713,70 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
   return { success: true, outcomes }
 }
 
+/**
+ * THE client review writer — the portal's "Share your experience" widget
+ * (app/portal/[contactId]/transaction/[transactionId]/client-feedback-widget.tsx).
+ *
+ * GATED ON THE CONTACT'S OWN PORTAL SESSION (§4). This is a `"use server"`
+ * export, i.e. a public endpoint, and it used to take `brokerageId` and
+ * `agentId` straight from the BODY with no session check at all — any signed-in
+ * user could file a review into any brokerage against any agent. The gate is
+ * the portal's shared one, `requireContactAccess`: it resolves whether the
+ * caller IS this contact (linked user id, matching email, or an accepted
+ * unexpired portal invite) or same-tenant staff. A review is authored by the
+ * CLIENT, so `isContactSelf` is required — staff do not write a client's words.
+ *
+ * TENANT AND AGENT FROM THE RECORD, NOT THE BODY: brokerage_id is the gate's
+ * (the contact's row), and the transaction must belong to this contact in that
+ * brokerage — its agent_id is what the review is filed against. `agentId` and
+ * `brokerageId` are kept in the signature for the existing caller and ignored.
+ *
+ * `leadId`, `categories` and `wouldRecommend` have no column on agent_reviews
+ * (scripts/schema-snapshot.ts) and are accepted but not persisted — the same
+ * un-homed inputs the deleted duplicate `submitClientReview` carried (see the
+ * tombstone in the CLIENT REVIEW section below).
+ *
+ * The session client is used deliberately so `agent_reviews_pol` still runs
+ * underneath this check; §3: every read destructures `error`.
+ */
 export async function submitClientFeedback(data: {
   leadId?: string
   contactId?: string
   transactionId: string
-  agentId: string
+  /** @deprecated ignored — the agent is the transaction's agent_id. */
+  agentId?: string
   rating: number
   reviewText: string
   categories: any
   wouldRecommend: boolean
+  /** @deprecated ignored — the tenant is the contact's brokerage. */
   brokerageId?: string
 }) {
+  if (!data.contactId) throw new Error("contactId required")
+  const access = await requireContactAccess(data.contactId)
+  if (!access.ok) throw new Error(access.error)
+  if (!access.isContactSelf) throw new Error("Only the client can submit their own review")
+
+  const rating = Number(data.rating)
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new Error("Rating must be 1–5")
+
+  const svc = createServiceClient()
+  const { data: txn, error: txnErr } = await svc
+    .from("transactions")
+    .select("id, agent_id, brokerage_id, contact_id, buyer_contact_id, seller_contact_id")
+    .eq("id", data.transactionId)
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+  if (txnErr) throw new Error(`Could not verify the transaction: ${txnErr.message}`)
+  const t = txn as {
+    id: string; agent_id: string | null; contact_id: string | null
+    buyer_contact_id: string | null; seller_contact_id: string | null
+  } | null
+  const belongsToContact =
+    !!t && [t.contact_id, t.buyer_contact_id, t.seller_contact_id].includes(data.contactId)
+  if (!t || !belongsToContact) throw new Error("That transaction isn't yours to review")
+  if (!t.agent_id) throw new Error("That transaction has no agent to review")
+
   const supabase = await createClient()
 
   // client_reviews does not exist — use agent_reviews
@@ -732,11 +786,11 @@ export async function submitClientFeedback(data: {
   const { data: review, error } = await supabase
     .from("agent_reviews")
     .insert({
-      brokerage_id: data.brokerageId,
-      agent_id: data.agentId,
+      brokerage_id: access.brokerageId,
+      agent_id: t.agent_id,
       contact_id: data.contactId,
-      transaction_id: data.transactionId,
-      rating: data.rating,
+      transaction_id: t.id,
+      rating,
       review_text: data.reviewText,
       platform: "internal",
       is_published: false,
@@ -991,68 +1045,24 @@ export async function calculateAgentBilling(data: {
 // CLIENT REVIEW FUNCTIONS
 // ============================================
 
-// DELIBERATELY LEFT UNWIRED — SECOND WRITER.
+// TOMBSTONE (§1.1, wave 26, lane L4): `submitClientReview` DELETED.
 //
-//   submitClientReview  ->  app/actions/multi-persona.ts:submitClientFeedback
+//   SURVIVOR: app/actions/multi-persona.ts:submitClientFeedback (above, in the
+//   AUTOMATION section) — the same agent_reviews insert (platform "internal",
+//   is_published=false), WIRED from
+//   app/portal/[contactId]/transaction/[transactionId]/client-feedback-widget.tsx.
 //
-// Same table (agent_reviews), same platform literal ("internal"), same
-// is_published=false, and the survivor is a strict SUPERSET: it also writes
-// `contact_id`, the column that ties a review to the client who left it. It is
-// WIRED, at app/portal/[contactId]/transaction/[transactionId]/client-feedback-widget.tsx:45.
-// agent_reviews already has a second client-side writer besides it
-// (app/actions/portal-lifetime.ts:91, the lifetime testimonial capture).
-//
-// Wiring this one would put a THIRD independent path into the same table with a
-// LESS complete row, so it is not wired. It is NOT deleted either: `leadId`,
-// `reviewCategories`, `wouldRecommend` and `reviewSource` are accepted here and
-// have no column anywhere in agent_reviews, so removing the function would not
-// merely relocate a capability — it would erase the only remaining record that
-// those four inputs were ever meant to be captured. Its schema-truth defects are
-// fixed below so it is not a trap for whoever finishes it:
-//   · brokerage_id is NOT NULL on agent_reviews AND is both halves of the RLS
-//     policy (qual and with_check are `brokerage_id = current_user_brokerage_id()`),
-//     so an omitted/undefined brokerageId made the insert unconditionally fail.
-//     It is now derived from the session, never from the caller's parameter.
-//   · contact_id was never written, so a review could not be traced to its author.
-export async function submitClientReview(data: {
-  leadId?: string
-  contactId?: string
-  transactionId?: string
-  agentId: string
-  rating: number
-  reviewText?: string
-  reviewCategories?: any
-  wouldRecommend?: boolean
-  reviewSource?: string
-  brokerageId?: string
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
-
-  const supabase = await createClient()
-
-  // client_reviews does not exist — use agent_reviews.
-  // TENANT: the session's brokerage wins over the parameter. A caller-supplied
-  // brokerageId is spoofable and the RLS with_check would reject it anyway.
-  const { data: review, error } = await supabase
-    .from("agent_reviews")
-    .insert({
-      brokerage_id: auth.brokerageId,
-      agent_id: data.agentId,
-      contact_id: data.contactId ?? null,
-      transaction_id: data.transactionId,
-      rating: data.rating,
-      review_text: data.reviewText,
-      platform: "internal", // one of the six values agent_reviews_platform_check allows
-      is_published: false,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return review
-}
+// What the survivor was MISSING was ported onto it first, per the doctrine: the
+// duplicate's session gate (the survivor took brokerage_id and agent_id from
+// the request body with no auth at all) — now the portal contact's own session
+// via requireContactAccess + isContactSelf, tenant from the contact row, agent
+// from the verified transaction. Nothing else was portable: `leadId`,
+// `reviewCategories`, `wouldRecommend` and `reviewSource` — the inputs this
+// function accepted — have no column on agent_reviews (scripts/schema-snapshot.ts),
+// so they are recorded HERE as the un-homed capture the widget still collects
+// client-side (categories + wouldRecommend) and the survivor accepts and does
+// not persist. agent_reviews' other client-side writer is
+// app/actions/portal-lifetime.ts (the lifetime testimonial capture).
 
 /**
  * The CLIENT-FACING read of an agent's reputation: PUBLISHED reviews only.
@@ -1115,99 +1125,81 @@ export async function getAgentReviews(agentId: string) {
 // CLIENT JOURNEY PREFERENCES
 // ============================================
 
+/**
+ * The CLIENT's own must-haves — the portal contact tells their agent what a
+ * home has to have. Wired from app/portal/[contactId]/journey (the
+ * "What we're looking for" card's editor island).
+ *
+ * NARROWED ON PURPOSE (wave 26, lane L4). property_interests is ONE ROW PER
+ * CONTACT (unique index uq_property_interests_contact) and the AGENT already
+ * writes it — app/crm/contacts/[contactId]/search/search-client.tsx
+ * handleSaveCriteria upserts min/max price, beds, baths, property_type,
+ * preferred_locations, zip_codes. This writer therefore touches ONLY the
+ * columns the agent's writer does not own: `must_have_features` (the client's
+ * list) and `keywords` (deal-breakers + lifestyle priorities, comma-joined). A
+ * partial upsert leaves the agent's price/beds/areas intact on the same row.
+ *
+ * DROPPED from the earlier, never-wired shape: writing `preferred_locations`
+ * (would have clobbered the agent's areas) and a JSON blob into `notes` (a
+ * prose column the agent's contact page prints verbatim). The inputs that had
+ * no column anywhere — sellingTimeline, sellingMotivation, decisionMakers,
+ * decisionTimeline, preferredContactTimes, frequencyPreference, commute,
+ * schools, niceToHave — are recorded here as un-homed; they need a table before
+ * they can be accepted honestly.
+ *
+ * GATE (§4): requireContactAccess — the contact themself (linked user, matching
+ * email, or an accepted unexpired portal invite) OR same-tenant staff entering
+ * them on the client's behalf. Tenant = the contact row's brokerage, never a
+ * parameter. The write runs on the service client because the boundary IS this
+ * gate (property_interests' tenant policy admits every row in the brokerage,
+ * which is the wrong grain for a client); §3: `error` is read, and the upsert
+ * is `.select()`ed so a silently unmatched write cannot report success.
+ */
 export async function saveClientJourneyPreferences(data: {
-  leadId?: string
-  contactId?: string
-  journeyType: string
+  contactId: string
   mustHaveFeatures?: string[]
-  niceToHaveFeatures?: string[]
   dealBreakers?: string[]
-  preferredNeighborhoods?: string[]
-  commuteConsiderations?: any
-  schoolRequirements?: any
   lifestylePriorities?: string[]
-  sellingTimeline?: string
-  sellingMotivation?: string[]
-  preferredContactMethod?: string[]
-  preferredContactTimes?: any
-  frequencyPreference?: string
-  decisionMakers?: string[]
-  decisionTimeline?: string
-}) {
-  // DELIBERATELY LEFT UNWIRED — SECOND WRITER ON THE SAME ROW.
-  //
-  // property_interests is ONE ROW PER CONTACT (unique index uq_property_interests_contact
-  // on contact_id) and it already has a writer:
-  //
-  //   app/crm/contacts/[contactId]/search/search-client.tsx:422  handleSaveCriteria
-  //
-  // — the AGENT-side "save this buyer's criteria" upsert, which writes
-  // contact_id / brokerage_id / agent_user_id / min_price / max_price / bedrooms /
-  // bathrooms / property_type / preferred_locations / zip_codes onto that same row.
-  // This function writes preferred_locations too, so a client saving journey
-  // preferences would silently overwrite the neighbourhoods the agent had saved,
-  // with no second row to hold both opinions.
-  //
-  // It also JSON.stringify()s a nine-key blob into `notes`, a free-text column the
-  // agent's contact page (app/crm/contacts/[contactId]/page.tsx:88) reads and shows
-  // as prose — so wiring it would print raw JSON into the agent's view of the buyer.
-  //
-  // NOT DELETED: there is no other home in the schema for sellingTimeline /
-  // sellingMotivation / decisionMakers / decisionTimeline / preferredContactTimes,
-  // and this is the only place they are named. The tenant defect is fixed so the
-  // row it would write is at least anchored (see brokerage_id below).
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
+}): Promise<{ success: true; mustHaveFeatures: string[] } | { success: false; error: string }> {
+  if (!data.contactId) return { success: false, error: "contactId required" }
+  const access = await requireContactAccess(data.contactId)
+  if (!access.ok) return { success: false, error: access.error }
 
-  const supabase = await createClient()
+  const clean = (xs: string[] | undefined, max: number) =>
+    Array.from(new Set((xs ?? []).map((s) => String(s).trim()).filter(Boolean))).slice(0, max)
+  const mustHave = clean(data.mustHaveFeatures, 25)
+  const keywords = clean([...(data.dealBreakers ?? []), ...(data.lifestylePriorities ?? [])], 25)
 
-  if (!data.contactId) {
-    return { success: false, error: "contactId required" }
-  }
-
-  // client_journey_preferences does not exist — use property_interests for buyer prefs
-  // property_interests: id, contact_id, property_type, min_price, max_price,
-  // preferred_locations, bedrooms, bathrooms, notes, brokerage_id, agent_user_id,
-  // keywords, zip_codes, must_have_features, max_days_on_market, year_built_min,
-  // search_alert_enabled, alert_frequency, last_search_at, ai_preference_score, updated_at
-  const { data: prefs, error } = await supabase
+  const svc = createServiceClient()
+  const { data: row, error } = await svc
     .from("property_interests")
     .upsert(
       {
         contact_id: data.contactId,
-        // TENANT ANCHOR. Omitting this wrote brokerage_id NULL, and
-        // property_interests_tenant_select is
+        // TENANT ANCHOR — the contact row's brokerage (from the gate). Omitting
+        // this wrote brokerage_id NULL, and property_interests_tenant_select is
         //   (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
         // — an unanchored row is readable by EVERY tenant on the platform.
-        brokerage_id: auth.brokerageId,
-        must_have_features: data.mustHaveFeatures,
-        keywords: [
-          ...(data.dealBreakers || []),
-          ...(data.lifestylePriorities || []),
-        ].join(", "),
-        preferred_locations: data.preferredNeighborhoods,
-        notes: JSON.stringify({
-          journey_type: data.journeyType,
-          commute: data.commuteConsiderations,
-          schools: data.schoolRequirements,
-          contact_method: data.preferredContactMethod,
-          contact_times: data.preferredContactTimes,
-          frequency: data.frequencyPreference,
-          decision_makers: data.decisionMakers,
-          decision_timeline: data.decisionTimeline,
-          selling_timeline: data.sellingTimeline,
-          selling_motivation: data.sellingMotivation,
-          nice_to_have: data.niceToHaveFeatures,
-        }),
+        brokerage_id: access.brokerageId,
+        must_have_features: mustHave,
+        keywords: keywords.join(", "),
         updated_at: new Date().toISOString(),
       },
-      { onConflict: "contact_id" }
+      { onConflict: "contact_id" },
     )
-    .select()
-    .single()
+    .select("id, must_have_features")
+    .maybeSingle()
 
-  if (error) throw error
-  return prefs
+  if (error) return { success: false, error: error.message }
+  if (!row) return { success: false, error: "Preferences were not saved (no row returned)" }
+
+  revalidatePath(`/portal/${data.contactId}/journey`)
+  return {
+    success: true,
+    mustHaveFeatures: Array.isArray((row as { must_have_features?: unknown }).must_have_features)
+      ? ((row as { must_have_features: string[] }).must_have_features)
+      : mustHave,
+  }
 }
 
 /**

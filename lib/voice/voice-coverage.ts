@@ -25,6 +25,11 @@ export const GATE_DELEGATED: Record<string, string> = {
   // The buyer e-sign envelope: BBA is a HARD gate enforced in the handler (refuses dispatch until the
   // BBA is signed) — stronger than a pre-flight content gate.
   dispatch_transaction_packet: "BBA hard gate enforced in the dispatch handler",
+  // The free-text bridge: it never sends itself — parseTeamCommandText resolves the spoken request to
+  // ONE registered command (voice_followup, cut_promo, …) and dispatchTeamCommand runs that command's
+  // own backend, which enforces that command's declared gate. Registering the bridge (so the route's
+  // role gate covers it) must not require a content gate the bridge cannot evaluate before parsing.
+  run_team_command: "free-text bridge — each parsed command dispatches to its registered tool's own backend gate",
 }
 
 export interface VoiceCoverageViolation {

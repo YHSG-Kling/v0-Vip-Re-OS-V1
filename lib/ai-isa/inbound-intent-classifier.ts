@@ -96,11 +96,41 @@ export interface InboundContext {
   hasCma: boolean
 }
 
-/** The injectable classifier seam — AI by default, keyword fallback as the floor. */
+/**
+ * WHO ANSWERED (CLAUDE.md §4 "nobody checked must never render as checked").
+ *
+ * `aiClassifier` used to swallow a model failure (`catch {}`) and return the
+ * keyword floor's verdict with nothing to say so — the router, the activity row
+ * and every caller then read a keyword guess as an AI verdict. The verdict now
+ * carries its PROVENANCE: which layer produced it, and, when it was the floor,
+ * WHY the model did not answer.
+ */
+export type ClassifierSource = "ai" | "keyword_fallback"
+export type ClassifierDegradedReason = "model_unavailable" | "unrecognized_label"
+
+export interface ClassifierVerdict {
+  intent: ClassifiedIntent | null
+  source: ClassifierSource
+  /** Set only when `source === "keyword_fallback"`. */
+  degraded?: ClassifierDegradedReason
+}
+
+/**
+ * The injectable classifier seam — AI by default, keyword fallback as the floor.
+ * A classifier may return a bare `ClassifiedIntent | null` (the simulators'
+ * injected classifiers do); the router tags such a verdict `source: "ai"`, i.e.
+ * "the injected layer answered", exactly as before.
+ */
 export type InboundClassifier = (
   message: string,
   ctx: InboundContext,
-) => Promise<ClassifiedIntent | null> | (ClassifiedIntent | null)
+) =>
+  | Promise<ClassifiedIntent | ClassifierVerdict | null>
+  | (ClassifiedIntent | ClassifierVerdict | null)
+
+function isVerdict(v: ClassifiedIntent | ClassifierVerdict | null): v is ClassifierVerdict {
+  return !!v && typeof v === "object" && "source" in v && "intent" in v
+}
 
 export interface ClassifyAndRouteParams {
   leadId: string
@@ -122,9 +152,16 @@ export interface ClassifyAndRouteResult {
   alreadyConverted?: boolean
   /** Negative intent detected → engagement halted, DNC set. */
   halted?: boolean
-  /** Why we did NOT convert (ambiguous, no lead, negative, …). */
-  reason?: "none" | "negative" | "lead_not_found" | "convert_failed"
+  /** Why we did NOT convert (ambiguous, no lead, negative, …). `degraded_held`
+   *  = the model was down and the keyword floor read only a BARE positive, which
+   *  is too weak to convert on without the model — held, kept nurturing. */
+  reason?: "none" | "negative" | "lead_not_found" | "convert_failed" | "degraded_held"
   error?: string
+  /** Which layer classified this message (absent on the negative halt and the
+   *  lead-not-found skip, where no classifier ran). */
+  classifierSource?: ClassifierSource
+  /** Why the keyword floor answered instead of the model, when it did. */
+  classifierDegraded?: ClassifierDegradedReason
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,11 +303,17 @@ function decodeIntentLabel(label: string): ClassifiedIntent | null {
  *
  * Falls back to keywordIntentFallback when the AI returns an unrecognized label —
  * HONEST CONSERVATISM means an unparseable AI answer never invents a conversion.
+ *
+ * The verdict says WHO answered. The model erroring and the model answering
+ * garbage are different facts (an outage vs. a prompt drift) and both are
+ * distinct from the model answering — the caller decides what the floor may
+ * convert on, and the logs show an outage as an outage instead of a quiet
+ * keyword-driven afternoon.
  */
 async function aiClassifier(
   message: string,
   ctx: InboundContext,
-): Promise<ClassifiedIntent | null> {
+): Promise<ClassifierVerdict> {
   // Negative is detected deterministically BEFORE we ever reach the converters
   // (the live router re-checks too) — but bias the AI to it as well.
   const sideHint =
@@ -320,12 +363,16 @@ Respond with ONLY the label, nothing else.`,
     }
     const label = result.text.trim().toLowerCase().replace(/[^a-z_]/g, "")
     if ((INTENT_ENUM as readonly string[]).includes(label)) {
-      return decodeIntentLabel(label)
+      return { intent: decodeIntentLabel(label), source: "ai" }
     }
-  } catch {
-    // AI unavailable / errored — fall through to the deterministic floor.
+    console.warn(`[inbound-intent] model returned an unrecognized label "${label}" — keyword floor used`)
+    return { intent: keywordIntentFallback(message, ctx.knownSide), source: "keyword_fallback", degraded: "unrecognized_label" }
+  } catch (err) {
+    // AI unavailable / errored — the deterministic floor answers, and the
+    // outage is LOGGED (it used to be swallowed here with no trace at all).
+    console.error("[inbound-intent] model unavailable — keyword floor used:", err instanceof Error ? err.message : err)
+    return { intent: keywordIntentFallback(message, ctx.knownSide), source: "keyword_fallback", degraded: "model_unavailable" }
   }
-  return keywordIntentFallback(message, ctx.knownSide)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,7 +481,22 @@ export async function classifyAndRouteInbound(
   }
 
   // ── Classify (AI by default; keyword fallback as the floor / injectable seam) ─
-  const classified = await classifier(params.message, ctx)
+  const raw = await classifier(params.message, ctx)
+  const verdict: ClassifierVerdict = isVerdict(raw) ? raw : { intent: raw, source: "ai" }
+  const provenance = { classifierSource: verdict.source, classifierDegraded: verdict.degraded }
+
+  // ── FAIL CLOSED ON A DEGRADED BARE POSITIVE (§4) ────────────────────────────
+  // With the model DOWN, the keyword floor still recognises explicit milestone
+  // asks ("what's my home worth", "can I tour 123 Main") — those phrases are what
+  // it was written for and they route below. A bare "ok" / "sure" / "yes" routed
+  // only by knownSide is the weakest signal the floor emits, and converting a
+  // lead on it while nobody checked is exactly the "checked and fine" the rule
+  // forbids. Held instead: nurture touch, provenance recorded, no conversion.
+  const heldForModel =
+    verdict.intent?.reason === "positive_reply" &&
+    verdict.source === "keyword_fallback" &&
+    verdict.degraded === "model_unavailable"
+  const classified = heldForModel ? null : verdict.intent
 
   // AMBIGUOUS / no clear intent → NO conversion. Record a nurture touch, keep nurturing.
   if (!classified) {
@@ -447,13 +509,17 @@ export async function classifyAndRouteInbound(
       entity_id: params.leadId,
       brokerage_id: params.brokerageId,
       activity_type: "ai_isa_inbound_nurture",
-      title: "Inbound reply — no conversion intent",
-      description: "AI ISA classified an inbound reply as ambiguous / no clear conversion intent. Kept nurturing (no conversion).",
+      title: heldForModel ? "Inbound reply — held (classifier degraded)" : "Inbound reply — no conversion intent",
+      description: heldForModel
+        ? "AI ISA classifier was DEGRADED (model unavailable); the keyword floor read only a bare positive reply, which is too weak to convert on without the model. Held — kept nurturing, no conversion. Re-classify when the model is back."
+        : verdict.source === "keyword_fallback"
+          ? `AI ISA classified an inbound reply as ambiguous / no clear conversion intent (keyword floor; model ${verdict.degraded === "model_unavailable" ? "unavailable" : "answered an unrecognized label"}). Kept nurturing (no conversion).`
+          : "AI ISA classified an inbound reply as ambiguous / no clear conversion intent. Kept nurturing (no conversion).",
       status: "completed",
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
     }).then(() => null, () => null)
-    return { outcome: "nurtured", reason: "none" }
+    return { outcome: "nurtured", reason: heldForModel ? "degraded_held" : "none", ...provenance }
   }
 
   // ── RETURNING-CUSTOMER hook ─────────────────────────────────────────────────
@@ -505,13 +571,14 @@ export async function classifyAndRouteInbound(
       // the slot, so we deliberately do NOT fabricate one from an inbound reply.
     })
     if (!res.success) {
-      return { outcome: "skipped", classified, reason: "convert_failed", error: res.error }
+      return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
     }
     return {
       outcome: "converted",
       classified,
       contactId: res.contactId,
       alreadyConverted: res.alreadyConverted,
+      ...provenance,
     }
   }
 
@@ -526,12 +593,13 @@ export async function classifyAndRouteInbound(
     // outcome for a bare inbound reply. The agent enriches on follow-up.
   })
   if (!res.success) {
-    return { outcome: "skipped", classified, reason: "convert_failed", error: res.error }
+    return { outcome: "skipped", classified, reason: "convert_failed", error: res.error, ...provenance }
   }
   return {
     outcome: "converted",
     classified,
     contactId: res.contactId,
     alreadyConverted: res.alreadyConverted,
+    ...provenance,
   }
 }

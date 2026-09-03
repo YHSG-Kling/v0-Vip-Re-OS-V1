@@ -737,6 +737,27 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
     description: "Staff records a buyer's financial verification by voice — 'mark the Hendersons pre-approved for 480k from the pre-approval letter'. For the brokerage's OWN staff (authority 'financial_staff') on THEIR contacts (entity_owner gate) — the agent/TC/compliance path that does NOT require an assigned lender (verifiedBy 'agent', source 'manual'). Flips the financing gate, so the dispatcher requires an explicit spoken confirm first.",
   },
+
+  // ── The free-text bridge — REGISTERED so the route's role gate can see it. ──
+  //    run_team_command was dispatched (tool-call route), registered with
+  //    ElevenLabs (lib/elevenlabs/conv-ai.ts) and mapped speakable
+  //    (lib/voice/command-coverage.ts) but had NO row here — and the route only
+  //    ran authorityAllows for tools it could find in this registry, so the one
+  //    tool that can reach every team command bypassed the per-intent role gate
+  //    entirely. The downstream backends re-check their own guards (broker
+  //    commands, deal decisions); this row gives the bridge the same first gate
+  //    every other tool has. is_outbound because a parsed voice_followup sends —
+  //    gated per parsed command (GATE_DELEGATED in lib/voice/voice-coverage.ts).
+  run_team_command: {
+    name: "run_team_command",
+    category: "stage",
+    authority: "agent",
+    gates: [],
+    is_outbound: true,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Free-text bridge: parseTeamCommandText → dispatchTeamCommand (the same parser + dispatcher as the text command bar). Each parsed command dispatches to its own registered tool's backend, which enforces that tool's gate; ambiguous text asks for a rephrase instead of mis-routing.",
+  },
 }
 
 /**

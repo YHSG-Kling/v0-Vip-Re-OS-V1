@@ -223,8 +223,10 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
         content: aiResult,
         estimatedMinutes: aiMode === 'podcast' ? 10 : aiMode === 'article' || aiMode === 'url' ? 5 : 3,
         brokerageId,
+        // Model-authored → pending_review (an admin approves before it publishes).
+        isAiGenerated: true,
       })
-      toast.success('Saved to education library')
+      toast.success('Saved to the education library — pending admin review before it publishes')
       setAiTopic(''); setAiResult(''); setAiSourceUrl('')
     } catch {
       toast.error('Failed to save')

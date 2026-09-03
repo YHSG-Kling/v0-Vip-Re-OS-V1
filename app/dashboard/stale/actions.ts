@@ -19,6 +19,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { initiateAIISAContactEngagement } from "@/app/actions/ai-isa/initiate-contact-engagement"
 import { toggleContactAIISA } from "@/app/actions/ai-isa/engage-contact"
 import { detectStaleContacts } from "@/lib/ai-isa/stale-contact-detector"
+import { resolveStaleThreshold } from "@/lib/ai-isa/reengagement-policy"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const STALE_LEAD_DAYS = 7
@@ -84,8 +85,10 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
   // The cutoff itself is no longer computed here — detectStaleContacts derives it
   // from staleDays, and applies the LONGER lifetime-customer horizon per contact,
   // which a single hand-computed cutoff could not express.
-  const staleContactDays =
-    typeof settings?.isa_ghost_threshold_days === "number" ? settings.isa_ghost_threshold_days : 14
+  // ONE reading of isa_ghost_threshold_days (§6) — shared with the
+  // stale-contact-monitor cron; rejects 0 / negative / NaN, which the old inline
+  // ternary let through.
+  const staleContactDays = resolveStaleThreshold(settings?.isa_ghost_threshold_days)
 
   // ── 1. Unassigned stale leads (broker-only) ────────────────────────────────
   let unassignedStaleLeads: StaleLeadRow[] = []

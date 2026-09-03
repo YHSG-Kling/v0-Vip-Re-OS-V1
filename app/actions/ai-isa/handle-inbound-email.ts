@@ -201,11 +201,23 @@ export async function processInboundEmail(params: {
         brokerageId: leadForDnc.brokerage_id,
         message: params.body,
       })
+      // PROVENANCE IS PART OF THE REASON. `classifierSource` says which layer
+      // classified (the model, or the keyword floor); `classifierDegraded` says
+      // why the floor answered. A model outage now reads as an outage in the
+      // logs instead of a quietly keyword-driven day, and a conversion carries
+      // who decided it. A degraded bare positive is HELD by the classifier
+      // (outcome 'nurtured', reason 'degraded_held') and falls through to the
+      // normal nurturing reply below — never converted on a guess.
+      if (routed.classifierDegraded) {
+        console.warn(
+          `[handle-inbound-email] intent classifier DEGRADED (${routed.classifierDegraded}) for lead ${params.leadId}: outcome=${routed.outcome} reason=${routed.reason ?? '-'} source=${routed.classifierSource}`,
+        )
+      }
       if (routed.outcome === 'converted') {
         return {
           success: true,
           responded: false,
-          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}`,
+          reason: `intent_converted:${routed.classified?.side}:${routed.classified?.reason}:${routed.classifierSource ?? 'unknown'}`,
           contactId: routed.contactId,
         }
       }

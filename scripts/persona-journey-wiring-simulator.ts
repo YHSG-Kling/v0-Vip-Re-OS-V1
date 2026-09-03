@@ -579,23 +579,64 @@ const CHECKS: Check[] = [
     },
   },
   {
-    id: "mp-review-writer-not-wired",
-    name: "submitClientReview stays UNWIRED — submitClientFeedback is the named, more complete writer",
-    run: () => importersOf("submitClientReview", F.multiPersona).length === 0,
+    // Wave 26 (lane L4): the duplicate was merged onto the survivor and DELETED
+    // (§1 tombstone in multi-persona.ts). What the survivor lacked — the gate —
+    // was ported first: submitClientFeedback used to take brokerage_id AND
+    // agent_id from the request body with no session check. It now gates on the
+    // contact's OWN portal session (requireContactAccess + isContactSelf), takes
+    // the tenant from the contact row and the agent from the verified transaction.
+    id: "mp-review-writer-gated",
+    name: "submitClientReview is deleted; submitClientFeedback (the one writer) gates on the contact's own portal session, tenant + agent from the record",
+    run: () => {
+      const flatSrc = src1(F.multiPersona)
+      const body = functionBody(flatSrc, "submitClientFeedback")
+      return (
+        importersOf("submitClientReview", F.multiPersona).length === 0 &&
+        !/function\s+submitClientReview\s*\(/.test(flatSrc) &&
+        body.length > 0 &&
+        /requireContactAccess\s*\(/.test(body) &&
+        /isContactSelf/.test(body) &&
+        /brokerage_id:\s*access\.brokerageId/.test(body) &&
+        /agent_id:\s*t\.agent_id/.test(body)
+      )
+    },
     breaks: {
-      file: F.teamPage,
-      find: `import { getAgentReviews } from "@/app/actions/multi-persona"`,
-      replace: `import { getAgentReviews, submitClientReview } from "@/app/actions/multi-persona"`,
+      file: F.multiPersona,
+      find: `      brokerage_id: access.brokerageId,
+      agent_id: t.agent_id,`,
+      replace: `      brokerage_id: data.brokerageId,
+      agent_id: t.agent_id,`,
     },
   },
   {
-    id: "mp-prefs-writer-not-wired",
-    name: "saveClientJourneyPreferences stays UNWIRED — property_interests already has handleSaveCriteria",
-    run: () => importersOf("saveClientJourneyPreferences", F.multiPersona).length === 0,
+    // Wave 26 (lane L4): WIRED, NARROWED. property_interests is one row per
+    // contact and the agent's handleSaveCriteria writes price/beds/areas onto
+    // it; the client's writer may touch ONLY must_have_features + keywords
+    // (never preferred_locations, never a JSON blob into notes), through a
+    // partial upsert, and only from the portal journey editor.
+    id: "mp-prefs-writer-narrow",
+    name: "saveClientJourneyPreferences is wired ONLY from the portal journey editor and writes ONLY must_have_features + keywords (never the agent's preferred_locations / notes)",
+    run: () => {
+      const importers = importersOf("saveClientJourneyPreferences", F.multiPersona)
+      const body = functionBody(src1(F.multiPersona), "saveClientJourneyPreferences")
+      return (
+        importers.length === 1 &&
+        importers[0].endsWith("journey/journey-preferences-editor.tsx") &&
+        body.length > 0 &&
+        /requireContactAccess\s*\(/.test(body) &&
+        /must_have_features:/.test(body) &&
+        /onConflict:\s*"contact_id"/.test(body) &&
+        !/preferred_locations/.test(body) &&
+        !/notes:/.test(body)
+      )
+    },
     breaks: {
-      file: F.journeyPage,
-      find: `import { getClientJourneyPreferences } from "@/app/actions/multi-persona"`,
-      replace: `import { getClientJourneyPreferences, saveClientJourneyPreferences } from "@/app/actions/multi-persona"`,
+      file: F.multiPersona,
+      find: `        keywords: keywords.join(", "),
+        updated_at: new Date().toISOString(),`,
+      replace: `        keywords: keywords.join(", "),
+        preferred_locations: [] as string[],
+        updated_at: new Date().toISOString(),`,
     },
   },
   {

@@ -39,6 +39,14 @@ export function twimlConnectRelay(wssUrl: string, welcomeGreeting: string, voice
 }
 
 // ── Companion-side protocol (pure — unit-tested here, executed by the relay) ─
+//
+// NOT AN ORPHAN (wave 26, orphan-export ledger): parseRelayFrame / relaySpeak /
+// relayEnd have no in-app caller BY CONSTRUCTION. The code that executes this
+// protocol is tools/relay-companion/server.mjs (frames at :42-68) — a plain-JS
+// process deployed wherever a WebSocket can be held, which cannot import this
+// TS module. These three are the typed, unit-tested SPEC of that companion
+// (scripts/voice-lane-simulator.ts:178-181); the .mjs is its executable twin.
+// Change one, change both.
 
 export type RelayInbound =
   | { type: "setup"; callSid: string; from: string; to: string }

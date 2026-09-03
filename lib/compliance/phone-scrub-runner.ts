@@ -11,7 +11,10 @@
 
 import "server-only"
 import { callBatchDataMcp } from "@/lib/external/batchdata-mcp"
-import { electScrubbedPhones, electionToColumnPatch, toTenDigits, type ScrubCandidate, type PhoneElection } from "./phone-scrub"
+import {
+  electScrubbedPhones, electionToColumnPatch, toTenDigits, dispositionOf,
+  type ScrubCandidate, type PhoneElection, type PhoneDisposition,
+} from "./phone-scrub"
 
 export { toTenDigits }
 
@@ -21,6 +24,10 @@ export interface PhoneScrubResult {
   election: PhoneElection | null
   /** how many numbers were actually checked against BatchData */
   scrubbed: number
+  /** Per-number verdict in the caller's input order — WHY each line ranked where it did
+   *  (clean / unknown / unreachable / dnc / tcpa_litigator). The election above says what
+   *  was promoted; this says what was found. Empty when nothing was scrubbed. */
+  dispositions: Array<{ number: string; disposition: PhoneDisposition }>
 }
 
 /** Tolerant boolean read across the field names BatchData variants use. null when unparseable. */
@@ -46,13 +53,13 @@ function readFlag(data: unknown, keys: string[]): boolean | null {
  */
 export async function scrubAndElectPhones(numbers: Array<string | null | undefined>): Promise<PhoneScrubResult> {
   const tens = numbers.map((n) => ({ raw: n, ten: toTenDigits(n) })).filter((x) => !!x.raw && !!x.ten) as Array<{ raw: string; ten: string }>
-  if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0 }
+  if (tens.length === 0) return { deferred: false, election: null, scrubbed: 0, dispositions: [] }
 
   const candidates: ScrubCandidate[] = []
   let scrubbed = 0
   for (const { raw, ten } of tens) {
     const dncRes = await callBatchDataMcp<unknown>("check_dnc_status", { phone_number: ten })
-    if (dncRes.unconfigured) return { deferred: true, election: null, scrubbed } // provider off — bail before more calls
+    if (dncRes.unconfigured) return { deferred: true, election: null, scrubbed, dispositions: [] } // provider off — bail before more calls
     const tcpaRes = await callBatchDataMcp<unknown>("check_tcpa_status", { phone_number: ten })
 
     const dnc = dncRes.ok ? readFlag(dncRes.data, ["dnc", "is_dnc", "isDnc", "dnc_status", "onDnc", "listed", "result"]) : null
@@ -62,12 +69,20 @@ export async function scrubAndElectPhones(numbers: Array<string | null | undefin
     candidates.push({ number: raw, dnc, tcpaLitigator, reachable: null })
   }
 
-  return { deferred: false, election: electScrubbedPhones(candidates), scrubbed }
+  // The same pure classifier the election ranks by — reported per number so a
+  // caller (or a log line) can say WHY a line was demoted, not just that it was.
+  const dispositions = candidates.map((c) => ({ number: c.number, disposition: dispositionOf(c) }))
+  return { deferred: false, election: electScrubbedPhones(candidates), scrubbed, dispositions }
 }
 
 /** Convenience: the column patch to merge into a contacts/leads update, or {} when deferred/empty. */
-export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>): Promise<{ patch: Record<string, unknown>; deferred: boolean; reordered: boolean }> {
+export async function scrubPhonesForPatch(numbers: Array<string | null | undefined>): Promise<{
+  patch: Record<string, unknown>
+  deferred: boolean
+  reordered: boolean
+  dispositions: PhoneScrubResult["dispositions"]
+}> {
   const r = await scrubAndElectPhones(numbers)
-  if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false }
-  return { patch: electionToColumnPatch(r.election), deferred: false, reordered: r.election.reordered }
+  if (r.deferred || !r.election) return { patch: {}, deferred: r.deferred, reordered: false, dispositions: r.dispositions }
+  return { patch: electionToColumnPatch(r.election), deferred: false, reordered: r.election.reordered, dispositions: r.dispositions }
 }

@@ -25,7 +25,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createHash } from "node:crypto"
-import { contactRedactionPatch } from "@/lib/privacy/contact-pii-redaction"
+import { contactRedactionPatch, redactedContactFields } from "@/lib/privacy/contact-pii-redaction"
 
 const ALLOWED_FULFILLMENT_ROLES = new Set([
   "broker","broker_admin","admin","superadmin","compliance_officer",
@@ -569,26 +569,67 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
   const email = req.subject_email as string
   const audit_hash = hashForAudit(email)
 
+  // THE ERASURE IS VERIFIED, NOT ASSUMED. The update used to `.select("id")` and
+  // mark the request fulfilled on the ROW COUNT alone — a request was closed as
+  // "anonymized" without anyone reading back whether the PII actually cleared.
+  // The complete PII column set (redactedContactFields — the ONE list the
+  // erasure and its completeness test share) is selected back on every row the
+  // update touched, and any field still carrying a value fails the request
+  // CLOSED: nothing is marked fulfilled, the surviving fields are named.
+  const piiFields = redactedContactFields()
   const { data: anonymized, error: anonErr } = await svc
     .from("contacts")
     .update(contactRedactionPatch(audit_hash, requestId))
     .eq("email", email)
     .eq("brokerage_id", req.brokerage_id)
-    .select("id")
+    .select(["id", ...piiFields].join(","))
   if (anonErr) return { ok: false, error: anonErr.message }
 
-  await svc
+  const rows = (anonymized ?? []) as unknown as Array<Record<string, unknown>>
+  const expectedMarker: Record<string, unknown> = {
+    first_name: audit_hash,
+    last_name:  "[deleted]",
+    email:      `${audit_hash}@deleted.local`,
+  }
+  const survivors: string[] = []
+  for (const row of rows) {
+    for (const field of piiFields) {
+      const v = row[field]
+      const cleared = field in expectedMarker ? v === expectedMarker[field] : v === null || v === undefined
+      if (!cleared) survivors.push(`${row.id}:${field}`)
+    }
+  }
+  if (survivors.length > 0) {
+    return {
+      ok: false,
+      error: `Erasure incomplete — ${survivors.length} PII field(s) still carry a value after the update (${survivors.slice(0, 8).join(", ")}${survivors.length > 8 ? ", …" : ""}). The request was NOT marked fulfilled.`,
+    }
+  }
+
+  // ZERO ROWS is a legitimate outcome (the subject has no contact row in this
+  // brokerage) but it is a different fact from "anonymized", so it is stated as
+  // one — never reported as "0 record(s) anonymized" as if a delete had run.
+  const summary = rows.length === 0
+    ? `No contact record matched ${email} in this brokerage — nothing to anonymize. Transaction records retained per state real-estate retention rules.`
+    : `${rows.length} contact record(s) anonymized and verified (${piiFields.length} PII fields cleared per record). Transaction records retained per state real-estate retention rules.`
+
+  const { error: closeErr } = await svc
     .from("data_subject_requests")
     .update({
       status:              "fulfilled",
       fulfilled_at:        new Date().toISOString(),
       fulfilled_by:        auth.userId,
-      response_summary:    `${anonymized?.length ?? 0} contact record(s) anonymized. Transaction records retained per state real-estate retention rules.`,
+      response_summary:    summary,
     })
     .eq("id", requestId)
+  if (closeErr) {
+    // The erasure happened; the ledger did not record it. Say so rather than
+    // returning ok — the request would show as open with its clock still running.
+    return { ok: false, error: `Contact(s) anonymized but the request could not be marked fulfilled: ${closeErr.message}`, contactsAnonymized: rows.length }
+  }
 
   revalidatePath("/dashboard/admin/privacy/requests")
-  return { ok: true, contactsAnonymized: anonymized?.length ?? 0 }
+  return { ok: true, contactsAnonymized: rows.length }
 }
 
 // ── ADMIN: DENY ──────────────────────────────────────────────────────────────
