@@ -33,11 +33,25 @@ export interface GeneratedDocumentRow {
   listingId: string | null
   listingAddress: string | null
   /**
-   * Plain public URL, opened with a plain anchor. This rail OWNS its delivery
-   * URLs: the producer hosts every PDF via hostRenderedMedia (public media
-   * host), so blob_url resolves directly. The governed-URL custody wrapper
-   * (getGovernedDocumentUrl / document-custody) serves the PRIVATE
-   * client-documents bucket — client_documents rows, not this table.
+   * A SIGNED, EXPIRING storage URL, opened with a plain anchor.
+   *
+   * It used to be a permanent public one: the producers hosted every PDF into
+   * `video-assets` (a PUBLIC_MEDIA bucket) by omitting hostRenderedMedia's
+   * bucket argument, so blob_url was a bearer capability with no session, no RLS
+   * and no expiry — for CMAs carrying a named client's valuation, net sheets
+   * carrying a seller's proceeds, and recruiting pitches carrying brokerage
+   * terms. Both producers now name GENERATED_DOCUMENT_BUCKET (document-class),
+   * so the one issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl)
+   * SIGNS the URL instead of publishing it.
+   *
+   * NOTHING CHANGES FOR THIS READER: a signed URL is still a URL an anchor can
+   * open, and it is minted at DOC_URL_TTL_SECONDS precisely because rows persist
+   * it (lib/storage/signed-doc-url.ts documents that bridge). The correct
+   * end-state is sign-on-read, and the object key is already on the row —
+   * generated_documents.blob_id — so that refactor has what it needs; it is not
+   * done here because it would change this action's contract, not just its
+   * bucket. The governed-URL custody wrapper (issueGovernedDocumentUrl /
+   * document-custody) still serves `client_documents` rows, not this table.
    */
   blobUrl: string | null
 }

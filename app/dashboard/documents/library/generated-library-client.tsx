@@ -148,10 +148,12 @@ export function GeneratedLibraryClient({ documents }: { documents: GeneratedDocu
                     <span className="text-xs text-muted-foreground whitespace-nowrap w-16 text-right">
                       {formatSize(d.fileSizeBytes)}
                     </span>
-                    {/* Plain anchor on purpose — this rail's PDFs are hosted via
-                        hostRenderedMedia (public media host, we own the URL). The
-                        governed-URL custody wrapper serves the PRIVATE
-                        client-documents bucket (client_documents rows), not this. */}
+                    {/* Plain anchor on purpose — blobUrl is a SIGNED storage URL
+                        (the producers host into the document-class
+                        GENERATED_DOCUMENT_BUCKET; it used to be a permanent
+                        public one), and a signed URL opens in an anchor exactly
+                        the same way. The governed-URL custody wrapper serves
+                        client_documents rows, not this rail. */}
                     {d.blobUrl ? (
                       <a
                         href={d.blobUrl}

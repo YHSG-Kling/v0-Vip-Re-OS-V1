@@ -214,7 +214,10 @@ export async function addRecruitingCost(
   amount: number,
   notes?: string
 ) {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  // `userId` is taken here (and only here) because the kernel event below stamps
+  // lifecycle_events.actor_user_id — the "who" the raw insert this replaced never
+  // wrote. It comes from the SESSION, resolved by requireRecruitingCaller (§4).
+  const { client, brokerageId, userId } = await requireRecruitingCaller()
 
   // The recruit must be one of THIS tenant's agents: the cost row, the kernel event
   // and the service-client recompute below all key on it, so a foreign agents.id
@@ -242,21 +245,48 @@ export async function addRecruitingCost(
 
   if (error) throw error
 
-  // Emit kernel event
-  await client
-    .from("lifecycle_events")
-    .insert({
-      brokerage_id: brokerageId,
-      event_type: "RECRUITING_COST_ADDED",
-      entity_type: "recruiting_cost",
-      entity_id: data?.[0]?.id,
+  // THE KERNEL EVENT, THROUGH THE ONE EMITTER (lib/kernel/emit.ts).
+  //
+  // This was a raw `.from("lifecycle_events").insert(...)`. The row landed and
+  // nothing downstream ever heard it: emitKernelEvent does BOTH halves — the
+  // audit insert AND the reactor fan-out (staff notifications, campaign
+  // enrollment, portal cards, every handler) — and a direct insert is exactly the
+  // "audit row that reaches no notification rule and no handler" the owner's
+  // ruling bans. It also silently dropped the WHO: actor_user_id was never
+  // written, so a spend entry on the brokerage's books named nobody.
+  //
+  // HONEST ABOUT WHAT THIS BUYS TODAY: "RECRUITING_COST_ADDED" is a FREE-FORM
+  // string, not a KernelEvent value (lib/kernel/events.ts has
+  // RECRUITING_ROI_CALCULATED and RECRUITING_TERRITORY_SCORED, not this), so
+  // emit's fan-out gate persists it and stops there — audit-only, deliberately.
+  // The gain is the canonical path, the actor, and the dedupe column; the day
+  // this event earns a handler it fans out with no further change here.
+  //
+  // The row id is the entity, so a write that returned none has no event to
+  // emit — a lifecycle row pointing at nothing is worse than no row. §3: the
+  // insert's own refusal already threw above; this guards the empty-return case.
+  const costId = (data?.[0] as { id?: string } | null | undefined)?.id
+  if (costId) {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const emitted = await emitKernelEvent({
+      event: "RECRUITING_COST_ADDED",
+      brokerageId,
+      entityType: "recruiting_cost",
+      entityId: costId,
+      actorUserId: userId,
+      source: "ui",
       metadata: {
         recruited_agent_id: recruitedAgentId,
         cost_type: costType,
         amount,
       },
-      created_at: new Date().toISOString(),
     })
+    // emitKernelEvent never throws; it RETURNS the refusal. Swallowing that would
+    // put us back where the raw insert was — a write nobody knows failed.
+    if (emitted.error) {
+      console.error("[recruiting-roi] RECRUITING_COST_ADDED emit failed:", emitted.error)
+    }
+  }
 
   // Recompute the recruited agent's ROI now that spend changed — keeps the recruiting_roi row (and the
   // dashboard's headline KPIs) live. Best-effort; a recompute hiccup never blocks the cost entry.

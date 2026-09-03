@@ -31,8 +31,21 @@
 
 import { checkUpload } from "@/lib/storage/file-limits"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 
-/** The default host bucket: public, and what every existing caller used. */
+/**
+ * The default host bucket: PUBLIC, and what every existing caller used.
+ *
+ * READ THIS BEFORE OMITTING THE BUCKET ARGUMENT. `video-assets` is on
+ * lib/storage/document-buckets.ts#PUBLIC_MEDIA_BUCKETS, so an object stored here
+ * is issued a PERMANENT UNAUTHENTICATED URL — correct for a rendered reel, a TTS
+ * track or a thumbnail a render worker fetches with no session, and wrong for
+ * anything a person would call a document. Two producers of client PDFs took
+ * this default by omission and every generated CMA, net sheet, listing packet,
+ * recruiting pitch and appraiser packet received a never-expiring public link;
+ * they now name lib/storage/document-buckets.ts#GENERATED_DOCUMENT_BUCKET.
+ * scripts/public-bucket-egress-guard.ts section 9 holds that rule.
+ */
 export const RENDER_MEDIA_BUCKET = "video-assets"
 
 /**
@@ -43,7 +56,9 @@ export const RENDER_MEDIA_BUCKET = "video-assets"
  *                the bucket their asset actually belongs in (carrier-fetched
  *                audio → `media`, for instance) instead of piling every media
  *                class into one bucket. Existing callers omit it and are
- *                unaffected.
+ *                unaffected — but see RENDER_MEDIA_BUCKET above: omitting it is
+ *                a decision to publish a permanent public URL, so DOCUMENT bytes
+ *                (`application/pdf` and friends) must always name their bucket.
  *
  * @throws if the bytes cannot be stored or no URL can be minted.
  */
@@ -87,7 +102,29 @@ export async function hostRenderedMedia(
   // starts being signed here without this file changing.
   const issued = await issueBucketObjectUrl(svc, { bucket, objectPath: path })
   if (!issued.ok) {
-    throw new Error(`[media-host] ${bucket}/${path} stored but no URL could be issued: ${issued.reason}`)
+    // THE BYTES ARE ALREADY IN THE BUCKET AT THIS POINT, so throwing without
+    // undoing the upload leaves an object nothing in the system knows about —
+    // exactly the orphan class lib/storage/put-and-sign.ts was written for, and
+    // its `removeOrRecordOrphan` is the survivor for the undo (do NOT re-roll it
+    // here). This branch used to be unreachable in practice: every caller took
+    // the public-media path, where issuing a URL is local string building that
+    // cannot be refused. It became REACHABLE the moment document-class callers
+    // arrived, because signing is a network call that can fail — so the
+    // compensation has to exist before the failure does, not after.
+    const undo = await removeOrRecordOrphan(svc, {
+      bucket,
+      objectPath: path,
+      reason: "media_host_url_issue_failed",
+      detail: `issueBucketObjectUrl refused: ${issued.reason}`,
+    })
+    throw new Error(
+      `[media-host] ${bucket}/${path} stored but no URL could be issued: ${issued.reason}` +
+        (undo.orphanRemoved
+          ? " (the stored object was removed)"
+          : undo.orphanRecorded
+          ? " (the object could NOT be removed and was recorded on storage_orphaned_objects)"
+          : ` (the object could NOT be removed and the worklist write was refused: ${undo.orphanUnrecordedReason})`),
+    )
   }
   return issued.url
 }

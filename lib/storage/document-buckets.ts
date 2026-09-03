@@ -43,6 +43,20 @@
 // Nothing has leaked yet. Every fix below is pre-traffic, which is the only
 // window in which the bucket flip in
 // scripts/1108-private-document-buckets.sql is free.
+//
+// ── A NEWER MEASUREMENT SUPERSEDES PART OF THAT (2026-08-26) ────────────────
+// lib/storage/bucket-limits.ts is MACHINE-WRITTEN from storage.buckets and
+// carries a body-sha256 that scripts/file-limit-truth-guard.ts recomputes, so it
+// is the newest live reading in the tree. Generated 2026-08-26 it records
+//   "documents":       { isPublic: false, … }
+//   "brokerage-forms": { isPublic: false, … }
+//   "agent-documents": { isPublic: false, … }   ← and it now EXISTS
+// i.e. the three things scripts/1108-private-document-buckets.sql was written to
+// do are DONE live. The 2026-08-22 block above is kept rather than rewritten
+// because it is the measurement that justified the classification; it is simply
+// four days stale on those three rows. Read bucket-limits.ts for "what is the
+// bucket's visibility TODAY", and read this file for "what may it ever be".
+// The two never disagree by design: this roster is the RULE, the flag is state.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { signedDocUrl, DOC_URL_TTL_SECONDS } from "./signed-doc-url"
@@ -83,14 +97,41 @@ export const DOCUMENT_CLASS_BUCKETS: Readonly<Record<string, string>> = {
   "client-documents":       "Client/buyer financial paperwork — pre-approvals, proof of funds, bank statements, tax returns. Already public=false live.",
   "offer-documents":        "Offer PDFs and counters. Already public=false live.",
   "transaction-documents":  "Closed-file transaction record. Already public=false live.",
-  "documents":              "The universal document lane — offer attachments, listing agreements, inbound-email attachments, board packets, certificates. PUBLIC LIVE TODAY; the flip is scripts/1108-private-document-buckets.sql.",
-  "brokerage-forms":        "Broker-uploaded transaction forms AND the FILLED copies written alongside them under filled/ (app/actions/buyer-offer/prefill-storage-form.ts). A filled offer form carries the buyer's name, price and terms. PUBLIC LIVE TODAY.",
+  "documents":              "The universal document lane — offer attachments, listing agreements, inbound-email attachments, board packets (lib/kernel/board-packet.ts), certificates, AND every PDF the platform PRODUCES for a client under client-docs/ (GENERATED_DOCUMENT_BUCKET below). Live public=false per lib/storage/bucket-limits.ts (2026-08-26).",
+  "brokerage-forms":        "Broker-uploaded transaction forms AND the FILLED copies written alongside them under filled/ (app/actions/buyer-offer/prefill-storage-form.ts). A filled offer form carries the buyer's name, price and terms. Live public=false per lib/storage/bucket-limits.ts (2026-08-26).",
   "cda-templates":          "Brokerage commission-disclosure templates — proprietary brokerage paperwork. Not yet created live.",
   "cda-filled":             "FILLED commission disclosures — commission splits, a brokerage financial. Not yet created live.",
   "commission-agreements":  "Signed agent commission / independent-contractor agreements. Not yet created live.",
   "receipts":               "Expense receipts attached to the brokerage P&L. Not yet created live.",
-  "agent-documents":        "An agent's real-estate LICENSE document and E&O insurance certificate (app/dashboard/onboarding/license). NOT CREATED LIVE AND NOT CREATABLE FROM HERE — the upload runs in the browser, so ensureBucket never sees it; those uploads fail today with 'Bucket not found'. scripts/1108-private-document-buckets.sql creates it private.",
+  "agent-documents":        "An agent's real-estate LICENSE document and E&O insurance certificate (app/dashboard/onboarding/license). The upload runs in the BROWSER, so lib/storage/buckets.ts#ensureBucket never sees it and cannot create it — it had to be created by migration, and lib/storage/bucket-limits.ts (2026-08-26) now records it existing with isPublic:false and a 10 MB limit.",
 }
+
+/**
+ * WHERE A PDF THE PLATFORM PRODUCED FOR A CLIENT LANDS. One spelling (§6) for
+ * the two producers that write under `client-docs/<brokerage>/…`:
+ * lib/documents/client-document-producer.ts#produceClientDocument (CMAs, net
+ * sheets, guides, presentations, brochures, packets, recruiting pitches) and
+ * lib/kernel/appraiser-packet.ts#composeAppraiserPacket.
+ *
+ * ── WHY THIS CONSTANT EXISTS AT ALL ─────────────────────────────────────────
+ * Both producers called `hostRenderedMedia(svc, "client-docs/…", buf,
+ * "application/pdf")` and took its DEFAULT bucket, `video-assets` — which is on
+ * the PUBLIC_MEDIA_BUCKETS allowlist above. So every generated client document
+ * received a permanent unauthenticated URL, which this module says in as many
+ * words is never correct for a document. The bytes were routed correctly through
+ * the one issuer; the BUCKET was the defect, and a bucket argument that is
+ * omitted is exactly the kind of decision nobody can see being made. Naming it
+ * here makes the choice reviewable and keeps both producers on one answer.
+ *
+ * ── WHY `documents` AND NOT A NEW BUCKET ────────────────────────────────────
+ * `documents` is the universal document lane, it EXISTS live and is already
+ * public=false (bucket-limits.ts, 2026-08-26), and lib/kernel/board-packet.ts
+ * already writes brokerage financials into it and mints through
+ * issueBucketObjectUrl — so this follows the established path rather than
+ * opening a second one. A new bucket would not exist live until a migration ran,
+ * and until then every client PDF would fail with "Bucket not found".
+ */
+export const GENERATED_DOCUMENT_BUCKET = "documents"
 
 /**
  * PURE. Is this bucket document-class — i.e. must its URLs be signed?

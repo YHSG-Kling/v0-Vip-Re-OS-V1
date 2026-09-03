@@ -10,9 +10,31 @@
  * Producers call ONE function with a spec builder — the presentation builder
  * attaches the CMA leave-behind, the lead-magnet runner attaches the guide
  * booklet, and future document types ride the same line.
+ *
+ * ── THE BUCKET IS NAMED, DELIBERATELY (was: whatever the default happened to be) ──
+ * This line used to read
+ *
+ *     hostRenderedMedia(svc, `client-docs/…`, buf, "application/pdf")
+ *
+ * and took hostRenderedMedia's DEFAULT bucket — `video-assets`, which is on the
+ * PUBLIC_MEDIA_BUCKETS allowlist. issueBucketObjectUrl therefore did the correct
+ * thing for the bucket it was given and returned a PERMANENT UNAUTHENTICATED
+ * URL: a bearer capability with no session, no RLS and no expiry, persisted onto
+ * generated_documents.blob_url and mailed into notifications. A CMA carries a
+ * named client's valuation, a net sheet carries a seller's proceeds (§5:
+ * contacts see no financials but their own), a recruiting pitch carries the
+ * brokerage's terms. Those are documents, and lib/storage/document-buckets.ts
+ * says in its own words that a permanent public URL is never correct for one.
+ *
+ * The fix is the bucket, not a second URL mechanism: GENERATED_DOCUMENT_BUCKET
+ * is document-class, so the SAME issuer now signs instead of publishing. The
+ * stored URL stays a working URL — signed at DOC_URL_TTL_SECONDS because every
+ * reader persists it (the library anchor, notification bodies, the lead-magnet
+ * email) — which is the bridge lib/storage/signed-doc-url.ts documents.
  */
 import "server-only"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { GENERATED_DOCUMENT_BUCKET } from "@/lib/storage/document-buckets"
 import {
   renderClientPdf,
   type ClientPdfBrand,
@@ -86,7 +108,12 @@ export async function produceClientDocument(
     const bytes = await renderClientPdf(params.spec)
     const buf = Buffer.from(bytes)
     const fileName = `${params.documentType}-${Date.now()}.pdf`
-    const pdfUrl = await hostRenderedMedia(svc, `client-docs/${params.brokerageId}/${fileName}`, buf, "application/pdf")
+    // ONE spelling of the object key (§6). It was the upload path AND the
+    // `blob_id` recorded on the row; blob_id is gone (tombstone below, no reader),
+    // so the path now lives in exactly one place — inside the URL the issuer
+    // returns — and there is nothing left for it to drift against.
+    const objectPath = `client-docs/${params.brokerageId}/${fileName}`
+    const pdfUrl = await hostRenderedMedia(svc, objectPath, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
 
     // generated_documents.agent_id is agents-class. This used to file the USERS id,
     // which the FK rejected — so every client PDF this produced was hosted and then
@@ -106,10 +133,9 @@ export async function produceClientDocument(
       blob_url: pdfUrl,
       // TOMBSTONE (§1.1, w26 lane C8): `blob_id` DELETED from this insert — the second
       // of its two writers. SURVIVOR: `blob_url` on the same row, read by
-      // app/actions/generated-documents.ts:65. Full reasoning at the sibling tombstone,
-      // lib/kernel/appraiser-packet.ts:829 — in short, blob_id held the storage object
-      // PATH, the bucket is public-class so the stored URL already contains that path,
-      // and no reader ever selected the column.
+      // app/actions/generated-documents.ts:65. It held the storage object PATH and no
+      // reader ever selected it. Full reasoning at the sibling tombstone,
+      // lib/kernel/appraiser-packet.ts.
       file_name: fileName,
       file_size: buf.length,
       metadata: { ...(params.metadata ?? {}), title: params.spec.title },

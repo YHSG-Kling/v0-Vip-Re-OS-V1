@@ -27,7 +27,9 @@
  *      hold (GIS + tax reports have no provider rail here). Renders a cover
  *      checklist + the assembled sections through the shared client-PDF engine
  *      (lib/documents/client-pdf — reused, not forked), hosts it in storage
- *      (hostRenderedMedia idiom), and records it in generated_documents.
+ *      (hostRenderedMedia into GENERATED_DOCUMENT_BUCKET — a DOCUMENT-class
+ *      bucket, so the URL is signed and expiring, never a permanent public one),
+ *      and records it in generated_documents.
  *   2. runAppraiserPacketCoaching() — the coaching moment: seller-side gated,
  *      idempotent per (transaction, appraisal order), composes the packet and
  *      creates ONE agent-facing task with an AI-authored brand-voice note (with
@@ -76,6 +78,7 @@ import {
 } from "@/lib/documents/client-pdf"
 import { resolvePdfBrand } from "@/lib/documents/client-document-producer"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { GENERATED_DOCUMENT_BUCKET } from "@/lib/storage/document-buckets"
 import {
   sourceCompsForCma,
   REQUIRED_SOLD_COMPS,
@@ -812,7 +815,19 @@ export async function composeAppraiserPacket(args: {
     const bytes = await renderClientPdf(spec)
     const buf = Buffer.from(bytes)
     const fileName = `appraiser-packet-${tx.id}-${Date.now()}.pdf`
-    const pdfUrl = await hostRenderedMedia(svc, `client-docs/${tx.brokerage_id}/${fileName}`, buf, "application/pdf")
+    // ONE spelling of the object key (§6). It was the upload path and the
+    // `blob_id` on the row; blob_id is gone (tombstone below, no reader), so the
+    // path survives only inside the URL the issuer returns.
+    const objectPath = `client-docs/${tx.brokerage_id}/${fileName}`
+    // GENERATED_DOCUMENT_BUCKET, NOT hostRenderedMedia's default. The default is
+    // `video-assets`, a PUBLIC_MEDIA bucket, and this packet is the transaction:
+    // contract price, every counter and addendum on file, the seller's dated and
+    // COSTED upgrades, the survey and the sourced comparables. That was landing
+    // at a permanent unauthenticated URL — no session, no RLS, no expiry —
+    // persisted onto generated_documents.blob_url and put into an agent task. The
+    // bucket named here is document-class, so the one issuer signs it instead.
+    // See lib/storage/document-buckets.ts#GENERATED_DOCUMENT_BUCKET.
+    const pdfUrl = await hostRenderedMedia(svc, objectPath, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
 
     let documentId: string | null = null
     try {
@@ -831,13 +846,17 @@ export async function composeAppraiserPacket(args: {
           // app/actions/generated-documents.ts:65 (the Document Center library).
           //
           // blob_id stored `client-docs/<brokerage>/<file>` — the object PATH, which is
-          // the exact string handed to hostRenderedMedia one line above. Nothing read it.
-          // It was not a second, more durable handle: hostRenderedMedia issues the URL
-          // through lib/storage/document-buckets.ts#issueBucketObjectUrl, and its bucket
-          // (RENDER_MEDIA_BUCKET = "video-assets") is on the PUBLIC_MEDIA_BUCKETS roster,
-          // so the URL is a permanent getPublicUrl that CONTAINS this path rather than a
-          // signed URL that expires. The survivor therefore lacks nothing this arm
-          // carried — nothing had to be ported before the delete.
+          // the exact string handed to hostRenderedMedia one line above. NOTHING READ IT;
+          // that, and only that, is why it goes.
+          //
+          // CORRECTED 2026-09-03 (integrator): the original tombstone justified the
+          // delete by saying the bucket was public-class, so the permanent URL already
+          // contained the path. Lane SEC then moved these documents OFF the public
+          // roster onto the signing branch, because a permanent unauthenticated URL for
+          // a client document was the defect. The delete still stands on the reader
+          // count, but a justification that has stopped being true must not sit here
+          // reading as current — a signed URL expires, and anything that later needs the
+          // path must take it from the survivor rather than assume this row carried it.
           file_name: fileName,
           file_size: buf.length,
           metadata: {

@@ -30,7 +30,17 @@
  *      are created by the first write, so the DEFAULT decides their visibility);
  *   5. the one issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl)
  *      grows a fallback to getPublicUrl on the sad path — a fallback to public is
- *      the exact shape that would undo all of the above.
+ *      the exact shape that would undo all of the above;
+ *   6. (section 9) DOCUMENT BYTES are handed to lib/remotion/media-host.ts
+ *      #hostRenderedMedia without naming a document-class bucket, so they take
+ *      its PUBLIC default. This is the one that actually shipped, and none of
+ *      1-5 could see it: the call routes through the one issuer correctly and
+ *      contains no public spelling at all — the bucket argument was simply
+ *      OMITTED, and the default is `video-assets`. Every generated CMA, net
+ *      sheet, listing packet, recruiting pitch and appraiser packet was
+ *      published at a permanent unauthenticated URL by an argument nobody wrote.
+ *      The lesson generalises: a defect can be a DEFAULT rather than a token, and
+ *      a guard that only greps for tokens will call that tree clean forever.
  *
  * ── MEASUREMENT DISCIPLINE (CLAUDE.md §2) ────────────────────────────────────
  * · Comments are removed with scripts/strip-comments.ts — `blankComments`,
@@ -52,6 +62,12 @@
  *     - it reads source text. A public URL assembled by hand from a project ref
  *       and an /object/public/ path would not be seen; section 5 checks the one
  *       issuer instead of trying to catch every possible hand-rolled URL.
+ *     - SECTION 9 classifies a hostRenderedMedia call by its contentType
+ *       ARGUMENT. Where that argument is computed at runtime
+ *       (`outputContentType(frames)`) the call cannot be classified at all, so
+ *       it is COUNTED and PRINTED beside the finding rather than folded into the
+ *       pass. Those calls are the video/audio renders the public default exists
+ *       for; if one ever starts producing a PDF, section 9 will not see it.
  */
 import { readFileSync, writeFileSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
@@ -63,6 +79,7 @@ import {
   bucketClassReason,
   DOCUMENT_CLASS_BUCKETS,
   PUBLIC_MEDIA_BUCKETS,
+  GENERATED_DOCUMENT_BUCKET,
 } from "../lib/storage/document-buckets"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -97,11 +114,33 @@ const lineOf = (src: string, idx: number) => src.slice(0, idx).split("\n").lengt
 export interface Hit { line: number; bucket: string; detail: string }
 
 /** Every `const NAME = "literal"` / `let NAME = 'literal'` in the file. */
+/**
+ * `export const NAME = "bucket"` pairs read out of the roster module itself, so
+ * the guard resolves the same names the code imports instead of a hardcoded copy
+ * that could drift from it (§2 — assert the rule, derive the value).
+ */
+const ROSTER_BUCKET_CONSTS: ReadonlyMap<string, string> = (() => {
+  const m = new Map<string, string>()
+  const src = readFileSync(join(root, "lib/storage/document-buckets.ts"), "utf8")
+  for (const x of src.matchAll(/export\s+const\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*["']([^"'\n]+)["']/g)) {
+    m.set(x[1], x[2])
+  }
+  return m
+})()
+
 function localStringConsts(code: string): Map<string, string> {
   const m = new Map<string, string>()
   const re = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*["']([^"'\n]+)["']/g
   let x: RegExpExecArray | null
   while ((x = re.exec(code))) m.set(x[1], x[2])
+  // …PLUS the bucket names the ROSTER exports. A call site naming its bucket the
+  // sanctioned way — `hostRenderedMedia(…, GENERATED_DOCUMENT_BUCKET)` — imports
+  // that constant rather than repeating a string literal, which is what §6 asks
+  // for; without this the resolver saw an unknown identifier, failed closed, and
+  // reported the CORRECT fix as a violation. Only the roster module is trusted,
+  // and only its exported string constants: any other identifier still fails
+  // closed, which is the behaviour that makes this scan worth running.
+  for (const [name, value] of ROSTER_BUCKET_CONSTS) if (!m.has(name)) m.set(name, value)
   return m
 }
 
@@ -176,6 +215,172 @@ function collapseWhitespace(code: string): { norm: string; map: number[] } {
     map.push(i)
   }
   return { norm, map }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 9's FINDER — DOCUMENT BYTES ROUTED INTO A PUBLIC BUCKET.
+//
+// WHY SECTIONS 1-3 COULD NOT SEE THIS. They look for the SPELLING of a public
+// URL: a getPublicUrl call, an `access: "public"`, a `public: true`. The live
+// defect had none of those. lib/remotion/media-host.ts#hostRenderedMedia routes
+// every render through the ONE issuer — correctly — and issueBucketObjectUrl
+// publishes or signs strictly according to the BUCKET it is handed. Its bucket
+// parameter has a default, `video-assets`, which is on the public allowlist. So
+// two producers wrote `client-docs/<brokerage>/<file>.pdf` with the bucket
+// argument OMITTED, and every generated CMA, net sheet, listing packet,
+// recruiting pitch and appraiser packet was published at a permanent
+// unauthenticated URL — through code that looked, and was, canonical. An
+// omitted argument is a decision nobody can see being made; this finder is what
+// makes it visible.
+//
+// THE RULE ASSERTED, not the two call sites fixed (§2: a waypoint assertion goes
+// false the moment the work moves): DOCUMENT BYTES MUST NAME A DOCUMENT-CLASS
+// BUCKET. The default bucket is read out of media-host.ts rather than written
+// down here, so changing that default is re-measured instead of re-asserted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PURE — is this content type a DOCUMENT rather than a media asset? Kept
+ * explicit and narrow: each entry is a format a person would call a document and
+ * would not expect a stranger to be able to open forever.
+ */
+export function isDocumentContentType(contentType: string): boolean {
+  const c = contentType.trim().toLowerCase()
+  return (
+    c === "application/pdf" ||
+    c === "application/rtf" ||
+    c === "text/csv" ||
+    c === "application/msword" ||
+    c.startsWith("application/vnd.openxmlformats-officedocument.") ||
+    c.startsWith("application/vnd.ms-")
+  )
+}
+
+/**
+ * Top-level argument TEXTS of every `fn(…)` call in `code`.
+ *
+ * Written as a depth scanner rather than a regex because the argument that
+ * matters here is the FIFTH, and the second is a template literal
+ * (`` `client-docs/${id}/${name}` ``) that can contain commas, parentheses and
+ * braces. A regex that split on commas would mis-index every call it read and
+ * then report zero — the failure mode CLAUDE.md §2 is written about. String and
+ * template literals are skipped wholesale, `${…}` interpolations included.
+ */
+export function callArguments(code: string, fnName: string): Array<{ index: number; args: string[] }> {
+  const out: Array<{ index: number; args: string[] }> = []
+  const re = new RegExp(`\\b${fnName}\\s*\\(`, "g")
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code))) {
+    // The DECLARATION is not a call. `export async function hostRenderedMedia(`
+    // would otherwise be read as a call whose fourth argument is the text
+    // `contentType: string`, which resolves to no literal and would inflate the
+    // published blind-spot count by one in the file that defines the helper.
+    if (/\bfunction\s+$/.test(code.slice(Math.max(0, m.index - 24), m.index))) continue
+    let i = m.index + m[0].length
+    let depth = 0
+    let cur = ""
+    let closed = false
+    const args: string[] = []
+    while (i < code.length) {
+      const ch = code[i]
+      if (ch === '"' || ch === "'" || ch === "`") {
+        const quote = ch
+        let j = i + 1
+        let interp = 0
+        while (j < code.length) {
+          const c = code[j]
+          if (c === "\\") { j += 2; continue }
+          if (quote === "`" && c === "$" && code[j + 1] === "{") { interp++; j += 2; continue }
+          if (quote === "`" && c === "}" && interp > 0) { interp--; j++; continue }
+          if (c === quote && interp === 0) break
+          j++
+        }
+        cur += code.slice(i, j + 1)
+        i = j + 1
+        continue
+      }
+      if (ch === "(" || ch === "[" || ch === "{") { depth++; cur += ch; i++; continue }
+      if (ch === ")" && depth === 0) {
+        if (cur.trim().length > 0) args.push(cur.trim())
+        closed = true
+        i++
+        break
+      }
+      if (ch === ")" || ch === "]" || ch === "}") { depth--; cur += ch; i++; continue }
+      if (ch === "," && depth === 0) { args.push(cur.trim()); cur = ""; i++; continue }
+      cur += ch
+      i++
+    }
+    // An unterminated call (a truncated file, a scanner that lost its place) is
+    // NOT reported as a zero-argument call — it is dropped, and the caller below
+    // counts what it dropped rather than treating it as clean.
+    if (closed) out.push({ index: m.index, args })
+  }
+  return out
+}
+
+/** Resolve one argument text to a string literal, directly or through a local const. */
+function resolveLiteral(arg: string | undefined, consts: Map<string, string>): string | null {
+  if (arg === undefined) return null
+  const lit = arg.match(/^["']([^"']*)["']$/)
+  if (lit) return lit[1]
+  return consts.get(arg) ?? null
+}
+
+export interface HostRenderedMediaScan {
+  /** Document bytes headed for a public-media bucket, or a bucket we cannot resolve. */
+  hits: Hit[]
+  /** Calls whose contentType is computed at runtime — the honest blind spot. */
+  unresolvedContentType: number
+  /** Calls examined in total, so the two numbers above have a denominator. */
+  calls: number
+}
+
+/**
+ * `hostRenderedMedia(svc, path, bytes, contentType, bucket?)` calls that put
+ * DOCUMENT bytes somewhere a permanent public URL can be minted for them.
+ *
+ * FAIL CLOSED on the bucket: once the content type says "document", a bucket
+ * argument that cannot be resolved to a literal is treated as public, because
+ * "we could not tell" must not read as "checked and fine" (§4).
+ *
+ * HONEST about the other half: a contentType computed at runtime
+ * (`outputContentType(frames)`) cannot be classified, and those are counted and
+ * PUBLISHED rather than silently folded into the pass. They are the video and
+ * audio renders this default bucket exists for.
+ */
+export function findDocumentBytesInPublicBucket(code: string, defaultBucket: string): HostRenderedMediaScan {
+  const consts = localStringConsts(code)
+  const scan: HostRenderedMediaScan = { hits: [], unresolvedContentType: 0, calls: 0 }
+  for (const call of callArguments(code, "hostRenderedMedia")) {
+    // A re-export/import line (`import { hostRenderedMedia } from …`) never
+    // parses as a call, so nothing filters those out here — they have no `(`.
+    if (call.args.length < 4) { scan.calls += 1; scan.unresolvedContentType += 1; continue }
+    scan.calls += 1
+    const contentType = resolveLiteral(call.args[3], consts)
+    if (contentType === null) { scan.unresolvedContentType += 1; continue }
+    if (!isDocumentContentType(contentType)) continue
+
+    // Annotated `string | undefined` deliberately: `noUncheckedIndexedAccess` is
+    // OFF in this tsconfig, so `args[4]` types as `string` and `=== undefined`
+    // would be a TS2367 "no overlap" error on a comparison that is true at
+    // runtime for every 4-argument call — which is exactly the case that matters.
+    const bucketArg: string | undefined = call.args[4]
+    const bucket = bucketArg === undefined ? defaultBucket : resolveLiteral(bucketArg, consts)
+    if (bucket !== null && isDocumentClassBucket(bucket)) continue
+
+    scan.hits.push({
+      line: lineOf(code, call.index),
+      bucket: bucket ?? `<unresolved:${bucketArg}>`,
+      detail:
+        bucket === null
+          ? `${contentType} bytes with a bucket argument that could not be resolved — fail closed`
+          : bucketArg === undefined
+          ? `${contentType} bytes with NO bucket argument, so they take the public default '${bucket}'`
+          : `${contentType} bytes into the public-media bucket '${bucket}'`,
+    })
+  }
+  return scan
 }
 
 /** A document-class bucket written with an explicit `public: true`. */
@@ -387,6 +592,69 @@ check("GREEN: the same defect INSIDE a comment is not counted",
   findPublicUrlOnDocumentBucket(b(`// svc.storage.from("documents").getPublicUrl(p)\n`)).length === 0 &&
   findPublicUrlOnDocumentBucket(b(`/* svc.storage.from("documents").getPublicUrl(p) */\n`)).length === 0)
 
+// ── 6b · POSITIVE CONTROL for the section-9 finder ──────────────────────────
+// The LIVE defect, in the exact shape it shipped: a PDF whose bucket argument is
+// simply absent. Nothing in sections 1-3 can see it, so this control is the only
+// thing standing between section 9 and a permanently green blind spot.
+console.log("\n[6b · POSITIVE CONTROL — document bytes into a public bucket]")
+const DEFAULT_BUCKET_PROBE = "video-assets"
+const hostHits = (src: string) => findDocumentBytesInPublicBucket(b(src), DEFAULT_BUCKET_PROBE).hits
+
+const DIRTY_HOST_OMITTED = `
+  const pdfUrl = await hostRenderedMedia(svc, \`client-docs/\${params.brokerageId}/\${fileName}\`, buf, "application/pdf")
+`
+const DIRTY_HOST_EXPLICIT_PUBLIC = `
+  const url = await hostRenderedMedia(svc, path, buf, "application/pdf", "video-assets")
+`
+const DIRTY_HOST_UNRESOLVED_BUCKET = `
+  const url = await hostRenderedMedia(svc, path, buf, "application/pdf", pickBucket(kind))
+`
+// The argument-splitter's own control: a template literal carrying commas,
+// parentheses and braces must not shift the index of the fourth argument. A
+// comma-splitting regex reads "application/pdf" as the FIFTH argument here and
+// the whole finder silently reports zero.
+const DIRTY_HOST_COMMAS_IN_TEMPLATE = `
+  const url = await hostRenderedMedia(svc, \`client-docs/\${fmt(a, b)}/\${[x, y].join(",")}.pdf\`, buf, "application/pdf")
+`
+const CLEAN_HOST_NAMED_DOC_BUCKET = `
+  const GENERATED_DOCUMENT_BUCKET = "documents"
+  const url = await hostRenderedMedia(svc, path, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
+`
+const CLEAN_HOST_MEDIA = `
+  const url = await hostRenderedMedia(svc, \`listing-promo/reels/\${id}.mp4\`, bytes, "video/mp4")
+  const thumb = await hostRenderedMedia(svc, \`thumbs/\${id}.png\`, thumbBytes, "image/png")
+  const audio = await hostRenderedMedia(svc, path, buf, "audio/mpeg", "media")
+`
+const BLIND_HOST_RUNTIME_MIME = `
+  const url = await hostRenderedMedia(svc, path, bytes, outputContentType(composition.duration_frames))
+`
+
+check("RED: a PDF with NO bucket argument (the live defect) is flagged",
+  hostHits(DIRTY_HOST_OMITTED).length === 1,
+  "an omitted bucket is not being charged against the public default")
+check("RED: a PDF explicitly named into a public-media bucket is flagged",
+  hostHits(DIRTY_HOST_EXPLICIT_PUBLIC).length === 1)
+check("RED: a PDF whose bucket cannot be resolved is flagged (fail closed)",
+  hostHits(DIRTY_HOST_UNRESOLVED_BUCKET).length === 1)
+check("RED: …even when the path template contains commas, parens and braces",
+  hostHits(DIRTY_HOST_COMMAS_IN_TEMPLATE).length === 1,
+  "the argument splitter is mis-indexing calls whose path template contains a comma")
+check("GREEN: a PDF into a document-class bucket (literal or local const) is NOT flagged",
+  hostHits(CLEAN_HOST_NAMED_DOC_BUCKET).length === 0)
+check("GREEN: video/image/audio renders on the public default are NOT flagged",
+  hostHits(CLEAN_HOST_MEDIA).length === 0)
+// The blind spot, proved to BE a blind spot rather than assumed: a runtime mime
+// yields no hit AND is counted, so the number section 9 prints is honest.
+const blindScan = findDocumentBytesInPublicBucket(b(BLIND_HOST_RUNTIME_MIME), DEFAULT_BUCKET_PROBE)
+check("BLIND SPOT, counted not hidden: a runtime-computed contentType yields no hit and IS counted",
+  blindScan.hits.length === 0 && blindScan.unresolvedContentType === 1)
+check("GREEN: the same defect inside a comment is not counted",
+  hostHits(`// await hostRenderedMedia(svc, p, buf, "application/pdf")\n`).length === 0)
+check("isDocumentContentType recognises the document formats and rejects media",
+  isDocumentContentType("application/pdf") && isDocumentContentType("text/csv") &&
+  isDocumentContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document") &&
+  !isDocumentContentType("video/mp4") && !isDocumentContentType("image/png") && !isDocumentContentType("audio/mpeg"))
+
 // ── 7 · the classification stays honest ─────────────────────────────────────
 console.log("\n[7 · every live bucket is classified exactly once]")
 // The eleven buckets measured live in project hrvaqgvukzxfskkcrwbt on 2026-08-22.
@@ -426,6 +694,51 @@ check("it says an already-emailed public URL stays valid FOREVER",
   /stays valid against its object FOREVER/i.test(mig))
 check("it also drops the anon-readable RLS policy the flip alone would leave",
   /drop policy if exists "public read brokerage-forms"/.test(mig))
+
+// ── 9 · document bytes never ride the media host's PUBLIC default ───────────
+console.log("\n[9 · no DOCUMENT bytes are hosted into a public-media bucket]")
+
+// DERIVE the default rather than hardcode it (§2 — a hardcoded 'video-assets'
+// here would keep passing after somebody changed the default). If it cannot be
+// read, that is a FAILURE, not a reason to guess: a finder that charges omitted
+// bucket arguments against the wrong default is a finder that reports zero.
+const mediaHostSrc = blankComments(readFileSync(join(root, "lib/remotion/media-host.ts"), "utf8"))
+const defaultBucketMatch = mediaHostSrc.match(/RENDER_MEDIA_BUCKET\s*(?::[^=]+)?=\s*["']([^"']+)["']/)
+const DEFAULT_HOST_BUCKET = defaultBucketMatch?.[1] ?? null
+check("the media host's default bucket can be read out of lib/remotion/media-host.ts",
+  DEFAULT_HOST_BUCKET !== null,
+  "RENDER_MEDIA_BUCKET's literal could not be found — section 9 cannot charge an omitted argument against anything")
+
+if (DEFAULT_HOST_BUCKET) {
+  console.log(`  hostRenderedMedia's default bucket is '${DEFAULT_HOST_BUCKET}' — ${isDocumentClassBucket(DEFAULT_HOST_BUCKET) ? "document-class" : "PUBLIC-MEDIA, so an omitted bucket argument publishes"}`)
+
+  const hostHitsLive: Array<Hit & { file: string }> = []
+  let hostCalls = 0
+  let hostRuntimeMime = 0
+  for (const [f, code] of sources) {
+    const s = findDocumentBytesInPublicBucket(code, DEFAULT_HOST_BUCKET)
+    hostCalls += s.calls
+    hostRuntimeMime += s.unresolvedContentType
+    for (const h of s.hits) hostHitsLive.push({ ...h, file: f })
+  }
+  // The denominator and the exclusions, beside the number (§2).
+  console.log(`  hostRenderedMedia call sites examined: ${hostCalls} · document-typed into a public bucket: ${hostHitsLive.length} · contentType computed at runtime (UNCLASSIFIABLE, the blind spot): ${hostRuntimeMime}`)
+  for (const h of hostHitsLive) console.log(`     · ${h.file}:${h.line} — ${h.detail}`)
+  check(`zero document-typed hostRenderedMedia calls land in a public-media bucket (${hostHitsLive.length} found)`,
+    hostHitsLive.length === 0,
+    hostHitsLive.map((h) => `${h.file}:${h.line}`).join(", "))
+  // A finder that examined nothing also reports zero. The corpus contains this
+  // helper's call sites by construction, so an empty scan means the scanner
+  // broke, not that the tree is clean.
+  check(`the finder actually reached hostRenderedMedia call sites (${hostCalls} examined)`, hostCalls > 0)
+}
+
+// The constant the producers name, checked as a RULE rather than as a spelling:
+// whatever GENERATED_DOCUMENT_BUCKET is set to must be document-class, or
+// pointing the producers at it would re-open exactly what section 9 closes.
+check(`GENERATED_DOCUMENT_BUCKET ('${GENERATED_DOCUMENT_BUCKET}') is document-class`,
+  isDocumentClassBucket(GENERATED_DOCUMENT_BUCKET),
+  bucketClassReason(GENERATED_DOCUMENT_BUCKET))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${pass} passed, ${fail} failed`)
