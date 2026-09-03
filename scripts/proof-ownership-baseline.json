@@ -98,7 +98,6 @@
     "test:direct-mail-copy",
     "test:dispatcher-load",
     "test:dry-run-cockpit",
-    "test:dual-transaction-timing",
     "test:e2e-lifecycle",
     "test:e2e:flows",
     "test:egress-scope",
