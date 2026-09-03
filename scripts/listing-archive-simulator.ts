@@ -521,8 +521,11 @@ const ACTION_PINS: Pin[] = [
     holds: (b) => /ownedErr/.test(b) },
   { name: "reports what was RETAINED",
     holds: (b) => b.includes("retained") && b.includes("retainedTotal") },
+  // Through the kernel spine (lib/kernel/emit.ts — audit row AND reactor, lane
+  // H2 2026-09-03), whose option is `actorUserId`; the raw-insert spelling
+  // `actor_user_id:` was the pre-spine shape and is not a call site any more.
   { name: "writes a LISTING_ARCHIVED audit event naming the real actor",
-    holds: (b) => b.includes("LISTING_ARCHIVED") && /actor_user_id:\s*auth\.actorUserId/.test(b) },
+    holds: (b) => b.includes("LISTING_ARCHIVED") && /emitKernelEvent\(/.test(b) && /actorUserId:\s*auth\.actorUserId/.test(b) },
 ]
 
 /**

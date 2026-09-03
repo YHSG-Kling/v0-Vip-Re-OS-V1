@@ -98,7 +98,7 @@ export async function computeIncomeForecastForAgent(input: {
   // this as an error instead of a snapshot.
   if (!agentRecordId) {
     throw new Error(
-      `[income-forecast] users id ${input.agentId} has no agents row in brokerage ${input.brokerageId}; refusing to forecast`,
+      `[income-forecast] no agent record for users id ${input.agentId} in brokerage ${input.brokerageId}; refusing to forecast`,
     )
   }
 
