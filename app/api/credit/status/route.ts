@@ -8,8 +8,12 @@ import { supabaseService } from "@/services/supabaseService"
  * (legacy spelling ?leadId= is still accepted for one release — see below)
  *
  * The ONLY reader of the credit lane (credit_status has no other reader in the
- * tree). KEPT for that reason — building this route a caller is another lane's
- * item — and FIXED (lane N3a 2026-09-01, CLAUDE.md §4):
+ * tree). Its caller is app/credit-pipeline/page.tsx — the ManageCreditAccountDialog
+ * fetches this route when it opens and renders the credit file (score / DTI /
+ * last_updated / notes) and the credit-related activity beside the posture form
+ * that WRITES contacts.credit_status (lane B, 2026-09-03; the route was 6b —
+ * addressed by nothing in the tree — until then). FIXED (lane N3a 2026-09-01,
+ * CLAUDE.md §4):
  *
  * The query-string leadId used to flow straight into SERVICE-ROLE reads
  * (getContactById / getCreditStatus) with no brokerage predicate, so any
@@ -36,6 +40,11 @@ export async function GET(request: Request) {
     // The canonical spelling is now ?contactId=. The legacy ?leadId= spelling is
     // accepted for ONE RELEASE because an off-repo caller of this public route
     // cannot be disproved; remove the fallback after that window.
+    // WINDOW STATUS (lane B, 2026-09-03): NOT proven closed — the ruling is two
+    // days and no tagged release old (`git tag` is empty), and
+    // scripts/identity-class-guard.ts:1293-1297 pins this exact fallback as
+    // present. Removing it is a guard change outside this lane; the in-tree
+    // caller (app/credit-pipeline/page.tsx) already spells ?contactId=.
     const contactId = searchParams.get("contactId") ?? searchParams.get("leadId")
 
     if (!contactId) {

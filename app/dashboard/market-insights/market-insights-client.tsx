@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
   Card,
@@ -262,6 +262,83 @@ export function MarketInsightsDashboardClient({
     }
   }
 
+  // ── DURABLE REFRESH — the Workflow DevKit lane, now with a reader ──────────
+  // POST /api/workflows/market-insight starts the durable run (refresh THEN
+  // regenerate, each step retried independently) and hands back a runId;
+  // GET /api/workflows/market-insight/[runId] is the status reader that id used
+  // to lack. The insight itself is never taken from the reader: on completion
+  // the page re-reads through the same session-scoped actions every other
+  // button uses (loadMarketData), so the tenant predicate is the actions', not
+  // the poller's. The synchronous "Refresh Data" / "Regenerate" buttons stay —
+  // this is the one-click-both-with-retry path, not a replacement.
+  const [durableRun, setDurableRun] = useState<{ runId: string; status: string } | null>(null)
+  const [isDurableRefreshing, setIsDurableRefreshing] = useState(false)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const handleDurableRefresh = async () => {
+    if (!selectedMarket || isDurableRefreshing) return
+    setIsDurableRefreshing(true)
+    setDurableRun(null)
+    try {
+      const startRes = await fetch("/api/workflows/market-insight", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ marketArea: selectedMarket }),
+      })
+      const started = await startRes.json().catch(() => null)
+      if (!startRes.ok || !started?.runId) {
+        toast.error(started?.error || "The durable refresh could not be started")
+        return
+      }
+      const runId: string = started.runId
+      setDurableRun({ runId, status: started.status ?? "started" })
+
+      // Poll every 2 s for up to 5 minutes. Every non-2xx from the reader is a
+      // stop, not a retry — a 404 means "not yours or not there" and will not
+      // change by asking again.
+      const deadline = Date.now() + 5 * 60_000
+      while (Date.now() < deadline && mountedRef.current) {
+        await new Promise((r) => setTimeout(r, 2000))
+        const pollRes = await fetch(`/api/workflows/market-insight/${encodeURIComponent(runId)}`)
+        const poll = await pollRes.json().catch(() => null)
+        if (!mountedRef.current) return
+        if (!pollRes.ok || !poll?.status) {
+          setDurableRun({ runId, status: "unreadable" })
+          toast.error(poll?.error || "Lost track of the durable refresh run")
+          return
+        }
+        setDurableRun({ runId, status: poll.status })
+        if (poll.status === "completed") {
+          toast.success(
+            poll.result?.cached
+              ? `Market data refreshed via ${poll.result.source}; insight already current`
+              : `Market data refreshed via ${poll.result?.source ?? "unknown"} and insight regenerated`,
+          )
+          await loadMarketData(selectedMarket)
+          return
+        }
+        if (poll.status === "failed" || poll.status === "cancelled") {
+          toast.error(`The durable refresh ${poll.status}`)
+          return
+        }
+      }
+      if (mountedRef.current) {
+        setDurableRun({ runId, status: "timed_out" })
+        toast.error("The durable refresh is still running — check back shortly")
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "The durable refresh failed")
+    } finally {
+      if (mountedRef.current) setIsDurableRefreshing(false)
+    }
+  }
+
   const handleGenerateInsight = async () => {
     if (!selectedMarket) return
     setIsGenerating(true)
@@ -516,6 +593,19 @@ export function MarketInsightsDashboardClient({
             <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             Refresh Data
           </Button>
+          <Button
+            variant="outline"
+            onClick={handleDurableRefresh}
+            disabled={isDurableRefreshing || !selectedMarket}
+            title="Refresh market data and regenerate the insight as one durable run — each step retries on a transient vendor or AI failure"
+          >
+            {isDurableRefreshing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 h-4 w-4" />
+            )}
+            Refresh + regenerate (durable)
+          </Button>
         </div>
       </div>
 
@@ -527,6 +617,27 @@ export function MarketInsightsDashboardClient({
           <Badge variant="outline" className="ml-2">
             {marketData.source_type || "unknown"}
           </Badge>
+        </div>
+      )}
+
+      {/* Durable run status — the reader side of the runId the POST returns */}
+      {durableRun && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          {isDurableRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckSquare className="h-4 w-4" />}
+          Durable refresh
+          <Badge
+            variant={
+              durableRun.status === "completed"
+                ? "default"
+                : durableRun.status === "failed" || durableRun.status === "cancelled" || durableRun.status === "unreadable"
+                  ? "destructive"
+                  : "secondary"
+            }
+            className="capitalize"
+          >
+            {durableRun.status.replace(/_/g, " ")}
+          </Badge>
+          <span className="font-mono text-xs">run …{durableRun.runId.slice(-8)}</span>
         </div>
       )}
 

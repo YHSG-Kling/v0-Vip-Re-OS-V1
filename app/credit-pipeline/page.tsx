@@ -114,6 +114,31 @@ interface PickerContact {
   last_name: string | null
 }
 
+/**
+ * The credit FILE — what GET /api/credit/status returns for one contact
+ * (app/api/credit/status/route.ts). `creditStatus` is the credit_status TABLE row
+ * (credit_score / debt_to_income / last_updated / notes, live columns per
+ * scripts/schema-snapshot.ts), distinct from the free-text contacts.credit_status
+ * column this dialog WRITES through updateContactCreditStatus. `creditLog` is the
+ * contact's activities filtered to activity_type "credit-related". Until this
+ * page fetched it, nothing in the tree read either.
+ */
+interface CreditFile {
+  creditStatus: {
+    credit_score: number | null
+    debt_to_income: number | null
+    last_updated: string | null
+    notes: string | null
+  } | null
+  creditLog: Array<{
+    id: string
+    title: string | null
+    description: string | null
+    notes: string | null
+    created_at: string | null
+  }>
+}
+
 export default function CreditPipelinePage() {
   const [accounts, setAccounts] = useState<CreditAccount[]>([])
   const [stats, setStats] = useState<PipelineStats | null>(null)
@@ -359,7 +384,14 @@ function ManageCreditAccountDialog({
   const [expectedTimeline, setExpectedTimeline] = useState("")
   const [referring, setReferring] = useState(false)
 
+  // The READ side of the credit lane: GET /api/credit/status (session-tenant
+  // gated on the server; only the contact id the agent picked is sent).
+  const [creditFile, setCreditFile] = useState<CreditFile | null>(null)
+  const [creditFileError, setCreditFileError] = useState<string | null>(null)
+  const [loadingCreditFile, setLoadingCreditFile] = useState(false)
+
   const open = account !== null
+  const contactId = account?.contact_id ?? null
 
   useEffect(() => {
     if (!open) return
@@ -370,8 +402,33 @@ function ManageCreditAccountDialog({
     setPartnerId("")
     setReferralNotes("")
     setExpectedTimeline("")
+    setCreditFile(null)
+    setCreditFileError(null)
 
     let cancelled = false
+
+    if (contactId) {
+      setLoadingCreditFile(true)
+      fetch(`/api/credit/status?contactId=${encodeURIComponent(contactId)}`, { credentials: "same-origin" })
+        .then(async (res) => {
+          const body = await res.json().catch(() => null)
+          if (cancelled) return
+          if (!res.ok || !body?.success) {
+            // 404 is the route's fail-closed answer for a foreign or unknown
+            // contact; it is shown, never silently rendered as "no file".
+            setCreditFileError(body?.error || `Credit file unavailable (${res.status})`)
+            return
+          }
+          setCreditFile({ creditStatus: body.creditStatus ?? null, creditLog: body.creditLog ?? [] })
+        })
+        .catch((e: any) => {
+          if (!cancelled) setCreditFileError(e?.message || "Could not load the credit file")
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingCreditFile(false)
+        })
+    }
+
     setLoadingPartners(true)
     listPartnersWithReferrals()
       .then((res) => {
@@ -387,7 +444,7 @@ function ManageCreditAccountDialog({
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, contactId])
 
   async function handleSaveStatus() {
     if (!account?.contact_id) return
@@ -464,6 +521,68 @@ function ManageCreditAccountDialog({
 
         <div className="space-y-6">
           <section className="space-y-3">
+            <h3 className="text-sm font-semibold">Credit file</h3>
+            {loadingCreditFile ? (
+              <p className="text-sm text-muted-foreground">Loading credit file…</p>
+            ) : creditFileError ? (
+              <p className="text-sm text-destructive">{creditFileError}</p>
+            ) : !creditFile ? (
+              <p className="text-sm text-muted-foreground">No contact is attached to this account.</p>
+            ) : (
+              <div className="space-y-3">
+                {creditFile.creditStatus ? (
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">Credit score</p>
+                      <p className="font-semibold">{creditFile.creditStatus.credit_score ?? "—"}</p>
+                    </div>
+                    <div className="rounded-md border p-3">
+                      <p className="text-xs text-muted-foreground">Debt-to-income</p>
+                      <p className="font-semibold">
+                        {creditFile.creditStatus.debt_to_income != null
+                          ? `${creditFile.creditStatus.debt_to_income}%`
+                          : "—"}
+                      </p>
+                    </div>
+                    <div className="col-span-2 text-xs text-muted-foreground">
+                      Last updated{" "}
+                      {creditFile.creditStatus.last_updated
+                        ? new Date(creditFile.creditStatus.last_updated).toLocaleString()
+                        : "never"}
+                      {creditFile.creditStatus.notes ? ` · ${creditFile.creditStatus.notes}` : ""}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No credit file (score / DTI) recorded for this contact yet. The posture you save below writes the
+                    contact&apos;s credit_status field, not this file.
+                  </p>
+                )}
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Credit-related activity ({creditFile.creditLog.length})
+                  </p>
+                  {creditFile.creditLog.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No credit-related activity logged.</p>
+                  ) : (
+                    <ul className="divide-y rounded-md border text-sm">
+                      {creditFile.creditLog.slice(0, 10).map((a) => (
+                        <li key={a.id} className="px-3 py-2">
+                          <p className="font-medium">{a.title || a.description || "Credit activity"}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {a.created_at ? new Date(a.created_at).toLocaleString() : "Undated"}
+                            {a.notes ? ` · ${a.notes}` : ""}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3 border-t pt-4">
             <h3 className="text-sm font-semibold">Credit status</h3>
             <div className="space-y-2">
               <Label htmlFor="cc-status">Status</Label>

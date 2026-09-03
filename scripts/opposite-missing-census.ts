@@ -2348,20 +2348,54 @@ stage("C3 exports")
 const GENERATED_EXPORT_EXEMPT_PREFIX = "lib/external/_generated/"
 const generatedCorpusFiles = productFiles.filter((f) => f.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
 let generatedExemptExports = 0
+
+/**
+ * ── FRAMEWORK-CONSUMED TYPE EXPORTS, name-scoped and SELF-REPORTING (2026-09-03) ──
+ * An export whose only importer is BUILD OUTPUT this corpus never contains.
+ * types/next-augment.d.ts::PrefetchForTypeCheckInternal is consumed by the
+ * `.next/types/app/**\/page.ts` wrappers Next 16.1.6 generates (the file's own
+ * header, lines 1-18, records the upstream name mismatch it papers over); no
+ * runtime file names it, so the orphan-type-export scan resurfaced it every
+ * wave as a burn-down item that cannot be burned down without breaking
+ * `next build`. Exempted BY NAME — one file::name key, not a prefix, not a
+ * directory — on the GENERATED_EXPORT_EXEMPT_PREFIX model: every key must still
+ * name a live export (a stale entry goes red instead of sitting here reading as
+ * enforced, §2), and a sibling orphan in the same file is still reported.
+ * Remove the entry when the augmentation file itself is deleted (Next 16.1.7+).
+ */
+const FRAMEWORK_CONSUMED_TYPE_EXPORTS = new Map<string, string>([
+  ["types/next-augment.d.ts::PrefetchForTypeCheckInternal",
+    "imported only by Next's generated .next/types/** page wrappers (types/next-augment.d.ts:1-18) — build output, never in this corpus"],
+])
+let frameworkConsumedExemptExports = 0
+const frameworkConsumedExempt = (e: ExportRef) => FRAMEWORK_CONSUMED_TYPE_EXPORTS.has(`${e.file}::${e.name}`)
 for (const e of typeOrphans) {
   if (e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) { generatedExemptExports++; continue }
+  if (frameworkConsumedExempt(e)) { frameworkConsumedExemptExports++; continue }
   add("orphan-type-export", `${e.file}::${e.name}`, `${e.file}:${e.line}`, `exported ${e.kind}, referenced by no other file`)
 }
+// Both arms of the name-scoped exemption, proved — an exemption that only ever
+// exempts is indistinguishable from a scan that stopped working.
+control("C3 every framework-consumed exemption still names a LIVE orphan export (a stale entry = red)",
+  [...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].every((key) => typeOrphans.some((e) => `${e.file}::${e.name}` === key)),
+  [...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].join(","))
+control("C3 the framework-consumed exemption is NAME-EXACT — a sibling orphan in the same file, and the same name in another file, are still findings",
+  !frameworkConsumedExempt({ file: "types/next-augment.d.ts", name: "PrefetchForTypeCheckInternalSibling", kind: "type", line: 1 }) &&
+  !frameworkConsumedExempt({ file: "types/other-augment.d.ts", name: "PrefetchForTypeCheckInternal", kind: "type", line: 1 }) &&
+  frameworkConsumedExempt({ file: "types/next-augment.d.ts", name: "PrefetchForTypeCheckInternal", kind: "type", line: 1 }))
+control("C3 the framework-consumed exemption swallowed exactly one finding per key",
+  frameworkConsumedExemptExports === FRAMEWORK_CONSUMED_TYPE_EXPORTS.size,
+  `${frameworkConsumedExemptExports} exempted for ${FRAMEWORK_CONSUMED_TYPE_EXPORTS.size} key(s)`)
 control("C3 the generated-file exemption still matches at least one corpus file (a stale exemption = red)",
   generatedCorpusFiles.length > 0, generatedCorpusFiles.join(",") || "NO FILE under " + GENERATED_EXPORT_EXEMPT_PREFIX)
 control("C3 the generated-file exemption is prefix-EXACT — a sibling outside _generated/ is not exempt",
   !"lib/external/rentcast-typed.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX) &&
   !"lib/property/rentcast-eligibility.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
-control("C3 no finding under the exempted prefix survives, and none outside it was swallowed",
+control("C3 no finding under the exempted prefix survives, and none outside it (or the name-scoped list) was swallowed",
   !findings.some((f) => f.cat === "orphan-type-export" && f.where.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) &&
-  typeOrphans.filter((e) => !e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)).length ===
+  typeOrphans.filter((e) => !e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX) && !frameworkConsumedExempt(e)).length ===
     findings.filter((f) => f.cat === "orphan-type-export").length,
-  `${generatedExemptExports} exempted`)
+  `${generatedExemptExports} exempted by prefix, ${frameworkConsumedExemptExports} by name`)
 
 control("C3 counted non-function exports at all", typeExports.length > 200, `${typeExports.length} scanned`)
 {
@@ -4039,6 +4073,7 @@ console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unre
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)
 console.log(`               · ${generatedExemptExports} orphan export(s) in ${generatedCorpusFiles.length} GENERATED file(s) under ${GENERATED_EXPORT_EXEMPT_PREFIX} exempt BY RULING (codegen scaffolding — hand-pruning a generated file is §3-wrong; self-reporting, red when the prefix matches nothing)`)
+console.log(`               · ${frameworkConsumedExemptExports} orphan type export(s) exempt BY NAME as FRAMEWORK-CONSUMED (${[...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].join(", ")} — imported only by Next's generated .next/types/** build output; self-reporting, red when the key names no live orphan)`)
 console.log(`               · ${typeStructurallyReachable} reachable through another declaration of the same module, private props interfaces included (a type in an exported signature needs no named import)`)
 console.log(`               · ${typeInUnaddressedModule} declared in a module NOTHING imports and no framework loads — the structural exclusion does not apply there, because it has no consumer to apply through`)
 console.log(`  C3 graph     · ${graphEdges} resolved import edges over ${TS_PATH_ALIASES.length} tsconfig path alias(es) · ${importersOf.size} modules with at least one importer`)

@@ -5,13 +5,37 @@
  * Accepts trigger events from external systems (GHL, IDX, Zapier, QR scans,
  * email provider open/click webhooks) and fires sequence auto-enrollment.
  *
- * Auth: Bearer token via WORKFLOW_WEBHOOK_SECRET env var (or
- * brokerage-level webhook secret stored in brokerage_integrations.config.webhook_secret).
+ * ── AUTH: which secret authorises which tenant reach ────────────────────────
+ * `Authorization: Bearer <secret>`, compared timing-safe. Two secrets, two reaches:
+ *
+ *   1. PLATFORM path — WORKFLOW_WEBHOOK_SECRET (env). A CROSS-TENANT master key:
+ *      the body's `brokerageId` is trusted as given, so whoever holds this value
+ *      can enroll contacts in ANY brokerage's sequences. Platform-operated
+ *      integrations only. See docs/SERVICE-SECRETS.md.
+ *
+ *   2. TENANT path — the signing secret of one of the brokerage's own ACTIVE
+ *      outbound webhook subscriptions (tenant_webhook_subscriptions.secret, the
+ *      `whsec_…` value the tenancy principal minted on /settings/developers and
+ *      was shown once — app/actions/tenant-webhooks.ts). The secret is looked up
+ *      BY the body's brokerageId and must match one of THAT brokerage's rows, so
+ *      the tenant is bound to the credential: a tenant secret cannot name another
+ *      brokerage, and a body-supplied brokerageId on this path is a lookup key,
+ *      not a trusted claim (CLAUDE.md §4).
+ *
+ *   The header used to promise "brokerage_integrations.config.webhook_secret".
+ *   No such column exists — brokerage_integrations has no `config` (live columns:
+ *   scripts/schema-snapshot.ts:145) — and nothing in the tree ever minted a
+ *   per-brokerage inbound secret, so that path was documentation for a gate that
+ *   did not run. tenant_webhook_subscriptions.secret is the survivor: it has a
+ *   writer, a rotation path (delete + re-create the subscription) and a UI.
+ *   Trade-off, stated: the same value signs our deliveries TO the tenant, so the
+ *   host that receives them can also fire triggers INTO that tenant — and only
+ *   that tenant.
  *
  * Body (JSON):
  * {
  *   event:       string          // trigger event value from WORKFLOW_TRIGGERS
- *   brokerageId: string          // required
+ *   brokerageId: string          // required — trusted on path 1, a lookup key on path 2
  *   contactId?:  string          // if known
  *   contactEmail?: string        // used to look up contactId if not provided
  *   metadata?:   Record<string,any>
@@ -22,22 +46,29 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
+import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Constant-time equality; unequal lengths are a mismatch, never an exception. */
+function secretsMatch(given: string, expected: string): boolean {
+  const a = Buffer.from(given)
+  const b = Buffer.from(expected)
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b)
+}
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // ── Auth ──────────────────────────────────────────────────────────────────
   const authHeader = req.headers.get("Authorization") ?? ""
   const token = authHeader.replace(/^Bearer\s+/i, "")
-
-  const globalSecret = process.env.WORKFLOW_WEBHOOK_SECRET
-  if (!globalSecret) {
-    return NextResponse.json({ error: "WORKFLOW_WEBHOOK_SECRET not configured" }, { status: 500 })
-  }
-  if (token !== globalSecret) {
+  if (!token) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   // ── Parse body ────────────────────────────────────────────────────────────
+  // Parsed before the tenant path can run: that path needs brokerageId as its
+  // lookup key. Nothing is written or enrolled until one of the two paths
+  // has authorised.
   let body: {
     event: string
     brokerageId: string
@@ -61,6 +92,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const supabase = createServiceClient()
 
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  let authorisedVia: "platform" | "tenant" | null = null
+
+  // Path 1 — platform master key. An unset env var disables THIS path only; it
+  // never widens into "accept anything" (fail closed).
+  const globalSecret = process.env.WORKFLOW_WEBHOOK_SECRET
+  if (globalSecret && secretsMatch(token, globalSecret)) {
+    authorisedVia = "platform"
+  }
+
+  // Path 2 — the brokerage's own subscription secret, bound to the body's
+  // brokerageId by the query predicate. A malformed id cannot match a row.
+  if (!authorisedVia && UUID_SHAPE.test(brokerageId)) {
+    const { data: subscriptions, error } = await supabase
+      .from("tenant_webhook_subscriptions")
+      .select("secret")
+      .eq("brokerage_id", brokerageId)
+      .eq("active", true)
+    if (error) {
+      // A gate that cannot run must refuse, not pass.
+      console.error("[workflow/trigger] tenant secret lookup refused:", error.message)
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    // Every candidate is compared — no early exit — so timing does not reveal
+    // WHICH row (if any) matched.
+    let matched = false
+    for (const row of subscriptions ?? []) {
+      if (typeof row.secret === "string" && secretsMatch(token, row.secret)) matched = true
+    }
+    if (matched) authorisedVia = "tenant"
+  }
+
+  if (!authorisedVia) {
+    if (!globalSecret) console.error("[workflow/trigger] WORKFLOW_WEBHOOK_SECRET is not configured; platform path disabled")
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   // ── Resolve contactId from email if not provided ───────────────────────────
   if (!contactId && contactEmail) {
     const { data: contact } = await supabase
@@ -83,7 +151,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       contact_id:   contactId,
       event_type:   event,
       source:       source ?? "webhook",
-      payload:      { ...metadata },
+      payload:      { ...metadata, authorised_via: authorisedVia },
       received_at:  new Date().toISOString(),
     })
   ).catch(() => {})
