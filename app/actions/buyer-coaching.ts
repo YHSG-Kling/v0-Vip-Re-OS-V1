@@ -10,8 +10,9 @@
 
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 
 export interface BuyerCoachingResult {
   success:                  boolean
@@ -37,28 +38,44 @@ export async function getBuyerCoaching(params: {
 }): Promise<BuyerCoachingResult> {
   // Auth gate — paid AI fallback runs on cache miss, PII (contact_persona,
   // buyer_stage) returned. Was unauthenticated.
-  const authClient = await createClient()
-  const { data: { user } } = await authClient.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-  const { data: callerRow } = await authClient
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
-  const brokerageId = callerRow.brokerage_id
+  //
+  // ── AND UNTIL WAVE 26 IT HAD NO ROLE TEST ──────────────────────────────────
+  // It read the caller's brokerage_id, read the contact's, and admitted on
+  // EQUALITY ALONE. `users.user_type` can hold `contact`, `vendor` and `lender`
+  // and those rows carry a brokerage_id, so every such seat passed for EVERY
+  // contact in the tenant — reading that person's buyer stage and persona, and
+  // on a cache miss BILLING the brokerage for an Opus call to do it. This card
+  // is agent-facing coaching ABOUT a buyer (its only caller is the CRM contact
+  // page), so the back-office roster is the right question, and `isContactSelf`
+  // is deliberately not offered: it is the agent's playbook, not the buyer's.
+  //
+  // The `users` read also discarded `error` — supabase-js RESOLVES a refusal
+  // (§3), so an RLS denial of the caller's own row was reported as
+  // "Unauthorized". `requireCaller()` reads that error and separates the cases.
+  const caller = await requireCaller()
+  if (!caller.ok) {
+    return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  }
+  if (!isCrmContactStaff(caller.userType)) return { success: false, error: "Forbidden" }
+  const brokerageId = caller.brokerageId
 
   const supabase = createServiceClient()
 
-  // 1. Load contact.buyer_stage + contact_persona — must belong to caller's brokerage
+  // 1. Load contact.buyer_stage + contact_persona — must belong to caller's brokerage.
+  //    `.maybeSingle()`, not `.single()`: single() raises PGRST116 on zero rows, so a
+  //    refused read and an absent contact arrived as the same "error" and were reported
+  //    with the same sentence. They are different answers and must stay apart (§4).
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("buyer_stage, contact_persona, brokerage_id")
     .eq("id", params.contactId)
-    .single()
+    .maybeSingle()
 
-  if (contactError || !contact) {
-    return { success: false, error: contactError?.message ?? "Contact not found" }
+  if (contactError) {
+    return { success: false, error: "Access check failed" }
+  }
+  if (!contact || !contact.brokerage_id) {
+    return { success: false, error: "Contact not found" }
   }
   if (contact.brokerage_id !== brokerageId) {
     return { success: false, error: "Forbidden" }

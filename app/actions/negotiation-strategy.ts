@@ -33,6 +33,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { writeNegotiationStrategy } from "@/lib/negotiation/strategy-writer"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -323,24 +324,40 @@ export async function getNegotiationStrategyForContactAction(
   | { ok: true; strategy: NegotiationStrategyView | null }
   | { ok: false; error: string }
 > {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  // ── PORTAL-FACING, SO THE PORTAL GATE IS THE RIGHT ONE (wave 26, lane SEC3) ──
+  //
+  // Its only caller is <NegotiationMirrorPanel>, mounted on the customer's own
+  // portal home (app/portal/[contactId]/buyer-home.tsx and seller-home.tsx). The
+  // person this is for is the CONTACT, reading their own negotiation — so the
+  // fix is not "staff only", it is the shared gate that answers both halves.
+  //
+  // What was wrong: the caller's `users.brokerage_id` was compared to the
+  // contact's and admitted on EQUALITY ALONE, with no role test. `users.user_type`
+  // can hold `contact`, `vendor` and `lender` on rows carrying a brokerage_id, so
+  // ANY other buyer — and any vendor or lender seat — in the same brokerage could
+  // read a stranger's live negotiation: recommended counter price, win
+  // probability, and the drafted counter language. CLAUDE.md §5 puts those seats
+  // on their OWN record only, and this is the "only their own" case: the contact
+  // themselves is legitimate, everyone else in the tenant who is not staff is not.
+  //
+  // `isContactSelf` is allowed here BECAUSE the payload is the contact's own
+  // side of their own deal. It is not a brokerage financial: commission, CDA and
+  // the books are elsewhere and stay staff-only.
+  //
+  // It also fixes a narrowing: a buyer whose `users` row has no brokerage_id was
+  // refused on their own portal page, which the layout already admits them to.
+  //
+  // Both `users` and `contacts` reads discarded `error` (§3 — supabase-js
+  // RESOLVES a refusal, so a denied read was reported as "Unauthorized" /
+  // "Contact not found"). The gate destructures both and keeps "Access check
+  // failed" apart from "Forbidden".
+  const gate = await requireContactAccess(contactId)
+  if (!gate.ok) return { ok: false, error: gate.error }
 
-  // Verify contact belongs to caller's brokerage
-  const { data: contactRow } = await supabase
-    .from("contacts")
-    .select("brokerage_id")
-    .eq("id", contactId)
-    .maybeSingle()
-  if (!contactRow) return { ok: false, error: "Contact not found" }
-  if (contactRow.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
+  // The PAYLOAD read stays on the session (RLS-bound) client, so policy
+  // ns_contact_self is a second bound underneath the app gate rather than being
+  // replaced by it.
+  const supabase = await createClient()
 
   // CUSTOMER-FACING (the portal mirror panel) — deliberately does NOT select the
   // internal provenance/rationale columns (generated_by, agent_disposition*,
@@ -350,7 +367,7 @@ export async function getNegotiationStrategyForContactAction(
     .from("negotiation_strategies")
     .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
     .eq("contact_id", contactId)
-    .eq("brokerage_id", u.brokerage_id)
+    .eq("brokerage_id", gate.brokerageId)
     .eq("status", "open")
     .order("created_at", { ascending: false })
     .limit(1)

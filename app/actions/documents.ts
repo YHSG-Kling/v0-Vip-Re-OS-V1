@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { parseStorageObjectUrl } from "@/lib/storage/parse-object-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { revalidatePath } from "next/cache"
 // Was `import { put, del } from "@vercel/blob"`. The upload half already moved
 // to lib/storage/put-and-sign.ts#putAndSign (see below); this removes the last
@@ -903,30 +904,86 @@ async function validateDocumentFields(
 // DOCUMENT RETRIEVAL
 // ============================================
 
-export async function getContactDocuments(contactId: string) {
+export interface ContactDocumentsResult {
+  /** false = the documents were NOT read. `documents` is empty and means nothing. */
+  ok: boolean
+  error?: string
+  documents: any[]
+}
+
+/**
+ * A contact's uploaded documents (`client_documents`), for the back office.
+ *
+ * TWO DEFECTS CLOSED HERE (wave 26, lane SEC3):
+ *
+ * 1. NO ROLE TEST. The gate read the caller's brokerage and the contact's
+ *    brokerage and admitted on EQUALITY ALONE. `users.user_type` can hold
+ *    `contact`, `vendor` and `lender`, and those rows carry a brokerage_id — so
+ *    a vendor seat could pull any client's pre-approval letters, bank
+ *    statements and inspection reports out of the whole brokerage. CLAUDE.md §5:
+ *    contacts, lenders and vendors see no financials, and see only their own.
+ *    The roster is now asked explicitly, before the service client is built.
+ *
+ *    Deliberately NOT `isContactSelf`: this is the back-office reader, and the
+ *    documents it returns are the ones the AGENT filed. The portal's own
+ *    document surfaces gate on lib/portal/require-contact-access.ts, which is
+ *    where a contact's route to their own record lives.
+ *
+ * 2. EVERY REFUSAL RENDERED AS "NO DOCUMENTS". All four exits returned a bare
+ *    `[]` — unauthenticated, forbidden, a refused ownership read, and a refused
+ *    documents read were indistinguishable from a contact who has uploaded
+ *    nothing. supabase-js RESOLVES a refused query (§3), so the last two never
+ *    even surfaced an error to discard. "Nobody could check" must never render
+ *    as "checked, and there is nothing here" (§4). `ok` is now the discriminant
+ *    and BOTH reads destructure `error`.
+ *
+ * NOTE for the reviewer: this export has no caller in the tree (it is in
+ * scripts/orphan-export-baseline.json), which is why the return shape could be
+ * corrected rather than worked around. It is still a `"use server"` export and
+ * therefore a live public HTTP endpoint (§1: unreferenced is not dead), which is
+ * exactly why it is gated rather than deleted. Its same-named sibling
+ * app/actions/contact-details.ts:getContactDocuments reads a DIFFERENT table
+ * (`documents`) and is a different function, not a duplicate of this one.
+ */
+export async function getContactDocuments(contactId: string): Promise<ContactDocumentsResult> {
   // AUTH GATE — previously returned every document for any caller-supplied
   // contact id with no tenant scope.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return []
+    return { ok: false, error: "Unauthorized", documents: [] }
+  }
+
+  // THE TEST THAT WAS MISSING — asked before the service client exists.
+  if (!isCrmContactStaff(ctx.userType)) {
+    return { ok: false, error: "Forbidden", documents: [] }
   }
 
   const svc = createServiceClient()
-  const { data: c } = await svc
+  const { data: c, error: contactError } = await svc
     .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
-  if (!c || c.brokerage_id !== ctx.brokerageId) {
-    return []
+  if (contactError) {
+    return { ok: false, error: "Access check failed", documents: [] }
+  }
+  if (!c || !c.brokerage_id) {
+    return { ok: false, error: "Contact not found", documents: [] }
+  }
+  if (c.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "Forbidden", documents: [] }
   }
 
   const supabase = await createClient()
-  const { data: documents } = await supabase
+  const { data: documents, error: documentsError } = await supabase
     .from("client_documents")
     .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
-  return documents || []
+  if (documentsError) {
+    return { ok: false, error: documentsError.message, documents: [] }
+  }
+
+  return { ok: true, documents: documents ?? [] }
 }
 
 export async function getDocumentWithAnalysis(documentId: string) {

@@ -22,6 +22,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
@@ -194,24 +196,41 @@ export async function getAgentPortalStream(params: {
   // Auth gate — agent stream contains both agent_copy + customer_copy
   // (full event detail, suggested actions, etc.) Was previously
   // unauthenticated; any signed-in user could pull any contact's stream.
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-  const { data: callerRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
+  //
+  // ── THE HALF THAT WAS STILL MISSING (wave 26, lane SEC3) ────────────────────
+  //
+  // The gate compared two brokerage_ids and admitted on EQUALITY ALONE. No role
+  // was ever asked. `users.user_type` can hold `contact`, `vendor` and `lender`,
+  // and those rows carry a brokerage_id — so every one of them could pull ANY
+  // contact's AGENT-side stream in the tenant. That payload is the thing this
+  // function exists to keep separate: `AGENT_STREAM_COLS` returns `agent_copy`
+  // alongside `customer_copy`, i.e. the internal note the agent reads and the
+  // customer is never shown. The customer-facing sibling above deliberately
+  // withholds it; this one hands it over, so it is staff-only by construction
+  // and now says so. (Its only caller is the CRM contact page, so no portal
+  // surface loses anything.)
+  //
+  // Both reads also discarded `error`. supabase-js RESOLVES a refusal (§3): an
+  // RLS denial of the caller's own users row was reported as "Unauthorized" and
+  // a denied contacts read as "Contact not found" — a clean negative, which is
+  // the one thing a refusal must never be laundered into. `requireCaller()`
+  // reads the first, and the second now has its own sentence.
+  const caller = await requireCaller()
+  if (!caller.ok) {
+    return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  }
+  if (!isCrmContactStaff(caller.userType)) return { success: false, error: "Forbidden" }
+  const supabase = caller.supabase
 
   // Verify contact belongs to caller's brokerage
-  const { data: contact } = await supabase
+  const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select("brokerage_id")
     .eq("id", params.contactId)
     .maybeSingle()
-  if (!contact) return { success: false, error: "Contact not found" }
-  if (contact.brokerage_id !== callerRow.brokerage_id) {
+  if (contactError) return { success: false, error: "Access check failed" }
+  if (!contact || !contact.brokerage_id) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== caller.brokerageId) {
     return { success: false, error: "Forbidden" }
   }
 
@@ -219,12 +238,12 @@ export async function getAgentPortalStream(params: {
     .from("portal_event_stream")
     .select(AGENT_STREAM_COLS)
     .eq("contact_id", params.contactId)
-    .eq("brokerage_id", callerRow.brokerage_id)
+    .eq("brokerage_id", caller.brokerageId)
     .order("occurred_at", { ascending: false })
     .limit(params.limit ?? 50)
   if (error) return { success: false, error: error.message }
   const rows = (data ?? []) as RawRow[]
-  const completers = await resolveCompleterNames(supabase, rows, callerRow.brokerage_id)
+  const completers = await resolveCompleterNames(supabase, rows, caller.brokerageId)
   return { success: true, rows: rows.map((r) => rowToStream(r, null, completers)) }
 }
 

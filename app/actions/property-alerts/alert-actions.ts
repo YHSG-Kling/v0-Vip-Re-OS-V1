@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runAlert } from "@/lib/property-alerts/alert-engine"
 import { ensureSmsFirstChannels } from "@/app/actions/instant-property-alerts"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { RENTCAST_ALERT_KEY_PREFIX } from "@/lib/property-alerts/idx-alert-search"
 
@@ -21,6 +22,28 @@ import { RENTCAST_ALERT_KEY_PREFIX } from "@/lib/property-alerts/idx-alert-searc
 // callers that did have auth still trusted caller-supplied brokerageId /
 // contactId, which is an IDOR vulnerability.
 
+// ── THIS FUNCTION IS CALLED requireAgent AND DID NOT ASK (wave 26, lane SEC3) ─
+//
+// It proved a session and a tenant and stopped there — no role was ever read, so
+// its name was a claim the code did not make. Every caller then compared a
+// brokerage_id to a brokerage_id and admitted on EQUALITY ALONE.
+// `users.user_type` can hold `contact`, `vendor` and `lender`, and those rows
+// carry a brokerage_id, so all of them passed. Through `createPropertyAlert`
+// that meant a vendor seat could create an alert against ANY contact in the
+// tenant and, by asking for `frequency: 'instant'`, make the platform push
+// SMS to that person immediately (`ensureSmsFirstChannels` then `runAlert`) —
+// an outbound egress on someone else's client, billed to the brokerage, with
+// `agent_user_id` naming the vendor. §5: contacts, lenders and vendors see only
+// their own.
+//
+// The buyer half of this file is NOT touched: `requireAlertAccess` and
+// `requireBuyerAccess` carry the contact-self branch and are how a buyer reaches
+// their own alerts. This is the agent/staff door only, and its callers are all
+// CRM surfaces (createPropertyAlert, and the three at :413/:454/:514).
+//
+// The `users` read also dropped `error` — a refusal RESOLVES (§3), so an RLS
+// denial of the caller's own row was reported as "unauthenticated", which sends
+// a signed-in agent to the login page over a permissions outage.
 async function requireAgent(): Promise<
   | { ok: true; userId: string; brokerageId: string; teamId: string | null }
   | { ok: false; error: string }
@@ -32,12 +55,16 @@ async function requireAgent(): Promise<
   // cascade (agent → team → brokerage → platform): a gate asked only at
   // brokerage scope cannot see a credential filed at team scope, and would then
   // spend the platform's RentCast on a tenant who owns a feed.
-  const { data: u } = await supabase
+  const { data: u, error: userError } = await supabase
     .from("users")
-    .select("brokerage_id, team_id")
+    .select("brokerage_id, team_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
+  if (userError) return { ok: false, error: "access check failed" }
   if (!u?.brokerage_id) return { ok: false, error: "unauthenticated" }
+  // The test the name always implied. Fails closed on a null user_type — an
+  // absent role must never read as a granted one (§4).
+  if (!isCrmContactStaff(u.user_type as string | null)) return { ok: false, error: "forbidden" }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id, teamId: (u.team_id as string | null) ?? null }
 }
 
@@ -156,13 +183,17 @@ export async function createPropertyAlert(params: {
 
   const svc = createServiceClient()
 
-  // Verify contact belongs to caller's brokerage before creating an alert for them
-  const { data: contact } = await svc
+  // Verify contact belongs to caller's brokerage before creating an alert for
+  // them. `error` destructured (§3): a refused read RESOLVED as `data: null` and
+  // was reported as "contact not found" — a clean negative, which is the one
+  // answer an outage must never be laundered into.
+  const { data: contact, error: contactError } = await svc
     .from("contacts")
     .select("brokerage_id")
     .eq("id", params.contactId)
     .maybeSingle()
-  if (!contact) return { success: false, error: "contact not found" }
+  if (contactError) return { success: false, error: "access check failed" }
+  if (!contact || !contact.brokerage_id) return { success: false, error: "contact not found" }
   if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "forbidden" }
 
   const { data, error } = await svc
@@ -202,7 +233,18 @@ export async function createPropertyAlert(params: {
 
   if (params.frequency === "instant") {
     // Instant alerts go SMS-first (98% open vs 25% email) before the first fire.
-    await ensureSmsFirstChannels(data.id)
+    // `ensureSmsFirstChannels` can now REFUSE (it grew its own session + roster +
+    // tenant gate this wave), and a refusal there is not a no-op: the alert fires
+    // email-first instead of SMS, which is a different product than the one the
+    // agent asked for. The alert itself committed, so this reports success — but
+    // it must not vanish unsaid.
+    const smsFirst = await ensureSmsFirstChannels(data.id)
+    if (smsFirst.refused) {
+      console.error(
+        `[alert-actions] ensureSmsFirstChannels REFUSED for alert ${data.id} — the instant alert was created but will NOT go SMS-first:`,
+        smsFirst.refused,
+      )
+    }
     await runAlert(data.id)
   }
 

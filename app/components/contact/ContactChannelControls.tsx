@@ -125,16 +125,29 @@ export default function ContactChannelControls({
   // disabled until it lands, so the defaults can no longer be written back
   // over a real preference by someone who clicked before the read returned.
   const [hydrated, setHydrated] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setHydrated(false)
+    setLoadError(null)
     void (async () => {
       const current = await getContactChannelControls(contactId)
       if (cancelled) return
-      // The action returns all-nulls both for "no such preference" and for a
-      // refused read. Neither is a reason to overwrite what the caller passed
-      // in, so a null field leaves the prop-derived value standing.
+      // A REFUSED READ IS NOT A HYDRATION. `ok: false` means the record was
+      // never read — forbidden, or the ownership check itself was refused. The
+      // old shape could not say that: it returned `callStopFlag: false` for a
+      // refusal, so an outage painted the call-suppression switch OFF and then
+      // ARMED Save, offering to write that "calls are allowed" back. Leaving
+      // `hydrated` false keeps Save disabled and says why, which is the only
+      // honest thing a panel can do when it does not know the record's state.
+      if (!current.ok) {
+        setLoadError(current.error ?? "Could not load channel preferences.")
+        return
+      }
+      setLoadError(null)
+      // A null field is "no such preference" — not a reason to overwrite what
+      // the caller passed in, so it leaves the prop-derived value standing.
       if (current.preferredChannel) setPreferredChannel(current.preferredChannel)
       if (current.socialHandles) setSocialHandles(current.socialHandles)
       setCallStopFlag(current.callStopFlag)
@@ -328,8 +341,12 @@ export default function ContactChannelControls({
           ) : (
             <Save size={12} />
           )}
-          {hydrated ? "Save preferences" : "Loading preferences…"}
+          {hydrated ? "Save preferences" : loadError ? "Unavailable" : "Loading preferences…"}
         </button>
+
+        {loadError && !hydrated && (
+          <p className="text-[11px] font-medium text-destructive">{loadError}</p>
+        )}
 
         {saveMsg && (
           <p

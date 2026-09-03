@@ -27,6 +27,8 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import {
   loadUniversalInbox,
@@ -453,41 +455,65 @@ export async function markInboxRead(params: {
   channel?: string
 }): Promise<{ success: boolean; error?: string }> {
   try {
-    const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    // Resolve caller's brokerage_id — earlier code authed the caller but then
+    // mutated by contact_id only, letting anyone mark another tenant's messages
+    // read.
+    //
+    // ── AND IT STILL HAD NO ROLE TEST (wave 26, lane SEC3) ────────────────────
+    //
+    // Two brokerage_ids compared, admitted on EQUALITY ALONE. `users.user_type`
+    // can hold `contact`, `vendor` and `lender` on rows that carry a
+    // brokerage_id, so any of those seats could reach into the AGENT's inbox and
+    // mark another client's unread conversation as read — destroying the signal
+    // the agent triages by, on a contact they have no business touching. This is
+    // the communications inbox (its only caller is InboxClient), so the
+    // back-office roster is the question, asked before any row is touched.
+    //
+    // The `users` read discarded `error` (§3 — a refusal RESOLVES, so an RLS
+    // denial read as "Unauthorized"); `requireCaller()` reads it.
+    const caller = await requireCaller()
+    if (!caller.ok) {
+      return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+    }
+    if (!isCrmContactStaff(caller.userType)) return { success: false, error: "Forbidden" }
+    const supabase = caller.supabase
 
-    // Resolve caller's brokerage_id — previous code authed the caller but
-    // then mutated by contact_id only, letting anyone mark another tenant's
-    // messages read.
-    const { data: callerRow } = await supabase
-      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-    if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
-
-    // Verify the contact belongs to the caller's brokerage
-    const { data: contact } = await supabase
+    // Verify the contact belongs to the caller's brokerage. A refused read is
+    // NOT "Forbidden" — that reads as a decision when it was an outage.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
-    if (!contact || contact.brokerage_id !== callerRow.brokerage_id) {
+    if (contactError) return { success: false, error: "Access check failed" }
+    if (!contact || contact.brokerage_id !== caller.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
 
-    // Mark portal messages as read — scoped by brokerage
-    await supabase
+    // Both updates dropped their `error` entirely. supabase-js RESOLVES a
+    // refusal, so a denied write returned nothing and this reported
+    // `success: true` over two mutations that never happened — the inbox then
+    // re-rendered the thread as read and the badge came back on the next load
+    // with no explanation anywhere. Zero rows matched is NOT an error here (a
+    // contact with nothing unread is the ordinary case), so these are
+    // error-checked rather than counted.
+    const { error: portalReadError } = await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", params.contactId)
-      .eq("brokerage_id", callerRow.brokerage_id)
+      .eq("brokerage_id", caller.brokerageId)
       .eq("read", false)
+    if (portalReadError) {
+      return { success: false, error: portalReadError.message }
+    }
 
     // Mark messages table — scoped by brokerage
-    await supabase
+    const { error: messagesReadError } = await supabase
       .from("messages")
       .update({ status: "read" })
       .eq("contact_id", params.contactId)
-      .eq("brokerage_id", callerRow.brokerage_id)
+      .eq("brokerage_id", caller.brokerageId)
       .eq("status", "unread")
+    if (messagesReadError) {
+      return { success: false, error: messagesReadError.message }
+    }
 
     return { success: true }
   } catch (err) {
