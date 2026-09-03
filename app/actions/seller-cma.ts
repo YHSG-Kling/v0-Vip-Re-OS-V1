@@ -7,6 +7,8 @@ import { generatePricePrediction } from "@/lib/pricing/predictive-pricing"
 import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { isValidUUID } from "@/lib/validations"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -272,6 +274,143 @@ export async function loadCMAPageData(listingId: string): Promise<CMAPageData> {
     riskFlags,
     propertyUpgrades: upgradesRes.data ?? [],
     agreement: agreementRes.data ?? null,
+  }
+}
+
+/**
+ * Load ONE cma_reports row by its own id, gated by the session's brokerage.
+ *
+ * loadCMAPageData above is listing-scoped — the latest row by listing_id — and
+ * that was the ONLY reader of a CMA in the tree. A cma_reports row with
+ * listing_id = null is legal (ai-cma.ts writes it that way for the
+ * listing-appointment prep chain), and such a row was unreachable by any page:
+ * the copilot panel held its id and had nowhere to send it. This is the by-id
+ * reader that app/dashboard/cma/[cmaId]/page.tsx renders.
+ *
+ * GATE — the exact shape of buildAppraisalDefensePackage
+ * (app/actions/appraisal-defense.ts:95-110): requireAuth → read the parent →
+ * refuse unless report.brokerage_id === auth.brokerageId. §4: the tenant comes
+ * from the session; the caller's id only picks a row INSIDE it. The children
+ * (cma_comparables, ai_comp_scores, comp_risk_flags) carry no brokerage_id —
+ * they are tenanted only transitively through cma_id — so they are read only
+ * AFTER the parent passed, and keyed by ITS id, never by the caller's string.
+ * "cma_not_found" is returned for both a missing row and a wrong-tenant row so
+ * the endpoint cannot be used as an existence oracle across tenants.
+ *
+ * §3: every read destructures { data, error } and a refusal THROWS. supabase-js
+ * resolves refusals; a `?? []` over an unread error would render an empty comp
+ * table as if the CMA had no comparables, and the page's error boundary is the
+ * honest surface for a read the database declined.
+ *
+ * Contact-facing variant — NOT built here (gap brief §1.4 names it). A portal
+ * caller would add `.eq("contact_id", <contacts.id from the portal session>)`
+ * on top of the brokerage pin — cma_reports.contact_id holds contacts.id (the
+ * PK), not contacts.contact_id — and §5 applies: a contact sees no financials
+ * beyond their own property's valuation. Precedent for the portal gate shape:
+ * app/portal/[contactId]/listing/page.tsx.
+ */
+export async function loadCMAReportById(cmaId: string): Promise<
+  | {
+      success: true
+      data: CMAPageData & { cmaId: string; listingId: string | null; contactId: string | null }
+    }
+  | { success: false; error: "unauthenticated" | "invalid_id" | "cma_not_found" }
+> {
+  // Shape check before any query (matches ai-cma.ts getCMAReport).
+  if (!isValidUUID(cmaId)) return { success: false, error: "invalid_id" }
+
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false, error: "unauthenticated" }
+
+  const { data: report, error: reportError } = await supabase
+    .from("cma_reports")
+    .select("*")
+    .eq("id", cmaId)
+    .maybeSingle()
+  if (reportError) throw new Error(`cma_reports read refused: ${reportError.message}`)
+  if (!report || report.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "cma_not_found" }
+  }
+
+  // Children — the same three reads as loadCMAPageData, keyed by the GATED
+  // parent's id. propertyUpgrades and listing_agreements are keyed by listing_id
+  // and a prep CMA has none; those two are simply absent then, not guessed.
+  const listingId: string | null = report.listing_id ?? null
+  const [compsRes, scoresRes, flagsRes, upgradesRes, agreementRes] = await Promise.all([
+    supabase
+      .from("cma_comparables")
+      .select("*")
+      .eq("cma_id", report.id)
+      .order("similarity_score", { ascending: false }),
+    supabase
+      .from("ai_comp_scores")
+      .select("*")
+      .eq("cma_id", report.id),
+    supabase
+      .from("comp_risk_flags")
+      .select("*")
+      .eq("cma_id", report.id)
+      .eq("is_resolved", false),
+    listingId
+      ? supabase
+          .from("property_upgrades")
+          .select("*")
+          .eq("listing_id", listingId)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] as PropertyUpgrade[], error: null }),
+    listingId
+      ? supabase
+          .from("listing_agreements")
+          .select(
+            "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+          )
+          .eq("listing_id", listingId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null as ListingAgreement | null, error: null }),
+  ])
+
+  if (compsRes.error) throw new Error(`cma_comparables read refused: ${compsRes.error.message}`)
+  if (scoresRes.error) throw new Error(`ai_comp_scores read refused: ${scoresRes.error.message}`)
+  if (flagsRes.error) throw new Error(`comp_risk_flags read refused: ${flagsRes.error.message}`)
+  if (upgradesRes.error) throw new Error(`property_upgrades read refused: ${upgradesRes.error.message}`)
+  if (agreementRes.error) throw new Error(`listing_agreements read refused: ${agreementRes.error.message}`)
+
+  const comparables: CMAComparable[] = compsRes.data ?? []
+  const riskFlags: CompRiskFlag[] = flagsRes.data ?? []
+  const compScores: Record<string, AICompScore> = {}
+  for (const score of scoresRes.data ?? []) {
+    compScores[score.comparable_id] = score
+  }
+
+  // `autoGenerated` — NOT derived from status here. cma_reports.status is
+  // CHECK-constrained to archived | draft | presented | ready
+  // (scripts/check-vocabularies.ts), and none of those means "no human actor".
+  // loadCMAPageData tests status === "auto_generated" (a value the column cannot
+  // hold, so it is permanently false there); repeating that test would carry a
+  // §6 vocabulary defect into a second reader. Until a column can say it, the
+  // honest answer is that the row does not claim to be auto-generated.
+  const cma: CMAReport = {
+    ...report,
+    hasAIScores: Object.keys(compScores).length > 0,
+    autoGenerated: false,
+  }
+
+  return {
+    success: true,
+    data: {
+      cma,
+      comparables,
+      compScores,
+      riskFlags,
+      propertyUpgrades: upgradesRes.data ?? [],
+      agreement: agreementRes.data ?? null,
+      cmaId: report.id as string,
+      listingId,
+      contactId: (report.contact_id as string | null | undefined) ?? null,
+    },
   }
 }
 

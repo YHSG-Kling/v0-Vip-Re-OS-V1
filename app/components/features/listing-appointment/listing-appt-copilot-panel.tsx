@@ -218,18 +218,18 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             <p className="text-xs font-semibold text-indigo-900 flex items-center gap-1.5">
               <TrendingUp className="h-3.5 w-3.5" /> CMA & Pricing
             </p>
-            {/* TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02):
-                an "Open CMA →" Link to `/crm/contacts/${contactId}/cma/${cmaId}`
-                stood here. app/crm/contacts/[contactId]/ has no cma child and NO
-                page anywhere renders a cma_reports row by its id —
-                /dashboard/listings/[id]/cma is listing-scoped (latest row by
-                listing_id, app/actions/seller-cma.ts:200) and this prep's CMA
-                carries no listingId (ListingApptCmaSummary). The card below
-                already shows the row's recommended price, range, comp count and
-                strategy inline. A future CMA detail page would need: a
-                cma_reports-by-id reader gated by brokerage_id (and contact_id
-                for the contact-facing case), plus the cma_comparables /
-                cma_price_adjustments children ai-cma.ts writes. */}
+            {/* Restored 2026-09-03: the "Open CMA" link that was tombstoned here
+                (no page rendered a cma_reports row by id) now has its route —
+                app/dashboard/cma/[cmaId]/page.tsx, read by loadCMAReportById in
+                app/actions/seller-cma.ts, brokerage-gated from the session. */}
+            {prep.cma.cmaId && (
+              <Link
+                href={`/dashboard/cma/${prep.cma.cmaId}`}
+                className="text-[11px] font-medium text-indigo-700 hover:underline whitespace-nowrap"
+              >
+                Open CMA →
+              </Link>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div>

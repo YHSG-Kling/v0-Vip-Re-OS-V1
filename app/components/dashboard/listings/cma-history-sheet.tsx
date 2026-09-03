@@ -320,10 +320,14 @@ export function CmaHistorySheet({
                       ) : null}
                       {isShared ? "Unmark Shared" : "Mark Shared with Seller"}
                     </Button>
-                    <Link href={`/listings/${listingId}`}>
+                    {/* Per-row link opens THIS report by id (app/dashboard/cma/[cmaId]).
+                        It pointed at /listings/${listingId} labelled "Regenerate" —
+                        the listing page, not the report, and regeneration is the
+                        "Generate New CMA" button at the top of this sheet. */}
+                    <Link href={`/dashboard/cma/${cma.id}`}>
                       <Button size="sm" variant="ghost" className="h-6 text-[10px] px-2 gap-1">
                         <ExternalLink className="h-2.5 w-2.5" />
-                        Regenerate
+                        Open report
                       </Button>
                     </Link>
                   </div>
