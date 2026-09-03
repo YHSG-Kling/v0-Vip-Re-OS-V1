@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isValidUUID } from "@/lib/validations"
 // ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext()
 // and writes through its `db`. Cookie (RLS) client for normal tenant users;
 // service client ONLY under an active FULL impersonation grant re-validated at
@@ -107,6 +108,99 @@ export async function getTasks(params?: {
     return { success: true, tasks }
   } catch (error) {
     return handleError(error, "getTasks")
+  }
+}
+
+/**
+ * One `tasks` row as getTasks/getTaskById return it: every column of the
+ * table (scripts/schema-snapshot.ts `tasks`) plus the assignee flattened to
+ * the id/first_name/last_name shape every agent-name reader in the app uses.
+ */
+export type TaskWithAssignee = {
+  id: string
+  brokerage_id: string
+  title: string
+  description: string | null
+  status: string | null
+  priority: string | null
+  due_date: string | null
+  completed_at: string | null
+  assigned_to_agent_id: string | null
+  created_by_agent_id: string | null
+  assignee_type: string | null
+  auto_generated: boolean | null
+  source: string | null
+  source_enrollment_id: string | null
+  stage_key: string | null
+  tags: string[] | null
+  contact_id: string | null
+  listing_id: string | null
+  transaction_id: string | null
+  created_at: string | null
+  updated_at: string | null
+  assigned_agent: { id: string; first_name: string | null; last_name: string | null } | null
+}
+
+/**
+ * One task by id, for the agent-facing detail page (app/dashboard/tasks/[taskId]).
+ *
+ * BUILT (orphan doctrine §1.2, lane G3 2026-09-03): the daily brief had minted
+ * `/dashboard/tasks/<id>` CTAs (lib/intelligence/user-type-briefs/index.ts
+ * `complete_task`) against a page that did not exist, and no reader anywhere
+ * opened a task by id. This is the missing half.
+ *
+ * SAME SCOPE AS getTasks, not a second rule: tenant first and unconditional
+ * (brokerage_id from the SESSION), then assignee-or-tenant-admin through the
+ * one roster (isAdminOrBroker — team_lead is inside it). A task the caller may
+ * not see answers with the SAME string as a task that does not exist, so a
+ * forbidden id cannot be told apart from a foreign or absent one.
+ */
+export async function getTaskById(
+  taskId: string,
+): Promise<{ success: true; task: TaskWithAssignee } | { success: false; error: string }> {
+  try {
+    if (!isValidUUID(taskId)) return { success: false, error: "Task not found in your brokerage" }
+
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet." }
+    }
+    const isTenantAdmin = isAdminOrBroker({ user_type: ctx.userType })
+    // Fail closed: a non-admin seat with no agents row can own nothing.
+    if (!isTenantAdmin && !ctx.agentId) return { success: false, error: "Agent profile not found" }
+
+    const supabase = await createClient()
+
+    // The disambiguated embed getTasks uses (see the comment above its query):
+    // `tasks` has TWO FKs to agents, so a bare embed is PGRST201.
+    const { data, error } = await supabase
+      .from("tasks")
+      .select(
+        "*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, users:user_id(first_name, last_name))",
+      )
+      .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
+    if (!isTenantAdmin && data.assigned_to_agent_id !== ctx.agentId) {
+      // Deliberately the not-found string — do not leak that the id exists.
+      return { success: false, error: "Task not found in your brokerage" }
+    }
+
+    const a = (data as any).assigned_agent ?? null
+    const u = a?.users ?? null
+    const task: TaskWithAssignee = {
+      ...(data as any),
+      assigned_agent: a
+        ? { id: a.id, first_name: u?.first_name ?? null, last_name: u?.last_name ?? null }
+        : null,
+    }
+    return { success: true, task }
+  } catch (error) {
+    return handleError(error, "getTaskById")
   }
 }
 
@@ -242,6 +336,7 @@ export async function updateTask(params: {
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return warning ? { success: true, task: data, warning } : { success: true, task: data }
   } catch (error) {
@@ -275,6 +370,7 @@ export async function completeTask(taskId: string) {
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true, task: data }
   } catch (error) {
@@ -308,6 +404,7 @@ export async function deleteTask(taskId: string) {
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true }
   } catch (error) {
@@ -365,6 +462,7 @@ export async function createTask(params: {
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true, task: data }
   } catch (error) {

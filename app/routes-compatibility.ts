@@ -53,7 +53,7 @@ export const ROUTE_ALIASES: Record<string, string> = {
   '/reviews':                        '/dashboard/referrals',
   '/showings':                       '/dashboard/listings',
   '/sphere':                         '/crm',
-  '/tasks':                          '/dashboard',
+  '/tasks':                          '/dashboard/tasks',
   '/admin/agent-roster':             '/dashboard/admin/users',
   '/admin/ai-audit':                 '/dashboard/admin/ai-audit',
   '/admin/error-handler':            '/dashboard/admin/error-handler',

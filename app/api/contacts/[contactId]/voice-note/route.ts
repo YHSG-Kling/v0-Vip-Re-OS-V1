@@ -113,7 +113,11 @@ export async function POST(
         assigned_to_agent_id: auth.agentId,
         title: t.title,
         priority: t.priority,
-        status: "open",
+        // §6 defect (lane G3, 2026-09-03): this was the ONLY writer of status
+        // "open" — every other tasks writer (createTask and ~17 inserts) mints
+        // "pending", and every reader filters on pending/in_progress/completed,
+        // so a voice-note follow-up landed in a bucket nothing displayed.
+        status: "pending",
         due_date: due,
         auto_generated: true,
       })

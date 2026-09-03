@@ -159,23 +159,18 @@ function buildAgentPriorityCtas(p: {
     case "view_listing":
       return [{ label: "Open listing", href: `/dashboard/listings/${id}` }]
     case "complete_task":
-      // TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02): this
-      // returned `{ label: "Complete task", href: `/dashboard/tasks/${id}` }`.
-      // app/dashboard/tasks does not exist; /tasks is an alias page that
-      // redirects to /dashboard, and the only tasks table surface
-      // (app/dashboard/admin/tasks — admin/broker only) reads no ?task= param.
-      // No page anywhere opens a task by id, so a task-typed entity gets NO CTA
-      // (the shell and the brief email render only href-bearing CTAs — see
-      // app/components/shell/todays-focus-card.tsx:204 — so the priority text
-      // still shows, without a dead button). A contact / transaction / listing
-      // entity tagged complete_task falls through to the entity fallback below,
-      // which is a real page. A task detail page would need a tasks-by-id
-      // reader gated by brokerage_id + assignee, and a mark-complete action.
-      // NOTE for the integrator: brief EMAILS already sent minted the old path;
-      // a thin app/dashboard/tasks/[id] redirect page has no survivor to
-      // redirect to, so those links stay dead until a task surface exists.
-      // (Falls through — a `break` here left the switch and the function
-      // returned undefined, never reaching the fallback it was written for.)
+      // RESTORED (lane G3, 2026-09-03). The 2026-09-02 tombstone here recorded
+      // that this CTA had been removed because no page opened a task by id:
+      // app/dashboard/tasks did not exist and /tasks redirected to /dashboard.
+      // Both halves that tombstone said were missing now exist — a tasks-by-id
+      // reader gated by brokerage_id + assignee-or-tenant-admin
+      // (app/actions/tasks.ts getTaskById) and the detail page at
+      // app/dashboard/tasks/[taskId] with the mark-complete control
+      // (TaskRowActions → completeTask). The brief EMAILS that already minted
+      // this path go live with it. A `return` here also ends the fall-through
+      // the tombstone relied on; the entity fallback below is unchanged for
+      // every other action_type.
+      return [{ label: "Complete task", href: `/dashboard/tasks/${id}` }]
     default:
       // Fallback by entity type when AI didn't pick action_type
       if (p.entity_type === "contact") return [{ label: "Open contact", href: `/crm?contact=${id}` }]
