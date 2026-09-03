@@ -1098,7 +1098,14 @@ const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // would demand a second insert that was never supposed to exist.
   { file: "lib/intelligence/daily-briefing-generator.ts", table: "notifications", floor: 1 },
   { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 3 },
-  { file: "app/actions/social-publishing.ts", table: "notifications", floor: 1 },
+  // MOVED, not lost (wave 26, lane L3). social-publishing.ts's notifications write
+  // lived inside `handleContentApproved`, one of THREE functions that approved a
+  // social post. It was deleted onto `approveSocialPost` in social-media-automation.ts
+  // — and the notification it carried, which the survivor lacked, was PORTED FIRST,
+  // so that file went from one notifications writer to two. The floor follows the
+  // capability rather than the filename; leaving it here would have demanded a
+  // second approver be rebuilt to satisfy a count.
+  { file: "app/actions/social-media-automation.ts", table: "notifications", floor: 2 },
   { file: "app/actions/video-content.ts", table: "notifications", floor: 3 },
   { file: "app/actions/portal-education.ts", table: "notifications", floor: 1 },
   { file: "app/api/widget/intake/route.ts", table: "notifications", floor: 1 },

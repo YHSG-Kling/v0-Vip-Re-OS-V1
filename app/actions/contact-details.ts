@@ -3,6 +3,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { requireCaller } from "@/lib/auth/require-caller"
+import { CONTACT_SCOPE_STAFF_USER_TYPES } from "@/lib/portal/require-contact-access"
 import { generateAssistantSuggestions } from "@/app/actions/assistant"
 import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
@@ -16,31 +18,188 @@ import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 // Fix: every function now resolves brokerage_id from the session and verifies
 // the contact's brokerage_id matches before returning anything.
 
+/**
+ * THE SEATS THIS FILE'S SEVEN ACTIONS SERVE — **DERIVED**, NOT RETYPED (§6).
+ *
+ * The base is the ONE contact-scope roster, exported from the gate that already
+ * owned it (`lib/portal/require-contact-access.ts`). The three extras are added
+ * HERE, explicitly, rather than by widening that roster — the vendor-scope.ts
+ * pattern that lib/auth/resolve-user-role.ts:213 blesses by name — so the portal
+ * gate's behaviour is byte-identical to what it was before this wave, and the
+ * widening lives where it is needed and is argued for.
+ *
+ * ── WHY THESE THREE, AND WHY THIS IS A NARROWING OVERALL ────────────────────
+ *
+ * The gate this replaces admitted EVERY seat whose `users.brokerage_id` matched
+ * the contact's — all fifteen storable user_types. So a roster is only honest if
+ * it names the seats that were legitimately using /crm, or the "fix" quietly
+ * revokes them. Checked against the LIVE vocabulary cache
+ * (`scripts/check-vocabularies.ts` → users.user_type, generated 2026-09-01,
+ * fifteen values), the fifteen split three ways:
+ *
+ *   ADMITTED (9) — tenant staff who work contacts:
+ *     agent, team_lead, tc, admin, broker, broker_owner   ← the base roster
+ *     broker_admin        a REAL storable seat: the live CHECK now lists it, so
+ *                         m530 is applied and CLAUDE.md §4's tenant roster names
+ *                         it. The base roster predates that and omits it; adding
+ *                         it here is what stops this change from revoking a
+ *                         broker admin's own CRM.
+ *     isa                 lib/auth/permissions.ts:32 grants it contacts:read +
+ *                         contacts:write — working contacts IS the seat.
+ *     compliance_officer  lib/auth/permissions.ts grants it contacts:read; it is
+ *                         also in public.is_lead_visible_role() (033/m518/m530).
+ *
+ *   REFUSED, AND THIS IS THE DEFECT BEING CLOSED (3) — CLAUDE.md §5 names these
+ *   three by name: "Contacts, lenders and vendors see no financials — only their
+ *   own." Live on hrvaqgvukzxfskkcrwbt: 4 `contact`, 2 `vendor`, 2 `lender`
+ *   seats carry a brokerage_id, and every one of them passed the old gate for
+ *   EVERY contact in that brokerage.
+ *     contact, vendor, lender
+ *
+ *   REFUSED, DELIBERATELY (3):
+ *     system              not a person; the AI ISA runs server-side and does not
+ *                         call these actions.
+ *     support, superadmin platform staff. They reach a tenant through the
+ *                         impersonation seam (§5), which walks the account and
+ *                         never exceeds it — not through a role hard-wired into
+ *                         a CRM read. (`requireCaller()` refuses a caller with no
+ *                         brokerage anyway, and the platform's one superadmin is
+ *                         user_type='admin', so nobody real is lost here.)
+ *
+ * `lib/auth/permissions.ts:32` also grants `lender` contacts:read. That is a
+ * DISAGREEMENT with §5, not a licence: it is recorded in the lane report as an
+ * adjacent finding, and it does not widen this roster.
+ */
+const CRM_CONTACT_STAFF_USER_TYPES: ReadonlySet<string> = new Set([
+  ...CONTACT_SCOPE_STAFF_USER_TYPES,
+  "broker_admin",
+  "isa",
+  "compliance_officer",
+])
+
+/**
+ * Fail-closed membership test. A null, undefined or unrecognised `user_type`
+ * answers NO — a seat whose role could not be resolved must never be graded as a
+ * granted one (§4), and an unresolved role is exactly what a refused `users` read
+ * leaves behind.
+ */
+function isCrmContactStaff(userType: string | null | undefined): boolean {
+  return CRM_CONTACT_STAFF_USER_TYPES.has(String(userType ?? "").toLowerCase())
+}
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE GATE FOR EVERY CONTACT-PII READ IN THIS FILE — TENANT **AND** ROLE.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ── WHAT WAS WRONG (wave 26, lane SEC2) ─────────────────────────────────────
+ *
+ * The tenant half was right and stays right: brokerage comes from the SESSION,
+ * never from a parameter (§4). What was missing was the ROLE half — this gate
+ * admitted ANY seat whose `users.brokerage_id` matched the contact's. Measured
+ * on the production project (hrvaqgvukzxfskkcrwbt): 4 users with
+ * `user_type='contact'` carry a brokerage_id, plus 2 `vendor` and 2 `lender`.
+ * Every export of a `"use server"` file is a public HTTP endpoint (§4), so a
+ * signed-in client, vendor or lender could POST any contactId in their brokerage
+ * to these seven actions and receive `select("*")` on that person's contact row,
+ * their credit accounts, their transactions, their documents and their whole
+ * activity timeline. CLAUDE.md §5: "Contacts, lenders and vendors see no
+ * financials — only their own."
+ *
+ * ── THE RULING: STAFF-ONLY, ALL SEVEN. NO isContactSelf BRANCH. ─────────────
+ *
+ * The alternative considered was "staff, PLUS a contact reaching their OWN
+ * record via `requireContactAccess`'s `isContactSelf`". It is rejected here, and
+ * deliberately, for three reasons:
+ *
+ *   1. §5 puts credit accounts and transactions out of a contact's reach on
+ *      their OWN record too — a buyer does not read the brokerage's transaction
+ *      row for their own deal out of the agent CRM's endpoint. A gate that
+ *      admits self for five actions and refuses it for two would be two gates
+ *      wearing one name, which is the §6 defect.
+ *   2. NOTHING ASKS FOR IT. The only live call site of any of these seven is
+ *      `app/crm/page.tsx:514-518` — the agent-facing CRM. The portal's own
+ *      surfaces do not import this module; they go through
+ *      `lib/portal/require-contact-access.ts`, which is where the self branch
+ *      lives and where it is exercised. Adding a self branch here would be
+ *      WIDENING a public endpoint that no surface needs widened.
+ *   3. `getContactDetails` is `select("*")` on `contacts` — lead score, owner,
+ *      internal notes, enrichment — plus the last ten `conversations`. That is
+ *      the agent's working record ABOUT a person, not the person's own record.
+ *
+ * So: same-brokerage AND a contact-facing staff seat, per
+ * `CRM_CONTACT_STAFF_USER_TYPES` above — DERIVED from the one exported roster in
+ * lib/portal/require-contact-access.ts, not a third list, and deliberately not
+ * TENANT_ADMIN_USER_TYPES, which omits `agent` and `tc` and would lock every
+ * agent out of their own CRM.
+ *
+ * No role GRANT read is needed to reach the same answer as `resolveTenantAdmin`:
+ * `agent` is already the floor of this roster, so the live "second seat"
+ * (user_type 'agent' holding an 'admin' grant) is admitted by user_type alone.
+ *
+ * NO PLATFORM-STAFF BYPASS, on purpose. `requireCaller()` refuses a caller with
+ * no brokerage of their own, so untenanted platform staff are refused here
+ * exactly as they were before this change — support reaches a tenant through the
+ * impersonation seam (§5), which walks the account and never exceeds it, not by
+ * a role check hard-wired into a CRM read.
+ *
+ * ── FAIL CLOSED, BRANCH BY BRANCH (§3, §4) ──────────────────────────────────
+ *
+ * The old body destructured `{ data }` on BOTH reads and dropped both errors.
+ * supabase-js RESOLVES a refusal, so an RLS refusal of the caller's own `users`
+ * row arrived as "Unauthorized" and a refused `contacts` read arrived as
+ * "Contact not found" — a permissions outage reported as a clean negative.
+ *
+ *   session missing        → "Unauthorized"      (requireCaller: unauthenticated)
+ *   users read REFUSED     → the reason, surfaced (requireCaller: unreadable)
+ *   caller has no tenant   → the reason, surfaced (requireCaller: no_brokerage)
+ *   role unresolved / not
+ *     on the roster        → "Forbidden"   — null user_type answers NO, never yes
+ *   contacts read REFUSED  → "Access check failed" — NOT "Contact not found"
+ *   contact in another
+ *     tenant, or untenanted→ "Forbidden"
+ */
 async function authorizeContactAccess(contactId: string): Promise<
-  | { ok: true; brokerageId: string; contact: { id: string; brokerage_id: string } }
+  | { ok: true; brokerageId: string; userType: string | null; contact: { id: string; brokerage_id: string } }
   | { ok: false; error: string }
 > {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
+  // Identity from the SESSION through the ONE survivor (lib/auth/require-caller.ts).
+  // It destructures and reads `error` on the auth read AND the users read, and it
+  // does NOT default a missing user_type to "agent" — the two properties the
+  // hand-rolled gate that stood here lacked.
+  const caller = await requireCaller()
+  if (!caller.ok) {
+    return { ok: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  }
 
+  // THE CHECK THIS GATE NEVER HAD. A contact / vendor / lender seat stops here.
+  if (!isCrmContactStaff(caller.userType)) {
+    return { ok: false, error: "Forbidden" }
+  }
+
+  // Service client for the ownership read, on purpose: a contact belonging to
+  // ANOTHER tenant must come back so the comparison below can REFUSE it. Read
+  // through RLS it would come back empty and be reported as "Contact not found",
+  // which is a different answer wearing the same shape. Gate first, then the
+  // service client (§4) — the role test above has already run.
   const svc = createServiceClient()
-  const { data: u } = await svc
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-
-  const { data: contact } = await svc
+  const { data: contact, error: contactErr } = await svc
     .from("contacts")
     .select("id, brokerage_id")
     .eq("id", contactId)
     .maybeSingle()
-  if (!contact) return { ok: false, error: "Contact not found" }
-  if (contact.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
 
-  return { ok: true, brokerageId: u.brokerage_id, contact: { id: contact.id, brokerage_id: contact.brokerage_id } }
+  // §3 — a refused read RESOLVES. It must not be laundered into "not found".
+  if (contactErr) return { ok: false, error: "Access check failed" }
+  if (!contact || !contact.brokerage_id) return { ok: false, error: "Contact not found" }
+  if (contact.brokerage_id !== caller.brokerageId) return { ok: false, error: "Forbidden" }
+
+  return {
+    ok: true,
+    brokerageId: caller.brokerageId,
+    userType: caller.userType,
+    contact: { id: contact.id, brokerage_id: contact.brokerage_id },
+  }
 }
 
 export async function getContactDetails(contactId: string) {
@@ -158,10 +317,28 @@ export async function getContactCopilotSuggestions(contactId: string) {
   // Use service client to bypass RLS on smart_assistant_suggestions.
   // Explicit tenant filters (brokerage_id + agent_id) maintain isolation.
   const supabase = createServiceClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userType } = await getAgentContext()
 
   if (!brokerageId) {
     return { suggestions: [], error: "No brokerage context" }
+  }
+
+  // THE ROLE TEST (wave 26, lane SEC2). This action does NOT route through
+  // `authorizeContactAccess`, and that is deliberate: it is the one function here
+  // that carries the IMPERSONATION seam — `getAgentContext()` resolves the
+  // TARGET tenant when platform staff are acting as a brokerage, while
+  // `requireCaller()` resolves the real session user and would refuse a
+  // legitimate impersonating support seat. So the same roster is applied to the
+  // same context this function already trusts for its tenant, rather than a
+  // second identity read that would disagree with it.
+  //
+  // Its prior gate was tenant-only plus "has an agents row", which happened to
+  // exclude contact/vendor/lender seats (they have none) — an accident of data,
+  // not a decision, and it is not what the empty result SAID. It also fires a
+  // model call through generateAssistantSuggestions below, so an ungated seat
+  // was a billable one. Refusing by role is explicit and comes first.
+  if (!isCrmContactStaff(userType)) {
+    return { suggestions: [], error: "Forbidden" }
   }
 
   // Guard: service client bypasses RLS, so we must filter by agentId when available
