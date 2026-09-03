@@ -297,7 +297,10 @@ if (!serverExtract) {
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n  BLIND SPOTS")
 console.log("     · Only proxy.ts and lib/supabase/server.ts implement setAll; the deprecated")
-console.log("       get/set/remove adapters (lib/auth/permissions.ts, app/actions/demo-auth.ts)")
+// lib/auth/permissions.ts stood here too until wave 26 deleted it (tombstone:
+// lib/auth/index.ts; survivor lib/security/permission-matrix.ts). A blind-spot
+// note naming a file that no longer exists reads as coverage of nothing.
+console.log("       get/set/remove adapter (app/actions/demo-auth.ts)")
 console.log("       receive no cache headers from the library by design and are not checked here.")
 console.log("     · This is a unit-level proof. It does not exercise a live CDN.")
 for (const n of notes) console.log(`     · ${n}`)

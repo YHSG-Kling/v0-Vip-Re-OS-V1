@@ -44,10 +44,16 @@ import { byPriorityDesc } from "@/lib/kernel/priority-rank"
  *                         it. The base roster predates that and omits it; adding
  *                         it here is what stops this change from revoking a
  *                         broker admin's own CRM.
- *     isa                 lib/auth/permissions.ts:32 grants it contacts:read +
- *                         contacts:write — working contacts IS the seat.
- *     compliance_officer  lib/auth/permissions.ts grants it contacts:read; it is
- *                         also in public.is_lead_visible_role() (033/m518/m530).
+ *     isa                 lib/security/permission-matrix.ts:120 grants it
+ *                         contacts:create — working contacts IS the seat.
+ *     compliance_officer  lib/security/permission-matrix.ts:196 grants it
+ *                         contacts:view_all; it is also in
+ *                         public.is_lead_visible_role() (033/m518/m530).
+ *
+ *   (Both citations used to point at lib/auth/permissions.ts, a SECOND
+ *   role→capability table deleted in wave 26 with zero callers — tombstone in
+ *   lib/auth/index.ts. The survivor grants both seats the same access under the
+ *   canonical spelling, so this roster is unchanged by that deletion.)
  *
  *   REFUSED, AND THIS IS THE DEFECT BEING CLOSED (3) — CLAUDE.md §5 names these
  *   three by name: "Contacts, lenders and vendors see no financials — only their

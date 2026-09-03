@@ -120,10 +120,15 @@ function byAuthority(a: { role: string | null }, b: { role: string | null }): nu
  * row `.limit(1)` could pick. Among the tenanted grants the choice is made by
  * an explicit, stable precedence rather than by row order.
  *
- * Generic in the row type so a caller that needs MORE than `RoleGrant` carries —
- * lib/auth/permissions.ts wants the grant's own `id` and its embedded brokerage
- * record — can run its own `select` and still get this one ordering, instead of
- * copying the precedence and drifting from it.
+ * Generic in the row type so a caller that needs MORE than `RoleGrant` carries
+ * can run its own `select` and still get this one ordering, instead of copying
+ * the precedence and drifting from it. The caller that motivated the generic —
+ * lib/auth/permissions.ts, which selected the grant's own `id` and its embedded
+ * brokerage record — was DELETED in wave 26 as a duplicate permission stack
+ * (tombstone: lib/auth/index.ts; survivor: lib/security/permission-matrix.ts).
+ * The generic stays, exercised by scripts/multi-role-seat-simulator.ts:128; the
+ * in-app path is `selectTenantBrokerageId` below (app/api/internal/ai-chat and
+ * ai-note), which passes plain `RoleGrant` rows.
  */
 export function selectTenantGrant<T extends { role: string | null; brokerage_id: string | null }>(
   grants: T[],

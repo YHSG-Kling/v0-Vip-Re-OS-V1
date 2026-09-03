@@ -133,7 +133,8 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
         if (ctx.agentUserId) notifyTargets.push(ctx.agentUserId)
 
         // Notify the deal's TC + compliance officer. user_type is stored in the
-        // canonical lowercase vocabulary (see lib/auth/permissions.ts Role) — the
+        // canonical lowercase vocabulary (see lib/security/types.ts CanonicalRole,
+        // which lib/auth/permissions.ts's deleted `Role` copy used to restate) — the
         // TC role is 'tc', and 'compliance_manager' is a legacy alias of
         // 'compliance_officer'. The prior ['TC','compliance_manager'] filter
         // matched no rows, so TCs were never notified.

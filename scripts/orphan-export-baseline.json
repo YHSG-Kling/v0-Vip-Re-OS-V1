@@ -90,7 +90,7 @@
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/auth/isa-actor.ts": 1,
-    "lib/auth/permissions.ts": 2,
+    "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
@@ -519,7 +519,7 @@
     "remotion/VideoCoverThumb.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9502,
+  "census": 9497,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -672,7 +672,7 @@
     "app/actions/buyer-portal-matches.ts": 1,
     "app/actions/buyer-property-search.ts": 3,
     "app/actions/calculators.ts": 13,
-    "app/actions/calendar/calendar-sync-actions.ts": 5,
+    "app/actions/calendar/calendar-sync-actions.ts": 6,
     "app/actions/call-review-actions.ts": 2,
     "app/actions/campaign-bundle-dispatch.ts": 1,
     "app/actions/campaign-bundles.ts": 4,
@@ -2536,6 +2536,7 @@
     "app/portal/[contactId]/vendors/rate-booking-stars.tsx": 1,
     "app/portal/[contactId]/vendors/request-booking-button.tsx": 1,
     "app/portal/[contactId]/vendors/respa-ack-gate.tsx": 1,
+    "app/portal/invite/route.ts": 1,
     "app/portal/lender/[transactionId]/document-upload.tsx": 1,
     "app/portal/lender/[transactionId]/lender-actions.tsx": 1,
     "app/portal/lender/[transactionId]/lender-conditions-panel.tsx": 1,
@@ -2803,10 +2804,10 @@
     "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
+    "lib/auth/crm-contact-staff.ts": 1,
     "lib/auth/isa-actor.ts": 2,
     "lib/auth/lead-visibility.ts": 5,
     "lib/auth/permissions-client.ts": 3,
-    "lib/auth/permissions.ts": 11,
     "lib/auth/platform-guard.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
@@ -3200,7 +3201,7 @@
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
     "lib/geo/publish-video-landing.ts": 3,
-    "lib/geo/video-landing.ts": 13,
+    "lib/geo/video-landing.ts": 14,
     "lib/gifting/gift-studio.ts": 3,
     "lib/gifting/shoppable-links.ts": 1,
     "lib/goals/goal-types.ts": 2,
@@ -3370,7 +3371,7 @@
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync-orchestrator.ts": 1,
-    "lib/kernel/calendar-sync.ts": 6,
+    "lib/kernel/calendar-sync.ts": 7,
     "lib/kernel/call-intelligence.ts": 6,
     "lib/kernel/campaign-center.ts": 4,
     "lib/kernel/capacity-guardian-runner.ts": 1,
@@ -4140,7 +4141,7 @@
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 5,
     "lib/video/comps-animation-spec.ts": 1,
-    "lib/video/director-content.ts": 17,
+    "lib/video/director-content.ts": 18,
     "lib/video/director-eval-harness.ts": 6,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 8,
@@ -5291,7 +5292,8 @@
       "syncEventToProvider",
       "syncFromProvider",
       "fetchMyProviderAccounts",
-      "fetchSyncLogs"
+      "fetchSyncLogs",
+      "fetchSyncMappings"
     ],
     "app/actions/call-review-actions.ts": [
       "flagCallForCompliance",
@@ -12549,6 +12551,9 @@
     "app/portal/[contactId]/vendors/respa-ack-gate.tsx": [
       "RespaAckGate"
     ],
+    "app/portal/invite/route.ts": [
+      "GET"
+    ],
     "app/portal/lender/[transactionId]/document-upload.tsx": [
       "LenderDocumentUpload"
     ],
@@ -13754,6 +13759,9 @@
     "lib/auth/contact-access.ts": [
       "assertCanActOnContact"
     ],
+    "lib/auth/crm-contact-staff.ts": [
+      "isCrmContactStaff"
+    ],
     "lib/auth/isa-actor.ts": [
       "getIsaSystemUserId",
       "getIsaSystemUserIdCached"
@@ -13769,19 +13777,6 @@
       "getClientUserRole",
       "clientHasCapability",
       "clientIsAdmin"
-    ],
-    "lib/auth/permissions.ts": [
-      "getCurrentUserContext",
-      "getCurrentUserWithRole",
-      "getUserBrokerages",
-      "hasCapability",
-      "hasRole",
-      "isAdmin",
-      "assertCapability",
-      "assertRole",
-      "assertAdmin",
-      "getCurrentBrokerageId",
-      "canAccessResource"
     ],
     "lib/auth/platform-guard.ts": [
       "requirePlatformStaff",
@@ -15787,6 +15782,7 @@
       "serializeJsonLd",
       "buildLlmsTxt",
       "seoHintFromNarration",
+      "companionCard",
       "seoHintFromRenderProps",
       "describeVideoForSearch",
       "secondsToIso8601",
@@ -16560,6 +16556,7 @@
       "pushCalendarEventToProvider",
       "pullCalendarEventsFromProvider",
       "listProviderAccounts",
+      "listSyncMappings",
       "listSyncLogs"
     ],
     "lib/kernel/call-intelligence.ts": [
@@ -20633,6 +20630,7 @@
     ],
     "lib/video/director-content.ts": [
       "brandBlock",
+      "directorShareCard",
       "money",
       "cityStateOf",
       "photoUrlsOf",
