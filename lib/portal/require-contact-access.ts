@@ -75,6 +75,7 @@ export const CONTACT_SCOPE_STAFF_USER_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Fail-closed membership test for {@link CONTACT_SCOPE_STAFF_USER_TYPES}.
+ * File-local — see the note on the declaration.
  *
  * A null / undefined / unknown `user_type` answers NO. That is the point: a seat
  * whose role could not be resolved must never be graded as a granted one
@@ -82,7 +83,13 @@ export const CONTACT_SCOPE_STAFF_USER_TYPES: ReadonlySet<string> = new Set([
  * an unrecognised value is exactly the shape a refused `users` read leaves
  * behind.
  */
-export function isContactScopeStaff(userType: string | null | undefined): boolean {
+// FILE-LOCAL, not exported. It is the staff branch's own membership test and has
+// exactly one caller — the branch below, in this module. Exporting it added an
+// import nobody made, which the orphan census correctly reported as a capability
+// with no reader. The ROSTER above is the shared thing (two gates spread it); the
+// predicate over it is not, because each of those gates asks about a WIDER roster
+// of its own and this one would answer the wrong question for them.
+function isContactScopeStaff(userType: string | null | undefined): boolean {
   return CONTACT_SCOPE_STAFF_USER_TYPES.has(String(userType ?? "").toLowerCase())
 }
 
