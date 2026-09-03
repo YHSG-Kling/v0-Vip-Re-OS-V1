@@ -1,4 +1,16 @@
-"use server"
+// NOT a server-action module (2026-09-03, integrator, CLAUDE.md §4). The
+// module-level "use server" that stood here made every export a public HTTP
+// endpoint onto a service client: getActiveSessions(brokerageId) and
+// getAgentMetrics(brokerageId) answered ANY tenant's agent sessions to any
+// signed-in caller, and endAgentSession / clearHumanOverride mutated any
+// tenant's rows — the parameter-supplied-tenant IDOR shape. The browser now
+// reaches these only through app/actions/coordination.ts, which resolves the
+// tenant from the session and proves the row is the caller's first. The
+// in-process callers stay: app/api/cron/agent-health-check (cron secret),
+// app/api/intelligence/coordinate (INTERNAL_API_SECRET), app/dashboard/
+// coordination/page.tsx (via the gated actions). `server-only` fails a future
+// client import at build time.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'

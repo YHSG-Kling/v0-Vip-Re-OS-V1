@@ -29,7 +29,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
-import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+import { buildComplianceSystemBlocks, postcheckScript, type QueryableClient } from "@/lib/video/script-compliance"
 // THE ONE speaking-pace vocabulary (§6). A chapter video is a pure D-ID
 // talking head (provider_metadata carries no target_composition_id, so no
 // Remotion frame cap — the clip is as long as the speech). The SECONDS are the
@@ -182,6 +182,7 @@ export async function generatePropertyChapterVideos(
           propertyData: input.propertyData,
           agentName,
           brokerageId: input.brokerageId,
+          client: svc,
         }))
 
       // Graded AFTER generation and on EVERY script — including a caller-
@@ -194,6 +195,12 @@ export async function generatePropertyChapterVideos(
         { userId: agentUserId, brokerageId: input.brokerageId },
         script,
         "seller", // a chapter reel addresses a prospective seller pre-listing-appointment
+        // The SERVICE client (integrator, 2026-09-03): this generator is reached
+        // from a cron-driven chain with no session, and without a client the
+        // brand-voice + prohibited-phrase read fell to the cookie client, failed
+        // silently, and the verdict came back UNKNOWN (script-compliance.ts:234-237
+        // names "the cron-reached chapter generator" as the reason the seam exists).
+        { client: svc },
       )
 
       // Insert into the canonical ai_video_projects table. 'queued' is the
@@ -382,8 +389,10 @@ async function generateChapterScript(params: {
   propertyData?: ChapterVideoInput["propertyData"]
   agentName: string
   brokerageId: string
+  /** Service client for the compliance reads — no session on the cron-reached path. */
+  client?: QueryableClient | null
 }): Promise<string> {
-  const { chapter, presentationContent, propertyData, agentName, brokerageId } = params
+  const { chapter, presentationContent, propertyData, agentName, brokerageId, client } = params
 
   // COMPLIANCE, PROACTIVELY. This generator was the sixth AI video-script
   // producer and the only one not running lib/video/script-compliance.ts — the
@@ -396,7 +405,7 @@ async function generateChapterScript(params: {
   // gestured at in a style bullet, and the Fair Housing constraints. Steering
   // generation cannot refuse a chapter — the alternative, hard-blocking on a
   // post-hoc verdict, would trade a never-renders bug for a never-passes one.
-  const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
+  const complianceBlocks = await buildComplianceSystemBlocks(brokerageId, undefined, client)
 
   const propertyContext = propertyData
     ? `Property: ${propertyData.address ?? ""}, ${propertyData.city ?? ""}, ${propertyData.state ?? ""}` +

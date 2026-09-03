@@ -11,7 +11,11 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from './events'
-import { processKernelEvent } from './notification-engine'
+// emitKernelEvent, not processKernelEvent (integrator, 2026-09-03): the five
+// *_DUE events have LIVE notification_rules rows but processKernelEvent writes
+// no lifecycle_events audit row, so a fired deadline left no record. The
+// survivor (lib/kernel/emit.ts) writes the row AND fans out.
+import { emitKernelEvent } from './emit'
 import { CalendarEventType } from './calendar-types'
 
 // ─── CALENDAR EVENT TYPE → KERNEL EVENT MAP ───────────────────────────────────
@@ -96,17 +100,19 @@ export async function checkUpcomingDeadlines(
     }
 
     try {
-      await processKernelEvent({
+      await emitKernelEvent({
         event:       kernelEventType,
         brokerageId: calEvent.brokerage_id,
         entityType:  calEvent.entity_type,
         entityId:    calEvent.entity_id,
+        source:      "cron",
+        metadata:    { calendar_event_id: calEvent.id, start_at: calEvent.start_at, event_type: calEvent.event_type },
       })
 
       notifiedIds.push(calEvent.id)
     } catch (err) {
       console.error(
-        `[calendar-deadline-watcher] processKernelEvent failed for calendar_event ${calEvent.id}:`,
+        `[calendar-deadline-watcher] emitKernelEvent failed for calendar_event ${calEvent.id}:`,
         err
       )
       // INTENTIONAL: skip this event and continue — do not mark as notified

@@ -6,6 +6,8 @@ import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isValidUUID } from "@/lib/validations"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 // ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext()
 // and writes through its `db`. Cookie (RLS) client for normal tenant users;
 // service client ONLY under an active FULL impersonation grant re-validated at
@@ -332,7 +334,19 @@ export async function updateTask(params: {
     if (!data) return { success: false, error: "Task not found in your brokerage" }
 
     let warning: string | undefined
-    if (reassigning) warning = await notifyNewAssignee(supabase, params.assignedTo!, data)
+    if (reassigning) {
+      warning = await notifyNewAssignee(supabase, params.assignedTo!, data)
+      // TASK_ASSIGNED on reassignment too (integrator, 2026-09-03) — see createTask.
+      const { error: emitError } = await emitKernelEvent({
+        event: KernelEvent.TASK_ASSIGNED,
+        brokerageId: ctx.brokerageId,
+        entityType: "task",
+        entityId: data.id,
+        actorUserId: ctx.userId ?? undefined,
+        metadata: { assigned_to_agent_id: params.assignedTo, reassigned_from: before.assigned_to_agent_id, title: data.title },
+      })
+      if (emitError) console.error(`[updateTask] TASK_ASSIGNED emit refused for task ${data.id}: ${emitError}`)
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
@@ -459,6 +473,22 @@ export async function createTask(params: {
       .single()
 
     if (error) throw error
+
+    // TASK_ASSIGNED (integrator, 2026-09-03): notification_rules holds live
+    // task_assigned rows and the label exists in the notification engine, but
+    // nothing ever emitted it — a created task bellowed nobody. Best-effort:
+    // a refused audit row must not undo a task that was created.
+    const { error: emitError } = await emitKernelEvent({
+      event: KernelEvent.TASK_ASSIGNED,
+      brokerageId,
+      entityType: "task",
+      entityId: data.id,
+      actorUserId: ctx.userId ?? undefined,
+      contactId: params.contactId ?? undefined,
+      transactionId: params.transactionId ?? undefined,
+      metadata: { assigned_to_agent_id: assignee, title: params.title, due_date: params.dueDate ?? null },
+    })
+    if (emitError) console.error(`[createTask] TASK_ASSIGNED emit refused for task ${data.id}: ${emitError}`)
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")

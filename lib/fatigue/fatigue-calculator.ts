@@ -1,4 +1,14 @@
-"use server"
+// NOT a server-action module (2026-09-03, integrator, lane R3-A's sweep — this
+// file was held back because lane H2 was converting its lifecycle_events
+// insert at the same time). The module-level "use server" that stood here
+// made calculateFatigue(contactId, brokerageId) and calculateAllBuyerFatigue
+// public HTTP doors onto a service client with the tenant taken from the
+// PARAMETER — CLAUDE.md §4's IDOR shape. Every caller is in-process server
+// code: app/actions/buyer-fatigue.ts (a gated action), app/api/fatigue/cron/
+// route.ts and app/api/fatigue/calculate/route.ts (both gate before calling).
+// The brokerageId parameter is now an in-process contract, not a public one.
+// `server-only` makes a future client import fail at build time.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 // agents.id → { users.id, users.brokerage_id }. The ONE crossing helper: both

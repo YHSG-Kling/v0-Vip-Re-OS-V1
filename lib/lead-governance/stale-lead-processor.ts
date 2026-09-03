@@ -1,4 +1,11 @@
-'use server'
+// NOT a server-action module (2026-09-03, integrator, lane R3-A's sweep — held
+// back while lane H2 converted its lifecycle_events inserts). The module-level
+// "use server" that stood here made processStaleLeadsAndSLA(brokerageId) a
+// public HTTP door onto a service client with the tenant from the PARAMETER
+// (CLAUDE.md §4). Its only caller is app/api/cron/stale-lead-monitor/route.ts,
+// which gates on the cron secret and iterates tenants itself; the parameter is
+// now an in-process contract. `server-only` fails a future client import.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"

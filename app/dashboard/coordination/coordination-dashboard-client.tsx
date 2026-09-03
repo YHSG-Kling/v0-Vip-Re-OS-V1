@@ -33,7 +33,9 @@ import { toast } from "sonner"
 // coordination dashboard" — and all three had zero callers while this file
 // hand-rolled weaker copies of each. See getAgentIcon below for what that cost.
 import { getAgentColor, getAgentConfig, getAgentDisplayName, type AgentType } from "@/lib/intelligence/agent-registry"
-import { clearHumanOverride, endAgentSession, getActiveSessions } from "@/lib/intelligence/multi-agent-router"
+// The GATED doors (app/actions/coordination.ts) — the router itself is
+// server-only since 2026-09-03; these resolve the tenant from the session.
+import { clearHumanOverride, endAgentSession, getActiveSessions } from "@/app/actions/coordination"
 
 interface Session {
   id: string
@@ -119,7 +121,9 @@ export function CoordinationDashboardClient({
   // server action instead of an HTTP request to a route that does not exist.
   const { data: sessionsData, mutate: mutateSessions, error: sessionsError } = useSWR(
     brokerageId ? ["coordination-sessions", brokerageId] : null,
-    ([, id]: [string, string]) => getActiveSessions(id),
+    // The tenant is resolved server-side from the session; the key keeps the
+    // brokerage id only so a tenant switch invalidates the cache.
+    () => getActiveSessions(),
     {
       fallbackData: { sessions: initialSessions },
       refreshInterval: 30000, // Refresh every 30 seconds

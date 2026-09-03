@@ -680,7 +680,13 @@ export async function addTitleEscrow(data: {
   }
 
   await addTimelineEntry(data.transaction_id, "title_escrow_added", `Title company "${data.title_company_name}" assigned`)
-  if (data.closing_scheduled_date) {
+  // gate.brokerageId is nullable on the act-as seam; a closing without a tenant
+  // cannot be announced to one, so the emit is skipped (and said) rather than
+  // typed away (integrator, 2026-09-03).
+  if (data.closing_scheduled_date && !gate.brokerageId) {
+    console.error(`[addTitleEscrow] CLOSING_SCHEDULED not emitted: no brokerage on the write context for transaction ${data.transaction_id}`)
+  }
+  if (data.closing_scheduled_date && gate.brokerageId) {
     await emitClosingScheduled({
       transactionId: data.transaction_id,
       brokerageId:   gate.brokerageId,
@@ -709,7 +715,10 @@ export async function updateTitleEscrow(titleEscrowId: string, updates: Record<s
     return { success: false, error: error.message }
   }
   const scheduled = typeof updates.closing_scheduled_date === "string" ? updates.closing_scheduled_date : null
-  if (scheduled && (data as { transaction_id?: string } | null)?.transaction_id) {
+  if (scheduled && !gate.brokerageId) {
+    console.error(`[updateTitleEscrow] CLOSING_SCHEDULED not emitted: no brokerage on the write context for title/escrow ${titleEscrowId}`)
+  }
+  if (scheduled && gate.brokerageId && (data as { transaction_id?: string } | null)?.transaction_id) {
     await emitClosingScheduled({
       transactionId: (data as { transaction_id: string }).transaction_id,
       brokerageId:   gate.brokerageId,

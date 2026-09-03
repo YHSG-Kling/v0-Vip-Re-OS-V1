@@ -282,8 +282,11 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
 
   async function handleForceReassess(leadId: string) {
     try {
-      const { evaluateLeadQualification } = await import('@/lib/ai-isa/qualification-evaluator')
-      await evaluateLeadQualification(leadId)
+      // The gated door (session tenant pinned on the lead) — the evaluator
+      // module itself is server-only since 2026-09-03.
+      const { evaluateLeadQualificationAction } = await import('@/app/actions/ai-isa/evaluate-lead-qualification')
+      const evaluated = await evaluateLeadQualificationAction(leadId)
+      if (!evaluated.success) throw new Error(evaluated.error)
       toast.success('AI-ISA is reassessing this lead')
       router.refresh()
     } catch {

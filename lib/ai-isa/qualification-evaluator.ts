@@ -1,4 +1,12 @@
-'use server'
+// NOT a server-action module (2026-09-03, integrator, CLAUDE.md §4/§5). The
+// module-level 'use server' that stood here made evaluateLeadQualification(leadId)
+// a public HTTP endpoint that evaluated and PERSISTED signals for any lead id —
+// the tenant came from the lead row, never from the caller. Leads belong to the
+// brokerage. The ISA console reaches it through
+// app/actions/ai-isa/evaluate-lead-qualification.ts (session tenant pinned on
+// the lead first); handle-inbound-email (a gated action) stays in-process.
+// `server-only` fails a future client import at build time.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'

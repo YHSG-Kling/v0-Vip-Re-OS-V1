@@ -67,26 +67,16 @@ import { stripComments, blankStrings } from "./strip-comments"
 // Every entry names who closes it and how. When it is closed, this guard fails
 // until the line is deleted — deliberately (§2: a hardcoded name that no longer
 // applies must not sit in a list reading as enforced).
-const KNOWN_UNGATED: ReadonlyArray<{ file: string; why: string }> = [
-  {
-    file: "lib/intelligence/multi-agent-router.ts",
-    why: "1A — needs a GATE, not a swap: app/dashboard/coordination/coordination-dashboard-client.tsx (\"use client\") imports it. " +
-         "Fix: keep the directive, read the session first, resolve brokerageId from it (drop the parameter). Integrator, after lane H2.",
-  },
-  {
-    file: "lib/ai-isa/qualification-evaluator.ts",
-    why: "1A — needs a GATE, not a swap: app/dashboard/isa/ai-isa-console-client.tsx (\"use client\") imports it. " +
-         "Fix: keep the directive, check the lead's brokerage_id against the session's. Integrator, after lane H2.",
-  },
-  {
-    file: "lib/fatigue/fatigue-calculator.ts",
-    why: "1B, fenced — every caller is in-process; swap to `import \"server-only\"` (preference-updater template). Owned by lane H2 this wave; integrator applies after.",
-  },
-  {
-    file: "lib/lead-governance/stale-lead-processor.ts",
-    why: "1B, fenced — sole caller is app/api/cron/stale-lead-monitor/route.ts; swap to `import \"server-only\"`. Owned by lane H2 this wave; integrator applies after.",
-  },
-]
+//
+// HISTORY: the list held four entries when this guard landed (2026-09-03):
+// multi-agent-router.ts and qualification-evaluator.ts (client components
+// imported them — closed by moving the browser-facing calls behind gated
+// actions, app/actions/coordination.ts and app/actions/ai-isa/evaluate-lead-
+// qualification.ts, and making the modules server-only) and fatigue-calculator.ts
+// / stale-lead-processor.ts (swapped to server-only once lane H2's edits to
+// the same files landed). All four closed the same day; the list is empty and
+// any NEW ungated lib module fails the guard.
+const KNOWN_UNGATED: ReadonlyArray<{ file: string; why: string }> = []
 
 // ─── Session tokens ───────────────────────────────────────────────────────────
 interface Token { name: string; re: RegExp; on: "identifiers" | "specifiers" }
