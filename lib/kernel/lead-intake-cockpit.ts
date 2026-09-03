@@ -50,7 +50,12 @@ export type FunnelStage = "pending" | "promoted" | "rejected" | "error"
 /** Every raw processing_status that means "the GATE stopped this row" — each is a
  *  rejection REASON the Steward can act on. Kept verbatim from ProcessingStatus so the
  *  reason text is the pipeline's own truth, not a relabel. */
-import { REJECTION_STATUSES } from "@/lib/lead-pipeline/processing-status"
+// `isRejectionStatus` is the vocabulary module's OWN membership test. This file
+// used to build a local `new Set<string>(REJECTION_STATUSES)` and ask it — a
+// second spelling of one question (§6), and the spelling that drifts, because a
+// Set built here is invisible to the guard that pins the vocabulary. The roster
+// is still imported and re-exported for the readers that iterate it.
+import { REJECTION_STATUSES, isRejectionStatus } from "@/lib/lead-pipeline/processing-status"
 export { REJECTION_STATUSES }
 
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `RejectionStatus`
@@ -166,7 +171,6 @@ export interface LeadIntakeCockpitData {
  *  breakdown. Every status maps to exactly one stage; unknown statuses count toward
  *  'pending' (in-flight) rather than being silently dropped. Honest zeros on []. */
 export function computeFunnel(rows: RawRowLite[]): FunnelCounts {
-  const rejectionSet = new Set<string>(REJECTION_STATUSES)
   const pendingSet = new Set<string>(PENDING_STATUSES)
   const counts: FunnelCounts = {
     rawTotal: rows.length,
@@ -182,7 +186,7 @@ export function computeFunnel(rows: RawRowLite[]): FunnelCounts {
       counts.promoted += 1
     } else if (status === "error") {
       counts.error += 1
-    } else if (rejectionSet.has(status)) {
+    } else if (isRejectionStatus(status)) {
       counts.rejected += 1
       counts.rejectionsByReason[status] = (counts.rejectionsByReason[status] ?? 0) + 1
     } else {

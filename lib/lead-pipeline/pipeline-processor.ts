@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import type { RawProcessingStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
-import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
+import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -299,8 +299,34 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
 
+      // LOSSLESS ON THE MERGE PATH TOO — THE CONTACT-SIDE TWIN THAT WAS MISSING.
+      //
+      // `leadSpecPatch` runs on the INSERT path below (:512) and on the manual
+      // promoter, so a raw record that becomes a NEW lead carries its scraped
+      // beds/baths/sqft/type/value. A raw record that lands here instead —
+      // higher-confidence duplicate of a record we already hold — carried only
+      // email/phone/confidence, so exactly the specs the extractor exists to
+      // rescue were dropped, and dropped SILENTLY, on the branch that has already
+      // decided this record is the better one.
+      //
+      // `contactSpecPatch` is the contacts-side patch and it is not the same
+      // patch: contacts store the property value in `home_value_estimate` while
+      // leads use `estimated_value`, and naming the wrong one is a PGRST204 that
+      // refuses the WHOLE update, not just that field. Choosing by target table
+      // is the only correct form, and it is why two patch builders exist.
+      //
+      // ADDITIVE BY CONSTRUCTION: both builders emit only the keys the raw jsonb
+      // actually produced, so a spec we did not scrape can never null out one the
+      // existing record already has.
+      // Same two jsonb sources, in the same order, as the insert path at :535 —
+      // so the merged record and the inserted one can never carry different
+      // specs for the same raw row.
+      const mergeSpecs = extractPropertySpecs([rec.raw_data as any, rec.normalized_preview as any])
+      const specPatch = targetTable === 'leads' ? leadSpecPatch(mergeSpecs) : contactSpecPatch(mergeSpecs)
+
       // enrichment_status exists only on leads; contacts tracks confidence only.
       const mergeUpdate: Record<string, unknown> = {
+        ...specPatch,
         email:                 enriched.email || postEnrichDuplicate.email,
         phone:                 enriched.phone || postEnrichDuplicate.phone,
         enrichment_confidence: newConfidence,

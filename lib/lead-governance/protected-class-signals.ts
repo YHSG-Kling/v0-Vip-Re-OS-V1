@@ -340,10 +340,23 @@ export function isProtectedClassSource(source: string): boolean {
  * (see its `protectedClassSources` output at
  * lib/lead-governance/protected-class-signals.ts:274).
  *
- * The THROW did not die with it. It is the mechanism behind
- * `assertAudienceSegmentationAllowed` (this file, :518), which is where a protected class
- * choosing an audience is refused, and it is still the thing
- * scripts/batchdata-seller-signal-simulator.ts exercises to prove the
+ * WHO CALLS IT TODAY: no production caller, and re-adding the one the tombstone
+ * above describes would BREAK THE LANE, not harden it. `defineSellerSignalSources`
+ * is handed BATCHDATA_SELLER_SIGNAL_SOURCES at module load
+ * (lib/external/batchdata-seller-signals.ts:303-304), and four of those specs
+ * declare protected sources on purpose under owner ruling #304 —
+ * `quickLists.inherited`, `demographics.*`, `min_owner_age`. Running this
+ * assertion over them throws at IMPORT time and takes the whole seller-signal
+ * lane down, which is exactly the state the wave-15 ruling reversed. Verified in
+ * tree 2026-09-03, lane L2.
+ *
+ * IT IS NOT THE SAME FUNCTION AS `assertAudienceSegmentationAllowed` (this file,
+ * below) AND DOES NOT CALL IT OR VICE VERSA — an earlier version of this comment
+ * said it was "the mechanism behind" it, which read as a call graph that has
+ * never existed. What they SHARE is `protectedClassReasonFor`, the one
+ * classifier. The refusal that survived governs SEGMENTING an audience; this one
+ * governs DECLARING a source, and its live exercise is
+ * scripts/batchdata-seller-signal-simulator.ts:171-174, which proves the
  * classifier's teeth are real rather than merely declared.
  */
 export function assertSellerSignalSourceAllowed(source: string, declaredBy: string): void {
@@ -721,31 +734,27 @@ export function labelProtectedClassFields(
   return { value: row, paths }
 }
 
-/**
- * BACK-COMPAT SHIM. Same call signature the one remaining caller already uses —
- * lib/external/batchdata-seller-signals.ts:675, which this lane does not own —
- * but it NO LONGER REDACTS. `value` is the row unchanged; `redacted` is the
- * LABEL list from `labelProtectedClassFields`.
- *
- * SURVIVOR: `labelProtectedClassFields` (this file, immediately above). Call
- * that one from new code.
- *
- * ONE VOCABULARY PER FUNCTION (CLAUDE.md §6) IS NOT YET HELD HERE, and saying
- * so is the point of this comment. The caller writes this list into
- * `signal_details.protected_class_redacted`, a column name that now describes
- * something that no longer happens: nothing is redacted. Renaming that key to
- * `protected_class_fields` is a one-line edit in
- * lib/external/batchdata-seller-signals.ts:675-693 that belongs to the lane
- * that owns it. Until then the stored key name is a known, recorded lie and
- * this shim is the duplicate that gets deleted the day it is fixed.
- */
-export function redactProtectedClassFields(
-  row: unknown,
-  path = "",
-): { value: unknown; redacted: string[] } {
-  const { value, paths } = labelProtectedClassFields(row, path)
-  return { value, redacted: paths }
-}
+// TOMBSTONE (CLAUDE.md §1, 2026-09-03, lane L2). `redactProtectedClassFields`
+// is DELETED. It was a back-compat shim over the survivor below-but-one —
+// SURVIVOR: lib/lead-governance/protected-class-signals.ts:labelProtectedClassFields
+// (immediately above) — that renamed `paths` to `redacted` and changed nothing
+// else. Its own header set the condition for its removal in writing: "this shim
+// is the duplicate that gets deleted the day it is fixed", where "it" was the
+// stored key `signal_details.protected_class_redacted`, a name asserting a
+// redaction that stopped happening under the wave-15 owner ruling.
+//
+// BOTH HALVES OF THAT CONDITION ARE NOW MET, which is why this is a deletion
+// and not a deferral:
+//   · the key was renamed to `protected_class_fields` on 2026-08-21 —
+//     lib/external/batchdata-seller-signals.ts:1416 and
+//     app/api/cron/permit-signal-scan/route.ts:248,285;
+//   · the one caller the shim's header named moved to the survivor —
+//     lib/external/batchdata-seller-signals.ts:1371 calls
+//     `labelProtectedClassFields` directly and says so at :1367.
+// NOTHING WAS PORTED because the survivor lacked nothing: the shim's whole body
+// was `labelProtectedClassFields(row, path)` with `paths` re-spelled `redacted`.
+// The proof that exercised the shim's shape now asserts the RULE that replaced
+// it — scripts/batchdata-seller-signal-simulator.ts, section 1d.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE ONE ARM THAT STILL REFUSES — AD-AUDIENCE SEGMENTATION

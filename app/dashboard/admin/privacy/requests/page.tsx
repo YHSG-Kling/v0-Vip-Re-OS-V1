@@ -6,8 +6,27 @@ import { listDSARQueueAction } from "@/app/actions/privacy/data-subject-requests
 import { DSARRowActions } from "./dsar-row-actions"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { protectedClassSourcesBySignalType } from "@/lib/lead-governance/protected-class-signals"
+import {
+  BATCHDATA_SELLER_SIGNAL_SOURCES, BATCHDATA_PROTECTED_CLASS_BASIS,
+} from "@/lib/external/batchdata-seller-signals"
 
 export const dynamic = "force-dynamic"
+
+/**
+ * PURE, module-scope: the declaration table compiled into this build. No I/O, no
+ * tenant, no personal data — the same answer for every brokerage, which is why it
+ * is computed once here rather than per request.
+ */
+const protectedSignalRows = Object.entries(
+  protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES),
+)
+  .map(([signalType, sources]) => ({
+    signalType,
+    sources: [...sources],
+    reasons: (BATCHDATA_PROTECTED_CLASS_BASIS[signalType] ?? []).map((b) => b.reason),
+  }))
+  .sort((a, b) => a.signalType.localeCompare(b.signalType))
 
 function statusBadge(s: string, overdue: boolean) {
   if (s === "fulfilled") return <Badge className="bg-emerald-100 text-emerald-800">Fulfilled</Badge>
@@ -174,6 +193,83 @@ export default async function DSARQueuePage() {
                       </td>
                     </tr>
                     </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── PROTECTED-CLASS DISCLOSURE ────────────────────────────────────────
+          THE STAFF-FACING READER FOR A LABEL THAT ONLY EXISTED IN CODE.
+
+          Owner ruling (wave 15): the data lane may SOURCE a motivated-seller
+          signal from protected-class data — "we determine the kind of education
+          in channels by the age group" — and the refusal moved to the
+          ad-audience path. What that ruling did NOT release is the
+          record-keeping. `defineSellerSignalSources` labels every declared
+          signal type with the protected-class sources it derives from, and
+          `protectedClassSourcesBySignalType` is that label's designated reader —
+          "without it the label would be a write with no reader" — and it had no
+          production caller at all. The person who has to answer a DSAR or a fair-
+          housing question is exactly who needs to see it, so it is answered on
+          this page.
+
+          PURE AND TENANT-FREE. This reads no database and no contact: it is the
+          DECLARATION table compiled into the build, so it is the same answer for
+          every brokerage and carries nobody's personal data. It renders after the
+          queue gate above, so an un-authorised caller never reaches it.
+
+          The source NAMES come from `protectedClassSourcesBySignalType`; the
+          REASON sentence beside each comes from BATCHDATA_PROTECTED_CLASS_BASIS,
+          which is the classifier's own wording verbatim — a paraphrase here would
+          drift from the live classifier invisibly. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            Protected-class derived signals
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Motivated-seller signal types this platform derives from protected-class data, and the
+            provider fields each one reads. Signal types absent from this list are derived purely
+            from parcel and transaction records. Holding and scoring these facts is permitted;
+            using them to target housing advertising is refused at the ad-audience gate.
+          </p>
+          {protectedSignalRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No declared signal type is derived from protected-class data.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-muted/10">
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">Signal type</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">Protected-class sources</th>
+                    <th className="text-left px-3 py-2 font-medium text-muted-foreground">Why it is protected</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {protectedSignalRows.map((row) => (
+                    <tr key={row.signalType} className="border-b last:border-0 align-top">
+                      <td className="px-3 py-2 font-medium">{row.signalType}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {row.sources.map((s) => (
+                            <Badge key={s} variant="outline" className="font-mono text-[10px]">{s}</Badge>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {row.reasons.length === 0
+                          ? "—"
+                          : row.reasons.map((reason, i) => <p key={i} className={i > 0 ? "mt-1" : ""}>{reason}</p>)}
+                      </td>
+                    </tr>
                   ))}
                 </tbody>
               </table>

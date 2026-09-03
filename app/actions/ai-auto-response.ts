@@ -267,7 +267,15 @@ export async function trackBehavioralEvent(params: {
     contactId: params.contactId,
     eventType: params.eventType,
     eventData: params.eventData || {},
-    pointsAwarded: params.pointsAwarded || 0,
+    // PASSED THROUGH, NOT DEFAULTED. `|| 0` turned "the caller said nothing about
+    // points" into "the caller explicitly said this event is worth zero" — and
+    // those are different facts to the recorder's vocabulary gate, which admits an
+    // UNSCORED event type only when the caller states what it is worth. With the
+    // fabricated zero this endpoint could file any string as an event type and
+    // have it score 0 forever while reporting success. `undefined` now means
+    // undefined, and an unscored type without stated points is refused with a
+    // reason the caller receives.
+    pointsAwarded: params.pointsAwarded,
   })
 
   if (!result.recorded) {

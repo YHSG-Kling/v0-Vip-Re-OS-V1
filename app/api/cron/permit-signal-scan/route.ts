@@ -6,7 +6,9 @@ import {
 } from "@/app/actions/cron-kernel"
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { ingestPermitSignals, type PermitScanTerritory } from "@/lib/external/permit-signals"
-import { listSupportedMarkets } from "@/lib/external/socrata-market-registry"
+import {
+  listSupportedMarkets, listQueryablePermitDatasets, listQueryableDatasets,
+} from "@/lib/external/socrata-market-registry"
 import {
   ingestBatchDataSellerSignals, realBatchDataPropertyLookup, DEFAULT_LOOKUPS_PER_RUN,
 } from "@/lib/external/batchdata-seller-signals"
@@ -317,6 +319,28 @@ export async function GET(request: Request) {
     // what IS covered next to what is not. socrata-market-registry.MARKETS is the place to extend.
     const supportedMarkets = marketGaps.length > 0 ? listSupportedMarkets() : undefined
 
+    // ── THE DENOMINATOR, PUBLISHED BESIDE THE NUMBER (CLAUDE.md §2) ──────────
+    //
+    // `datasets_queried` counts what THIS RUN reached. It has never had a
+    // ceiling next to it, so "queried 3" could mean the sweep covered everything
+    // it can read or a tenth of it, and the two are indistinguishable in the
+    // response. `listQueryableDatasets` is the registry's own definition of
+    // "the sweep can query this today" — the SAME predicate
+    // (`isQueryableDataset`) the coverage classifier uses, deduped by
+    // host/datasetId exactly as the sweep dedupes, so this is the ceiling the
+    // sweep is actually measured against and not a second count of the registry.
+    //
+    // `listQueryablePermitDatasets` is that same list narrowed to the permit
+    // kind, i.e. the ceiling for the PERMIT half alone; the difference between
+    // the two is the code-violation half, which is why both are reported rather
+    // than one total. Everything excluded from either is excluded for a stated
+    // reason already carried in `unavailable_datasets`.
+    const queryableDatasets = {
+      permits: listQueryablePermitDatasets().length,
+      ingestible_total: listQueryableDatasets().length,
+      ids: listQueryableDatasets().map((d) => `${d.host}/${d.datasetId}`),
+    }
+
     // A dataset the registry itself marks broken is a REGISTRY DEFECT, and it rides back with the
     // reason attached. Without this the run reports "0 signals" for a tenant whose only market is
     // a dead portal, and the operator has no way to tell that from a week with no permits.
@@ -342,6 +366,7 @@ export async function GET(request: Request) {
         batchdata,
         market_coverage: marketCoverage, market_gaps: marketGaps,
         supported_markets: supportedMarkets,
+        queryable_datasets: queryableDatasets,
         dataset_health: health,
         datasets_silent: silent.length > 0 ? silent : undefined,
         unavailable_datasets: unavailable, errors: errors.slice(0, 20),
@@ -360,6 +385,8 @@ export async function GET(request: Request) {
       market_coverage: marketCoverage,
       market_gaps: marketGaps,
       supported_markets: supportedMarkets,
+      // The ceiling `datasets_queried` should be read against.
+      queryable_datasets: queryableDatasets,
       // PER-DATASET, ALWAYS PRESENT. `permits_fetched` is the sum; this is the breakdown, and it
       // is the only thing in this response that can distinguish a quiet portal from a dead one.
       dataset_health: health,

@@ -48,8 +48,19 @@ console.log("\n═══ 1. One list, imported — not three hand-copied ones �
   ok("pipeline-processor no longer declares its own union — that inline list is\n    what the cockpit was hand-copying from",
     !/type ProcessingStatus =\s*\n\s*\|/.test(proc))
   ok("...it imports the shared type", /import type \{ RawProcessingStatus \} from ".\/processing-status"/.test(proc))
+  // The import may carry SIBLING symbols from the same vocabulary module — wave
+  // 26 added `isRejectionStatus`, the module's own membership test, replacing a
+  // local `new Set(REJECTION_STATUSES)` the cockpit was building to ask the same
+  // question. The rule is "imported, not re-declared", never "imported alone",
+  // and a single-symbol regex turned a §6 consolidation into a red guard.
   ok("the cockpit imports REJECTION_STATUSES rather than re-declaring it",
-    /import \{ REJECTION_STATUSES \} from "@\/lib\/lead-pipeline\/processing-status"/.test(cockpit))
+    /import \{[^}]*\bREJECTION_STATUSES\b[^}]*\} from "@\/lib\/lead-pipeline\/processing-status"/.test(cockpit))
+  // POSITIVE CONTROL — the widened matcher still refuses a cockpit that imports
+  // nothing from the vocabulary module, which is the defect it exists for.
+  ok("CONTROL the matcher still fails a cockpit with no such import",
+    !/import \{[^}]*\bREJECTION_STATUSES\b[^}]*\} from "@\/lib\/lead-pipeline\/processing-status"/.test(
+      'const REJECTION_STATUSES = ["unassigned_no_market"]',
+    ))
   ok("...and the hand-copied literal block is gone",
     !/REJECTION_STATUSES = \[\s*\n\s*"unassigned_no_market"/.test(cockpit))
 }

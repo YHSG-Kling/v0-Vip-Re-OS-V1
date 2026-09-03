@@ -81,6 +81,36 @@ export async function recordBehavioralEvent(
     return { recorded: false, reason }
   }
 
+  // ── VOCABULARY GATE AT INTAKE ─────────────────────────────────────────────
+  //
+  // `isScoredEventType` was exported "so call sites and proofs can assert they
+  // speak the scored vocabulary" and no call site ever did. This is that
+  // assertion, made once at the door rather than five times at the callers.
+  //
+  // WHY REFUSING IS THE HONEST ANSWER AND NOT DATA LOSS. `lead_behavioral_data`
+  // has exactly ONE reader — lib/lead-scoring/behavioral-events.ts, through the
+  // canonical scorer — and it weighs a row by `EVENT_POINTS[event_type]`, falling
+  // back to `event_data.points_awarded`. A row whose type is in neither scores 0
+  // forever and is invisible to every surface: a write with no reader, which is
+  // the orphan class CLAUDE.md §1 forbids creating. Filing it looks like success
+  // and measures as nothing.
+  //
+  // THE DOOR THIS ACTUALLY GUARDS: four of the five call sites hard-code a scored
+  // type, but app/actions/ai-auto-response.ts:trackBehavioralEvent takes
+  // `eventType: string` from its caller and is a "use server" export — a public
+  // HTTP endpoint (§4). It can pass anything. A caller that genuinely means an
+  // unscored type still gets through by SAYING WHAT IT IS WORTH
+  // (`pointsAwarded`), which is the same escape the scorer already honours — so
+  // the vocabulary is enforced without inventing a second one.
+  if (!isScoredEventType(input.eventType) && typeof input.pointsAwarded !== "number") {
+    const reason =
+      `'${input.eventType}' is not a scored event type and no pointsAwarded was supplied — ` +
+      `the row would never be read by the scorer. Use a type from EVENT_POINTS ` +
+      `(lib/lead-scoring/behavioral-events.ts) or state the points explicitly.`
+    console.error(`[behavioral-recorder] event NOT recorded — ${reason}`)
+    return { recorded: false, reason }
+  }
+
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()

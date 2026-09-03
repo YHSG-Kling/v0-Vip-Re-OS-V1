@@ -57,6 +57,7 @@ import {
   compareNeighborhoods,
   analyzeInvestmentProperty,
   calculateRentVsBuy,
+  calculateHomeValue,
 } from "@/app/actions/calculators"
 
 // Tool definitions with categories
@@ -270,6 +271,36 @@ const TOOLS = [
       { name: "state", type: "text", label: "State", placeholder: "CO" },
     ],
   },
+  // THE FOURTH CALCULATOR. `calculateHomeValue` is the only export in
+  // app/actions/calculators.ts with no surface anywhere: its three siblings each
+  // have a tile below and it had none, so the one calculator that runs a real AI
+  // CMA (comparable sourcing + adjustment) was unreachable from the signed-in
+  // product and existed only for the public agent page.
+  //
+  // TENANT COMES FROM THE SESSION, not from this form. `calculateHomeValue`
+  // resolves the brokerage from getAgentContext first and only falls back to
+  // `agentSlug` on the public path — so this tile passes NO slug and no brokerage
+  // id, and a signed-in agent's own tenant pays for and receives their own CMA
+  // (CLAUDE.md §4). Its own rate limiter bounds the provider spend before any
+  // paid call, so the tile adds no second limiter of its own.
+  {
+    id: "home_value",
+    name: "Home Value (AI CMA)",
+    description: "Run a real comparable-sales valuation for one address — the same engine behind your public home-value page",
+    category: "intelligence",
+    categoryColor: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    icon: Home,
+    directAction: true,
+    inputs: [
+      { name: "address", type: "text", label: "Street address", placeholder: "1234 N Lamar Blvd" },
+      { name: "state", type: "text", label: "State (2-letter)", placeholder: "TX" },
+      { name: "city", type: "text", label: "City", placeholder: "Austin", required: false },
+      { name: "zipCode", type: "text", label: "ZIP", placeholder: "78701", required: false },
+      { name: "bedrooms", type: "text", label: "Bedrooms", placeholder: "3", required: false },
+      { name: "bathrooms", type: "text", label: "Bathrooms", placeholder: "2", required: false },
+      { name: "squareFeet", type: "text", label: "Square feet", placeholder: "1850", required: false },
+    ],
+  },
   {
     id: "investment_analyzer",
     name: "Investment Property Analyzer",
@@ -393,6 +424,22 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
             hoaFees: 0,
             maintenanceReserve: 5,
             vacancyRate: 5,
+          })
+        } else if (tool.id === "home_value") {
+          // Optional facts stay UNKNOWN when the agent leaves them blank — null,
+          // never a fabricated 0, because runAiCma adjusts against them and a
+          // zero-bed subject is a different property, not a missing one.
+          const num = (v: string | undefined) => {
+            const n = parseFloat(v ?? "")
+            return Number.isFinite(n) ? n : null
+          }
+          result = await calculateHomeValue(inputs.address, {
+            state: (inputs.state ?? "").trim().toUpperCase(),
+            city: inputs.city?.trim() || null,
+            zipCode: inputs.zipCode?.trim() || null,
+            bedrooms: num(inputs.bedrooms),
+            bathrooms: num(inputs.bathrooms),
+            squareFeet: num(inputs.squareFeet),
           })
         } else if (tool.id === "rent_vs_buy") {
           result = await calculateRentVsBuy({

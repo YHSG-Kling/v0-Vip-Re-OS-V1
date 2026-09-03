@@ -1337,12 +1337,16 @@ export interface BatchDataSignalRow {
  * (defaults now()). PGRST204 refuses an INSERT naming an absent column ENTIRELY,
  * so this row names those seven and nothing else.
  *
- * `observed` is passed through `redactProtectedClassFields` on the way in.
+ * `observed` is passed through `labelProtectedClassFields` on the way in.
  *
- * READ THAT NAME LITERALLY AS OF 2026-08-21: it no longer REMOVES anything on
- * this path. Owner ruling — "do not run the compliance or fair housing on
- * scrapping, enrichment, scoring, sourcing" — turned it into a LABELLER, and it
+ * IT LABELS, IT DOES NOT REMOVE. Owner ruling — "do not run the compliance or
+ * fair housing on scrapping, enrichment, scoring, sourcing" — turned this into a
+ * LABELLER on 2026-08-21, and it
  * now returns the row intact alongside the paths that name a protected class.
+ * (This sentence used to name the `redactProtectedClassFields` shim, which was
+ * already not what the code below called; the shim was deleted 2026-09-03 —
+ * tombstone at lib/lead-governance/protected-class-signals.ts, above
+ * `assertAudienceSegmentationAllowed`.)
  * Those paths are stored as `signal_details.protected_class_fields` — renamed
  * from `protected_class_redacted` on 2026-08-21, because the old name asserted
  * a redaction that no longer happens, in persisted data a reader would trust.

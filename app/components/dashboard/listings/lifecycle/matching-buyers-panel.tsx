@@ -5,8 +5,21 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Loader2, ArrowRight, AlertTriangle, UserSearch } from "lucide-react"
-import { matchBuyersForListing, scoreSingleBuyerForListing } from "@/app/actions/property-buyer-matching"
+import { Users, Loader2, ArrowRight, AlertTriangle, UserSearch, History } from "lucide-react"
+import {
+  matchBuyersForListing, scoreSingleBuyerForListing, getListingMatchHistory,
+} from "@/app/actions/property-buyer-matching"
+
+/** One previously-logged match signal for this listing (activities row). */
+interface MatchSignal {
+  signal_id: string
+  contact_id?: string
+  match_confidence?: string
+  match_score?: number
+  top_factors?: string[]
+  caution_notes?: string[]
+  generated_at?: string
+}
 
 interface BuyerMatch {
   contact_id: string
@@ -43,6 +56,34 @@ export function MatchingBuyersPanel({ listingId, buyerOptions = [] }: {
   const [checking, setChecking] = useState(false)
   const [single, setSingle] = useState<BuyerMatch | null>(null)
   const [singleError, setSingleError] = useState<string | null>(null)
+  // PAST MATCHES — the reader half of the signals `matchBuyersForListing` has been
+  // writing all along. Every run with `logSignals: true` files a
+  // `buyer_match_signal` activity, and `getListingMatchHistory` (tenant-scoped on
+  // activities.brokerage_id, session-gated through getAgentContext) was the only
+  // way to read them back and had no caller — so the log accumulated for nobody.
+  // On demand, never on mount: a panel that fetches history on every listing page
+  // load spends a query per render for a tab most agents will not open.
+  const [history, setHistory] = useState<MatchSignal[] | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+
+  async function loadHistory() {
+    if (history) { setHistory(null); return }   // toggle closed
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const res = await getListingMatchHistory({ listingId, limit: 25 })
+      if ((res as { success: boolean }).success) {
+        setHistory(((res as { signals?: MatchSignal[] }).signals) ?? [])
+      } else {
+        setHistoryError((res as { error?: string }).error ?? "Could not load match history.")
+      }
+    } catch {
+      setHistoryError("Could not load match history.")
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
 
   async function checkOne() {
     if (!checkContactId) return
@@ -93,15 +134,57 @@ export function MatchingBuyersPanel({ listingId, buyerOptions = [] }: {
             </CardTitle>
             <CardDescription>Best-fit buyers from your database for this listing.</CardDescription>
           </div>
-          <Button size="sm" onClick={run} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Users className="h-4 w-4 mr-1" />}
-            {matches ? "Re-run" : "Find Buyers"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={loadHistory} disabled={historyLoading}>
+              {historyLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <History className="h-4 w-4 mr-1" />}
+              {history ? "Hide history" : "Past matches"}
+            </Button>
+            <Button size="sm" onClick={run} disabled={loading}>
+              {loading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Users className="h-4 w-4 mr-1" />}
+              {matches ? "Re-run" : "Find Buyers"}
+            </Button>
+          </div>
         </div>
       </CardHeader>
-      {(matches || error || buyerOptions.length > 0) && (
+      {(matches || error || history || historyError || buyerOptions.length > 0) && (
         <CardContent className="space-y-2">
           {error && <p className="text-sm text-red-600">{error}</p>}
+          {historyError && <p className="text-sm text-red-600">{historyError}</p>}
+          {history && (
+            <div className="pb-2 border-b space-y-1.5">
+              <p className="text-xs font-medium flex items-center gap-1.5">
+                <History className="h-3.5 w-3.5" /> Past match signals
+              </p>
+              {history.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No match signals logged for this listing yet — they are written when you run matching.
+                </p>
+              ) : (
+                history.map((h) => (
+                  <div key={h.signal_id} className="flex items-center justify-between gap-3 text-xs">
+                    <span className="flex items-center gap-2 min-w-0">
+                      {typeof h.match_score === "number" && (
+                        <Badge className={CONFIDENCE_STYLE[h.match_confidence ?? "low"] ?? CONFIDENCE_STYLE.low}>
+                          {h.match_score}% · {h.match_confidence ?? "—"}
+                        </Badge>
+                      )}
+                      <span className="truncate text-muted-foreground">
+                        {(h.top_factors ?? []).slice(0, 2).join(" · ") || "—"}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-2 shrink-0 text-muted-foreground">
+                      {h.generated_at ? new Date(h.generated_at).toLocaleDateString() : ""}
+                      {h.contact_id && (
+                        <Button size="sm" variant="ghost" asChild className="h-6 px-2">
+                          <Link href={`/crm?contact=${h.contact_id}`}>Open <ArrowRight className="h-3 w-3 ml-1" /></Link>
+                        </Button>
+                      )}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
           {matches && matches.length === 0 && !error && (
             <p className="text-sm text-muted-foreground py-2">
               No strong buyer matches yet{meta ? ` (evaluated ${meta.evaluated})` : ""}. As you add and qualify buyers, matches appear here.

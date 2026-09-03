@@ -32,7 +32,7 @@ import {
   tokenizeFieldPath, protectedClassReasonFor, isProtectedClassSource,
   assertSellerSignalSourceAllowed, defineSellerSignalSources,
   screenProtectedClassCriteria, stripProtectedClassCriteria,
-  redactProtectedClassFields, labelProtectedClassFields,
+  labelProtectedClassFields,
   protectedClassSourcesBySignalType, protectedClassBasisBySignalType,
   assertAudienceSegmentationAllowed, protectedClassSegmentationIn,
   PROTECTED_CLASS_TOKENS, PROTECTED_CLASS_NAMESPACES, PROTECTED_CLASS_LANES,
@@ -426,12 +426,33 @@ console.log("\n[1d · STORAGE — a protected value is LABELLED on the way in, n
     && kept.address.street === "1234 N LAMAR BLVD" && !paths.includes("intel.salePropensity"))
   check("a row with nothing protected in it is labelled with NOTHING (control: the labeller is not tagging at random)",
     labelProtectedClassFields({ intel: { salePropensity: 50 }, quickLists: { vacant: true } }).paths.length === 0)
-  // The one caller this lane does not own (lib/external/batchdata-seller-signals.ts:675)
-  // still destructures `{ value, redacted }`. The shim must keep that shape and must
-  // return the row UNCHANGED, or that caller silently reverts to redacting.
-  const shim = redactProtectedClassFields(providerRow)
-  check("the redactProtectedClassFields shim keeps the old SHAPE while returning the row UNCHANGED",
-    (shim.value as any).demographics?.age === 71 && shim.redacted.includes("demographics"))
+  // ── THE SHIM IS GONE, AND THIS IS WHAT REPLACED THE ASSERTION ─────────────
+  //
+  // Until 2026-09-03 this block called `redactProtectedClassFields` and asserted
+  // it kept the OLD `{ value, redacted }` shape. That assertion was pinned to a
+  // WAYPOINT (CLAUDE.md §2): it could only pass while a shim existed whose own
+  // header said it should be deleted once the stored key was renamed. The key WAS
+  // renamed (`protected_class_fields`), the caller DID move to the survivor, and
+  // the shim was deleted — so the check now asserts the RULE that holds instead:
+  // there is ONE labeller, no second spelling of it anywhere in lib/ or app/, and
+  // the persisted key never reverts to the name that asserted a redaction.
+  //
+  // Source is read STRIPPED (CLAUDE.md §2): the tombstone naming the deleted
+  // function is meant to stay, and a raw-source scan would read that comment as a
+  // live declaration and accuse the repo of the thing the tombstone records fixed.
+  const pcsStripped = stripComments(src("lib/lead-governance/protected-class-signals.ts"))
+  const lookupStripped = stripComments(src("lib/external/batchdata-seller-signals.ts"))
+  check("the redact-shim is DELETED — one labeller, not two spellings of it",
+    !/export\s+function\s+redactProtectedClassFields/.test(pcsStripped))
+  check("POSITIVE CONTROL — the same scan DOES find the survivor's declaration",
+    /export\s+function\s+labelProtectedClassFields/.test(pcsStripped))
+  check("…and no live code anywhere calls the deleted name (comments/tombstones excluded)",
+    !/\bredactProtectedClassFields\s*\(/.test(pcsStripped)
+    && !/\bredactProtectedClassFields\s*\(/.test(lookupStripped))
+  check("the row-builder calls the SURVIVOR and stores the renamed key",
+    /labelProtectedClassFields\(\s*params\.signal\.observed\s*\)/.test(lookupStripped)
+    && /protected_class_fields:\s*protectedFields/.test(lookupStripped)
+    && !/protected_class_redacted/.test(lookupStripped))
 }
 
 console.log("\n[1e · THE REFUSAL THAT SURVIVED — a protected class may not define an AD AUDIENCE]")
