@@ -214,9 +214,31 @@ console.log("\nvocabulary the live CHECKs admit")
     check(`${f} carries no CHECK-rejected literal`, !hit, hit ? `found ${hit}` : undefined)
   }
 
-  check("the calculator writes only the four admitted risk levels",
-    /return "critical"[\s\S]{0,120}return "high"[\s\S]{0,120}return "moderate"[\s\S]{0,80}return "fresh"/.test(
-      src("lib/fatigue/fatigue-calculator.ts")))
+  // RETARGETED 2026-09-03. This pinned the `return "critical" … return "fresh"`
+  // ladder INSIDE the calculator — which was `toRiskLevel`'s body, a byte-identical
+  // second spelling of the cut points that wave 26 DELETED onto
+  // fatigue-display.ts:deriveRiskLevel (§6). Pinning a duplicate's body means the
+  // check can only pass while the duplicate exists, so finishing the merge turned
+  // it red: §2's forbidden waypoint.
+  //
+  // The RULE is what matters — only the four values the live CHECK admits are ever
+  // written — so it is asserted BEHAVIOURALLY across the whole score range rather
+  // than by matching a ladder's text, plus the structural half: the calculator must
+  // consult the survivor instead of growing the ladder back.
+  {
+    const ADMITTED = new Set(["critical", "high", "moderate", "fresh"])
+    const produced = new Set<string>()
+    for (let s = -20; s <= 120; s++) produced.add(deriveRiskLevel(s))
+    check("the risk scorer yields ONLY the four admitted levels, across every score (-20…120)",
+      [...produced].every((r) => ADMITTED.has(r)),
+      [...produced].filter((r) => !ADMITTED.has(r)).join(", ") || undefined)
+    check("…and it actually reaches all four (an always-'fresh' scorer would pass the line above)",
+      produced.size === 4, `produced ${[...produced].sort().join(", ")}`)
+    const calc = src("lib/fatigue/fatigue-calculator.ts")
+    check("the calculator consults the survivor rather than re-declaring the ladder",
+      /import\s*\{[^}]*\bderiveRiskLevel\b[^}]*\}\s*from\s*["']\.\/fatigue-display["']/.test(calc) &&
+      !/function\s+toRiskLevel\s*\(/.test(calc))
+  }
   check("the badge helper derives from the SAME cut points (75/50/25)",
     deriveRiskLevel(75) === "critical" && deriveRiskLevel(50) === "high" &&
     deriveRiskLevel(25) === "moderate" && deriveRiskLevel(24) === "fresh")
