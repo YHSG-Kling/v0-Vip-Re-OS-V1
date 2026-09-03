@@ -1780,8 +1780,11 @@ async function main() {
       && !src("app/actions/ai-isa/initiate-engagement.ts").includes("from('messages').insert")      // no dead writes remain
       && src("app/actions/ai-isa/initiate-engagement.ts").includes("isa_outreach_log")              // the status read now hits the real ledger
       && src("lib/ai-isa/email-generator.ts").includes("entity_id: leadId")
-      && src("app/actions/referrals/referral-actions.ts").includes("actor_user_id: userId")
-      && src("app/actions/neighborhood-reports.ts").includes("actor_user_id: userId")
+      // 2026-09-03: both sites now emit through emitKernelEvent, whose input spells the
+      // users-class actor `actorUserId` (→ lifecycle_events.actor_user_id). Assert the
+      // RULE — the actor is `userId`, never `agentId` — not the column spelling (§2).
+      && /actor(?:_user_id|UserId):\s*userId\b/.test(src("app/actions/referrals/referral-actions.ts"))
+      && /actor(?:_user_id|UserId):\s*userId\b/.test(src("app/actions/neighborhood-reports.ts"))
       && src("app/actions/content-studio.ts").includes("agent_user_id: userId")
       && src("lib/kernel/stalled-deferrals-runner.ts").includes('select("user_id")')
       && src("lib/kernel/manager-signals.ts").includes("resolve-or-keep")
@@ -2843,7 +2846,9 @@ async function main() {
         src("lib/kernel/manager-registry.ts").includes("PLATFORM_MANAGERS")
         && src("lib/kernel/manager-registry.ts").includes("resolvePlatformManager")
         && src("lib/kernel/manager-registry.ts").includes("platform_coupons: \"finance_manager\"")
-        && src("app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx").includes("PLATFORM_MANAGERS.platform_sentinel")
+        // 2026-09-03: the queue reads the persona THROUGH resolvePlatformManager (the
+        // registry's contract) instead of indexing PLATFORM_MANAGERS directly.
+        && /resolvePlatformManager\(\s*['"]platform_sentinel['"]\s*\)/.test(src("app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx"))
         && src("lib/kernel/event-fanout.ts").includes("MILESTONE_COMPLETED")
         && src("lib/platform/changelog.ts").includes("2026-07-19")
         && !src("lib/services/social-publishing.service.ts").includes("Math.random")

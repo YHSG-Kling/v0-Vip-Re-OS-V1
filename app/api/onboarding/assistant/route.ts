@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { requireAuth } from '@/lib/kernel/api-auth'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { searchKB } from '@/lib/intelligence/kb-search'
 
 export async function POST(request: Request) {
@@ -50,13 +51,13 @@ export async function POST(request: Request) {
       }
     }
 
-    // Fire SETUP_ASSISTANT_QUERY_MADE kernel event
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: brokerageId,
-      entity_type: 'agent',
-      entity_id: agentId,
-      event_type: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
-      actor_user_id: auth.userId,
+    // Fire SETUP_ASSISTANT_QUERY_MADE kernel event — audit row + reactor.
+    await emitKernelEvent({
+      brokerageId,
+      entityType: 'agent',
+      entityId: agentId,
+      event: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
+      actorUserId: auth.userId,
     })
 
     const systemPrompt = `You are a helpful setup assistant for this real-estate platform. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
@@ -92,12 +93,12 @@ ${kbContext || 'No specific documentation found for this query.'}`
           aiResponse.toLowerCase().includes('not certain')
 
         if (noKBResults || uncertainResponse) {
-          await supabase.from('lifecycle_events').insert({
-            brokerage_id: brokerageId,
-            entity_type: 'agent',
-            entity_id: agentId,
-            event_type: KernelEvent.SETUP_ASSISTANT_ESCALATED,
-            actor_user_id: auth.userId,
+          await emitKernelEvent({
+            brokerageId,
+            entityType: 'agent',
+            entityId: agentId,
+            event: KernelEvent.SETUP_ASSISTANT_ESCALATED,
+            actorUserId: auth.userId,
             metadata: {
               query: latestQuery,
               reason: noKBResults ? 'no_kb_results' : 'uncertain_response',

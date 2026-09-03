@@ -549,7 +549,7 @@ export async function executeListingTransition(params: {
   // transition also fires a generic LISTING_STAGE_CHANGED so brokerages can
   // listen on the catch-all if they want.
   try {
-    const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
     const { KernelEvent } = await import("@/lib/kernel/events")
 
     // DEAD VOCABULARY REMOVED — this map was keyed on stages that do not exist.
@@ -581,6 +581,7 @@ export async function executeListingTransition(params: {
       entityId:     params.listingId,
       listingId:    params.listingId,
       agentUserId:  user.id,
+      actorUserId:  user.id,
       metadata: {
         from_stage: currentStage,
         to_stage:   params.targetStage,
@@ -590,21 +591,25 @@ export async function executeListingTransition(params: {
 
     // Fire the specific stage event (auto-enrolls + portal update with the
     // event-specific template).
+    // emitKernelEvent writes the KernelEvent-spelled audit row (listing_published /
+    // listing_stage_changed …) AND fans out. transitionLifecycle above records only its
+    // dotted `lifecycle.<stage>` row, so before this the canonical spelling never
+    // reached the audit table for a stage transition at all.
     if (stageEvent) {
-      await fanOutKernelEvent({ event: stageEvent as any, ...sharedCtx })
+      await emitKernelEvent({ event: stageEvent, ...sharedCtx })
     }
 
     // Always fire the generic LISTING_STAGE_CHANGED for catch-all sequences
     // and audit. Skipped when the specific event already fired AND duplicates
     // the audit — but it's fine to fire both; idempotency in the fanout
     // dedupes sequence enrollment.
-    await fanOutKernelEvent({
+    await emitKernelEvent({
       event: KernelEvent.LISTING_STAGE_CHANGED,
       ...sharedCtx,
       metadata: { ...sharedCtx.metadata, mapped_event: stageEvent ?? null },
     })
   } catch (err) {
-    console.error("[executeListingTransition] fanOutKernelEvent failed", err)
+    console.error("[executeListingTransition] emitKernelEvent failed", err)
   }
 
   // MANAGER HANDOFF (bus) — when a listing reaches coming-soon or goes live, the Listing Concierge →

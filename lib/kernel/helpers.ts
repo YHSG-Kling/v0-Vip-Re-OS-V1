@@ -222,6 +222,15 @@ export async function enforceCompliance(
  * Schema:
  *   activities:      activity_type, entity_type, entity_id(=contact_id), agent_id, brokerage_id, title, description, status, created_at
  *   lifecycle_events: event_type, entity_type, entity_id, actor_user_id, brokerage_id, metadata, created_at
+ *
+ * ONE VOCABULARY (2026-09-03): the lifecycle_events half goes through
+ * `emitKernelEvent` (lib/kernel/emit.ts) — this was the FIFTH spelling of "fire
+ * a kernel event", and it never reached the reactor. A typed KernelEvent passed
+ * here now fans out (staff bell / sequences / portal); a free-form audit string
+ * (the AI-ISA outreach telemetry that is this helper's main traffic) is still
+ * persisted and stops there — the emit gates on the KernelEvent enum. The
+ * `activities` mirror is unchanged. The emit is loaded at call time because it
+ * is `server-only` and this module is imported by simulators under plain tsx.
  */
 export async function emitLifecycleEvent(params: EmitEventParams): Promise<void> {
   try {
@@ -239,7 +248,8 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
     // would look identical to telemetry that worked. bestEffort keeps it
     // non-fatal AND logs, which is what "must never break the calling flow"
     // was meant to buy.
-    await Promise.all([
+    const { emitKernelEvent } = await import("./emit")
+    const [, emitted] = await Promise.all([
       bestEffort(supabase.from("activities").insert({
         activity_type:  params.eventType,
         entity_type:    params.entityType,
@@ -252,16 +262,21 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
         status:         "completed",
         created_at:     now,
       }), "lifecycle activity mirror"),
-      supabase.from("lifecycle_events").insert({
-        event_type:    params.eventType,
-        entity_type:   params.entityType,
-        entity_id:     entityUuid,
-        actor_user_id: actorUuid,
-        brokerage_id:  brokerUuid,
+      emitKernelEvent({
+        event:         params.eventType,
+        entityType:    params.entityType,
+        entityId:      entityUuid ?? "",
+        actorUserId:   actorUuid,
+        brokerageId:   brokerUuid,
+        contactId:     params.contactId,
+        transactionId: params.transactionId,
         metadata:      params.metadata ?? {},
-        created_at:    now,
+        createdAt:     now,
       }),
     ])
+    if (emitted.error) {
+      console.error(`[kernel/helpers] lifecycle_events row refused for ${params.eventType}: ${emitted.error}`)
+    }
   } catch (err) {
     // Non-fatal — telemetry failures must never break the calling flow.
     console.error("[kernel/helpers] emitLifecycleEvent failed:", err)

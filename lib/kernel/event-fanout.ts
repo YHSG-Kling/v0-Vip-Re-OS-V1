@@ -1,32 +1,33 @@
 /**
  * lib/kernel/event-fanout.ts
  *
- * Single canonical "what happens when a kernel event fires" router. Three
- * fan-out channels per event:
+ * The reactor's CLIENT-SIDE channels, called by lib/kernel/event-reactor.ts for
+ * every kernel event:
  *
- *   1. Internal notifications (existing processKernelEvent — staff bell)
- *   2. Campaign sequence auto-enrollment (campaign_sequences.trigger_event)
- *   3. Client-facing portal updates (transparency_updates +
- *      client_portal_messages + contact-targeted notifications)
+ *   1. Campaign sequence auto-enrollment (campaign_sequences.trigger_event)
+ *   2. Client-facing portal updates (transparency_updates +
+ *      client_portal_messages + contact-targeted notifications), template-gated
+ *      by PORTAL_UPDATE_TEMPLATES below.
  *
  * The contact is the center: every meaningful state change should reach
  * their portal so seller/buyer/lifetime always know where their deal stands.
  *
- * Why this layer:
- *   - processKernelEvent is intentionally narrow (notifications only).
- *   - Adding portal/sequence logic into every emitter at every call site
- *     created drift; fan-out lives here so additions to one channel benefit
- *     every event uniformly.
- *
- * Event emitters call fanOutKernelEvent(...) instead of processKernelEvent
- * directly. This wrapper invokes processKernelEvent for staff notifications
- * AND fires the two new channels.
+ * TOMBSTONE (orphan doctrine §1.1, 2026-09-03) — `fanOutKernelEvent(ctx)` stood
+ * here. It was the SECOND of four spellings of "fire a kernel event": a thin
+ * forwarder into processKernelEvent for callers that had already inserted
+ * their own lifecycle_events row, and it silently dropped `suppressEnrollment`
+ * because its context type never carried it. SURVIVOR: `emitKernelEvent` at
+ * lib/kernel/emit.ts:112 — its `skipInsert: true` option IS the old
+ * fanOutKernelEvent contract (row already written → fan out only), and its
+ * `KernelEventContext`-shaped fields (contactId / buyerContactId /
+ * sellerContactId / transactionId / listingId / agentUserId / metadata /
+ * lifecycleEventId) are accepted one-for-one. All 15 call sites were repointed;
+ * this file no longer imports the notification engine.
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { processKernelEvent } from "./notification-engine"
 import { renderTemplateText } from "./portal-template-render"
 import { sentinelWrite } from "./write-sentinel"
 import { resolveUserIdToAgentRecord } from "./agent-identity-resolver"
@@ -55,33 +56,6 @@ export interface KernelEventContext {
   metadata?:      Record<string, any>
   /** Lifecycle event id for cross-linking (already inserted by caller). */
   lifecycleEventId?: string
-}
-
-// Thin forwarder. All three fan-out channels (staff notifications + campaign_sequences enrollment +
-// client portal) now live behind processKernelEvent → the kernel reactor, so EVERY emitter gets them
-// uniformly — not just the handful that call this wrapper. fanOutKernelEvent simply forwards its
-// richer client context (buyer/seller/transaction/listing/agent) so the reactor doesn't have to
-// re-resolve it. The reactor's portal writer is template-gated + idempotent, so routing through it
-// here adds no duplicate cards.
-export async function fanOutKernelEvent(ctx: KernelEventContext): Promise<void> {
-  try {
-    await processKernelEvent({
-      event:            ctx.event,
-      brokerageId:      ctx.brokerageId,
-      entityType:       ctx.entityType,
-      entityId:         ctx.entityId,
-      lifecycleEventId: ctx.lifecycleEventId,
-      contactId:        ctx.contactId,
-      buyerContactId:   ctx.buyerContactId,
-      sellerContactId:  ctx.sellerContactId,
-      transactionId:    ctx.transactionId,
-      listingId:        ctx.listingId,
-      agentUserId:      ctx.agentUserId,
-      metadata:         ctx.metadata ?? null,
-    })
-  } catch (e) {
-    console.error("[fanOutKernelEvent] processKernelEvent failed", e)
-  }
 }
 
 // ─── 2. Sequence auto-enrollment ─────────────────────────────────────────────
@@ -542,7 +516,14 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Offer is delivered to the other side.",
     chatBody: "Your offer is fully signed — sending it over now.",
   },
-  [KernelEvent.ESIGN_SIGNED_COMPLETED]: {
+  // TOMBSTONE (orphan doctrine §1.1 + §6, 2026-09-03) — this "Document signed"
+  // template was keyed on KernelEvent.ESIGN_SIGNED_COMPLETED, a spelling NOTHING
+  // in the tree emits. The fact it describes — an e-sign envelope completed on a
+  // document — is emitted as KernelEvent.ESIGN_PACKET_SIGNED by
+  // lib/esign-webhooks/finalize-packet.ts:106 (every provider webhook). The
+  // template moved onto that survivor; the enum member stays (events.ts:6 — it may
+  // be live as a notification_rules.trigger_event row; the integrator checks).
+  [KernelEvent.ESIGN_PACKET_SIGNED]: {
     title: "Document signed",
     plainLanguageSummary:
       "A document you needed to sign is now complete. A copy is saved to your portal for your records.",

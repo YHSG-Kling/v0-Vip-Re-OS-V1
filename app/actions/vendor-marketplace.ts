@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
@@ -1258,13 +1259,14 @@ export async function assignVendorToTransaction(data: {
 
   if (jobError) throw jobError
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: profile?.brokerage_id,
-    event_type: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
-    entity_type: "vendor_assignment",
-    entity_id: assignment.id,
-    actor_user_id: user.id,
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: profile?.brokerage_id ?? null,
+    event: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
+    entityType: "vendor_assignment",
+    entityId: assignment.id,
+    transactionId: data.transactionId,
+    actorUserId: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
@@ -1273,7 +1275,6 @@ export async function assignVendorToTransaction(data: {
       // not disagree with the assignment it is reporting on.
       assigned_by_agent_id: agentRowId,
     },
-    created_at: new Date().toISOString(),
   })
 
   // Auto-email the vendor with job details (fire and forget — must not
@@ -1402,20 +1403,20 @@ export async function createVendorBookingWithKernelEvent(data: {
 
   if (error) throw error
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: profile?.brokerage_id,
-    event_type: KernelEvent.VENDOR_BOOKING_CREATED,
-    entity_type: "vendor_booking",
-    entity_id: booking.id,
-    actor_user_id: user.id,
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: profile?.brokerage_id ?? null,
+    event: KernelEvent.VENDOR_BOOKING_CREATED,
+    entityType: "vendor_booking",
+    entityId: booking.id,
+    transactionId: data.transactionId,
+    actorUserId: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
       service_type: data.serviceType,
       scheduled_date: data.scheduledDate,
     },
-    created_at: new Date().toISOString(),
   })
 
   // Auto-email vendor with booking details (fire and forget).

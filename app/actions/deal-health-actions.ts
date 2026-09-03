@@ -18,6 +18,7 @@ import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── Resolve a proactive intervention ────────────────────────────────────────
 
@@ -97,13 +98,16 @@ export async function rescanDealHealthAction(params: {
       brokerageId:   tx.brokerage_id,
     })
 
-    // Mirror the cron's lifecycle event so portals + alerts get notified.
-    await supabase.from("lifecycle_events").insert({
-      event_type:  KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
-      entity_type: "transaction",
-      entity_id:   tx.id,
-      brokerage_id: tx.brokerage_id,
-      actor_user_id: user.id,
+    // Mirror the cron's lifecycle event so portals + alerts get notified —
+    // emitKernelEvent does the audit row AND the reactor (a bare insert did neither
+    // of "portals + alerts").
+    await emitKernelEvent({
+      event:       KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
+      entityType:  "transaction",
+      entityId:    tx.id,
+      brokerageId: tx.brokerage_id,
+      actorUserId: user.id,
+      transactionId: tx.id,
       metadata: {
         overall_score: result.overallScore,
         risk_level:    result.riskLevel,
@@ -113,12 +117,13 @@ export async function rescanDealHealthAction(params: {
     })
 
     if (result.riskLevel === "critical" || result.riskLevel === "at_risk") {
-      await supabase.from("lifecycle_events").insert({
-        event_type:  KernelEvent.DEAL_AT_RISK_DETECTED,
-        entity_type: "transaction",
-        entity_id:   tx.id,
-        brokerage_id: tx.brokerage_id,
-        actor_user_id: user.id,
+      await emitKernelEvent({
+        event:       KernelEvent.DEAL_AT_RISK_DETECTED,
+        entityType:  "transaction",
+        entityId:    tx.id,
+        brokerageId: tx.brokerage_id,
+        actorUserId: user.id,
+        transactionId: tx.id,
         metadata: {
           overall_score: result.overallScore,
           risk_level:    result.riskLevel,

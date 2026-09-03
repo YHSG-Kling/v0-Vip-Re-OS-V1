@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   DEFAULT_REFERRAL_STATUS,
   isReferralStatus,
@@ -220,13 +221,15 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
     }
   }
 
-  // Step 4: INSERT lifecycle_events
-  await db.from("lifecycle_events").insert({
-    entity_type:   "contact",
-    entity_id:     referredContactId ?? referral.id,
-    brokerage_id:  brokerageId,
-    event_type:    KernelEvent.REFERRAL_RECEIVED,
-    actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
+  // Step 4: kernel event — audit row + reactor (sequences keyed on referral_received
+  // now enroll; the bare insert reached nothing).
+  await emitKernelEvent({
+    entityType:  "contact",
+    entityId:    referredContactId ?? referral.id,
+    brokerageId,
+    event:       KernelEvent.REFERRAL_RECEIVED,
+    contactId:   referredContactId ?? undefined,
+    actorUserId: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       referral_id: referral.id,
       partner_id:  params.partnerId ?? null,

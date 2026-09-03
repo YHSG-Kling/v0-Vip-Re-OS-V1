@@ -53,6 +53,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
@@ -72,6 +73,8 @@ import {
   fitNarrationWithOneRedraft,
   type NarrationBudgetOutcome,
 } from "@/lib/video/script-structure"
+import { missingContentProps, describeMissingContent, stagesVoiceover } from "@/lib/remotion/content-contract"
+import { seoHintFromNarration } from "@/lib/geo/video-landing"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -316,20 +319,21 @@ export async function POST(req: NextRequest) {
       video_project_id: projectId,
     }).eq("id", promo.id)
 
-    await svc.from("lifecycle_events").insert({
-      brokerage_id:  promo.brokerage_id,
-      actor_user_id: promoAgentUserId,  // FK users(id) — the resolved owner
-      event_type:    hybrid ? KernelEvent.VIDEO_GENERATION_REQUESTED : KernelEvent.VIDEO_GENERATION_COMPLETED,
+    // Audit row + reactor (was a bare insert nobody downstream heard).
+    await emitKernelEvent({
+      brokerageId: promo.brokerage_id,
+      actorUserId: promoAgentUserId,  // FK users(id) — the resolved owner
+      event:       hybrid ? KernelEvent.VIDEO_GENERATION_REQUESTED : KernelEvent.VIDEO_GENERATION_COMPLETED,
+      listingId:   promo.listing_id ?? undefined,
       metadata: {
         ai_video_project_id: projectId,
         promo_ledger_id:     promo.id,
         listing_id:          promo.listing_id,
         hybrid,
       },
-      entity_id:   projectId,
-      entity_type: "ai_video_project",
-      source:      "system",
-      processed:   false,
+      entityId:   projectId,
+      entityType: "ai_video_project",
+      source:     "system",
     })
 
     // 7. HYBRID — submit D-ID intro + outro renders to the same egress. The
@@ -820,12 +824,51 @@ async function renderRemotionReel(args: {
     const { recordRenderQueued } = await import("@/lib/remotion/registry")
     const { buildRenderIntent } = await import("@/lib/remotion/render-decision")
     const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
+
+    // ── THE COMPANION CARD'S PROPS, resolved BEFORE the row is filed ─────────
+    // `seoHint` is the text an AI search engine reads to describe a video it
+    // cannot watch, and the content contract REQUIRES it on VideoCoverThumb —
+    // this producer used to omit it, and because it calls renderStill directly
+    // the render-composition backstop never got to refuse, so the card shipped
+    // with the composition's Studio sample hint ("Just-listed home in Brickell,
+    // FL…") under a real listing. It is now cut VERBATIM from the gated
+    // narration (seoHintFromNarration — whole sentences of a script that
+    // already passed the fair-housing gate; no paraphrase, no new claim), and
+    // the same contract question the backstop asks is asked here, first.
+    //
+    // `agentName` no longer falls back to the literal "Your Agent": that string
+    // is the composition's own sample value, and staging it by hand would
+    // satisfy isSupplied while meaning exactly what the contract refuses. A
+    // tenant with no agent name and no brokerage name has no honest card —
+    // the contract says so by name below, and the video still ships.
+    const thumbProps: Record<string, unknown> = {
+      kind: "listing", title: args.facts.address || eventLabel(args.eventType),
+      subtitle: eventLabel(args.eventType), eyebrow: eventLabel(args.eventType).toUpperCase(),
+      heroImageUrl: args.facts.images?.[0] ?? null,
+      agentName: args.brand.agentName ?? args.brand.brokerageName ?? null,
+      brand: { primaryColor: args.brand.primaryColor, accentColor: args.brand.accentColor, brokerageName: args.brand.brokerageName ?? "Your Brokerage", showEhoMark: true },
+      seoHint: seoHintFromNarration(args.script),
+    }
+    const thumbMissing = missingContentProps(THUMB_COMPOSITION, thumbProps)
+    const thumbRefusal = thumbMissing.length > 0 ? describeMissingContent(THUMB_COMPOSITION, thumbMissing) : null
+
+    // THE AUDIT ROW CARRIES WHAT WAS STAGED. It used to file
+    // `{ kind, music_mood }` — a row the Asset Manager, the cache economics and
+    // the /v/[slug] page could read nothing from. Now the composition's real
+    // props (minus the two blobs: the per-word caption cues and the QR data
+    // URI, named in `audit_omitted` so their absence is not mistaken for
+    // "never staged") plus the companion card under the ONE key
+    // render-decision.ts resolveThumbnailProps reads, `thumbnail_props`, which
+    // is where lib/geo/video-landing.ts seoHintFromRenderProps reads the hint
+    // back for og:description. NO snake `voiceover_url` is filed: the
+    // narration is already IN the frames via camel voiceoverUrl, and the
+    // coordinator would mux a second copy over it.
     const rq = await recordRenderQueued({
       brokerageId: args.brokerageId, compositionId,
       agentUserId: args.agentUserId,
       entityType: "listing_promo", entityId: args.promoId,
-      usedVoiceover: true,
-      inputProps: { kind: "listing_promo", music_mood: "upbeat" },
+      usedVoiceover: stagesVoiceover(compositionId, inputProps),
+      inputProps: auditableProps(inputProps, { kind: "listing_promo", music_mood: "upbeat", thumbnail_props: thumbProps }),
       scopeType: "brokerage", scopeId: args.brokerageId, requestedVia: "cron",
     })
     if (rq.ok && rq.renderId) {
@@ -840,32 +883,33 @@ async function renderRemotionReel(args: {
       if (fin.ok && fin.outputUrl) {
         finishedUrl = fin.outputUrl
         // COMPANION THUMBNAIL (registry declares VideoCoverThumb; the bespoke
-        // route never rendered it): branded share/OG card, best-effort.
-        try {
-          const { renderStill } = await import("@remotion/renderer")
-          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-          const thumbComp = await selectComposition({
-            serveUrl: bundleLocation, id: "VideoCoverThumb",
-            inputProps: {
-              kind: "listing", title: args.facts.address || eventLabel(args.eventType),
-              subtitle: eventLabel(args.eventType), eyebrow: eventLabel(args.eventType).toUpperCase(),
-              heroImageUrl: args.facts.images?.[0] ?? null,
-              agentName: args.brand.agentName ?? args.brand.brokerageName ?? "Your Agent",
-              brand: { primaryColor: args.brand.primaryColor, accentColor: args.brand.accentColor, brokerageName: args.brand.brokerageName ?? "Your Brokerage", showEhoMark: true },
-            },
-          })
-          const thumbPath = path.join(tmpdir(), `listing-promo-${args.promoId}-thumb.png`)
-          await renderStill({
-            composition: thumbComp, serveUrl: bundleLocation, output: thumbPath,
-            chromiumOptions: { headless: true, gl: "swangle" },
-            ...(executablePath ? { browserExecutable: executablePath } : {}),
-          })
-          const thumbBytes = await fs.readFile(thumbPath)
-          await fs.unlink(thumbPath).catch(() => {})
-          const thumbUrl = await hostRenderedMedia(svcFin, `listing-promo/thumbs/${args.promoId}.png`, thumbBytes, "image/png")
-          await svcFin.from("remotion_composition_renders").update({ thumbnail_url: thumbUrl }).eq("id", rq.renderId)
-        } catch (te) {
-          console.warn("[render-just-listed] thumbnail pass failed; video kept:", (te as Error).message)
+        // route never rendered it): branded share/OG card, best-effort — but
+        // FAIL CLOSED on the contract: a card the contract refuses is not
+        // rendered at all, and the reason is logged by prop name. A missing
+        // card degrades the share preview; a sample-data card misleads it.
+        if (thumbRefusal) {
+          console.warn(`[render-just-listed] thumbnail REFUSED for promo ${args.promoId}; video kept: ${thumbRefusal}`)
+        } else {
+          try {
+            const { renderStill } = await import("@remotion/renderer")
+            const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+            const thumbComp = await selectComposition({
+              serveUrl: bundleLocation, id: THUMB_COMPOSITION,
+              inputProps: thumbProps,
+            })
+            const thumbPath = path.join(tmpdir(), `listing-promo-${args.promoId}-thumb.png`)
+            await renderStill({
+              composition: thumbComp, serveUrl: bundleLocation, output: thumbPath,
+              chromiumOptions: { headless: true, gl: "swangle" },
+              ...(executablePath ? { browserExecutable: executablePath } : {}),
+            })
+            const thumbBytes = await fs.readFile(thumbPath)
+            await fs.unlink(thumbPath).catch(() => {})
+            const thumbUrl = await hostRenderedMedia(svcFin, `listing-promo/thumbs/${args.promoId}.png`, thumbBytes, "image/png")
+            await svcFin.from("remotion_composition_renders").update({ thumbnail_url: thumbUrl }).eq("id", rq.renderId)
+          } catch (te) {
+            console.warn("[render-just-listed] thumbnail pass failed; video kept:", (te as Error).message)
+          }
         }
       }
     }
@@ -887,6 +931,30 @@ async function renderRemotionReel(args: {
     fellBack:       built.fellBack,
     fallbackReason: built.fallbackReason,
   }
+}
+
+/** The companion share/OG card this lane renders, named ONCE (§6). */
+const THUMB_COMPOSITION = "VideoCoverThumb"
+
+/**
+ * The staged props as the audit row files them: everything the composition
+ * was actually given, minus the two payloads that are large and carry no
+ * fact — the per-word caption cues (hundreds of entries per reel) and the QR
+ * PNG data URI. Their keys are recorded in `audit_omitted` so a reader can
+ * tell "omitted for size" from "never staged". PURE.
+ */
+const AUDIT_OMITTED_KEYS = ["captionsCues", "qrCodeDataUrl"] as const
+function auditableProps(
+  staged: Record<string, unknown>,
+  extra: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const omitted: string[] = []
+  for (const [k, v] of Object.entries(staged)) {
+    if ((AUDIT_OMITTED_KEYS as readonly string[]).includes(k)) { if (v != null) omitted.push(k); continue }
+    out[k] = v
+  }
+  return { ...out, ...extra, ...(omitted.length ? { audit_omitted: omitted } : {}) }
 }
 
 function buildHybridHookScript(position: "intro" | "outro", facts: ListingFacts, agentName: string): string {

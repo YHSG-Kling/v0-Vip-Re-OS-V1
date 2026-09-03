@@ -129,18 +129,11 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           }
 
           const { KernelEvent } = await import("@/lib/kernel/events")
-          await svc.from("lifecycle_events").insert({
-            entity_type: "listing",
-            entity_id: existingDraft.id,
-            event_type: KernelEvent.LISTING_CREATED ?? "listing_created",
-            brokerage_id: ctx.brokerageId,
-            metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, promoted_from_draft: true },
-            created_at: new Date().toISOString(),
-          }).then(() => {})
-
+          // One emit does the audit row + fan-out (was a direct insert whose outcome was
+          // swallowed by `.then(() => {})`, then a separate fan-out call).
           try {
-            const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-            await fanOutKernelEvent({
+            const { emitKernelEvent } = await import("@/lib/kernel/emit")
+            const r = await emitKernelEvent({
               event: KernelEvent.LISTING_CREATED,
               brokerageId: ctx.brokerageId,
               entityType: "listing",
@@ -148,8 +141,10 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
               sellerContactId: ctx.contactId,
               listingId: existingDraft.id,
               agentUserId: ctx.agentUserId,
-              metadata: { stage: "LISTING_AGREEMENT_SIGNED", promoted_from_draft: true },
+              actorUserId: ctx.agentUserId ?? null,
+              metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, promoted_from_draft: true },
             })
+            if (r.error) console.error("[compliance-listing-auto-create] LISTING_CREATED row refused (non-fatal):", r.error)
           } catch (err: any) {
             console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
           }
@@ -194,18 +189,10 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
         // kernel createListingRecord emits. Direct-insert chains otherwise skip it,
         // so auto-created listings never kicked off marketing/portal automation.
         const { KernelEvent } = await import("@/lib/kernel/events")
-        await svc.from("lifecycle_events").insert({
-          entity_type: "listing",
-          entity_id: listing.id,
-          event_type: KernelEvent.LISTING_CREATED ?? "listing_created",
-          brokerage_id: ctx.brokerageId,
-          metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, created_via: "compliance_auto_create" },
-          created_at: new Date().toISOString(),
-        }).then(() => {})
-
+        // One emit does the audit row + fan-out (see the draft-promotion branch above).
         try {
-          const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-          await fanOutKernelEvent({
+          const { emitKernelEvent } = await import("@/lib/kernel/emit")
+          const r = await emitKernelEvent({
             event: KernelEvent.LISTING_CREATED,
             brokerageId: ctx.brokerageId,
             entityType: "listing",
@@ -213,8 +200,10 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             sellerContactId: ctx.contactId,
             listingId: listing.id as string,
             agentUserId: ctx.agentUserId,
-            metadata: { stage: "LISTING_AGREEMENT_SIGNED" },
+            actorUserId: ctx.agentUserId ?? null,
+            metadata: { stage: "LISTING_AGREEMENT_SIGNED", agent_id: agent.id, created_via: "compliance_auto_create" },
           })
+          if (r.error) console.error("[compliance-listing-auto-create] LISTING_CREATED row refused (non-fatal):", r.error)
         } catch (err: any) {
           console.error("[compliance-listing-auto-create] LISTING_CREATED fan-out failed (non-fatal):", err?.message ?? err)
         }

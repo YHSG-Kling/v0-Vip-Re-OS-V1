@@ -324,19 +324,19 @@ export async function generatePropertyChapterVideos(
       // made it visible to poll-did-videos, not because this row exists.
       // (Previously this emitted the dotted "video.queued" which the
       // underscore-form KernelEvent reactor never matched either.)
-      await svc.from("lifecycle_events").insert({
-        brokerage_id:  input.brokerageId,
-        actor_user_id: agentUserId,
-        event_type:    KernelEvent.VIDEO_GENERATION_REQUESTED,
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      await emitKernelEvent({
+        brokerageId: input.brokerageId,
+        actorUserId: agentUserId,
+        event:       KernelEvent.VIDEO_GENERATION_REQUESTED,
         metadata: {
           video_project_id: project.id,
           chapter_title:    chapter.title,
           presentation_id:  input.presentationId,
         },
-        entity_id:   project.id,
-        entity_type: "ai_video_project",
-        source:      "system",
-        processed:   false,
+        entityId:   project.id,
+        entityType: "ai_video_project",
+        source:     "system",
       })
     } catch (err: unknown) {
       failures.push(chapter.title)

@@ -90,19 +90,23 @@ function resolveStageMilestoneEvent(toStage: string): string {
 /**
  * Log failed transition attempt.
  *
- * Writes directly to lifecycle_events — no state change occurs,
- * so transitionLifecycle() is NOT called and processKernelEvent() is NOT fired.
+ * No state change occurs, so transitionLifecycle() is NOT called — but the
+ * FAILURE is itself a KernelEvent (LISTING_STAGE_TRANSITION_FAILED), and a
+ * notification_rule keyed on it is entitled to hear it. emitKernelEvent writes
+ * the audit row AND fans out; the bare insert it replaces did only the former.
  */
 export async function logFailedTransition(
-  supabase: SupabaseClient,
+  _supabase: SupabaseClient,
   event: LifecycleEventData & { failureReason: string }
 ): Promise<void> {
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  event.brokerageId,
-    entity_type:   'listing_stage_machine',
-    entity_id:     event.listingId,
-    event_type:    KernelEvent.LISTING_STAGE_TRANSITION_FAILED,
-    actor_user_id: event.userId,
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    brokerageId:  event.brokerageId,
+    entityType:   'listing_stage_machine',
+    entityId:     event.listingId,
+    listingId:    event.listingId,
+    event:        KernelEvent.LISTING_STAGE_TRANSITION_FAILED,
+    actorUserId:  event.userId,
     metadata: {
       from_stage:       event.fromStage,
       to_stage:         event.toStage,
@@ -111,7 +115,6 @@ export async function logFailedTransition(
       is_override:      false,
     },
   })
-  // processKernelEvent NOT called — no state change occurred
 }
 
 /**

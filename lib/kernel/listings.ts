@@ -251,8 +251,9 @@ export async function createListingRecord(
     }
 
     // Portal fan-out: the seller sees "Your listing is being prepared".
-    const { fanOutKernelEvent } = await import("./event-fanout")
-    await fanOutKernelEvent({
+    // Row already written above → skipInsert (fan-out only).
+    const { emitKernelEvent } = await import("./emit")
+    await emitKernelEvent({
       event:           KernelEvent.LISTING_CREATED,
       brokerageId:     input.brokerageId,
       entityType:      "listing",
@@ -261,6 +262,7 @@ export async function createListingRecord(
       listingId:       listing.id as string,
       agentUserId:     input.agentId,
       metadata:        { stage: "LISTING_AGREEMENT_INITIATED" },
+      skipInsert:      true,
     }).catch(() => {})
 
     return { success: true, listing }

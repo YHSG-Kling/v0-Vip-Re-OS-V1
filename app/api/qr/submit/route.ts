@@ -234,8 +234,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (action === 'created') {
       try {
-        const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
-        await fanOutKernelEvent({
+        // Row already written above → skipInsert (fan-out only).
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        await emitKernelEvent({
           event:       KernelEvent.CONTACT_CAPTURED,
           brokerageId: qr.brokerage_id,
           entityType:  'contact',
@@ -243,6 +244,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           contactId,
           agentUserId: undefined,
           metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
+          skipInsert:  true,
         })
       } catch { /* non-blocking */ }
     }

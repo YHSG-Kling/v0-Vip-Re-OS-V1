@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 interface GenerateDraftParams {
@@ -228,13 +229,19 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
     throw new Error(`Failed to send message: ${messageError.message}`)
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.SELLER_UPDATE_SENT,
-    actor_user_id: approvedByAgentId,
+  // Emit kernel event — audit row + reactor. This is THE producer of
+  // SELLER_UPDATE_SENT: the portal template in lib/kernel/event-fanout.ts
+  // ("Listing activity update") had no emitter until the bare insert here
+  // became a real emit. The seller is passed explicitly so the card posts to
+  // them without a resolver round-trip.
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "listing",
+    entityId: listingId,
+    event: KernelEvent.SELLER_UPDATE_SENT,
+    listingId,
+    sellerContactId: listing.contact_id,
+    actorUserId: approvedByAgentId,
     metadata: {
       message_id: message.id,
       contact_id: listing.contact_id,

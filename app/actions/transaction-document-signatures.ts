@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -131,13 +132,16 @@ export async function sendDocumentForSignature(params: {
     .update({ status: "pending_signature", updated_at: new Date().toISOString() })
     .eq("id", documentId)
 
-  // ── Emit kernel event for audit ───────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "transaction_document",
-    entity_id:     documentId,
-    event_type:    KernelEvent.CONTRACT_SENT_FOR_SIGNATURE ?? "document.signature.requested",
-    actor_user_id: userId,
+  // ── Emit kernel event — audit row + reactor ───────────────────────────────
+  // (was a bare insert with a `?? "document.signature.requested"` fallback that
+  // could never fire — the enum member is always defined — and a swallowed outcome.)
+  await emitKernelEvent({
+    brokerageId,
+    entityType:    "transaction_document",
+    entityId:      documentId,
+    event:         KernelEvent.CONTRACT_SENT_FOR_SIGNATURE,
+    transactionId,
+    actorUserId:   userId,
     metadata: {
       transaction_id:  transactionId,
       signature_id:    sig.id,
@@ -146,7 +150,7 @@ export async function sendDocumentForSignature(params: {
       signer_count:    signers.length,
     },
   })
-  .then(() => {}, () => {}) // fire-and-forget: silent fail on audit log errors
+  .then(() => {}, () => {}) // fire-and-forget: the send already succeeded
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, signatureId: sig.id }

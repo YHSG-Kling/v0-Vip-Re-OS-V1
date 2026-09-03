@@ -123,15 +123,25 @@ export async function computeWeeklyMetrics(
     systemsProcessed++
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.AI_METRICS_COMPUTED,
-    payload: {
+  // Emit kernel event — audit row + reactor. The bare insert it replaces carried NO
+  // entity_type / entity_id (both NOT NULL on the live table) and wrote `payload`
+  // instead of `metadata`, so it was refused on every run and no AI_METRICS_COMPUTED
+  // row has ever landed. The entity is the brokerage whose week was computed.
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  const { error: metricsEventError } = await emitKernelEvent({
+    brokerageId,
+    event: KernelEvent.AI_METRICS_COMPUTED,
+    entityType: "brokerage",
+    entityId: brokerageId,
+    source: "cron",
+    metadata: {
       week_start: weekStart.toISOString(),
       systems_processed: systemsProcessed,
     },
   })
+  if (metricsEventError) {
+    console.error(`[FeedbackAggregator] AI_METRICS_COMPUTED row refused for ${brokerageId}: ${metricsEventError}`)
+  }
 
   return { systemsProcessed }
 }

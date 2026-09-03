@@ -14,6 +14,7 @@
 // receiving alerts from this path regardless.
 import { createServiceClient } from "@/lib/supabase/service"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
+import { KernelEvent }         from "@/lib/kernel/events"
 import { searchIDXForAlert, type AlertSearchRefusal } from "./idx-alert-search"
 import { scorePropertyForAlert } from "./alert-matcher"
 import { deliverAlertResults } from "./alert-notifier"
@@ -233,9 +234,14 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
   // emitKernelEvent does INSERT + reactor fan-out (staff notifications + sequence enrollment +
   // client portal card). A bare lifecycle_events INSERT silently skipped all three downstream
   // channels — buyers never saw the matched-property card on their portal.
+  //
+  // ONE VOCABULARY (§6, 2026-09-03): this emitted the DOTTED string
+  // "property.alert.matched", which is not a KernelEvent value — so the reactor's
+  // enum gate skipped it and the PROPERTY_ALERT_MATCHED portal template ("A home
+  // matched your alert") never once rendered. The canonical spelling is the enum.
   if (propertiesMatched > 0) {
     await emitKernelEvent({
-      event:       "property.alert.matched",
+      event:       KernelEvent.PROPERTY_ALERT_MATCHED,
       brokerageId,
       entityType:  "buyer_lifecycle",
       entityId:    alert.contact_id,

@@ -340,22 +340,29 @@ function ytdStart(): string {
   return `${currentYear()}-01-01`
 }
 
+// ONE VOCABULARY (2026-09-03): routes through emitKernelEvent (audit row + reactor)
+// instead of a bare insert that never reached notification_rules. Same columns:
+// agent_id (agents-class), actor_user_id (the reporting user), brokerage, entity.
 async function emitEvent(
-  supabase: Awaited<ReturnType<typeof createServiceClient>>,
+  _supabase: Awaited<ReturnType<typeof createServiceClient>>,
   ctx: ReportingActorContext,
   event: KernelEvent,
   entityId: string,
   metadata: Record<string, unknown> = {}
 ): Promise<void> {
-  await supabase.from("lifecycle_events").insert({
-    agent_id:    ctx.agentId,
-    brokerage_id: ctx.brokerageId,
-    entity_type: "report",
-    entity_id:   entityId,
-    event_type:  event,
+  const { emitKernelEvent } = await import("./emit")
+  const r = await emitKernelEvent({
+    event,
+    agentId:     ctx.agentId,
+    actorUserId: ctx.userId,
+    brokerageId: ctx.brokerageId,
+    entityType:  "report",
+    entityId,
     metadata,
-    created_at:  new Date().toISOString(),
-  }).select()
+  })
+  if (r.error) {
+    console.error(`[kernel/reporting] lifecycle_events row refused for ${event}: ${r.error}`)
+  }
 }
 
 // ─── COMMANDS ────────────────────────────────────────────────────────────────

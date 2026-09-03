@@ -855,19 +855,20 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     )
   }
 
-  await svc.from("lifecycle_events").insert({
-    brokerage_id:  input.brokerageId,
-    actor_user_id: agentUserId,
-    event_type:    KernelEvent.VIDEO_GENERATION_REQUESTED,
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  await emitKernelEvent({
+    brokerageId: input.brokerageId,
+    actorUserId: agentUserId,
+    event:       KernelEvent.VIDEO_GENERATION_REQUESTED,
     metadata: {
       intro_video_id:      introVideoId,
       ai_video_project_id: project.id,
       trigger:             input.trigger,
     },
-    entity_id:   project.id,
-    entity_type: "ai_video_project",
-    source:      "system",
-    processed:   false,
+    entityId:   project.id,
+    entityType: "ai_video_project",
+    source:     "system",
   })
 
   return {

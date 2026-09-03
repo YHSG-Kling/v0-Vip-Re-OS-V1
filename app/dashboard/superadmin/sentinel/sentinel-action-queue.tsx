@@ -19,12 +19,14 @@ import {
   type SentinelQueue,
   type SentinelLearningView,
 } from '@/app/actions/superadmin/platform-sentinel'
-import { PLATFORM_MANAGERS } from '@/lib/kernel/manager-registry'
+import { resolvePlatformManager } from '@/lib/kernel/manager-registry'
 
 // The registered platform-scope manager persona — identity (label/domain/accent)
 // comes from the manager registry, exactly like the tenant Command Center's 14
 // manager chips, so the staff surface can never drift from the constitution.
-const SENTINEL = PLATFORM_MANAGERS.platform_sentinel
+// Read through the resolver (never undefined) rather than indexing the map —
+// the resolver is the registry's contract and had no product reader until now.
+const SENTINEL = resolvePlatformManager('platform_sentinel')
 
 const SEVERITY_BADGE: Record<string, string> = {
   critical: 'bg-red-100 text-red-800',

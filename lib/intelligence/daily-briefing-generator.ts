@@ -897,23 +897,24 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     )
   }
 
-  // 6. INSERT lifecycle_events
-  await supabase
-    .from("lifecycle_events")
-    .insert({
-      brokerage_id: brokerageId,
-      entity_type: "ai_daily_briefing",
-      entity_id: upsertedBriefing.id,
-      event_type: KernelEvent.DAILY_BRIEFING_GENERATED,
-      metadata: {
-        agent_id: agentsId,
-        briefing_date: today,
-        tasks_count: tasks.length,
-        transactions_count: transactions.length,
-        deals_at_risk_count: finalDealsAtRisk.length,
-        listings_at_risk_count: listingsAtRisk.length,
-      },
-    })
+  // 6. Kernel event — audit row + reactor (was a bare insert nobody downstream heard).
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "ai_daily_briefing",
+    entityId: upsertedBriefing.id,
+    event: KernelEvent.DAILY_BRIEFING_GENERATED,
+    agentId: agentsId,
+    actorUserId: briefingUserId,
+    metadata: {
+      agent_id: agentsId,
+      briefing_date: today,
+      tasks_count: tasks.length,
+      transactions_count: transactions.length,
+      deals_at_risk_count: finalDealsAtRisk.length,
+      listings_at_risk_count: listingsAtRisk.length,
+    },
+  })
 
   // 7. Return briefing data
   return upsertedBriefing as DailyBriefing

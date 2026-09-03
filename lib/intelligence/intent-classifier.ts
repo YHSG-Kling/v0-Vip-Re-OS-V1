@@ -195,13 +195,16 @@ Return the classification with a confidence score (0-100) and a brief suggested_
     })
     .eq('id', conversationId)
 
-  // Step 4: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.INTENT_CLASSIFIED,
-    brokerage_id: brokerageId,
-    entity_type: 'conversation',
-    entity_id: conversationId,
-    payload: {
+  // Step 4: Kernel event — audit row + reactor (`payload` → `metadata`, the column
+  // every reader uses).
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.INTENT_CLASSIFIED,
+    brokerageId,
+    entityType: 'conversation',
+    entityId: conversationId,
+    contactId: contactId ?? undefined,
+    metadata: {
       intent: finalResult.intent_primary,
       intent_secondary: finalResult.intent_secondary,
       confidence: finalResult.confidence,

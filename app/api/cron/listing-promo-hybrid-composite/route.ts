@@ -37,6 +37,7 @@ import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -198,18 +199,18 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      await svc.from("lifecycle_events").insert({
-        brokerage_id:  p.brokerage_id,
-        actor_user_id: projAgentUserId,  // FK users(id) — the resolved owner, not the project's agents id
-        event_type:    KernelEvent.VIDEO_GENERATION_COMPLETED,
+      // Audit row + reactor (was a bare insert nobody downstream heard).
+      await emitKernelEvent({
+        brokerageId: p.brokerage_id,
+        actorUserId: projAgentUserId,  // FK users(id) — the resolved owner, not the project's agents id
+        event:       KernelEvent.VIDEO_GENERATION_COMPLETED,
         metadata: {
           ai_video_project_id: p.id,
           hybrid_composited:   true,
         },
-        entity_id:   p.id,
-        entity_type: "ai_video_project",
-        source:      "system",
-        processed:   false,
+        entityId:   p.id,
+        entityType: "ai_video_project",
+        source:     "system",
       })
 
       results.push({ id: p.id, outcome: "completed" })

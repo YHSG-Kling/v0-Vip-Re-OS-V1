@@ -27,10 +27,15 @@
  *
  * Reads Root.tsx as text. No Remotion import, no bundling, no DB.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
-import { CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent } from "../lib/remotion/content-contract"
+import {
+  CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent,
+  VOICEOVER_CONSUMING_COMPOSITIONS, consumesVoiceover, stagesVoiceover,
+} from "../lib/remotion/content-contract"
+import { buildAvatarRenderRow } from "../lib/video/avatar-render-orchestrator"
+import { seoHintFromNarration, seoHintFromRenderProps, describeVideoForSearch, SEO_HINT_MAX_CHARS } from "../lib/geo/video-landing"
 import { explainerDiagramSpec } from "../lib/charts/explainer-diagram"
 import {
   listingReelProps, justSoldProps, comingSoonProps, openHouseProps,
@@ -724,6 +729,232 @@ console.log("\n═══ 14. Time and money formatting cannot guess ═══")
   ok("an unparseable time is null, never guessed", formatTimeWindow("later", "13:00") === null)
   ok("money below a thousand is not compacted into nonsense", compactMoney(640) === "$640")
   ok("a million reads as a million", compactMoney(1_250_000) === "$1.3M")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 15. ONE VOICEOVER CENSUS (§6, 2026-09-03).
+//
+// "Which compositions play input_props.voiceoverUrl" had two spellings that
+// both fed remotion_composition_renders.used_voiceover: a private Set in the
+// avatar handoff (measured from remotion/**) and the hand-seeded live column
+// remotion_compositions.requires_voiceover (m168) — and they disagreed on 17 of
+// 33 rows. The survivor is VOICEOVER_CONSUMING_COMPOSITIONS in
+// lib/remotion/content-contract.ts; m601 makes the column its mirror. This
+// section DERIVES the truth from the compositions (comment-stripped source, so
+// a tombstone that names the prop is not a reader) and holds all three copies to
+// it: the set, every code reader, and — when it can reach it — the live table.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 15. ONE voiceover census — the set, the compositions, the code, the live mirror ═══")
+{
+  const compFiles: string[] = []
+  const walk = (dir: string, depth = 0) => {
+    if (depth > 3) return
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name.startsWith(".")) continue
+      const full = `${dir}/${e.name}`
+      if (e.isDirectory()) walk(full, depth + 1)
+      else if (/\.tsx?$/.test(e.name)) compFiles.push(full)
+    }
+  }
+  walk("remotion")
+  // The same reader shape scripts/remotion-setup-guard.ts §5 uses — an <Audio>
+  // whose src reads voiceoverUrl. Comment-stripped, NOT string-masked: JSX
+  // attributes are code, and the prop name is what is being looked for.
+  const voRead = /<Audio\b[^>]*\bsrc=\{[^}]*voiceoverUrl/
+  const readers = compFiles
+    .filter((f) => voRead.test(stripComments(src(f))))
+    .map((f) => f.replace(/^remotion\//, "").replace(/\.tsx?$/, ""))
+    .filter((id) => !!CONTENT_CONTRACT[id])
+    .sort()
+  ok("the reader finder recognises the shape it looks for, and not a bare declaration",
+    voRead.test(`{voiceoverUrl && <Audio src={voiceoverUrl} />}`)
+    && voRead.test(`{props.voiceoverUrl ? <Audio src={props.voiceoverUrl} /> : null}`)
+    && !voRead.test(`voiceoverUrl?: string`))
+  ok("...and does NOT count a comment that names the reader (a tombstone is not a call site)",
+    !voRead.test(stripComments(`// used to render <Audio src={voiceoverUrl} /> here`)))
+  ok(`...and really read the tree (${compFiles.length} files under remotion/, ${readers.length} readers)`,
+    compFiles.length >= 33 && readers.length >= 10)
+
+  const set = [...VOICEOVER_CONSUMING_COMPOSITIONS].sort()
+  ok(`VOICEOVER_CONSUMING_COMPOSITIONS EQUALS the compositions that render <Audio src={voiceoverUrl}>\n    (${set.length}) — a composition added to remotion/ without being added here fails this line`,
+    JSON.stringify(set) === JSON.stringify(readers),
+    `set-only: ${set.filter((i) => !readers.includes(i)).join(", ") || "none"} | readers-only: ${readers.filter((i) => !set.includes(i)).join(", ") || "none"}`)
+  ok("every member is a classified composition", set.every((id) => !!CONTENT_CONTRACT[id]))
+  ok("consumesVoiceover answers from the set: JustListedReel yes, BuyerConsultationSlide no, unknown no",
+    consumesVoiceover("JustListedReel") && !consumesVoiceover("BuyerConsultationSlide") && !consumesVoiceover("NoSuchReel") && !consumesVoiceover(null))
+  ok("stagesVoiceover is a fact about the RENDER — membership alone is not a narration, a URL on a\n    composition that cannot play it is not one either, and a blank URL is nothing",
+    !stagesVoiceover("JustListedReel", {})
+    && stagesVoiceover("JustListedReel", { voiceoverUrl: "https://cdn.example/vo.mp3" })
+    && !stagesVoiceover("BuyerConsultationSlide", { voiceoverUrl: "https://cdn.example/vo.mp3" })
+    && !stagesVoiceover("JustListedReel", { voiceoverUrl: "   " }))
+
+  // ── EVERY CODE READER READS THE SET, and the second spelling is gone ──────
+  const orch = code("lib/video/avatar-render-orchestrator.ts")
+  ok("the avatar handoff reads the set through consumesVoiceover and keeps NO private copy of the ids",
+    (orch.match(/consumesVoiceover\(/g) ?? []).length >= 2
+    && !/new Set<string>\(\[/.test(orch) && !orch.includes('"AffordabilitySnapshotReel"'))
+  const coord = code("lib/remotion/render-coordinator.ts")
+  ok("the render coordinator's used_voiceover starts from the render's own props (stagesVoiceover),\n    not from the mirror column",
+    coord.includes("stagesVoiceover(composition.composition_id") && !/usedVoiceover = composition\.requires_voiceover/.test(coord))
+  const am = code("lib/agents/asset-manager-actions.ts")
+  ok("the Asset Manager stamps used_voiceover from the render's own props at BOTH doors\n    (start_render, restart_failed_render)",
+    (am.match(/stagesVoiceover\(/g) ?? []).length >= 2 && !/usedVoiceover:\s*composition\.requires_voiceover/.test(am))
+  const reg = code("lib/remotion/registry.ts")
+  ok("the cost estimator reads the set by composition id",
+    reg.includes("consumesVoiceover(composition.composition_id)"))
+  ok("CONTROL: the second-spelling finder would still see the old shape",
+    /usedVoiceover:\s*composition\.requires_voiceover/.test("usedVoiceover: composition.requires_voiceover,"))
+
+  // ── THE MIRROR MIGRATION names exactly this set ───────────────────────────
+  const migPath = "supabase/migrations/m601-remotion-requires-voiceover-agrees-with-compositions.sql"
+  const mig = src(migPath)
+  const migIds = [...new Set([...mig.matchAll(/'([A-Za-z0-9]+)'/g)].map((m) => m[1]))].filter((id) => !!CONTENT_CONTRACT[id]).sort()
+  ok("m601 sets requires_voiceover from EXACTLY this set (the SQL's quoted ids, not its prose)",
+    JSON.stringify(migIds) === JSON.stringify(set),
+    `sql-only: ${migIds.filter((i) => !set.includes(i)).join(", ") || "none"} | set-only: ${set.filter((i) => !migIds.includes(i)).join(", ") || "none"}`)
+  ok("...as a whole-column RULE, re-runnable, not seventeen hand-typed rows",
+    /SET requires_voiceover = \(composition_id IN \(/.test(mig) && /IS DISTINCT FROM/.test(mig))
+
+  // ── THE LIVE MIRROR, compared when it can be reached (§3b discipline) ─────
+  // CI has no database. A gate that cannot run must SAY it skipped, never
+  // report ✓ for a comparison it did not make.
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log("  ⏭  skipped — no SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.")
+    console.log("     The LIVE requires_voiceover column is UNVERIFIED against the set in this run")
+    console.log("     (m601 is WRITTEN, NOT APPLIED until the integrator applies it).")
+  } else {
+    const { createServiceClient } = await import("../lib/supabase/service")
+    const { data, error } = await createServiceClient()
+      .from("remotion_compositions")
+      .select("composition_id, requires_voiceover")
+    if (error) {
+      ok("the live remotion_compositions read succeeded", false, error.message)
+    } else {
+      const rows = (data ?? []) as Array<{ composition_id: string; requires_voiceover: boolean }>
+      ok(`the live table returned rows at all (${rows.length})`, rows.length > 0)
+      const drift = rows
+        .filter((r) => r.requires_voiceover !== VOICEOVER_CONSUMING_COMPOSITIONS.has(r.composition_id))
+        .map((r) => `${r.composition_id} live=${r.requires_voiceover}`)
+      ok("the LIVE requires_voiceover column mirrors the set — apply m601 if this fails",
+        drift.length === 0, drift.slice(0, 8).join(" | "))
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 16. THE AVATAR HANDOFF REFUSES BEFORE IT INSERTS.
+//
+// enqueueAvatarCompositionForProject merged whatever provider_metadata carried
+// into a row and inserted it with no contract check, while the same file ran
+// missingContentProps on its two REQUEST builders. The row inserted, the caller
+// got ok + a renderId, and render-composition cancelled it a minute later with
+// nobody told. Same refusal pattern as lib/video/cma-reel-orchestrator.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 16. The avatar handoff refuses BEFORE it inserts ═══")
+{
+  const orch = code("lib/video/avatar-render-orchestrator.ts")
+  const fnAt = orch.indexOf("export async function enqueueAvatarCompositionForProject")
+  const body = fnAt >= 0 ? orch.slice(fnAt) : ""
+  const gateAt = body.indexOf("missingContentProps(compositionId, row.input_props")
+  const insertAt = body.indexOf(".insert(row)")
+  ok("enqueueAvatarCompositionForProject asks the contract on the MERGED payload it is about to stage",
+    fnAt >= 0 && gateAt > 0)
+  ok("...BEFORE the insert, and refuses by name (describeMissingContent), so the caller reads WHY",
+    insertAt > gateAt && body.includes("describeMissingContent(compositionId, missing)"))
+
+  // PURE half: the exact row that used to insert-then-cancel is what the gate refuses.
+  const thin = buildAvatarRenderRow({
+    brokerageId: "b", agentId: "a", compositionId: "AgentTalkingHeadReel",
+    avatarVideoUrl: "https://cdn.example/avatar.mp4", extraInputProps: {},
+  })
+  const missing = missingContentProps("AgentTalkingHeadReel", thin.input_props as Record<string, unknown>)
+  ok("CONTROL: an avatar row built over EMPTY extraInputProps is refused naming hook, agentName and\n    caption — the row that used to be inserted and cancelled a minute later",
+    missing.includes("hook") && missing.includes("agentName") && missing.includes("caption"), missing.join(","))
+  const full = buildAvatarRenderRow({
+    brokerageId: "b", agentId: "a", compositionId: "AgentTalkingHeadReel",
+    avatarVideoUrl: "https://cdn.example/avatar.mp4",
+    extraInputProps: { hook: "MEET YOUR AGENT", agentName: "Dana Reyes", caption: "Welcome — I'm glad you're here." },
+  })
+  ok("...and the same row carrying the staged props passes — the gate tracks the payload, not the path",
+    missingContentProps("AgentTalkingHeadReel", full.input_props as Record<string, unknown>).length === 0)
+  const inert = buildAvatarRenderRow({ brokerageId: "b", agentId: "a", compositionId: "BuyerConsultationSlide", avatarVideoUrl: "u", voiceoverUrl: "https://cdn.example/vo.mp3" })
+  const played = buildAvatarRenderRow({ brokerageId: "b", agentId: "a", compositionId: "JustListedReel", avatarVideoUrl: "u", voiceoverUrl: "https://cdn.example/vo.mp3" })
+  ok("...and the builder still stages a voiceover (and used_voiceover) ONLY for a composition on the\n    census (§15) — BuyerConsultationSlide nulls it, JustListedReel keeps it",
+    (inert.input_props as Record<string, unknown>).voiceoverUrl === null && inert.used_voiceover === false
+    && (played.input_props as Record<string, unknown>).voiceoverUrl === "https://cdn.example/vo.mp3" && played.used_voiceover === true)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 17. seoHint HAS A PRODUCER AND A READER.
+//
+// VideoCoverThumb REQUIRES seoHint (section 5 pins it) — the text an AI search
+// engine reads to describe a video it cannot watch. Its only producer omitted
+// it and rendered the still directly, so the backstop could not refuse and the
+// card shipped the Studio sample hint under a real listing; nothing read it
+// back. The producer now supplies it VERBATIM from the gated narration and
+// asks the contract before renderStill; the reader lives in
+// lib/geo/video-landing.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 17. seoHint — the producer supplies it, the contract gates it, the reader reads it ═══")
+{
+  const route = code("app/api/internal/remotion/render-just-listed/route.ts")
+  ok("the promo route names its card composition once", /const THUMB_COMPOSITION = "VideoCoverThumb"/.test(route))
+  ok("...supplies seoHint from the GATED narration, never a second draft",
+    route.includes("seoHint: seoHintFromNarration(args.script)"))
+  const gateAt = route.indexOf("missingContentProps(THUMB_COMPOSITION, thumbProps)")
+  const stillAt = route.indexOf("renderStill({")
+  ok("...asks the contract BEFORE renderStill and refuses by name — the backstop cannot, since the\n    still is rendered directly",
+    gateAt > 0 && stillAt > gateAt && route.includes("describeMissingContent(THUMB_COMPOSITION"))
+  const thumbBlock = route.slice(route.indexOf("const thumbProps"), route.indexOf("const thumbMissing"))
+  ok("...and no longer hand-stages the composition's own sample agent name to get past isSupplied",
+    thumbBlock.length > 0 && !thumbBlock.includes('"Your Agent"'))
+  ok("...and files the card on the audit row under thumbnail_props — the ONE key\n    render-decision.ts resolveThumbnailProps reads, and where the reader looks",
+    route.includes("thumbnail_props: thumbProps") && route.includes("auditableProps(inputProps"))
+  ok("...with the audit row's blobs named, not silently dropped",
+    /AUDIT_OMITTED_KEYS = \["captionsCues", "qrCodeDataUrl"\]/.test(route) && route.includes("audit_omitted"))
+
+  // PURE half.
+  const script = "Just listed at 812 Sunset Harbour Drive in Naples. Four bedrooms, a saltwater pool and a deeded boat slip. Reply to schedule a private tour before Saturday's open house."
+  const hint = seoHintFromNarration(script)
+  ok(`the hint is whole leading sentences of the script, within ${SEO_HINT_MAX_CHARS} chars`,
+    !!hint && hint.length <= SEO_HINT_MAX_CHARS && script.startsWith(hint) && /[.!?]$/.test(hint), hint ?? "(null)")
+  const longFirst = `${"harbour ".repeat(40).trim()}. Short second.`
+  const longHint = seoHintFromNarration(longFirst)
+  ok("...a first sentence over the ceiling is cut on a WORD boundary with an ellipsis, never mid-word",
+    !!longHint && longHint.length <= SEO_HINT_MAX_CHARS && longHint.endsWith("…") && /harbour…$/.test(longHint), longHint ?? "(null)")
+  ok("...and a blank script yields null, so the contract refuses rather than a producer inventing one",
+    seoHintFromNarration("   ") === null && seoHintFromNarration(null) === null)
+  const thumb = { kind: "listing", title: "812 Sunset Harbour Dr", subtitle: "Just Listed", agentName: "Dana Reyes", brand: { brokerageName: "Harbour & Co." }, seoHint: hint }
+  ok("VideoCoverThumb passes with the hint", missingContentProps("VideoCoverThumb", thumb).length === 0,
+    missingContentProps("VideoCoverThumb", thumb).join(","))
+  ok("...and refuses without it, naming seoHint — the prop the producer used to omit",
+    missingContentProps("VideoCoverThumb", { ...thumb, seoHint: null }).join(",") === "seoHint")
+  ok("...and refuses a null agentName — the retired 'Your Agent' fallback is no longer a way past it",
+    missingContentProps("VideoCoverThumb", { ...thumb, agentName: null }).join(",") === "agentName")
+  ok("the reader finds the hint under thumbnail_props first, then top-level (a VideoCoverThumb render),\n    else null — never the composition's sample",
+    seoHintFromRenderProps({ thumbnail_props: { seoHint: " x " } }) === "x"
+    && seoHintFromRenderProps({ seoHint: "y" }) === "y"
+    && seoHintFromRenderProps({ thumbnail_props: { seoHint: "" }, seoHint: "z" }) === "z"
+    && seoHintFromRenderProps({ thumbnail_props: {} }) === null
+    && seoHintFromRenderProps(null) === null)
+  const gen = { seoHint: null, seoDescription: null, displayName: "Just Listed Reel", producerName: "Harbour & Co.", agentName: "Dana Reyes" }
+  ok("describeVideoForSearch prefers the hint, then registry copy, then the generic line, and keeps the\n    agent attribution the page has always appended",
+    describeVideoForSearch({ ...gen, seoHint: "Hint." }) === "Hint. Presented by Dana Reyes."
+    && describeVideoForSearch({ ...gen, seoDescription: "Registry copy." }) === "Registry copy. Presented by Dana Reyes."
+    && describeVideoForSearch(gen) === "Just Listed Reel produced by Harbour & Co.. Presented by Dana Reyes."
+    && describeVideoForSearch({ ...gen, agentName: null }) === "Just Listed Reel produced by Harbour & Co..")
+
+  // THE PAGE. The reader has to be CALLED from the landing page's metadata for
+  // og:description to change; that wiring is one line in app/v/[slug]/page.tsx.
+  // Reported, not faked: this prints the state it finds and fails nothing on
+  // its own, because the page is outside the lane that built the reader
+  // (2026-09-03) and a red guard here would block every other lane on a
+  // three-line edit. UNRESOLVED until the line reads ✓.
+  const page = code("app/v/[slug]/page.tsx")
+  const wired = page.includes("describeVideoForSearch(") || page.includes("seoHintFromRenderProps(")
+  if (wired) ok("app/v/[slug]/page.tsx reads the hint back into the page description", true)
+  else console.log("  ⏭  UNRESOLVED — app/v/[slug]/page.tsx:125 still builds its description from seo_description alone;\n     lib/geo/video-landing.ts seoHintFromRenderProps / describeVideoForSearch have no caller until\n     loadPage selects input_props and calls describeVideoForSearch. Writer built; reader half-wired.")
 }
 
 console.log(`\n${"═".repeat(70)}`)

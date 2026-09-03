@@ -447,32 +447,32 @@ export async function attachOpenHouseSourceAttribution(input: {
       return { success: false, error: "brokerage_id is required for the attribution event" }
     }
 
-    // Emit lifecycle event for audit trail.
+    // Emit the kernel event — audit row + reactor.
     // The error was previously not destructured, so a refused insert resolved
     // quietly and this function reported success with no audit row written —
     // the attribution "succeeded" and the trail it exists to leave was absent.
-    const { error: eventErr } = await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type: "contact",
-        entity_id: contact_id,
-        event_type: KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED,
-        brokerage_id,
-        // lifecycle_events.agent_id is agents-class (the column exists and is
-        // nullable); actor_user_id is the users-class one and is deliberately
-        // left alone here — an agents.id in it is an FK violation.
+    // emitKernelEvent reports the refusal in `error`; it is read here the same way.
+    const { emitKernelEvent } = await import("./emit")
+    const { error: eventErr } = await emitKernelEvent({
+      entityType: "contact",
+      entityId: contact_id,
+      contactId: contact_id,
+      event: KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED,
+      brokerageId: brokerage_id,
+      // lifecycle_events.agent_id is agents-class (the column exists and is
+      // nullable); actor_user_id is the users-class one and is deliberately
+      // left alone here — an agents.id in it is an FK violation.
+      agentId: agent_id,
+      metadata: {
+        attendee_id,
         agent_id,
-        metadata: {
-          attendee_id,
-          agent_id,
-          resolved_at: new Date().toISOString(),
-        },
-        created_at: new Date().toISOString(),
-      })
+        resolved_at: new Date().toISOString(),
+      },
+    })
 
     if (eventErr) {
-      console.error(`[Kernel] attribution lifecycle_events insert failed:`, eventErr.message)
-      return { success: false, error: `Failed to record open house attribution: ${eventErr.message}` }
+      console.error(`[Kernel] attribution lifecycle_events insert failed:`, eventErr)
+      return { success: false, error: `Failed to record open house attribution: ${eventErr}` }
     }
 
     console.log(`[Kernel] Attached open_house attribution to contact ${contact_id}`)

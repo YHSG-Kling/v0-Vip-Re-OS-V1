@@ -282,14 +282,18 @@ async function pauseActiveSequenceEnrollmentsOnReply(contactId: string): Promise
     })
     .in('id', ids)
 
-  // One lifecycle event per paused enrollment for audit trail.
+  // One kernel event per paused enrollment — audit row + reactor. suppressEnrollment:
+  // this IS the sequence engine reacting to a reply; its own event must not re-enroll.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
   for (const e of active) {
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id:  e.brokerage_id,
-      entity_type:   'sequence_enrollment',
-      entity_id:     e.id,
-      event_type:    KernelEvent.SEQUENCE_PAUSED_ON_REPLY,
-      metadata:      { reason: 'contact_replied', sequence_id: e.sequence_id },
+    await emitKernelEvent({
+      brokerageId:  e.brokerage_id,
+      entityType:   'sequence_enrollment',
+      entityId:     e.id,
+      event:        KernelEvent.SEQUENCE_PAUSED_ON_REPLY,
+      contactId,
+      metadata:     { reason: 'contact_replied', sequence_id: e.sequence_id },
+      suppressEnrollment: true,
     }).then(() => null, () => null)
   }
 }

@@ -5,6 +5,7 @@ import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_EVENT }         from "@/lib/buyer-offer/offer-lifecycle"
 import { resolveAgentId }      from "@/lib/kernel/agent-identity"
@@ -126,18 +127,19 @@ export async function startOfferDraft(params: {
   const gate = await requireStaffOnContact(contactId)
   if (!gate.ok) return { success: false, error: gate.error }
 
-  const supabase = createServiceClient()
-
-  const { error } = await supabase.from("lifecycle_events").insert({
-    brokerage_id:  gate.brokerageId,
-    entity_type:   "buyer_lifecycle",
-    entity_id:     contactId,
-    event_type:    KernelEvent.BUYER_OFFER_DRAFT_STARTED,
-    actor_user_id: gate.userId,
-    metadata:      { listing_id: listingId ?? null },
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  const { error } = await emitKernelEvent({
+    brokerageId:  gate.brokerageId,
+    entityType:   "buyer_lifecycle",
+    entityId:     contactId,
+    event:        KernelEvent.BUYER_OFFER_DRAFT_STARTED,
+    actorUserId:  gate.userId,
+    contactId,
+    listingId:    listingId ?? undefined,
+    metadata:     { listing_id: listingId ?? null },
   })
 
-  if (error) return { success: false, error: error.message }
+  if (error) return { success: false, error }
   return { success: true }
 }
 

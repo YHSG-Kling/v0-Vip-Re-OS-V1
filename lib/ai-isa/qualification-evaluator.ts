@@ -242,18 +242,20 @@ export async function persistQualificationSignals(
   //         the rules before the hot lead goes cold. handleLeadAssigned already handles
   //         the success path (lifecycle transition + contact creation + notification).
   if (!assignResult.assigned) {
-    await supabase.from('lifecycle_events').insert({
-      entity_type: 'lead',
-      entity_id: leadId,
-      event_type: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
-      brokerage_id: lead.brokerage_id,
+    // Audit row + reactor (notification_rules keyed on lead_ready_for_assignment now
+    // fire; the bare insert reached nothing). Loaded at call time — server-only.
+    const { emitKernelEvent } = await import('@/lib/kernel/emit')
+    await emitKernelEvent({
+      entityType: 'lead',
+      entityId: leadId,
+      event: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
+      brokerageId: lead.brokerage_id,
       metadata: {
         source: 'ai_isa_qualification',
         score: qualificationScore,
         gov_score: govResult?.score,
         assign_reason: assignResult.reason,
       },
-      created_at: new Date().toISOString(),
     })
 
     const { escalateUnassignedQualifiedLead } = await import('@/lib/lead-assignment/unassigned-escalation')

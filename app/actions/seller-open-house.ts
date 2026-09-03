@@ -625,8 +625,9 @@ export async function createOpenHouseEvent(params: {
     .select("seller_contact_id")
     .eq("id", params.listingId)
     .maybeSingle()
-  const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-  await fanOutKernelEvent({
+  // Row already written above → skipInsert (fan-out only).
+  const { emitKernelEvent } = await import("@/lib/kernel/emit")
+  await emitKernelEvent({
     event:           KernelEvent.OPEN_HOUSE_SCHEDULED,
     brokerageId:     auth.brokerageId,
     entityType:      "listing",
@@ -635,6 +636,7 @@ export async function createOpenHouseEvent(params: {
     listingId:       params.listingId,
     agentUserId:     auth.userId,
     metadata:        { event_id: event.id, event_date: params.eventDate },
+    skipInsert:      true,
   }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)

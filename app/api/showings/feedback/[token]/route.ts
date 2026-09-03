@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 // TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
-// never called. Survivor: lib/kernel/event-fanout.ts:67, which is what
-// `fanOutKernelEvent` — the CANONICAL fan-out this route uses at :294 — calls.
-// Going direct would have skipped the seller-portal resolution and the sequence
-// auto-enrolment that the fan-out adds on top of processKernelEvent.
+// never called. Survivor: `emitKernelEvent` (lib/kernel/emit.ts:112) — the
+// CANONICAL emit this route uses below (its predecessor `fanOutKernelEvent` was
+// folded onto it on 2026-09-03; see lib/kernel/event-fanout.ts). Going direct
+// would have skipped the audit row, the seller-portal resolution and the
+// sequence auto-enrolment that the emit adds on top of processKernelEvent.
 import { KernelEvent } from "@/lib/kernel/events"
 import { aiAnalyzeShowingFeedback } from "@/app/actions/ai-showing-management"
 import { generateAIResponse } from "@/lib/ai"
@@ -338,14 +339,17 @@ Additional notes: ${additionalNotes || "none"}`,
           .select("seller_contact_id")
           .eq("id", listing.listing_id)
           .maybeSingle()
-        const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-        await fanOutKernelEvent({
+        // emitKernelEvent also writes the showing_feedback_received audit row this
+        // route never had.
+        const { emitKernelEvent } = await import("@/lib/kernel/emit")
+        await emitKernelEvent({
           event:           KernelEvent.SHOWING_FEEDBACK_RECEIVED,
           brokerageId:     fbReq.brokerage_id,
           entityType:      "listing_stage_machine",
           entityId:        listing.listing_id,
           sellerContactId: fbListing?.seller_contact_id ?? undefined,
           listingId:       listing.listing_id,
+          source:          "webhook",
         }).catch(() => {})
       }
     }

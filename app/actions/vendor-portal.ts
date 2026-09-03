@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { putAndSign, removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { checkUpload } from "@/lib/storage/file-limits"
@@ -358,17 +359,16 @@ export async function addVendorJobNote(data: {
   if (error) throw error
   if (!job) throw new Error("Job not found in your scope")
 
-  // Emit kernel event scoped to verified brokerage
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: gate.brokerageId,
-    event_type: KernelEvent.PORTAL_MODULE_VIEWED,
-    entity_type: "vendor_job",
-    entity_id: data.jobId,
+  // Emit kernel event scoped to verified brokerage — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: gate.brokerageId,
+    event: KernelEvent.PORTAL_MODULE_VIEWED,
+    entityType: "vendor_job",
+    entityId: data.jobId,
     metadata: {
       vendor_id: gate.vendorId,
       action: "note_added",
     },
-    created_at: new Date().toISOString(),
   })
 
   return job
@@ -588,17 +588,16 @@ export async function uploadVendorJobDocument(data: {
     throw docError ?? new Error("The document record could not be created")
   }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: gate.brokerageId,
-    event_type: KernelEvent.DOCUMENT_UPLOADED,
-    entity_type: "vendor_job_document",
-    entity_id: document.id,
+  await emitKernelEvent({
+    brokerageId: gate.brokerageId,
+    event: KernelEvent.DOCUMENT_UPLOADED,
+    entityType: "vendor_job_document",
+    entityId: document.id,
     metadata: {
       job_id: data.jobId,
       vendor_id: gate.vendorId,
       document_type: data.documentType,
     },
-    created_at: new Date().toISOString(),
   })
 
   return document
@@ -651,16 +650,16 @@ export async function sendVendorMessageToAgent(data: {
 
   if (msgError) throw msgError
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: gate.brokerageId,
-    event_type: KernelEvent.MESSAGE_CREATED,
-    entity_type: "vendor_message",
-    entity_id: data.jobId,
+  await emitKernelEvent({
+    brokerageId: gate.brokerageId,
+    event: KernelEvent.MESSAGE_CREATED,
+    entityType: "vendor_message",
+    entityId: data.jobId,
+    transactionId: data.transactionId,
     metadata: {
       vendor_id: gate.vendorId,
       transaction_id: data.transactionId,
     },
-    created_at: new Date().toISOString(),
   })
 
   return { success: true }

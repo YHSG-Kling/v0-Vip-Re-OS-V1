@@ -425,3 +425,83 @@ export const CONTENT_CONTRACT_ERROR_PREFIX = "content_props_missing:"
 export function contentContractError(missing: string[]): string {
   return `${CONTENT_CONTRACT_ERROR_PREFIX}${missing.join(",")}`.slice(0, 800)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE VOICEOVER CENSUS — which compositions PLAY `input_props.voiceoverUrl`.
+//
+// ONE FACT, WHICH HAD TWO SPELLINGS (§6, measured 2026-09-03):
+//
+//   · this set, formerly private to lib/video/avatar-render-orchestrator.ts
+//     (VOICEOVER_CONSUMING_COMPOSITIONS, 14 members) — byte-identical to the
+//     compositions under remotion/ that render `<Audio src={…voiceoverUrl}>`;
+//   · the live column `remotion_compositions.requires_voiceover`, true for a
+//     DIFFERENT nine (AgentExplainerReel, AgentTalkingHeadReel,
+//     BuyerConsultationSlide, EquityReportReel, ExplainerAnimReel,
+//     JustListedReelHorizontal, ListingPresentationSlide, MarketUpdateReel,
+//     NeighborhoodSpotlightReel) — a hand-seeded m168 guess that fed
+//     `used_voiceover` on every asset-manager and coordinator render row. Under
+//     it a ListingPresentationSlide render with no audio at all was ledgered as
+//     narrated, and a JustListedReel that carried its narration IN FRAME was
+//     ledgered as silent.
+//
+// THE MEANING CHOSEN IS THE MEASURABLE ONE: a composition "consumes a
+// voiceover" iff its remotion/ entry renders `<Audio src={voiceoverUrl}>`.
+// That is provable in CI with no database — scripts/remotion-setup-guard.ts §5
+// proves every DECLARATION of the prop has such a reader, and
+// scripts/content-contract-guard.ts §15 derives the reader set from remotion/**
+// (comment-stripped) and asserts it equals THIS set. The live column is a
+// MIRROR of this set as of m601 (supabase/migrations/m601-…), the way
+// COMPOSITION_GEOMETRY mirrors the live geometry in the other direction; §15
+// compares the two whenever SUPABASE_SERVICE_ROLE_KEY is present and SAYS IT
+// SKIPPED otherwise. Code that DECIDES anything reads this set; the column is
+// read only by callers that already hold a live row (a cost estimate, a badge).
+//
+// WHY HERE. This module is the one pure, DB-free description of what each
+// composition's props MEAN, already imported by every producer that stages a
+// render and by the guard that proves it. A composition that plays the prop is
+// a fact of the same kind as "this prop is a claim".
+//
+// WHAT THE SET DOES NOT SAY. `voiceover_url` (snake) is a FINISH key: the
+// render coordinator muxes it under any composition after the frames are
+// rendered. A composition absent here can still ship narrated through that
+// channel — and the coordinator flips `used_voiceover` to true when the mux
+// lands. This set answers only the in-frame question.
+//
+// Source: grep '<Audio' remotion/ for src={…voiceoverUrl} (2026-09-01,
+// re-measured 2026-09-03). A new consumer is added HERE and nowhere else.
+// ─────────────────────────────────────────────────────────────────────────────
+export const VOICEOVER_CONSUMING_COMPOSITIONS: ReadonlySet<string> = new Set<string>([
+  "AffordabilitySnapshotReel",
+  "AgentTalkingHeadReel",
+  "CMAReel",
+  "ComingSoonReel",
+  "JustListedReel",
+  "JustListedReelHorizontal",
+  "JustListedReelSquare",
+  "JustSoldReelSquare",
+  "ListingSectionReel",
+  "NeighborhoodSpotlightReel",
+  "NewsletterDigestVideo",
+  "OpenHouseAnnounceReel",
+  "PhotoWalkthroughReel",
+  "TestimonialReel",
+])
+
+/** Does this composition render `<Audio src={voiceoverUrl}>`? PURE. */
+export function consumesVoiceover(compositionId: string | null | undefined): boolean {
+  return !!compositionId && VOICEOVER_CONSUMING_COMPOSITIONS.has(compositionId)
+}
+
+/**
+ * Will THIS render play an in-frame voiceover? — the composition consumes the
+ * prop AND the staged props actually carry one. This is the honest initial
+ * value of `remotion_composition_renders.used_voiceover`: a fact about the
+ * render, not about the composition. The coordinator may still flip it to true
+ * later when a snake-key `voiceover_url` finish mux lands. PURE.
+ */
+export function stagesVoiceover(
+  compositionId: string | null | undefined,
+  props: Record<string, unknown> | null | undefined,
+): boolean {
+  return consumesVoiceover(compositionId) && isSupplied(props?.voiceoverUrl)
+}

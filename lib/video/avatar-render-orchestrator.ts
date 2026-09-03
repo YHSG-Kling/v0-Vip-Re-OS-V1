@@ -47,7 +47,11 @@
  * now this function, and the email backfill and lib/video/playable-video share it.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { missingContentProps } from "@/lib/remotion/content-contract"
+import {
+  missingContentProps,
+  describeMissingContent,
+  consumesVoiceover,
+} from "@/lib/remotion/content-contract"
 // ONE spelling of the buyer-slide composition id (§6) — the same constant the
 // narration budget derives from. Not server-only; no cycle (consultation-*
 // modules import THIS file only via dynamic import at call sites).
@@ -87,35 +91,16 @@ export interface AvatarRenderRowParams {
   facts?:           Record<string, unknown> | null
 }
 
-/**
- * THE COMPOSITIONS THAT ACTUALLY PLAY `input_props.voiceoverUrl` — every
- * remotion/ entry that declares the prop, and the setup guard §5 proves each
- * declaration has an `<Audio src={...voiceoverUrl}>` reader, so declares ⇒
- * renders. The RULE: buildAvatarRenderRow stages a voiceover URL and stamps
- * `used_voiceover` ONLY for a composition on this list. For any other target
- * (BuyerConsultationSlide / ListingPresentationSlide have no such prop) the
- * flag would assert a narration that plays nowhere — an untrue ledger row.
- * The CONTENT_CONTRACT cannot answer this question (it classifies voiceoverUrl
- * on only 2 of these 14), so the list is explicit; a new consumer must be
- * added here to have its voiceover staged. Source: grep voiceoverUrl remotion/
- * (2026-09-01).
- */
-const VOICEOVER_CONSUMING_COMPOSITIONS = new Set<string>([
-  "AffordabilitySnapshotReel",
-  "AgentTalkingHeadReel",
-  "CMAReel",
-  "ComingSoonReel",
-  "JustListedReel",
-  "JustListedReelHorizontal",
-  "JustListedReelSquare",
-  "JustSoldReelSquare",
-  "ListingSectionReel",
-  "NeighborhoodSpotlightReel",
-  "NewsletterDigestVideo",
-  "OpenHouseAnnounceReel",
-  "PhotoWalkthroughReel",
-  "TestimonialReel",
-])
+// TOMBSTONE (§6, 2026-09-03): the private `VOICEOVER_CONSUMING_COMPOSITIONS`
+// Set that stood here (14 ids, "grep voiceoverUrl remotion/") MOVED to
+// lib/remotion/content-contract.ts:VOICEOVER_CONSUMING_COMPOSITIONS, read
+// through `consumesVoiceover(id)`. It was ONE of TWO spellings of the same fact
+// — the live `remotion_compositions.requires_voiceover` column was the other,
+// and the two disagreed on 17 of 33 rows while both fed `used_voiceover`.
+// The survivor is the content-contract set (provable from remotion/** in CI —
+// test:content-contract §15); m601 aligns the column to it. The RULE this
+// builder applies is unchanged: a voiceover URL is staged, and `used_voiceover`
+// stamped, ONLY for a composition that actually plays the prop.
 
 /**
  * Pure: build the remotion_composition_renders insert payload for an avatar
@@ -123,10 +108,10 @@ const VOICEOVER_CONSUMING_COMPOSITIONS = new Set<string>([
  * input_props over any caller-supplied props, and the used_* flags + scope are
  * set so the queue, coordinator, and tier gate all see a DID-avatar render.
  * The voiceover (URL and flag alike) is gated on the target composition
- * actually consuming it — see VOICEOVER_CONSUMING_COMPOSITIONS above.
+ * actually consuming it — consumesVoiceover, lib/remotion/content-contract.ts.
  */
 export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, unknown> {
-  const voiceover = VOICEOVER_CONSUMING_COMPOSITIONS.has(p.compositionId)
+  const voiceover = consumesVoiceover(p.compositionId)
     ? (p.voiceoverUrl ?? null)
     : null
   return {
@@ -276,7 +261,7 @@ export async function enqueueAvatarCompositionForProject(
       // composition `used_voiceover: true` would assert a narration that plays
       // nowhere (BuyerConsultationSlide, this lane's staged row, has no
       // voiceoverUrl prop).
-      const voiceover = VOICEOVER_CONSUMING_COMPOSITIONS.has(compositionId)
+      const voiceover = consumesVoiceover(compositionId)
         ? ((meta.voiceover_url as string | null) ?? null)
         : null
       const mergedProps: Record<string, unknown> = {
@@ -346,6 +331,26 @@ export async function enqueueAvatarCompositionForProject(
     factsKey:        staged?.facts_key ?? null,
     facts:           staged?.facts ?? null,
   })
+
+  // THE CONTENT GATE, on the payload that will actually be staged — the same
+  // question the render backstop (render-composition/route.ts) asks before it
+  // cancels, asked HERE first. This file already asks it for the two REQUEST
+  // builders (buildIntroCompositionRequest, buildBuyerSlideCompositionRequest),
+  // but the row those requests are assembled into on completion — this one —
+  // was inserted unchecked: `meta.input_props` is whatever the D-ID submit
+  // stamped (an older producer, a hand-driven /api/did/generate-video call, a
+  // staged row whose props were thinned since), and an under-supplied payload
+  // does not render blank, it renders the Studio sample data as this client's.
+  // The row inserted, this function returned ok + a renderId, and the backstop
+  // cancelled it a minute later with nobody told — the paid D-ID cut then sat
+  // behind an assembly that was never coming. Refusing by NAME is what turns
+  // that invisible cancellation into a reason poll-did-videos can log and the
+  // composite state machine can read (no render row ⇒ 'abandoned' at the wait
+  // bound, and the D-ID cut ships honestly).
+  const missing = missingContentProps(compositionId, row.input_props as Record<string, unknown>)
+  if (missing.length > 0) {
+    return { ok: false, skipped: describeMissingContent(compositionId, missing) }
+  }
 
   const { data: inserted, error } = await supabase
     .from("remotion_composition_renders")

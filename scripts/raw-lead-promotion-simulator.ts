@@ -27,10 +27,13 @@ function selfTest(): void {
   console.log("\n[raw-lead review status · pure]")
   check("pending → pipeline will auto-promote", (() => { const s = rawLeadReviewStatus({ processing_status: "pending" }); return s.pipelineRetryEligible && s.tone === "pending" })())
   check("already promoted → terminal", (() => { const s = rawLeadReviewStatus({ lead_id: randomUUID() }); return !s.pipelineRetryEligible && s.tone === "promoted" })())
-  check("duplicate → terminal", (() => { const s = rawLeadReviewStatus({ dedupe_status: "duplicate" }); return !s.pipelineRetryEligible && s.tone === "duplicate" })())
+  // The duplicate verdict rides processing_status (the pipeline's own vocabulary),
+  // not the never-written dedupe_status column — see review-status.ts's tombstone.
+  check("duplicate (pre-enrich) → terminal", (() => { const s = rawLeadReviewStatus({ processing_status: "duplicate_pre_enrich" }); return !s.pipelineRetryEligible && s.tone === "duplicate" })())
+  check("duplicate (post-enrich) → terminal", (() => { const s = rawLeadReviewStatus({ processing_status: "duplicate_post_enrich" }); return !s.pipelineRetryEligible && s.tone === "duplicate" })())
   check("error → pipeline retries", (() => { const s = rawLeadReviewStatus({ processing_status: "error", error_message: "x" }); return s.pipelineRetryEligible && s.tone === "error" })())
   check("prior attempt → re-enrich sweep (labeled)", (() => { const s = rawLeadReviewStatus({ promotion_attempts: 2 }); return s.pipelineRetryEligible && s.tone === "attempted" && /2/.test(s.label) })())
-  check("promoted beats every other signal", rawLeadReviewStatus({ lead_id: "L", processing_status: "error", dedupe_status: "duplicate" }).pipelineRetryEligible === false)
+  check("promoted beats every other signal", rawLeadReviewStatus({ lead_id: "L", processing_status: "duplicate_post_enrich", error_message: "x" }).pipelineRetryEligible === false)
 
   if (fail > 0) { console.log(` RESULT: ${pass} passed, ${fail} failed`); process.exit(1) }
   console.log(` RESULT: ${pass} passed, 0 failed`)

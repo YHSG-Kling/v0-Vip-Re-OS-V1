@@ -25,6 +25,17 @@ import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/
 
 const FOLLOW_REC = "__recommended__"
 
+/** One manager's OWNED PROOFS — the maintenance domains resolveMaintenanceManager holds
+ *  it accountable for, and the proofs (npm scripts) that keep them green. Computed
+ *  server-side in page.tsx from the registry; this surface only renders it. */
+export interface OwnedProofSeat {
+  key: ManagerKey
+  label: string
+  accent: string
+  domains: Array<{ domain: string; proof: string }>
+  proofs: string[]
+}
+
 const TIER_META: Record<TrustTier, { label: string; className: string; icon: typeof ShieldCheck }> = {
   trusted: { label: "Trusted", className: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: ShieldCheck },
   monitored: { label: "Monitored", className: "bg-amber-100 text-amber-700 border-amber-200", icon: Eye },
@@ -39,10 +50,12 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [],
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
+  /** OWNED PROOFS per manager (maintenance ownership made visible) — see page.tsx. */
+  ownedProofs?: OwnedProofSeat[]
   learned?: LearnedAdjustmentView[]
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
@@ -260,6 +273,44 @@ export function ManagerTrustClient({
           )}
         </CardContent>
       </Card>
+
+      {/* OWNED PROOFS — maintenance ownership, per manager. Every burn/maintenance domain
+          in the registry is held by exactly one accountable manager (resolveMaintenanceManager),
+          and each domain names the proof that keeps it green. Rendered from registry data
+          handed down by the server page; nothing here can drift from the law. */}
+      {ownedProofs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />Owned proofs — what each manager keeps green</CardTitle>
+            <CardDescription>
+              {ownedProofs.reduce((n, s) => n + s.domains.length, 0)} maintenance domains across {ownedProofs.filter((s) => s.domains.length > 0).length} managers, each backed by a named proof.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {ownedProofs.map((seat) => (
+              <details key={seat.key} className="rounded-lg border p-3">
+                <summary className="cursor-pointer flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${seat.accent}`}>{seat.label}</span>
+                  <span className="text-sm font-medium">{seat.domains.length} domain{seat.domains.length === 1 ? "" : "s"}</span>
+                  <span className="text-xs text-muted-foreground">{seat.proofs.length} proof{seat.proofs.length === 1 ? "" : "s"}</span>
+                </summary>
+                {seat.domains.length === 0 ? (
+                  <p className="text-xs text-muted-foreground mt-2">No maintenance domain is held by this seat yet.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1 max-h-64 overflow-y-auto">
+                    {seat.domains.map((d) => (
+                      <li key={d.domain} className="text-xs flex items-center justify-between gap-3">
+                        <span className="font-mono truncate" title={d.domain}>{d.domain}</span>
+                        <Badge variant="outline" className="text-[10px] shrink-0">{d.proof}</Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

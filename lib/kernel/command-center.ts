@@ -20,7 +20,7 @@ import { lintSpamRisk } from "@/lib/kernel/email-deliverability"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
 import { applyTenantScope, resolveTenantScope } from "./tenant-scope"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
-import { resolveActionManager, type ManagerKey } from "./manager-registry"
+import { resolveActionManager, resolveCronManager, type ManagerKey } from "./manager-registry"
 import { compliancePreflight } from "./manager-dissent"
 import type { EgressScope } from "./egress-scope"
 
@@ -156,11 +156,29 @@ export const CLIENT_DECISION_SOURCES = [
   "lender_condition",
 ] as const
 
+/** One scheduled loop's latest run, stamped with the manager that RUNS it (resolveCronManager). */
+export interface CronOwnerLine {
+  cronName:         string
+  cronPath:         string
+  status:           string | null
+  startedAt:        string | null
+  completedAt:      string | null
+  recordsProcessed: number | null
+  errorMessage:     string | null
+  managerKey:       ManagerKey
+  managerLabel:     string
+}
+
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
   /** Per-manager pending load — proves every activity has an accountable owner. */
   managerBreakdown: ManagerBreakdownEntry[]
+  /** HEARTBEAT — the latest run of each scheduled loop in the last 24h, each stamped with
+   *  its accountable manager through resolveCronManager (the registry's cron-ownership
+   *  resolver, which had no product reader before this). Tenant-scoped rows only — a
+   *  brokerage sees the loops that ran FOR it; platform scope sees every loop. */
+  cronOwners:      CronOwnerLine[]
   /** Manager Daily Standup — each manager's 24h activity + what needs a human.
    *  The morning roll-call that heads the Command Center. */
   standup:         import("@/lib/intelligence/manager-standup").ManagerStandupLine[]
@@ -637,6 +655,55 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     } catch (err) {
       console.error("[command-center] manager activity failed:", err)
     }
+  }
+
+  // HEARTBEAT — the latest run of every scheduled loop (24h), each stamped with the
+  // manager that RUNS it. resolveCronManager is the registry's cron-ownership
+  // resolver; until this reader it was exercised only by the ownership simulator.
+  // Same tenant discriminator as every other read here (§4): a tenant sees the
+  // runs recorded against it, platform scope sees the fleet. Best-effort.
+  let cronOwners: CronOwnerLine[] = []
+  try {
+    const since = new Date(now.getTime() - 24 * 3600_000).toISOString()
+    const cronQuery = supabase
+      .from("cron_execution_logs")
+      .select("cron_name, cron_path, status, started_at, completed_at, records_processed, error_message")
+      .gte("started_at", since)
+      .order("started_at", { ascending: false })
+      .limit(300)
+    applyTenantScope(cronQuery, tenant)
+    const { data: cronRows, error: cronErr } = await cronQuery
+    if (cronErr) {
+      console.error("[command-center] cron_execution_logs read refused:", cronErr.message)
+    } else {
+      const seen = new Set<string>()
+      for (const r of (cronRows ?? []) as Array<Record<string, unknown>>) {
+        // cron_path is stored as the route FILE path ("/app/api/cron/x/route.ts");
+        // CRON_MANAGER is keyed on the URL path ("/api/cron/x"). Normalise once.
+        const raw = String(r.cron_path ?? "")
+        const urlPath = raw.replace(/^\/app/, "").replace(/\/route\.tsx?$/, "").split("?")[0]
+        const key = urlPath || String(r.cron_name ?? "")
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        const mgr = resolveCronManager(urlPath)
+        cronOwners.push({
+          cronName:         String(r.cron_name ?? key),
+          cronPath:         urlPath,
+          status:           (r.status as string | null) ?? null,
+          startedAt:        (r.started_at as string | null) ?? null,
+          completedAt:      (r.completed_at as string | null) ?? null,
+          recordsProcessed: typeof r.records_processed === "number" ? r.records_processed : null,
+          errorMessage:     (r.error_message as string | null) ?? null,
+          managerKey:       mgr.key,
+          managerLabel:     mgr.label,
+        })
+      }
+    }
+  } catch (err) {
+    console.error("[command-center] heartbeat (cron owners) failed:", err)
+  }
+
+  if (brokerageWide && brokerageId) {
     const { data: db } = await supabase
       .from("ai_isa_call_batches")
       .select("id, proposed_count, proposed_at")
@@ -666,6 +733,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     sessions,
     pendingActions,
     managerBreakdown,
+    cronOwners,
     standup,
     weeklyPnl,
     deliverables,

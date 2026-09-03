@@ -296,16 +296,18 @@ export async function calculateFatigue(
         }
       }
 
-      // lifecycle_events sub-event
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id:   brokerageId,
-        entity_type:    "buyer_lifecycle",
-        entity_id:      contactId,
-        event_type:     KernelEvent.BUYER_FATIGUE_DETECTED,
+      // Kernel sub-event — audit row + reactor (the bare insert reached nothing).
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      await emitKernelEvent({
+        brokerageId,
+        entityType:   "buyer_lifecycle",
+        entityId:     contactId,
+        event:        KernelEvent.BUYER_FATIGUE_DETECTED,
+        contactId,
         // lifecycle_events.actor_user_id FKs users(id) — contact.agent_id is an
         // agents.id, so the raw stamp FK-threw and the sub-event was lost even
         // though the alert beside it landed. Reuse the id already resolved above.
-        actor_user_id:  fatigueAgentUserId,
+        actorUserId:  fatigueAgentUserId,
         metadata: {
           fatigue_score:   score,
           risk_level:      riskLevel,

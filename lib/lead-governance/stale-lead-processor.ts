@@ -100,17 +100,18 @@ export async function processStaleLeadsAndSLA(
     // ── Step 3: Per-breach notifications ──────────────────────────────────
     for (const row of rows) {
       try {
-        // a) lifecycle_events insert
-        await supabase.from("lifecycle_events").insert({
-          brokerage_id: brokerageId,
-          entity_type:  "lead",
-          entity_id:    row.lead_id,
-          event_type:   KernelEvent.LEAD_SLA_BREACHED,
+        // a) kernel event — audit row + reactor (the bare insert reached nothing)
+        const { emitKernelEvent } = await import("@/lib/kernel/emit")
+        await emitKernelEvent({
+          brokerageId,
+          entityType: "lead",
+          entityId:   row.lead_id,
+          event:      KernelEvent.LEAD_SLA_BREACHED,
+          source:     "cron",
           metadata: {
             sla_type:  row.sla_type,
             target_at: row.target_at,
           },
-          created_at: new Date().toISOString(),
         })
 
         // b) Find broker/admin user_id for this brokerage
@@ -194,17 +195,18 @@ export async function processStaleLeadsAndSLA(
           .maybeSingle()
 
         if (!existing) {
-          await supabase.from("lifecycle_events").insert({
-            brokerage_id: brokerageId,
-            entity_type:  "lead",
-            entity_id:    lead.id,
-            event_type:   KernelEvent.STALE_LEAD_ALERT,
+          const { emitKernelEvent } = await import("@/lib/kernel/emit")
+          await emitKernelEvent({
+            brokerageId,
+            entityType: "lead",
+            entityId:   lead.id,
+            event:      KernelEvent.STALE_LEAD_ALERT,
+            source:     "cron",
             metadata: {
               stale_reason:       lead.staleReason,
               days_stale:         lead.daysStale,
               last_activity_date: lead.lastActivityDate,
             },
-            created_at: new Date().toISOString(),
           })
         }
       } catch (err) {

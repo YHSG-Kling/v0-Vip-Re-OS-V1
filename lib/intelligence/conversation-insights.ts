@@ -504,18 +504,21 @@ export async function updateConversationMemory(
     })
     .eq('id', conversationId)
 
-  // Step 6: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.MEMORY_CONTEXT_UPDATED,
-    agent_id: conversation.agent_id,
-    brokerage_id: brokerageId,
-    entity_type: 'conversation',
-    entity_id: conversationId,
-    payload: {
+  // Step 6: Kernel event — audit row + reactor. `payload` → `metadata`: metadata is
+  // the column every reader (portal templates, dedupe, timelines) uses; payload was
+  // a second spelling nothing read.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.MEMORY_CONTEXT_UPDATED,
+    agentId: conversation.agent_id,
+    brokerageId,
+    entityType: 'conversation',
+    entityId: conversationId,
+    contactId: conversation.contact_id ?? undefined,
+    metadata: {
       contact_id: conversation.contact_id,
       topics_count: insights.key_topics.length,
       sentiment: insights.overall_sentiment,
     },
-    created_at: new Date().toISOString(),
   })
 }

@@ -60,7 +60,7 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                 {rows.map((r) => {
                   const review = rawLeadReviewStatus({
                     lead_id: r.leadId, processing_status: r.processingStatus,
-                    dedupe_status: r.dedupeStatus, promotion_attempts: r.promotionAttempts, error_message: r.errorMessage,
+                    promotion_attempts: r.promotionAttempts, error_message: r.errorMessage,
                   })
                   return (
                     <tr key={r.id} className="border-b last:border-0 align-top">

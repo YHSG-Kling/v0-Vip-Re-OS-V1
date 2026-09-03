@@ -26,6 +26,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { compositionSeconds } from "@/lib/remotion/composition-geometry"
+import { consumesVoiceover } from "@/lib/remotion/content-contract"
 
 export type CompositionTier =
   | "solo_agent"
@@ -67,6 +68,16 @@ export interface RemotionCompositionRow {
   duration_frames:          number
   fps:                      number
   requires_did_avatar:      boolean
+  /**
+   * A MIRROR, not a source (m601, 2026-09-03). True iff the composition renders
+   * `<Audio src={voiceoverUrl}>` — the set declared at
+   * lib/remotion/content-contract.ts:VOICEOVER_CONSUMING_COMPOSITIONS, which is
+   * what every decision in code reads (consumesVoiceover / stagesVoiceover).
+   * test:content-contract §15 proves the column equals the set whenever it can
+   * reach the live table. Read this field only when you already hold a live
+   * row and want the mirror's answer (a badge, a cost estimate); never branch a
+   * ledger write on it.
+   */
   requires_voiceover:       boolean
   tier_access:              CompositionTier[]
   is_active:                boolean
@@ -184,7 +195,21 @@ export function estimateCompositionCost(
   // ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration
   // runs ~120 characters per second. Conservative cap at $0.10 even
   // for short clips because the API has a minimum charge.
-  const voice = composition.requires_voiceover
+  //
+  // WHICH compositions carry that narration is read from the ONE set
+  // (consumesVoiceover — lib/remotion/content-contract.ts), not from the row's
+  // `requires_voiceover`, which is that set's live mirror (m601). The mirror is
+  // consulted only when a caller hands a PARTIAL row with no composition_id —
+  // lib/remotion/render-cache.ts:282 builds one from four fields — because a
+  // silent 0 there would understate the economics snapshot without saying so.
+  // BLIND SPOT, named: narration muxed through the snake `voiceover_url` finish
+  // key (the Director's EquityReportReel / MarketUpdateReel / ExplainerAnimReel
+  // lane) is TTS spend this estimate does not see; the real ledger is
+  // ai_tool_usage, and this number was always an approximation beside it.
+  const narrated = composition.composition_id
+    ? consumesVoiceover(composition.composition_id)
+    : composition.requires_voiceover
+  const voice = narrated
     ? Math.max(0.05, (seconds * 120 / 1000) * 0.18)
     : 0
 

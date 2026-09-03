@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export async function POST(request: NextRequest) {
@@ -69,19 +70,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create sync log" }, { status: 500 })
     }
 
-    // Log kernel event for sync started
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: profile.brokerage_id,
-      event_type: KernelEvent.SYSTEM_SYNC_TRIGGERED,
-      entity_type: "accounting_sync_log",
-      entity_id: syncLog.id,
-      actor_user_id: user.id,
+    // Kernel event for sync started — audit row + reactor.
+    await emitKernelEvent({
+      brokerageId: profile.brokerage_id,
+      event: KernelEvent.SYSTEM_SYNC_TRIGGERED,
+      entityType: "accounting_sync_log",
+      entityId: syncLog.id,
+      actorUserId: user.id,
       metadata: {
         provider: credentials.provider_name,
         sync_type,
         triggered_by: user.id,
       },
-      created_at: new Date().toISOString(),
     })
 
     // Perform sync based on type
@@ -172,20 +172,19 @@ export async function POST(request: NextRequest) {
         })
         .eq("id", syncLog.id)
 
-      // Log kernel event for sync completed
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id: profile.brokerage_id,
-        event_type: KernelEvent.SYSTEM_SYNC_COMPLETED,
-        entity_type: "accounting_sync_log",
-        entity_id: syncLog.id,
-        actor_user_id: user.id,
+      // Kernel event for sync completed — audit row + reactor.
+      await emitKernelEvent({
+        brokerageId: profile.brokerage_id,
+        event: KernelEvent.SYSTEM_SYNC_COMPLETED,
+        entityType: "accounting_sync_log",
+        entityId: syncLog.id,
+        actorUserId: user.id,
         metadata: {
           provider: credentials.provider_name,
           sync_type,
           records_synced: recordsSynced,
           records_failed: recordsFailed,
         },
-        created_at: new Date().toISOString(),
       })
 
       return NextResponse.json({

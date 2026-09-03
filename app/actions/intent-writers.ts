@@ -16,6 +16,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 /**
  * ROUND-TRIP RECEIPT: after every write, the row is read back FRESH from the
@@ -62,6 +64,36 @@ export async function requestDocument(input: {
     .select("id, document_name, status, due_date, created_at")
     .eq("id", data.id).maybeSingle()
   if (!fresh) return { success: false, error: "write_not_verifiable" }
+
+  // THE PRODUCER OF KernelEvent.DOCUMENT_REQUESTED. The portal template ("Action
+  // needed: document requested" — lib/kernel/event-fanout.ts) and the staff-bell
+  // path both existed with no emitter; this is the ONE writer of document_requests,
+  // so the fact becomes true exactly here. Best-effort: the request row is the
+  // record; a fan-out failure must not fail the voice command that placed it.
+  // The card posts only when the request names a contact (no contact → no portal).
+  try {
+    await emitKernelEvent({
+      event:         KernelEvent.DOCUMENT_REQUESTED,
+      brokerageId:   ctx.brokerageId,
+      entityType:    "document_request",
+      entityId:      fresh.id as string,
+      contactId:     input.contactId ?? undefined,
+      transactionId: input.transactionId ?? undefined,
+      actorUserId:   ctx.userId,
+      source:        "ui",
+      metadata: {
+        document_request_id: fresh.id,
+        document_name:       (fresh as any).document_name,
+        document_type:       input.documentType ?? null,
+        due_date:            (fresh as any).due_date ?? null,
+        contact_id:          input.contactId ?? null,
+        transaction_id:      input.transactionId ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[intent-writers] DOCUMENT_REQUESTED emit failed (request recorded):", err)
+  }
+
   revalidatePath("/dashboard/transactions")
   return {
     success: true,

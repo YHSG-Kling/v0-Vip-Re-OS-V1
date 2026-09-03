@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateAIText } from "@/lib/ai"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { getRentcastMarketStats } from "@/lib/property/rentcast"
@@ -475,13 +476,14 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
     return { success: false, error: upsertError.message }
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.NEIGHBORHOOD_REPORT_GENERATED,
-    actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "listing",
+    entityId: listingId,
+    event: KernelEvent.NEIGHBORHOOD_REPORT_GENERATED,
+    listingId,
+    actorUserId: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       neighborhood_name: neighborhoodName,
       data_source: reportData.data_source || "AI Generated",

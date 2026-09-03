@@ -5,8 +5,35 @@ import {
   getCrossManagerReferrals, getStandingReviews, getTeamworkMetrics,
 } from "@/app/actions/admin/manager-evals"
 import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
-import { ManagerTrustClient } from "./manager-trust-client"
+import { ManagerTrustClient, type OwnedProofSeat } from "./manager-trust-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
+
+/**
+ * OWNED PROOFS — every maintenance/burn domain in the registry, grouped by the manager
+ * that resolveMaintenanceManager holds ACCOUNTABLE for it, with the proof (npm script)
+ * that keeps it green. Pure registry data, computed server-side so the surface can never
+ * drift from the law. resolveMaintenanceManager had no product reader before this — the
+ * ownership simulator was the only caller — so maintenance ownership was enforced in a
+ * test and shown nowhere a broker could see it.
+ */
+function composeOwnedProofs(): OwnedProofSeat[] {
+  const byManager = new Map<ManagerKey, OwnedProofSeat>()
+  for (const key of Object.keys(MANAGERS) as ManagerKey[]) {
+    byManager.set(key, { key, label: MANAGERS[key].label, accent: MANAGERS[key].accent, domains: [], proofs: [] })
+  }
+  for (const domain of Object.keys(MAINTENANCE_DOMAINS)) {
+    const mgr = resolveMaintenanceManager(domain)
+    const seat = byManager.get(mgr.key)
+    if (!seat) continue
+    const proof = MAINTENANCE_DOMAINS[domain].proof
+    seat.domains.push({ domain, proof })
+    if (!seat.proofs.includes(proof)) seat.proofs.push(proof)
+  }
+  return Array.from(byManager.values())
+    .map((s) => ({ ...s, proofs: s.proofs.sort(), domains: s.domains.sort((a, b) => a.domain.localeCompare(b.domain)) }))
+    .sort((a, b) => b.domains.length - a.domains.length)
+}
 
 export const dynamic = "force-dynamic"
 
@@ -49,11 +76,13 @@ export default async function ManagerTrustPage() {
   // registry (collaborations + emitters + loaders), computed server-side and handed to
   // the client as plain data so the surface can never drift from the law.
   const teamMap = composeTeamArgumentMap()
+  const ownedProofs = composeOwnedProofs()
   return (
     <ManagerTrustClient
       managers={res.managers}
       team={res.team}
       teamMap={teamMap}
+      ownedProofs={ownedProofs}
       learned={learned}
       referrals={referrals}
       standingReviews={standingReviews}

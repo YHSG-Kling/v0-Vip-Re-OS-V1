@@ -46,6 +46,26 @@ interface QueueFailureRow {
   error_message: string | null
   retry_count: number | null
   queued_at: string | null
+  /** What the queuer asked for (lead_enrichment_queue.enrichments_needed). */
+  enrichments_needed: string[] | null
+  /** What the drain recorded for the row (lead_enrichment_queue.enrichment_results). */
+  enrichment_results: Record<string, unknown> | null
+}
+
+/**
+ * One line from the drain's own account of a failed row. The orchestrator writes
+ * `{ lane, person_enrichment, free_osint, note }` — `person_enrichment` is the
+ * verdict on the paid lookup ('no_match' | 'withheld_budget' | 'not_applicable'),
+ * and a non-null `free_osint` means the free lane still answered something. Only
+ * those two are summarised; the rest of the object stays in the title tooltip.
+ */
+function summariseResults(r: Record<string, unknown> | null): string | null {
+  if (!r) return null
+  const parts: string[] = []
+  if (typeof r.lane === "string") parts.push(`lane ${r.lane}`)
+  if (typeof r.person_enrichment === "string") parts.push(`person lookup: ${r.person_enrichment.replace(/_/g, " ")}`)
+  if (r.free_osint && typeof r.free_osint === "object") parts.push("free OSINT lane answered")
+  return parts.length > 0 ? parts.join(" · ") : null
 }
 
 export function EnrichmentBacklogPanel() {
@@ -164,10 +184,20 @@ export function EnrichmentBacklogPanel() {
               <ul className="space-y-1">
                 {queueFailures.map((f) => (
                   <li key={f.id} className="text-[11px] text-muted-foreground flex items-start justify-between gap-2">
-                    <span className="truncate" title={f.error_message ?? undefined}>
-                      <span className="font-medium text-foreground">{f.enrichment_type ?? "enrichment"}</span>
-                      {" — "}
-                      {f.error_message ?? "no reason recorded"}
+                    <span className="min-w-0">
+                      <span className="block truncate" title={f.error_message ?? undefined}>
+                        <span className="font-medium text-foreground">{f.enrichment_type ?? "enrichment"}</span>
+                        {f.enrichments_needed && f.enrichments_needed.length > 0 && (
+                          <span className="text-muted-foreground"> (needed: {f.enrichments_needed.map((n) => n.replace(/_/g, " ")).join(", ")})</span>
+                        )}
+                        {" — "}
+                        {f.error_message ?? "no reason recorded"}
+                      </span>
+                      {summariseResults(f.enrichment_results) && (
+                        <span className="block truncate text-[10px]" title={JSON.stringify(f.enrichment_results)}>
+                          {summariseResults(f.enrichment_results)}
+                        </span>
+                      )}
                     </span>
                     <span className="shrink-0">
                       {f.retry_count != null ? `${f.retry_count} retr${f.retry_count === 1 ? "y" : "ies"}` : ""}

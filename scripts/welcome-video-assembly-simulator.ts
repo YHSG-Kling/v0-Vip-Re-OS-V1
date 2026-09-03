@@ -291,25 +291,41 @@ async function layer3_cleanTrack() {
     return { res, row: c.inserted[0]?.row }
   }
 
+  // THE FIXTURE IS THE REACTOR'S OWN REQUEST (2026-09-03, lane RM-B). These
+  // four used to stage `{ target_composition_id }` and nothing else — the exact
+  // payload the handoff inserted unchecked and render-composition cancelled a
+  // minute later for having no hook/agentName/caption. A fixture that thin
+  // could never see that defect (§2); now the handoff refuses it by name
+  // (asserted below), so the avatar-track assertions ride the request a real
+  // producer stamps, with its content props.
+  const declared = buildIntroCompositionRequest(PARAMS)!
+
   const both = await enqueue(
-    { target_composition_id: INTRO_VIDEO_COMPOSITION, clean_video_url: clean }, branded)
+    { ...declared, clean_video_url: clean }, branded)
   check("the handoff enqueues a render for a project that declared an assembly",
     both.res.ok === true, both.res.ok ? "" : both.res.skipped)
   check("the clean un-branded cut wins over the branded project URL — Remotion adds\n    its own chrome, so a pre-branded source would carry two attribution bands",
     both.row?.input_props?.avatarVideoUrl === clean, String(both.row?.input_props?.avatarVideoUrl))
 
-  const noClean = await enqueue({ target_composition_id: INTRO_VIDEO_COMPOSITION }, branded)
+  const noClean = await enqueue({ ...declared }, branded)
   check("CONTROL: with no clean copy persisted the branded cut is the fallback —\n    a double band beats no video",
     noClean.row?.input_props?.avatarVideoUrl === branded)
 
-  const nothing = await enqueue({ target_composition_id: INTRO_VIDEO_COMPOSITION }, null)
+  const nothing = await enqueue({ ...declared }, null)
   check("CONTROL: nothing at all ⇒ the handoff skips instead of enqueueing a render\n    with no avatar track",
     nothing.res.ok === false && /no avatar video URL/.test((nothing.res as any).skipped))
 
   const blank = await enqueue(
-    { target_composition_id: INTRO_VIDEO_COMPOSITION, clean_video_url: "   " }, branded)
+    { ...declared, clean_video_url: "   " }, branded)
   check("CONTROL: a blank clean_video_url is not a clean copy",
     blank.row?.input_props?.avatarVideoUrl === branded)
+
+  // THE ROW THAT USED TO INSERT-THEN-CANCEL is refused before the insert, by
+  // prop name — the same sentence the CMA orchestrator's refusal carries.
+  const thin = await enqueue({ target_composition_id: INTRO_VIDEO_COMPOSITION, clean_video_url: clean }, branded)
+  check("CONTROL: a target with NO content props is REFUSED by name before any row is inserted —\n    it used to insert, return ok, and be cancelled by the render backstop with nobody told",
+    thin.res.ok === false && /was not given .*hook.*agentName.*caption/.test((thin.res as any).skipped ?? "") && thin.row === undefined,
+    thin.res.ok ? "it enqueued anyway" : (thin.res as any).skipped)
 
   // THE ORIGINAL DEFECT, reproduced: metadata with no target is skipped.
   const bare = await enqueue({ provider: "did" }, branded)

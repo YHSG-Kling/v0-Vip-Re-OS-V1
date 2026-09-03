@@ -269,6 +269,95 @@ export function buildLlmsTxt(args: {
   return lines.join("\n")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// seoHint — THE TEXT AN AI SEARCH ENGINE READS TO DESCRIBE A VIDEO IT CANNOT
+// WATCH. Three sides of one contract, and this file holds the two pure ones:
+//
+//   · lib/remotion/content-contract.ts requires `seoHint` on VideoCoverThumb
+//     (a defaulted hint feeds a fabricated summary to exactly the surface the
+//     GEO work is trying to win);
+//   · the PRODUCER — app/api/internal/remotion/render-just-listed/route.ts —
+//     supplies it with `seoHintFromNarration` below and stages the whole card
+//     as `input_props.thumbnail_props` (the one key render-decision.ts
+//     resolveThumbnailProps already reads);
+//   · the READER — `seoHintFromRenderProps` / `describeVideoForSearch` below,
+//     for the /v/[slug] page's <meta description> / og:description.
+//
+// Until 2026-09-03 only the first side existed: the producer omitted the prop
+// (and rendered the still directly, so the backstop could not refuse), and
+// nothing read it back — a required prop with neither writer nor reader.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** og:description / VideoObject.description ceiling — the length search
+ *  snippets actually show; longer hints are cut mid-sentence by the engine. */
+export const SEO_HINT_MAX_CHARS = 160
+
+/**
+ * The seoHint, cut VERBATIM from copy that already passed the compliance gate.
+ *
+ * NOT A SECOND DRAFT. The promo narration has been through evaluateOutbound
+ * (fair housing, the one redraft) before it is spoken, so the hint is whole
+ * sentences of that script — never a paraphrase, never a new claim, never a
+ * protected-class word the gate did not see. Whole sentences while they fit
+ * SEO_HINT_MAX_CHARS; a first sentence longer than that is cut on a word
+ * boundary with an ellipsis rather than mid-word. Blank in ⇒ null out, so the
+ * content contract refuses the card instead of a producer inventing one.
+ *
+ * PURE.
+ */
+export function seoHintFromNarration(script: string | null | undefined, maxChars = SEO_HINT_MAX_CHARS): string | null {
+  const flat = (script ?? "").replace(/\s+/g, " ").trim()
+  if (!flat) return null
+  const sentences = flat.match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g)?.map((s) => s.trim()).filter(Boolean) ?? [flat]
+  let out = ""
+  for (const s of sentences) {
+    const next = out ? `${out} ${s}` : s
+    if (next.length > maxChars) break
+    out = next
+  }
+  if (out) return out
+  // The first sentence alone is over the ceiling: cut on a word boundary.
+  const head = sentences[0] ?? flat
+  const cut = head.slice(0, maxChars - 1)
+  const atWord = cut.lastIndexOf(" ") > maxChars / 2 ? cut.slice(0, cut.lastIndexOf(" ")) : cut
+  return `${atWord.replace(/[\s.,;:—-]+$/, "")}…`
+}
+
+/**
+ * Read the seoHint back off a render row's input_props: the companion card's
+ * `thumbnail_props.seoHint` for a moving render, or the top-level `seoHint`
+ * when the render IS a VideoCoverThumb still. Null when neither is a
+ * non-blank string — a reader must then fall back to registry copy, never to
+ * the composition's sample hint. PURE.
+ */
+export function seoHintFromRenderProps(inputProps: Record<string, unknown> | null | undefined): string | null {
+  const tp = inputProps?.thumbnail_props
+  const nested = tp && typeof tp === "object" ? (tp as Record<string, unknown>).seoHint : undefined
+  const candidate = typeof nested === "string" && nested.trim() ? nested : inputProps?.seoHint
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : null
+}
+
+/**
+ * The description the landing page publishes for a Remotion render — one rule,
+ * in preference order: the render's own seoHint (staged from gated copy), the
+ * registry's seo_description, then the honest generic line. The agent
+ * attribution suffix is appended in every case, as the page always has.
+ * PURE — mirrors app/v/[slug]/page.tsx loadPage's inline rule with the seoHint
+ * arm in front of it.
+ */
+export function describeVideoForSearch(args: {
+  seoHint:        string | null
+  seoDescription: string | null
+  displayName:    string
+  producerName:   string
+  agentName:      string | null
+}): string {
+  const base = args.seoHint
+    || (args.seoDescription && args.seoDescription.trim())
+    || `${args.displayName} produced by ${args.producerName}.`
+  return args.agentName ? `${base} Presented by ${args.agentName}.` : base
+}
+
 /** ISO-8601 duration (PT#M#S) from seconds, for VideoObject.duration. */
 export function secondsToIso8601(totalSec: number): string {
   const s = Math.max(0, Math.round(totalSec))

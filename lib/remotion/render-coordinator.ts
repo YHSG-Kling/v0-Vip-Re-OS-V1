@@ -46,6 +46,7 @@ import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { mixBackgroundMusic } from "./music-mixer"
 import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
+import { stagesVoiceover } from "./content-contract"
 
 export interface RenderIntent {
   brokerageId:     string
@@ -196,11 +197,21 @@ export async function finalizeCoordinatedRender(
   // internal reports, the agent's clone for contact-facing) and carry the mp3
   // URL in input_props.voiceover_url; we mux it here BEFORE music so the music
   // ducks under the narration. Best-effort — a mux failure ships the video silent.
-  let usedVoiceover = composition.requires_voiceover
+  // The initial value is a fact about THIS RENDER, not about the composition:
+  // did the staged props carry an in-frame voiceoverUrl that this composition
+  // actually plays (stagesVoiceover — lib/remotion/content-contract.ts)? It
+  // used to start from `composition.requires_voiceover`, a hand-seeded column
+  // that disagreed with the compositions' own <Audio> readers on 17 of 33 rows
+  // (m601) — so a ListingPresentationSlide with no audio at all was ledgered as
+  // narrated, and a JustListedReel with its narration IN FRAME as silent. The
+  // snake-key finish mux below still flips it to true when it lands.
+  let usedVoiceover = false
   try {
     const { data: renderRow } = await svc.from("remotion_composition_renders")
       .select("input_props").eq("id", renderId).maybeSingle()
-    const voUrl = (renderRow as any)?.input_props?.voiceover_url
+    const stagedProps = ((renderRow as any)?.input_props ?? null) as Record<string, unknown> | null
+    usedVoiceover = stagesVoiceover(composition.composition_id, stagedProps)
+    const voUrl = stagedProps?.voiceover_url
     if (typeof voUrl === "string" && voUrl.startsWith("http")) {
       // How long the voice runs, from the alignment we already cached for
       // captions — so a script longer than this composition's FIXED

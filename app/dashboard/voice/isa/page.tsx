@@ -393,11 +393,8 @@ export default async function VoiceISAPage() {
         />
 
         {/* Handoff Queue */}
-        <HandoffQueuePanel
-          queue={(handoffQueue || []) as any[]}
-          brokerageId={brokerageId}
-          assignedToUserId={userIdForHandoff}
-        />
+        {/* Tenant + claimant are session-derived inside the claim action now. */}
+        <HandoffQueuePanel queue={(handoffQueue || []) as any[]} />
       </div>
 
       {/* ISA Configuration Summary */}

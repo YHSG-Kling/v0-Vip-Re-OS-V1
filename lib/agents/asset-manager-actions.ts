@@ -330,11 +330,16 @@ async function runHandler(
         }
       }
 
+      // used_voiceover is a fact about THIS render (the composition plays
+      // voiceoverUrl AND these props carry one), read from the one set at
+      // lib/remotion/content-contract.ts — not the registry row's mirror column,
+      // which asserted a narration for compositions that have no audio (m601).
+      const { stagesVoiceover } = await import("@/lib/remotion/content-contract")
       const queued = await recordRenderQueued({
         brokerageId, compositionId,
         agentUserId, entityType, entityId,
         usedDidAvatar: composition.requires_did_avatar,
-        usedVoiceover: composition.requires_voiceover,
+        usedVoiceover: stagesVoiceover(compositionId, inputProps),
         inputProps, scopeType, scopeId,
         requestedVia: "asset_manager",
       })
@@ -404,6 +409,7 @@ async function runHandler(
 
       // Carry the original render's props + scope forward so the retry
       // reproduces the SAME branded piece, not a defaults sample.
+      const { stagesVoiceover } = await import("@/lib/remotion/content-contract")
       const queued = await recordRenderQueued({
         brokerageId,
         compositionId: o.composition_id,
@@ -411,7 +417,8 @@ async function runHandler(
         entityType:    o.entity_type,
         entityId:      o.entity_id,
         usedDidAvatar: composition.requires_did_avatar,
-        usedVoiceover: composition.requires_voiceover,
+        // Same rule as start_render: the render's own fact, from the one set.
+        usedVoiceover: stagesVoiceover(o.composition_id, carriedProps),
         inputProps:    carriedProps,
         scopeType:     o.scope_type ?? "brokerage",
         scopeId:       o.scope_id ?? brokerageId,

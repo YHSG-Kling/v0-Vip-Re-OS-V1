@@ -20,11 +20,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { KernelEvent }         from "@/lib/kernel/events"
 // TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
-// never called. Survivor: lib/kernel/event-fanout.ts:67, reached through
-// `fanOutKernelEvent` at :207 below — whose own comment already records the
-// swap ("Single canonical fan-out (replaces direct processKernelEvent call)").
-// The fan-out adds contact/buyer/seller/listing resolution, portal updates and
-// sequence auto-enrolment on top; the direct call would have skipped all three.
+// never called. Survivor: `emitKernelEvent` at lib/kernel/emit.ts:112, reached
+// through emitTransactionEvent below (fanOutKernelEvent, the earlier survivor,
+// was itself folded onto emitKernelEvent on 2026-09-03 — see the tombstone in
+// lib/kernel/event-fanout.ts). The emit adds the audit row, contact/buyer/
+// seller/listing resolution, portal updates and sequence auto-enrolment on top;
+// the direct call would have skipped all of them.
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
@@ -192,39 +193,35 @@ export async function emitTransactionEvent(params: {
   const { event, brokerageId, entityId, actorUserId, metadata } = params
   const entityType = params.entityType ?? "transaction"
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   entityType,
-    entity_id:     entityId,
-    event_type:    event,
-    actor_user_id: actorUserId,
-    metadata:      metadata ?? {},
-  })
-
   // ── Enrich the event with contact + transaction + listing context (shared resolver — the SAME
-  //    logic the kernel reactor uses for bare processKernelEvent callers, so there's one resolution
-  //    path, no drift) so fanOutKernelEvent can fire portal updates + sequence enrollment for both
-  //    buyer and seller without each call site re-resolving.
+  //    logic the kernel reactor uses for bare callers, so there's one resolution path, no drift)
+  //    so the fan-out can fire portal updates + sequence enrollment for both buyer and seller
+  //    without each call site re-resolving.
   const { resolveEventContacts } = await import("./resolve-event-contacts")
   const { contactId, buyerContactId, sellerContactId, listingId, transactionId } =
     await resolveEventContacts(supabase, entityType, entityId)
 
-  // Single canonical fan-out (replaces direct processKernelEvent call) —
-  // notifications + sequence auto-enroll + portal update happen here.
-  const { fanOutKernelEvent } = await import("./event-fanout")
-  await fanOutKernelEvent({
+  // Single canonical emit — the lifecycle_events row (with the actor) AND the fan-out
+  // (notifications + sequence auto-enroll + portal update) happen here. The refused-row case
+  // used to be invisible (the insert's error was never read); it is logged now.
+  const { emitKernelEvent } = await import("./emit")
+  const r = await emitKernelEvent({
     event,
     brokerageId,
     entityType,
     entityId,
+    actorUserId,
     contactId,
     buyerContactId,
     sellerContactId,
     transactionId,
     listingId,
     agentUserId: actorUserId,
-    metadata,
+    metadata:    metadata ?? {},
   })
+  if (r.error) {
+    console.error(`[emitTransactionEvent] lifecycle_events row refused for ${event} on ${entityType}:${entityId}: ${r.error}`)
+  }
 }
 
 // ─── 1. EVALUATE OFFER COMPLIANCE ────────────────────────────────────────────
@@ -1235,8 +1232,9 @@ export async function closeTransactionCommand(params: {
     // the seller AND buyer portals show "Closed!" + "Welcome to your
     // lifetime portal" cards immediately.
     try {
-      const { fanOutKernelEvent } = await import("./event-fanout")
-      await fanOutKernelEvent({
+      // Row already written in the Promise.all above → skipInsert (fan-out only).
+      const { emitKernelEvent } = await import("./emit")
+      await emitKernelEvent({
         event:           KernelEvent.TRANSACTION_CLOSED,
         brokerageId:     params.brokerageId,
         entityType:      "transaction",
@@ -1247,9 +1245,10 @@ export async function closeTransactionCommand(params: {
         sellerContactId: txBefore?.seller_contact_id ?? undefined,
         agentUserId:     params.agentId,
         metadata:        { reason: params.reason ?? null, close_date: today },
+        skipInsert:      true,
       })
     } catch (e) {
-      console.error("[closeTransactionCommand] fanOutKernelEvent failed", e)
+      console.error("[closeTransactionCommand] emitKernelEvent failed", e)
     }
 
     // ── Propagate close to related entities ────────────────────────────────

@@ -255,9 +255,12 @@ async function resolveAgentId(
   return data?.id ?? null
 }
 
-/** Write a lifecycle_events row for the given event */
+/** Write a lifecycle_events row for the given event AND fan it out.
+ *  ONE VOCABULARY (2026-09-03): routes through emitKernelEvent — the bare insert
+ *  it replaces never reached the reactor, so VENDOR_* notification rules never
+ *  fired. Same columns; a refused row is logged instead of resolving silently. */
 async function emitLifecycleEvent(
-  supabase: ReturnType<typeof createServiceClient>,
+  _supabase: ReturnType<typeof createServiceClient>,
   params: {
     brokerageId:  string
     actorUserId:  string
@@ -267,15 +270,18 @@ async function emitLifecycleEvent(
     metadata?:    Record<string, unknown>
   }
 ) {
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  params.brokerageId,
-    actor_user_id: params.actorUserId,
-    entity_type:   params.entityType,
-    entity_id:     params.entityId,
-    event_type:    params.event,
-    metadata:      params.metadata ?? {},
-    created_at:    new Date().toISOString(),
+  const { emitKernelEvent } = await import("./emit")
+  const r = await emitKernelEvent({
+    event:       params.event,
+    brokerageId: params.brokerageId,
+    actorUserId: params.actorUserId,
+    entityType:  params.entityType,
+    entityId:    params.entityId,
+    metadata:    params.metadata ?? {},
   })
+  if (r.error) {
+    console.error(`[kernel/vendors] lifecycle_events row refused for ${params.event} on ${params.entityType}:${params.entityId}: ${r.error}`)
+  }
 }
 
 // ─── COMMAND 1: loadVendorWorkspace ──────────────────────────────────────────

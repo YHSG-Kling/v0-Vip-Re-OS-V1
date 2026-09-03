@@ -2293,9 +2293,26 @@ export function resolveTableManager(table: string): ManagerInfo {
   return key ? MANAGERS[key] : FALLBACK_MANAGER
 }
 
-/** Fallback owner for any activity not yet mapped — surfaced so nothing is ever truly orphaned. */
-export const FALLBACK_MANAGER: ManagerInfo = {
-  key: "marketing_agent", label: "Operations", domain: "Unassigned — needs an owner", accent: "bg-slate-100 text-slate-700",
+/**
+ * Fallback owner for any activity not yet mapped — surfaced so nothing is ever truly
+ * orphaned.
+ *
+ * FILE-LOCAL (2026-09-03): it was exported with zero importers — every reader goes
+ * through the resolve* functions below, which is the contract. And it is keyed on
+ * cron_manager now, not marketing_agent: its label used to read "Operations" while its
+ * key pointed at the marketing seat, so an unmapped activity was attributed to the
+ * Marketing Agent under the name of a domain that MANAGERS.cron_manager already
+ * declares as its own ("Schedules, heartbeat & loop health (operations)"). One seat
+ * per domain (§6): the operations seat is the cron manager, and the fallback's label
+ * is the registry's own label for that seat — not a second spelling of it. The
+ * `domain` line still says the activity is unowned, because that is the fact a
+ * reader needs: this seat is holding it, not claiming it.
+ */
+const FALLBACK_MANAGER: ManagerInfo = {
+  key:    "cron_manager",
+  label:  MANAGERS.cron_manager.label,
+  domain: "Unassigned — needs an owner (held by the operations seat until one is declared)",
+  accent: "bg-slate-100 text-slate-700",
 }
 
 /**

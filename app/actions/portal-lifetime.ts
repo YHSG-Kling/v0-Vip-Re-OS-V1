@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { bestEffort } from "@/lib/db/best-effort"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { validateTestimonialSubmission, type TestimonialKind } from "@/lib/testimonials/testimonial-policy"
 import { isNextMoveIntent, nextStepForIntent, type NextMoveIntent } from "@/lib/portal/next-move"
@@ -190,12 +191,17 @@ export async function submitNextMoveIntent(params: {
         }).then(() => {}, () => {})
       }
 
-      await svc.from("lifecycle_events").insert({
-        brokerage_id: access.brokerageId,
-        event_type: KernelEvent.MESSAGE_FROM_CONTACT,
-        entity_type: "contact",
-        entity_id: params.contactId,
-        actor_user_id: contact.agent_id,
+      // Audit row + reactor (MESSAGE_FROM_CONTACT has a staff-bell label — the
+      // bare insert never rang it). contact.agent_id is an agents.id: it goes to
+      // the agents-class agent_id column, NOT actor_user_id (FK users) — that
+      // FK refusal is why this row never landed before.
+      await emitKernelEvent({
+        brokerageId: access.brokerageId,
+        event: KernelEvent.MESSAGE_FROM_CONTACT,
+        entityType: "contact",
+        entityId: params.contactId,
+        contactId: params.contactId,
+        agentId: contact.agent_id,
         metadata: { contact_id: params.contactId, agent_id: contact.agent_id, type: "next_move_intent", intent: params.intent, note },
       }).then(() => {}, () => {})
     }
@@ -692,14 +698,17 @@ export async function submitReferral(data: {
         (clientNote ? `\nTheir note: ${clientNote}` : ""),
     })
 
-    // Emit kernel event - resolve agent via kernel identity function
+    // Emit kernel event - resolve agent via kernel identity function. Audit row +
+    // reactor; contact.agent_id is agents-class → agent_id, never actor_user_id
+    // (FK users — the refusal that kept this row from landing).
     const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: agentData?.brokerage_id,
-      event_type: KernelEvent.MESSAGE_FROM_CONTACT,
-      entity_type: "contact",
-      entity_id: data.contactId,
-      actor_user_id: contact.agent_id,
+    await emitKernelEvent({
+      brokerageId: agentData?.brokerage_id ?? contact.brokerage_id,
+      event: KernelEvent.MESSAGE_FROM_CONTACT,
+      entityType: "contact",
+      entityId: data.contactId,
+      contactId: data.contactId,
+      agentId: contact.agent_id,
       metadata: {
         contact_id: data.contactId,
         referred_name: data.referredName,

@@ -11,7 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { platformStaffCan, isPlatformStaffRole, type PlatformCapability } from "@/lib/platform/platform-staff-roster"
 import { PLATFORM_ANNOUNCEMENT_TYPE } from "@/lib/notifications/platform-staff"
-import { PLATFORM_MANAGERS, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
+import { resolvePlatformManager, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
 import { AnnouncementComposer } from "./announcement-composer"
 import { AgreementAckBanner } from "./agreement-ack-banner"
 
@@ -251,7 +251,8 @@ export default async function PlatformStaffHomePage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {g.tools.map((t) => {
               const count = t.countKey ? counts[t.countKey] : null
-              const manager = t.managerKey ? PLATFORM_MANAGERS[t.managerKey] : null
+              // Through the resolver (the registry's contract; never undefined).
+              const manager = t.managerKey ? resolvePlatformManager(t.managerKey) : null
               return (
                 <Card key={t.href + t.label} className="hover:border-primary/50 transition-colors">
                   <CardContent className="p-4">

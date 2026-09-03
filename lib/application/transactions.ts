@@ -680,6 +680,15 @@ export async function addTitleEscrow(data: {
   }
 
   await addTimelineEntry(data.transaction_id, "title_escrow_added", `Title company "${data.title_company_name}" assigned`)
+  if (data.closing_scheduled_date) {
+    await emitClosingScheduled({
+      transactionId: data.transaction_id,
+      brokerageId:   gate.brokerageId,
+      actorUserId:   gate.actorUserId ?? gate.userId,
+      closingScheduledDate: data.closing_scheduled_date,
+      closingLocation: data.closing_location ?? null,
+    })
+  }
   revalidatePath("/transactions")
   return { success: true, data: result }
 }
@@ -699,8 +708,53 @@ export async function updateTitleEscrow(titleEscrowId: string, updates: Record<s
     console.error("Error updating title/escrow:", error)
     return { success: false, error: error.message }
   }
+  const scheduled = typeof updates.closing_scheduled_date === "string" ? updates.closing_scheduled_date : null
+  if (scheduled && (data as { transaction_id?: string } | null)?.transaction_id) {
+    await emitClosingScheduled({
+      transactionId: (data as { transaction_id: string }).transaction_id,
+      brokerageId:   gate.brokerageId,
+      actorUserId:   gate.actorUserId ?? gate.userId,
+      closingScheduledDate: scheduled,
+      closingLocation: typeof updates.closing_location === "string" ? updates.closing_location : null,
+    })
+  }
   revalidatePath("/transactions")
   return { success: true, data }
+}
+
+// THE PRODUCER OF KernelEvent.CLOSING_SCHEDULED at the fact-point. The portal template
+// ("Closing scheduled — bring a government-issued ID…") and the staff-bell label both
+// existed; the only emitters were the title portal's `closing_ready` status flip and the
+// calendar watcher's T-24h reminder — neither is the moment the agent/TC WRITES the
+// date. `transaction_title_escrow.closing_scheduled_date` is that moment (the war room,
+// the health scorer and the deal detail all read it as "closing scheduled"), and this
+// module is its ONE writer. Best-effort: the escrow row is the record. Not exported —
+// this is a `"use server"` module, where every export is a public endpoint.
+async function emitClosingScheduled(args: {
+  transactionId: string
+  brokerageId: string
+  actorUserId: string
+  closingScheduledDate: string
+  closingLocation: string | null
+}): Promise<void> {
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.CLOSING_SCHEDULED,
+      brokerageId: args.brokerageId,
+      entityId:    args.transactionId,
+      actorUserId: args.actorUserId,
+      metadata: {
+        closing_scheduled_date: args.closingScheduledDate,
+        closing_date:           args.closingScheduledDate,
+        closing_location:       args.closingLocation,
+        source:                 "title_escrow_write",
+      },
+    })
+  } catch (err) {
+    console.error("[transactions] CLOSING_SCHEDULED emit failed (escrow row saved):", err)
+  }
 }
 
 // ============================================

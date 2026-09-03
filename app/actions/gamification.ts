@@ -22,6 +22,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   isLeaderboardScope,
   isLeaderboardMetric,
@@ -230,11 +231,13 @@ async function awardBadge(data: {
   const badgeTier = (Array.isArray(def) ? def[0]?.badge_tier : def?.badge_tier) ?? null
 
   // Emit kernel event — brokerage_id resolved above, from the agent record.
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: agentData.brokerage_id,
-    event_type: KernelEvent.GAMIFICATION_BADGE_AWARDED,
-    entity_type: "agent_badge",
-    entity_id: newBadge.id,
+  // Audit row + reactor (notification_rules keyed on this event now fire).
+  await emitKernelEvent({
+    brokerageId: agentData.brokerage_id,
+    event: KernelEvent.GAMIFICATION_BADGE_AWARDED,
+    entityType: "agent_badge",
+    entityId: newBadge.id,
+    agentId: data.agentId,
     metadata: {
       agent_id: data.agentId,
       badge_id: data.badgeId,
@@ -242,7 +245,6 @@ async function awardBadge(data: {
       badge_tier: badgeTier,
       reason: data.reason,
     },
-    created_at: new Date().toISOString(),
   })
 
   // THE EVENT NOW HAS A CONSUMER, AND IT IS THE PERSON IT IS ABOUT.

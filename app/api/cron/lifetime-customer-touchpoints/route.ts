@@ -139,13 +139,17 @@ export async function GET(request: Request) {
           // lib/kernel/event-fanout.ts rendered never. Both ends existed; the
           // signal between them did not.
           try {
-            const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
+            // emitKernelEvent also writes the anniversary_triggered audit row (this cron
+            // fanned out without ever recording the fact it announced).
+            const { emitKernelEvent } = await import("@/lib/kernel/emit")
             const { KernelEvent } = await import("@/lib/kernel/events")
-            await fanOutKernelEvent({
+            await emitKernelEvent({
               event:       KernelEvent.ANNIVERSARY_TRIGGERED,
               brokerageId: (txn as any).brokerage_id,
               entityType:  "contact",
               entityId:    txn.contact_id,
+              contactId:   txn.contact_id,
+              source:      "cron",
               metadata:    { years_ago: yearsAgo, transaction_id: txn.id, close_date: txn.actual_close_date },
             })
           } catch (fanErr: any) {

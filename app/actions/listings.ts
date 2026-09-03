@@ -11,6 +11,7 @@ import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/act
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { archiveListing as archiveListingRecord, unarchiveListing as unarchiveListingRecord } from "@/lib/kernel/listing-archive"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 /**
  * CRUD operations for listings
@@ -446,15 +447,18 @@ export async function archiveListing(listingId: string) {
     // took it off and when — that is the half a hard delete could never have.
     // Best-effort and voided: the archive already happened and must not be
     // reported as failed because an audit insert did.
-    await supabase.from("lifecycle_events").insert({
-      entity_type:   "listing",
-      entity_id:     listingId,
-      event_type:    KernelEvent.LISTING_ARCHIVED,
-      brokerage_id:  auth.brokerageId,
+    // emitKernelEvent: the audit row AND the reactor — an archived listing now reaches
+    // notification_rules / sequences keyed on listing_archived, not just the table.
+    await emitKernelEvent({
+      entityType:  "listing",
+      entityId:    listingId,
+      event:       KernelEvent.LISTING_ARCHIVED,
+      brokerageId: auth.brokerageId,
+      listingId,
       // The REAL accountable actor — under staff act-as this is the
       // impersonator, not the impersonated identity.
-      actor_user_id: auth.actorUserId ?? null,
-      created_at:    result.outcome.archivedAt,
+      actorUserId: auth.actorUserId ?? null,
+      createdAt:   result.outcome.archivedAt,
       metadata: {
         // The record's own status, READ BACK rather than written. Proof in the
         // audit trail that archiving did not rewrite what the listing was.
@@ -514,14 +518,14 @@ export async function unarchiveListing(listingId: string) {
     const result = await unarchiveListingRecord(supabase, listingId, auth.brokerageId)
     if (!result.ok) return { success: false, error: result.error ?? "This listing could not be restored." }
 
-    await supabase.from("lifecycle_events").insert({
-      entity_type:   "listing",
-      entity_id:     listingId,
-      event_type:    KernelEvent.LISTING_UNARCHIVED,
-      brokerage_id:  auth.brokerageId,
-      actor_user_id: auth.actorUserId ?? null,
-      created_at:    new Date().toISOString(),
-      metadata:      {},
+    await emitKernelEvent({
+      entityType:  "listing",
+      entityId:    listingId,
+      event:       KernelEvent.LISTING_UNARCHIVED,
+      brokerageId: auth.brokerageId,
+      listingId,
+      actorUserId: auth.actorUserId ?? null,
+      metadata:    {},
     }).then(() => null, () => null)
 
     revalidatePath("/listings")

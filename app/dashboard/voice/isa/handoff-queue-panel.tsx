@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { createClient } from "@/lib/supabase/client"
+import { claimHandoffAction } from "@/app/actions/ai-isa/claim-handoff"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,7 +14,6 @@ import {
   CheckCircle2,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { KernelEvent } from "@/lib/kernel/events"
 import { BookAppointmentDialog } from "./book-appointment-dialog"
 
 interface QualifiedContact {
@@ -75,21 +74,13 @@ interface QualifiedContact {
 //   agents.id → lifecycle_events.actor_user_id ....... REFUSED 23503
 //   resolved users.id → all three ..................... ACCEPTED, and the real
 //     readers see it (badge-counts returns the row; the `users!` embed resolves).
+// 2026-09-03: `brokerageId` and `assignedToUserId` are no longer props. The claim
+// moved into app/actions/ai-isa/claim-handoff.ts, which derives BOTH from the
+// session (CLAUDE.md §4 — tenant never from a request body or a prop), so the
+// id-space contract above is now enforced in one server-side place instead of
+// at two call sites.
 interface HandoffQueuePanelProps {
   queue: QualifiedContact[]
-  brokerageId: string
-  /**
-   * `users.id` of the HUMAN AGENT claiming this handoff.
-   *
-   * NOT an `agents.id`. Every column this component writes it into FKs
-   * `users(id)`, and the two id spaces are disjoint, so an `agents.id` here is a
-   * 23503 refusal on all three writes — not a mis-assignment. A caller holding
-   * only an `agents.id` must cross the space first: `getAgentContext()` already
-   * returns `userId` beside `agentId`, and for a caller that has nothing but an
-   * agent id there is `resolveAgentRecipient` in
-   * `lib/notifications/recipient-tenant.ts`, which reads `agents.user_id`.
-   */
-  assignedToUserId: string
 }
 
 function formatTimeAgo(dateString: string | null): string {
@@ -125,7 +116,7 @@ function getScoreBadge(score: number | null) {
   return <Badge variant="secondary">{score}</Badge>
 }
 
-export function HandoffQueuePanel({ queue: initialQueue, brokerageId, assignedToUserId }: HandoffQueuePanelProps) {
+export function HandoffQueuePanel({ queue: initialQueue }: HandoffQueuePanelProps) {
   const router = useRouter()
   const [claiming, setClaiming] = useState<string | null>(null)
   // Optimistic removal: maintain local copy of the queue
@@ -153,69 +144,35 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, assignedTo
     setClaiming(qualificationId)
     setClaimError(null)
 
-    const supabase = createClient()
+    // 1-3. The claim (assignment + kernel event + notification) runs SERVER-SIDE in
+    //      app/actions/ai-isa/claim-handoff.ts. It used to run here, in the browser,
+    //      with a direct lifecycle_events insert — and a client component cannot reach
+    //      the kernel reactor, so AI_ISA_HANDOFF_TO_AGENT landed in the audit table and
+    //      never reached notification_rules or any reactor handler. The action derives
+    //      the tenant AND the claimant from the session (never from props) and FAILS
+    //      CLOSED on a refused or zero-row assignment, exactly as this panel did.
+    let result: Awaited<ReturnType<typeof claimHandoffAction>>
+    try {
+      result = await claimHandoffAction({ qualificationId })
+    } catch (err) {
+      result = { ok: false, error: err instanceof Error ? err.message : "Could not reach the server" }
+    }
 
-    // 1. Persist: assign the qualification to the HUMAN AGENT taking the call.
-    //    `assigned_to_agent_id` FKs users(id) despite its name — see the contract
-    //    note above.
-    const { error: assignErr } = await supabase
-      .from("ai_isa_qualifications")
-      .update({
-        assigned_to_agent_id: assignedToUserId,
-        assigned_at: new Date().toISOString(),
-      })
-      .eq("id", qualificationId)
-
-    if (assignErr) {
+    if (!result.ok) {
       // FAIL CLOSED. The claim did not happen, so the row stays in the queue and
       // this does not navigate — another agent must still be able to take it.
-      console.error("[HandoffQueue] Failed to assign qualification:", assignErr.message)
-      setClaimError(`Could not claim this handoff: ${assignErr.message}`)
+      console.error("[HandoffQueue] Failed to claim handoff:", result.error)
+      setClaimError(`Could not claim this handoff: ${result.error}`)
       setClaiming(null)
       return
     }
 
-    // 2. Emit Kernel handoff event. `actor_user_id` FKs users(id).
-    const { error: eventErr } = await supabase
-      .from("lifecycle_events")
-      .insert({
-        brokerage_id: brokerageId,
-        entity_type: "contact",
-        entity_id: contactId,
-        event_type: KernelEvent.AI_ISA_HANDOFF_TO_AGENT,
-        actor_user_id: assignedToUserId,
-        metadata: {
-          qualification_id: qualificationId,
-          handoff_type: "manual_claim",
-        },
-      })
-    if (eventErr) {
-      console.error("[HandoffQueue] Failed to emit handoff event:", eventErr.message)
-    }
-
-    // 3. Notify the human who now owns the call. `notifications.user_id` FKs
-    //    users(id), and the reader that lights the bell
-    //    (`app/api/dashboard/badge-counts/route.ts`) filters
-    //    `.eq("brokerage_id", <the RECIPIENT's users.brokerage_id>)
-    //     .eq("user_id", user.id)`, so a row carrying the wrong id space is not a
-    //    dim notification — it is no row at all.
-    const { error: notifyErr } = await supabase.from("notifications").insert({
-      brokerage_id: brokerageId,
-      user_id: assignedToUserId,
-      type: "handoff_claimed",
-      title: "Handoff claimed",
-      body: `You claimed a qualified lead from the AI-ISA handoff queue.`,
-      entity_type: "qualification",
-      entity_id: qualificationId,
-      created_at: new Date().toISOString(),
-      is_read: false,
-    })
-    if (notifyErr) {
+    if (!result.notified) {
       // The assignment DID land, so this does not roll the claim back — but a
       // handoff nobody was told about is the failure mode this panel exists to
       // avoid, so it is surfaced rather than logged into the void.
-      console.error("[HandoffQueue] Failed to notify the assigned agent:", notifyErr.message)
-      setClaimError(`Claimed, but the assigned agent was not notified: ${notifyErr.message}`)
+      console.error("[HandoffQueue] Failed to notify the assigned agent:", result.notifyError)
+      setClaimError(`Claimed, but the assigned agent was not notified: ${result.notifyError ?? "unknown"}`)
     }
 
     // 4. Optimistic removal — the claim is persisted, so the row can go.
@@ -223,7 +180,7 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, assignedTo
     setClaiming(null)
 
     // 5. Navigate to the contact detail page
-    router.push(`/crm/contacts/${contactId}`)
+    router.push(`/crm/contacts/${result.contactId}`)
   }
 
   return (

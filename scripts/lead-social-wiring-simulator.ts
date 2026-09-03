@@ -567,8 +567,11 @@ function profileWriterLayer() {
   // The `(?:(?!from\()…)` guard stops the wildcard escaping into the SIBLING
   // query. Without it, blanking the behavioural `.or(` was still satisfied by
   // the property `.or(` two statements later — caught by the negative test.
+  // Wave 26 (lane C5): the unified_profile_id OR-lane is GONE — it read a column
+  // no writer stamps — so the behavioural query is a plain contact_id equality.
   check("L17", "behavioural signals resolve by contact_id, the column that is written",
-    /from\(\s*["']behavioral_signals["']\s*\)(?:(?!from\()[\s\S]){0,300}?\.or\(`contact_id\.eq\.\$\{contactId\}/.test(signals))
+    /from\(\s*["']behavioral_signals["']\s*\)(?:(?!from\()[\s\S]){0,300}?\.eq\(\s*["']contact_id["']\s*,\s*contactId\s*\)/.test(signals) &&
+    !/unified_profile_id/.test(stripComments(signals)))
   check("L18", "property signals resolve by contact_id too",
     /from\(\s*["']property_intelligence["']\s*\)(?:(?!from\()[\s\S]){0,300}?\.or\(`contact_id\.eq\.\$\{contactId\}/.test(signals))
   check("L19", "...and both are brokerage-scoped, because this is a service client",
@@ -852,8 +855,8 @@ const MUTATIONS: Mutation[] = [
     replace: `      signal_type: "something_else",` },
 
   { id: "L17", file: LEAD, note: "go back to reading a column with no writer",
-    find: `        .or(\`contact_id.eq.\${contactId},unified_profile_id.eq.\${profileId}\`)`,
-    replace: `        .eq("unified_profile_id", profileId)` },
+    find: `    .from("behavioral_signals")\n    .select("*")\n    .eq("contact_id", contactId)`,
+    replace: `    .from("behavioral_signals")\n    .select("*")\n    .eq("unified_profile_id", profileId)` },
 
   { id: "L18", file: LEAD, note: "read property signals through a column with no writer",
     find: `        .or(\`contact_id.eq.\${contactId},profile_id.eq.\${profileId}\`)`,

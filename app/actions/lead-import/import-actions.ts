@@ -7,6 +7,7 @@ import { routeUnknownToNotes, CANONICAL_CONTACT_FIELDS } from '@/lib/data-stewar
 import { normalizeRowEnums, NORMALIZABLE_ENUM_FIELDS } from '@/lib/data-steward/value-normalizer'
 import { aiMatchEnumValues, aiMatchKey } from '@/lib/data-steward/ai-value-matcher'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 // Common column names from other CRMs' exports (kvCORE, Follow Up Boss, Lofty/Chime,
@@ -186,12 +187,13 @@ async function processImportRows(params: {
     .eq('id', params.importId)
     .eq('brokerage_id', brokerageId)
 
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id: brokerageId,
-    entity_type: 'lead_import',
-    entity_id: params.importId,
-    event_type: KernelEvent.LEAD_IMPORT_COMPLETED,
-    actor_user_id: agentUserId,
+  // Audit row + reactor (was a bare insert nobody downstream heard).
+  await emitKernelEvent({
+    brokerageId,
+    entityType: 'lead_import',
+    entityId: params.importId,
+    event: KernelEvent.LEAD_IMPORT_COMPLETED,
+    actorUserId: agentUserId,
     metadata: {
       created,
       merged,

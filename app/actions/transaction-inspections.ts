@@ -7,6 +7,7 @@ import { scheduleInspection, updateInspection } from "@/lib/application/transact
 import { requestQuoteApproval, approveQuote, declineQuote } from "@/lib/transactions/vendor-quote-workflow"
 import { completeMilestone } from "@/lib/transactions/milestone-service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── AUTH HELPERS ──────────────────────────────────────────────────────────────
 
@@ -112,12 +113,14 @@ export async function scheduleInspectionAction(params: {
       requestedBy:     auth.userId,
     })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.INSPECTION_QUOTE_REQUESTED,
-      metadata:     { inspection_id: result.data.id, quote_amount: params.cost },
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.INSPECTION_QUOTE_REQUESTED,
+      actorUserId:   auth.userId,
+      metadata:      { inspection_id: result.data.id, quote_amount: params.cost },
     })
   }
 
@@ -153,12 +156,14 @@ export async function approveInspectionQuoteAction(params: {
     notes:         params.notes,
   })
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSPECTION_QUOTE_APPROVED,
-    metadata:     { vendor_name: params.vendorName },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSPECTION_QUOTE_APPROVED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -339,12 +344,14 @@ export async function requestInsuranceQuoteAction(params: {
     return { success: false, error: error.message }
   }
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSURANCE_QUOTE_REQUESTED,
-    metadata:     { vendor_name: params.vendorName, service_id: data?.id },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSURANCE_QUOTE_REQUESTED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName, service_id: data?.id },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -455,12 +462,14 @@ export async function approveInsuranceQuoteAction(params: {
     notes:         params.notes,
   })
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: auth.brokerageId,
-    entity_type:  "transaction",
-    entity_id:    params.transactionId,
-    event_type:   KernelEvent.INSURANCE_QUOTE_APPROVED,
-    metadata:     { vendor_name: params.vendorName },
+  await emitKernelEvent({
+    brokerageId:   auth.brokerageId,
+    entityType:    "transaction",
+    entityId:      params.transactionId,
+    transactionId: params.transactionId,
+    event:         KernelEvent.INSURANCE_QUOTE_APPROVED,
+    actorUserId:   auth.userId,
+    metadata:      { vendor_name: params.vendorName },
   })
 
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -538,14 +547,18 @@ export async function updateEarnestMoneyAction(params: {
     }
   }
 
-  // If earnest money received date is set, complete the milestone + emit event
+  // If earnest money received date is set, complete the milestone + emit event.
+  // EARNEST_MONEY_RECEIVED has a buyer/seller portal template ("Earnest money
+  // received") — the bare insert here meant the card never posted.
   if (params.earnestMoneyReceivedDate) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.EARNEST_MONEY_RECEIVED,
-      metadata:     {
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.EARNEST_MONEY_RECEIVED,
+      actorUserId:   auth.userId,
+      metadata:      {
         amount:       params.earnestMoneyAmount ?? null,
         held_by:      params.earnestMoneyHeldBy ?? null,
         received_at:  params.earnestMoneyReceivedDate,
@@ -560,12 +573,14 @@ export async function updateEarnestMoneyAction(params: {
       completedBy:   auth.userId,
     })
 
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: auth.brokerageId,
-      entity_type:  "transaction",
-      entity_id:    params.transactionId,
-      event_type:   KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED,
-      metadata:     { milestone: "earnest_money_due" },
+    await emitKernelEvent({
+      brokerageId:   auth.brokerageId,
+      entityType:    "transaction",
+      entityId:      params.transactionId,
+      transactionId: params.transactionId,
+      event:         KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED,
+      actorUserId:   auth.userId,
+      metadata:      { milestone: "earnest_money_due" },
     })
   }
 

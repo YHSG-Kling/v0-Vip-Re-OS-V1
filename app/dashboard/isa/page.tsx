@@ -707,11 +707,7 @@ export default async function AIISAOperationsConsolePage() {
               VALUE under a prop name that claimed otherwise. Only the name
               changed here; the sibling console at /dashboard/voice/isa was the
               one passing an `agents.id`. */}
-          <HandoffQueuePanel
-            queue={handoffQueue}
-            brokerageId={brokerageId}
-            assignedToUserId={user.id}
-          />
+          <HandoffQueuePanel queue={handoffQueue} />
         </TabsContent>
 
         {/* ISA Queue Tab — the raw lead queue behind everything else on this

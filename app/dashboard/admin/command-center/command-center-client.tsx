@@ -588,6 +588,28 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Heartbeat — every scheduled loop that ran is owned by an accountable manager
+          (resolveCronManager). The cron owner had no product reader before this. */}
+      {(data.cronOwners ?? []).length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Heartbeat — who runs each loop</h2>
+          <div className="flex flex-wrap gap-2">
+            {data.cronOwners.map((c) => (
+              <Card key={c.cronPath} className="px-3 py-2 flex items-center gap-2" title={`${c.cronPath} · ${MANAGERS[c.managerKey]?.domain ?? ""}`}>
+                <Badge className="bg-slate-900 text-white">{c.managerLabel}</Badge>
+                <span className="text-sm">{c.cronName}</span>
+                <Badge className={c.status === "failed" ? "bg-red-100 text-red-800" : c.status === "running" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}>
+                  {c.status ?? "unknown"}
+                </Badge>
+                {c.startedAt && (
+                  <span className="text-xs text-muted-foreground">{new Date(c.startedAt).toLocaleString()}</span>
+                )}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Approval queue */}
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Approval queue</h2>
