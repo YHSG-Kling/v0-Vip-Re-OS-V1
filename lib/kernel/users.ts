@@ -49,7 +49,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { requiresAgentRow, requiresOnboardingRow, ownerNeedsTeamRow } from "./tenant-provisioning-spec"
-import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
+import { roleDashboardRoute } from "./role-routes"
 import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
 // Runtime-safe both ways: seat-usage imports only TYPES from this module
 // (erased at compile time), so this is not a runtime cycle.
@@ -514,7 +514,7 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
   const isComplete    = missing.length === 0
   const requiresSetup = !isComplete || onboardingData?.status === "pending"
 
-  const dashboardRoute = ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+  const dashboardRoute = roleDashboardRoute(userType)
 
   return {
     userId,

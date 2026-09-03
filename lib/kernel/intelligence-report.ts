@@ -192,6 +192,10 @@ const money = (cents: number) => {
 
 const plural = (n: number, s: string, p?: string) => (n === 1 ? s : (p ?? `${s}s`))
 
+// CENSUS NOTE: countDelta / approvalRatePct / describeGrantShape are INTERNAL-LIVE — called by
+// the section composers below, whose lines app/dashboard/intelligence-report/page.tsx:134 renders
+// (`l.delta`). Exported for scripts/intelligence-report-simulator.ts.
+
 /** PURE: "↑ 4 vs last month" / "↓ 2" / null when prior is no baseline. */
 export function countDelta(current: number, prior: number): string | null {
   if (prior === 0 && current === 0) return null

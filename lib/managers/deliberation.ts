@@ -146,7 +146,10 @@ export function isDeliberativeDomain(domainKey: string | null | undefined): bool
   return !!domainKey && MANAGER_COLLABORATIONS[domainKey]?.deliberate === true
 }
 
-/** Every deliberative collaboration domain (governance surface / sim). PURE. */
+/** Every deliberative collaboration domain (governance surface / sim). PURE.
+ *  CENSUS NOTE: proof-only by design — read by scripts/manager-deliberation-simulator.ts:105
+ *  (every deliberative domain has a loader + a raiser); no product surface enumerates the set
+ *  (team-argument-map derives per-manager via collaborationsFor). */
 export function deliberativeDomains(): CollaborationDomain[] {
   return Object.values(MANAGER_COLLABORATIONS).filter((d) => d.deliberate === true)
 }
@@ -214,7 +217,10 @@ export function applyPrincipalOverride(
   }
 }
 
-/** PURE: what actually governs — the principal's call when recorded, else the argued winner. */
+/** PURE: what actually governs — the principal's call when recorded, else the argued winner.
+ *  CENSUS NOTE: proof-only by design — scripts/manager-deliberation-simulator.ts:298,551. The
+ *  governance surface (manager-trust-client.tsx DeliberationBlock) deliberately renders the argued
+ *  winner AND the principal's call side by side, so it never collapses them to one value. */
 export function effectiveWinner(record: DeliberationRecord): ManagerKey | null {
   return record.override?.winner ?? record.winner
 }
@@ -988,7 +994,10 @@ export async function runDeliberation(
   input: RunDeliberationInput, client?: Svc, engine?: DeliberationEngine,
 ): Promise<DeliberationRecord | null> {
   const domain = MANAGER_COLLABORATIONS[input.collabDomain]
-  if (!domain || domain.deliberate !== true) return null
+  // The ONE predicate for "this domain deliberates" (isDeliberativeDomain above) —
+  // the referral handler and the team argument map read the same one, so the
+  // three sites can never disagree about which domains argue.
+  if (!domain || !isDeliberativeDomain(input.collabDomain)) return null
 
   // Idempotent reuse — the argument already happened; never re-argue on a retry.
   const existing = parseDeliberation(input.existingPayload)

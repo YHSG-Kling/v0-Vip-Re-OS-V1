@@ -148,7 +148,8 @@ export function signalSpec(signalType: string): SignalSpec | undefined {
   return SIGNAL_REGISTRY[signalType]
 }
 
-/** Every catalogued signal_type. */
+/** Every catalogued signal_type.
+ *  CENSUS NOTE: guard-consumed — scripts/signal-integrity-simulator.ts:20 (guard chain). */
 export function registeredSignalTypes(): string[] {
   return Object.keys(SIGNAL_REGISTRY)
 }

@@ -198,6 +198,13 @@ function unavailable(base: Omit<RailAccuracy, "available" | "why" | "observation
 const round2 = (n: number) => Math.round(n * 100) / 100
 const round4 = (n: number) => Math.round(n * 10000) / 10000
 
+// CENSUS NOTE (orphan-export category B — LIVE, not a backlog): every summarize*Rows,
+// fractionalMedian and gradablePricePairs export in this module is called IN-FILE by its
+// rail adapter, every adapter runs inside getPredictionAccuracyReport (below), and the
+// report is rendered rail-by-rail by app/components/analytics/prediction-accuracy-panel.tsx:79
+// (mounted from app/dashboard/analytics/page.tsx and superadmin/platform/page.tsx). They are
+// exported for scripts/prediction-accuracy-simulator.ts and seller-closing-costs-simulator.ts.
+
 /** True fractional median (medianOf from the closing-cost module rounds to
  *  whole dollars — right for money, wrong for percentage errors). */
 export function fractionalMedian(values: number[]): number {

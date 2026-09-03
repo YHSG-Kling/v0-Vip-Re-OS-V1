@@ -445,9 +445,12 @@ async function main() {
 
   console.log("\n[Layer 1h · wiring — the referral handler escalates deliberative domains (source check, doc-kernel idiom)]")
   const handlerSrc = src("lib/kernel/manager-signals.ts")
-  check("handleCrossManagerReferral escalates on domain.deliberate === true via runDeliberation",
-    handlerSrc.includes("domain.deliberate === true") && handlerSrc.includes("runDeliberation")
-    && handlerSrc.includes("summarizeDeliberation"))
+  // 2026-09-03 (lane L6): the handler reads the registry's ONE predicate,
+  // isDeliberativeDomain (lib/managers/deliberation.ts), not a re-spelled
+  // `domain.deliberate === true`; the pin follows the survivor.
+  check("handleCrossManagerReferral escalates on isDeliberativeDomain(...) via runDeliberation",
+    /isDeliberativeDomain\(/.test(handlerSrc) && !handlerSrc.includes("domain.deliberate === true")
+    && handlerSrc.includes("runDeliberation") && handlerSrc.includes("summarizeDeliberation"))
   check("the escalation reuses the referral's own payload (idempotent — a retry never re-argues)",
     handlerSrc.includes("existingPayload: signal.payload"))
   check("the governance surface renders the argument (positions, winner, why, dissent, rebuttals) + the teamwork card",

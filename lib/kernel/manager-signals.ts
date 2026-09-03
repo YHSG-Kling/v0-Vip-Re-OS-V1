@@ -20,6 +20,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
+// Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
+import { isDeliberativeDomain } from "@/lib/managers/deliberation"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -2200,7 +2202,10 @@ async function handleCrossManagerReferral(
   // an unreachable model records 'deliberation unavailable', never canned arguments. ──
   let deliberationLine: string | null = null
   let deliberationBody = ""
-  if (domain.deliberate === true) {
+  // The registry's ONE predicate (lib/managers/deliberation.ts:isDeliberativeDomain) —
+  // runDeliberation and the team argument map read the same one, so the handler can
+  // never escalate a domain the engine would refuse, or skip one it would argue.
+  if (isDeliberativeDomain(domain.key)) {
     try {
       const { runDeliberation, summarizeDeliberation } = await import("@/lib/managers/deliberation")
       const record = await runDeliberation({

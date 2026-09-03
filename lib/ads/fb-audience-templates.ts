@@ -401,8 +401,10 @@ export function templateAudienceUse(template: AudienceTemplate): AudienceUse {
 
 /**
  * Pure synchronous lookup of a template by id. Returns the full template or
- * undefined. The server-action `resolveAudienceTemplate` builds its
- * create-audience params on top of this.
+ * undefined. (The server action `resolveAudienceTemplate` that once wrapped this
+ * was deleted 2026-09-03 onto the client's own template → createAudience mapping,
+ * ads-dashboard-client.tsx handleUseTemplate; see the tombstone in
+ * app/actions/fb-audience-templates.ts.)
  */
 export function findAudienceTemplate(templateId: string): AudienceTemplate | undefined {
   return FB_AUDIENCE_TEMPLATES.find((t) => t.id === templateId)

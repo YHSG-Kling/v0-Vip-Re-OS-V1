@@ -294,7 +294,9 @@ export function isRecordableFromStage(stage: ListingStage | string, action: Reco
   return (STAGE_EVENTS[stage as ListingStage] ?? []).includes(action)
 }
 
-/** Every action that appears somewhere in the stage map — used to prove none is stranded. */
+/** Every action that appears somewhere in the stage map — used to prove none is stranded.
+ *  CENSUS NOTE: guard-consumed — scripts/writerless-arrivals-simulator.ts:517 (guard chain) and
+ *  scripts/lifecycle-recording-simulator.ts:152. */
 export function allMappedActions(): RecordableAction[] {
   const seen = new Set<RecordableAction>()
   for (const list of Object.values(STAGE_EVENTS)) for (const a of list ?? []) seen.add(a)

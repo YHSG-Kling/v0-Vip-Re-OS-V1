@@ -266,7 +266,9 @@ export async function runReaperNet(
 }
 
 // ── COVERAGE MAP — honest "how much of the team is reaped" ────────────────────
-/** Managers that have at least one registered reaper in the net. */
+// Product reader: app/dashboard/admin/manager-trust/page.tsx (reaperCoverage → the
+// "Nothing falls through — reaper coverage" card). Proof: scripts/reaper-net-simulator.ts.
+/** Managers that have at least one registered reaper in the net (internal-live: reaperCoverage). */
 export function managersUnderReaperCoverage(): ManagerKey[] {
   return Array.from(new Set(REAPER_NET.map((e) => e.manager)))
 }

@@ -86,6 +86,8 @@ const DEAL_ROOM_TRANSCRIPT_HEADER =
  * Deterministic fixed ids — the demo-tenant.ts demoUuid idiom (same
  * dde00000-0000-4000-a000- prefix) but with entity blocks ≥ 9001, a range the
  * round-21 seeder (blocks 1–7) can never occupy. The id itself is a marker.
+ * CENSUS NOTE: internal-live (builds DEAL_ROOM_IDS just below); exported for
+ * scripts/deal-room-demo-simulator.ts:57-59 (determinism + the <9001 refusal).
  */
 export function dealRoomUuid(entity: number, n: number): string {
   if (entity < 9001) throw new Error("deal-room ids live in entity blocks ≥ 9001 (round-21 owns 1–7)")

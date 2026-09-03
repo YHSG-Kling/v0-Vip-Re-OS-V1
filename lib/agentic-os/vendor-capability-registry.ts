@@ -191,7 +191,9 @@ export const CAPABILITY_AGIS: Record<VendorCapability, CapabilityAgis> = {
   tts:                   { verb: "RENDER",  scope: "comms:tts",       intentWeight: 0.4 },
 }
 
-/** The scope an agent must hold to invoke a capability. */
+/** The scope an agent must hold to invoke a capability. THE accessor: the invoke-time
+ *  gate (invoke-planner.ts planInvocation) and the DISCOVER manifest (buildActionManifest
+ *  below) both read the scope through it. */
 export function requiredScope(capability: VendorCapability): string {
   return CAPABILITY_AGIS[capability].scope
 }
@@ -222,7 +224,7 @@ export function buildActionManifest(): AgenticAction[] {
       verb: agis.verb,
       capability: cap,
       category: def.domain,
-      scope: agis.scope,
+      scope: requiredScope(cap),
       purpose: def.purpose,
       inputs: def.inputs,
       intentWeight: agis.intentWeight,

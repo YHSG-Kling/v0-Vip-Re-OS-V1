@@ -14,10 +14,8 @@
  * contacts/leads and pushes hashed PII to Facebook.
  */
 
-import type { SourceRule, AudienceType } from "@/lib/kernel/ads"
 import {
   FB_AUDIENCE_TEMPLATES,
-  findAudienceTemplate,
   type AudienceTemplate,
 } from "@/lib/ads/fb-audience-templates"
 
@@ -34,28 +32,12 @@ export async function listAudienceTemplates(): Promise<AudienceTemplate[]> {
   return FB_AUDIENCE_TEMPLATES
 }
 
-/**
- * Resolve a template id to its create-audience parameters, ready for
- * `createAudience` (lib/ads/facebook-audience-sync.ts). Caller passes the
- * resolved params on through.
- *
- * Was `createFacebookAudience` until 2026-09-01, when that duplicate export was
- * deleted onto its survivor — the tombstone naming it is at the top of
- * lib/ads/facebook-audience-sync.ts. A comment naming a function that no longer
- * exists sends the next reader looking for a door that was deliberately closed.
- */
-export async function resolveAudienceTemplate(templateId: string): Promise<{
-  audienceName: string
-  audienceType: AudienceType
-  sourceRule: SourceRule
-  consentBasis: string
-} | null> {
-  const tpl = findAudienceTemplate(templateId)
-  if (!tpl) return null
-  return {
-    audienceName: tpl.name,
-    audienceType: tpl.audienceType,
-    sourceRule: tpl.sourceRule,
-    consentBasis: tpl.consentBasis,
-  }
-}
+// TOMBSTONE (§1.1, 2026-09-03, lane L6): `resolveAudienceTemplate(templateId)` deleted.
+// SURVIVOR: the client mapping in app/dashboard/campaigns/ads/ads-dashboard-client.tsx
+// `handleUseTemplate` (the "Use template" path), which already holds the full template
+// from listAudienceTemplates() and maps name → audienceName, audienceType, sourceRule
+// and consentBasis straight into createAudience (lib/ads/facebook-audience-sync.ts) —
+// the same four fields this action re-derived from an id the client had already
+// resolved, over a server round-trip nothing called. The pure lookup it wrapped survives
+// as lib/ads/fb-audience-templates.ts:findAudienceTemplate. This was also an un-gated
+// "use server" endpoint; it exposed only the static catalog, no tenant data.

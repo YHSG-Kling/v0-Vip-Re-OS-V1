@@ -76,6 +76,16 @@ export async function createReviewRequestAction(
   return createReviewRequest({ ...input, ...actor })
 }
 
+// CENSUS NOTE (2026-09-03, lane L6): recordReviewAction, createReferralRequestAction and
+// advanceReferralStatusAction are DELIBERATELY UNWIRED and NOT DELETED — a prior ruling locked
+// in scripts/openhouse-reputation-wiring-simulator.ts:466-488 (guard chain) and the registry
+// entry open_house_walkin_capture, against named survivors: referral-actions.ts createReferral /
+// updateReferralStatus and multi-persona.ts submitClientFeedback / portal-lifetime.ts. Recorded
+// for a dedicated lane: the survivors are no longer strictly more complete (updateReferralStatus
+// stamps no converted_at and emits no kernel event; neither review writer closes the answering
+// review_requests row or emits REVIEW_RECEIVED — see lib/kernel/reputation.ts), so a §1.1 merge
+// must port those onto the survivors BEFORE these are deleted. Gates here are sound: tenant and
+// agent come from the session's agents row (resolveActor), never from input.
 export async function recordReviewAction(
   input: Omit<RecordReviewInput, "agentId" | "brokerageId">,
 ) {

@@ -19,6 +19,7 @@ import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
 import type { AccuracyGateVerdict, AccuracyHoldRollup } from "@/lib/managers/accuracy-gate"
 import type { TeamArgumentSeat } from "@/lib/managers/team-argument-map"
+import type { ReaperCoverage } from "@/lib/intelligence/reaper-net"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -50,12 +51,15 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [], reaperCoverage = null,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
   /** OWNED PROOFS per manager (maintenance ownership made visible) — see page.tsx. */
   ownedProofs?: OwnedProofSeat[]
+  /** REAPER COVERAGE — which managers a "nothing falls through" reaper actually
+   *  covers (dedicated / predictor-backed / none). Registry-derived in page.tsx. */
+  reaperCoverage?: ReaperCoverage | null
   learned?: LearnedAdjustmentView[]
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
@@ -308,6 +312,58 @@ export function ManagerTrustClient({
                 )}
               </details>
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* REAPER COVERAGE — the honest map of which managers a "nothing falls through"
+          reaper stands behind. Dedicated reapers (REAPER_NET), predictor-backed coverage
+          (a stall predictor → gated handler chain with the handoff reaper as the safety
+          net), and — named, never padded — the managers NO reaper covers yet. */}
+      {reaperCoverage && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><Archive className="h-4 w-4" />Nothing falls through — reaper coverage</CardTitle>
+            <CardDescription>
+              {reaperCoverage.effectiveCoveredManagers.length} of {reaperCoverage.totalManagers} managers have a reaper behind them
+              ({reaperCoverage.coveredManagers.length} dedicated, {reaperCoverage.predictorBackedManagers.length} predictor-backed).
+              {reaperCoverage.uncoveredManagers.length > 0
+                ? ` ${reaperCoverage.uncoveredManagers.length} covered by nothing yet.`
+                : " Every manager is covered."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-1.5">
+              {reaperCoverage.coveredManagers.map((m) => (
+                <span key={m} className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${MANAGERS[m]?.accent ?? "bg-slate-100 text-slate-700"}`} title="dedicated reaper">
+                  {MANAGERS[m]?.label ?? m}
+                </span>
+              ))}
+              {reaperCoverage.predictorBackedManagers.map((m) => (
+                <span key={m} className="inline-flex items-center rounded border px-2 py-0.5 text-xs text-muted-foreground" title="predictor → handler chain (safety net: handoff reaper)">
+                  {MANAGERS[m]?.label ?? m} · predictor-backed
+                </span>
+              ))}
+            </div>
+            {reaperCoverage.uncoveredManagers.length > 0 && (
+              <p className="text-xs text-amber-900 flex items-start gap-1">
+                <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                <span>
+                  No reaper covers: {reaperCoverage.uncoveredManagers.map((m) => MANAGERS[m]?.label ?? m).join(", ")} — stuck work in
+                  those domains is caught by nothing automatic today.
+                </span>
+              </p>
+            )}
+            <ul className="space-y-1">
+              {reaperCoverage.domains.map((d) => (
+                <li key={d.domain} className="text-xs flex items-center justify-between gap-3">
+                  <span className="font-mono truncate" title={d.protects}>{d.domain}</span>
+                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] shrink-0 ${MANAGERS[d.manager]?.accent ?? "bg-slate-100 text-slate-700"}`}>
+                    {MANAGERS[d.manager]?.label ?? d.manager}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </CardContent>
         </Card>
       )}

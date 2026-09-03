@@ -379,7 +379,8 @@ export function resolveLookupUrl(
     .replaceAll("{{lastName}}", encodeURIComponent((params.lastName ?? "").trim()))
 }
 
-/** All registry entries (read-only) — used by simulators/audits. PURE. */
+/** All registry entries (read-only) — used by simulators/audits. PURE.
+ *  CENSUS NOTE: guard-consumed — scripts/license-review-simulator.ts:45-46 (guard chain). */
 export function listStateLicenseSources(): readonly StateLicenseSource[] {
   return SOURCES
 }

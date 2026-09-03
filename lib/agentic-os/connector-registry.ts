@@ -225,6 +225,9 @@ export function getConnectorSpec(name: string): ConnectorSpec | null {
   return (CONNECTOR_REGISTRY as Record<string, ConnectorSpec>)[name] ?? null
 }
 
+/** CENSUS NOTE: proof-only by design — scripts/connector-healer-simulator.ts:55-58 pins the
+ *  category contract (≥3 ai, ≥1 mls, lob=letters, peopledata=enrichment). No product surface
+ *  lists by category (provider-posture groups its OWN rows via resolveCategory). */
 export function listConnectorsByCategory(category: ConnectorSpec["category"]): ConnectorSpec[] {
   return Object.values(CONNECTOR_REGISTRY).filter(c => c.category === category)
 }

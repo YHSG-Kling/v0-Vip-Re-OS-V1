@@ -89,7 +89,9 @@ export function listingApptPrepDedupeKey(listingId: string): string {
 }
 
 
-/** Override the money-spending leaf executors (tests only). Pass null to reset to real. */
+/** Override the money-spending leaf executors (tests only). Pass null to reset to real.
+ *  CENSUS NOTE: a test seam by design — readers are scripts/listing-appt-prep-simulator.ts:181,
+ *  buyer-intent-conversion-simulator.ts:113, seller-appt-conversion-simulator.ts:96. */
 export function setListingApptPrepExecutors(next: Partial<ListingApptPrepExecutors> | null): void {
   activeExecutors = next ? { ...realExecutors, ...next } : realExecutors
 }

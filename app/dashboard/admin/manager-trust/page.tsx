@@ -5,6 +5,7 @@ import {
   getCrossManagerReferrals, getStandingReviews, getTeamworkMetrics,
 } from "@/app/actions/admin/manager-evals"
 import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
+import { reaperCoverage } from "@/lib/intelligence/reaper-net"
 import { ManagerTrustClient, type OwnedProofSeat } from "./manager-trust-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { MAINTENANCE_DOMAINS, MANAGERS, resolveMaintenanceManager, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -77,12 +78,20 @@ export default async function ManagerTrustPage() {
   // the client as plain data so the surface can never drift from the law.
   const teamMap = composeTeamArgumentMap()
   const ownedProofs = composeOwnedProofs()
+  // REAPER COVERAGE — the honest "how much of the team is reaped" map
+  // (lib/intelligence/reaper-net.ts:reaperCoverage): which managers have a dedicated
+  // reaper in the net, which are covered by a predictor → handler chain instead, and
+  // which are covered by NOTHING. Pure registry data (no I/O), same idiom as the
+  // argument map above; it had no product reader before this — only test:reaper-net —
+  // so the coverage gaps were enforced in a proof and shown nowhere a broker could see.
+  const reaper = reaperCoverage()
   return (
     <ManagerTrustClient
       managers={res.managers}
       team={res.team}
       teamMap={teamMap}
       ownedProofs={ownedProofs}
+      reaperCoverage={reaper}
       learned={learned}
       referrals={referrals}
       standingReviews={standingReviews}

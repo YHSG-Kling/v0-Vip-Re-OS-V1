@@ -140,6 +140,11 @@ export type PlatformActorRole = (typeof PLATFORM_ACTOR_ROLES)[number]
  * Does this platform_role act ABOVE a single tenant — as staff OR as a service
  * account? Deliberately NOT the same test as `isPlatformSuperadminIdentity`:
  * being a platform actor grants no capability by itself.
+ *
+ * CENSUS NOTE: guard-consumed — scripts/isa-scope-per-user-simulator.ts:110-117 exercises it
+ * and :332 pins the export (guard chain). It must NOT be wired into a tenant admin gate
+ * (e.g. manage-required-docs.ts uses isPlatformStaffRole on purpose): answering YES for
+ * `ai_isa_system` would let the service account administer tenant configuration.
  */
 export function isPlatformActorRole(role: string | null | undefined): role is PlatformActorRole {
   return isPlatformStaffRole(role) || isNonHumanPlatformRole(role)
