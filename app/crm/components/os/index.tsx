@@ -1,4 +1,11 @@
-export { ContactCommandStrip } from "./contact-command-strip"
+// TOMBSTONE (orphan doctrine §1.1, lane R3-B 2026-09-03): ContactCommandStrip
+// (./contact-command-strip.tsx, DELETED) was a superseded duplicate rendered by
+// nobody — the only mentions were prose. Survivor: ContactHeaderCard,
+// app/crm/components/contact-header-card.tsx (its header :3-17 says "Replaces
+// ContactCommandStrip"), mounted at app/crm/page.tsx:1257. The survivor is a
+// strict superset: share-to-social, churn warning, suppression toggles,
+// persona/stage badges, and Call/SMS/Portal/Note actions that log to
+// activities. Nothing was merged back because nothing was missing.
 export { ContactPulsePanel } from "./contact-pulse-panel"
 export { RelationshipRadar } from "./relationship-radar"
 export { CommunicationHealthPanel } from "./communication-health-panel"

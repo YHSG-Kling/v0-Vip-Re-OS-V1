@@ -50,6 +50,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 import { revalidatePath } from "next/cache"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
@@ -541,24 +542,15 @@ export async function listVendorAssignmentsForBrokerageAction(
   // this is a service-role read on a tenant panel. A failed lookup leaves the
   // names null and the grant record still renders: the audit row is real even
   // when the display name is not.
-  const actorIds = [
-    ...new Set(
-      (data ?? []).flatMap((r: any) => [r.assigned_by, r.revoked_by]).filter(Boolean) as string[],
-    ),
-  ]
-  const actorNameById = new Map<string, string>()
-  if (actorIds.length > 0) {
-    const { data: actors, error: actorErr } = await svc
-      .from("users")
-      .select("id, first_name, last_name, email")
-      .in("id", actorIds)
-      .eq("brokerage_id", auth.brokerageId)
-    if (actorErr) console.error("[vendor-contact-access] grant actor lookup failed:", actorErr.message)
-    for (const u of (actors ?? []) as any[]) {
-      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
-      if (label) actorNameById.set(u.id as string, label as string)
-    }
-  }
+  // TOMBSTONE (§1.1, 2026-09-03): the inline users lookup that stood here was
+  // one of four copies; survivor lib/kernel/actor-attribution.ts:91
+  // (resolveActorNames), brokerage-scoped as before. The null fallback stays at
+  // the render site below.
+  const actorIds = (data ?? []).flatMap((r: any) => [r.assigned_by, r.revoked_by]).filter(Boolean) as string[]
+  const { names: actorNameById, error: actorErr } = await resolveActorNames(svc, actorIds, {
+    brokerageId: auth.brokerageId,
+  })
+  if (actorErr) console.error("[vendor-contact-access] grant actor lookup failed:", actorErr)
 
   return {
     ok: true,

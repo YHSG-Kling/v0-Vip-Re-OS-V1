@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveActorNamesEitherClass } from "@/lib/kernel/actor-attribution"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { hashSharePassword, verifySharePassword } from "@/lib/security/share-password"
 import { revalidatePath } from "next/cache"
@@ -1255,55 +1256,24 @@ export async function getDocumentAccessLog(
 
   if (error) return { success: false, entries: [], error: error.message }
 
-  const actorIds = Array.from(
-    new Set((data ?? []).map((r: any) => r.accessed_by_id).filter(Boolean) as string[]),
-  )
+  const actorIds = (data ?? []).map((r: any) => r.accessed_by_id).filter(Boolean) as string[]
 
-  const names = new Map<string, string>()
   // A failed name lookup degrades the display, it does not invalidate the log —
   // but `error` is still bound and reported, because a permanently-failing
   // lookup that renders as "unknown" forever is exactly the kind of silence
   // this codebase keeps paying for.
-  let nameLookupError: string | null = null
-  if (actorIds.length > 0) {
-    // USERS class — brokerage-scoped, because this is a service-role read.
-    const { data: users, error: usersError } = await svc
-      .from("users")
-      .select("id, first_name, last_name, email")
-      .in("id", actorIds)
-      .eq("brokerage_id", ctx.brokerageId)
-    if (usersError) nameLookupError = usersError.message
-    for (const u of users ?? []) {
-      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
-      if (label) names.set(u.id, label)
-    }
-    // AGENTS class — the class document-custody actually writes.
-    const { data: agents, error: agentsError } = await svc
-      .from("agents")
-      .select("id, user_id")
-      .in("id", actorIds)
-      .eq("brokerage_id", ctx.brokerageId)
-    if (agentsError) nameLookupError = agentsError.message
-    const agentUserIds = (agents ?? []).map((a: any) => a.user_id).filter(Boolean) as string[]
-    if (agentUserIds.length > 0) {
-      const { data: agentUsers, error: agentUsersError } = await svc
-        .from("users")
-        .select("id, first_name, last_name, email")
-        .in("id", agentUserIds)
-        .eq("brokerage_id", ctx.brokerageId)
-      if (agentUsersError) nameLookupError = agentUsersError.message
-      const byUserId = new Map(
-        (agentUsers ?? []).map((u: any) => [
-          u.id,
-          [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
-        ]),
-      )
-      for (const a of agents ?? []) {
-        const label = a.user_id ? byUserId.get(a.user_id) : null
-        if (label) names.set(a.id, label as string)
-      }
-    }
-  }
+  //
+  // accessed_by_id is written by BOTH identity classes (portal contacts as
+  // users.id, document custody as agents.id), so the lookup crosses both:
+  // users by id, agents by id → agents.user_id → users, brokerage-scoped
+  // because this is a service-role read. TOMBSTONE (§1.1, 2026-09-03): that
+  // three-hop block stood inline here and was the model for the survivor,
+  // lib/kernel/actor-attribution.ts:121 (resolveActorNamesEitherClass). One
+  // difference, deliberate: a refused hop now yields an EMPTY map plus the
+  // reason, where the inline copy kept whatever the earlier hops had resolved.
+  const { names, error: nameLookupError } = await resolveActorNamesEitherClass(svc, actorIds, {
+    brokerageId: ctx.brokerageId,
+  })
 
   return {
     success: true,

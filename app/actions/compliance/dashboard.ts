@@ -38,6 +38,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 import { toCanonicalRole, type CanonicalRole } from "@/lib/security/types"
 import {
   OFFER_COMPLIANCE_FLAG_EVENT,
@@ -270,26 +271,17 @@ export async function getComplianceDashboard(): Promise<ComplianceDashboard> {
   }
 
   // Resolve the actors to names in ONE query — users.id, never agents.id.
-  const actorIds = Array.from(new Set(
-    (cleared ?? [])
-      .map(c => (c.metadata as any)?.resolved_by)
-      .filter((v): v is string => typeof v === "string" && v.length > 0),
-  ))
-  const actorNames = new Map<string, string>()
-  if (actorIds.length > 0) {
-    // `users` has first_name / last_name / email — there is no full_name column.
-    const { data: actors, error: actorsError } = await supabase
-      .from("users")
-      .select("id, first_name, last_name, email")
-      .in("id", actorIds)
-    if (actorsError) {
-      console.error("[compliance-dashboard] actor name lookup failed:", actorsError.message)
-    }
-    for (const a of actors ?? []) {
-      const named = [a.first_name, a.last_name].filter(Boolean).join(" ").trim()
-      const label = named || (a.email as string | null) || null
-      if (a.id && label) actorNames.set(a.id as string, label)
-    }
+  // TOMBSTONE (§1.1, 2026-09-03): the inline users lookup that stood here was
+  // one of four copies; survivor lib/kernel/actor-attribution.ts:91
+  // (resolveActorNames). Unscoped on purpose — `supabase` is the cookie-session
+  // client and RLS is the tenant bound. The render-site fallback (null) below
+  // is this caller's, as before.
+  const actorIds = (cleared ?? [])
+    .map(c => (c.metadata as any)?.resolved_by)
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+  const { names: actorNames, error: actorsError } = await resolveActorNames(supabase, actorIds)
+  if (actorsError) {
+    console.error("[compliance-dashboard] actor name lookup failed:", actorsError)
   }
 
   for (const c of cleared ?? []) {

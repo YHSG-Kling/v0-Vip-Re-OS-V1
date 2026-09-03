@@ -36,6 +36,8 @@
 // below are the constraint, not a preference.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
+
 /** call_coaching_insights.insight_type CHECK (live, scripts/check-vocabularies.ts:386). */
 // The two derived unions below are UN-EXPORTED with DerivedCoachingInsight
 // (§1.1, 2026-08-31, lane M4): all their readers live in this file; see the
@@ -185,11 +187,13 @@ function deriveCoachingInsights(facts: CoachingSourceFacts): DerivedCoachingInsi
   }
 
   // Highest priority first, then insertion order — the panels order by
-  // created_at and the review page orders by priority, so a stable ranking here
-  // is what makes both agree.
-  const rank: Record<CoachingPriority, number> = { high: 0, medium: 1, low: 2 }
+  // created_at and the review page ranks in code with the SAME comparator, so a
+  // stable ranking here is what makes both agree. TOMBSTONE (§1.1, 2026-09-03):
+  // the local `rank {high:0, medium:1, low:2}` that stood here was one of five
+  // hand copies of the same map — survivor lib/kernel/priority-rank.ts:45,
+  // comparator `byPriorityDesc` imported above.
   return out
-    .sort((a, b) => rank[a.priority] - rank[b.priority])
+    .sort(byPriorityDesc)
     .slice(0, MAX_INSIGHTS_PER_ANALYSIS)
 }
 

@@ -24,6 +24,7 @@ import { createClient } from "@/lib/supabase/server"
 import { computePriceDropRecommendation } from "@/lib/kernel/listing-price-advisor"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+import { RESOLVED_HISTORY_LIMIT, RESOLVED_HISTORY_WINDOW_DAYS } from "@/lib/listing-health/resolved-history-bounds"
 
 export type RiskLevel = "healthy" | "watch" | "at_risk" | "critical"
 
@@ -104,17 +105,11 @@ export interface ListingHealthBoard {
 }
 
 // THE SAME BOUNDS AS THE PER-LISTING AUDIT (§6 — one spelling of "recent").
-// app/dashboard/listings/[id]/lifecycle/page.tsx:241-242 declares
-// RESOLVED_HISTORY_LIMIT = 10 and RESOLVED_HISTORY_WINDOW_DAYS = 180 as
-// function-local consts INSIDE the page component's body — not exported, not
-// importable — and that page is read-only for this lane, so they are restated
-// here rather than imported. The drift risk is real and named: hoisting both
-// into one shared module (lib/listing-health/…) that both pages import is the
-// follow-up, and any change to one number must be made in both places until
-// then. The rationale is theirs: 180d covers a listing term plus a renewal;
-// 10 matches the open-list limit so neither half dominates.
-const RESOLVED_HISTORY_LIMIT = 10
-const RESOLVED_HISTORY_WINDOW_DAYS = 180
+// RESOLVED_HISTORY_LIMIT / RESOLVED_HISTORY_WINDOW_DAYS are imported above from
+// lib/listing-health/resolved-history-bounds.ts, which carries the rationale.
+// TOMBSTONE (2026-09-03): the module-level restatement that stood here (the
+// lifecycle page's copy was function-local and not importable) is the hoist
+// its own comment named as the follow-up.
 
 export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { error: string }> {
   const supabase = await createClient()

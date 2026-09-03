@@ -15,6 +15,7 @@ import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
 import { CONTRACT_TERM_COLUMNS } from "@/lib/transactions/contract-terms"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Every seller-side offer action (accept / counter / reject / portal-link /
@@ -695,9 +696,13 @@ export async function getRepairNegotiationItems(transactionId: string): Promise<
     .from("transaction_repair_negotiations")
     .select("id, item_description, estimated_cost, actual_cost, status, priority, requested_by")
     .eq("transaction_id", transactionId)
-    .order("priority", { ascending: true })
+    // priority is TEXT (CHECK critical|high|medium|low): `ORDER BY priority ASC`
+    // sorted it alphabetically, so `low` outranked `medium`. SQL orders by
+    // created_at (request order); the rank is applied in code
+    // (lib/kernel/priority-rank.ts). No limit here, so no over-fetch needed.
+    .order("created_at", { ascending: true })
   if (error) return { success: false, items: [], error: error.message }
-  return { success: true, items: data ?? [] }
+  return { success: true, items: [...(data ?? [])].sort(byPriorityDesc) }
 }
 
 // ── LOOKUP MLS NUMBER BY BUYER CONTACT + PROPERTY ADDRESS ─────────────────────

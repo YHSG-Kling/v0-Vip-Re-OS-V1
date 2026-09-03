@@ -12,6 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 
 export interface SphereSignal {
   key:         string
@@ -140,34 +141,24 @@ export async function loadSphereResonance(): Promise<{ data: SphereLoad } | { er
   if (rowsErr) return { error: `Could not load your sphere queue: ${rowsErr.message}` }
 
   // ── WHO REVIEWED / WHO CANCELLED ────────────────────────────────────────────
-  // One batched `.in()` against `users` (the command-center name-map pattern,
-  // app/dashboard/admin/command-center/page.tsx:276-279), anchored to the
-  // caller's brokerage. An id that does not resolve inside the tenant stays
-  // unresolved on purpose — the card says "outside this brokerage" rather than
-  // borrowing a name from another tenant.
-  const actorIds = Array.from(new Set(
-    ((rows ?? []) as any[])
-      .flatMap((r) => [r.reviewed_by_user_id, r.cancelled_by_user_id])
-      .filter((v): v is string => typeof v === "string" && v.length > 0),
-  ))
-  const actorNames = new Map<string, string>()
-  if (actorIds.length > 0 && agentRow.brokerage_id) {
-    const { data: actors, error: actorErr } = await svc
-      .from("users")
-      .select("id, first_name, last_name, email")
-      .in("id", actorIds)
-      .eq("brokerage_id", agentRow.brokerage_id)
-    if (actorErr) {
-      // Names are additive; the queue itself is not. Log and fall through with an
-      // empty map — every actor then renders as "name not resolved", never as
-      // "nobody did this".
-      console.error("[sphere] actor name resolution failed:", actorErr.message)
-    }
-    for (const u of (actors ?? []) as any[]) {
-      const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
-      actorNames.set(u.id, name || u.email || "Teammate")
-    }
-  }
+  // One batched `.in()` against `users`, anchored to the caller's brokerage. An
+  // id that does not resolve inside the tenant stays unresolved on purpose —
+  // the card says "outside this brokerage" rather than borrowing a name from
+  // another tenant. Names are additive; the queue itself is not: a refused
+  // lookup is logged and the map stays EMPTY, so every actor renders as "name
+  // not resolved" (the null fallback in rowToView), never as "nobody did this".
+  // TOMBSTONE (§1.1, 2026-09-03): the inline users lookup that stood here was
+  // one of four copies; survivor lib/kernel/actor-attribution.ts:91
+  // (resolveActorNames). Its "Teammate" label for a user with neither name nor
+  // email is gone — such a row is simply absent from the map, and the render
+  // site's null reads as "name not resolved", which is the truth.
+  const actorIds = ((rows ?? []) as any[])
+    .flatMap((r) => [r.reviewed_by_user_id, r.cancelled_by_user_id])
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+  const { names: actorNames, error: actorErr } = await resolveActorNames(svc, actorIds, {
+    brokerageId: agentRow.brokerage_id,
+  })
+  if (actorErr) console.error("[sphere] actor name resolution failed:", actorErr)
 
   const data: SphereLoad = { pendingAuto: [], needsAction: [], sent: [], cancelled: [] }
   for (const r of (rows ?? []) as any[]) {

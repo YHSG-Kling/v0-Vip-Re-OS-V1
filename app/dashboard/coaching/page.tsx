@@ -12,6 +12,7 @@ import { getSellerCoaching } from "@/lib/seller-coaching/coaching-generator"
 // (them-first score, talk/listen ratio). Distinct from the per-call insight list
 // on /dashboard/voice/isa: this is the aggregate pattern across the week.
 import { getCoachingTips } from "@/app/actions/assistant"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export const dynamic = "force-dynamic"
 
@@ -67,14 +68,16 @@ export default async function CoachingPage() {
       .order("severity", { ascending: true }) // critical first
       .order("created_at", { ascending: false })
       .limit(10),
+    // priority is TEXT (low|medium|high): an SQL ORDER BY sorts it alphabetically
+    // and put `high` last. Secondary created_at order stays; over-fetch here,
+    // rank in code below (lib/kernel/priority-rank.ts), slice to 5.
     supabase
       .from("smart_assistant_suggestions")
       .select("*")
       .eq("agent_id", agentId)
       .eq("status", "pending")
-      .order("priority", { ascending: false })
       .order("created_at", { ascending: false })
-      .limit(5),
+      .limit(50),
     // agents.id class — call_coaching_insights.agent_id is filtered with exactly
     // this id on /dashboard/voice/isa, and getAgentContext() is the same source.
     getCoachingTips(agentId),
@@ -83,7 +86,7 @@ export default async function CoachingPage() {
   const buyerContacts = buyerContactsResult.data || []
   const activeListings = activeListingsResult.data || []
   const interventions = interventionsResult.data || []
-  const suggestions = suggestionsResult.data || []
+  const suggestions = [...(suggestionsResult.data || [])].sort(byPriorityDesc).slice(0, 5)
 
   // Fetch coaching content for each buyer and seller
   const buyerCoachingPromises = buyerContacts.map(async (contact) => {

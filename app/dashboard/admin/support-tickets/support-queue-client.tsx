@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast"
 import { updateTicketStatus, getBrokerageTicketThread, replyToBrokerageTicket } from "@/app/actions/support"
 import { TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/lib/support/ticket-constants"
 import type { TicketThread as Thread } from "@/lib/support/support-thread"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 const STATUS_BADGE: Record<string, string> = {
   open: "bg-blue-100 text-blue-700 border-blue-200",
@@ -17,7 +18,11 @@ const STATUS_BADGE: Record<string, string> = {
   resolved: "bg-emerald-100 text-emerald-700 border-emerald-200",
   closed: "bg-gray-100 text-gray-600 border-gray-200",
 }
-const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
+// TOMBSTONE (§1.1, 2026-09-03): the local `PRIORITY_RANK {urgent:0 … low:3}`
+// that stood here was one of five hand copies of the same map. Survivor:
+// lib/kernel/priority-rank.ts:45 (PRIORITY_RANK, `urgent` aliased to
+// `critical`) and its comparator `byPriorityDesc`, imported above. An unknown
+// priority still sorts LAST (it ranked 9 here; it ranks 0 there — same end).
 
 /** Inline thread for a ticket — view the conversation + reply on the tenant side.
  *  Mirrors the agent-facing thread in dashboard/help/ticket-thread.tsx, on the
@@ -130,7 +135,7 @@ export function SupportQueueClient({
 
   const visible = useMemo(() => {
     const list = filter === "all" ? tickets : tickets.filter((t) => t.status === filter)
-    return [...list].sort((a, b) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
+    return [...list].sort(byPriorityDesc)
   }, [tickets, filter])
 
   async function setStatus(id: string, status: TicketStatus) {

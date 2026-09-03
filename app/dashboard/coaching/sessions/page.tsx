@@ -50,6 +50,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { CoachingSessionsClient } from "./coaching-sessions-client"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export const dynamic = "force-dynamic"
 
@@ -100,9 +101,11 @@ export default async function CoachingSessionsPage() {
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .eq("status", "pending")
-          .order("priority", { ascending: false })
+          // priority is TEXT (low|medium|high) — SQL sorted it alphabetically
+          // and put `high` last. created_at stays the SQL order; over-fetch,
+          // rank in code below (lib/kernel/priority-rank.ts), slice to 25.
           .order("created_at", { ascending: false })
-          .limit(25)
+          .limit(100)
       : Promise.resolve({ data: [], error: null } as const),
     supabase
       .from("calendar_events")
@@ -135,7 +138,7 @@ export default async function CoachingSessionsPage() {
       userId={user.id}
       hasAgentProfile={Boolean(agentId)}
       coaches={coaches}
-      suggestions={(suggestionsResult.data ?? []) as Array<Record<string, unknown>>}
+      suggestions={[...(suggestionsResult.data ?? [])].sort(byPriorityDesc).slice(0, 25) as Array<Record<string, unknown>>}
       bookedSessions={(bookedResult.data ?? []) as Array<Record<string, unknown>>}
       loadErrors={loadErrors}
     />

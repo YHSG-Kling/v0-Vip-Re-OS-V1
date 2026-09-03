@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { CallReviewActionsBar } from "./call-review-actions-bar"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export const dynamic = "force-dynamic"
 
@@ -137,14 +138,23 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     dismissed: boolean
   }> = []
   if (analysis) {
-    const { data: insights } = await supabase
+    // priority is TEXT (CHECK high|medium|low): `ORDER BY priority ASC` sorted
+    // it alphabetically — `high, low, medium` — so `low` outranked `medium`.
+    // SQL orders by created_at (the writer's insertion order, which
+    // lib/voice/call-coaching.ts already ranks); the rank is applied in code
+    // (lib/kernel/priority-rank.ts) so this page and the writer agree. The
+    // error is read (§3): a refused read must not render as "no coaching".
+    const { data: insights, error: insightsError } = await supabase
       .from("call_coaching_insights")
       .select("id, insight_type, content, priority, dismissed")
       .eq("call_analysis_id", analysis.id)
       .eq("dismissed", false)
-      .order("priority", { ascending: true })
+      .order("created_at", { ascending: true })
+    if (insightsError) {
+      console.error("[voice review] coaching insight read failed:", insightsError.message)
+    }
 
-    coachingInsights = insights || []
+    coachingInsights = [...(insights ?? [])].sort(byPriorityDesc)
   }
 
   // Fetch whisper logs

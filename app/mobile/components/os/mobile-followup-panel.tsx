@@ -10,6 +10,7 @@ import { Clock, Phone, MessageSquare, CheckCircle, AlertCircle, User } from "luc
 import { formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import { completeActivity } from "@/app/actions/activities"
+import { priorityRank } from "@/lib/kernel/priority-rank"
 
 interface FollowupTask {
   id: string
@@ -41,11 +42,16 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
   const pendingTasks = tasks
     .filter((t) => t.status !== "completed")
     .sort((a, b) => {
-      // Sort by priority first, then by due date
-      const priorityOrder = { high: 0, medium: 1, low: 2 }
-      const aPriority = priorityOrder[a.priority as keyof typeof priorityOrder] ?? 1
-      const bPriority = priorityOrder[b.priority as keyof typeof priorityOrder] ?? 1
-      if (aPriority !== bPriority) return aPriority - bPriority
+      // Sort by priority first, then by due date. TOMBSTONE (§1.1, 2026-09-03):
+      // the local `priorityOrder {high:0, medium:1, low:2}` that stood here was
+      // one of five hand copies of the same map — survivor
+      // lib/kernel/priority-rank.ts:45 (`priorityRank` :65, imported above). A
+      // missing priority still folds to `medium` — tasks.priority DEFAULT
+      // 'medium' — which this copy did with `?? 1`; the survivor leaves that
+      // default to the caller, so it is applied here.
+      const aPriority = priorityRank(a.priority ?? "medium")
+      const bPriority = priorityRank(b.priority ?? "medium")
+      if (aPriority !== bPriority) return bPriority - aPriority
 
       const aDate = a.due_date || a.scheduled_at || ""
       const bDate = b.due_date || b.scheduled_at || ""

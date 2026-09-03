@@ -22,6 +22,7 @@
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { isEmailOnSuppressionList } from "@/lib/platform/suppression-list"
 import {
@@ -191,16 +192,16 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
 
   // WHO decided. Resolved once for the decided rows; a staff id with no user
   // row left resolves to the raw id rather than to a blank, so a deleted
-  // account never renders as "nobody decided this".
-  const actorIds = [...new Set(((recentRes.data ?? []) as any[]).map((r) => r.acted_by).filter(Boolean))] as string[]
-  const actorOf = new Map<string, string>()
-  if (actorIds.length > 0) {
-    const { data: actors } = await svc.from("users").select("id, email, first_name, last_name").in("id", actorIds)
-    for (const u of (actors ?? []) as any[]) {
-      const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
-      actorOf.set(u.id, name || u.email || u.id)
-    }
-  }
+  // account never renders as "nobody decided this" — that fallback lives at
+  // the render site (toRow: `actorOf?.get(r.acted_by) ?? r.acted_by`).
+  // TOMBSTONE (§1.1, 2026-09-03): the inline users lookup that stood here was
+  // one of four copies AND the only one that never read its error, so a refused
+  // read rendered every decision as its raw id with no trace of why. Survivor
+  // lib/kernel/actor-attribution.ts:91 (resolveActorNames) — unscoped on
+  // purpose: acted_by is PLATFORM staff, who belong to no tenant.
+  const actorIds = ((recentRes.data ?? []) as any[]).map((r) => r.acted_by).filter(Boolean) as string[]
+  const { names: actorOf, error: actorErr } = await resolveActorNames(svc, actorIds)
+  if (actorErr) console.error("[platform-sentinel] decision actor lookup failed:", actorErr)
 
   const proposed = ((proposedRes.data ?? []) as any[]).map((r) => toRow(r, nameOf))
   proposed.sort((a, b) =>

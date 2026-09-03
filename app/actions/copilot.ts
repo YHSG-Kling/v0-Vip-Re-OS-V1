@@ -13,6 +13,7 @@ import { authorizeForUser } from "@/lib/auth/authorize-for-user"
 import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 // Writers resolve their own identity and their own client here — never from the payload.
 import { resolveWriteContext } from "@/lib/platform/acting-context"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // =====================================================
 // THE "EVENT HANDLERS" IN THIS FILE ARE NOT EVENT HANDLERS. Owner decision, settled.
@@ -579,15 +580,26 @@ export async function generateDailyGameplan(userId: string) {
     console.error("[copilot] at-risk milestone read failed:", atRiskError.message)
   }
 
-  // Get overdue tasks
-  const { data: overdueTasks } = await supabase
+  // Get overdue tasks.
+  //
+  // tasks.priority is VARCHAR (no CHECK, default 'medium'): `ORDER BY priority
+  // DESC` sorted it alphabetically — `medium` first, `high` LAST — and the
+  // `.limit(10)` then dropped the high rows first. SQL orders by due_date
+  // (most overdue first); the rank is applied in code
+  // (lib/kernel/priority-rank.ts) over a 50-row over-fetch, then sliced to 10.
+  // The error is read (§3): a refused read must not render as "nothing overdue".
+  const { data: overdueTaskRows, error: overdueTasksError } = await supabase
     .from("tasks")
     .select("*, contacts(*)")
     .eq("assigned_to_agent_id", gameplanAgentId)
     .eq("status", "pending")
     .lt("due_date", new Date().toISOString())
-    .order("priority", { ascending: false })
-    .limit(10)
+    .order("due_date", { ascending: true })
+    .limit(50)
+  if (overdueTasksError) {
+    console.error("[copilot] overdue task read failed:", overdueTasksError.message)
+  }
+  const overdueTasks = [...(overdueTaskRows ?? [])].sort(byPriorityDesc).slice(0, 10)
 
   // Get approved content ready to post
   //

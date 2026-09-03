@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { generateAssistantSuggestions } from "@/app/actions/assistant"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // Every read in this file is a contact PII surface: contact record itself,
 // credit accounts, transactions, message threads, documents, video engagement,
@@ -207,11 +208,18 @@ export async function getContactCopilotSuggestions(contactId: string) {
 
   query = query.eq("agent_id", agentId)
 
+  // PRIORITY IS TEXT (CHECK low|medium|high) — `ORDER BY priority DESC` sorted
+  // it alphabetically, so `medium` led and `high` came LAST, and the `.limit(10)`
+  // on the same query dropped the high rows first. Order by created_at in SQL,
+  // over-fetch, rank in code (lib/kernel/priority-rank.ts), slice to the
+  // original 10.
+  const SUGGESTION_LIMIT = 10
   const { data, error } = await query
-    .order("priority", { ascending: false })
-    .limit(10)
+    .order("created_at", { ascending: false })
+    .limit(50)
 
-  return { suggestions: data || [], error }
+  const suggestions = [...(data ?? [])].sort(byPriorityDesc).slice(0, SUGGESTION_LIMIT)
+  return { suggestions, error }
 }
 
 export async function getContactActivity(contactId: string) {

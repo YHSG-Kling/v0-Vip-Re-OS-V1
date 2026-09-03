@@ -9,6 +9,7 @@ import { TasksPanel }           from "@/app/components/dashboard/listings/lifecy
 import { StageTimeline }        from "@/app/components/dashboard/listings/lifecycle/stage-timeline"
 import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
 import { ListingHealthRadarPanel } from "@/app/components/features/listings/listing-health-radar-panel"
+import { RESOLVED_HISTORY_LIMIT, RESOLVED_HISTORY_WINDOW_DAYS } from "@/lib/listing-health/resolved-history-bounds"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
 import { getListingTasks } from "@/app/actions/listing-lifecycle"
 import { getOpenHouseDashboard, getPostEventIntelligence } from "@/app/actions/seller-open-house"
@@ -233,13 +234,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // audit who cleared a seller_impacted flag. The open list below is deliberately
   // left open-only; this is a SECOND, bounded read beside it.
   //
-  // BOUNDS, chosen and stated: newest 10, resolved within the last 180 days.
-  // 180d covers a full listing term plus a renewal (the panel sits on an ACTIVE
-  // listing, and the longest-lived thing it can be auditing is that listing's own
-  // run); 10 matches the open-list limit directly above so neither half of the
-  // panel can dominate the other. The panel prints both numbers beside the list.
-  const RESOLVED_HISTORY_LIMIT = 10
-  const RESOLVED_HISTORY_WINDOW_DAYS = 180
+  // BOUNDS: RESOLVED_HISTORY_LIMIT / RESOLVED_HISTORY_WINDOW_DAYS, imported from
+  // lib/listing-health/resolved-history-bounds.ts, which carries the rationale.
+  // They stood here as function-local consts (and were restated verbatim in
+  // app/dashboard/listings/health/actions.ts) until the hoist on 2026-09-03.
+  // The panel prints both numbers beside the list.
   const resolvedSince = new Date(Date.now() - RESOLVED_HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
   const [healthScoreRes, openInterventionsRes, scoreHistoryRes, resolvedInterventionsRes] = await Promise.all([
     supabase
