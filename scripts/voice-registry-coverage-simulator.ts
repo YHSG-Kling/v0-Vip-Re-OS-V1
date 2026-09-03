@@ -56,8 +56,25 @@ function registryKeys(): Set<string> {
   return keys
 }
 
+// SCOPED TO THE TOOL DISPATCH, not the whole file. This used to scan every
+// `case "x":` in the route, which was safe only while the route held exactly one
+// switch. Wave 26 added a second one — `preflightDeclaredGates` switches over the
+// registry's DECLARED GATE names to resolve entity_owner / assigned_party before
+// a tool runs — and those case labels were read as dispatched tools, so the guard
+// demanded that two compliance gates be registered as voice tools. Anchoring on
+// `runTool`'s own switch keeps the question the guard is asking ("what can the
+// dispatcher actually invoke?") independent of how many other switches the file
+// grows.
 function dispatchedTools(): Set<string> {
-  const src = readFileSync(DISPATCHER, "utf8")
+  const raw = readFileSync(DISPATCHER, "utf8")
+  const at = raw.search(/function\s+runTool\s*\(/)
+  if (at < 0) {
+    // Say so rather than silently scanning the whole file: a renamed dispatcher
+    // would otherwise quietly restore the over-broad scan this replaced.
+    console.log("  ✗ dispatcher anchor `runTool(` not found — the scope this guard relies on is gone")
+    return new Set<string>()
+  }
+  const src = raw.slice(at)
   const tools = new Set<string>()
   for (const m of src.matchAll(/case\s+"([a-z_]+)"\s*:/g)) {
     const t = m[1]
