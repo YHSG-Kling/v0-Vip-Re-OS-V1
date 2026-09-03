@@ -153,10 +153,35 @@ interface MarketingSnapshot {
   priorPlanOutcomes: Array<{
     week_start:                 string
     realized_campaigns_sent:    number | null
+    /** Attributed recipient sends the measure cron counted for the week —
+     *  the denominator behind the two rates. 40% open on 12 sends and 40% on
+     *  1,200 are not the same track record. */
+    realized_recipient_sends:   number | null
     realized_open_rate:         number | null
     realized_click_rate:        number | null
+    /** What THAT week's plan realized per persona (≥5 sends each), so the
+     *  agent can set last week's actual segment response against the 30-day
+     *  persona table and see which segment is rising or fading. */
+    realized_persona_breakdown: Array<{ persona: string; sends: number; open_rate: number; click_rate: number }> | null
     plan_quality_score:         number | null
   }>
+  /** Wave 26 — the PREVIOUS spawn's headline signals, read back from
+   *  marketing_agent_weekly_outcomes.snapshot_signals_jsonb, so the kickoff can
+   *  state week-over-week MOVEMENT instead of a bare level ("3 promos pending"
+   *  means something different after 0 last week than after 9). spawned_at is
+   *  the gate: null when there is no prior spawn, or when the last one is
+   *  older than 14 days — a delta against a month-old snapshot misleads. */
+  priorWeekSnapshot: {
+    week_start:            string
+    spawned_at:            string
+    daysAgo:               number
+    pendingListingPromos:  number
+    newListingsThisWeek:   number
+    atRiskListings:        number
+    recentSocialPosts:     number
+    recentNewsletterSends: number
+    recentBlogPublishes:   number
+  } | null
   /** The Video Director's LEARNED format winners (composition × channel × mood by situation kind),
    *  surfaced so the Marketing Agent biases this week's renders toward proven winners instead of
    *  the default. Closes the loop: the Director learns, the Marketing Agent capitalizes. */
@@ -456,17 +481,55 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
   try { topFormats = summarizeTopFormats(await loadFormatOutcomes(brokerageId)) } catch { /* no format data yet */ }
 
   let priorPlanOutcomes: MarketingSnapshot["priorPlanOutcomes"] = []
+  let priorWeekSnapshot: MarketingSnapshot["priorWeekSnapshot"] = null
   try {
     const fourWeeksAgo = new Date(Date.now() - 28 * 86_400_000)
     fourWeeksAgo.setUTCHours(0, 0, 0, 0)
-    const { data: prior } = await svc
+    const { data: prior, error: priorErr } = await svc
       .from("marketing_agent_weekly_outcomes")
-      .select("week_start, realized_campaigns_sent, realized_open_rate, realized_click_rate, plan_quality_score")
+      .select("week_start, spawned_at, realized_campaigns_sent, realized_recipient_sends, realized_open_rate, realized_click_rate, realized_persona_breakdown, plan_quality_score, snapshot_signals_jsonb")
       .eq("brokerage_id", brokerageId)
       .gte("week_start", fourWeeksAgo.toISOString().slice(0, 10))
       .order("week_start", { ascending: false })
       .limit(4)
-    priorPlanOutcomes = (prior ?? []) as MarketingSnapshot["priorPlanOutcomes"]
+    if (priorErr) throw new Error(priorErr.message)
+    type PriorRow = MarketingSnapshot["priorPlanOutcomes"][number] & {
+      spawned_at:             string | null
+      snapshot_signals_jsonb: Partial<Record<string, unknown>> | null
+    }
+    const priorRows = (prior ?? []) as PriorRow[]
+    priorPlanOutcomes = priorRows.map((r) => ({
+      week_start:                 r.week_start,
+      realized_campaigns_sent:    r.realized_campaigns_sent,
+      realized_recipient_sends:   r.realized_recipient_sends,
+      realized_open_rate:         r.realized_open_rate,
+      realized_click_rate:        r.realized_click_rate,
+      realized_persona_breakdown: Array.isArray(r.realized_persona_breakdown) ? r.realized_persona_breakdown : null,
+      plan_quality_score:         r.plan_quality_score,
+    }))
+    // Week-over-week deltas come off the most recent PRIOR spawn's snapshot.
+    // persistWeeklyPlanWindow runs after this snapshot is built, so on a fresh
+    // Monday the newest row is last week's; on a same-week re-spawn it is
+    // this morning's, which is still "the previous spawn".
+    const latest = priorRows[0]
+    if (latest?.spawned_at && latest.snapshot_signals_jsonb) {
+      const daysAgo = (Date.now() - Date.parse(latest.spawned_at)) / 86_400_000
+      if (Number.isFinite(daysAgo) && daysAgo <= 14) {
+        const s = latest.snapshot_signals_jsonb
+        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0)
+        priorWeekSnapshot = {
+          week_start:            latest.week_start,
+          spawned_at:            latest.spawned_at,
+          daysAgo:               Math.round(daysAgo),
+          pendingListingPromos:  num(s.pendingListingPromos),
+          newListingsThisWeek:   num(s.newListingsThisWeek),
+          atRiskListings:        num(s.atRiskListings),
+          recentSocialPosts:     num(s.recentSocialPosts),
+          recentNewsletterSends: num(s.recentNewsletterSends),
+          recentBlogPublishes:   num(s.recentBlogPublishes),
+        }
+      }
+    }
   } catch (e) {
     console.error(`[marketing-agent] prior plan outcomes read failed for ${brokerageId}:`, (e as Error).message)
   }
@@ -815,6 +878,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     personaEngagement,
     personaTopTopics,
     priorPlanOutcomes,
+    priorWeekSnapshot,
     topFormats,
     blogChannel,
     listingPromoRenderStatus,
@@ -892,10 +956,32 @@ export async function spawnMarketingAgentForBrokerage(params: {
     ? "(no prior plans on record — this is the first measured Monday for this brokerage)"
     : snap.priorPlanOutcomes.map((p) => {
         const measured = p.realized_open_rate !== null
+        const personaLine = (p.realized_persona_breakdown?.length ?? 0) > 0
+          ? "\n      by persona: " + (p.realized_persona_breakdown ?? [])
+              .map((b) => `${b.persona} n=${b.sends} open=${b.open_rate.toFixed(0)}% click=${b.click_rate.toFixed(0)}%`)
+              .join(" · ")
+          : ""
         return `  ${p.week_start}  ` + (measured
-          ? `campaigns=${p.realized_campaigns_sent ?? 0}  open=${(p.realized_open_rate ?? 0).toFixed(1)}%  click=${(p.realized_click_rate ?? 0).toFixed(1)}%  quality=${p.plan_quality_score ?? "?"}`
+          ? `campaigns=${p.realized_campaigns_sent ?? 0}  sends=${p.realized_recipient_sends ?? 0}  open=${(p.realized_open_rate ?? 0).toFixed(1)}%  click=${(p.realized_click_rate ?? 0).toFixed(1)}%  quality=${p.plan_quality_score ?? "?"}` + personaLine
           : `(not yet measured — current week or pending Sunday-night cron)`)
       }).join("\n")
+  // Wave 26 — movement of the headline signals since the previous spawn.
+  const delta = (label: string, before: number, after: number) => {
+    const d = after - before
+    return `  ${label.padEnd(30)} ${String(before).padStart(4)} → ${String(after).padStart(4)}  (${d >= 0 ? "+" : ""}${d})`
+  }
+  const prev = snap.priorWeekSnapshot
+  const snapshotDeltaLines = prev === null
+    ? "  (no prior spawn within 14 days to compare against — read the levels above as-is)"
+    : [
+        `  vs. your previous spawn (week of ${prev.week_start}, ${prev.daysAgo}d ago):`,
+        delta("Just Listed reels pending", prev.pendingListingPromos,  snap.pendingListingPromos),
+        delta("New listings (7d)",         prev.newListingsThisWeek,   snap.newListingsThisWeek),
+        delta("Listings at risk",          prev.atRiskListings,        snap.atRiskListings),
+        delta("Social posts (7d)",         prev.recentSocialPosts,     snap.recentSocialPosts),
+        delta("Newsletter campaigns (7d)", prev.recentNewsletterSends, snap.recentNewsletterSends),
+        delta("Blog posts (7d)",           prev.recentBlogPublishes,   snap.recentBlogPublishes),
+      ].join("\n")
   const priorPlanAvg = measuredPrior.length === 0
     ? null
     : {
@@ -924,6 +1010,11 @@ export async function spawnMarketingAgentForBrokerage(params: {
     `Newsletter campaigns sent last 7d:         ${snap.recentNewsletterSends}`,
     `Blog posts published last 7d:              ${snap.recentBlogPublishes}`,
     `Combined weekly broadcast budget:          ${snap.weekSocialBudget}`,
+    "",
+    "WEEK-OVER-WEEK MOVEMENT (a level means little without its direction —",
+    "a rising at-risk count or a falling send count changes the plan before",
+    "any topic does):",
+    snapshotDeltaLines,
     "",
     "──── CONTENT INTELLIGENCE — TOP TOPICS FROM THE BANK ────",
     "Lead every asset this week with one of these. The audience is asking",
@@ -963,6 +1054,11 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "+ topics that scored highest above. If a prior plan flatlined (low",
     "campaigns_sent), it means de-conflict caps or composition-gate defers",
     "ate the week — check the snapshot's defer_reasons before planning.",
+    "`sends` is the attributed-recipient denominator behind each week's rates;",
+    "weight a week by it. The `by persona` line under a measured week is what",
+    "THAT plan realized per segment — set it against the 30-day persona table",
+    "above: a persona above its 30-day average last week is rising, give it",
+    "more sections; one below is fading, pull back.",
     "",
     priorPlanLines,
     priorPlanAvgLine,

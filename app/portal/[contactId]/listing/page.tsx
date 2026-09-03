@@ -182,14 +182,23 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
   const weeklyReport = (weeklyReportRow?.report_content as Record<string, unknown> | null) ?? null
 
   // National "Market Pulse" — what buyers are prioritizing now (market_pulse, written weekly).
+  // generated_at + source_count are the card's provenance line: WHEN the pulse
+  // was distilled and from HOW MANY buyer-forum threads (market-pulse-runner.ts:51
+  // writes both). A dated "what buyers want now" with no date is a claim the
+  // seller cannot weigh; insights.generated===false is the evergreen fallback
+  // floor, whose source_count is the threads that were too few to distill.
   const { data: pulseRow } = await supabase
     .from("market_pulse")
-    .select("insights")
+    .select("insights, generated_at, source_count")
     .eq("scope", "national")
     .order("pulse_week", { ascending: false })
     .limit(1)
     .maybeSingle()
   const marketPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+  const marketPulseHasInsights = Array.isArray(marketPulse?.insights) && (marketPulse!.insights as unknown[]).length > 0
+  const marketPulseGeneratedAt = (pulseRow?.generated_at as string | null) ?? null
+  const marketPulseSourceCount = typeof pulseRow?.source_count === "number" ? (pulseRow.source_count as number) : 0
+  const marketPulseIsDistilled = marketPulse?.generated !== false
 
   const marketingChannels = buildListingMarketingChannels({
     mlsNumber: (listingOwnerCheck?.mls_number as string | null) ?? null,
@@ -338,6 +347,14 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
 
         {/* Market Pulse — what buyers are prioritizing now (the novel buyer-sentiment differentiator) */}
         <SellerMarketPulseCard pulse={marketPulse as any} />
+        {marketPulseHasInsights && marketPulseGeneratedAt && (
+          <p className="text-[11px] text-muted-foreground px-1 -mt-4">
+            Pulse as of {new Date(marketPulseGeneratedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            {marketPulseIsDistilled && marketPulseSourceCount > 0
+              ? ` · distilled from ${marketPulseSourceCount} buyer-forum thread${marketPulseSourceCount === 1 ? "" : "s"}`
+              : " · evergreen guidance (too few fresh threads to distill this week)"}
+          </p>
+        )}
 
         {/* Open House Alert if upcoming */}
         {upcomingOpenHouse && (

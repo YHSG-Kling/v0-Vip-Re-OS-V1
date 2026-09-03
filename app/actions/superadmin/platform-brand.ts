@@ -65,9 +65,18 @@ export async function listTopicsAction(): Promise<{ ok: true; topics: any[] } | 
   const auth = await requireMarketing()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  // THE POOL ROTATES ON used_at. platform-content.ts stamps used_at when the
+  // calendar or a video draft consumes a topic (:63, :123) and nothing read it
+  // back, so a consumed topic sat in this list forever and, at limit 50, the
+  // oldest used entries eventually crowded out fresh 'new' ones. A used topic
+  // now ages out of the list 30 days after it was used; 'new' rows, and used
+  // rows from before the column was stamped (used_at IS NULL), are unaffected.
+  const usedCutoff = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data, error } = await svc.from("platform_content_topics")
-    .select("id, source, topic, competitor, url, status, created_at")
-    .neq("status", "dismissed").order("created_at", { ascending: false }).limit(50)
+    .select("id, source, topic, competitor, url, status, used_at, created_at")
+    .neq("status", "dismissed")
+    .or(`status.neq.used,used_at.is.null,used_at.gte.${usedCutoff}`)
+    .order("created_at", { ascending: false }).limit(50)
   if (error) return { ok: false, error: error.message }
   return { ok: true, topics: data ?? [] }
 }

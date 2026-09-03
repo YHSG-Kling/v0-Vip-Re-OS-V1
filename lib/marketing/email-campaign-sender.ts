@@ -243,11 +243,13 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
         metadata: { campaign_id: campaignId, subscriber_id: sub.id },
       })
       if (sub.contact_id) {
+        // `subject` is NOT copied onto the send row (wave 26, §1 duplicate):
+        // it is email_campaigns.subject_line, read at :57 and dispatched at
+        // :238 above — campaign_id is the join, the campaign is the survivor.
         await svc.from("newsletter_sends").insert({
           brokerage_id: campaign.brokerage_id,
           contact_id: sub.contact_id,
           campaign_id: campaignId,
-          subject: campaign.subject_line,
           status: result.success ? "sent" : "failed",
           // Same reason as the email_sends update above, and the same column
           // publish-newsletters already fills: without the provider id, the

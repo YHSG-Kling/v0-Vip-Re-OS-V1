@@ -40,8 +40,15 @@ export default async function RepurposePage({
     const initialSourceType = sp.source ? SOURCE_TOKEN_TO_TYPE[sp.source] ?? null : null
     const initialSourceId = sp.episodeId ?? sp.sourceId ?? null
     const agentContext = await getAgentContext()
-    const { userId, brokerageId } = agentContext
+    const { userId, brokerageId, agentId, userType } = agentContext
     const teamId: string | null = (agentContext as any).teamId ?? null
+    // newsletter_teasers.agent_id says WHOSE podcast a teaser promotes
+    // (app/actions/podcast-generation.ts:1502 stamps the episode owner). The
+    // page was brokerage-scoped only, so an agent was offered paste-ready copy
+    // promoting a colleague's episode. Office-wide roles (CLAUDE.md §4 tenant
+    // roster) keep the whole office's list; everyone else sees their own.
+    const OFFICE_WIDE_ROLES = new Set(["broker", "broker_admin", "broker_owner", "team_lead", "admin"])
+    const teasersOfficeWide = OFFICE_WIDE_ROLES.has(userType)
     const supabase = await createClient()
 
     // Get user profile with role
@@ -97,12 +104,16 @@ export default async function RepurposePage({
         .select("platform")
         .eq("brokerage_id", brokerageId ?? "")
         .eq("is_active", true),
-      supabase
-        .from("newsletter_teasers")
-        .select("id, content, source_type, source_id, status, created_at")
-        .eq("brokerage_id", brokerageId ?? "")
-        .order("created_at", { ascending: false })
-        .limit(20),
+      (() => {
+        const q = supabase
+          .from("newsletter_teasers")
+          .select("id, content, source_type, source_id, status, agent_id, created_at")
+          .eq("brokerage_id", brokerageId ?? "")
+        // Fail closed: a non-office-wide viewer with no agents.id sees none,
+        // never everyone's.
+        const scoped = teasersOfficeWide ? q : agentId ? q.eq("agent_id", agentId) : q.limit(0)
+        return scoped.order("created_at", { ascending: false }).limit(20)
+      })(),
     ])
 
     const connectedPlatforms = Array.from(

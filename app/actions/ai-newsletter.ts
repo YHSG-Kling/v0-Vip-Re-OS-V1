@@ -1299,12 +1299,19 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       if (status === "failed")     errors++
 
       try {
+        // `subject` and `template_id` are NOT written on this row (wave 26, §1
+        // duplicate). `assembled.subject` IS newsletter_campaigns.subject_line
+        // (lib/kernel/newsletter/assemble.ts:162 copies context.campaignSubject,
+        // which is the campaign row read at :1268 above and rendered at
+        // app/newsletters/newsletters-client.tsx:1995) — the campaign is the
+        // survivor and campaign_id is the join. The old `template_id: null` was
+        // a literal null: nothing to merge. The one live template_id writer is
+        // the workflow-OS path below (queueNewsletterForContact), where the row
+        // has no campaign and the template is its only content source.
         await supabase.from("newsletter_sends").insert({
           brokerage_id:        sessionBrokerageId,
           campaign_id:         params.newsletterId,
           contact_id:          subscriber.contact_id ?? null,
-          template_id:         null,
-          subject:             assembled.subject,
           status,
           provider_message_id: result.messageId ?? null,
           sent_at:             status === "sent" ? new Date().toISOString() : null,
@@ -1808,14 +1815,46 @@ export async function queueNewsletterForContact(params: {
       }
     }
 
-    // Record the send intent
+    // IDEMPOTENCY ON (contact, template) — the reader for newsletter_sends.
+    // template_id. A workflow step re-fired for the same contact (a retry, a
+    // re-enrollment, two sequences sharing a template) used to mail the same
+    // newsletter again; the column that could have told us was written here
+    // and read nowhere. Same shape as the per-campaign check in
+    // app/api/cron/publish-newsletters/route.ts:445, keyed on the template
+    // because a workflow send has no campaign. Seven days: a template that
+    // legitimately goes out weekly is not a duplicate the following week.
+    if (params.templateId) {
+      const dupSince = new Date(Date.now() - 7 * 86_400_000).toISOString()
+      const { data: prior, error: priorErr } = await supabase
+        .from("newsletter_sends")
+        .select("id")
+        .eq("brokerage_id", params.brokerageId)
+        .eq("contact_id", params.contactId)
+        .eq("template_id", params.templateId)
+        .in("status", ["sent", "opened", "clicked"])
+        .gte("sent_at", dupSince)
+        .limit(1)
+        .maybeSingle()
+      if (priorErr) {
+        // A refused check is not "no duplicate" — say so, but a read refusal
+        // must not block a send the workflow owes the contact.
+        console.error("[queueNewsletterForContact] duplicate check refused, sending anyway:", priorErr.message)
+      } else if (prior?.id) {
+        return { success: true, newsletterId: prior.id as string }
+      }
+    }
+
+    // Record the send intent. `subject` is NOT written here (wave 26, §1
+    // duplicate): it is newsletter_templates.subject_line, read at :1802 via
+    // the template_id this row keeps, or the step's own override, which the
+    // dispatch ledger records as vendor_usage_tracking.metadata.subject
+    // (lib/providers/dispatch.ts:515).
     const { data: sendRow, error: insertErr } = await supabase
       .from("newsletter_sends")
       .insert({
         brokerage_id: params.brokerageId,
         contact_id: params.contactId,
         template_id: params.templateId ?? null,
-        subject,
         status: "queued",
         queued_at: new Date().toISOString(),
       })
@@ -1823,7 +1862,10 @@ export async function queueNewsletterForContact(params: {
       .maybeSingle()
 
     if (insertErr) {
-      // newsletter_sends may not exist yet — proceed without tracking
+      // §3: a refused insert used to be silent. The send still goes out, but
+      // the ledger row that the queue-latency rollup and the duplicate check
+      // above depend on does not exist, and that must be visible in the log.
+      console.error("[queueNewsletterForContact] newsletter_sends insert refused, send untracked:", insertErr.message)
     }
 
     const newsletterId = sendRow?.id ?? `nws-${Date.now()}`
@@ -1840,12 +1882,17 @@ export async function queueNewsletterForContact(params: {
       html: html || `<p>Hi ${contact.first_name ?? "there"},</p><p>Your newsletter is ready.</p>`,
     })
 
-    // Update send status
+    // Update send status. sent_at ONLY on success: engagement-rollup counts the
+    // delivered denominator as `sent_at IS NOT NULL` and the queue→send latency
+    // as queued_at→sent_at, so stamping a failed send here inflated both.
     if (sendRow?.id) {
       void Promise.resolve(
         supabase
           .from("newsletter_sends")
-          .update({ status: result.success ? "sent" : "failed", sent_at: new Date().toISOString() })
+          .update({
+            status: result.success ? "sent" : "failed",
+            ...(result.success && { sent_at: new Date().toISOString() }),
+          })
           .eq("id", sendRow.id)
       ).catch(() => {})
     }

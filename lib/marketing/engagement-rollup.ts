@@ -55,6 +55,63 @@ export interface RollupSummary {
   campaignsSkipped: number
   /** Campaigns whose source rows could not be read. Never folded into a zero. */
   refusals: string[]
+  /** Newsletter lane only — see newsletterQueueLatency. Absent on the email lane. */
+  queue?: QueueLatency
+}
+
+/**
+ * QUEUE → SEND LATENCY, the reader for `newsletter_sends.queued_at`.
+ *
+ * The workflow-OS adapter (app/actions/ai-newsletter.ts queueNewsletterForContact)
+ * stamps queued_at when it files the row and sent_at when the provider accepts
+ * it. Those rows carry NO campaign_id (a step sends one contact one template),
+ * so the per-campaign rollups above can never see them — which is why the
+ * column was written and read by nobody. This is measured over the whole
+ * window rather than per campaign for exactly that reason.
+ *
+ * Two facts come out of it, both invisible any other way:
+ *   · medianSecondsToSend — how long a queued newsletter waits before it goes.
+ *   · stuckQueued — rows still 'queued' an hour after queued_at. The adapter's
+ *     status update is fire-and-forget; a row that never advanced is a send
+ *     that was filed and never happened, and nothing else reports it.
+ */
+export interface QueueLatency {
+  /** Rows with both queued_at and sent_at in the window. */
+  measured: number
+  medianSecondsToSend: number | null
+  stuckQueued: number
+}
+
+async function newsletterQueueLatency(
+  svc: Svc,
+  since: string,
+): Promise<{ queue: QueueLatency | null; error: string | null }> {
+  const { data, error } = await svc
+    .from("newsletter_sends")
+    .select("queued_at, sent_at, status")
+    .not("queued_at", "is", null)
+    .gte("queued_at", since)
+    .limit(20_000)
+  if (error) return { queue: null, error: `newsletter_sends queued_at: ${error.message}` }
+
+  const stuckBefore = Date.now() - 3_600_000
+  const latencies: number[] = []
+  let stuckQueued = 0
+  for (const row of (data ?? []) as Array<{ queued_at: string; sent_at: string | null; status: string }>) {
+    const queuedMs = Date.parse(row.queued_at)
+    if (Number.isNaN(queuedMs)) continue
+    if (row.sent_at) {
+      const sentMs = Date.parse(row.sent_at)
+      if (!Number.isNaN(sentMs) && sentMs >= queuedMs) latencies.push((sentMs - queuedMs) / 1000)
+    } else if (row.status === "queued" && queuedMs < stuckBefore) {
+      stuckQueued++
+    }
+  }
+  latencies.sort((a, b) => a - b)
+  const median = latencies.length === 0
+    ? null
+    : Math.round(latencies[Math.floor((latencies.length - 1) / 2)])
+  return { queue: { measured: latencies.length, medianSecondsToSend: median, stuckQueued }, error: null }
 }
 
 function pct(part: number, whole: number): number {
@@ -286,6 +343,12 @@ export async function rollupNewsletterCampaignRates(
     }
     out.campaignsRolledUp++
   }
+
+  // Queue latency rides the same window. A refusal here is reported, not
+  // folded into "no queued sends" — the same rule as every count above.
+  const queue = await newsletterQueueLatency(svc, since)
+  if (queue.error) out.refusals.push(queue.error)
+  else if (queue.queue) out.queue = queue.queue
 
   return out
 }

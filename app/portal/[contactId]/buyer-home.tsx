@@ -202,14 +202,21 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   // National "Buyer Pulse" — what fellow buyers are prioritizing now, distilled (buyer lens) from the
   // SAME weekly market_pulse row the seller portal reads. Net-new buyer-engagement surface; reuses the
   // scraper + gateway + table (no new infra). Renders nothing until the weekly pulse exists.
+  // Same provenance line as the seller card (listing/page.tsx): generated_at
+  // and source_count from market-pulse-runner.ts:51 say when and from how
+  // many threads; insights.generated===false marks the evergreen fallback.
   const { data: pulseRow } = await supabase
     .from("market_pulse")
-    .select("insights")
+    .select("insights, generated_at, source_count")
     .eq("scope", "national")
     .order("pulse_week", { ascending: false })
     .limit(1)
     .maybeSingle()
   const buyerPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+  const buyerPulseHasInsights = Array.isArray(buyerPulse?.insights) && (buyerPulse!.insights as unknown[]).length > 0
+  const buyerPulseGeneratedAt = (pulseRow?.generated_at as string | null) ?? null
+  const buyerPulseSourceCount = typeof pulseRow?.source_count === "number" ? (pulseRow.source_count as number) : 0
+  const buyerPulseIsDistilled = buyerPulse?.generated !== false
 
   // Buyer broker agreement awaiting THIS buyer's signature. NAR 2024 blocks
   // showings and offers until one is active (lib/buyer-broker/gate.ts fails
@@ -698,6 +705,14 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
         {/* Buyer Pulse — community sentiment (buyer lens) from the weekly national market_pulse.
              Arms the buyer with what fellow buyers prioritize so they search + compete with confidence. */}
         <BuyerPulseCard pulse={buyerPulse as any} />
+        {buyerPulseHasInsights && buyerPulseGeneratedAt && (
+          <p className="text-[11px] text-muted-foreground px-1 -mt-4">
+            Pulse as of {new Date(buyerPulseGeneratedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            {buyerPulseIsDistilled && buyerPulseSourceCount > 0
+              ? ` · distilled from ${buyerPulseSourceCount} buyer-forum thread${buyerPulseSourceCount === 1 ? "" : "s"}`
+              : " · evergreen guidance (too few fresh threads to distill this week)"}
+          </p>
+        )}
 
         {/* Agent Contact Card */}
         {agentInfo && (

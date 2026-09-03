@@ -167,8 +167,15 @@ export async function getManagerTrustScorecard(): Promise<
     effByKind.set("shopping_agent", { effectiveness: s.effectiveness, sample: s.total })
   }
   // Marketing/Campaign managers: weekly outcomes (plan quality + realized engagement) → by session→kind.
+  // MEASURED WEEKS ONLY. scoreMarketingOutcomes reports `weeks = rows.length`
+  // and effectivenessBand needs 3 to claim a band, but the current week and
+  // any week the Sunday measure cron has not reached yet carry NULL realized
+  // columns — they added to the sample without adding a data point, so a
+  // band could be claimed off one measured week padded by two empty ones.
   let moQ = svc.from("marketing_agent_weekly_outcomes")
-    .select("spawned_session_id, plan_quality_score, realized_open_rate, realized_click_rate").limit(5000)
+    .select("spawned_session_id, plan_quality_score, realized_open_rate, realized_click_rate")
+    .not("realized_at", "is", null)
+    .limit(5000)
   if (!isPlatform) moQ = moQ.eq("brokerage_id", ctx.brokerageId as string)
   const { data: mktRows } = await moQ
   if ((mktRows ?? []).length > 0) {

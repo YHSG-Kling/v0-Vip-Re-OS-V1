@@ -108,11 +108,16 @@ async function ensureCompetitorProfile(
   const { data: existing } = await svc.from("competitor_profiles")
     .select("id").eq("brokerage_id", w.brokerage_id).eq("competitor_name", w.competitor_name).maybeSingle()
   if (existing) return (existing as any).id as string
+  // `market_zip_codes` is NOT copied onto the profile twin (wave 26, §1
+  // duplicate). The zips originate on competitor_brokerages.watch_zip_codes —
+  // written by app/actions/direct-mail-settings.ts:132, read as the geo hint
+  // at scanOneCompetitor below (:130) and app/api/cron/competitor-ads-exa/
+  // route.ts:98 — and the copy here had no reader. The watch row is the
+  // survivor; competitor_id ↔ competitor_name is the join back to it.
   const { data, error } = await svc.from("competitor_profiles").insert({
     brokerage_id: w.brokerage_id,
     competitor_name: w.competitor_name,
     competitor_type: "brokerage",
-    market_zip_codes: w.watch_zip_codes ?? null,
     is_active: true,
   }).select("id").single()
   return error ? null : ((data as any).id as string)
