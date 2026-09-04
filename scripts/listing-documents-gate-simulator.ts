@@ -97,8 +97,40 @@ console.log("\n── the gate an agent actually hits runs the REQUIRED-DOCS aud
     /unverifiedDocs\.length === 0/.test(gate))
 
   // The failure the whole check exists to catch.
-  check("an empty document set can no longer satisfy the gate on its own",
-    /missing_blocking\.length === 0 && unverifiedDocs\.length === 0/.test(gate))
+  //
+  // ASSERTED AS A RULE, NOT AS AN ADJACENCY (CLAUDE.md §2 — "do not pin an
+  // assertion to a WAYPOINT"). This used to require the literal
+  // `missing_blocking.length === 0 && unverifiedDocs.length === 0`, i.e. those
+  // two terms SIDE BY SIDE. The owner's 2026-09-04 ruling ("same compliance gate
+  // when a listing becomes an active listing") added a third conjunct —
+  // `unexecuted.length === 0`, the signature/initial half — BETWEEN them, and
+  // this assertion went red because the gate it guards got STRONGER. That is the
+  // §2 failure mode exactly: an assertion that can only pass while the work is
+  // unfinished. What actually matters is that each term GATES `passed`, not what
+  // order they appear in or what else is conjoined with them.
+  // The LAST `passed:` in the body is the real verdict — the earlier ones are
+  // the fail-closed early returns (`passed: false`), and matching the first is
+  // how this read "false" and reported every term missing.
+  const passedExprs = Array.from(gate.matchAll(/passed:\s*([\s\S]*?),\s*reason:/g)).map(m => m[1])
+  const passedExpr = passedExprs.length ? passedExprs[passedExprs.length - 1] : ""
+  const conjuncts = [
+    { name: "a MISSING blocking requirement", re: /audit\.missing_blocking\.length === 0/ },
+    { name: "an unfinished ATTACHMENT",       re: /unverifiedDocs\.length === 0/ },
+    { name: "an audit that could not RUN",    re: /!audit\.unavailable_reason/ },
+  ]
+  const absent = conjuncts.filter(c => !c.re.test(passedExpr)).map(c => c.name)
+  check(
+    `an empty document set can no longer satisfy the gate on its own (every term gates \`passed\`${absent.length ? `; MISSING: ${absent.join(", ")}` : ""})`,
+    passedExpr.length > 0 && absent.length === 0,
+  )
+  // POSITIVE CONTROL — prove the finder above still recognises the defect it was
+  // written for. A regex that matches nothing and a clean tree both report zero.
+  check("…and that finder still catches a `passed` that ignores the required-docs audit",
+    (() => {
+      const defective = "passed: unverifiedDocs.length === 0,\n    reason:"
+      const expr = (defective.match(/passed:\s*([\s\S]*?),\s*reason:/) ?? [])[1] ?? ""
+      return expr.length > 0 && !/audit\.missing_blocking\.length === 0/.test(expr)
+    })())
 }
 
 console.log("\n── it cannot disagree with the execution checkpoint ──")

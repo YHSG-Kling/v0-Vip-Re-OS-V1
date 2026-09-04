@@ -70,6 +70,16 @@ export interface SubmitToComplianceResult {
   error?:         string
   /** When refused: which brokerage-required documents are missing (blocking). */
   missing_required?: string[]
+  /**
+   * When refused: which brokerage-required documents are PRESENT but not fully
+   * executed, each naming what it is short of — a party's signature, a party's
+   * initials, or a scan that never ran. Separate from `missing_required`
+   * because the remedy is different: chase a signature, or open the document
+   * and scan it. Added with the owner's 2026-09-04 ruling that compliance
+   * checks presence AND execution, so both refuse here rather than one refusing
+   * and the other warning.
+   */
+  unexecuted_required?: string[]
   /** When refused: which packet fields/signatures/initials are missing. */
   packet_blockers?:  Array<{ flagType: string; severity: string; title: string }>
 }
@@ -199,6 +209,56 @@ export async function submitOfferToCompliance(
   })
 
   const hasBlockingMissing = audit.missing_blocking.length > 0
+
+  // ── PRESENT BUT NOT EXECUTED IS A BLOCKING MISS (owner ruling, 2026-09-04) ──
+  //
+  // "the compliance gate runs through the documents against an approved
+  //  checklist provided by the brokerage to make sure ALL DOCUMENTS ARE PRESENT
+  //  AND THAT ALL SIGNATURES AND INITIALS ARE PRESENT, then the executed offer
+  //  becomes a transaction"
+  //
+  // Both halves of that sentence, one consequence. This checkpoint blocked on
+  // the first half and only WARNED on the second, so a required agency
+  // disclosure or lead-paint addendum could be uploaded BLANK, satisfy
+  // `missing_blocking`, and have `compliance_passed_at` stamped over it. The
+  // stamp then meant something the ruling says it does not mean.
+  //
+  // WHY THE WARN-ONLY SHAPE WAS RIGHT UNTIL TODAY, and is not a lane's mistake:
+  // its own comment said "turning it into a refusal here would change what
+  // submitting to compliance MEANS, which is a ruling this does not have." That
+  // was correct — and the ruling has now arrived and says exactly that.
+  //
+  // THIS IS THE RIGHT PLACE FOR IT, not merely an earlier one. The two early
+  // returns above already refuse an offer that is not FULLY EXECUTED by both
+  // sides, so by the time control reaches here the contract is signed and the
+  // required paperwork is supposed to be signed with it. Compliance is the step
+  // the ruling names as the thing that checks.
+  //
+  // THE SAME PURE READER the creation gate refuses on
+  // (lib/transactions/transaction-creation-gate.ts#findUnexecutedDocuments), so
+  // the block a TC hits here and the refusal they would have hit later are one
+  // reading of one deal file — not two spellings that can disagree (§6).
+  //
+  // ABSENCE IS NOT CONSENT: a required, signature-bearing document with NO
+  // `signature_completeness` blob at all is reported `unscanned` and blocks too.
+  // That is the same direction the creation gate already takes, and the refusal
+  // below says "never scanned" rather than "a party failed to sign", because
+  // they are different remedies.
+  //
+  // SAFE TO TIGHTEN NOW, MEASURED: `offers` 0 rows, `documents` 0 rows and
+  // `offers.compliance_passed_at` set on 0 rows live on hrvaqgvukzxfskkcrwbt
+  // (2026-09-04). There is no population of half-scanned paperwork this newly
+  // refuses — the question the lane could not size has the answer "nobody".
+  const unexecutedRequired = findUnexecutedDocuments(
+    audit.deal_file,
+    audit.required_breakdown.map((r) => r.classification),
+  )
+  const hasUnexecutedRequired = unexecutedRequired.length > 0
+  const unexecutedSummary = unexecutedRequired.map((d) => {
+    if (d.unscanned) return `${d.label} (never scanned)`
+    const gaps = [...d.missingSignatures, ...d.missingInitials]
+    return `${d.label} (missing ${gaps.join(", ")})`
+  })
   // The scanner synthesises a blocker on EVERY exit that did not walk a packet
   // — deliberately, so a consumer reading only `blockers` fails closed. But the
   // never-staged exit is not a finding about this deal's paperwork (see the
@@ -286,7 +346,7 @@ export async function submitOfferToCompliance(
     }
   }
 
-  if (hasBlockingMissing || hasPacketBlockers || packetUnverified) {
+  if (hasBlockingMissing || hasUnexecutedRequired || hasPacketBlockers || packetUnverified) {
     // Fan out a critical compliance flag so the agent + TC + compliance_officer
     // all see the unblock work clearly in their bells (high/critical severity
     // routes through multi-channel: in-app + email + SMS-on-consent).
@@ -299,6 +359,7 @@ export async function submitOfferToCompliance(
     // the compliance officer from the brokerage roster.
     const summaryBits: string[] = []
     if (hasBlockingMissing) summaryBits.push(`${audit.missing_blocking.length} required document(s) missing`)
+    if (hasUnexecutedRequired) summaryBits.push(`${unexecutedRequired.length} required document(s) not fully signed/initialed`)
     if (hasPacketBlockers)  summaryBits.push(`${packetScan.blockers.length} packet blocker(s)`)
     if (packetUnverified)   summaryBits.push(`packet check could not run (${packetScan.error ?? "no reason given"})`)
 
@@ -317,7 +378,7 @@ export async function submitOfferToCompliance(
         type:        "compliance.submit_blocked",
         severity:    "high",
         title:       `Submit to compliance blocked: ${summaryBits.join(", ")}`,
-        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.${remedies.length > 0 ? `\nWhat to do: ${remedies.join(" ")}` : ""}`,
+        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nNot fully executed: ${unexecutedSummary.join("; ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.${remedies.length > 0 ? `\nWhat to do: ${remedies.join(" ")}` : ""}`,
         entityType:  "offer",
         entityId:    offerId,
         offerId,
@@ -328,6 +389,7 @@ export async function submitOfferToCompliance(
       success: false,
       error: `Cannot submit to compliance — ${summaryBits.join(" and ")}. Fix the listed items first.${remedies.length > 0 ? ` ${remedies.join(" ")}` : ""}`,
       missing_required: audit.missing_blocking,
+      unexecuted_required: unexecutedSummary,
       packet_blockers: packetScan.blockers.map(b => ({
         flagType: b.flagType, severity: b.severity, title: b.title,
       })),
@@ -410,39 +472,24 @@ export async function submitOfferToCompliance(
   const warningDocs  = audit.missing_warning ?? []
   const packetWarns  = packetScan.warnings ?? []
 
-  // ── PRESENT BUT NOT EXECUTED — the miss this checkpoint could not see ──────
+  // ── PRESENT BUT NOT EXECUTED — now a BLOCK, computed once, above ──────────
   //
-  // The audit above answers "is the document THERE". Nothing here answered "is
-  // it SIGNED AND INITIALED", for any required document other than the purchase
-  // contract: the packet scan reads the offer's own staged packet, and the
-  // buyer/seller evidence block reads the offer's columns. A required agency
-  // disclosure, lead-paint addendum or brokerage form could be uploaded blank,
-  // satisfy `missing_blocking`, and pass compliance in silence.
+  // This block used to compute `findUnexecutedDocuments` a SECOND time here and
+  // raise a `medium` warning from it, under a comment saying a refusal "would
+  // change what submitting to compliance MEANS, which is a ruling this does not
+  // have." The owner's 2026-09-04 ruling is that ruling, so the same reading now
+  // BLOCKS at the top of this function (see the long note beside
+  // `hasUnexecutedRequired`) and control only reaches this line when there are
+  // none.
   //
-  // It did not stay silent forever — lib/transactions/transaction-creation-gate.ts
-  // refuses transaction creation on exactly this, by the owner's rule that a
-  // transaction exists "only after the compliance is good, all documents are
-  // present with full signatures and initials". So the fact was already computed
-  // and already load-bearing; it was just discovered a stage TOO LATE, at the
-  // moment the deal tried to become a transaction, by which point compliance had
-  // been stamped and everyone believed the file was clean.
+  // The second call is gone — one reading of one deal file (§6) — and the
+  // splitting below survives because the flag it raises still distinguishes
+  // "nobody scanned this" from "a party has not signed", which are different
+  // remedies. With the block above in force both lists are empty here, so this
+  // section is now the belt to that braces: if a future edit relaxes the block,
+  // the warning path is still wired rather than having been deleted along with
+  // it.
   //
-  // This calls the gate's OWN pure reader rather than a second copy of it, so the
-  // warning a TC sees here and the refusal they would hit later are the same
-  // reading of the same deal file. Owner's rule for this path, verbatim, is the
-  // one already quoted above: "whether or not a doc is required or a warning, any
-  // missing item … needs to be a notification to the TC and/or the listing
-  // agent" — an unsigned required document is a missing item.
-  //
-  // WARNING, NOT A BLOCK, and deliberately so. `medium` severity is the in-app
-  // bell only (see the flag below), so this never becomes an email + SMS on every
-  // deal; and turning it into a refusal here would change what submitting to
-  // compliance MEANS, which is a ruling this does not have. The gate still
-  // refuses at creation — this only stops the TC finding out then.
-  const unexecutedRequired = findUnexecutedDocuments(
-    audit.deal_file,
-    audit.required_breakdown.map((r) => r.classification),
-  )
   // Split the way the gate splits them: a document nobody SCANNED has a different
   // remedy from one a party has not signed — "scan it" rather than "chase them".
   const unexecutedNeverScanned = unexecutedRequired.filter((u) => u.unscanned)

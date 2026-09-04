@@ -362,7 +362,16 @@ const assertions: Assertion[] = [
     },
     breaks: [
       { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",`, replace: `    stage: "MLS_ACTIVE_XX",\n    label: "MLS Active",` },
-      { file: F.defs, find: `    allowedFrom: ["OPEN_HOUSE_MARKETING"],\n    readinessChecks: ["mls_data_complete"],`, replace: `    allowedFrom: ["LEAD"],\n    readinessChecks: ["mls_data_complete"],` },
+      // THIS FIXTURE NO LONGER SPANS readinessChecks, ON PURPOSE (CLAUDE.md §2 —
+      // "do not pin an assertion to a WAYPOINT"). It used to read
+      // `allowedFrom: [...],\n    readinessChecks: ["mls_data_complete"],`, so
+      // when the owner's 2026-09-04 ruling added `documents_verified` to
+      // MLS_ACTIVE the find string stopped matching and the theatre detector
+      // (correctly, loudly) reported the mutation as not applied. The mutation
+      // only ever needed to drift allowedFrom; it is now anchored on the stage's
+      // IDENTITY plus the one line it actually changes, so a future change to
+      // this stage's readiness checks cannot break it again.
+      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["LEAD"],` },
     ],
   },
   {
@@ -383,7 +392,12 @@ const assertions: Assertion[] = [
       return { ok: true, detail: `LISTING_AGREEMENT_SIGNED requires [${signed.readinessChecks.join(", ")}]` }
     },
     breaks: [
-      { file: F.defs, find: `    allowedFrom: ["OPEN_HOUSE_MARKETING"],\n    readinessChecks: ["mls_data_complete"],`, replace: `    allowedFrom: ["OPEN_HOUSE_MARKETING", "LEAD"],\n    readinessChecks: ["mls_data_complete"],` },
+      // Anchored on stage identity + the allowedFrom line only — see the note on
+      // the sibling fixture above for why readinessChecks was dropped from it.
+      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING", "LEAD"],` },
+      // This one still pins LISTING_AGREEMENT_SIGNED's own checks, which the
+      // assertion reads directly (it fails when that stage declares none), so
+      // the literal IS the thing under test rather than a waypoint beside it.
       { file: F.defs, find: `    readinessChecks: ["dotloop_signatures", "documents_verified"],`, replace: `    readinessChecks: [],` },
     ],
   },

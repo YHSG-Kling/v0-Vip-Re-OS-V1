@@ -220,6 +220,37 @@ async function checkDocumentsVerified(
     stateCode:       (listing.state as string | null) ?? null,
   })
 
+  // ─── The EXECUTION half ───────────────────────────────────────────────────
+  //
+  // "documents_verified" CLAIMED MORE THAN IT CHECKED. Presence plus a terminal
+  // `documents.status` is not verification: `status` is a workflow label a
+  // caller writes, while whether every required party actually SIGNED and
+  // INITIALED lives in `documents.signature_completeness`, which this check
+  // never opened. A document could sit at status 'complete' with the seller's
+  // initials blank and this gate called it verified.
+  //
+  // The owner's 2026-09-04 ruling — "same compliance gate when a listing becomes
+  // an active listing" — is what closes it. findUnexecutedDocuments is the SAME
+  // pure function the offer-side transaction gate and the listing-activation
+  // gate run (§6: one vocabulary), so a check named `documents_verified` and the
+  // gate that guards MLS_ACTIVE can no longer disagree about what a verified
+  // document is.
+  //
+  // LISTING_AGREEMENT_PARTIES (agent + seller) is passed explicitly: this is
+  // seller-side paperwork and there is no buyer at this point in the lifecycle.
+  // The default is the purchase-contract pair and would refuse every listing.
+  const { findUnexecutedDocuments } = await import("@/lib/transactions/transaction-creation-gate")
+  const { LISTING_AGREEMENT_PARTIES } = await import("@/lib/compliance/signature-completeness")
+  const unexecuted = audit.unavailable_reason
+    ? []
+    : findUnexecutedDocuments(
+        audit.deal_file,
+        audit.required_breakdown.map((r) => r.classification),
+        LISTING_AGREEMENT_PARTIES,
+      )
+  const signatureGaps = unexecuted.filter((u) => u.missingSignatures.length > 0)
+  const initialGaps   = unexecuted.filter((u) => u.missingInitials.length > 0)
+
   const reasons: string[] = []
   // AN AUDIT THAT COULD NOT RUN IS NOT A CLEAN AUDIT. This check is the exact
   // surface finding #105 named ("documents_verified passes with zero
@@ -232,13 +263,25 @@ async function checkDocumentsVerified(
   if (audit.missing_blocking.length > 0) {
     reasons.push(`${audit.missing_blocking.length} required document(s) missing: ${audit.missing_blocking.join(", ")}`)
   }
+  // Signatures and initials are reported SEPARATELY, because the owner names
+  // them separately and fixing one is not fixing the other.
+  if (signatureGaps.length > 0) {
+    reasons.push(`${signatureGaps.length} required document(s) not fully signed: ${signatureGaps.map((u) => u.label).join(", ")}`)
+  }
+  if (initialGaps.length > 0) {
+    reasons.push(`initials outstanding on ${initialGaps.length} required document(s): ${initialGaps.map((u) => u.label).join(", ")}`)
+  }
   if (unverifiedDocs.length > 0) {
     reasons.push(`${unverifiedDocs.length} attached document(s) not yet complete or signed`)
   }
 
   return {
     check: "documents_verified",
-    passed: !audit.unavailable_reason && audit.missing_blocking.length === 0 && unverifiedDocs.length === 0,
+    passed:
+      !audit.unavailable_reason &&
+      audit.missing_blocking.length === 0 &&
+      unexecuted.length === 0 &&
+      unverifiedDocs.length === 0,
     reason: reasons.length > 0 ? reasons.join("; ") : undefined,
     details: {
       attached: data?.length || 0,
@@ -248,6 +291,10 @@ async function checkDocumentsVerified(
       // Warnings never block, but the surface should still show them so the
       // agent knows what the TC is about to ask for.
       missing_warning: audit.missing_warning,
+      // The execution half, split the way the refusal is, so a surface can tell
+      // an agent WHICH job is outstanding rather than only that one is.
+      missing_signatures: signatureGaps.map((u) => ({ label: u.label, missing: u.missingSignatures, unscanned: u.unscanned })),
+      missing_initials:   initialGaps.map((u) => ({ label: u.label, missing: u.missingInitials, unscanned: u.unscanned })),
     },
   }
 }

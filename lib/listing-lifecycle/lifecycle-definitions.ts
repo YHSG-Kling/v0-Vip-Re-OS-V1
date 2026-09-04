@@ -268,7 +268,28 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     label: "MLS Active",
     description: "Live on MLS",
     allowedFrom: ["OPEN_HOUSE_MARKETING"],
-    readinessChecks: ["mls_data_complete"],
+    // `documents_verified` added on the owner's 2026-09-04 ruling: "same
+    // compliance gate when a listing becomes an active listing."
+    //
+    // MLS_ACTIVE is a PUBLICLY-LIVE stage — lib/listings/listing-status-sync.ts
+    // maps it to listings.status 'active' — and it declared only
+    // mls_data_complete, so the generic stage-advance path
+    // (lib/application/listing-lifecycle.ts::requireListingStageAdvance, reached
+    // from the stage pipeline, the AI chat tool and updateListingStage) could
+    // walk a listing live with no document, signature or initial check at all.
+    // That was the bypass sitting beside the gate now enforced at activateMLS
+    // and launchListing, and a gate with an open door next to it is not a gate.
+    //
+    // documents_verified now means presence AND execution — see
+    // lib/listing-lifecycle/readiness-checker.ts::checkDocumentsVerified, which
+    // runs the same findUnexecutedDocuments the two gates run.
+    //
+    // Obligation 1 (a compliance-passed, fully-executed listing agreement) is
+    // not restated here because the stage graph already enforces it by
+    // construction: every route through allowedFrom to MLS_ACTIVE passes through
+    // LISTING_AGREEMENT_SIGNED, which is asserted in test:lifecycle-lib-defects
+    // (d1.owner-ruling-holds-by-construction).
+    readinessChecks: ["mls_data_complete", "documents_verified"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },

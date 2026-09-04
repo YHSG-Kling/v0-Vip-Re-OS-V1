@@ -598,6 +598,17 @@ export async function launchListing(input: {
   mlsNumber: string
   mlsLink?: string
   actorUserId: string
+  /**
+   * THE SESSION'S brokerage, resolved by the caller's own auth gate
+   * (app/actions/listings-kernel.ts::launchListingAction → resolveCallerContext).
+   * REQUIRED, because the compliance gate below cannot run without a tenant
+   * anchor and "no anchor" must refuse rather than pass (CLAUDE.md §4).
+   *
+   * It cannot WIDEN scope: this function reads through the request-scoped client
+   * (RLS applies) and the gate re-reads listings.brokerage_id and refuses a
+   * mismatch, so a wrong value can only narrow to a refusal.
+   */
+  brokerageId: string
 }): Promise<KernelResult<{ listing: Record<string, unknown> }>> {
   if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
   if (!input.mlsNumber?.trim())        return { success: false, error: "MLS number is required" }
@@ -614,6 +625,38 @@ export async function launchListing(input: {
 
   try {
     const supabase = await createClient()
+
+    // ── THE COMPLIANCE GATE (owner's ruling, 2026-09-04) ───────────────────
+    //
+    // "same compliance gate when a listing becomes an active listing."
+    //
+    // THIS IS THE SECOND DOOR TO ACTIVE, and it is the one that does not go
+    // through the stage machine at all: the UPDATE below writes BOTH
+    // `status:'active'` and `lifecycle_stage:'MLS_ACTIVE'` straight onto the
+    // row, so neither transitionLifecycle nor any readinessCheck ever sees it.
+    // Gating only activateMLS would have left the front door locked and this one
+    // open — the launch dialog (app/dashboard/listings/[id]/components/launch/)
+    // reaches it through launchListingAction.
+    //
+    // validateListingLaunchReadiness above is NOT this check and does not
+    // overlap it: it asks for a seller contact, a list price, an MLS number and
+    // five photos. It has never asked whether a single required document exists,
+    // whether anything was signed, or whether an initial is outstanding.
+    //
+    // IMPORTED DYNAMICALLY, for the reason this file already documents at the
+    // top: the gate reaches lib/compliance/required-documents.ts, which is
+    // `server-only`, and a static import would pull that into every module graph
+    // touching this file — including the plain `tsx` guard simulators, which are
+    // not server components and crash on `server-only` at load.
+    const { assertListingActivationAllowed } = await import("@/lib/listings/listing-activation-gate")
+    const complianceGate = await assertListingActivationAllowed(supabase as any, {
+      brokerageId: input.brokerageId,
+      listingId:   input.listingId,
+      door:        "listing launch",
+    })
+    if (!complianceGate.allowed) {
+      return { success: false, error: complianceGate.reason }
+    }
 
     const { data: listing, error } = await supabase
       .from("listings")

@@ -23,6 +23,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { auditListingDocuments } from "@/lib/compliance/required-documents"
+// THE LISTING-ACTIVATION COMPLIANCE GATE (owner's ruling, 2026-09-04: "same
+// compliance gate when a listing becomes an active listing"). See activateMLS.
+import { assertListingActivationAllowed } from "@/lib/listings/listing-activation-gate"
 import { scanListingPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
 import { LISTING_AGREEMENT_EXECUTED_STATUS } from "@/lib/transactions/coordination-status"
@@ -1819,6 +1822,38 @@ export async function activateMLS(params: {
   // Authority check: Admin only
   if (role !== "admin") {
     return { success: false, error: "Only admin can activate MLS" }
+  }
+
+  // ── THE COMPLIANCE GATE (owner's ruling, 2026-09-04) ─────────────────────
+  //
+  // "same compliance gate when a listing becomes an active listing."
+  //
+  // This is the moment. Until now the ONLY conditions on making a listing
+  // publicly live through this door were `authorizeListingAction` (tenancy) and
+  // `role !== "admin"` (authority) — no document check, no signature check, no
+  // initial check, and not even a stage precondition. An admin could take a
+  // listing with an empty file straight to MLS_ACTIVE, and because
+  // transitionLifecycle syncs listings.status ('active' via
+  // lib/listings/listing-status-sync.ts), it went publicly live on the spot.
+  //
+  // The gate is the listing-side twin of assertTransactionCreationAllowed and
+  // asks the same four questions against the BROKERAGE'S OWN checklist. It runs
+  // BEFORE the transition, and a refusal returns the reason verbatim — it names
+  // the missing documents, the missing signatures and the missing initials
+  // separately, because those are three different jobs for whoever fixes them.
+  const complianceGate = await assertListingActivationAllowed(supabase as any, {
+    brokerageId,
+    listingId,
+    door: "MLS activation",
+  })
+  if (!complianceGate.allowed) {
+    return {
+      success: false,
+      error: complianceGate.reason,
+      refusals: complianceGate.refusals,
+      missing_required: complianceGate.detail.missingRequired,
+      unexecuted: complianceGate.detail.unexecuted,
+    }
   }
 
   // Stage transition: MLS_READY → MLS_ACTIVE

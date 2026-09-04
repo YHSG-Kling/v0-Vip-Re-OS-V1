@@ -640,6 +640,10 @@ export async function launchListingAction(params: {
     mlsNumber:   params.mlsNumber,
     mlsLink:     params.mlsLink,
     actorUserId: ctx.userId,
+    // THE SESSION'S brokerage (CLAUDE.md §4 — never a request body's). The
+    // listing-activation compliance gate inside launchListing anchors on it and
+    // refuses when the listing belongs to another tenant.
+    brokerageId: ctx.brokerageId,
   })
 
   if (result.success) {
