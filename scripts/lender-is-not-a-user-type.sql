@@ -1,14 +1,30 @@
 -- scripts/lender-is-not-a-user-type.sql
 -- ═════════════════════════════════════════════════════════════════════════════
--- ⚠  WRITTEN, NOT APPLIED.  Lanes write migrations; the INTEGRATOR applies them
---    (CLAUDE.md §3: "a migration that exists as a .sql file has not been
---    applied"). Nothing below has run against hrvaqgvukzxfskkcrwbt.
+-- ✅ APPLIED LIVE 2026-09-04 to hrvaqgvukzxfskkcrwbt by the integrator.
+--    (CLAUDE.md §3: lanes write migrations, the integrator applies them.)
 --
---    AFTER APPLYING, REGENERATE THE VOCABULARY CACHE — scripts/check-vocabularies.ts
---    is machine-written from public.live_check_constraints_json(), and
---    check-vocabulary-guard / seatableUserTypes / scripts/seat-display-simulator.ts
---    all read it. An applied CHECK with a stale cache is the two halves
---    disagreeing, which is the exact shape §2 forbids.
+--    RESULT, verified by re-reading pg_constraint afterwards rather than by
+--    trusting the statement: the CHECK now admits FOURTEEN values, 'lender' is
+--    gone from it, and `select count(*) from users where user_type='lender'`
+--    returns 0.
+--
+--    THE TWO ROWS, INSPECTED BEFORE THE UPDATE rather than counted. Both are
+--    seed identities — lender@yourbrokerage.com (holding a `lender` grant in
+--    user_role_assignments) and lender@vip.demo (holding none) — and NEITHER has
+--    a `vendors` row. So the repoint takes nothing away: as vendors with no
+--    vendor record they still see nothing, exactly as they saw nothing as
+--    lenders, and the ruling's real effect is on the seats created from here on.
+--    Creating vendor records for two demo seats would be inventing data, so it
+--    was not done; it is recorded instead, because "the surface is on now" would
+--    be the wrong claim for these two rows specifically.
+--
+--    THE VOCABULARY CACHE WAS REGENERATED in the same step, as this header
+--    required — scripts/check-vocabularies.ts rebuilt from all 913 live
+--    single-column CHECKs (435 tables, 767 columns), with 'lender' the only
+--    membership change. test:check-vocabulary is green and RETIRED 17 in-memory
+--    baseline entries in the process; test:seat-display 142, test:identity-class
+--    113, test:vendor-categories 148, test:role-union-nav 57 and
+--    test:schema-cache-drift 43 are green too.
 -- ═════════════════════════════════════════════════════════════════════════════
 --
 -- OWNER RULING, 2026-09-04, verbatim:

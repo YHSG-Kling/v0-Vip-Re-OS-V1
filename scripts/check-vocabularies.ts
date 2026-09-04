@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 435 tables, 767 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-01
+ * generated: 2026-09-04
  * source: public.live_check_constraints_json()
- * body-sha256: 9aff2e03c8f15db7f37311daee1160bae4ffa7507ceb98c1678db2504fd64df8
+ * body-sha256: f780e1dfaeb6e711fe34cfbccf2cfcdc01526f2747bc88d7256af7888899bfde
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1553,7 +1553,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    user_type: ["admin", "agent", "broker", "broker_admin", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
+    user_type: ["admin", "agent", "broker", "broker_admin", "broker_owner", "compliance_officer", "contact", "isa", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],
