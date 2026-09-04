@@ -71,7 +71,7 @@ export type UserRole =
   // conservative, it is a false statement a compiler will happily enforce:
   // `user_type === 'lender'` type-checks, matches zero rows, and reads as
   // "there is nobody in that role". 'title_agent' had been stale here since m307;
-  // 'lender' goes with the migration in scripts/lender-is-not-a-user-type.sql.
+  // 'lender' goes with the migration in supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql.
   // Both remain CANONICAL ROLES in lib/security/types.ts — untouched.
   //
   // A `member` value briefly lived in both and was removed from both (m470),
@@ -268,7 +268,7 @@ export function isPlatformStaffIdentity(
 // and not this one, leaving the app roster WIDER than the predicate: the
 // false-success direction for RLS-bound callers (a refused SELECT resolves as
 // zero rows) and a REAL widening for the gates that run on the SERVICE client.
-// scripts/1109-a-compliance-officer-administers-the-brokerage.sql closed it,
+// supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql closed it,
 // applied live to hrvaqgvukzxfskkcrwbt on 2026-09-04 by the integrator, with its
 // own verification block passing against the applied definition. It widens
 // is_brokerage_admin() ONLY, and deliberately not is_brokerage_finance_admin()

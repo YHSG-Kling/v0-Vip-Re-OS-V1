@@ -84,7 +84,7 @@ const ROOT = process.cwd()
  * directions at once — it omitted 'broker_admin' (added to the CHECK by m530, so
  * a legitimate `.eq("user_type","broker_admin")` would have been reported as an
  * offender) and it still admitted 'lender' (which
- * scripts/lender-is-not-a-user-type.sql removes, so a filter that can never match
+ * supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql removes, so a filter that can never match
  * would have been graded legal).
  *
  * Derived from scripts/check-vocabularies.ts instead — the MACHINE-WRITTEN cache

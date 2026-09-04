@@ -1,4 +1,4 @@
--- scripts/1109-a-compliance-officer-administers-the-brokerage.sql
+-- supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WRITTEN BY LANE ROSTER (wave 27). **APPLIED LIVE 2026-09-04** by the
 -- integrator to hrvaqgvukzxfskkcrwbt, after the safety measurement below was

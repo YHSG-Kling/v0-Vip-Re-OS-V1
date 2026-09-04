@@ -308,7 +308,7 @@ function sourceLayer() {
   const APP_ROLES_PENDING_SQL = [
     // Owner ruling 2026-09-04, "there is a compliance officer for tenant staff
     // which was not included". SQL half written as
-    // scripts/1109-a-compliance-officer-administers-the-brokerage.sql —
+    // supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql —
     // WRITTEN, NOT APPLIED, and it widens is_brokerage_admin() ONLY.
     "compliance_officer",
   ]
@@ -369,7 +369,7 @@ function sourceLayer() {
     // right observation about the WRONG PAIR, and the owner's 2026-09-04 ruling
     // ("there is a compliance officer for tenant staff which was not included")
     // dissolved it: the compliance officer now ADMINISTERS, so the admin gate is
-    // meant to name them too (scripts/1109-…sql, written not applied).
+    // meant to name them too (supabase/migrations/m602-…sql, written not applied).
     //
     // The distinction m467 actually drew survives verbatim, one predicate over:
     // its own header says "a compliance officer READS them and does not

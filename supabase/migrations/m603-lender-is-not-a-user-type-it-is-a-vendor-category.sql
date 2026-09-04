@@ -1,4 +1,4 @@
--- scripts/lender-is-not-a-user-type.sql
+-- supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql
 -- ═════════════════════════════════════════════════════════════════════════════
 -- ✅ APPLIED LIVE 2026-09-04 to hrvaqgvukzxfskkcrwbt by the integrator.
 --    (CLAUDE.md §3: lanes write migrations, the integrator applies them.)

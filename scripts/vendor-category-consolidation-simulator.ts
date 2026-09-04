@@ -659,7 +659,7 @@ console.log("\n── owner ruling (2026-09-04) · LENDER IS A VENDOR CATEGORY, 
   {
     const overlap = liveUserTypes.filter((t) => liveCategories.includes(t))
     const migration = (() => {
-      try { return readFileSync(join(ROOT, "scripts/lender-is-not-a-user-type.sql"), "utf8") }
+      try { return readFileSync(join(ROOT, "supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql"), "utf8") }
       catch { return "" }
     })()
     // The rebuilt CHECK's value list, extracted once. An empty string here makes
@@ -687,8 +687,24 @@ console.log("\n── owner ruling (2026-09-04) · LENDER IS A VENDOR CATEGORY, 
     check("positive control · the migration is present and does both halves",
       /UPDATE public\.users SET user_type = 'vendor'/.test(migration) &&
       /ADD CONSTRAINT users_user_type_check/.test(migration))
-    check("…and it is honest that it has not been applied",
-      /WRITTEN, NOT APPLIED/.test(migration))
+    // RETARGETED 2026-09-04 (§2). This read `/WRITTEN, NOT APPLIED/.test(migration)`
+    // — so it could ONLY pass while the migration LIED about its own state, and
+    // it went red the moment the integrator applied it and said so in the header.
+    // That is the forbidden waypoint, three lines below a paragraph warning
+    // against exactly it: the sibling check above was written to pass vacuously
+    // once applied, and this one was written to fail.
+    //
+    // THE RULE is that the migration STATES its application status rather than
+    // leaving a reader to guess, and that the status it states AGREES WITH THE
+    // GENERATED CACHE. Both directions are asserted, so neither a stale "not
+    // applied" header on an applied migration nor an "applied" claim the database
+    // does not support can pass.
+    const claimsApplied  = /APPLIED LIVE \d{4}-\d{2}-\d{2}/.test(migration)
+    const claimsNotYet   = /WRITTEN, NOT APPLIED/.test(migration)
+    check("the migration states its application status, exactly one way",
+      claimsApplied !== claimsNotYet)
+    check("…and the generated vocabulary cache AGREES with what it claims",
+      claimsApplied ? !liveUserTypes.includes("lender") : liveUserTypes.includes("lender"))
   }
 
   // ── 6 · THE BOUNDARY OF THE RULING, PINNED SO IT IS NOT OVER-APPLIED ──────

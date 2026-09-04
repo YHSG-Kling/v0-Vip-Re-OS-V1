@@ -95,7 +95,7 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // The owner ruled "there is a compliance officer for tenant staff which was not
 // included", so TENANT_ADMIN_USER_TYPES — and therefore this alias — admits
 // `compliance_officer` as well, and the SQL half is APPLIED rather than merely
-// written: scripts/1109-a-compliance-officer-administers-the-brokerage.sql went
+// written: supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql went
 // live on hrvaqgvukzxfskkcrwbt the same day, widening
 // public.is_brokerage_admin() in BOTH of its branches. So the count in the line
 // above is now SIX on both sides, and this gate is not one role wider than the

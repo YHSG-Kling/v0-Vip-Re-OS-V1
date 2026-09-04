@@ -298,7 +298,7 @@ export async function getNegotiationStrategyForOfferAction(
   //
   // (`lender` was a THIRD such seat when this was written and is no longer a
   // storable user_type at all — the owner's 2026-09-04 ruling made it a vendor
-  // category and scripts/lender-is-not-a-user-type.sql dropped it from the
+  // category and supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql dropped it from the
   // CHECK. Those seats are `vendor` now, so they are still in the class this
   // gate refuses; the count of spellings changed, the exposure did not.)
   //

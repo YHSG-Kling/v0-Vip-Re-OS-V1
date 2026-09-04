@@ -682,7 +682,7 @@ async function liveLayer() {
   // a count that moves is the finding.
   const APP_EXTRAS_PENDING_SQL = [
     // Owner ruling 2026-09-04. SQL half written as
-    // scripts/1109-a-compliance-officer-administers-the-brokerage.sql —
+    // supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql —
     // WRITTEN, NOT APPLIED. Once applied, `wideExtras` below goes empty and
     // every check here still passes.
     "compliance_officer",

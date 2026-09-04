@@ -149,7 +149,7 @@ Supabase project `hrvaqgvukzxfskkcrwbt`.
   policies admit `current_user_type() = 'vendor'` and nothing else external, so a
   user typed `'lender'` matches none of them and every read comes back
   successfully EMPTY. `'title_agent'` left the CHECK in m307;
-  `scripts/lender-is-not-a-user-type.sql` does the same for `'lender'`.
+  `supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql` does the same for `'lender'`.
   BOTH remain CANONICAL ROLES in `lib/security/types.ts` — the permission
   vocabulary and the seat vocabulary are deliberately different sets.
 - Team lead anchors on `teams.team_lead_id`. A team is a mini brokerage.

@@ -62,7 +62,7 @@ type SupabaseLike = { from: (table: string) => any }
 // `compliance_officer` on the owner's ruling that the compliance officer is
 // tenant staff, so this gate admits them too — and the MIRRORS-is_brokerage_admin()
 // claim at the top of this comment still holds, because the SQL half was
-// APPLIED the same day (scripts/1109-a-compliance-officer-administers-the-brokerage.sql,
+// APPLIED the same day (supabase/migrations/m602-a-compliance-officer-administers-the-brokerage.sql,
 // live on hrvaqgvukzxfskkcrwbt). The "five roles live" count above is six now,
 // on both sides. Left un-applied it would have mattered here in the quiet
 // direction: global_settings writes ride the INJECTED, ctx-resolved client, so

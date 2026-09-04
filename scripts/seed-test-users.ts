@@ -18,7 +18,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 // scripts/check-vocabularies.ts (users.user_type), never retyped here, because a
 // transcribed constraint goes stale silently. 'lender' and 'title_agent' are NOT
 // among them: both are VENDOR CATEGORIES, not seats (owner ruling; m307 and
-// scripts/lender-is-not-a-user-type.sql). Note 'TC' is not legal either — the
+// supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql). Note 'TC' is not legal either — the
 // value is lowercase 'tc'.
 // role must be a canonical role (lib/security/types.ts) — a DIFFERENT set, which
 // DOES include lender and title_agent: that is the permission vocabulary, and it

@@ -90,7 +90,7 @@ export type UserDomainRole =
   // tier-role-matrix.ts already refused it (PARTNER_ROLES is `["vendor"]`, and
   // roleRefusalReason names the vendor invite flow), so keeping it here only kept
   // the value alive for the god console, which is the one path that could still
-  // mint the drift. scripts/lender-is-not-a-user-type.sql drops it from the CHECK.
+  // mint the drift. supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql drops it from the CHECK.
   // It remains a CANONICAL ROLE in lib/security/types.ts — a lender vendor's
   // permissions are still spelled 'lender'; only the SEAT is 'vendor'.
   | "superadmin"
