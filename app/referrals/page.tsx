@@ -61,6 +61,14 @@ interface ClientRow {
     status?: string | null
   }>
   client_engagement_scores?: EngagementRow[]
+  /**
+   * §1.2 (2026-09-04) — TRUE when the client's ONE engagement score row was
+   * computed for a different agent (client_engagement_scores.agent_id, written
+   * by the scorer and read by nobody until now). The table is
+   * UNIQUE(contact_id), so a client who changed hands keeps the previous
+   * agent's number and this flag is the only thing that can say so.
+   */
+  engagement_scored_by_other_agent?: boolean
 }
 
 function fullName(c: { first_name?: string | null; last_name?: string | null }): string {
@@ -183,6 +191,13 @@ export default async function ReferralsPage({ searchParams }: Props) {
   const engagementRows = clients
     .map((c) => c.client_engagement_scores?.[0])
     .filter((e): e is EngagementRow => Boolean(e))
+
+  // §1.2 — how much of the average above is somebody else's relationship. The
+  // number is NOT silently re-computed to exclude them: the sphere score is a
+  // stored, cross-screen figure (app/lifetime-customers/page.tsx uses the same
+  // bands) and quietly changing what it means is its own defect. The count is
+  // published beside it so an agent can see the borrowed share.
+  const inheritedScores = clients.filter((c) => c.engagement_scored_by_other_agent).length
 
   const engagement =
     engagementRows.length > 0
@@ -331,6 +346,7 @@ export default async function ReferralsPage({ searchParams }: Props) {
           value_estimate: Number(r.value_estimate) || undefined,
         }))}
         sphereScore={sphereScore}
+        inheritedEngagementScores={inheritedScores}
         topAdvocates={topAdvocates}
         sphereSegments={sphereSegments}
         leaderboardWidget={leaderboardWidget}

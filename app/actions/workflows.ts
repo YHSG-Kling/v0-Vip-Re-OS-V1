@@ -413,6 +413,92 @@ export async function startSmartDrip(
 }
 
 /**
+ * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+ *
+ * `drip_campaigns` carried a full LIFECYCLE that nothing on earth read:
+ * `agent_id`, `started_at`, `completed_at` (written by startSmartDrip above,
+ * :370) and `paused_at` (written by the queue drain,
+ * app/api/cron/queue-drain/route.ts:517 when no compliance-gated sequence of
+ * the drip_type exists). An agent could press "Start drip", and five minutes
+ * later the drain could PAUSE that drip with an honest reason — and the agent
+ * would never learn it, because the card that started it showed no history.
+ * That is the "queued into a cadence that cannot send" failure the card's own
+ * header promises never happens.
+ *
+ * No duplicate reader existed anywhere (the only other `drip_campaigns`
+ * selects are the drain's own worklist and its two updates), so the reader is
+ * BUILT here rather than merged. Read-only; tenant + agent scope come from the
+ * SESSION (§4), never from a parameter.
+ */
+export interface ContactDripRow {
+  id: string
+  dripType: string | null
+  status: string | null
+  /** True when this drip was started by the CALLING agent (drip_campaigns.agent_id). */
+  startedByMe: boolean
+  startedAt: string | null
+  completedAt: string | null
+  pausedAt: string | null
+  /** The drain's honest reason a drip was paused, or the sequence it completed into. */
+  outcome: string | null
+}
+
+export async function listContactDrips(
+  contactId: string
+): Promise<{ success: boolean; drips?: ContactDripRow[]; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
+
+    const svc = createServiceClient()
+    // brokerage_id is re-asserted on the drip rows themselves: the contact
+    // check above proves the CONTACT is ours, this proves no cross-tenant drip
+    // row hanging off the same contact id can be read.
+    const { data, error } = await svc
+      .from("drip_campaigns")
+      .select("id, agent_id, drip_type, status, started_at, completed_at, paused_at, metadata")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+    // §3 — supabase-js RESOLVES refusals; a swallowed error would render as
+    // "this contact has never been dripped", which is the opposite of the truth.
+    if (error) return { success: false, error: error.message }
+
+    const drips: ContactDripRow[] = (data ?? []).map((row: any) => {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>
+      const outcome =
+        typeof meta.drain_reason === "string"
+          ? (meta.drain_reason as string)
+          : typeof meta.sequence_name === "string"
+            ? `Enrolled in “${meta.sequence_name as string}”`
+            : typeof meta.enroll_error === "string"
+              ? `Enrollment refused (${meta.enroll_error as string}) — queued for retry`
+              : null
+      return {
+        id: row.id as string,
+        dripType: (row.drip_type as string | null) ?? null,
+        status: (row.status as string | null) ?? null,
+        startedByMe: !!ctx.agentId && row.agent_id === ctx.agentId,
+        startedAt: (row.started_at as string | null) ?? null,
+        completedAt: (row.completed_at as string | null) ?? null,
+        pausedAt: (row.paused_at as string | null) ?? null,
+        outcome,
+      }
+    })
+
+    return { success: true, drips }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to read drip history" }
+  }
+}
+
+/**
  * Send a message to a contact.
  */
 export async function sendMessage(

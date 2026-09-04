@@ -141,6 +141,15 @@ export async function OutcomeProofPanel({ brokerageId }: OutcomeProofPanelProps)
                       ) : null}
                     </p>
                     <p className="text-xs text-muted-foreground">{r.explanation}</p>
+                    {/* §1.2 — WHO it failed to reach. A lead-directed touch
+                        carries lead_id and no contact_id, so without this the
+                        broker saw a failure with no subject. Rendered as a link
+                        to the lead's own record. */}
+                    {r.leadId && (
+                      <a href={`/leads/${r.leadId}`} className="text-xs underline text-muted-foreground">
+                        Open the lead this never reached
+                      </a>
+                    )}
                   </div>
                 ))}
               </div>

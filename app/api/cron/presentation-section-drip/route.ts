@@ -18,6 +18,12 @@ import { sweepPrelistingDeliveryGate } from "@/lib/listing-presentation/prelisti
  * The response carries the per-channel counts (portalPosted / emailsSent /
  * emailsFailed / waitingOnReel) so a tick that delivered rows but sent no email
  * is visible from the cron log instead of reading as a clean run.
+ *
+ * It also carries `lastDeliveredAt` + `stalledPresentations` (§1.2, 2026-09-04):
+ * presentation_sections.delivered_at was written and read by nothing, so a drip
+ * that stopped mid-timetable returned the same all-zero body as a tick with
+ * nothing due. A null `lastDeliveredAt` means the sweep could not be read — not
+ * that nothing has ever been delivered.
  * Auth: CRON_SECRET.
  */
 export const dynamic = "force-dynamic"

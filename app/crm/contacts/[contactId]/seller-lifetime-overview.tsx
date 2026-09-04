@@ -75,8 +75,17 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
     // transfer_reason (app/api/voice/twilio/turn/route.ts:253) and had no reader,
     // so the timeline could say a call was handed off and never say to whom —
     // on a contact record whose whole job is "who talked to this person".
+    // ORPHAN DOCTRINE §1.2 (2026-09-04) — `caller_phone` and
+    // `caller_phone_digits` joined this select. Both were written by the
+    // reception lane (app/api/voice/twilio/inbound/route.ts:127) and read by
+    // NOBODY, so this timeline — the one place a call is shown to the person
+    // who has to follow it up — could say a call happened and never say WHICH
+    // number it came from. A contact routinely has several (mobile, office, a
+    // spouse's), and "call them back" is unanswerable without it. The DIGITS
+    // column is the normalised match key, which is what makes counting repeat
+    // calls from one number possible below.
     svc.from("inbound_call_classifications")
-       .select("id, classification, transfer_reason, transferred_to_user_id, ai_handled, classified_at")
+       .select("id, classification, transfer_reason, transferred_to_user_id, ai_handled, classified_at, caller_phone, caller_phone_digits")
        .eq("brokerage_id", brokerageId)
        .eq("resulting_contact_id", contactId)
        .order("classified_at", { ascending: false })
@@ -120,6 +129,15 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
         if (name) transferNameById.set((u as any).id as string, name)
       }
     }
+  }
+
+  // §1.2 — repeat calls per NUMBER, from caller_phone_digits. Counted over the
+  // full 10-row window before the timeline is trimmed, so "3rd call from this
+  // number" stays true even when older calls fall off the display.
+  const callsPerNumber = new Map<string, number>()
+  for (const c of callClassifications as Array<{ caller_phone_digits?: string | null }>) {
+    const d = c.caller_phone_digits
+    if (d) callsPerNumber.set(d, (callsPerNumber.get(d) ?? 0) + 1)
   }
 
   // Merge activities + classified inbound calls into one newest-first timeline
@@ -320,6 +338,19 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
                       {item.entry.transferred_to_user_id && (
                         <span className="text-[11px] text-muted-foreground">
                           → transferred to {transferNameById.get(String(item.entry.transferred_to_user_id)) ?? "a teammate"}
+                        </span>
+                      )}
+                      {/* §1.2 — the number they called from, and how many times
+                          that number has called. Rendered only when recorded;
+                          an absent number is never guessed at from the contact
+                          record, which may hold a different one. */}
+                      {item.entry.caller_phone && (
+                        <span className="text-[11px] text-muted-foreground">
+                          from {String(item.entry.caller_phone)}
+                          {(() => {
+                            const n = callsPerNumber.get(String(item.entry.caller_phone_digits ?? "")) ?? 0
+                            return n > 1 ? ` · ${n} calls from this number` : ""
+                          })()}
                         </span>
                       )}
                       {item.entry.ai_handled && (

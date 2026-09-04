@@ -145,6 +145,17 @@ export interface VendorPackageChargeRow {
   price_per_month: number
   price_per_credit: number | null
   billing_cycle: string
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `vendor_subscriptions.canceled_at` was written by
+   * endVendorPackageEnrolmentAction (:382) and cleared on revive (:321) and
+   * read by NOBODY. The payer's own view — this list — showed the bare word
+   * "canceled" with no date, so a vendor disputing a charge could not tell
+   * from the product whether the enrolment ended last week or last year, which
+   * is the single fact the dispute turns on. Null while active.
+   */
+  canceled_at: string | null
 }
 
 export type VendorPackageChargeListResult =
@@ -426,7 +437,7 @@ export async function listMyVendorPackageChargesAction(): Promise<VendorPackageC
   const { data, error } = await supabase
     .from("vendor_subscriptions")
     .select(
-      "id, brokerage_id, plan_id, status, current_period_start, current_period_end, credits_used_this_period",
+      "id, brokerage_id, plan_id, status, current_period_start, current_period_end, credits_used_this_period, canceled_at",
     )
     .eq("vendor_id", grant.vendor_id)
     .order("current_period_end", { ascending: false })
@@ -463,6 +474,7 @@ export async function listMyVendorPackageChargesAction(): Promise<VendorPackageC
         price_per_month: Number(p?.price_per_month ?? 0),
         price_per_credit: p?.price_per_credit === null || p?.price_per_credit === undefined ? null : Number(p.price_per_credit),
         billing_cycle: p?.billing_cycle ?? "monthly",
+        canceled_at: (r.canceled_at as string | null) ?? null,
       }
     }),
   }

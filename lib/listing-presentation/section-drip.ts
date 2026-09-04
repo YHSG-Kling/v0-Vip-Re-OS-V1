@@ -746,6 +746,20 @@ export interface DeliverResult {
   emailsFailed:  number
   /** Due sections held back because their reel is still rendering. */
   waitingOnReel: number
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `presentation_sections.delivered_at` was stamped by the claim below (:866)
+   * and read by NOBODY — none of the four other readers of this table selects
+   * it. So the drip could stamp a delivery and then stop dead, and every
+   * subsequent tick returned `considered: 0, delivered: 0`, which is
+   * byte-identical to "there was nothing due". A seller's pre-appointment
+   * timetable could stall silently between part 2 and part 7 with the
+   * appointment coming, and the cron log said the run was clean.
+   */
+  lastDeliveredAt: string | null
+  /** Presentations with an OVERDUE section whose last delivery is > 3 days old. */
+  stalledPresentations: number
   error?:        string
 }
 
@@ -821,7 +835,10 @@ export async function deliverDueSections(
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const nowIso = now.toISOString()
-  const result: DeliverResult = { delivered: 0, considered: 0, portalPosted: 0, emailsSent: 0, emailsFailed: 0, waitingOnReel: 0 }
+  const result: DeliverResult = {
+    delivered: 0, considered: 0, portalPosted: 0, emailsSent: 0, emailsFailed: 0,
+    waitingOnReel: 0, lastDeliveredAt: null, stalledPresentations: 0,
+  }
 
   // GATE 2: a section is delivered only after a human RELEASED its presentation
   // (listing_presentations.delivery_approved_at). An inner join + not-null filter
@@ -838,6 +855,12 @@ export async function deliverDueSections(
 
   const rows = (due ?? []) as unknown as DueSectionRow[]
   result.considered = rows.length
+
+  // §1.2 — THE READER for delivered_at. Computed BEFORE this tick's own claims
+  // so it describes the state the tick INHERITED, which is what a stall is.
+  const stall = await readDripStall(supabase, now)
+  result.lastDeliveredAt = stall.lastDeliveredAt
+  result.stalledPresentations = stall.stalledPresentations
 
   const presCache = new Map<string, PresentationContext | null>()
 
@@ -938,6 +961,73 @@ export async function deliverDueSections(
   }
 
   return result
+}
+
+/**
+ * ORPHAN DOCTRINE §1.2 — the reader `presentation_sections.delivered_at` never
+ * had. Answers two questions the drip could not previously answer about itself:
+ *
+ *   · when did this rail last deliver ANYTHING (its pulse), and
+ *   · how many presentations have a section that came due more than a day ago
+ *     while their last delivery is older than STALL_DAYS — a timetable that
+ *     started and then stopped, which is the failure a seller notices and the
+ *     cron log could not show.
+ *
+ * §3: both reads destructure `{ data, error }`. A refused read reports zero
+ * stalls AND a null pulse, and the null pulse is what marks the answer unknown
+ * rather than clean.
+ */
+const STALL_DAYS = 3
+
+async function readDripStall(
+  supabase: ReturnType<typeof createServiceClient>,
+  now: Date,
+): Promise<{ lastDeliveredAt: string | null; stalledPresentations: number }> {
+  const staleBefore = new Date(now.getTime() - STALL_DAYS * 86_400_000).toISOString()
+  const overdueBefore = new Date(now.getTime() - 86_400_000).toISOString()
+
+  const [deliveredRes, overdueRes] = await Promise.all([
+    supabase
+      .from("presentation_sections")
+      .select("presentation_id, delivered_at")
+      .not("delivered_at", "is", null)
+      .order("delivered_at", { ascending: false })
+      .limit(2000),
+    supabase
+      .from("presentation_sections")
+      .select("presentation_id")
+      .eq("status", "scheduled")
+      .lte("scheduled_for", overdueBefore)
+      .limit(2000),
+  ])
+  if (deliveredRes.error) {
+    console.error(`[section-drip] delivered_at sweep unreadable: ${deliveredRes.error.message}`)
+    return { lastDeliveredAt: null, stalledPresentations: 0 }
+  }
+  if (overdueRes.error) {
+    console.error(`[section-drip] overdue sweep unreadable: ${overdueRes.error.message}`)
+    return { lastDeliveredAt: null, stalledPresentations: 0 }
+  }
+
+  const deliveredRows = (deliveredRes.data ?? []) as Array<{ presentation_id: string; delivered_at: string }>
+  // Rows arrive newest-first, so the FIRST stamp seen per presentation is its latest.
+  const latestByPresentation = new Map<string, string>()
+  for (const r of deliveredRows) {
+    if (!latestByPresentation.has(r.presentation_id)) latestByPresentation.set(r.presentation_id, r.delivered_at)
+  }
+  const lastDeliveredAt = deliveredRows[0]?.delivered_at ?? null
+
+  const overduePresentations = new Set(
+    ((overdueRes.data ?? []) as Array<{ presentation_id: string }>).map((r) => r.presentation_id),
+  )
+  let stalledPresentations = 0
+  for (const pid of overduePresentations) {
+    const last = latestByPresentation.get(pid)
+    // A drip that has delivered NOTHING is not stalled — it has not started;
+    // gate 2 holds it, and calling that a stall would cry wolf every tick.
+    if (last && last < staleBefore) stalledPresentations++
+  }
+  return { lastDeliveredAt, stalledPresentations }
 }
 
 /** Resolve everything a section email needs from its presentation, once per presentation. */

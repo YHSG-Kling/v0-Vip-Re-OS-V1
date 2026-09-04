@@ -1337,6 +1337,25 @@ Them-first: focus on what the buyer gains, not agent promotion.`
       .upsert({
         brokerage_id: params.brokerageId,
         contact_id: params.contactId ?? null,
+        // UNRESOLVED, RECORDED (orphan doctrine §1, 2026-09-04). `template_id`
+        // is written here and by lib/workflow/adapters/listing-landing-page.ts:49
+        // and read by NOBODY, and the reason is that the OTHER HALF OF THE
+        // FEATURE DOES NOT EXIST: there is no landing-page template table
+        // anywhere in this tree (the column carries no FK — see
+        // scripts/schema-fk-map.ts:461, where listing_landing_pages has FKs to
+        // brokerages/contacts/listings and nothing else), and the value comes
+        // from a bare uuid box in the sequence step palette
+        // (lib/workflow/step-palette.ts:245, `listing_page_template_id`). The
+        // page's markup is generated free-form by the model above, so no
+        // template is applied at render time either.
+        //
+        // So this is NOT a wiring gap a lane can close: the missing half is a
+        // template system, which is a product decision, not a reader. Deleting
+        // the column would silently drop the ids agents have already typed into
+        // that field, and building a fake reader would report a template as
+        // "applied" when nothing applies it. Left as-is, named here so the next
+        // census pass does not re-litigate it. Integrator: this one needs the
+        // owner to say whether landing-page templates are wanted.
         template_id: params.templateId ?? null,
         listing_id: params.listingId ?? null,
         slug: pageSlug,

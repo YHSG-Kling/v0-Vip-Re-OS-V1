@@ -39,8 +39,17 @@ export default async function FleetNumbersPage(
     svc.from("tenant_phone_numbers")
       .select("id, brokerage_id, phone_number, scope_type, agent_user_id, number_source, twilio_number_sid, is_active, created_at")
       .order("created_at", { ascending: false }).limit(500),
+    // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select, through
+    // the embed so the name travels with it. The provisioning ledger stamps
+    // WHICH AGENT a number event belongs to (lib/voice/number-provisioning.ts:46,
+    // agents-class per scripts/agent-fk-columns.ts:193) and nothing read it, so
+    // this board — the fleet's only event log — showed a number being bought or
+    // released and never for whom. On an agent-scoped line, that is the whole
+    // record: a released number with no agent on the row cannot be traced back
+    // to the seat that stops receiving calls. phone_number_events has exactly
+    // one FK to agents (schema-fk-map.ts:557), so the bare embed is unambiguous.
     svc.from("phone_number_events")
-      .select("id, brokerage_id, phone_number, event_type, source, twilio_sid, cost_usd, notes, created_at")
+      .select("id, brokerage_id, agent_id, phone_number, event_type, source, twilio_sid, cost_usd, notes, created_at, agents(users(first_name, last_name))")
       .order("created_at", { ascending: false }).limit(30),
   ])
   if (brkError) return <div className="p-6 text-red-600">Failed to load tenants: {brkError.message}</div>
@@ -172,6 +181,13 @@ export default async function FleetNumbersPage(
                   {tenantName.get(e.brokerage_id) ?? "(unknown tenant)"}
                 </span>
                 {e.source && <span className="text-xs text-muted-foreground">source: {e.source}</span>}
+                {/* §1.2 — whose line this event was. An id that resolves to no
+                    name renders as "an agent" rather than naming the wrong one. */}
+                {e.agent_id && (
+                  <span className="text-xs text-muted-foreground">
+                    agent: {[e.agents?.users?.first_name, e.agents?.users?.last_name].filter(Boolean).join(" ") || "an agent"}
+                  </span>
+                )}
                 {e.cost_usd != null && <span className="text-xs text-muted-foreground tabular-nums">${Number(e.cost_usd).toFixed(2)}</span>}
                 {e.notes && <span className="text-xs text-muted-foreground truncate max-w-[420px]" title={e.notes}>{e.notes}</span>}
                 <span className="ml-auto text-xs text-muted-foreground">{e.created_at ? new Date(e.created_at).toLocaleString() : "—"}</span>

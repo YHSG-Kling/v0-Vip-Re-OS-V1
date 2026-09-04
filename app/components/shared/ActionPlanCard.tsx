@@ -16,6 +16,14 @@ interface ActionPlanCardProps {
     contact_id?: string | null
     relatedLeadName?: string
     source?: string
+    /**
+     * Extra context beside the source badge — e.g. an open-house attendee's
+     * interest score, read from ai_autopilot_actions.metadata (§1.2, 2026-09-04).
+     * Kept SEPARATE from `source` on purpose: the feed matches `source` against
+     * the exact literal 'AI Autopilot' to decide whether these rows can be
+     * resolved at all.
+     */
+    sourceDetail?: string
   }
   /**
    * When provided, the card renders Done / Skip controls and calls this with
@@ -58,6 +66,7 @@ export function ActionPlanCard({ plan, onResolve }: ActionPlanCardProps) {
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {plan.source && <Badge variant="outline" className="text-[10px]">{plan.source}</Badge>}
+            {plan.sourceDetail && <Badge variant="secondary" className="text-[10px]">{plan.sourceDetail}</Badge>}
             {priorityColor && <Badge className={priorityColor}>{plan.priority}</Badge>}
           </div>
         </div>

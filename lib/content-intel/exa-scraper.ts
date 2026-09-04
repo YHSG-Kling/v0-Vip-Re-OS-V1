@@ -37,6 +37,21 @@ export interface ExaSearchResult {
   published_date:   string | null
   /** Heuristic category tags. */
   categories:       string[]
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF, on the WRITER side.
+   *
+   * `competitor_content.media_url` is READ by
+   * app/actions/marketing-intelligence.ts:148 (and carried through to
+   * CompetitorPost.mediaUrl) and was written by NOBODY: the one writer of that
+   * table, lib/competitive-intel/content-intel-scan.ts:160, never set it, so
+   * every competitor post the scan files has a null image and the panel shows a
+   * rival's post as a wall of text. Exa returns the page's representative image
+   * on the search result itself; it was simply being dropped in the mapper
+   * below. NULL when Exa has no image — never a placeholder, because a
+   * fabricated thumbnail on a competitor-intel card is a claim about their
+   * creative.
+   */
+  image_url:        string | null
 }
 
 interface ExaResultItem {
@@ -47,6 +62,10 @@ interface ExaResultItem {
   publishedDate?: string
   highlights?: string[]
   text?:   string
+  /** Exa's representative image for the page, when it found one. */
+  image?:  string
+  /** Some Exa responses carry the favicon instead of/next to `image`. */
+  favicon?: string
 }
 
 interface ExaResponse {
@@ -129,6 +148,9 @@ export async function exaSearch(args: {
       summary:          summary.slice(0, 4000),
       published_date:   r.publishedDate ?? null,
       categories:       inferCategoriesFromText(`${r.title ?? ""} ${summary}`),
+      // §1.2 — the page image. `favicon` is deliberately NOT used as a fallback:
+      // a 16px site icon rendered as a post thumbnail misrepresents the post.
+      image_url:        typeof r.image === "string" && r.image.startsWith("http") ? r.image : null,
     }
   })
 }

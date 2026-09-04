@@ -789,9 +789,18 @@ export default function CRMPage() {
               .eq("transaction_id", txId)
               .limit(5)
           : Promise.resolve({ data: [] }),
+        // ORPHAN DOCTRINE §1.2 (2026-09-04) — `notes` and `agent_id` joined this
+        // select. Both are written by the intent writer that makes the
+        // introduction (app/actions/intent-writers.ts:149) and were read by
+        // NOBODY: `notes` is the agent's own sentence about WHY this vendor was
+        // put in front of this client ("handles the crawlspace work, quoted
+        // Tuesday"), and `agent_id` is who introduced them. On a shared client
+        // the second agent saw a vendor's name and category and no account of
+        // how they got there, which is how a client gets introduced to the same
+        // trade twice.
         supabase
           .from("contact_vendors")
-          .select("id, role, status, vendors(id, name, category, phone, email)")
+          .select("id, role, status, notes, agent_id, introduced_at, vendors(id, name, category, phone, email)")
           .eq("contact_id", contactId)
           .limit(10),
         txId
@@ -2199,6 +2208,16 @@ export default function CRMPage() {
                                         <span className="text-sm font-medium">{vendor?.name}</span>
                                       </div>
                                       {vendor?.category && <p className="text-xs text-muted-foreground capitalize">{vendor.category}</p>}
+                                      {/* §1.2 — the introduction note and who made
+                                          it. Rendered only when recorded; nothing
+                                          is inferred when the columns are null. */}
+                                      {v.notes && <p className="text-xs text-muted-foreground">{v.notes}</p>}
+                                      {(v.introduced_at || v.agent_id) && (
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {v.introduced_at ? `Introduced ${new Date(v.introduced_at).toLocaleDateString()}` : "Introduced"}
+                                          {v.agent_id ? (v.agent_id === agentId ? " by you" : " by a teammate") : ""}
+                                        </p>
+                                      )}
                                     </div>
                                     <div className="flex gap-1.5 shrink-0">
                                       {vendor?.phone && (

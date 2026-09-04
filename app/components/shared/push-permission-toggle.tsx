@@ -9,8 +9,10 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   getVapidPublicKey,
+  listMyPushDevices,
   subscribePush,
   unsubscribePush,
+  type PushDeviceRow,
 } from "@/app/actions/push-subscriptions"
 
 type PushState =
@@ -42,9 +44,63 @@ function subscriptionKeys(sub: PushSubscription): { p256dh: string; auth: string
   return { p256dh, auth }
 }
 
+/**
+ * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF.
+ *
+ * `push_subscriptions.user_agent` was written and never read, so this renders
+ * it — as a short device label rather than the 200-character UA string. Pure
+ * string matching on the raw UA; wrong guesses degrade to "Browser", never to
+ * a claim about a device the user does not own.
+ */
+function deviceLabel(ua: string | null): string {
+  if (!ua) return "Unknown device"
+  const browser =
+    /Edg\//.test(ua) ? "Edge"
+    : /OPR\/|Opera/.test(ua) ? "Opera"
+    : /Firefox\//.test(ua) ? "Firefox"
+    : /Chrome\//.test(ua) ? "Chrome"
+    : /Safari\//.test(ua) ? "Safari"
+    : "Browser"
+  const os =
+    /iPhone|iPad|iPod/.test(ua) ? "iOS"
+    : /Android/.test(ua) ? "Android"
+    : /Mac OS X|Macintosh/.test(ua) ? "macOS"
+    : /Windows/.test(ua) ? "Windows"
+    : /Linux/.test(ua) ? "Linux"
+    : ""
+  return os ? `${browser} on ${os}` : browser
+}
+
+/** The honest reason a device stopped receiving push, in the user's words. */
+function deviceState(d: PushDeviceRow): { text: string; dead: boolean } {
+  if (!d.disabledAt) {
+    return {
+      text: d.lastSeenAt ? `Active — last confirmed ${new Date(d.lastSeenAt).toLocaleDateString()}` : "Active",
+      dead: false,
+    }
+  }
+  const why =
+    d.disabledReason === "endpoint_gone"
+      ? "the browser dropped the subscription (cleared site data, or the app was removed)"
+      : d.disabledReason === "user_unsubscribed"
+        ? "you turned push off on that device"
+        : d.disabledReason ?? "no reason was recorded"
+  return { text: `Not receiving push — ${why}`, dead: true }
+}
+
 export function PushPermissionToggle() {
   const [state, setState] = useState<PushState>("loading")
   const [error, setError] = useState("")
+  const [devices, setDevices] = useState<PushDeviceRow[] | null>(null)
+  const [devicesError, setDevicesError] = useState("")
+
+  const loadDevices = useCallback(async () => {
+    const result = await listMyPushDevices()
+    // Fail LOUD (§4): an unread refusal rendered as an empty list would read as
+    // "no devices", the very false all-clear this panel exists to prevent.
+    if (result.success) { setDevices(result.devices ?? []); setDevicesError("") }
+    else { setDevices(null); setDevicesError(result.error ?? "Could not read your push devices.") }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -82,6 +138,15 @@ export function PushPermissionToggle() {
       cancelled = true
     }
   }, [])
+
+  // The device list is about the ACCOUNT, not this browser, so it loads as soon
+  // as the platform is known to have push at all — including when THIS browser
+  // is unsubscribed or blocked, which is exactly when "…but my laptop still
+  // gets them, right?" needs answering.
+  useEffect(() => {
+    if (state === "loading" || state === "unsupported" || state === "unconfigured") return
+    void loadDevices()
+  }, [state, loadDevices])
 
   const enable = useCallback(async () => {
     setState("working")
@@ -204,6 +269,31 @@ export function PushPermissionToggle() {
         </button>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      <div className="border-t border-gray-200 pt-2">
+        <p className="text-xs font-medium text-gray-900">Your push devices</p>
+        {devicesError ? (
+          <p className="text-xs text-red-600">{devicesError}</p>
+        ) : devices === null ? (
+          <p className="text-xs text-gray-500">Reading your devices…</p>
+        ) : devices.length === 0 ? (
+          <p className="text-xs text-gray-500">
+            No device has ever been registered for push on this account.
+          </p>
+        ) : (
+          <ul className="mt-1 space-y-1">
+            {devices.map((d) => {
+              const s = deviceState(d)
+              return (
+                <li key={d.id} className="text-xs">
+                  <span className="font-medium text-gray-900">{deviceLabel(d.userAgent)}</span>
+                  <span className={s.dead ? " text-red-600" : " text-gray-600"}> — {s.text}</span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
     </div>
   )
 }

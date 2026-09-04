@@ -88,6 +88,13 @@ interface ReferralsOsClientProps {
     loyalty: number
     advocacy: number
   } | null
+  /**
+   * §1.2 — how many of the clients behind the engagement average were scored
+   * for a DIFFERENT agent (client_engagement_scores.agent_id). Published rather
+   * than netted out: the sphere score is a stored, cross-screen figure and
+   * quietly redefining it would be its own defect.
+   */
+  inheritedEngagementScores?: number
   topAdvocates?: Array<{
     id: string
     name: string
@@ -119,6 +126,7 @@ export function ReferralsOsClient({
   roiSummary,
   referrals,
   sphereScore,
+  inheritedEngagementScores,
   topAdvocates,
   sphereSegments,
   leaderboardWidget,
@@ -235,6 +243,7 @@ export function ReferralsOsClient({
         sphereScore={sphereScore ?? null}
         topAdvocates={topAdvocates ?? null}
         leaderboardWidget={formattedLeaderboard}
+        inheritedEngagementScores={inheritedEngagementScores}
       />
 
       {/* Pipeline Panel */}

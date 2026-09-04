@@ -157,6 +157,26 @@ export function composeReEngagement(params: {
   contactName: string
   memory: DealMemory
   signalType: string | null | undefined
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF, merged onto the SURVIVOR
+   * reader rather than into a new one.
+   *
+   * `signal_reactivations.signal_strength` and `.signal_data` were written by
+   * lib/ai-isa/long-term-nurture.ts:179 (recordReactivationSignal — the
+   * inbound-intent classifier stamps strength 80 and a
+   * {source, side, reason} payload) and read by NOBODY: this lane, the only
+   * consumer of the table's contact arm, selected `signal_type` alone. So the
+   * human approving a re-engagement was shown WHICH signal fired and never how
+   * strong it was or where it came from — the two facts that decide whether a
+   * "past client is active again" claim is worth sending.
+   *
+   * Optional so the pure composer stays callable without them.
+   */
+  signalStrength?: number | null
+  signalData?: Record<string, unknown> | null
+  /** Most recent prior reactivation of this contact (signal_reactivations.isa_reactivated_at). */
+  lastReactivatedAt?: string | null
+  now?: Date
 }): ReEngagementDraft {
   const { contactName, memory, signalType } = params
   const managerKey = reEngagementManager(signalType, memory)
@@ -187,7 +207,26 @@ export function composeReEngagement(params: {
       : `Hi ${name} — great to reconnect. ${recallLine}If anything's on the horizon — buying, selling, or just a question — I'm here. How can I help?`
 
   const mgrLabel = isBuyer ? "Shopping Agent" : managerKey === "listing_concierge" ? "Listing Concierge" : "Sphere Manager"
-  const rationale = `${REENGAGE_TAG} — ${mgrLabel}: a past client is active again (${signalType ?? "reactivation signal"}). Drafted with their prior-deal memory for approval — the same-day, remembered re-engagement no competitor offers.`
+
+  // The signal's own provenance, for the human who decides whether to send.
+  // Every part is OMITTED when unknown — an absent strength is never rendered
+  // as a number, and an unrecognised payload is never described.
+  const provenance: string[] = []
+  if (typeof params.signalStrength === "number" && Number.isFinite(params.signalStrength)) {
+    provenance.push(`strength ${params.signalStrength}`)
+  }
+  const src = params.signalData?.source
+  if (typeof src === "string" && src) provenance.push(`via ${src}`)
+  if (params.lastReactivatedAt) {
+    const since = (params.now ?? new Date()).getTime() - new Date(params.lastReactivatedAt).getTime()
+    const days = Math.max(0, Math.floor(since / 86_400_000))
+    if (Number.isFinite(days)) {
+      provenance.push(`last re-engaged ${days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`}`)
+    }
+  }
+  const provenanceLine = provenance.length > 0 ? ` [${provenance.join(", ")}]` : ""
+
+  const rationale = `${REENGAGE_TAG} — ${mgrLabel}: a past client is active again (${signalType ?? "reactivation signal"})${provenanceLine}. Drafted with their prior-deal memory for approval — the same-day, remembered re-engagement no competitor offers.`
 
   return { managerKey, audience, subject, body, rationale }
 }
@@ -213,9 +252,12 @@ export async function runReturningCustomerReengagement(
   const now = opts.now ?? new Date()
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
 
+  // signal_strength / signal_data joined the select 2026-09-04 (§1.2): they were
+  // written by recordReactivationSignal and read by nobody, so the approver saw
+  // the signal's NAME and nothing about its weight or origin.
   const { data: signals } = await supabase
     .from("signal_reactivations")
-    .select("id, contact_id, signal_type")
+    .select("id, contact_id, signal_type, signal_strength, signal_data")
     .eq("brokerage_id", brokerageId)
     .eq("isa_reactivated", false)
     .not("contact_id", "is", null)
@@ -225,7 +267,13 @@ export async function runReturningCustomerReengagement(
   const res: ReturningCustomerResult = { scanned: 0, proposed: 0, deduped: 0, skippedNotLifetime: 0 }
   const since = new Date(now.getTime() - REENGAGE_DEDUPE_DAYS * 86_400_000).toISOString()
 
-  for (const sig of (signals ?? []) as Array<{ id: string; contact_id: string; signal_type: string | null }>) {
+  for (const sig of (signals ?? []) as Array<{
+    id: string
+    contact_id: string
+    signal_type: string | null
+    signal_strength: number | null
+    signal_data: Record<string, unknown> | null
+  }>) {
     res.scanned += 1
     const markProcessed = async () =>
       supabase.from("signal_reactivations").update({ isa_reactivated: true, isa_reactivated_at: now.toISOString() }).eq("id", sig.id)
@@ -263,7 +311,34 @@ export async function runReturningCustomerReengagement(
     const memory = summarizePriorDeals((txns ?? []) as PriorDealTxn[], sig.contact_id, now)
 
     const name = [(contact as ContactLite).first_name, (contact as ContactLite).last_name].filter(Boolean).join(" ")
-    const draft = composeReEngagement({ contactName: name, memory, signalType: sig.signal_type })
+
+    // §1.2 — the READER for isa_reactivated_at, which until now was write-only.
+    // The most recent time THIS contact's signals were consumed tells the
+    // approver whether this is a first re-engagement or the fourth this month.
+    // §3: the error is read — an unreadable history omits the line rather than
+    // asserting "never re-engaged before".
+    const { data: priorReactivation, error: priorErr } = await supabase
+      .from("signal_reactivations")
+      .select("isa_reactivated_at")
+      .eq("contact_id", sig.contact_id)
+      .eq("brokerage_id", brokerageId)
+      .not("isa_reactivated_at", "is", null)
+      .order("isa_reactivated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const lastReactivatedAt = priorErr
+      ? null
+      : ((priorReactivation as { isa_reactivated_at?: string | null } | null)?.isa_reactivated_at ?? null)
+
+    const draft = composeReEngagement({
+      contactName: name,
+      memory,
+      signalType: sig.signal_type,
+      signalStrength: sig.signal_strength,
+      signalData: sig.signal_data,
+      lastReactivatedAt,
+      now,
+    })
 
     const proposed = await proposeClientMessage({
       brokerageId,

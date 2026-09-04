@@ -758,6 +758,27 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
   flag_count: number
   created_at: string | null
   reviewer_name: string | null
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `vendor_review_flags.reason` was written by flagVendorReview (:994) — one
+   * of five codes: inappropriate | fake | competitor | pii | irrelevant — and
+   * read by NOBODY: the only other read of that table is a `count`. So the
+   * flag count reached this queue and the REASON never did, and an admin was
+   * asked to approve or reject a review while being told that three people
+   * objected but not to what. A moderation queue that cannot be worked.
+   */
+  flag_reasons: Array<{ reason: string; count: number }>
+  /**
+   * §1.2 — `vendor_reviews.booking_id` and `.transaction_id` were written by
+   * rateVendorBooking (:586) and read by NOBODY, so the one fact that
+   * distinguishes a real customer's complaint from a drive-by — that this
+   * review hangs off an actual booking or an actual deal — was invisible at
+   * the exact moment a human decides whether to believe it. `is_verified`
+   * carried the boolean; nothing carried the evidence.
+   */
+  booking_id: string | null
+  transaction_id: string | null
 }>> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -782,7 +803,7 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
     .from("vendor_reviews")
     .select(`
       id, vendor_id, rating, review, headline, is_verified, verification_method,
-      moderation_status, flag_count, created_at,
+      moderation_status, flag_count, created_at, booking_id, transaction_id,
       vendors:vendor_id(name),
       users:user_id(first_name, last_name)
     `)
@@ -795,6 +816,33 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
   if (error) {
     console.error("[vendor-marketplace] moderation queue read failed:", error.message)
     return []
+  }
+
+  // §1.2 — the flag REASONS, tallied per review. One extra scoped read rather
+  // than a per-row N+1; the tenant predicate is the same brokerage_id already
+  // proved above, so a flag filed in another brokerage can never be counted here.
+  const queuedIds = (data ?? []).map((r: any) => r.id as string)
+  const reasonsByReview = new Map<string, Map<string, number>>()
+  if (queuedIds.length > 0) {
+    const { data: flagRows, error: flagError } = await svc
+      .from("vendor_review_flags")
+      .select("review_id, reason")
+      .eq("brokerage_id", brokerageId)
+      .in("review_id", queuedIds)
+      .limit(2000)
+    // §3 — a refused read must not render as "nobody said why": the admin is
+    // told the reasons are unavailable rather than shown an empty list.
+    if (flagError) {
+      console.error("[vendor-marketplace] flag reasons unreadable:", flagError.message)
+      for (const id of queuedIds) reasonsByReview.set(id, new Map([["(flag reasons could not be read)", 0]]))
+    } else {
+      for (const f of (flagRows ?? []) as Array<{ review_id: string; reason: string | null }>) {
+        const perReview = reasonsByReview.get(f.review_id) ?? new Map<string, number>()
+        const reason = f.reason ?? "unspecified"
+        perReview.set(reason, (perReview.get(reason) ?? 0) + 1)
+        reasonsByReview.set(f.review_id, perReview)
+      }
+    }
   }
 
   return (data ?? []).map((r: any) => ({
@@ -810,6 +858,11 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
     flag_count: r.flag_count ?? 0,
     created_at: r.created_at,
     reviewer_name: [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ") || null,
+    flag_reasons: [...(reasonsByReview.get(r.id) ?? new Map<string, number>()).entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => ({ reason, count })),
+    booking_id: r.booking_id ?? null,
+    transaction_id: r.transaction_id ?? null,
   }))
 }
 

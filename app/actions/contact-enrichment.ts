@@ -241,20 +241,36 @@ export interface EnrichmentQueueFailureRow {
   enrichment_results: Record<string, unknown> | null
 }
 
+/**
+ * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+ *
+ * `lead_enrichment_queue.completed_at` was written by the orchestrator on every
+ * terminal outcome (lib/lead-pipeline/enrichment-orchestrator.ts:209 and its
+ * sibling closes) and read by NOBODY. This reader — the queue's only health
+ * surface — showed FAILURES and 30-day SPEND and nothing else, so a queue that
+ * had drained two thousand rows and a queue whose drain died on Monday
+ * presented identically: no failures, some historical spend, zero signal. The
+ * missing half is the THROUGHPUT half, and it is the one that says whether the
+ * drain is alive.
+ */
 export async function getEnrichmentQueueHealth(limit = 10): Promise<{
   recentFailures: EnrichmentQueueFailureRow[]
   spend30d: number
+  /** Rows the drain CLOSED in the last 30 days (completed_at stamped). */
+  completed30d: number
+  /** The most recent completed_at — the drain's pulse. */
+  lastCompletedAt: string | null
   error?: string
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { recentFailures: [], spend30d: 0, error: "Unauthorized" }
+    return { recentFailures: [], spend30d: 0, completed30d: 0, lastCompletedAt: null, error: "Unauthorized" }
   }
 
   const supabase = await createClient()
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
 
-  const [failuresRes, costRes] = await Promise.all([
+  const [failuresRes, costRes, completedRes] = await Promise.all([
     supabase
       .from("lead_enrichment_queue")
       .select("id, enrichment_type, error_message, retry_count, queued_at, enrichments_needed, enrichment_results")
@@ -268,15 +284,27 @@ export async function getEnrichmentQueueHealth(limit = 10): Promise<{
       .eq("brokerage_id", ctx.brokerageId)
       .gte("queued_at", since)
       .not("enrichment_cost", "is", null),
+    // §1.2 — the throughput half. Ordered so the newest stamp is the pulse.
+    supabase
+      .from("lead_enrichment_queue")
+      .select("completed_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .gte("completed_at", since)
+      .order("completed_at", { ascending: false })
+      .limit(5000),
   ])
 
   // §3: a refused read must render as "unavailable", not as a clean zero —
   // a zero spend figure on a refused read would be a false bill of health.
-  if (failuresRes.error || costRes.error) {
-    const message = failuresRes.error?.message ?? costRes.error?.message ?? "read failed"
+  if (failuresRes.error || costRes.error || completedRes.error) {
+    const message = failuresRes.error?.message ?? costRes.error?.message ?? completedRes.error?.message ?? "read failed"
     console.error("[contact-enrichment] queue health read failed:", message)
-    return { recentFailures: [], spend30d: 0, error: message }
+    return { recentFailures: [], spend30d: 0, completed30d: 0, lastCompletedAt: null, error: message }
   }
+
+  const completedRows = (completedRes.data ?? []) as Array<{ completed_at: string | null }>
+  const completed30d = completedRows.length
+  const lastCompletedAt = completedRows[0]?.completed_at ?? null
 
   const spend30d = (costRes.data ?? []).reduce(
     (sum, r: { enrichment_cost: number | null }) => sum + (typeof r.enrichment_cost === "number" ? r.enrichment_cost : 0),
@@ -294,7 +322,7 @@ export async function getEnrichmentQueueHealth(limit = 10): Promise<{
         ? (r.enrichment_results as Record<string, unknown>)
         : null,
   }))
-  return { recentFailures, spend30d }
+  return { recentFailures, spend30d, completed30d, lastCompletedAt }
 }
 
 /**

@@ -75,6 +75,16 @@ async function recordPortalActivity(
     meta.property_ref_non_uuid = args.propertyId
     console.warn(`[buyer-offer-tools] '${args.activityType}' property handle is not a uuid — column left NULL, handle kept as metadata.property_ref_non_uuid`)
   }
+  // `agent_id` IS NOT WRITE-ONLY — ITS READER IS THE RLS POLICY. The
+  // client_portal_activity SELECT policy grants the agent side through
+  // `has_brokerage_access(brokerage_id) OR agent_id = current_user_agent_id()`
+  // (stated at app/actions/journey-tasks.ts:96-99, which is why that lane
+  // stamps it too): an unstamped row is readable by the client who wrote it and
+  // by NOBODY ELSE. So the column is read on every agent-side select, in the
+  // database, where no static scanner can see it — the same blind spot as a
+  // column read only by a unique-index expression. Dropping it would make this
+  // ledger invisible to the agent it belongs to (§4). Nothing to build and
+  // nothing to delete (§1).
   const { error } = await supabase.from("client_portal_activity").insert({
     brokerage_id: args.brokerageId,
     contact_id: args.contactId,

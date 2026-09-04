@@ -130,19 +130,56 @@ export async function resolveWelcomePersonalVideo(
   let pending: string | null = null
 
   // ── 1. THIS CONTACT'S OWN intro clip (the reactor's m121 ledger row) ────────
+  //
+  // ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF, merged onto the SURVIVOR
+  // reader. `agent_intro_videos.error_message` and `.delivered_at` were written
+  // in five places (lib/video/intro-video-reactor.ts:388/409/701/707 and
+  // app/api/cron/intro-video-email-backfill/route.ts:234) and read by NOBODY —
+  // this select, the ledger's only code reader, took `status` alone. So the
+  // reactor wrote the single most agent-actionable sentence in the whole lane —
+  // "agent has no voice/avatar profile — Settings → Voice & Avatar" — into a
+  // column with no reader, while THIS function, whose contract says `reason` is
+  // "always populated and agent-actionable", fell back to a generic sentence
+  // that guesses at the same fix. The ledger's own reason is better than the
+  // guess, so it is now preferred.
+  //
+  // NOTE the filter change: the old `.not("video_project_id","is",null)` could
+  // only ever see rows that got as far as a project, which is exactly the set
+  // whose error_message is EMPTY. Every failure the reactor recorded — opt-out,
+  // no avatar, refused project insert — was filtered out before it could be
+  // read. The row is now taken unconditionally and the project arm re-checks
+  // for a project id itself, so behaviour for the ready/in_progress path is
+  // unchanged.
   const { data: introRow, error: introError } = await svc
     .from("agent_intro_videos")
-    .select("id, video_project_id, status")
+    .select("id, video_project_id, status, error_message, delivered_at")
     .eq("brokerage_id", input.brokerageId)
     .eq("contact_id", input.contactId)
     .eq("agent_id", input.agentRecordId)
-    .not("video_project_id", "is", null)
     .order("created_at", { ascending: false })
     .limit(1)
   if (introError) {
     reasons.push(`intro-video ledger unreadable: ${introError.message}`)
   } else {
-    const projectId = (introRow?.[0]?.video_project_id as string | null) ?? null
+    const ledger = (introRow?.[0] ?? null) as {
+      video_project_id?: string | null
+      status?: string | null
+      error_message?: string | null
+      delivered_at?: string | null
+    } | null
+    // The ledger's own recorded failure, first in the list because it names the
+    // fix. Reported for the terminal states only — a 'queued'/'rendering' row
+    // carrying a stale message is not a failure to report.
+    if (ledger?.error_message && (ledger.status === "failed" || ledger.status === "suppressed")) {
+      reasons.push(`intro clip ${ledger.status}: ${ledger.error_message}`)
+    }
+    // A clip this contact ALREADY received. Without this, a re-run of the
+    // welcome reads "no video on file" and an agent re-commissions a render for
+    // somebody who was emailed one last week.
+    if (ledger?.delivered_at) {
+      reasons.push(`a personal intro clip was already delivered to this contact on ${ledger.delivered_at.slice(0, 10)}`)
+    }
+    const projectId = (ledger?.video_project_id as string | null) ?? null
     if (projectId) {
       const playable = await resolvePlayableVideo({ videoProjectId: projectId }, svc as any)
       if (playable.state === "ready") {

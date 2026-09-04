@@ -649,6 +649,37 @@ export async function logResponse(params: LogResponseParams) {
     // Also insert into mail_response_tracking for ROI aggregation. The refusal
     // used to be discarded entirely — a swallowed refusal here is how a campaign's
     // cost-per-response silently disagrees with its Responses tab.
+    //
+    // `response_metadata` HERE IS A DUPLICATE, AND ITS SURVIVOR IS NAMED — but
+    // it is NOT deleted, because deleting it needs a fact this repo cannot see
+    // (orphan doctrine §1 + §3, 2026-09-04).
+    //
+    // SURVIVOR: `direct_mail_responses.response_metadata`, written four lines
+    // above from the SAME `params.responseMetadata` and genuinely read —
+    // app/actions/ai-direct-mail.ts:1018 selects
+    // `*, responses:direct_mail_responses(*)`, a wildcard embed that reads
+    // every column of that row. The copy on `mail_response_tracking` has no
+    // reader at all: the only consumer of this table is the ROI rollup
+    // (app/api/cron/bundle-attribution-rollup/route.ts:166), which takes a
+    // COUNT and no columns. Same story at the second writer,
+    // app/api/qr/scan/route.ts:170.
+    //
+    // WHY IT STAYS FOR NOW: PGRST/23502 — an INSERT that omits a NOT NULL
+    // column with no default is refused ENTIRELY, and this write is the ROI
+    // ledger, so getting that wrong stops cost-per-response from being
+    // recorded at all. Nullability is not in the generated schema cache
+    // (scripts/schema-snapshot.ts holds column NAMES only), so it cannot be
+    // proved from the tree. UNVERIFIED — the integrator must measure:
+    //
+    //   select is_nullable, column_default
+    //     from information_schema.columns
+    //    where table_schema = 'public'
+    //      and table_name   = 'mail_response_tracking'
+    //      and column_name  = 'response_metadata';
+    //
+    // If is_nullable = 'YES' (or a default exists), drop this line and the twin
+    // at app/api/qr/scan/route.ts:170 and leave the tombstone naming the
+    // survivor above.
     const { error: roiError } = await supabase.from("mail_response_tracking").insert({
       brokerage_id: params.brokerageId,
       campaign_id: params.campaignId,

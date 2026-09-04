@@ -75,6 +75,10 @@ export const SENTINEL_THRESHOLDS = {
   // a pile-up means the platform line's webhooks are broken (the front door
   // is down and nobody would otherwise notice).
   receptionStalled: { warn: 5,  breach: 25 },
+  // Rows the unified queue drain CLOSED AS FAILED in the last 24h, across the
+  // push queue and orchestrator tasks. One is a bad configuration; a pile is a
+  // rail that is down.
+  queueFailures:    { warn: 1,  breach: 25 },
 } as const
 
 export interface OsHealthInputs {
@@ -88,7 +92,65 @@ export interface OsHealthInputs {
   redTeam: { lastRegressionAt: string | null }
   /** The platform's own AI reception line (7-day window). */
   platformReception: { calls7d: number; prospects7d: number; stalled: number }
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * The unified queue drain (app/api/cron/queue-drain/route.ts) writes the
+   * OUTCOME of every row it services and NOTHING read any of it:
+   * push_notification_queue.delivered_at / failed_at / error_message (:314,
+   * :352) and orchestrator_tasks.executed_at / last_error (:401). The drain
+   * was scrupulous about recording WHY a push never left the building — "no
+   * push provider configured", "no_active_subscriptions",
+   * "web_push_delivery_failed" — and an operator had no way to see any of it.
+   * That is a rail that can be down for a month in silence.
+   *
+   * The Sentinel already owns "state of the whole OS" for platform staff, so
+   * this is a subsystem here rather than a new console (§1: merge onto the
+   * survivor, do not grow a twin).
+   */
+  deliveryQueues: DeliveryQueueHealth
   topIncidents: OsIncident[]
+}
+
+export interface DeliveryQueueHealth {
+  /** push_notification_queue rows the drain closed as FAILED in the window. */
+  pushFailed: number
+  /** push_notification_queue rows the drain marked DELIVERED in the window. */
+  pushDelivered: number
+  /** orchestrator_tasks rows the drain closed as FAILED in the window. */
+  tasksFailed: number
+  /** The most recent honest failure reason across both queues, if any. */
+  lastReason: string | null
+  /**
+   * Queues whose health could NOT be read (a refused select). Non-empty means
+   * "nobody checked" — §4 fail-closed: it must never render as "checked and
+   * fine", so it forces the subsystem to at least WARN.
+   */
+  unreadable: string[]
+}
+
+/**
+ * PURE — delivery-queue status. An UNREADABLE queue is never "ok": a select
+ * this loader could not run is "nobody checked", and §4 forbids rendering that
+ * as "checked and fine".
+ */
+export function deliveryQueueStatus(q: DeliveryQueueHealth): SubsystemStatus {
+  const T = SENTINEL_THRESHOLDS.queueFailures
+  const byCount = classifyCount(q.pushFailed + q.tasksFailed, T.warn, T.breach)
+  if (q.unreadable.length > 0 && byCount === "ok") return "warn"
+  return byCount
+}
+
+/** PURE — the one-line detail the board renders under the tile. */
+export function describeDeliveryQueues(q: DeliveryQueueHealth): string {
+  const parts = [
+    `${q.pushFailed} push failed`,
+    `${q.pushDelivered} delivered`,
+    `${q.tasksFailed} task(s) failed`,
+  ]
+  if (q.unreadable.length > 0) parts.push(`UNREAD: ${q.unreadable.join(", ")}`)
+  const head = parts.join(" · ")
+  return q.lastReason ? `${head} — ${q.lastReason.slice(0, 90)}` : head
 }
 
 /** PURE reducer: subsystem statuses + overall worst-of, from already-loaded metrics. */
@@ -109,6 +171,7 @@ export function rollupOsHealth(i: OsHealthInputs): OsHealth {
     { key: "tenant_isolation", label: "Tenant isolation (RLS)", status: classifyCount(i.tenantIsolationFindings, T.tenantIsolation.warn, T.tenantIsolation.breach), count: i.tenantIsolationFindings, detail: `${i.tenantIsolationFindings} unresolved finding(s)`, link: "/dashboard/superadmin/platform" },
     { key: "red_team", label: "Red-team eval (weekly)", status: redTeamStatus, count: i.redTeam.lastRegressionAt ? 1 : 0, detail: i.redTeam.lastRegressionAt ? `Regression flagged ${i.redTeam.lastRegressionAt.slice(0, 10)}` : "No recent regression", link: "/dashboard/superadmin/ai-ops" },
     { key: "platform_reception", label: "Platform reception line (7d)", status: classifyCount(i.platformReception.stalled, T.receptionStalled.warn, T.receptionStalled.breach), count: i.platformReception.calls7d, detail: `${i.platformReception.calls7d} call(s), ${i.platformReception.prospects7d} prospect(s) captured, ${i.platformReception.stalled} stalled`, link: "/dashboard/superadmin/connectors" },
+    { key: "delivery_queues", label: "Delivery queues (push / tasks, 24h)", status: deliveryQueueStatus(i.deliveryQueues), count: i.deliveryQueues.pushFailed + i.deliveryQueues.tasksFailed, detail: describeDeliveryQueues(i.deliveryQueues), link: "/dashboard/superadmin/ai-ops" },
   ]
 
   const overall = worstStatus(subsystems.map((s) => s.status))
@@ -133,7 +196,7 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
     try { return await p } catch { return fallback }
   }
 
-  const [aiOps, managerOps, rotationRisks, tenantFindings, reaperAgg, redTeam, reception] = await Promise.all([
+  const [aiOps, managerOps, rotationRisks, tenantFindings, reaperAgg, redTeam, reception, queues] = await Promise.all([
     safe((async () => (await import("@/lib/platform/ai-ops")).loadAiOps(svc, now))(), null as any),
     safe((async () => (await import("@/lib/platform/manager-ops")).loadManagerOps(svc))(), null as any),
     safe((async () => (await import("@/lib/security/credential-rotation")).loadRotationRisks(svc))(), [] as any[]),
@@ -141,6 +204,12 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
     safe(loadSelfHeal(svc, now), { runs: 0, replayed: 0, escalated: 0 }),
     safe(loadRedTeam(svc, now), { lastRegressionAt: null as string | null }),
     safe(loadPlatformReception(svc, now), { calls7d: 0, prospects7d: 0, stalled: 0 }),
+    // The fallback is NOT an all-clear: a thrown loader lands here as "both
+    // queues unreadable", which deliveryQueueStatus turns into a WARN.
+    safe(loadDeliveryQueues(svc, now), {
+      pushFailed: 0, pushDelivered: 0, tasksFailed: 0, lastReason: null,
+      unreadable: ["push_notification_queue", "orchestrator_tasks"], reasons: [],
+    }),
   ])
 
   const aiSummary = aiOps?.summary ?? { consumed: 0, stuck: 0, held: 0, failed: 0, errors: 0, cronsFailing: 0 }
@@ -160,6 +229,12 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
   for (const e of (aiOps?.automationErrors ?? []).filter((x: any) => x.severity === "critical" || x.severity === "high").slice(0, 6) as any[]) {
     topIncidents.push({ subsystem: "automation_errors", severity: e.severity === "critical" ? "breach" : "warn", summary: `${e.workflow}: ${e.error}`, brokerageId: e.brokerageId })
   }
+  for (const r of queues.reasons.slice(0, 6)) {
+    topIncidents.push({ subsystem: "delivery_queues", severity: "warn", summary: r })
+  }
+  for (const u of queues.unreadable) {
+    topIncidents.push({ subsystem: "delivery_queues", severity: "warn", summary: `${u}: health could not be read — nobody checked` })
+  }
 
   return rollupOsHealth({
     generatedAt,
@@ -171,8 +246,88 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
     selfHeal: reaperAgg,
     redTeam,
     platformReception: reception,
+    deliveryQueues: {
+      pushFailed: queues.pushFailed,
+      pushDelivered: queues.pushDelivered,
+      tasksFailed: queues.tasksFailed,
+      lastReason: queues.lastReason,
+      unreadable: queues.unreadable,
+    },
     topIncidents,
   })
+}
+
+/**
+ * ORPHAN DOCTRINE §1.2 — THE READER THAT DID NOT EXIST.
+ *
+ * Reads the queue drain's own outcome columns over a 24h window:
+ *   push_notification_queue — status/failed_at/error_message (why a push never
+ *     left) and delivered_at (that any did).
+ *   orchestrator_tasks      — status/executed_at/last_error (which task types
+ *     have no executor, which posts the canonical publisher rejected).
+ *
+ * §3: every select destructures `{ data, error }` and READS the error — a
+ * refused select is reported as UNREADABLE, never counted as zero failures.
+ */
+async function loadDeliveryQueues(
+  svc: any,
+  now: Date,
+): Promise<DeliveryQueueHealth & { reasons: string[] }> {
+  const dayAgo = new Date(now.getTime() - 24 * 3_600_000).toISOString()
+  const unreadable: string[] = []
+  const reasons: string[] = []
+
+  const [pushFailedRes, pushDeliveredRes, tasksFailedRes] = await Promise.all([
+    svc.from("push_notification_queue")
+      .select("id, error_message, failed_at")
+      .eq("status", "failed").gte("failed_at", dayAgo)
+      .order("failed_at", { ascending: false }).limit(500),
+    svc.from("push_notification_queue")
+      .select("id, delivered_at")
+      .eq("status", "delivered").gte("delivered_at", dayAgo).limit(1000),
+    svc.from("orchestrator_tasks")
+      .select("id, task_type, last_error, executed_at")
+      .eq("status", "failed").gte("executed_at", dayAgo)
+      .order("executed_at", { ascending: false }).limit(500),
+  ])
+
+  if (pushFailedRes?.error) unreadable.push("push_notification_queue (failed)")
+  if (pushDeliveredRes?.error) unreadable.push("push_notification_queue (delivered)")
+  if (tasksFailedRes?.error) unreadable.push("orchestrator_tasks")
+
+  const pushFailedRows = (pushFailedRes?.data ?? []) as Array<{ error_message?: string | null; failed_at?: string | null }>
+  const taskFailedRows = (tasksFailedRes?.data ?? []) as Array<{ task_type?: string | null; last_error?: string | null; executed_at?: string | null }>
+
+  // Group by reason so a hundred rows of the same broken config read as ONE
+  // incident line with its count, not a hundred identical incidents.
+  const tally = new Map<string, number>()
+  for (const r of pushFailedRows) {
+    const key = `push: ${(r.error_message ?? "no reason recorded").slice(0, 120)}`
+    tally.set(key, (tally.get(key) ?? 0) + 1)
+  }
+  for (const r of taskFailedRows) {
+    const key = `task ${r.task_type ?? "?"}: ${(r.last_error ?? "no reason recorded").slice(0, 120)}`
+    tally.set(key, (tally.get(key) ?? 0) + 1)
+  }
+  for (const [reason, n] of [...tally.entries()].sort((a, b) => b[1] - a[1])) {
+    reasons.push(n > 1 ? `${reason} (×${n})` : reason)
+  }
+
+  // The most RECENT reason (both selects are ordered newest-first), which is
+  // what an operator wants on the tile itself.
+  const lastReason =
+    pushFailedRows[0]?.error_message ??
+    taskFailedRows[0]?.last_error ??
+    null
+
+  return {
+    pushFailed: pushFailedRows.length,
+    pushDelivered: ((pushDeliveredRes?.data ?? []) as unknown[]).length,
+    tasksFailed: taskFailedRows.length,
+    lastReason,
+    unreadable,
+    reasons,
+  }
 }
 
 /** The platform's own AI reception line — calls, prospect conversions, and

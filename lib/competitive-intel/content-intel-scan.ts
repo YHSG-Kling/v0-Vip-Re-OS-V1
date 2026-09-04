@@ -163,6 +163,14 @@ async function scanOneCompetitor(
         platform: platformFromUrl(r.url),
         content_type: contentType,
         content_url: r.url,
+        // §1.2 (2026-09-04) — THE MISSING WRITER. competitor_content.media_url
+        // is read by app/actions/marketing-intelligence.ts:148 and was written
+        // by nobody, so every competitor card rendered image-less. Exa carries
+        // the page image on the result; it is now mapped through
+        // (lib/content-intel/exa-scraper.ts :: ExaSearchResult.image_url) and
+        // stays NULL when Exa has none — a competitor-intel card must not
+        // invent a picture of a rival's creative.
+        media_url: r.image_url,
         caption,
         posted_at: r.published_date,
         observed_at: now.toISOString(),

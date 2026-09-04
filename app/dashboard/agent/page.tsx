@@ -121,6 +121,12 @@ export default function AgentDashboard() {
   const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
   const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
+  /**
+   * §1.2 — the reader for ai_autopilot_actions.executed_at. null means the
+   * count could not be read (a refusal), which is NOT the same as zero and is
+   * rendered differently.
+   */
+  const [autopilotResolvedToday, setAutopilotResolvedToday] = useState<number | null>(0)
   const [aiInsights, setAiInsights] = useState<AiInsightRow[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
@@ -265,23 +271,63 @@ export default function AgentDashboard() {
         // source. ai_autopilot_actions.agent_id references agents.id.
         let autopilotPlans: any[] = []
         if (agentRow?.id) {
+          // ORPHAN DOCTRINE §1.2 (2026-09-04) — `metadata` joined this select.
+          // lib/kernel/open-house.ts:543/659 writes the whole substance of an
+          // open-house follow-up into it — the AI-DRAFTED MESSAGE
+          // (`suggested_message`), the attendee's interest level, the open house
+          // it came from — and nothing read any of it. So the agent was shown a
+          // one-line "Send follow-up: Dana" while the message the platform had
+          // already written for them sat in a column with no reader, and the
+          // check-in score that decides how urgent it is was invisible.
           const { data: autopilotActions, error: autopilotError } = await supabase
             .from("ai_autopilot_actions")
-            .select("id, title, description, priority, action_type, entity_type, entity_id, scheduled_for")
+            .select("id, title, description, priority, action_type, entity_type, entity_id, scheduled_for, metadata")
             .eq("agent_id", agentRow.id)
             .eq("status", "pending")
             .order("scheduled_for", { ascending: true })
             .limit(5)
 
           if (!autopilotError && autopilotActions) {
-            autopilotPlans = autopilotActions.map((a: any) => ({
-              id: a.id,
-              title: a.title || a.action_type?.replace(/_/g, " ") || "Suggested action",
-              description: a.description || undefined,
-              priority: a.priority || undefined,
-              contact_id: a.entity_type === "contact" ? a.entity_id : null,
-              source: "AI Autopilot",
-            }))
+            autopilotPlans = autopilotActions.map((a: any) => {
+              const meta = (a.metadata ?? {}) as Record<string, unknown>
+              const suggested = typeof meta.suggested_message === "string" ? meta.suggested_message : null
+              const interest = typeof meta.interest_level === "number" ? meta.interest_level : null
+              return {
+                id: a.id,
+                title: a.title || a.action_type?.replace(/_/g, " ") || "Suggested action",
+                // The drafted message IS the description when one exists; the
+                // generic description is the fallback, never the other way round.
+                description: suggested || a.description || undefined,
+                priority: a.priority || undefined,
+                contact_id: a.entity_type === "contact" ? a.entity_id : null,
+                // `source` stays the EXACT literal "AI Autopilot": the card
+                // matches on it to decide whether to offer the executed/skipped
+                // buttons (agent-next-best-actions.tsx:146), so decorating it
+                // with the interest score would have silently removed the only
+                // way to resolve these rows. The score travels beside it.
+                source: "AI Autopilot",
+                sourceDetail: interest !== null ? `interest ${interest}/5` : undefined,
+              }
+            })
+          }
+
+          // §1.2 — `executed_at`, written by app/actions/open-house-kernel.ts:438
+          // when an agent marks a suggestion executed or skipped, was read by
+          // nobody: the feed could only ever show what is still PENDING, so an
+          // agent who cleared every suggestion saw the same empty list as one
+          // whose autopilot never produced any. A refused read is logged, not
+          // rendered as "you did nothing" (§4).
+          const dayAgo = new Date(Date.now() - 86_400_000).toISOString()
+          const { count: resolvedToday, error: resolvedError } = await supabase
+            .from("ai_autopilot_actions")
+            .select("id", { count: "exact", head: true })
+            .eq("agent_id", agentRow.id)
+            .gte("executed_at", dayAgo)
+          if (resolvedError) {
+            console.error("[agent-dashboard] autopilot resolved-count read refused:", resolvedError.message)
+            setAutopilotResolvedToday(null)
+          } else {
+            setAutopilotResolvedToday(resolvedToday ?? 0)
           }
         }
 
@@ -988,6 +1034,7 @@ export default function AgentDashboard() {
               upcomingShowings={showings}
               actionPlans={actionPlans}
               onResolveAutopilot={handleResolveAutopilot}
+              autopilotResolvedToday={autopilotResolvedToday}
             />
             <AgentDealIntelligence transactions={transactions} loading={loading} />
             <AgentLifetimeCustomersPanel

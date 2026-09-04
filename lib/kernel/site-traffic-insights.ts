@@ -110,15 +110,33 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
   const since = new Date(now.getTime() - 30 * 86_400_000).toISOString()
   let sent = 0, skipped = 0
 
-  const { data: visitors } = await svc.from("website_visitors")
-    .select("brokerage_id, page_url, time_on_page_seconds, utm_source, referrer")
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select. The
+  // tracking pixel stamps WHOSE page a visitor was on
+  // (app/api/track/pixel/route.ts:41) and nothing read it, so this weekly note
+  // — the only consumer of the table — could tell a brokerage its busiest page
+  // and never which agent's pages were pulling the traffic. That is the half a
+  // principal acts on.
+  const { data: visitors, error: visitorsError } = await svc.from("website_visitors")
+    .select("brokerage_id, agent_id, page_url, time_on_page_seconds, utm_source, referrer")
     .gte("last_seen_at", since).limit(2000)
+  // §3 — a refused read here would send every brokerage's weekly note as
+  // "skipped, no traffic", which is the false all-clear this note exists against.
+  if (visitorsError) {
+    console.error("[site-traffic-insights] website_visitors read refused:", visitorsError.message)
+    return { sent: 0, skipped: 0 }
+  }
   const byBrokerage = new Map<string, Array<{ page: string | null; seconds: number | null; source?: string | null }>>()
+  const agentVisitsByBrokerage = new Map<string, Map<string, number>>()
   for (const v of ((visitors ?? []) as any[])) {
     if (!v.brokerage_id) continue
     const arr = byBrokerage.get(v.brokerage_id) ?? []
     arr.push({ page: v.page_url, seconds: v.time_on_page_seconds, source: v.utm_source ?? v.referrer })
     byBrokerage.set(v.brokerage_id, arr)
+    if (v.agent_id) {
+      const perAgent = agentVisitsByBrokerage.get(v.brokerage_id) ?? new Map<string, number>()
+      perAgent.set(v.agent_id, (perAgent.get(v.agent_id) ?? 0) + 1)
+      agentVisitsByBrokerage.set(v.brokerage_id, perAgent)
+    }
   }
 
   for (const [brokerageId, rows] of byBrokerage) {
@@ -144,8 +162,27 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
         .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1)
       principals = anyUser ?? []
     }
+    // §1.2 — whose pages the traffic landed on. agent_id is AGENTS-class (the
+    // pixel takes it from the site's own agent param), so the name is resolved
+    // through agents ⨝ users; an unresolvable id degrades to "one agent" rather
+    // than naming the wrong person, and a refused read simply omits the line.
+    let agentLine: string | null = null
+    const perAgent = agentVisitsByBrokerage.get(brokerageId)
+    if (perAgent && perAgent.size > 0) {
+      const [topAgentId, topAgentVisits] = [...perAgent.entries()].sort((a, b) => b[1] - a[1])[0]
+      const { data: agentRow, error: agentErr } = await svc.from("agents")
+        .select("id, users:user_id(first_name, last_name)")
+        .eq("id", topAgentId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!agentErr) {
+        const u = (agentRow as any)?.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim()
+        agentLine = `${topAgentVisits} of those visits landed on ${name || "one agent"}'s pages${perAgent.size > 1 ? ` (${perAgent.size} agents got traffic)` : ""}.`
+      }
+    }
+
     const body = [
       insights.topPage ? `Busiest page: ${insights.topPage.page} (${insights.topPage.visits} visits).` : null,
+      agentLine,
       insights.stickiest ? `Visitors stay longest on ${insights.stickiest.page} (~${insights.stickiest.avgSeconds}s).` : null,
       insights.topSource ? `Most traffic arrives from ${insights.topSource}.` : null,
       `Suggested adjustment: ${insights.adjustment}`,

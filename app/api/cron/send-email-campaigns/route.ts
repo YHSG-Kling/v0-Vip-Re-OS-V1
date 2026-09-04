@@ -52,6 +52,20 @@ export async function GET(request: NextRequest) {
       // letting the campaign keep a stale or zero rate silently.
       console.error("[send-email-campaigns] rate rollup refusals:", rates.refusals.join(" | "))
     }
+    // §1.2 (2026-09-04) — email_tracking.user_agent / .metadata now have a
+    // reader. A machine-open share means the open_rate just written is inflated
+    // by mail-proxy prefetches; uncorrelated events mean provider engagement
+    // that matched no send row, which UNDER-counts. Both are said aloud rather
+    // than folded silently into the rate.
+    if (rates.machineOpens > 0) {
+      console.warn(`[send-email-campaigns] ${rates.machineOpens} open(s) came from a mail proxy, not a person — open_rate is inflated by that much`)
+    }
+    if (rates.uncorrelatedEvents > 0) {
+      console.warn(
+        `[send-email-campaigns] ${rates.uncorrelatedEvents} engagement event(s) matched no email_sends row — ` +
+        `provider ids: ${rates.uncorrelatedProviderIds.join(", ") || "none recorded"}`,
+      )
+    }
 
     await recordCronSuccessAction({
       context_id: contextId,

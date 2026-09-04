@@ -275,11 +275,24 @@ export async function loadReconciliations(
   providerDetail: Record<string, unknown> | null
   /** When the provider said it — not when we recorded it. */
   providerReportedAt: string | null
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `outcome_reconciliations.lead_id` was written by recordClaimedOutcome
+   * (:90) and read by NOBODY. A contradicted outcome means a touch the OS
+   * claimed to have made did NOT reach the person — and until now the board
+   * could say a text failed and not WHO it failed to reach, because a
+   * lead-directed touch carries a lead_id and no contact_id. On the lead lane
+   * (speed-to-lead, ISA nurture) that is precisely the population where a
+   * silent failure costs the most, and it was the population the board could
+   * not name.
+   */
+  leadId: string | null
 }>> {
   try {
     const svc = createServiceClient()
     let q = svc.from("outcome_reconciliations")
-      .select("id, channel, verdict, claimed_status, provider_status, claimed_at, explanation, truth_source, claimed_by_manager, provider_detail, provider_reported_at")
+      .select("id, channel, verdict, claimed_status, provider_status, claimed_at, explanation, truth_source, claimed_by_manager, provider_detail, provider_reported_at, lead_id")
       .eq("brokerage_id", brokerageId)
       .order("claimed_at", { ascending: false })
       .limit(opts.limit ?? 100)
@@ -292,6 +305,7 @@ export async function loadReconciliations(
       truthSource: r.truth_source, claimedByManager: r.claimed_by_manager,
       providerDetail: r.provider_detail ?? null,
       providerReportedAt: r.provider_reported_at ?? null,
+      leadId: r.lead_id ?? null,
     }))
   } catch {
     return []

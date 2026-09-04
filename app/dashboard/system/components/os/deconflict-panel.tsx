@@ -133,6 +133,24 @@ export function DeconflictPanel({ brokerageId }: DeconflictPanelProps) {
               ))}
             </div>
 
+            {/* §1.2 — WHICH AUDIENCE the cooldown silenced, from
+                deconflict_suppression_log.metadata.segment. A broadcast
+                suppression carries no contact_id, so before this the panel
+                could say "3 email deferred" and nothing about who they were. */}
+            {read.data.suppressedSegments.length > 0 && (
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Audiences a cooldown silenced</p>
+                <ul className="mt-1 space-y-0.5">
+                  {read.data.suppressedSegments.slice(0, 8).map((s) => (
+                    <li key={s.segment} className="text-sm flex items-center justify-between gap-3">
+                      <span className="truncate">{s.segment}</span>
+                      <span className="text-red-700 dark:text-red-400 shrink-0">{s.suppressed} deferred</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Most recent decisions, suppressions first in reading priority */}
             <div className="space-y-2">
               <p className="text-sm font-medium text-muted-foreground">Recent decisions</p>

@@ -224,6 +224,25 @@ interface MarketingSnapshot {
     personaVariantsStuck:       number
     /** Per-event_type rollup: count published in window. */
     perEventTypeCounts: Array<{ event_type: string; count: number }>
+    /**
+     * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+     *
+     * `listing_promo_videos.error_message` (written at
+     * app/api/cron/listing-promo-social-publish/route.ts:131/141/187 and the
+     * render routes) and `.social_post_ids` (:225) were read by NOBODY. The
+     * snapshot below asked only for rows in 'rendering' or 'social_drafted',
+     * so a promo lane in which EVERY listing failed — a dead renderer, an
+     * agents→users resolve returning empty, a social insert refused on every
+     * platform — showed up here as "0 active promos", indistinguishable from a
+     * quiet week. The cron's own comment promised the agent would "see it in
+     * the degraded-renders observability surface"; this is that surface, and
+     * it was not reading the column.
+     */
+    failedLast14d:              number
+    /** Distinct error_message values in window, most frequent first (max 5). */
+    failureReasons:             Array<{ reason: string; count: number }>
+    /** social_posts rows actually drafted from those promos (social_post_ids). */
+    socialPostsDrafted:         number
   }
   /** Wave 33 — social posts engagement aggregated in 28d window. The
    *  social channel has its own per-post engagement counters; surfacing
@@ -594,16 +613,45 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
   let listingPromoRenderStatus: MarketingSnapshot["listingPromoRenderStatus"] = {
     publishedLast14d: 0, personaVariantsCompleted: 0, personaVariantsFailed: 0,
     personaVariantsStuck: 0, perEventTypeCounts: [],
+    failedLast14d: 0, failureReasons: [], socialPostsDrafted: 0,
   }
   try {
-    const { data: recentPromos } = await svc.from("listing_promo_videos")
-      .select("id, listing_id, event_type, created_at")
+    // 'failed' joined the status filter (§1.2): the promo lane's failures were
+    // outside the window this snapshot could see, so the agent was told about
+    // persona variants that failed and never about promos that never rendered.
+    const { data: recentPromos, error: promoErr } = await svc.from("listing_promo_videos")
+      .select("id, listing_id, event_type, created_at, status, error_message, social_post_ids")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", since14d)
-      .in("status", ["rendering", "social_drafted"])
+      .in("status", ["rendering", "social_drafted", "failed"])
       .limit(50)
-    const promos = (recentPromos ?? []) as Array<{ id: string; listing_id: string | null; event_type: string; created_at: string }>
+    // §3 — supabase-js RESOLVES refusals; a swallowed one here would report a
+    // healthy, empty promo lane.
+    if (promoErr) {
+      console.error(`[marketing-agent] listing_promo_videos unreadable for ${brokerageId}:`, promoErr.message)
+    }
+    const allPromos = (recentPromos ?? []) as Array<{
+      id: string; listing_id: string | null; event_type: string; created_at: string
+      status: string | null; error_message: string | null; social_post_ids: unknown
+    }>
+    // publishedLast14d keeps its original meaning — promos that did NOT fail.
+    const promos = allPromos.filter((p) => p.status !== "failed")
     listingPromoRenderStatus.publishedLast14d = promos.length
+
+    const failed = allPromos.filter((p) => p.status === "failed")
+    listingPromoRenderStatus.failedLast14d = failed.length
+    const reasonTally = new Map<string, number>()
+    for (const f of failed) {
+      const reason = (f.error_message ?? "no reason recorded").slice(0, 160)
+      reasonTally.set(reason, (reasonTally.get(reason) ?? 0) + 1)
+    }
+    listingPromoRenderStatus.failureReasons = [...reasonTally.entries()]
+      .sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }))
+    // social_post_ids is a uuid[] — count what actually reached social_posts.
+    listingPromoRenderStatus.socialPostsDrafted = allPromos.reduce(
+      (sum, p) => sum + (Array.isArray(p.social_post_ids) ? p.social_post_ids.length : 0), 0,
+    )
     const perEvent = new Map<string, number>()
     for (const r of promos) {
       perEvent.set(r.event_type, (perEvent.get(r.event_type) ?? 0) + 1)
@@ -1091,6 +1139,11 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "──── WAVE 33 — LISTING-PROMO RENDER STATE (LAST 14d) ────",
     `Active listing promos in window: ${snap.listingPromoRenderStatus.publishedLast14d}`,
     `Persona variants — completed: ${snap.listingPromoRenderStatus.personaVariantsCompleted}, failed: ${snap.listingPromoRenderStatus.personaVariantsFailed}, STUCK > 2h: ${snap.listingPromoRenderStatus.personaVariantsStuck}`,
+    `Listing promos FAILED in window: ${snap.listingPromoRenderStatus.failedLast14d} · social posts drafted from promos: ${snap.listingPromoRenderStatus.socialPostsDrafted}`,
+    snap.listingPromoRenderStatus.failureReasons.length === 0
+      ? "Promo failure reasons: (none)"
+      : "Promo failure reasons:\n" + snap.listingPromoRenderStatus.failureReasons.map((f) =>
+          `  · ${f.reason} (×${f.count})`).join("\n"),
     snap.listingPromoRenderStatus.perEventTypeCounts.length === 0
       ? "Per event type: (none)"
       : "Per event type:\n" + snap.listingPromoRenderStatus.perEventTypeCounts.map((e) =>

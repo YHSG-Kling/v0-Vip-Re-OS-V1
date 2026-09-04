@@ -135,12 +135,32 @@ export default function AgentTransactionDetailPage() {
       .maybeSingle()
       .then(({ data: txn }: { data: { listing_id: string | null } | null }) => {
         if (!txn?.listing_id) return
+        // ORPHAN DOCTRINE §1.2 (2026-09-04) — `contact_id` and `agent_id` joined
+        // this select, through the embed so the names travel with them. Both are
+        // written by scheduleClosingGift (lib/application/listing-lifecycle.ts:524)
+        // and were read by NOBODY: this card — the only place a closing gift is
+        // shown — could say a basket was scheduled and neither WHO it is being
+        // sent to nor WHOSE gift it is. On a co-listed deal that is the whole
+        // question, and getting it wrong means a gift addressed to the wrong
+        // seller.
+        //
+        // closing_gifts has one FK to contacts and one to agents (the writer's
+        // own comment records that agent_id is AGENTS-class), so both embeds are
+        // unambiguous — a second FK to either table would earn PGRST201 and kill
+        // the query rather than degrade it.
         supabase
           .from("closing_gifts")
-          .select("id, gift_description, status, order_date, delivery_date, price_cents, created_at")
+          .select("id, gift_description, status, order_date, delivery_date, price_cents, created_at, contact_id, agent_id, contacts(first_name, last_name), agents(users(first_name, last_name))")
           .eq("listing_id", txn.listing_id)
           .order("created_at", { ascending: false })
-          .then(({ data: rows }: { data: any[] | null }) => {
+          .then(({ data: rows, error }: { data: any[] | null; error: any }) => {
+            // §3 — supabase-js RESOLVES refusals. A swallowed one here renders as
+            // "no closing gift scheduled", which is how a gift stops being sent.
+            if (error) {
+              console.error("[transaction] closing_gifts read refused:", error.message)
+              setClosingGifts([])
+              return
+            }
             setClosingGifts(rows ?? [])
           })
       })
@@ -736,6 +756,20 @@ export default function AgentTransactionDetailPage() {
                             <span>${(gift.price_cents / 100).toFixed(2)}</span>
                           )}
                         </div>
+                        {/* §1.2 — recipient and sender. Rendered only from what
+                            the row actually carries: an id with no resolvable
+                            name says "a client"/"an agent" rather than naming
+                            the wrong person. */}
+                        {(gift.contact_id || gift.agent_id) && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {gift.contact_id && (
+                              <>For {[gift.contacts?.first_name, gift.contacts?.last_name].filter(Boolean).join(" ") || "a client"}</>
+                            )}
+                            {gift.agent_id && (
+                              <> · from {[gift.agents?.users?.first_name, gift.agents?.users?.last_name].filter(Boolean).join(" ") || "an agent"}</>
+                            )}
+                          </p>
+                        )}
                       </div>
                       <Badge className={cn("text-xs capitalize font-semibold", giftStatusColors[gift.status] ?? "")}>
                         {gift.status}

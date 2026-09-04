@@ -775,6 +775,22 @@ export async function getMarketingPackageServices(packageId: string) {
   // forever instead of failing loudly. `company_name` is aliased onto the real
   // `name` column because that is the key the panel renders
   // (app/dashboard/listings/[id]/marketing-tier/marketing-package-panel.tsx).
+  // `estimated_cost` IS A READ WITH NO WRITER, AND THAT IS THE RULING — not a
+  // gap to close (orphan doctrine §1, re-checked 2026-09-04). bookMarketingService
+  // (:193) deliberately OMITS the column and says why: the vendor bench carries
+  // no price, and the package catalog prices a whole TIER rather than one
+  // service, so any number written at booking time would be a quote the
+  // brokerage never gave. The column therefore reads NULL on every row, and the
+  // panel is built for that — marketing-package-panel.tsx:397-401 prefers
+  // `actual_cost` (written at close-out) and renders NOTHING when neither
+  // exists, so nothing displays a fabricated or zero price.
+  //
+  // It stays in the select rather than being removed: the moment a real
+  // per-service quote is captured (a vendor price list, or a figure the agent
+  // enters at booking the way they enter the invoiced amount at close-out) this
+  // panel already renders it correctly. Building a writer to satisfy a census
+  // count would be inventing the quote (§1 — deleting or fabricating to move a
+  // number is forbidden).
   const { data, error } = await supabase
     .from("listing_marketing_services")
     .select(

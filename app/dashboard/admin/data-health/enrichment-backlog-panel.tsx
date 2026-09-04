@@ -73,6 +73,9 @@ export function EnrichmentBacklogPanel() {
   const [dueForCheck, setDueForCheck] = useState<Array<{ id: string }>>([])
   const [queueFailures, setQueueFailures] = useState<QueueFailureRow[]>([])
   const [spend30d, setSpend30d] = useState<number | null>(null)
+  // §1.2 — lead_enrichment_queue.completed_at, which had no reader anywhere.
+  const [completed30d, setCompleted30d] = useState<number | null>(null)
+  const [lastCompletedAt, setLastCompletedAt] = useState<string | null>(null)
   const [queueError, setQueueError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
@@ -91,6 +94,8 @@ export function EnrichmentBacklogPanel() {
     // A refused queue read renders as "unavailable", never as $0 spent.
     setQueueError(q.error ?? null)
     setSpend30d(q.error ? null : q.spend30d)
+    setCompleted30d(q.error ? null : q.completed30d)
+    setLastCompletedAt(q.error ? null : q.lastCompletedAt)
     setLoading(false)
   }, [])
 
@@ -176,6 +181,16 @@ export function EnrichmentBacklogPanel() {
                   : `$${(spend30d ?? 0).toFixed(2)} spent last 30 days`}
               </span>
             </div>
+            {/* THROUGHPUT (§1.2). Without it, "no failed queue items" was the
+                same picture whether the drain was working or had stopped. */}
+            {!queueError && (
+              <p className="text-[11px] text-muted-foreground">
+                {(completed30d ?? 0) === 0
+                  ? "Nothing has finished enrichment in the last 30 days — either the queue is empty, or the drain is not running."
+                  : `${completed30d} row${completed30d === 1 ? "" : "s"} finished in the last 30 days` +
+                    (lastCompletedAt ? ` · last ${new Date(lastCompletedAt).toLocaleDateString()}` : "")}
+              </p>
+            )}
             {queueError ? (
               <p className="text-xs text-destructive">Queue read failed: {queueError}</p>
             ) : queueFailures.length === 0 ? (

@@ -54,6 +54,25 @@ export interface DeconflictDecisionRow {
   window_days: number | null
   policy_max: number | null
   created_at: string
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `deconflict_suppression_log.metadata` was written by the BROADCAST arm of
+   * the engine (lib/kernel/deconflict/index.ts:286) carrying
+   * `{ broadcast_channel, segment }`, and read by NOBODY — this cockpit, the
+   * reader half the table was built for, selected every other column. A
+   * broadcast suppression has a NULL contact_id by construction (it is a
+   * cooldown on a whole audience, not a person), so `segment` was the ONLY
+   * thing on the row identifying WHO stopped being reached, and it was the one
+   * thing the cockpit could not show.
+   */
+  metadata: Record<string, unknown> | null
+}
+
+/** §1.2 — suppressed BROADCASTS grouped by the audience they were aimed at. */
+export interface DeconflictSegmentRollup {
+  segment: string
+  suppressed: number
 }
 
 export interface DeconflictChannelRollup {
@@ -69,6 +88,8 @@ export interface DeconflictActivity {
   suppressed: number
   byChannel: DeconflictChannelRollup[]
   decisions: DeconflictDecisionRow[]
+  /** §1.2 — which audiences a cooldown actually silenced, from metadata.segment. */
+  suppressedSegments: DeconflictSegmentRollup[]
 }
 
 export type DeconflictActivityRead =
@@ -127,7 +148,7 @@ export async function getDeconflictActivity(
   let q = svc
     .from("deconflict_suppression_log")
     .select(
-      "id, brokerage_id, contact_id, recipient_email, recipient_phone, channel, system_source, outcome, reason, touches_in_window, window_days, policy_max, created_at",
+      "id, brokerage_id, contact_id, recipient_email, recipient_phone, channel, system_source, outcome, reason, touches_in_window, window_days, policy_max, created_at, metadata",
     )
     .gte("created_at", sinceIso)
     .order("created_at", { ascending: false })
@@ -168,6 +189,22 @@ export async function getDeconflictActivity(
     .map(([channel, counts]) => ({ channel, ...counts }))
     .sort((a, b) => b.suppressed - a.suppressed || b.allowed - a.allowed)
 
+  // §1.2 — the audience half. Only SUPPRESSED rows are counted: an allowed
+  // broadcast silenced nobody, and folding it in here would read as if it had.
+  const segmentMap = new Map<string, number>()
+  for (const d of decisions) {
+    if (d.outcome === "allowed") continue
+    const seg = d.metadata?.segment
+    // A broadcast row with no segment recorded says so by name rather than
+    // being dropped — an unnamed audience is still an audience that was cut.
+    const key = typeof seg === "string" && seg ? seg : d.contact_id ? "" : "(broadcast, no segment recorded)"
+    if (!key) continue
+    segmentMap.set(key, (segmentMap.get(key) ?? 0) + 1)
+  }
+  const suppressedSegments = Array.from(segmentMap.entries())
+    .map(([segment, suppressedCount]) => ({ segment, suppressed: suppressedCount }))
+    .sort((a, b) => b.suppressed - a.suppressed)
+
   return {
     status: "ok",
     data: {
@@ -177,6 +214,7 @@ export async function getDeconflictActivity(
       suppressed,
       byChannel,
       decisions,
+      suppressedSegments,
     },
   }
 }

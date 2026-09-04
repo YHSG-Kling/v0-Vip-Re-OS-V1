@@ -77,6 +77,13 @@ export function VendorPackageChargesClient({
                   </span>
                 </div>
                 <p className="text-xs text-muted-foreground">You pay the brokerage this amount.</p>
+                {/* §1.2 — canceled_at. "Canceled" with no date could not be
+                    checked against a charge; now it can. */}
+                {!active && c.canceled_at && (
+                  <p className="text-xs text-muted-foreground">
+                    Ended {new Date(c.canceled_at).toLocaleDateString()} — no charge after this date.
+                  </p>
+                )}
               </CardHeader>
               <CardContent className="space-y-2 text-xs text-muted-foreground">
                 <div>

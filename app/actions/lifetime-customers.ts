@@ -210,11 +210,24 @@ export async function getLifetimeCustomers({
     return { success: false, error: transError.message }
   }
 
-  // Get engagement scores for these contacts
-  const { data: engagementScores } = await supabase
+  // Get engagement scores for these contacts.
+  //
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select. It is
+  // written by the scorer (app/actions/lifetime-customer-touchpoints.ts:366) and
+  // was read by NOBODY. The table is UNIQUE(contact_id), so there is exactly ONE
+  // score per client no matter how many agents have worked them — and the score
+  // is computed from THAT agent's touchpoints. When a client changes hands the
+  // row keeps the old agent's id and the new agent reads a number describing a
+  // relationship that is not theirs, with nothing on the screen to say so. The
+  // id is the only thing that can say so, and nobody was asking for it.
+  const { data: engagementScores, error: engagementError } = await supabase
     .from("client_engagement_scores")
-    .select("contact_id, engagement_score:score, last_touchpoint_date:last_interaction, computed_at:calculated_at, referrals_given, touchpoints_count")
+    .select("contact_id, agent_id, engagement_score:score, last_touchpoint_date:last_interaction, computed_at:calculated_at, referrals_given, touchpoints_count")
     .in("contact_id", contactIds)
+  // §3 — a refused read must not render as "every client scores zero".
+  if (engagementError) {
+    console.error("[lifetime-customers] client_engagement_scores read refused:", engagementError.message)
+  }
 
   // Merge data together
   const transactionMap = new Map()
@@ -234,7 +247,14 @@ export async function getLifetimeCustomers({
     .map(c => ({
       ...c,
       transactions: transactionMap.get(c.id) || [],
-      client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : []
+      client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : [],
+      // §1.2 — TRUE when the one score on this client was computed for a
+      // DIFFERENT agent, so the surface can mark the number as somebody else's
+      // relationship instead of presenting it as this agent's own. False when
+      // the row has no agent_id at all: unknown provenance is not a claim that
+      // it belongs to someone else.
+      engagement_scored_by_other_agent:
+        !!engagementMap.get(c.id)?.agent_id && engagementMap.get(c.id)?.agent_id !== agentId,
     }))
     // MOST-RECENT-CLOSING FIRST — carried from the removed duplicate
     // (lifetime-customer-touchpoints.ts:getLifetimeCustomerContacts). This

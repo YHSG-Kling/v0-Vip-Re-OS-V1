@@ -15,9 +15,17 @@ interface AgentNextBestActionsProps {
     listing: { address: string } | null
     contact: { first_name: string; last_name: string } | null
   }>
-  actionPlans?: Array<{ id: string; title: string; description?: string; priority?: string; contact_id?: string | null; source?: string }>
+  actionPlans?: Array<{ id: string; title: string; description?: string; priority?: string; contact_id?: string | null; source?: string; sourceDetail?: string }>
   /** Done/Skip transition for AI Autopilot suggestions — see ActionPlanCard.onResolve. */
   onResolveAutopilot?: (planId: string, outcome: 'executed' | 'skipped') => Promise<void> | void
+  /**
+   * How many autopilot suggestions this agent resolved in the last 24h, read
+   * from ai_autopilot_actions.executed_at (§1.2, 2026-09-04 — the column had no
+   * reader, so a cleared feed and a feed that never produced anything looked
+   * identical). `null` means the count could not be read; `undefined` means the
+   * caller does not track it.
+   */
+  autopilotResolvedToday?: number | null
 }
 
 export function AgentNextBestActions({
@@ -25,7 +33,8 @@ export function AgentNextBestActions({
   dealsAtRisk,
   upcomingShowings,
   actionPlans,
-  onResolveAutopilot
+  onResolveAutopilot,
+  autopilotResolvedToday
 }: AgentNextBestActionsProps) {
   const highPriorityActions = briefingActions.filter(a => a.priority === 'high')
   const otherActions = briefingActions.filter(a => a.priority !== 'high')
@@ -151,6 +160,17 @@ export function AgentNextBestActions({
               ))}
             </div>
           </div>
+        )}
+        {/* §1.2 — what the agent already cleared today. Without it an empty
+            feed says nothing about whether the autopilot is working. */}
+        {autopilotResolvedToday !== undefined && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            {autopilotResolvedToday === null
+              ? 'Resolved-today count unavailable — the read was refused.'
+              : autopilotResolvedToday === 0
+                ? 'No autopilot suggestions resolved in the last 24 hours.'
+                : `${autopilotResolvedToday} autopilot suggestion${autopilotResolvedToday === 1 ? '' : 's'} resolved in the last 24 hours.`}
+          </p>
         )}
       </CardContent>
     </Card>

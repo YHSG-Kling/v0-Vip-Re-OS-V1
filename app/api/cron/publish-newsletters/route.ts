@@ -429,9 +429,20 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       if (prefs && !buyerWantsNotification(prefs, "marketing", "email")) {
         suppressed++
         try {
+          // TOMBSTONE (orphan doctrine §1.1/§1.3, 2026-09-04) — `subject` is no
+          // longer written here. SURVIVOR: newsletter_campaigns.subject_line,
+          // reached from this row through campaign_id (the same join the send
+          // list and the weekly measure already use). This was the LAST pair of
+          // writers of the duplicate: app/actions/ai-newsletter.ts:1310 stopped
+          // writing it in wave 26 and left the ruling in a comment there, and
+          // this cron kept copying it — one subject, two homes, and the copy had
+          // no reader at all (§6). The column is nullable in practice: the
+          // ai-newsletter insert named above omits it on the platform's main
+          // newsletter path, and PostgREST refuses the WHOLE row on a NOT NULL
+          // violation (§3), so that path could not work if it were required.
           await svc.from("newsletter_sends").insert({
             brokerage_id: c.brokerage_id, campaign_id: c.id, contact_id: s.contact_id,
-            template_id: null, subject: c.subject_line ?? null, status: "suppressed",
+            template_id: null, status: "suppressed",
             provider_message_id: null, sent_at: null,
           })
         } catch { /* non-blocking */ }
@@ -547,12 +558,17 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     if (status === "failed")     errors++
 
     try {
+      // TOMBSTONE (§1.1/§1.3) — `subject` dropped; SURVIVOR is
+      // newsletter_campaigns.subject_line via campaign_id. `assembled.subject`
+      // IS that value (lib/kernel/newsletter/assemble.ts copies
+      // context.campaignSubject), so this wrote the campaign's own subject back
+      // onto every recipient row and nothing ever read the copy. See the fuller
+      // tombstone on the suppressed-row insert above.
       await svc.from("newsletter_sends").insert({
         brokerage_id:        c.brokerage_id,
         campaign_id:         c.id,
         contact_id:          s.contact_id,
         template_id:         null,
-        subject:             assembled.subject,
         status,
         provider_message_id: result.messageId ?? null,
         sent_at:             status === "sent" ? new Date().toISOString() : null,

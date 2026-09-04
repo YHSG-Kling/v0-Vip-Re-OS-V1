@@ -384,6 +384,19 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
   const agentRecordId = input.agentId
 
+  // ── `trigger_year` IS NOT WRITE-ONLY — ITS READER IS THE DATABASE ───────────
+  // ORPHAN DOCTRINE §1 + §3: the census reports agent_intro_videos.trigger_year
+  // as "written by code, read by NOBODY", and it is not. Its reader is the
+  // UNIQUE INDEX at supabase/migrations/m121-agent-intro-videos.sql:25 —
+  //   (contact_id, agent_id, trigger, coalesce(trigger_year, 0))
+  // — which is what makes "one anniversary video per contact per YEAR" true and
+  // what the 23505 branch below depends on. A code-side pre-check would be a
+  // SECOND idempotency rule racing the first (§1: no twins), and deleting the
+  // column would silently collapse every future anniversary onto the first one
+  // ever sent. So: no reader is built and nothing is deleted. This is the same
+  // blind spot the census already exempts in the other direction (a column
+  // written only by a DB trigger reads as writerless); a column read only by an
+  // index expression reads as readerless.
   if (contact.video_opt_out) {
     await svc.from("agent_intro_videos").insert({
       brokerage_id: input.brokerageId,

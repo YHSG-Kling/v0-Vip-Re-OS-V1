@@ -234,7 +234,22 @@ export interface CacheBoard extends CacheEconomics {
   /** Compositions that can never reuse a render, with the offending prop paths. */
   leaks: Array<{ compositionId: string; findings: CachePoisoningFinding[]; renders: number }>
   /** Most-reused narration clips, so the saving is visible and not asserted. */
-  topNarration: Array<{ preview: string; hits: number; chars: number }>
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `narration_cache.last_used_at` (written on every cache HIT,
+   * lib/video/reel-voiceover.ts:158, and on store, :182) and
+   * `.first_render_key` (:182 — the render that first paid ElevenLabs for this
+   * audio) were read by NOBODY. This board is the one surface that exists to
+   * say what the narration cache is worth, and it could only ever say which
+   * rows are hot. It could not say which are COLD — rows holding hosted audio
+   * that nothing has asked for in months, which is the pruning question — nor
+   * which render originally paid for a clip, which is the provenance question
+   * asked whenever a cached narration turns out to be wrong.
+   */
+  topNarration: Array<{ preview: string; hits: number; chars: number; lastUsedAt: string | null; firstRenderKey: string | null }>
+  /** Cache rows not used in 90 days — hosted audio nobody is reusing. */
+  coldNarrationRows: number
 }
 
 /**
@@ -246,7 +261,7 @@ export async function loadCacheBoard(
 ): Promise<CacheBoard> {
   const empty: CacheBoard = {
     renders: 0, hits: 0, hitRatePct: 0, secondsAvoided: 0, usdAvoided: 0,
-    narrationReuses: 0, leaks: [], topNarration: [],
+    narrationReuses: 0, leaks: [], topNarration: [], coldNarrationRows: 0,
   }
   try {
     const svc = createServiceClient()
@@ -262,10 +277,10 @@ export async function loadCacheBoard(
         .limit(500),
       svc.from("remotion_compositions").select("composition_id, duration_frames, fps, requires_did_avatar, requires_voiceover"),
       svc.from("narration_cache")
-        .select("script_preview, script_chars, hit_count")
+        .select("script_preview, script_chars, hit_count, last_used_at, first_render_key")
         .eq("brokerage_id", brokerageId)
         .order("hit_count", { ascending: false })
-        .limit(5),
+        .limit(200),
     ])
 
     const comps = new Map<string, { duration_frames: number; fps: number; requires_did_avatar: boolean; requires_voiceover: boolean }>()
@@ -311,17 +326,33 @@ export async function loadCacheBoard(
       leakMap.set(r.composition_id, { findings, renders: 1 })
     }
 
-    const narration = (narrR.data ?? []) as Array<{ script_preview: string | null; script_chars: number; hit_count: number }>
+    const narration = (narrR.data ?? []) as Array<{
+      script_preview: string | null; script_chars: number; hit_count: number
+      last_used_at: string | null; first_render_key: string | null
+    }>
     const econ = summarizeCacheEconomics(econRows, narration.reduce((s, n) => s + (n.hit_count ?? 0), 0))
+    // COLD = never used, or last used more than 90 days ago. A null stamp on a
+    // row that predates the column is counted cold rather than assumed fresh:
+    // "nobody checked" must not render as "checked and fine" (§4).
+    const coldCutoff = new Date(Date.now() - 90 * 86_400_000).toISOString()
+    const coldNarrationRows = narration.filter((n) => !n.last_used_at || n.last_used_at < coldCutoff).length
 
     return {
       ...econ,
       leaks: [...leakMap.entries()]
         .map(([compositionId, v]) => ({ compositionId, ...v }))
         .sort((a, b) => b.renders - a.renders),
+      coldNarrationRows,
       topNarration: narration
         .filter((n) => (n.hit_count ?? 0) > 0)
-        .map((n) => ({ preview: (n.script_preview ?? "").slice(0, 90), hits: n.hit_count, chars: n.script_chars })),
+        .slice(0, 5)
+        .map((n) => ({
+          preview: (n.script_preview ?? "").slice(0, 90),
+          hits: n.hit_count,
+          chars: n.script_chars,
+          lastUsedAt: n.last_used_at ?? null,
+          firstRenderKey: n.first_render_key ?? null,
+        })),
     }
   } catch {
     return empty

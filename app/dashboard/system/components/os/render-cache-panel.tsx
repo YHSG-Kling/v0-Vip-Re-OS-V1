@@ -165,12 +165,29 @@ export async function RenderCachePanel({ brokerageId }: RenderCachePanelProps) {
             </p>
             {board.topNarration.map((n, i) => (
               <div key={i} className="flex items-start justify-between gap-3 text-xs">
-                <span className="text-muted-foreground truncate">&ldquo;{n.preview}&rdquo;</span>
+                <span className="text-muted-foreground truncate">
+                  &ldquo;{n.preview}&rdquo;
+                  {/* §1.2 — last_used_at / first_render_key: which of these hot
+                      rows has actually been touched lately, and which render
+                      first paid for the audio. Both were write-only. */}
+                  {n.lastUsedAt ? (
+                    <span className="ml-1 opacity-70">· last used {new Date(n.lastUsedAt).toLocaleDateString()}</span>
+                  ) : null}
+                  {n.firstRenderKey ? (
+                    <span className="ml-1 opacity-70">· first paid by {n.firstRenderKey.slice(0, 12)}</span>
+                  ) : null}
+                </span>
                 <span className="font-semibold shrink-0">
                   {n.hits}&times;
                 </span>
               </div>
             ))}
+            {/* The pruning question the board could not previously ask. */}
+            <p className="text-xs text-muted-foreground">
+              {board.coldNarrationRows === 0
+                ? 'No cold narration rows — every cached clip has been reused in the last 90 days.'
+                : `${board.coldNarrationRows} cached narration row${board.coldNarrationRows === 1 ? '' : 's'} not reused in 90 days — hosted audio nothing is asking for.`}
+            </p>
           </div>
         )}
       </CardContent>

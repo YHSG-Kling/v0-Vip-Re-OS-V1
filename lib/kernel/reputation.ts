@@ -292,6 +292,34 @@ export async function loadReputationWorkspace(
     // yet". All three tables here are agents-class now; no hop, no sentinel.
 
     const [reviewsRes, requestsRes, referralsRes] = await Promise.all([
+      // ── `source_url` IS READ HERE AND WRITTEN BY NOBODY, AND THAT IS THE
+      //    HONEST STATE (verdict, 2026-09-04) ────────────────────────────────
+      //
+      // It surfaced as a NEW 1b entry in test:opposite-missing this wave without
+      // any line of code touching it — the writer did not disappear, the CENSUS
+      // GOT SHARPER. `agent_reviews` had been on that guard's "opaque write
+      // object" exclusion list, so its columns were invisible to the 1b sweep;
+      // BURN-C's merge left this table with parseable writes only, and the
+      // pre-existing pair became visible. §2: a count that moves is the finding,
+      // and this one moved because a blind spot shrank.
+      //
+      // NO CAPABILITY WAS LOST IN THAT MERGE — checked rather than assumed: the
+      // deleted `recordReview` did not write `source_url` either. Nothing ever
+      // has.
+      //
+      // THE MISSING HALF IS A FEATURE, NOT A WIRE. `source_url` is where a review
+      // lives on the platform it came FROM, so a card can link out to the real
+      // Google or Zillow review. Every review this OS holds is FIRST-PARTY — the
+      // two writers are app/actions/multi-persona.ts:submitClientFeedback and
+      // app/actions/portal-lifetime.ts:submitClientTestimonial, both collecting
+      // the review through our own portal, where there is no external URL to
+      // record. The writer would be an external-review IMPORTER (Google Business
+      // Profile / Zillow), which does not exist in this tree.
+      //
+      // So the read stays: it is correct, it renders null today, and removing it
+      // would mean re-adding it the day the importer lands. Recorded here with
+      // its reason instead of deleted to move a number (§1), and carried on the
+      // ratchet rather than silently baselined.
       supabase
         .from("agent_reviews")
         .select("id, rating, review_text, platform, source_url, is_published, response_text, response_at, created_at, contact_id, transaction_id")

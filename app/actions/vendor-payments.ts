@@ -659,6 +659,15 @@ export async function initiateVendorPayout(params: {
       brokerage_id: ctx.brokerageId,
       amount: params.amount,
       payout_method: method,
+      // `stripe_transfer_id` IS NOT WRITE-ONLY — its reader is the webhook
+      // matcher at lib/vendors/vendor-payout-events.ts:130, which finds this
+      // row by `.eq(mapping.column, …)` where `mapping.column` comes from
+      // VENDOR_PAYOUT_COMPLETION_EVENTS (:77-78). Because the column name is a
+      // VARIABLE, no static scanner can resolve the term — the opposite-missing
+      // census counts it under "unresolvable filter terms" and reports the
+      // column as read by nobody. It is the id transfer.created / transfer.reversed
+      // arrive quoting, so deleting it would strand every Stripe payout in
+      // 'processing' forever. Nothing to build and nothing to delete (§1).
       stripe_transfer_id: stripeTransferId ?? null,
       cash_app_reference: params.cashAppReference ?? null,
       status: stripeTransferId ? "processing" : "pending",

@@ -48,6 +48,54 @@ interface CampaignRateRollup {
   clicked: number
   openRate: number
   clickRate: number
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `email_tracking.user_agent` was written on every provider event
+   * (app/api/webhooks/sendgrid-events/route.ts:171) and read by NOBODY, so the
+   * open rate this rollup writes onto email_campaigns counted MACHINE opens —
+   * Apple Mail Privacy Protection and Gmail's image proxy fetch the tracking
+   * pixel for the recipient whether or not a human ever looked — exactly like
+   * human ones. The one column that can tell them apart was already being
+   * stored and never consulted.
+   *
+   * `openRate` above is DELIBERATELY unchanged: it is persisted onto
+   * email_campaigns.open_rate and read by surfaces beyond this file, and
+   * silently re-defining a headline number is its own defect. The machine
+   * share is reported BESIDE it so the inflation is visible and the decision
+   * about what to do with it is a human's.
+   */
+  machineOpens: number
+  /**
+   * §1.2 — `email_tracking.metadata` (the provider's own sg_message_id /
+   * sg_event_id) was likewise write-only. It is the ONLY handle on an
+   * engagement event whose `email_send_id` correlation came back null — the
+   * partial-correlation case the webhook's own comment names — so without it a
+   * campaign could be under-counting opens with nothing to trace.
+   */
+  uncorrelatedEvents: number
+  /** Provider message ids of those uncorrelated events (max 5, for tracing). */
+  uncorrelatedProviderIds: string[]
+}
+
+/**
+ * PURE — is this open the recipient's mail client prefetching, rather than a
+ * person? Matched on the substrings the two dominant proxies actually send.
+ * Conservative by construction: an unrecognised or absent user agent is treated
+ * as HUMAN, so this can under-report machine opens and can never invent one.
+ */
+export function isMachineOpenUserAgent(ua: string | null | undefined): boolean {
+  if (!ua) return false
+  const s = ua.toLowerCase()
+  return (
+    s.includes("googleimageproxy") ||
+    s.includes("yahoomailproxy") ||
+    s.includes("proofpoint") ||
+    s.includes("barracuda") ||
+    // Apple MPP fetches through a privacy relay and identifies as Mail on macOS
+    // with no Safari/Version token — the documented MPP shape.
+    (s.includes("mail/") && s.includes("macintosh") && !s.includes("safari"))
+  )
 }
 
 export interface RollupSummary {
@@ -55,6 +103,17 @@ export interface RollupSummary {
   campaignsSkipped: number
   /** Campaigns whose source rows could not be read. Never folded into a zero. */
   refusals: string[]
+  /**
+   * §1.2 — the two facts email_tracking.user_agent / .metadata now carry out of
+   * the rollup, aggregated across the window so the cron response shows them.
+   * `machineOpens` is the share of the open rate this run wrote that came from
+   * a mail proxy rather than a person; `uncorrelatedEvents` is the number of
+   * provider events that matched no send row (their provider ids are named so
+   * the correlation can be traced instead of guessed at).
+   */
+  machineOpens: number
+  uncorrelatedEvents: number
+  uncorrelatedProviderIds: string[]
   /** Newsletter lane only — see newsletterQueueLatency. Absent on the email lane. */
   queue?: QueueLatency
 }
@@ -156,6 +215,13 @@ async function newsletterSendRates(
       clicked: clicked.count,
       openRate: pct(opened.count, sent.count),
       clickRate: pct(clicked.count, sent.count),
+      // The newsletter lane keeps its engagement as stamps on newsletter_sends
+      // itself, not as email_tracking rows, so it has no user agent to judge
+      // and no provider event to correlate. Zero here is a real zero for this
+      // lane — it is not "unknown dressed as none".
+      machineOpens: 0,
+      uncorrelatedEvents: 0,
+      uncorrelatedProviderIds: [],
     },
     error: null,
   }
@@ -182,9 +248,11 @@ async function emailSendRates(
 
   // email_tracking → email_sends has exactly ONE foreign key, so the bare embed
   // is unambiguous (a second FK would earn PGRST201 and kill the whole query).
+  // user_agent + metadata joined the select 2026-09-04 (§1.2) — see the
+  // CampaignRateRollup fields they feed.
   const { data: events, error: eventsError } = await svc
     .from("email_tracking")
-    .select("email_send_id, event_type, email_sends!inner(campaign_id)")
+    .select("email_send_id, event_type, user_agent, metadata, email_sends!inner(campaign_id)")
     .eq("email_sends.campaign_id", campaignId)
     .in("event_type", ["open", "click"])
     .limit(50_000)
@@ -192,13 +260,41 @@ async function emailSendRates(
 
   const openedSends = new Set<string>()
   const clickedSends = new Set<string>()
-  for (const row of (events ?? []) as Array<{ email_send_id: string | null; event_type: string }>) {
-    if (!row.email_send_id) continue
-    if (row.event_type === "open") openedSends.add(row.email_send_id)
+  const machineOpenSends = new Set<string>()
+  const humanOpenSends = new Set<string>()
+  let uncorrelatedEvents = 0
+  const uncorrelatedProviderIds: string[] = []
+  for (const row of (events ?? []) as Array<{
+    email_send_id: string | null; event_type: string
+    user_agent: string | null; metadata: Record<string, unknown> | null
+  }>) {
+    if (!row.email_send_id) {
+      // The partial-correlation case. Counted and TRACEABLE rather than dropped.
+      uncorrelatedEvents++
+      const sgId = row.metadata?.sg_message_id
+      if (typeof sgId === "string" && sgId && uncorrelatedProviderIds.length < 5) {
+        uncorrelatedProviderIds.push(sgId)
+      }
+      continue
+    }
+    if (row.event_type === "open") {
+      openedSends.add(row.email_send_id)
+      if (isMachineOpenUserAgent(row.user_agent)) machineOpenSends.add(row.email_send_id)
+      else humanOpenSends.add(row.email_send_id)
+    }
     // A click implies an open even when the pixel was blocked, which is the
-    // common case on mail clients that strip images.
-    if (row.event_type === "click") { clickedSends.add(row.email_send_id); openedSends.add(row.email_send_id) }
+    // common case on mail clients that strip images. A CLICK is always human —
+    // no proxy follows the link — so it also clears any machine-only mark.
+    if (row.event_type === "click") {
+      clickedSends.add(row.email_send_id)
+      openedSends.add(row.email_send_id)
+      humanOpenSends.add(row.email_send_id)
+    }
   }
+
+  // A send counts as a machine open only when NOTHING human was seen on it.
+  let machineOpens = 0
+  for (const id of machineOpenSends) if (!humanOpenSends.has(id)) machineOpens++
 
   return {
     rollup: {
@@ -208,6 +304,9 @@ async function emailSendRates(
       clicked: clickedSends.size,
       openRate: pct(openedSends.size, sent.count),
       clickRate: pct(clickedSends.size, sent.count),
+      machineOpens,
+      uncorrelatedEvents,
+      uncorrelatedProviderIds,
     },
     error: null,
   }
@@ -220,7 +319,13 @@ function merge(a: CampaignRateRollup | null, b: CampaignRateRollup | null): Camp
   const sent = a.sent + b.sent
   const opened = a.opened + b.opened
   const clicked = a.clicked + b.clicked
-  return { campaignId: a.campaignId, sent, opened, clicked, openRate: pct(opened, sent), clickRate: pct(clicked, sent) }
+  return {
+    campaignId: a.campaignId, sent, opened, clicked,
+    openRate: pct(opened, sent), clickRate: pct(clicked, sent),
+    machineOpens: a.machineOpens + b.machineOpens,
+    uncorrelatedEvents: a.uncorrelatedEvents + b.uncorrelatedEvents,
+    uncorrelatedProviderIds: [...a.uncorrelatedProviderIds, ...b.uncorrelatedProviderIds].slice(0, 5),
+  }
 }
 
 /**
@@ -237,7 +342,10 @@ export async function rollupEmailCampaignRates(
   svc: Svc,
   opts?: { sinceDays?: number; limit?: number },
 ): Promise<RollupSummary> {
-  const out: RollupSummary = { campaignsRolledUp: 0, campaignsSkipped: 0, refusals: [] }
+  const out: RollupSummary = {
+    campaignsRolledUp: 0, campaignsSkipped: 0, refusals: [],
+    machineOpens: 0, uncorrelatedEvents: 0, uncorrelatedProviderIds: [],
+  }
   const since = new Date(Date.now() - (opts?.sinceDays ?? 45) * 86_400_000).toISOString()
 
   // WINDOW ON EVERY TIMESTAMP THE TABLE ACTUALLY HAS. Verified live:
@@ -290,6 +398,13 @@ export async function rollupEmailCampaignRates(
       continue
     }
     out.campaignsRolledUp++
+    // §1.2 — carry the machine-open share and the uncorrelated events out of
+    // the per-campaign rollup so the cron response reports them.
+    out.machineOpens += rollup.machineOpens
+    out.uncorrelatedEvents += rollup.uncorrelatedEvents
+    for (const id of rollup.uncorrelatedProviderIds) {
+      if (out.uncorrelatedProviderIds.length < 10) out.uncorrelatedProviderIds.push(id)
+    }
   }
 
   return out
@@ -306,7 +421,10 @@ export async function rollupNewsletterCampaignRates(
   svc: Svc,
   opts?: { sinceDays?: number; limit?: number },
 ): Promise<RollupSummary> {
-  const out: RollupSummary = { campaignsRolledUp: 0, campaignsSkipped: 0, refusals: [] }
+  const out: RollupSummary = {
+    campaignsRolledUp: 0, campaignsSkipped: 0, refusals: [],
+    machineOpens: 0, uncorrelatedEvents: 0, uncorrelatedProviderIds: [],
+  }
   const since = new Date(Date.now() - (opts?.sinceDays ?? 45) * 86_400_000).toISOString()
 
   const { data: campaigns, error } = await svc

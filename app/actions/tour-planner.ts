@@ -233,7 +233,8 @@ export async function getBuyerTours(contactId: string) {
         confirmed_time, is_confirmed, suggested_time,
         suggested_duration_minutes, drive_time_from_prev_minutes,
         buyer_interest_level, buyer_note, showing_id,
-        time_arrived_at, time_left_at, time_spent_minutes
+        time_arrived_at, time_left_at, time_spent_minutes,
+        scheduling_reference
       )
     `)
     .eq('contact_id', contactId)
@@ -768,10 +769,23 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       listing_agent_name:     listingAgentName ?? null,
       listing_agent_phone:    listingAgentPhone ?? null,
       listing_agent_company:  listingAgentCompany ?? null,
-      // NOT WRITE-ONLY (census re-check 2026-09-03): the reader is the confirm
-      // tab — app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:39
-      // types it and :98 seeds the field from it. The other writer is the
-      // ShowingTime webhook (app/api/showings/showingtime-webhook/route.ts:180).
+      // RE-ADJUDICATED 2026-09-04 — THE 2026-09-03 NOTE WAS WRONG, and the way
+      // it was wrong is the exact failure CLAUDE.md §2 warns about: it pointed
+      // at a TYPE and a useState default as if they were a read.
+      // app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:39
+      // declares `scheduling_reference` on its TourStop interface and :98 seeds
+      // the input from `stop.scheduling_reference` — but the only query that
+      // loads those stops (getContactTours, the `tour_stops (…)` embed at :226)
+      // listed its columns EXPLICITLY and did not include this one. A TypeScript
+      // interface is not a select list: the field arrived `undefined` on every
+      // render, the confirm form opened blank, and an agent re-confirming a
+      // ShowingTime appointment silently wiped the provider's own reference by
+      // saving an empty string back over it. The census was right and the
+      // re-check was reading the wrong evidence.
+      //
+      // FIXED at the source: `scheduling_reference` is now IN the embed
+      // (:226+), which is the reader this column always needed. Other writer:
+      // the ShowingTime webhook (app/api/showings/showingtime-webhook/route.ts:180).
       scheduling_reference:   schedulingReference ?? null,
       is_confirmed:           true,
     })

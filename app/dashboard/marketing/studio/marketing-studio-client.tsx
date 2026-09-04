@@ -351,8 +351,27 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   // one. Keyed by newsletter_campaign_id, most recent render wins. Vocabulary
   // is the composition gate's (lib/kernel/composition-gate.ts): queued /
   // rendering / completed / failed / suppressed.
+  //
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `voiceover_url` and `video_project_id`
+  // joined this shape. Both are written by the render worker
+  // (app/api/internal/remotion/render-newsletter-video/route.ts:470) and were
+  // read by NOBODY. The consequence for a FAILED render is the one that costs
+  // money: the narration is synthesised and hosted BEFORE the composite is
+  // assembled, so a campaign whose video failed still has a finished, paid-for
+  // voiceover sitting in storage — and this page, the only place the render is
+  // managed, could not offer it. `video_project_id` is the same story for the
+  // successful case: the render files an ai_video_projects row (the Video
+  // Studio's own record, where the reel can be re-cut, re-published or
+  // repurposed) and nothing linked to it.
   const [videoRendersByCampaign, setVideoRendersByCampaign] = useState<
-    Record<string, { status: string; video_url: string | null; error_message: string | null; completed_at: string | null }>
+    Record<string, {
+      status: string
+      video_url: string | null
+      error_message: string | null
+      completed_at: string | null
+      voiceover_url: string | null
+      video_project_id: string | null
+    }>
   >({})
   const [videoRendersError, setVideoRendersError] = useState<string | null>(null)
 
@@ -966,7 +985,7 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       } else {
         const { data: renders, error: rendersError } = await supabase
           .from("newsletter_video_renders")
-          .select("newsletter_campaign_id, status, video_url, error_message, completed_at, created_at")
+          .select("newsletter_campaign_id, status, video_url, error_message, completed_at, created_at, voiceover_url, video_project_id")
           .in("newsletter_campaign_id", campaignIds)
           .order("created_at", { ascending: false })
         if (rendersError) {
@@ -974,7 +993,14 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
           setVideoRendersByCampaign({})
         } else {
           setVideoRendersError(null)
-          const byCampaign: Record<string, { status: string; video_url: string | null; error_message: string | null; completed_at: string | null }> = {}
+          const byCampaign: Record<string, {
+            status: string
+            video_url: string | null
+            error_message: string | null
+            completed_at: string | null
+            voiceover_url: string | null
+            video_project_id: string | null
+          }> = {}
           for (const r of renders || []) {
             // Ordered newest-first; the first row per campaign is the current one.
             if (!byCampaign[r.newsletter_campaign_id]) {
@@ -983,6 +1009,8 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                 video_url: r.video_url ?? null,
                 error_message: r.error_message ?? null,
                 completed_at: r.completed_at ?? null,
+                voiceover_url: r.voiceover_url ?? null,
+                video_project_id: r.video_project_id ?? null,
               }
             }
           }
@@ -3176,6 +3204,23 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                               {render?.status === "failed" && (
                                 <p className="text-xs text-red-600 mt-0.5 break-words max-w-md">
                                   Video render failed: {render.error_message ?? "no error recorded"}
+                                  {/* §1.2 — the narration survived the failure and
+                                      was already paid for. Offer it rather than
+                                      leaving it stranded in storage. */}
+                                  {render.voiceover_url && (
+                                    <>
+                                      {" "}
+                                      <a
+                                        href={render.voiceover_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="underline"
+                                      >
+                                        The narration finished — play the audio
+                                      </a>
+                                      .
+                                    </>
+                                  )}
                                 </p>
                               )}
                             </div>
@@ -3184,6 +3229,21 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                                   settled at lib/kernel/composition-gate.ts:
                                   queued / rendering / completed / failed /
                                   suppressed. No render row = no video queued. */}
+                              {/* §1.2 — video_project_id: the ai_video_projects row
+                                  this render filed, shown so the reel can be found
+                                  in the Video Studio and re-cut or repurposed.
+                                  Rendered as TEXT, not a link, deliberately: no
+                                  route in this tree accepts an ai_video_projects id
+                                  as a parameter today, and inventing one here would
+                                  ship a 404 in place of a missing page. */}
+                              {render?.video_project_id && (
+                                <span
+                                  className="text-xs text-muted-foreground"
+                                  title={`ai_video_projects.id ${render.video_project_id}`}
+                                >
+                                  Studio project {render.video_project_id.slice(0, 8)}
+                                </span>
+                              )}
                               {render ? (
                                 render.status === "completed" && render.video_url ? (
                                   <a

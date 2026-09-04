@@ -20,6 +20,21 @@ export interface QueuedReview {
   flag_count: number
   created_at: string | null
   reviewer_name: string | null
+  /** Why people flagged it — vendor_review_flags.reason, tallied (§1.2). */
+  flag_reasons: Array<{ reason: string; count: number }>
+  /** The booking / deal the review hangs off — vendor_reviews.booking_id / .transaction_id (§1.2). */
+  booking_id: string | null
+  transaction_id: string | null
+}
+
+/** The five codes flagVendorReview stores, in the words a moderator uses. */
+const FLAG_REASON_LABEL: Record<string, string> = {
+  inappropriate: "Inappropriate content",
+  fake: "Believed fake",
+  competitor: "Posted by a competitor",
+  pii: "Contains personal information",
+  irrelevant: "Irrelevant to the service",
+  unspecified: "No reason given",
 }
 
 /**
@@ -105,6 +120,28 @@ export function ReviewModerationClient({ initialQueue }: { initialQueue: QueuedR
 
               {review.headline && <p className="text-sm font-medium">{review.headline}</p>}
               {review.review && <p className="text-sm text-muted-foreground">{review.review}</p>}
+
+              {/* §1.2 — WHY it was flagged. Without this the count above asked a
+                  human to decide with the objection withheld. */}
+              {review.flag_reasons.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] uppercase text-muted-foreground">Flagged for</span>
+                  {review.flag_reasons.map((f) => (
+                    <Badge key={f.reason} variant="outline" className="text-[10px]">
+                      {FLAG_REASON_LABEL[f.reason] ?? f.reason}
+                      {f.count > 1 ? ` ×${f.count}` : ""}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              {/* §1.2 — the review's PROVENANCE: a booking or a closed deal it
+                  actually hangs off, versus a review attached to neither. */}
+              <p className="text-[11px] text-muted-foreground">
+                {review.booking_id || review.transaction_id
+                  ? `Attached to ${[review.booking_id ? "a booking" : null, review.transaction_id ? "a transaction" : null].filter(Boolean).join(" and ")} in this brokerage`
+                  : "Not attached to any booking or transaction — no in-house record backs this review"}
+              </p>
 
               <div className="flex gap-2">
                 <Button size="sm" disabled={isPending && busyId === review.id}

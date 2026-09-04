@@ -124,6 +124,13 @@ export async function produceClientDocument(
       docAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
     }
 
+    // `agent_id` IS NOT WRITE-ONLY — it is the LIBRARY'S SCOPE PREDICATE.
+    // app/actions/generated-documents.ts:getGeneratedDocumentLibrary narrows a
+    // non-elevated seat with `q = q.eq("agent_id", ctx.agentId)` — applied to a
+    // reassigned query BUILDER inside an `if`, not inside the `.from(…)` chain,
+    // which is why the opposite-missing census cannot see the term and reports
+    // the column as read by nobody. Deleting it would hand every agent the whole
+    // brokerage's client PDFs (§4). Nothing to build and nothing to delete (§1).
     const { data: doc } = await svc.from("generated_documents").insert({
       brokerage_id: params.brokerageId,
       agent_id: docAgentId,
