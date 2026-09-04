@@ -87,8 +87,22 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 //
 // ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
 //     lib/auth/resolve-user-role.ts:220  TENANT_ADMIN_USER_TYPES
-// {admin, broker, broker_owner, team_lead, broker_admin} — the exact five the
-// live function admits. The name below is kept as an ALIAS so the five import
+// {admin, broker, broker_owner, team_lead, broker_admin} — which was the exact
+// five the live function admitted when that sentence was written.
+//
+// ── UPDATED 2026-09-04 (lane ROSTER + integrator): THE ROSTER IS NOW SIX, ON
+//    BOTH SIDES ─────────────────────────────────────────────────────────────
+// The owner ruled "there is a compliance officer for tenant staff which was not
+// included", so TENANT_ADMIN_USER_TYPES — and therefore this alias — admits
+// `compliance_officer` as well, and the SQL half is APPLIED rather than merely
+// written: scripts/1109-a-compliance-officer-administers-the-brokerage.sql went
+// live on hrvaqgvukzxfskkcrwbt the same day, widening
+// public.is_brokerage_admin() in BOTH of its branches. So the count in the line
+// above is now SIX on both sides, and this gate is not one role wider than the
+// database. Had it been left un-applied it would have been: the false-success
+// direction for the RLS-bound callers (a refused statement resolves) and a real
+// widening for the two SERVICE-client callers named above.
+// The name below is kept as an ALIAS so the five import
 // sites (scripts/brokerage-admin-grant-simulator.ts:39, app/actions/support.ts:39,
 // app/crm/contacts/[contactId]/alerts/page.tsx:40,
 // app/dashboard/team/create-team-dialog.tsx:11, and this file) keep compiling;

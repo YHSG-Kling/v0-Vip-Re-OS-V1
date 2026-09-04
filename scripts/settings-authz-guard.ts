@@ -14,7 +14,7 @@
 
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { isAdminOrBroker } from "../lib/auth/resolve-user-role"
+import { isAdminOrBroker, TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 
 let passed = 0
 let failed = 0
@@ -78,7 +78,14 @@ for (const t of targets) {
 // changes when the gate changes, whatever anyone writes about it.
 console.log("\n── isAdminOrBroker admits the owner's admin-class roster ──")
 {
-  for (const t of ["broker", "broker_admin", "broker_owner", "team_lead", "admin"]) {
+  // DERIVED from the roster, not a five-name copy of it. The copy would not have
+  // gone RED when the owner's 2026-09-04 ruling added `compliance_officer` — it
+  // only asserts inclusions — but it would have stopped COVERING the new seat,
+  // which is the quieter half of the same defect: a proof that keeps passing
+  // while the thing it proves grows past it.
+  check("POSITIVE CONTROL — the roster is non-empty, so the loop below is not vacuous",
+    TENANT_ADMIN_USER_TYPES.size > 0)
+  for (const t of [...TENANT_ADMIN_USER_TYPES].sort()) {
     check(`isAdminOrBroker admits '${t}'`, isAdminOrBroker({ user_type: t }))
   }
   // Paired negative control: an assertion that everything is admitted would pass

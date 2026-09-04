@@ -123,7 +123,20 @@ Supabase project `hrvaqgvukzxfskkcrwbt`.
 
 ### Roles
 
-- Tenant roster: `broker`, `broker_admin`, `broker_owner`, `team_lead`, `admin`.
+- Tenant roster: `broker`, `broker_admin`, `broker_owner`, `team_lead`, `admin`,
+  `compliance_officer`. The code is `TENANT_ADMIN_USER_TYPES`
+  (`lib/auth/resolve-user-role.ts`) and this line must never disagree with it.
+  `compliance_officer` was added on the owner's 2026-09-04 ruling ("there is a
+  compliance officer for tenant staff which was not included"); it is a storable
+  `users.user_type` and `ROLE_AUTHORITY_RANK` already ranked it above `team_lead`.
+  **The roster is the OPERATIONAL admin class, and three tiers derive FROM it by
+  named subtraction rather than restating it** — never copy the list, spread the
+  Set: `BROKERAGE_FINANCE_ADMIN_USER_TYPES` (the brokerage's books: minus
+  `team_lead` per m472 and minus `compliance_officer`, who m467 already lets READ
+  the books and never keep them), `TENANT_COMMERCE_ADMIN_USER_TYPES` (may
+  obligate the brokerage to pay — seats, subscription, vendor charges: minus
+  `compliance_officer`), and `LEAD_DESK_USER_TYPES` (`lib/auth/lead-visibility.ts`:
+  plus `isa`, minus `compliance_officer` per §5 and `is_lead_visible_role()`).
 - **Platform staff live in the `platform_role` column** — NOT `user_type='superadmin'`,
   which no live row has.
 - **A LENDER IS NOT A USER TYPE — it is a VENDOR CATEGORY** (owner, 2026-09-04),

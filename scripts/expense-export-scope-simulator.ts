@@ -52,6 +52,7 @@ import { createClient } from "@supabase/supabase-js"
 import {
   TENANT_ADMIN_USER_TYPES,
   BROKERAGE_FINANCE_ADMIN_USER_TYPES,
+  ROLES_HELD_OUT_OF_BROKERAGE_MONEY,
   isAdminOrBroker,
   isBrokerageFinanceAdmin,
 } from "../lib/auth/resolve-user-role"
@@ -91,9 +92,19 @@ const EXPORT_ACTIONS = ["exportExpensesCSV", "exportCommissionsCSV"] as const
 function rosterLayer() {
   console.log("\n[the roster · pure — \"brokerages' admins and owner\", derived not retyped]")
 
-  check("the export roster is the tenant roster MINUS exactly team_lead",
+  // WAS: `…MINUS exactly team_lead`, compared against the single string
+  // THE_ROLE_HELD_OUT. That pinned this proof to the roster of ONE wave — a
+  // CLAUDE.md §2 waypoint — and it went permanently false on 2026-09-04 when the
+  // owner seated `compliance_officer` as tenant staff admin and the money tier
+  // subtracted a second role. The claim is now the RULE: the export roster is the
+  // tenant roster minus exactly the roles the module NAMES as held out, whatever
+  // that list holds, and the module's list is read rather than restated here.
+  const heldOut = [...ROLES_HELD_OUT_OF_BROKERAGE_MONEY].sort().join(",")
+  check("POSITIVE CONTROL — the module names at least one role as held out of the books",
+    ROLES_HELD_OUT_OF_BROKERAGE_MONEY.size > 0)
+  check(`the export roster is the tenant roster MINUS exactly the ruled-out roles (${heldOut})`,
     [...TENANT_ADMIN_USER_TYPES].filter((r) => !BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(r))
-      .join(",") === THE_ROLE_HELD_OUT)
+      .sort().join(",") === heldOut)
   check("...and adds nothing the tenant roster lacks, so it is a STRICT subset",
     [...BROKERAGE_FINANCE_ADMIN_USER_TYPES].every((r) => TENANT_ADMIN_USER_TYPES.has(r)))
 
@@ -101,10 +112,14 @@ function rosterLayer() {
     check(`${r} may export their brokerage's expenses — the ruling's "admins and owner"`,
       isBrokerageFinanceAdmin({ user_type: r }))
   }
-  check("team_lead may NOT export another agent's expenses (the ruling names admins and owner only)",
-    !isBrokerageFinanceAdmin({ user_type: THE_ROLE_HELD_OUT }))
-  check("...even though team_lead IS a tenant admin elsewhere — the two tiers are different questions",
-    isAdminOrBroker({ user_type: THE_ROLE_HELD_OUT }))
+  // Every held-out role, both halves, driven off the module's own list — so a
+  // role added to it cannot arrive without being proved in both directions.
+  for (const r of ROLES_HELD_OUT_OF_BROKERAGE_MONEY) {
+    check(`${r} may NOT export another agent's expenses (the ruling names admins and owner only)`,
+      !isBrokerageFinanceAdmin({ user_type: r }))
+    check(`...even though ${r} IS a tenant admin elsewhere — the two tiers are different questions`,
+      isAdminOrBroker({ user_type: r }))
+  }
 
   for (const r of ["agent", "isa", "tc", "vendor", "lender", "contact"]) {
     check(`${r} may export nobody else's expenses`, !isBrokerageFinanceAdmin({ user_type: r }))
@@ -180,9 +195,15 @@ function decisionLayer() {
     check(`...but ${r} may NOT reach into ANOTHER brokerage`,
       gate(ctxOf(r), FOREIGN, inOther, false) === "Forbidden")
   }
-  check("a team_lead may not export a colleague's expenses, in their own brokerage or any other",
-    gate(ctxOf(THE_ROLE_HELD_OUT), PEER, inOwn, false) === "Forbidden" &&
-    gate(ctxOf(THE_ROLE_HELD_OUT), FOREIGN, inOther, false) === "Forbidden")
+  // Every role the module holds out of the books, run through the real gate —
+  // not just m472's team_lead. Driven off the module's list so the 2026-09-04
+  // compliance_officer ruling (and any later one) is exercised here the day it
+  // lands, instead of being asserted only as a set operation upstairs.
+  for (const r of ROLES_HELD_OUT_OF_BROKERAGE_MONEY) {
+    check(`a ${r} may not export a colleague's expenses, in their own brokerage or any other`,
+      gate(ctxOf(r), PEER, inOwn, false) === "Forbidden" &&
+      gate(ctxOf(r), FOREIGN, inOther, false) === "Forbidden")
+  }
 
   // THE ID ORACLE. Three different failures must be indistinguishable to the
   // caller, or the refusal itself becomes an enumeration primitive: a caller

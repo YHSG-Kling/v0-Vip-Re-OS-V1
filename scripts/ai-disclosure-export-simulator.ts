@@ -12,6 +12,9 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+// THE one sanctioned comment scanner (CLAUDE.md §2). Hand-rolled strippers get
+// the `//`-before-`/*` case wrong and blind the scan they were written to run.
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -53,8 +56,29 @@ console.log("\n── the export route is gated + shaped like a real file downlo
   const r = src(ROUTE)
   check("it calls the ledger engine (single source of truth, no re-query)",
     /generateAiDisclosureLedger\(/.test(r))
-  check("role-gated to the same set as the page (broker/admin/superadmin/team_lead/compliance_officer)",
-    r.includes("compliance_officer") && r.includes("broker") && /403/.test(r))
+  // ── RETARGETED 2026-09-04 (lane ROSTER) — THIS CHECK COULD NOT HAVE FAILED ─
+  //
+  // It read `r.includes("compliance_officer") && r.includes("broker")` over RAW
+  // SOURCE. That is the CLAUDE.md §2 defect by name: a role word in a COMMENT
+  // satisfies it. When the six-role literal here was replaced by a call to the
+  // shared roster predicate, the TOMBSTONE explaining the replacement still
+  // contains both words — so the check would have gone on reporting green over a
+  // gate it had stopped reading. It would equally have passed if the gate were
+  // deleted outright and only its comment left behind.
+  //
+  // Asserted as the BEHAVIOUR instead: the route asks the ONE tenant roster, by
+  // importing and CALLING its predicate, and still refuses with 403. The
+  // membership of that roster is owned and proved by test:admin-vocabulary; this
+  // file's job is that the gate is here and is the shared one.
+  const rCode = stripComments(r)
+  check("role-gated through the ONE tenant roster (imported and CALLED, not a local literal)",
+    /import\s*\{[^}]*\bisAdminOrBroker\b[^}]*\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/.test(rCode) &&
+    /isAdminOrBroker\s*\(/.test(rCode) && /403/.test(rCode))
+  check("NEGATIVE CONTROL — the gate scan reads CODE, so a role word in prose alone does not satisfy it",
+    !/isAdminOrBroker\s*\(/.test(stripComments('// the gate used to be isAdminOrBroker({ user_type: t })')))
+  check("...and the same page and route still agree on ONE roster (neither keeps a private list)",
+    !/\[\s*"broker"[^\]]*"compliance_officer"\s*\]/.test(rCode) &&
+    !/\[\s*"broker"[^\]]*"compliance_officer"\s*\]/.test(stripComments(src(PAGE))))
   check("unauthenticated → 401", /401/.test(r))
   check("brokerage-scoped (uses the caller's own brokerage_id)", /profile\.brokerage_id/.test(r))
   check("returns text/csv as an attachment with a filename", /text\/csv/.test(r) && /attachment; filename=/.test(r))

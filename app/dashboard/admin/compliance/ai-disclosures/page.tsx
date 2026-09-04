@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledger"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+// THE tenant roster, defined once — see the gate below.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -40,9 +42,11 @@ export default async function AiDisclosureLedgerPage() {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return <div className="p-6 text-red-600">Brokerage not configured</div>
-  // SCOPE LADDER (kept inline — admits compliance/team_lead tiers): 'superadmin'
-  // removed — dead as users.user_type (0 live rows); broker_owner added.
-  if (!["broker", "broker_owner", "broker_admin", "admin", "team_lead", "compliance_officer"].includes(profile.user_type ?? "")) {
+  // THE tenant roster, asked once (§6). This was the six-role literal that
+  // became a byte-for-byte copy of TENANT_ADMIN_USER_TYPES when the owner's
+  // 2026-09-04 ruling added `compliance_officer` to it — same membership, one
+  // definition. Survivor: lib/auth/resolve-user-role.ts:isAdminOrBroker.
+  if (!isAdminOrBroker({ user_type: profile.user_type })) {
     return <div className="p-6 text-red-600">Forbidden</div>
   }
 

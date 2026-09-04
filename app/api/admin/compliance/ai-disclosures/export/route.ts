@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
 import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledger"
+// THE tenant roster, defined once — see the tombstone below.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 /**
  * AI DISCLOSURE LEDGER — CSV EXPORT. The engine + page call this "the exportable
@@ -9,9 +11,21 @@ import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledge
  * human-approver proof + the recipient's live consent state — the EU AI Act /
  * FTC human-oversight evidence, as a file counsel can file.
  */
-// SCOPE LADDER (kept inline — same roster as the page): 'superadmin' removed —
-// dead as users.user_type (0 live rows); broker_owner added.
-const ALLOWED = ["broker", "broker_owner", "broker_admin", "admin", "team_lead", "compliance_officer"]
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — the six-role literal that used to sit here
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED as a LITERAL (§6, 2026-09-04, lane ROSTER). It read
+// ["broker","broker_owner","broker_admin","admin","team_lead","compliance_officer"]
+// and described itself as a scope ladder kept deliberately inline. The owner's
+// 2026-09-04 ruling ("there is a compliance officer for tenant staff which was
+// not included") added the sixth role to TENANT_ADMIN_USER_TYPES, at which point
+// this list became BYTE-FOR-BYTE the tenant roster — a second spelling of one
+// idea, which is the §6 defect. test:admin-vocabulary's shape scan reported it
+// the same day, having reported zero the day before.
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//     lib/auth/resolve-user-role.ts  isAdminOrBroker / TENANT_ADMIN_USER_TYPES
+// Membership is IDENTICAL, so this is a deletion and not a behaviour change.
 
 /**
  * RFC-4180 CSV cell: always quoted, embedded quotes doubled. Also neutralizes
@@ -36,7 +50,7 @@ export async function GET(request: NextRequest) {
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return NextResponse.json({ error: "Brokerage not configured" }, { status: 400 })
-  if (!ALLOWED.includes(profile.user_type ?? "")) return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  if (!isAdminOrBroker({ user_type: profile.user_type })) return NextResponse.json({ error: "Forbidden" }, { status: 403 })
 
   // Optional window override (?since=&until= ISO); defaults to the ledger's 30-day window.
   const { searchParams } = new URL(request.url)

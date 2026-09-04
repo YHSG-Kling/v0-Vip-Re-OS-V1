@@ -83,6 +83,7 @@ import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import {
+  TENANT_ADMIN_USER_TYPES,
   isAdminOrBroker,
   isTenantAdminGrantRole,
   isTenantAdminOrPlatformStaff,
@@ -90,6 +91,9 @@ import {
   resolveTenantAdmin,
 } from "../lib/auth/resolve-user-role"
 import { toCanonicalRole } from "../lib/security/types"
+// The LIVE users.user_type vocabulary, generated from the database (§3). Read,
+// never retyped — see STORABLE_USER_TYPES below for what retyping it cost.
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -108,11 +112,20 @@ const SELF = fileURLToPath(import.meta.url)
 // column names. Agreement with the database is owned by check-vocabularies.ts
 // and re-proved against the live CHECK constraint in the live layer below.
 
-/** users_user_type_check — the fourteen STORABLE user_type values. */
-const STORABLE_USER_TYPES = [
-  "admin", "agent", "broker", "broker_owner", "compliance_officer", "contact",
-  "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor",
-] as const
+/**
+ * users_user_type_check — the STORABLE user_type values, READ FROM THE
+ * GENERATED CACHE rather than retyped.
+ *
+ * WAS a fourteen-element literal, and it had already gone stale: m530 added
+ * `broker_admin` to the CHECK, so a hand-kept copy here disagreed with the
+ * database and the assertion built on it ("broker_admin is NOT storable") had
+ * become a lie that passed. CLAUDE.md §3 — the live database is the source of
+ * truth, and scripts/check-vocabularies.ts is its generated cache. A vocabulary
+ * retyped in a proof is a second vocabulary (§6), which is the exact defect this
+ * whole proof exists to police.
+ */
+const STORABLE_USER_TYPES: readonly string[] =
+  (CHECK_VOCABULARIES.users?.user_type ?? []).slice().sort()
 
 /** Accepted on INPUT, never stored. lib/security/types.ts#LEGACY_ROLE_MAP. */
 const LEGACY_INPUT_SPELLINGS = [
@@ -123,8 +136,21 @@ const LEGACY_INPUT_SPELLINGS = [
 
 const KNOWN_ROLE_WORDS = new Set<string>([...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS])
 
-/** The owner's TENANT admin-class roster, plus the legacy spelling of `broker`. */
-const TENANT_ADMIN = new Set(["admin", "broker", "broker_owner", "team_lead", "broker_admin"])
+/**
+ * The owner's TENANT admin-class roster.
+ *
+ * DERIVED from the module under test rather than retyped. It used to be a
+ * five-element literal here, which made this proof its own second copy of the
+ * very roster it exists to keep single (§6) — and the copy silently stopped
+ * agreeing on 2026-09-04, when the owner ruled "there is a compliance officer
+ * for tenant staff which was not included" and the roster gained a sixth member.
+ *
+ * The consequence was not a red check: `restatesTenantRoster` below uses this
+ * set to decide which local role arrays ARE restatements of the roster, so a
+ * stale copy would have made the census stop recognising a duplicate that names
+ * the new role — an absence claim reporting zero because it could no longer see.
+ */
+const TENANT_ADMIN: ReadonlySet<string> = TENANT_ADMIN_USER_TYPES
 /** PLATFORM markers a legacy user_type test may still carry. */
 const PLATFORM_MARKERS = new Set(["superadmin", "super_admin"])
 
@@ -133,12 +159,36 @@ const PLATFORM_MARKERS = new Set(["superadmin", "super_admin"])
 function pureLayer() {
   console.log("\n[the tenant roster · pure — the owner's five, and only those]")
 
-  for (const t of ["broker", "broker_admin", "broker_owner", "team_lead", "admin"]) {
+  // THE ADMITTED SIDE, driven off the roster itself. A retyped list here would
+  // be the §6 defect inside the proof that polices §6: it would keep passing on
+  // five roles while the module carried six, and the sixth would go unproved.
+  // The rulings that put each name there:
+  //   broker, broker_admin, broker_owner, team_lead, admin  — owner, 2026-08-22
+  //   compliance_officer                                    — owner, 2026-09-04
+  //     ("there is a compliance officer for tenant staff which was not included")
+  check("POSITIVE CONTROL — the roster is non-empty, so the loop below is not vacuous",
+    TENANT_ADMIN_USER_TYPES.size > 0)
+  for (const t of [...TENANT_ADMIN_USER_TYPES].sort()) {
     check(`'${t}' is admin-class (owner ruling, verbatim)`, isAdminOrBroker({ user_type: t }))
   }
+  // The ruling's own six, named, so a roster SILENTLY SHRINKING cannot pass the
+  // derived loop above by having nothing left to iterate. This is the one place
+  // the membership is written out, and it is written out as the RULINGS, not as
+  // a count — a seventh role added by a later ruling adds a line here.
+  for (const t of ["broker", "broker_admin", "broker_owner", "team_lead", "admin", "compliance_officer"]) {
+    check(`'${t}' is named by a standing ruling and is still in the roster`, TENANT_ADMIN_USER_TYPES.has(t))
+  }
 
-  console.log("\n[…and the roles the ruling does NOT name stay out]")
-  for (const t of ["agent", "tc", "isa", "compliance_officer", "vendor", "lender", "contact", "support", "system", "title_agent"]) {
+  console.log("\n[…and the roles no ruling names stay out]")
+  // DERIVED by subtraction from the live vocabulary, so a role added to the
+  // CHECK tomorrow is refused by default and a role the owner MOVES into the
+  // roster stops being asserted absent here automatically — which is exactly
+  // what went wrong when `compliance_officer` sat in this list as a hardcoded
+  // absence while the owner was ruling it present.
+  const notAdmin = [...STORABLE_USER_TYPES, "title_agent"]
+    .filter((t) => !TENANT_ADMIN_USER_TYPES.has(t) && !PLATFORM_MARKERS.has(t))
+  check(`POSITIVE CONTROL — the non-admin list is non-empty (found ${notAdmin.length})`, notAdmin.length > 0)
+  for (const t of notAdmin) {
     check(`'${t}' is NOT admitted by the tenant-admin test`, !isAdminOrBroker({ user_type: t }))
   }
   check("an absent user_type is not an admin (fail closed)",
@@ -171,9 +221,20 @@ function pureLayer() {
     !isTenantAdminOrPlatformStaff({ user_type: "agent", platform_role: null }))
 
   console.log("\n[legacy spellings · pure — accepted on INPUT, never written]")
-  check("'broker_admin' is accepted though it is NOT a storable user_type",
-    isAdminOrBroker({ user_type: "broker_admin" }) &&
-    !(STORABLE_USER_TYPES as readonly string[]).includes("broker_admin"))
+  // WAS: "'broker_admin' is accepted though it is NOT a storable user_type",
+  // asserting `!STORABLE_USER_TYPES.includes("broker_admin")`. That was a
+  // CLAUDE.md §2 WAYPOINT and it expired: m530 added the value to
+  // users_user_type_check, so the assertion could only pass while this proof's
+  // hand-typed vocabulary stayed behind the database. Reading the generated
+  // cache made it visible.
+  //
+  // The RULE that survives in both states: the roster judges a value a CALLER
+  // hands in, so it is correct whether or not the column can store it — proved
+  // in both directions, on a storable member and on a non-storable spelling.
+  check("'broker_admin' is admitted by the roster, and the live CHECK now stores it (m530)",
+    isAdminOrBroker({ user_type: "broker_admin" }) && STORABLE_USER_TYPES.includes("broker_admin"))
+  check("...while 'super_admin' is a spelling the CHECK does NOT store AND the tenant roster refuses",
+    !isAdminOrBroker({ user_type: "super_admin" }) && !STORABLE_USER_TYPES.includes("super_admin"))
   check("case-insensitive, because users.role is legacy free-form ('Admin', 'Lender')",
     isAdminOrBroker({ user_type: "Admin" }) && isAdminOrBroker({ user_type: "BROKER" }) &&
     !isAdminOrBroker({ user_type: "Lender" }))
@@ -193,8 +254,15 @@ function pureLayer() {
     toCanonicalRole("broker_admin") === "broker")
 
   console.log("\n[grant roles · pure — a grant is an administering fact (m466)]")
-  check("the grant-side predicate uses the SAME roster as the user_type side",
-    ["admin", "broker", "broker_owner", "team_lead", "broker_admin"].every(isTenantAdminGrantRole) &&
+  // Both sides read the SAME Set, so this is stated as that equivalence over the
+  // whole live vocabulary rather than over two hand-kept lists — a hardcoded
+  // pair would agree with itself while the roster moved underneath it, which is
+  // how `compliance_officer` could have been added to one side only.
+  check("the grant-side predicate uses the SAME roster as the user_type side, value for value",
+    [...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS]
+      .every((r) => isTenantAdminGrantRole(r) === isAdminOrBroker({ user_type: r })))
+  check("...and it admits every roster member and no seat outside it",
+    [...TENANT_ADMIN_USER_TYPES].every(isTenantAdminGrantRole) &&
     !["agent", "isa", "contact", "lender", "vendor", "tc"].some(isTenantAdminGrantRole))
   check("grant roles are matched case-insensitively too",
     isTenantAdminGrantRole("Admin") && !isTenantAdminGrantRole(null) && !isTenantAdminGrantRole(""))
@@ -400,9 +468,16 @@ function restatesTenantRoster(roles: string[]): boolean {
   const hasBroker = s.has("broker") || s.has("broker_admin") || s.has("broker_owner")
   const hasLead = s.has("team_lead")
   if (!(hasAdmin && hasBroker && hasLead)) return false
-  // …and it must be a TENANT question: a set that also names agent, tc, isa or
-  // compliance_officer is asking something else entirely (who is internal staff,
-  // who may act on compliance) and must not be collapsed into this one.
+  // …and it must be a TENANT question: a set that also names `agent`, `tc` or
+  // `isa` is asking something else entirely (who is internal staff, who works
+  // the desk) and must not be collapsed into this one.
+  //
+  // `compliance_officer` USED TO BE in that sentence, as a seat whose presence
+  // proved a set was NOT the tenant roster. It stopped being that on 2026-09-04:
+  // the owner ruled it INTO the roster, so a local array naming it beside admin,
+  // a broker word and team_lead is now a genuine restatement and SHOULD be
+  // reported. The membership test below reads the live Set, so this followed the
+  // ruling with no edit — which is the reason it reads the Set.
   return roles.every((r) => TENANT_ADMIN.has(r) || PLATFORM_MARKERS.has(r))
 }
 
@@ -453,9 +528,21 @@ function sourceLayer() {
   console.log("\n[…and GREEN on the questions it must NOT answer]")
   check("a NARROWER set (no team_lead) is a different question and is left alone",
     scan('["broker","broker_admin","broker_owner","admin","superadmin"].includes(t)') === 0)
-  check("a WIDER set (compliance / internal staff) is a different question and is left alone",
-    scan('["broker","admin","team_lead","compliance_officer"].includes(t)') === 0 &&
-    scan('["agent","team_lead","tc","admin","broker","superadmin"].includes(t)') === 0)
+  check("a WIDER set (internal staff — agents and TCs) is a different question and is left alone",
+    scan('["agent","team_lead","tc","admin","broker","superadmin"].includes(t)') === 0 &&
+    scan('["broker","admin","team_lead","isa","compliance_officer"].includes(t)') === 0)
+  // MOVED, NOT DELETED. `["broker","admin","team_lead","compliance_officer"]`
+  // used to be a specimen of "a different question, left alone", on the reading
+  // that a compliance seat proved the set was not the tenant roster. The owner's
+  // 2026-09-04 ruling reversed that reading — compliance_officer IS in the
+  // roster — so the same literal is now a RESTATEMENT and the scan must go red
+  // on it. Asserting the new direction is what keeps this a control rather than
+  // a comment: MEASURED, the roster widening turned four live literals into
+  // restatements (two voice-supervision gates, two compliance boards), all four
+  // repointed to isAdminOrBroker in the same wave.
+  check("goes RED on a roster restated with the compliance seat — the shape the 2026-09-04 ruling created",
+    scan('["broker","admin","team_lead","compliance_officer"].includes(t)') === 1 &&
+    scan('const S = new Set(["broker","broker_owner","broker_admin","admin","team_lead","compliance_officer"]); S.has(t)') === 1)
   check("an array of role names that is NOT a membership test (an enumeration) is not a gate",
     scan('const ALL_ROLES = ["admin", "broker", "team_lead"]') === 0)
   check("an array of non-role strings is not a role array",

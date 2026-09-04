@@ -58,6 +58,7 @@ import { createClient } from "@supabase/supabase-js"
 import {
   TENANT_ADMIN_USER_TYPES,
   BROKERAGE_FINANCE_ADMIN_USER_TYPES,
+  ROLES_HELD_OUT_OF_BROKERAGE_MONEY,
   isAdminOrBroker,
   isBrokerageFinanceAdmin,
   isTenantAdminGrantRole,
@@ -70,15 +71,53 @@ import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
-const check = (n: string, c: boolean) => {
-  if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
+// `detail` is OPTIONAL and printed only on failure: a set claim that goes red
+// with no numbers beside it sends the next reader back to re-derive them by
+// hand. It never participates in the verdict.
+const check = (n: string, c: boolean, detail?: string) => {
+  if (c) { pass++; console.log(`  ✓ ${n}`) }
+  else {
+    fail++; fails.push(n)
+    console.log(`  ✗ ${n}${detail ? `\n        ${detail}` : ""}`)
+  }
 }
 
 const ROOT = process.cwd()
 const SELF = fileURLToPath(import.meta.url)
 
-/** The role the ruling moves, and the only one that may differ between the tiers. */
+/** The role m472 moves — the concrete specimen the fixtures below act out. */
 const THE_ROLE_HELD_OUT = "team_lead"
+
+// EVERY role a standing ruling holds out of brokerage-wide money, each named
+// with the ruling that holds it out. NAMED here rather than derived from
+// `minus(TENANT, FINANCE)`: deriving the expected answer from the very sets
+// under test makes every claim below tautological — it would pass over any
+// subtraction at all, including one nobody ruled.
+//
+// This USED to be the single string `THE_ROLE_HELD_OUT`, with the claims spelled
+// "the two tiers differ by EXACTLY one role" and `FINANCE.size === TENANT.size - 1`.
+// Those were WAYPOINTS in the CLAUDE.md §2 sense: true of the roster as it stood
+// in one wave and permanently false the next time a ruling moved a role. They
+// are now derived from this list, so a seventh role landing in the tenant roster
+// tomorrow changes the numbers here without changing a line.
+//
+// Kept in sync with lib/auth/resolve-user-role.ts#ROLES_HELD_OUT_OF_BROKERAGE_MONEY
+// BY ASSERTION, not by import — see the first check in pureLayer(). Importing it
+// would make the proof restate the implementation and agree with it by
+// construction; asserting it means a role added to the module and not to this
+// ruling list (or the reverse) goes red and says so.
+const ROLES_HELD_OUT_OF_MONEY = [
+  // m472, owner verbatim: "Admin surfaces, but NOT brokerage-wide money."
+  "team_lead",
+  // Owner ruling 2026-09-04 seats the compliance officer as tenant staff ADMIN.
+  // m467's can_read_brokerage_books() already admits them to READ the books
+  // under the sentence "a compliance officer reads them and does not
+  // administer", and m472/m530's is_brokerage_finance_admin() does not admit
+  // them at all — so the app admitting them would be WIDER than RLS, which is
+  // the false-success direction, and REAL on the service-client gates.
+  "compliance_officer",
+] as const
+const HELD_OUT_JOINED = [...ROLES_HELD_OUT_OF_MONEY].sort().join(",")
 
 const setOf = (s: Set<string>) => [...s].sort()
 const minus = (a: Set<string>, b: Set<string>) => [...a].filter((x) => !b.has(x)).sort()
@@ -92,17 +131,29 @@ function pureLayer() {
   // below is a consequence of it. Written this way so that adding a role to the
   // tenant roster tomorrow cannot quietly change which tier it lands in without
   // this line noticing.
-  check("the two tiers differ by EXACTLY one role, and it is the one the ruling holds out",
-    minus(TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES).join(",") === THE_ROLE_HELD_OUT)
+  // THE MODULE'S OWN SUBTRACTION LIST AND THIS PROOF'S RULING LIST ARE THE SAME
+  // LIST. Asserted rather than imported: a role added to one and not the other
+  // is precisely the drift both are written to prevent, and an import would make
+  // that drift impossible to see.
+  check("the module's named subtraction list is exactly the rulings this proof knows about",
+    [...ROLES_HELD_OUT_OF_BROKERAGE_MONEY].sort().join(",") === HELD_OUT_JOINED,
+    `module=${[...ROLES_HELD_OUT_OF_BROKERAGE_MONEY].sort().join(",")} proof=${HELD_OUT_JOINED}`)
+
+  check("the two tiers differ by EXACTLY the roles the standing rulings hold out",
+    minus(TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES).join(",") === HELD_OUT_JOINED,
+    `differ=${minus(TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES).join(",")} ruled=${HELD_OUT_JOINED}`)
   check("...and the finance tier adds NOTHING the tenant roster does not already have",
     minus(BROKERAGE_FINANCE_ADMIN_USER_TYPES, TENANT_ADMIN_USER_TYPES).length === 0)
   check("...so finance is a STRICT subset — the narrow gate can never admit where the wide one refuses",
-    BROKERAGE_FINANCE_ADMIN_USER_TYPES.size === TENANT_ADMIN_USER_TYPES.size - 1)
+    BROKERAGE_FINANCE_ADMIN_USER_TYPES.size === TENANT_ADMIN_USER_TYPES.size - ROLES_HELD_OUT_OF_MONEY.length)
 
-  // The ruling's own sentence, one role at a time, through the predicates the
-  // call sites actually use.
-  check("team_lead IS an admin surface", isAdminOrBroker({ user_type: THE_ROLE_HELD_OUT }))
-  check("team_lead is NOT brokerage-wide money", !isBrokerageFinanceAdmin({ user_type: THE_ROLE_HELD_OUT }))
+  // The rulings' own sentences, one role at a time, through the predicates the
+  // call sites actually use. Driven off the ruling list so a role added to it
+  // cannot be added without also being proved on both tiers.
+  for (const r of ROLES_HELD_OUT_OF_MONEY) {
+    check(`${r} IS an admin surface`, isAdminOrBroker({ user_type: r }))
+    check(`${r} is NOT brokerage-wide money`, !isBrokerageFinanceAdmin({ user_type: r }))
+  }
 
   for (const r of ["admin", "broker", "broker_owner"]) {
     check(`${r} keeps BOTH tiers — the finance side of m472 is a no-op for the roles it kept`,
@@ -114,7 +165,17 @@ function pureLayer() {
   check("broker_owner reaches the books (the local literals m472 replaced refused them)",
     isBrokerageFinanceAdmin({ user_type: "broker_owner" }))
 
-  for (const r of ["agent", "isa", "tc", "vendor", "lender", "contact", "compliance_officer", "title_agent"]) {
+  // `compliance_officer` LEFT this list on 2026-09-04 and moved to the held-out
+  // loop above: the owner ruled it tenant staff ADMIN, so it now reaches the
+  // wide tier and still not the narrow one. The list below is the seats that
+  // reach NEITHER, and it is filtered through the roster rather than trusted —
+  // a name left here after a ruling moved it would assert the opposite of the
+  // ruling and pass, because these are all absence claims.
+  const NEITHER_TIER = ["agent", "isa", "tc", "vendor", "lender", "contact", "title_agent"]
+  check("POSITIVE CONTROL — no seat in the neither-tier list is actually in the tenant roster",
+    NEITHER_TIER.every((r) => !TENANT_ADMIN_USER_TYPES.has(r)),
+    NEITHER_TIER.filter((r) => TENANT_ADMIN_USER_TYPES.has(r)).join(","))
+  for (const r of NEITHER_TIER) {
     check(`${r} reaches neither tier`,
       !isAdminOrBroker({ user_type: r }) && !isBrokerageFinanceAdmin({ user_type: r }))
   }
@@ -380,6 +441,18 @@ const isRetypedFinanceRoster = (roles: string[]) => {
     [...BROKERAGE_FINANCE_ADMIN_USER_TYPES].every((r) => got.has(r))
 }
 
+/**
+ * True when the hit IS the wide tenant roster — the one declaration every other
+ * tier in the tree derives from. Built from the live Set for the same reason as
+ * its sibling above: a literal here would let the proof and the roster drift
+ * apart and this file would keep agreeing with a roster that had moved.
+ */
+const isRetypedWideRoster = (roles: string[]) => {
+  const got = new Set(roles)
+  return got.size === TENANT_ADMIN_USER_TYPES.size &&
+    [...TENANT_ADMIN_USER_TYPES].every((r) => got.has(r))
+}
+
 /** Does this source DEFINE the finance predicate — i.e. is it the canonical module? */
 function definesFinancePredicate(src: string): boolean {
   const { mask } = stringMask(src)
@@ -451,18 +524,35 @@ function sourceLayer() {
     console.log(`      ${r.file}: ${r.localRosters.map((x) => "[" + x.join(", ") + "]").join(" ")}`)
   }
 
-  // The canonical module must hold exactly ONE role array: the tenant roster.
-  // A second one there would mean the finance set stopped being a subtraction and
-  // started being a copy — the drift, at its source.
+  // ── THE CANONICAL MODULE'S ROLE ARRAYS ────────────────────────────────────
+  //
+  // This used to assert `modGates.length === 1` — "the tenant roster is the only
+  // role array in the module, so the finance tier can only be a subtraction".
+  // That was the right IDEA pinned to the wrong NUMBER: the subtraction itself
+  // became a named list on 2026-09-04 (ROLES_HELD_OUT_OF_BROKERAGE_MONEY), which
+  // is a second role array and is exactly what makes the subtraction auditable
+  // rather than a bare `!== "team_lead"`. A count would have forced the next
+  // ruling to choose between documenting itself and passing this proof.
+  //
+  // The claim is now the RULE the count was standing in for, and it is strictly
+  // stronger: every role array in the module is either the WIDE roster or a
+  // strict SUBSET of it, and none of them is the finance roster written out by
+  // hand. A copied finance list still fails; so does a roster naming a role the
+  // wide roster does not have.
   const modPath = join(ROOT, "lib", "auth", "resolve-user-role.ts")
   const mod = readFileSync(modPath, "utf8")
   const modGates = roleArrayGates(mod)
   check("POSITIVE CONTROL — the canonical module's own roster is visible to the scanner",
     modGates.length >= 1)
-  check("...and it is the ONLY role array there, so the finance tier can only be a subtraction",
-    modGates.length === 1)
-  check("...and that one array is the WIDE roster — it contains the role the finance tier removes",
-    modGates.length === 1 && modGates[0].roles.includes(THE_ROLE_HELD_OUT))
+  const wideArrays = modGates.filter((h) => h.roles.includes(THE_ROLE_HELD_OUT) && isRetypedWideRoster(h.roles))
+  check("...exactly ONE of them is the WIDE roster (the one every other tier derives from)",
+    wideArrays.length === 1,
+    `arrays=${modGates.map((h) => "[" + h.roles.join(",") + "]").join(" ")}`)
+  check("...and every OTHER role array there is a strict SUBSET of it — a subtraction, never a rival roster",
+    modGates.filter((h) => h !== wideArrays[0])
+      .every((h) => h.roles.length < TENANT_ADMIN_USER_TYPES.size &&
+                    h.roles.every((r) => TENANT_ADMIN_USER_TYPES.has(r))),
+    `arrays=${modGates.map((h) => "[" + h.roles.join(",") + "]").join(" ")}`)
   check("...so the finance roster is NOT written out anywhere in the canonical module",
     !modGates.some((h) => isRetypedFinanceRoster(h.roles)))
 }
@@ -529,11 +619,17 @@ function negativeControls() {
 
   // The set claims. If the tiers were built wrong, the pure layer must notice.
   const wrongFinance = new Set([...TENANT_ADMIN_USER_TYPES])
-  check("RED — a finance tier that kept team_lead fails the exactly-one-role-apart claim",
-    minus(TENANT_ADMIN_USER_TYPES, wrongFinance).join(",") !== THE_ROLE_HELD_OUT)
+  check("RED — a finance tier that held NOTHING out fails the exactly-these-roles-apart claim",
+    minus(TENANT_ADMIN_USER_TYPES, wrongFinance).join(",") !== HELD_OUT_JOINED)
+  // THE MUTATION THIS LANE ADDED: a finance tier that honoured m472 and MISSED
+  // the 2026-09-04 ruling — the shape the roster widening would have produced if
+  // compliance_officer had simply ridden along into the money tier.
+  const missedOneRuling = new Set([...TENANT_ADMIN_USER_TYPES].filter((r) => r !== THE_ROLE_HELD_OUT))
+  check("RED — a finance tier that holds out only SOME of the ruled-out roles is caught",
+    minus(TENANT_ADMIN_USER_TYPES, missedOneRuling).join(",") !== HELD_OUT_JOINED)
   const overNarrow = new Set([...BROKERAGE_FINANCE_ADMIN_USER_TYPES].filter((r) => r !== "broker_owner"))
   check("RED — a finance tier that ALSO dropped broker_owner fails it as well (a silent revocation)",
-    minus(TENANT_ADMIN_USER_TYPES, overNarrow).join(",") !== THE_ROLE_HELD_OUT)
+    minus(TENANT_ADMIN_USER_TYPES, overNarrow).join(",") !== HELD_OUT_JOINED)
   const widened = new Set([...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "isa"])
   check("RED — a finance tier holding a role the tenant roster lacks is caught as a superset",
     minus(widened, TENANT_ADMIN_USER_TYPES).length !== 0)
@@ -570,26 +666,55 @@ async function liveLayer() {
   check("POSITIVE CONTROL — the live bodies yielded role lists at all",
     dbWide.length > 0 && dbNarrow.length > 0)
 
-  // Stated as containment plus the ONE documented extra, because the app tolerates
-  // a legacy INPUT spelling the database has no reason to store: `broker_admin` is
-  // not a storable user_type (users_user_type_check admits fourteen values, that is
-  // not one of them, and it is VALIDATED), so it matches no row on either side and
-  // cannot make the app wider than RLS in practice.
+  // ── APP vs DB, STATED AS CONTAINMENT PLUS A NAMED, SHRINKING GAP ──────────
+  //
+  // These two checks used to read `=== "broker_admin"`: the app carried one role
+  // the SQL did not, because `broker_admin` was an INPUT spelling the column
+  // could not store. That was a WAYPOINT (CLAUDE.md §2) and it EXPIRED — m530 is
+  // applied, the live CHECK now stores broker_admin and both SQL predicates name
+  // it, so the equality became permanently false the moment the work finished.
+  //
+  // Restated as the rule that survives a migration landing: the DB is never
+  // wider than the app (the dangerous direction is the reverse), and whatever
+  // the app carries beyond the DB is one of the DOCUMENTED pending items below —
+  // subset, not equality, so applying the migration makes the gap shrink to zero
+  // WITHOUT turning this red. The actual extras are printed either way, because
+  // a count that moves is the finding.
+  const APP_EXTRAS_PENDING_SQL = [
+    // Owner ruling 2026-09-04. SQL half written as
+    // scripts/1109-a-compliance-officer-administers-the-brokerage.sql —
+    // WRITTEN, NOT APPLIED. Once applied, `wideExtras` below goes empty and
+    // every check here still passes.
+    "compliance_officer",
+  ]
+
   check("...every role the DB wide tier admits, the app wide tier admits",
     dbWide.every((r) => isAdminOrBroker({ user_type: r })))
-  check("...and the app adds nothing over it but the documented non-storable input spelling",
-    minus(TENANT_ADMIN_USER_TYPES, new Set(dbWide)).join(",") === "broker_admin")
+  const wideExtras = minus(TENANT_ADMIN_USER_TYPES, new Set(dbWide))
+  check(`...and the app wide tier adds nothing over the DB but documented pending items (found: ${wideExtras.join(",") || "none"})`,
+    wideExtras.every((r) => APP_EXTRAS_PENDING_SQL.includes(r)),
+    `extras=${wideExtras.join(",")} documented=${APP_EXTRAS_PENDING_SQL.join(",")}`)
 
   check("every role the DB finance tier admits, the app finance tier admits",
     dbNarrow.every((r) => isBrokerageFinanceAdmin({ user_type: r })))
-  check("...and the app finance tier adds nothing over it but that same input spelling",
-    minus(BROKERAGE_FINANCE_ADMIN_USER_TYPES, new Set(dbNarrow)).join(",") === "broker_admin")
+  const narrowExtras = minus(BROKERAGE_FINANCE_ADMIN_USER_TYPES, new Set(dbNarrow))
+  check(`...and the app finance tier adds NOTHING over the DB at all (found: ${narrowExtras.join(",") || "none"})`,
+    narrowExtras.length === 0,
+    `extras=${narrowExtras.join(",")}`)
 
-  // THE RULING, measured on the database rather than asserted about it.
-  check("the DB's two tiers differ by EXACTLY the role the app's two tiers differ by",
-    minus(new Set(dbWide), new Set(dbNarrow)).join(",") === THE_ROLE_HELD_OUT &&
-    minus(new Set(dbNarrow), new Set(dbWide)).length === 0)
-  check("...and the DB finance tier refuses that role, which is the ruling itself",
+  // THE RULINGS, measured on the database rather than asserted about it. The DB
+  // holds out whichever of the ruled roles it has been taught about; every role
+  // the DB holds out must be one this proof knows a ruling for, and nothing the
+  // DB holds out may be MISSING from the app's own subtraction — that direction
+  // is the app admitting a money write RLS refuses.
+  const dbHeldOut = minus(new Set(dbWide), new Set(dbNarrow))
+  check(`the DB holds out only roles this proof carries a ruling for (DB holds out: ${dbHeldOut.join(",") || "none"})`,
+    dbHeldOut.every((r) => (ROLES_HELD_OUT_OF_MONEY as readonly string[]).includes(r)) &&
+    minus(new Set(dbNarrow), new Set(dbWide)).length === 0,
+    `db=${dbHeldOut.join(",")} ruled=${HELD_OUT_JOINED}`)
+  check("...and every role the DB holds out of money, the APP holds out too — the app is never wider on money",
+    dbHeldOut.every((r) => !isBrokerageFinanceAdmin({ user_type: r })))
+  check("...and m472's own role is held out by the DB and admitted to its wide tier, which is that ruling itself",
     !dbNarrow.includes(THE_ROLE_HELD_OUT) && dbWide.includes(THE_ROLE_HELD_OUT))
 
   // BOTH branches, on BOTH predicates. user_type='team_lead' and a 'team_lead'

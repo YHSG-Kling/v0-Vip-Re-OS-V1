@@ -10,7 +10,17 @@ import type { UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
 import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { seatGate } from "@/lib/kernel/seat-usage"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// NOT isAdminOrBroker (lane ROSTER, 2026-09-04). The owner's ruling added
+// `compliance_officer` to TENANT_ADMIN_USER_TYPES, and this gate is the one
+// place in the admin surface that SPENDS: `seatGate` below decides whether the
+// invite fits inside the tenant's paid seats, and an invite past the limit
+// returns a `seatDecision` offering an upgrade or a paid seat. Inviting is
+// therefore seat management — the brokerage's subscription bill — and the
+// ruling seats a compliance officer as tenant STAFF ADMIN, not as the seat
+// buyer. isTenantCommerceAdmin is the tenant roster minus exactly that role, so
+// team_lead, broker_admin, broker, broker_owner and admin keep the surface
+// byte-for-byte and nobody who could invite yesterday is refused today.
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 
 export interface InviteUserParams {
   email: string
@@ -62,8 +72,10 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   const callerType = caller?.user_type ?? "agent"
 
-  // Only admin, broker, superadmin, and team_lead can invite
-  if (!isAdminOrBroker({ user_type: callerType })) {
+  // Only admin, broker, broker_owner, broker_admin and team_lead can invite —
+  // the tenant roster MINUS compliance_officer, because an invite consumes a
+  // billed seat (see the import comment above).
+  if (!isTenantCommerceAdmin({ user_type: callerType })) {
     return { success: false, error: "Forbidden: insufficient privileges to invite users" }
   }
 

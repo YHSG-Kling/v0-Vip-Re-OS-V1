@@ -30,7 +30,7 @@
 // lib/connections/accounting-scopes.ts idiom) so the simulator can stub it.
 
 import type { createServiceClient } from "@/lib/supabase/service"
-import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -51,13 +51,21 @@ export const VENDOR_INVITE_ROLES: ReadonlySet<string> = new Set([
 /** Roles that may charge ANY vendor in the brokerage (the round-36½ admin
  *  lane). Agents are deliberately absent — they go through the
  *  their-vendor attribution gate instead. */
-// DERIVED from the ONE tenant-admin roster, not retyped beside it. The five
+// DERIVED from the ONE tenant-admin roster, not retyped beside it. The
 // admin-class roles come from lib/auth/resolve-user-role.ts and change only
 // there. `superadmin` is added EXPLICITLY and only here: it is a PLATFORM
 // identity, deliberately absent from the tenant roster, and this lane admits it
 // on purpose — scripts/vendor-scope-charging-simulator.ts asserts it.
+//
+// THE PARENT IT SPREADS IS TENANT_COMMERCE_ADMIN_USER_TYPES, NOT THE FULL
+// TENANT ROSTER, and the difference is one role. The owner's 2026-09-04 ruling
+// added `compliance_officer` to the tenant admin roster; this lane CHARGES —
+// it puts money on a vendor's account against the brokerage's ledger — and a
+// widening of the ADMIN roster must not become a widening of who may spend.
+// The commerce tier keeps `team_lead`, so nothing this lane already admitted is
+// revoked; only the new role is held out, at the tier that names why.
 export const VENDOR_CHARGE_ADMIN_ROLES: ReadonlySet<string> = new Set([
-  ...TENANT_ADMIN_USER_TYPES,
+  ...TENANT_COMMERCE_ADMIN_USER_TYPES,
   "superadmin",
 ])
 

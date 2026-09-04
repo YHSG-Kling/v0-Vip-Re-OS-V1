@@ -323,13 +323,44 @@ console.log("\n[one roster — the census]")
     stale.length === 0, stale.map((s) => `${s.file} ${s.snippet}`).join(" | "))
   check("the survivor exists and declares the roster",
     /export const LEAD_DESK_USER_TYPES/.test(code(SURVIVOR)))
-  check("the survivor DERIVES its roster instead of retyping the five tenant roles",
-    /\.\.\.TENANT_ADMIN_USER_TYPES/.test(code(SURVIVOR)))
-  check("the derived roster is exactly the tenant roster plus the ISA seat",
-    [...LEAD_DESK_USER_TYPES].sort().join(",") === [...new Set([...TENANT_ADMIN_USER_TYPES, "isa"])].sort().join(","),
-    [...LEAD_DESK_USER_TYPES].sort().join(","))
+  check("the survivor DERIVES its roster instead of retyping the tenant roles",
+    /\.\.\.TENANT_ADMIN_USER_TYPES|TENANT_ADMIN_USER_TYPES\]\.filter/.test(code(SURVIVOR)))
+
+  // ── THE DERIVATION, AS A RULE RATHER THAN AS "PLUS ISA" ──────────────────
+  //
+  // WAS: `LEAD_DESK == TENANT_ADMIN_USER_TYPES + isa`, full stop. True while the
+  // tenant roster held five roles, and permanently false from 2026-09-04, when
+  // the owner seated `compliance_officer` as tenant staff admin. The lead desk
+  // did NOT widen with it, and that is deliberate on two independent grounds
+  // this proof now states instead of asserting a shape:
+  //
+  //   · CLAUDE.md §5 — leads belong to the brokerage's sales lane and reach an
+  //     agent only once qualified. Regulatory governance is not a stage of it.
+  //   · m530's public.is_lead_visible_role() admits
+  //     (broker, broker_admin, broker_owner, admin, team_lead, superadmin) and
+  //     no compliance_officer, in BOTH branches. An app roster wider than that
+  //     predicate would render an EMPTY desk rather than a refusal, because a
+  //     refused SELECT resolves as zero rows with `error` null (§3).
+  //
+  // The claim is now: the desk is the tenant roster, plus the documented
+  // additions, minus the documented subtractions — each named, so a role that
+  // moves in the parent has to be classified here on purpose.
+  const DESK_ADDED = ["isa"]                     // the AI-ISA seat (see the survivor's header)
+  const DESK_HELD_OUT = ["compliance_officer"]   // §5 + is_lead_visible_role(); see above
+  const expectedDesk = [
+    ...[...TENANT_ADMIN_USER_TYPES].filter((r) => !DESK_HELD_OUT.includes(r)),
+    ...DESK_ADDED,
+  ]
+  check("POSITIVE CONTROL — every role this proof holds out of the desk is actually IN the parent roster",
+    DESK_HELD_OUT.every((r) => TENANT_ADMIN_USER_TYPES.has(r)),
+    `held-out=${DESK_HELD_OUT.join(",")} parent=${[...TENANT_ADMIN_USER_TYPES].sort().join(",")}`)
+  check("the derived roster is the tenant roster, plus the ISA seat, minus the documented §5 exclusions",
+    [...LEAD_DESK_USER_TYPES].sort().join(",") === [...new Set(expectedDesk)].sort().join(","),
+    `desk=${[...LEAD_DESK_USER_TYPES].sort().join(",")} expected=${[...new Set(expectedDesk)].sort().join(",")}`)
   check("team_lead is IN it (the owner's ruling)", LEAD_DESK_USER_TYPES.has("team_lead"))
   check("agent is NOT (agents see contacts only)", !LEAD_DESK_USER_TYPES.has("agent"))
+  check("compliance_officer is NOT — it is a tenant ADMIN and still not a lead-desk seat (§5)",
+    !LEAD_DESK_USER_TYPES.has("compliance_officer") && TENANT_ADMIN_USER_TYPES.has("compliance_officer"))
   check("the brokerage-wide subset is the roster MINUS team_lead — derived, not retyped",
     !BROKERAGE_WIDE_LEAD_USER_TYPES.has("team_lead")
     && [...LEAD_DESK_USER_TYPES].filter((r) => r !== "team_lead").sort().join(",")

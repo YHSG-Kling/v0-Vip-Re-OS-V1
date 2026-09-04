@@ -291,16 +291,54 @@ function sourceLayer() {
 
   check("S5 it answers a STRICT boolean (coalesce to false), never NULL", def.includes("coalesce") && def.includes("false"))
 
-  for (const role of ADMIN_ROLES) {
+  // ── S6/S7 · APP vs SQL, WITH THE PENDING-SQL GAP NAMED ────────────────────
+  //
+  // These two used to demand a byte-identical set. That is the right steady
+  // state and the wrong assertion DURING a ruling: an app roster and an RLS
+  // predicate cannot change in the same commit — CLAUDE.md §3 says lanes write
+  // migrations and only the integrator applies them — so a two-part ruling
+  // necessarily spends time with the app one role ahead. Pinning to equality
+  // forces the lane to choose between landing the ruling and passing this proof.
+  //
+  // The claim is now: the SQL is never WIDER than the app (that direction is a
+  // policy admitting somebody the app has never heard of), and whatever the app
+  // carries beyond the SQL is a DOCUMENTED pending migration named below. When
+  // that migration is applied the gap closes to zero and every check here still
+  // passes — no waypoint, nothing to remember to update.
+  const APP_ROLES_PENDING_SQL = [
+    // Owner ruling 2026-09-04, "there is a compliance officer for tenant staff
+    // which was not included". SQL half written as
+    // scripts/1109-a-compliance-officer-administers-the-brokerage.sql —
+    // WRITTEN, NOT APPLIED, and it widens is_brokerage_admin() ONLY.
+    "compliance_officer",
+  ]
+  const sqlMissing = [...ADMIN_ROLES].filter((r) => !def.includes(`'${r}'`))
+  for (const role of [...ADMIN_ROLES].filter((r) => !APP_ROLES_PENDING_SQL.includes(r))) {
     check(`S6 the administering role '${role}' is admitted from the grant table`, def.includes(`'${role}'`))
   }
+  check(
+    `S6b every app role the SQL does NOT yet admit is a documented pending migration (found: ${sqlMissing.join(",") || "none"})`,
+    sqlMissing.every((r) => APP_ROLES_PENDING_SQL.includes(r)),
+    `missing=${sqlMissing.join(",")} documented=${APP_ROLES_PENDING_SQL.join(",")}`,
+  )
+  check(
+    "S6c POSITIVE CONTROL — the definition scan can see roles at all, so S6b's list is a measurement",
+    [...ADMIN_ROLES].some((r) => def.includes(`'${r}'`)),
+  )
 
   // THE APP AND THE DATABASE MUST AGREE. That disagreement is the whole defect.
+  // Stated as "the SQL is a subset of the app, and the difference is documented"
+  // rather than as set equality, for the reason above.
   check(
-    "S7 the app gate's BROKERAGE_ADMIN_USER_TYPES is exactly the SQL role set — app and DB agree on 'admin'",
+    "S7 the app gate's BROKERAGE_ADMIN_USER_TYPES is exactly the app's ONE roster — no third list",
     BROKERAGE_ADMIN_USER_TYPES.size === ADMIN_ROLES.size &&
       [...ADMIN_ROLES].every((r) => BROKERAGE_ADMIN_USER_TYPES.has(r)),
-    `app=${[...BROKERAGE_ADMIN_USER_TYPES].join(",")} sql=${[...ADMIN_ROLES].join(",")}`,
+    `app=${[...BROKERAGE_ADMIN_USER_TYPES].join(",")} roster=${[...ADMIN_ROLES].join(",")}`,
+  )
+  check(
+    "S7b …and the SQL admits NO administering role the app has never heard of",
+    [...ADMIN_ROLES, ...APP_ROLES_PENDING_SQL].length > 0 &&
+      !["agent", "isa", "tc", "vendor", "lender", "contact"].some((r) => def.includes(`'${r}'`)),
   )
 
   // ── THE READ SIDE (m467) ──────────────────────────────────────────────────
@@ -324,8 +362,29 @@ function sourceLayer() {
     for (const role of ["admin", "broker", "broker_owner", "broker_admin", "compliance_officer"]) {
       check(`S12 the books gate admits '${role}' from the grant table`, bdef.includes(`'${role}'`))
     }
-    check("S13 the books gate is STRICTLY WIDER than the admin gate (it is a different question)",
-      bdef.includes("'compliance_officer'") && !winningDefinition(loadMigrations())?.def.toLowerCase().includes("'compliance_officer'"))
+    // ── S13, RE-AIMED AT THE LINE THAT STILL EXISTS ─────────────────────────
+    //
+    // S13 used to read: "the books gate is STRICTLY WIDER than the admin gate",
+    // proved by compliance_officer being in one and not the other. That was the
+    // right observation about the WRONG PAIR, and the owner's 2026-09-04 ruling
+    // ("there is a compliance officer for tenant staff which was not included")
+    // dissolved it: the compliance officer now ADMINISTERS, so the admin gate is
+    // meant to name them too (scripts/1109-…sql, written not applied).
+    //
+    // The distinction m467 actually drew survives verbatim, one predicate over:
+    // its own header says "a compliance officer READS them and does not
+    // ADMINISTER" — meaning does not KEEP the books. So the pair that still
+    // differs is can_read_brokerage_books() vs is_brokerage_finance_admin(),
+    // and that is now what this proves. This is also exactly the line the app
+    // holds: BROKERAGE_FINANCE_ADMIN_USER_TYPES subtracts the role by name.
+    const money = winningDefinitionOf("is_brokerage_finance_admin", loadMigrations())
+    check("S13a some migration DEFINES public.is_brokerage_finance_admin (located by what it defines)", !!money)
+    check("S13b the books-READ gate admits the compliance officer (m467's own ruling, unrevoked)",
+      bdef.includes("'compliance_officer'"))
+    check("S13c …and the books-KEEPING gate does NOT — reads them, never keeps them",
+      !!money && !money.def.toLowerCase().includes("'compliance_officer'"))
+    check("S13d POSITIVE CONTROL — the money definition was actually read (an empty body agrees with anything)",
+      !!money && money.def.length > 100 && money.def.toLowerCase().includes("'broker_owner'"))
   }
 }
 

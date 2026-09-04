@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// NOT isAdminOrBroker (lane ROSTER, 2026-09-04). Provisioning a recruit runs
+// `seatGate` below and turns them into a BILLED seat on the tenant's
+// subscription — the same spend as app/actions/admin/invite-user.ts, and here
+// the whole route runs on the SERVICE client, so this app predicate is the ONLY
+// gate. The owner's ruling added `compliance_officer` to
+// TENANT_ADMIN_USER_TYPES as tenant staff admin, not as the seat buyer, so this
+// site takes the commerce tier: the same roster minus exactly that role, with
+// team_lead / broker / broker_owner / broker_admin / admin unchanged.
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 import { seatGate } from "@/lib/kernel/seat-usage"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { bestEffort } from "@/lib/db/best-effort"
@@ -21,7 +29,7 @@ export async function POST(req: Request) {
     const resolvedType = profile?.user_type ?? ""
     // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
     const isPlatformAdmin = isPlatformSuperadminIdentity(resolvedType, profile?.platform_role)
-    const isBrokerageAdmin = isAdminOrBroker({ user_type: resolvedType })
+    const isBrokerageAdmin = isTenantCommerceAdmin({ user_type: resolvedType })
     if (!isPlatformAdmin && !isBrokerageAdmin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }

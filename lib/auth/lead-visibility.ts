@@ -106,9 +106,41 @@ type AnySupabase = SupabaseClient<any, any, any>
  *   · `tc`, `compliance_officer`, `agent`, `vendor`, `lender`, `contact`. Agents
  *     see CONTACTS, never leads (CLAUDE.md §5); the rest never worked the lead
  *     desk in any of the fifteen rosters.
+ *
+ * ── AND WHY compliance_officer STAYS OUT AFTER JOINING THE PARENT ROSTER ────
+ *
+ * The owner's 2026-09-04 ruling ("there is a compliance officer for tenant staff
+ * which was not included") put `compliance_officer` INTO
+ * TENANT_ADMIN_USER_TYPES. Spreading the parent unchanged would therefore have
+ * widened the lead desk by a side effect of a ruling about admin surfaces — and
+ * this file's own exclusion list, four lines up, names that seat by name as
+ * deliberately absent. Two reasons it stays absent, neither of them withdrawn:
+ *
+ *   · CLAUDE.md §5 — "Leads belong to the BROKERAGE… A lead reaches an agent
+ *     only once qualified or showing positive intent." The lead desk is the
+ *     sales pipeline before qualification. Regulatory governance is not a stage
+ *     of it, and the compliance officer's own surfaces (compliance_flags, the
+ *     ledger, fair-housing review) reach CONTACTS, which they already have
+ *     through lib/auth/crm-contact-staff.ts.
+ *   · THE DATABASE AGREES AND WAS NOT ASKED TO CHANGE. m530's
+ *     public.is_lead_visible_role() admits
+ *     ('broker','broker_admin','broker_owner','admin','team_lead','superadmin')
+ *     in both branches, and no compliance_officer. Riding the parent widening in
+ *     here would make the app admit a `leads` read that RLS refuses — and a
+ *     refused SELECT resolves as ZERO ROWS with `error` null (§3), so the desk
+ *     would render empty rather than refusing, which is the failure mode this
+ *     whole module exists to prevent.
+ *
+ * The subtraction is EXPLICIT and NAMED rather than a re-typed list, so the
+ * derivation still has ONE parent and a seventh role added upstream tomorrow
+ * lands on the lead desk by default — the loud direction — instead of vanishing.
  */
+/** Held out of the lead desk by CLAUDE.md §5 + m530's is_lead_visible_role(),
+ *  NOT by an oversight in the parent roster. See the section above. */
+const NOT_LEAD_DESK_USER_TYPES: ReadonlySet<string> = new Set(["compliance_officer"])
+
 export const LEAD_DESK_USER_TYPES: ReadonlySet<string> = new Set([
-  ...TENANT_ADMIN_USER_TYPES,
+  ...[...TENANT_ADMIN_USER_TYPES].filter((t) => !NOT_LEAD_DESK_USER_TYPES.has(t)),
   // The AI-ISA seat — merged in from app/actions/leads.ts#ISA_ALLOWED_ROLES.
   "isa",
 ])

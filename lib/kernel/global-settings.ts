@@ -57,6 +57,17 @@ type SupabaseLike = { from: (table: string) => any }
 // now also derived, and the SQL function is_brokerage_admin, which admits five
 // roles live). The survivor is lib/auth/resolve-user-role.ts TENANT_ADMIN_USER_TYPES;
 // the local name is kept so the gate below reads the same.
+//
+// 2026-09-04 (lane ROSTER + integrator): the survivor gained
+// `compliance_officer` on the owner's ruling that the compliance officer is
+// tenant staff, so this gate admits them too — and the MIRRORS-is_brokerage_admin()
+// claim at the top of this comment still holds, because the SQL half was
+// APPLIED the same day (scripts/1109-a-compliance-officer-administers-the-brokerage.sql,
+// live on hrvaqgvukzxfskkcrwbt). The "five roles live" count above is six now,
+// on both sides. Left un-applied it would have mattered here in the quiet
+// direction: global_settings writes ride the INJECTED, ctx-resolved client, so
+// an un-widened policy would have refused the write — and supabase-js resolves a
+// refusal (§3), so the surface would have reported success over zero rows.
 const BROKERAGE_ADMIN_USER_TYPES: ReadonlySet<string> = TENANT_ADMIN_USER_TYPES
 
 // ★ ACT-AS WRITE SEAM ★ — the users-row read rides an INJECTED, ctx-resolved

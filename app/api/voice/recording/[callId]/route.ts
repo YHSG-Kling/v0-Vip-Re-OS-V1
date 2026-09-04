@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { checkAudioSourceUrl, platformAudioHostRules } from "@/lib/security/audio-source-allowlist"
+// THE tenant roster, defined once — see the tombstone on SUPERVISORY_ROLES.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -47,9 +49,31 @@ export const dynamic = "force-dynamic"
  * full re-download per scrub.
  */
 
-const SUPERVISORY_ROLES = new Set([
-  "team_lead", "broker", "broker_owner", "admin", "superadmin", "compliance_officer",
-])
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — `SUPERVISORY_ROLES = new Set(["team_lead","broker","broker_owner",
+//              "admin","superadmin","compliance_officer"])`
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED as a LITERAL (§6, 2026-09-04, lane ROSTER). The owner's 2026-09-04
+// ruling ("there is a compliance officer for tenant staff which was not
+// included") added the sixth role to TENANT_ADMIN_USER_TYPES, and this list then
+// asked the same question as the roster in its own words —
+// test:admin-vocabulary's shape scan reported it that day, having reported zero
+// the day before.
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//     lib/auth/resolve-user-role.ts  isAdminOrBroker
+//
+// TWO MEMBERSHIP DIFFERENCES, both stated rather than glossed:
+//   · GAINS `broker_admin`. m530 made it a storable user_type and CLAUDE.md §4
+//     names it in the tenant roster; a broker admin was refused every call
+//     recording in their own brokerage purely because this literal predated the
+//     migration.
+//   · LOSES `superadmin` AS A user_type. Measured repeatedly on
+//     hrvaqgvukzxfskkcrwbt: ZERO rows carry that users.user_type, and the
+//     platform's one superadmin is (user_type='admin', platform_role='superadmin')
+//     — already admitted here by `admin`. This branch matched nobody, which is
+//     why the roster refuses it and answers the platform question through
+//     platform_role instead (isPlatformStaffIdentity).
 
 export async function GET(
   request: NextRequest,
@@ -100,7 +124,7 @@ export async function GET(
   // that case (`voiceCall.agent_id !== agentId` is TRUE when agent_id is NULL),
   // so anything looser here would make the audio reachable through a route that
   // cannot be opened through its own page.
-  const canHearAll = SUPERVISORY_ROLES.has(ctx.userType)
+  const canHearAll = isAdminOrBroker({ user_type: ctx.userType })
   if (!canHearAll && row.agent_id !== ctx.agentId) {
     return NextResponse.json({ error: "You can only play recordings of your own calls" }, { status: 403 })
   }

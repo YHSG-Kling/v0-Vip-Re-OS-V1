@@ -47,7 +47,9 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import {
+  TENANT_ADMIN_USER_TYPES,
   BROKERAGE_FINANCE_ADMIN_USER_TYPES,
+  ROLES_HELD_OUT_OF_BROKERAGE_MONEY,
   isBrokerageFinanceAdmin,
   resolveTenantPrincipalTeamLead,
   resolveBrokerageFinanceAdmin,
@@ -59,8 +61,11 @@ import { NON_STAFF_PORTAL_ROLES } from "./shared/role-words"
 
 let pass = 0, fail = 0
 const fails: string[] = []
-const check = (n: string, c: boolean) => {
-  if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
+// `detail` is OPTIONAL and printed only on failure: a set claim that goes red
+// with no numbers beside it sends the next reader back to re-derive them by hand.
+const check = (n: string, c: boolean, detail?: string) => {
+  if (c) { pass++; console.log(`  ✓ ${n}`) }
+  else { fail++; fails.push(n); console.log(`  ✗ ${n}${detail ? `\n        ${detail}` : ""}`) }
 }
 
 const ROOT = process.cwd()
@@ -341,8 +346,26 @@ function sourceLayer() {
       body.length > 100 && !/'team_lead'/.test(body))
   }
 
-  check("the app roster agrees with the SQL rosters, byte for byte",
-    [...BROKERAGE_FINANCE_ADMIN_USER_TYPES].sort().join(",") === "admin,broker,broker_admin,broker_owner")
+  // WAS: `=== "admin,broker,broker_admin,broker_owner"` — the roster of one
+  // wave, retyped. It happened to stay true through the 2026-09-04 ruling (which
+  // held `compliance_officer` OUT of the money tier), but only by luck: it is a
+  // CLAUDE.md §2 waypoint, and a waypoint that survives a ruling is still a
+  // waypoint. It also restated the very list it was checking, so it could never
+  // have caught the two lists disagreeing — it WAS one of them.
+  //
+  // Stated as the RULE this proof actually depends on: the money roster is the
+  // tenant roster minus exactly the roles the module names as held out, and
+  // NOTHING in it is outside the tenant roster. The role names come from the
+  // module; the SQL side is compared against pg_proc in the live layer above,
+  // which is where a real app-vs-DB comparison belongs.
+  const heldOut = [...ROLES_HELD_OUT_OF_BROKERAGE_MONEY].sort().join(",")
+  check(`the app money roster is the tenant roster minus exactly the ruled-out roles (${heldOut})`,
+    [...TENANT_ADMIN_USER_TYPES].filter((r) => !BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(r)).sort().join(",") === heldOut,
+    `app=${[...BROKERAGE_FINANCE_ADMIN_USER_TYPES].sort().join(",")} tenant=${[...TENANT_ADMIN_USER_TYPES].sort().join(",")}`)
+  check("...and it contains nothing the tenant roster does not, so it can never admit where the wide gate refuses",
+    [...BROKERAGE_FINANCE_ADMIN_USER_TYPES].every((r) => TENANT_ADMIN_USER_TYPES.has(r)))
+  check("...and every ruled-out role really is refused by the money predicate — the tripwire, one role at a time",
+    [...ROLES_HELD_OUT_OF_BROKERAGE_MONEY].every((r) => !isBrokerageFinanceAdmin({ user_type: r })))
 
   // THE MIGRATION MUST DECLARE ITS APPLICATION STATE — one of the two, explicitly.
   //

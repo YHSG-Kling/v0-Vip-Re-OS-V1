@@ -9,6 +9,8 @@ import { TranscriptViewer } from "@/components/voice/TranscriptViewer"
 import { CoachingInsightCard } from "@/components/voice/CoachingInsightCard"
 import { CallRecordingPlayer } from "@/components/voice/CallRecordingPlayer"
 import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
+// THE tenant roster, defined once — see the gate below.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import {
   Phone,
   PhoneIncoming,
@@ -57,9 +59,17 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     .single()
 
   const userRole = userData?.user_type || "agent"
-  // SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin'
-  // removed — dead as users.user_type (0 live rows store it).
-  const canViewAllCalls = ["team_lead", "broker", "broker_owner", "admin", "compliance_officer"].includes(userRole)
+  // THE tenant roster, asked once (§6, 2026-09-04, lane ROSTER). This was a
+  // five-role literal whose comment called it a scope ladder "kept inline"; the
+  // owner's 2026-09-04 ruling put `compliance_officer` INTO
+  // TENANT_ADMIN_USER_TYPES, at which point the literal was the roster written
+  // out again. Survivor: lib/auth/resolve-user-role.ts:isAdminOrBroker.
+  //
+  // ONE MEMBERSHIP DIFFERENCE, stated: this now also admits `broker_admin`,
+  // a storable user_type since m530 and named by CLAUDE.md §4 — the literal
+  // simply predated that migration and refused a broker admin their own
+  // brokerage's call review. Nothing is revoked.
+  const canViewAllCalls = isAdminOrBroker({ user_type: userRole })
 
   // Fetch voice call with contact and agent info
   const { data: voiceCall, error: voiceCallError } = await supabase

@@ -227,11 +227,59 @@ export function isPlatformStaffIdentity(
 // OMITS broker_admin is the defect, because it will silently skip real rows. Any
 // such query should be derived from TENANT_ADMIN_USER_TYPES rather than
 // hand-typed, so it follows the roster instead of a snapshot of it.
+// ── compliance_officer: THE SIXTH SEAT (owner ruling 2026-09-04) ─────────────
+//
+// OWNER RULING, verbatim:
+//
+//   "there is a compliance officer for tenant staff which was not included."
+//
+// The omission was the OUTLIER, not the rule, and three independent facts in
+// this tree already said so before the ruling arrived:
+//
+//   · IT IS A STORABLE user_type. The live users_user_type_check admits fifteen
+//     values and `compliance_officer` is one of them — read from the generated
+//     cache, not asserted: scripts/check-vocabularies.ts, `users.user_type`.
+//     Unlike `broker_admin` before m530, this roster entry matches real rows the
+//     day it lands.
+//   · THE REPO'S OWN AUTHORITY ORDERING ALREADY RANKS IT ABOVE A MEMBER.
+//     lib/auth/role-grants.ts#ROLE_AUTHORITY_RANK reads
+//     superadmin > broker_owner > broker > admin > compliance_officer >
+//     team_lead > tc > agent … — so the one ordering this codebase has for
+//     "several grants, one answer" placed the compliance officer ABOVE
+//     `team_lead`, which has been in this roster all along.
+//   · THE DATABASE ALREADY GAVE IT THE BOOKS-READ. m467's
+//     public.can_read_brokerage_books() admits exactly
+//     ('admin','broker','broker_owner','broker_admin','compliance_officer') in
+//     BOTH branches, under the sentence "a compliance officer reads them and
+//     does not administer". The half of that sentence this ruling changes is the
+//     second half; the first half is why the finance-WRITE subtraction below
+//     exists rather than a blanket widening.
+//
+// WHAT THIS COSTS, STATED PLAINLY: this is an AUTHORITY WIDENING over every
+// gate that spreads this Set or calls isAdminOrBroker / isTenantAdminGrantRole /
+// resolveTenantAdmin — the ~170 operational admin surfaces (support, onboarding,
+// assignment rules, roster, marketing, settings, approvals). Each derived tier
+// that must NOT widen names its own subtraction below or at its own site, and
+// each such subtraction carries the ruling that justifies it. Nothing is held
+// back silently.
+//
+// APP AND DATABASE AGREE — the SQL half is APPLIED, not merely written.
+// Before it, public.is_brokerage_admin() (m530's step 2a) admitted five roles
+// and not this one, leaving the app roster WIDER than the predicate: the
+// false-success direction for RLS-bound callers (a refused SELECT resolves as
+// zero rows) and a REAL widening for the gates that run on the SERVICE client.
+// scripts/1109-a-compliance-officer-administers-the-brokerage.sql closed it,
+// applied live to hrvaqgvukzxfskkcrwbt on 2026-09-04 by the integrator, with its
+// own verification block passing against the applied definition. It widens
+// is_brokerage_admin() ONLY, and deliberately not is_brokerage_finance_admin()
+// nor is_lead_visible_role(), matching the two subtractions below — both of
+// which were re-read from the LIVE function bodies rather than from a migration
+// file, since a `.sql` in this tree is not evidence that anything ran (§3).
 /**
  * EXPORTED so that a surface needing a Set (rather than the predicate) DERIVES it
  * instead of restating it — see lib/vendors/vendor-scope.ts, which spreads this
  * and adds its own explicit, documented extras. Deriving keeps ONE definition;
- * retyping the five is the duplication the ruling forbids. (lib/auth/
+ * retyping the six is the duplication the ruling forbids. (lib/auth/
  * authorize-for-user.ts used to derive a set here too; that set was never
  * consulted and is deleted — see its tombstone.)
  */
@@ -244,6 +292,10 @@ export const TENANT_ADMIN_USER_TYPES = new Set([
   // applied. Until then it is still only reachable as an input spelling — which
   // is why this entry did not have to move. See the section header above.
   "broker_admin",
+  // Owner ruling 2026-09-04 — see the section header immediately above. A
+  // STORABLE user_type today (the live CHECK lists it), so unlike broker_admin
+  // this entry admits real rows from the moment it lands.
+  "compliance_officer",
 ])
 
 /**
@@ -317,14 +369,62 @@ export function isTenantAdminGrantRole(role: string | null | undefined): boolean
 // because nobody would think to also subtract it.
 //
 // So the finance set is COMPUTED from TENANT_ADMIN_USER_TYPES by removing the
-// one role the ruling removes. There is still ONE roster. This is the same
-// roster asked a narrower question, and the subtraction is the whole of the
-// difference — visible in one line instead of buried in a diff between two
-// lists. Add a role above and it joins BOTH tiers unless it is named here too,
-// which is the safe default for an operational role and a deliberate decision
-// for a financial one.
+// roles the rulings remove. There is still ONE roster. This is the same roster
+// asked a narrower question, and the subtraction is the whole of the difference
+// — visible in one line instead of buried in a diff between two lists. Add a
+// role above and it joins BOTH tiers unless it is named here too, which is the
+// safe default for an operational role and a deliberate decision for a
+// financial one.
+//
+// ── THE SECOND SUBTRACTION: compliance_officer (owner ruling 2026-09-04) ─────
+//
+// The 2026-09-04 ruling seats the compliance officer as tenant staff ADMIN. It
+// does not hand them the brokerage's books, and the database has already drawn
+// that exact line in the opposite direction, in writing:
+//
+//   m467 public.can_read_brokerage_books() admits compliance_officer, under the
+//   comment "Reading the books is a wider circle than administering the
+//   brokerage: a compliance officer reads them and does not administer."
+//
+//   m472/m530 public.is_brokerage_finance_admin() admits
+//   ('admin','broker','broker_owner') — plus is_tenant_principal_team_lead() as
+//   a third disjunct — and NOT compliance_officer.
+//
+//   MEASURED LIVE 2026-09-04 on hrvaqgvukzxfskkcrwbt, CORRECTING THIS LANE'S
+//   OWN DRAFT, which had written `broker_admin` into that list. It is not there.
+//   That is a PRE-EXISTING app/DB drift, and it is recorded here rather than
+//   repaired in either direction on an integrator's judgement: the set BELOW
+//   has admitted `broker_admin` to the brokerage's books since m530 made it a
+//   storable user_type, while the SQL predicate still refuses it. So an
+//   RLS-bound finance read by a broker admin comes back as zero rows with
+//   `error` null, and a service-client finance write by one is real. Widening a
+//   MONEY predicate is an owner ruling, not a tidy-up — UNRESOLVED, and now
+//   written where the next reader is already looking instead of being restated
+//   wrongly. It does not affect the compliance_officer subtraction below, which
+//   the live definition confirms exactly.
+//
+// So the live database ALREADY gives this seat the finance READ and refuses it
+// the finance WRITE. Letting the role ride along into this set would have made
+// the APP admit a write that RLS refuses — and supabase-js RESOLVES a refused
+// write, so the surface reports SUCCESS over a statement that touched zero rows.
+// Worse, several of these gates write through the SERVICE client, which bypasses
+// RLS entirely: there the app predicate is the ONLY gate and the write to the
+// brokerage's books would be REAL. Holding the role out here is what keeps app
+// and database saying the same thing, and it is the ruling read as written —
+// "compliance officer for tenant staff", not "for the brokerage's money".
+//
+// NAMED, WITH THE RULING THAT NAMES EACH, rather than a bare `!== "team_lead"`:
+// a subtraction whose reason is not written down is the one a later lane undoes.
+export const ROLES_HELD_OUT_OF_BROKERAGE_MONEY: ReadonlySet<string> = new Set([
+  // m472, owner verbatim: "Admin surfaces, but NOT brokerage-wide money."
+  "team_lead",
+  // Owner ruling 2026-09-04 + m467's own sentence: reads the books, does not
+  // keep them. See the paragraph above.
+  "compliance_officer",
+])
+
 export const BROKERAGE_FINANCE_ADMIN_USER_TYPES = new Set(
-  [...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"),
+  [...TENANT_ADMIN_USER_TYPES].filter((t) => !ROLES_HELD_OUT_OF_BROKERAGE_MONEY.has(t)),
 )
 
 /**
@@ -418,6 +518,48 @@ export function isBrokerageFinanceAdmin(profile: {
  */
 export function isBrokerageFinanceAdminGrantRole(role: string | null | undefined): boolean {
   return BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(String(role ?? "").toLowerCase())
+}
+
+// ─── COMMITTING THE TENANT TO A CHARGE — THE SAME ROSTER, ONE ROLE SHORTER ───
+//
+// A THIRD tier, and the burden is on it to justify existing (§6). It does,
+// because it is NOT either of the two above and the four sites that need it were
+// already outside both:
+//
+//   · It is not BROKERAGE_FINANCE_ADMIN_USER_TYPES. All four sites below admit
+//     `team_lead` today — a team lead may buy their team a seat and charge their
+//     team's vendors — and the m472 ruling that holds team_lead out of the
+//     brokerage's BOOKS never touched them. Repointing them at the finance tier
+//     would REVOKE a live seat, which is not this lane's ruling to make.
+//   · It is not TENANT_ADMIN_USER_TYPES either, and that is the whole point:
+//     these four gates OBLIGATE THE BROKERAGE TO PAY SOMEBODY. Signing the
+//     platform subscription agreement, buying a billed seat, charging a vendor,
+//     and selling premium placement (which issues an invoice and marks it paid)
+//     each create money owed. The 2026-09-04 ruling seats a compliance officer
+//     as tenant staff admin; it does not give them the tenant's chequebook, and
+//     m467 already says in so many words that this seat "reads [the books] and
+//     does not administer" them.
+//
+// DERIVED, so there is still ONE roster and adding a seventh role tomorrow lands
+// it in BOTH tiers unless someone names it here on purpose.
+export const TENANT_COMMERCE_ADMIN_USER_TYPES: ReadonlySet<string> = new Set(
+  [...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "compliance_officer"),
+)
+
+/**
+ * "May this seat obligate the brokerage to pay somebody?" — the predicate over
+ * {@link TENANT_COMMERCE_ADMIN_USER_TYPES}.
+ *
+ * Pure, sync and fail-closed on an absent value, exactly like its two siblings:
+ * a seat whose role could not be resolved is never graded as a granted one (§4).
+ * Case-folded for the same reason isAdminOrBroker is — callers pass legacy
+ * free-form `users.role` values, which MEASURED live hold 'Admin' and 'Lender'.
+ */
+export function isTenantCommerceAdmin(profile: {
+  user_type?: string | null
+  role?: string | null // tolerated on input, intentionally unread — see the module header
+}): boolean {
+  return TENANT_COMMERCE_ADMIN_USER_TYPES.has(String(profile.user_type ?? "").toLowerCase())
 }
 
 /**
