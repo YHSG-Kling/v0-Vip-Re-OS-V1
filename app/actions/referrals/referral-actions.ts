@@ -9,6 +9,8 @@ import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   DEFAULT_REFERRAL_STATUS,
   isReferralStatus,
+  canAdvanceReferral,
+  REFERRAL_TERMINAL_WON,
   type ReferralStatus,
 } from "@/lib/referrals/referral-status"
 import {
@@ -70,6 +72,11 @@ export type ReferralRow = {
   commission_amount: number | null
   value_estimate: number | null
   closed_at: string | null
+  /** Stamped alongside closed_at when the referral reaches REFERRAL_TERMINAL_WON.
+   *  A live `referrals` column (schema-snapshot) that the ROI rollups read and
+   *  this projection did not carry, so nothing typed here could ever set it —
+   *  merged in with the writer, BURN-C 2026-09-04. */
+  converted_at: string | null
   created_at: string
   referral_partners?: Pick<ReferralPartnerRow, "partner_name" | "partner_type"> | null
 }
@@ -108,6 +115,28 @@ export type CreateReferralParams = {
    *  referrals.referred_lead_id was written by exactly one function in the
    *  codebase — an orphan with no callers — so in practice it was never set. */
   referredLeadId?: string
+  /** ── WHO SENT THIS REFERRAL, and what it might be worth ────────────────────
+   *  MERGED IN (§1.1, BURN-C 2026-09-04) from the deleted
+   *  lib/kernel/reputation.ts:createReferralRequest, which was the only writer of
+   *  these three columns and had no caller. All three are READ on live surfaces
+   *  and so were readers with no writer:
+   *    · referred_by / source_contact_name — app/referrals/pipeline/page.tsx:123-129
+   *      renders "who sent this" from `referrer_contact || referred_by ||
+   *      source_contact_name`, and app/referrals/page.tsx:167 groups the top
+   *      referrers on the same pair. With nothing writing either column, the only
+   *      referrals that could ever show a referrer were those with a linked
+   *      contact — a referral phoned in by a name with no contact record showed
+   *      blank for ever.
+   *    · commission_potential — lib/agents/referral-closer.ts:31 prefers it over
+   *      value_estimate when ranking which referral to chase. Always null, so the
+   *      closer always fell through to the weaker signal. */
+  /** Free-text referrer when no contact record is linked. */
+  referredBy?: string
+  /** Display name of the referring party, when it is known but unlinked. */
+  sourceContactName?: string
+  /** Expected commission on this referral — a different unit from value_estimate
+   *  (what the referral is WORTH); see app/referrals/page.tsx:151. */
+  commissionPotential?: number
 }
 
 export type CreatePartnerParams = {
@@ -186,12 +215,21 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
       referral_source: params.referralSource ?? null,
       commission_amount: params.commissionAmount ?? null,
       value_estimate: params.valueEstimate ?? null,
+      commission_potential: params.commissionPotential ?? null,
+      referred_by: params.referredBy?.trim() || null,
+      source_contact_name: params.sourceContactName?.trim() || null,
       notes: params.notes?.trim() || null,
       // A referral can ARRIVE already closed (a partner tells you about a deal
       // that has since settled). updateReferralStatus stamps closed_at on the
       // transition; nothing stamped it on creation, so such a row read as an
       // open referral forever.
-      closed_at: status === "closed" ? new Date().toISOString() : null,
+      //
+      // converted_at rides along for the same reason it does on the transition
+      // (BURN-C 2026-09-04): the ROI rollups key on converted_at, so a referral
+      // that arrived already won counted as closed and as never converted.
+      ...(status === REFERRAL_TERMINAL_WON
+        ? { closed_at: new Date().toISOString(), converted_at: new Date().toISOString() }
+        : { closed_at: null, converted_at: null }),
     })
     .select("id")
     .single()
@@ -261,9 +299,49 @@ export async function updateReferralStatus(
   const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
+  // ── MERGED IN (orphan doctrine §1.1, BURN-C 2026-09-04) ────────────────────
+  // Three capabilities ported from the duplicate
+  // app/actions/reputation-kernel.ts:advanceReferralStatusAction →
+  // lib/kernel/reputation.ts:advanceReferralStatus, both now deleted. Lane L6
+  // recorded on 2026-09-03 that this survivor was NOT strictly more complete and
+  // that the merge had to happen before the duplicate could go; this is it.
+  //
+  // (1) THE STAGE GRAPH. isReferralStatus above proves the value is STORABLE, not
+  // that the move is LEGAL — so a referral could jump `received` → `closed`,
+  // skipping every stage, and the pipeline's own order meant nothing. The graph
+  // now lives beside the vocabulary it is written in (§6).
+  const { data: current, error: currentErr } = await db
+    .from("referrals")
+    .select("status")
+    .eq("id", referralId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (currentErr) throw new Error(`Failed to read referral: ${currentErr.message}`)
+  // No row ⇒ wrong referral or wrong tenant. The UPDATE below would match nothing
+  // and resolve CLEANLY (CLAUDE.md §3), reporting a stage change that never
+  // happened, so the refusal has to be caught here.
+  if (!current) throw new Error("Referral not found, or not owned by this agent.")
+
+  const previousStatus = (current as { status: string }).status
+  if (previousStatus !== status) {
+    const verdict = canAdvanceReferral(previousStatus, status)
+    if (!verdict.ok) {
+      throw new Error(
+        `A referral cannot move from "${previousStatus}" to "${status}". From here it can go to: ${verdict.allowed.join(", ") || "nowhere — this is a terminal stage"}.`,
+      )
+    }
+  }
+
   const updates: Partial<ReferralRow> = { status }
-  if (status === "closed") {
-    updates.closed_at = new Date().toISOString()
+  if (status === REFERRAL_TERMINAL_WON) {
+    const wonAt = new Date().toISOString()
+    updates.closed_at = wonAt
+    // (2) converted_at. Both columns exist on `referrals` and BOTH are read —
+    // closed_at is what this action always stamped, converted_at is what the
+    // ReferralRow projection and the ROI rollups read. Stamping only one left
+    // every ROI number reading a null on a referral that had in fact converted.
+    updates.converted_at = wonAt
     if (closedData?.commissionAmount !== undefined) {
       updates.commission_amount = closedData.commissionAmount
     }
@@ -277,6 +355,26 @@ export async function updateReferralStatus(
     .eq("brokerage_id", brokerageId)
 
   if (error) throw new Error(`Failed to update referral: ${error.message}`)
+
+  // (3) THE LIFECYCLE EVENT. A stage change is a lifecycle transition and
+  // lib/kernel/events.ts:9 requires each to map to exactly one KernelEvent; this
+  // rail wrote the column and told the OS nothing, so no sequence, notification
+  // or portal card ever fired on a referral advancing or converting. Best-effort
+  // behind the write, matching every other emit in this file: the stage change
+  // has already landed and a fan-out failure must not turn it into a throw the
+  // caller retries.
+  try {
+    await emitKernelEvent({
+      event: status === REFERRAL_TERMINAL_WON ? KernelEvent.REFERRAL_CONVERTED : KernelEvent.REFERRAL_ADVANCED,
+      brokerageId,
+      entityType: "referral",
+      entityId:   referralId,
+      actorUserId: userId,
+      metadata:   { from: previousStatus, to: status },
+    })
+  } catch (err) {
+    console.warn("[updateReferralStatus] referral lifecycle event emit failed:", (err as any)?.message)
+  }
 
   // If closed: bump total_value_generated on partner
   if (status === "closed" && closedData?.commissionAmount) {

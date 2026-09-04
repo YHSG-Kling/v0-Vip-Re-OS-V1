@@ -91,8 +91,16 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
       setFeedback({ kind: "error", message: "Already on that tier" })
       return
     }
+    // The reason is now MANDATORY on a tier change (10+ chars) — it is the audit
+    // record for changing what this tenant is charged. Checked here so the
+    // operator is told before the round trip; the action re-checks and is the
+    // authority. Suspend and cancel below already worked this way.
+    if (reason.trim().length < 10) {
+      setFeedback({ kind: "error", message: "A reason (10+ chars) is required — it is the audit record for a price change" })
+      return
+    }
     startTransition(async () => {
-      const r = await changeBrokerageTierAction({ brokerageId: brokerage.id, newTier: tier, reason: reason.trim() || undefined })
+      const r = await changeBrokerageTierAction({ brokerageId: brokerage.id, newTier: tier, reason: reason.trim() })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
       setFeedback({ kind: "success", message: `Tier changed from ${r.previousTier} → ${tier}${stripeSuffix(r)}` })
     })

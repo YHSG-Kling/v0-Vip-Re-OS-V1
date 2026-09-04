@@ -100,6 +100,22 @@ export interface SubscriptionOversightRow {
   daysToRenewal: number | null
   attention: boolean
   reason: string
+  /**
+   * MERGED IN (orphan doctrine §1.1, BURN-C 2026-09-04) from the duplicate
+   * app/actions/billing.ts:getDelinquentAccounts, now deleted.
+   *
+   * This row already covered that action's whole past-due set and then some —
+   * it detects past_due from subscriptions.status AND from the latest unpaid
+   * invoice, where the duplicate filtered on `status = 'past_due'` alone. The
+   * single thing the duplicate carried that this row did not was the brokerage
+   * EMAIL, and on a dunning queue that is not a decoration: it is who you
+   * contact about the missed payment. Without it the survivor could tell an
+   * operator a tenant was past due and not who to reach, which is why the
+   * duplicate could not simply be deleted first.
+   *
+   * Null when the brokerage row has no email on file.
+   */
+  email: string | null
 }
 
 export interface SubscriptionOversight {
@@ -137,7 +153,7 @@ type Svc = ReturnType<typeof createServiceClient>
 export async function loadSubscriptionOversight(client?: Svc, now: Date = new Date()): Promise<SubscriptionOversight> {
   const svc = client ?? createServiceClient()
   const [brokeragesR, subsR, tiersR, invoicesR] = await Promise.all([
-    svc.from("brokerages").select("id, name, plan_tier, trial_ends_at, status").is("archived_at", null).limit(2000),
+    svc.from("brokerages").select("id, name, email, plan_tier, trial_ends_at, status").is("archived_at", null).limit(2000),
     svc.from("subscriptions").select("brokerage_id, tier_id, status, trial_end, current_period_end, cancel_at, cancelled_at").limit(2000),
     svc.from("subscription_tiers").select("id, display_name, monthly_price_cents").limit(200),
     svc.from("billing_invoices").select("brokerage_id, status, due_date, invoice_date").order("invoice_date", { ascending: false }).limit(5000),
@@ -171,6 +187,9 @@ export async function loadSubscriptionOversight(client?: Svc, now: Date = new Da
       tier: tier?.display ?? (b.plan_tier ?? "—"),
       state: c.state, mrrCents: tier?.priceCents ?? 0,
       daysToTrialEnd: c.daysToTrialEnd, daysToRenewal: c.daysToRenewal, attention: c.attention, reason: c.reason,
+      // The dunning contact, merged from the deleted getDelinquentAccounts. A
+      // past-due row that cannot say who to email is only half an alert.
+      email: (b.email ?? null) || null,
     })
   }
 

@@ -92,7 +92,7 @@ export async function submitClientTestimonial(params: {
     .eq("contact_id", params.contactId).eq("brokerage_id", access.brokerageId).eq("status", "closed")
     .order("close_date", { ascending: false }).limit(1).maybeSingle()
 
-  const { error: insErr } = await svc.from("agent_reviews").insert({
+  const { data: insertedReview, error: insErr } = await svc.from("agent_reviews").insert({
     brokerage_id:   access.brokerageId,
     agent_id:       contact.agent_id ?? null,
     contact_id:     params.contactId,
@@ -105,7 +105,30 @@ export async function submitClientTestimonial(params: {
     platform:       "internal",
     is_published:   false, // the agent approves before using it in marketing
   })
+    // The id is needed to announce the review below; without .select() the
+    // insert returns null data and the lifecycle event has nothing to point at.
+    .select("id")
+    .single()
   if (insErr) return { ok: false, error: insErr.message }
+
+  // MERGED IN (§1.1, BURN-C 2026-09-04) from the deleted
+  // app/actions/reputation-kernel.ts:recordReviewAction — see
+  // lib/reputation/review-landed.ts. This writer notified the AGENT (below) but
+  // never closed the review_requests row the testimonial answers and never
+  // emitted REVIEW_RECEIVED, so a client who was ASKED for a review and gave one
+  // stayed on the outstanding-asks list and in the follow-up cadence.
+  if (insertedReview) {
+    const { onReviewLanded } = await import("@/lib/reputation/review-landed")
+    await onReviewLanded({
+      supabase:    svc,
+      reviewId:    (insertedReview as { id: string }).id,
+      brokerageId: access.brokerageId,
+      agentId:     contact.agent_id ?? null,
+      contactId:   params.contactId,
+      platform:    "internal",
+      rating:      null,
+    })
+  }
 
   // Surface to the agent so they can approve + use it.
   try {

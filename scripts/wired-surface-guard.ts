@@ -171,6 +171,74 @@ export function isInertControl(src: string, i: number): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PURE DETECTOR 2 — same-file reachability
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A SIBLING IN THE SAME FILE IS A CALLER. (§2 measurement correction, BURN-C, 2026-09-04.)
+ *
+ * The orphan scan skipped the action's OWN file outright — `if (cf === f) continue`
+ * — to stop a function's own `export async function X` declaration counting as a
+ * caller of X. It does stop that. It also blinds the scan to the shape this
+ * codebase uses constantly: a public ENTRY POINT that a UI imports, which then
+ * calls its siblings in the same actions file.
+ *
+ * The cost was not a missed defect, it was 14 FALSE ACCUSATIONS against live,
+ * surfaced code — and every one of them was a standing invitation to delete
+ * working code to move the number, which §1 forbids. Worked examples, all
+ * verified reachable from a real page:
+ *   · cda-portal.ts — uploadFinalCdAction and uploadCdaCheckCopyAction are the
+ *     tail of the money rail, both called by recordCdaClosingArtifactAction,
+ *     which app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx invokes
+ *     from the artifact upload handler; notifyAgentOfPreliminaryCdAction is
+ *     called by uploadPreliminaryCdAction on the same page. The three most
+ *     money-critical "orphans" in the census were never orphans.
+ *   · video-repurposing.ts — getSnippetById, logRepurposedContent and
+ *     getRepurposedContentLogs, all reached from repurpose-dashboard-client.tsx.
+ *   · vendor-payments.ts:createVendorInvoice ← issueVendorCharge ← the vendor
+ *     charges panel.
+ *
+ * WHAT KEEPS THIS HONEST — the closure starts ONLY at functions some other file
+ * names, and walks outward. A ring of same-file functions that call each other
+ * and are reached from nowhere stays orphaned, all of it. The live proof is
+ * ai-transaction-coordinator.ts: getClosingPrep calls prepareForClosing, and
+ * BOTH remain reported, because nothing outside the file calls getClosingPrep.
+ * A function is also never its own caller, so a recursive orphan stays an orphan.
+ *
+ * PURE. `src` must be COMMENT-STRIPPED by the caller — a tombstone naming a
+ * function is not a call site (§2), and this file's own doc comment above names
+ * six of them.
+ */
+export function reachableInFile(
+  src: string,
+  names: string[],
+  externallyReached: Set<string>,
+): Set<string> {
+  // Each declaration owns the text from its own `export async function` up to the
+  // next one — near enough to a body for "does A mention B(" and immune to brace
+  // counting going wrong inside a template literal or a regex.
+  const decls = [...src.matchAll(/export\s+async\s+function\s+(\w+)/g)]
+  const calls = new Map<string, string[]>()
+  decls.forEach((m, i) => {
+    const body = src.slice(m.index!, i + 1 < decls.length ? decls[i + 1].index! : src.length)
+    // `\bName\s*\(` — an INVOCATION, not a mere mention. A re-export or a type
+    // position naming the sibling must not rescue it.
+    calls.set(m[1], names.filter((n) => n !== m[1] && new RegExp(`\\b${n}\\s*\\(`).test(body)))
+  })
+
+  const reached = new Set(externallyReached)
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const caller of [...reached]) {
+      for (const callee of calls.get(caller) ?? []) {
+        if (!reached.has(callee)) { reached.add(callee); grew = true }
+      }
+    }
+  }
+  return reached
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FILE WALK
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -224,6 +292,42 @@ console.log("\n[pure — the inert-control detector]")
   const closedBefore = `<Link href="/a"><Button onClick={x}>A</Button></Link>\n<Button>B</Button>`
   check("a CLOSED wrapper earlier does not mask a later inert control",
     isInertControl(closedBefore, closedBefore.lastIndexOf("<Button")) === true)
+}
+
+console.log("\n[pure — same-file reachability, and the ways it must NOT rescue an orphan]")
+{
+  const two = `export async function entry(){ return helper() }\nexport async function helper(){ return 1 }`
+  const r1 = reachableInFile(two, ["entry", "helper"], new Set(["entry"]))
+  check("an entry point a UI imports rescues the sibling it calls", r1.has("helper"))
+
+  const chain = `export async function a(){ return b() }\nexport async function b(){ return c() }\nexport async function c(){ return 1 }`
+  const r2 = reachableInFile(chain, ["a", "b", "c"], new Set(["a"]))
+  check("reachability is TRANSITIVE (a → b → c)", r2.has("b") && r2.has("c"))
+
+  // THE POSITIVE CONTROL THAT MATTERS. If this ever passes vacuously the whole
+  // correction becomes "nothing is ever an orphan" and the guard is decoration.
+  const r3 = reachableInFile(two, ["entry", "helper"], new Set())
+  check("a ring nothing outside the file calls stays ORPHANED, all of it",
+    r3.size === 0)
+
+  const selfCall = `export async function loop(){ return loop() }`
+  const r4 = reachableInFile(selfCall, ["loop"], new Set())
+  check("a function is never its OWN caller (a recursive orphan is still an orphan)",
+    !r4.has("loop"))
+
+  const mention = `export async function entry(){ return "helper" }\nexport async function helper(){ return 1 }`
+  const r5 = reachableInFile(mention, ["entry", "helper"], new Set(["entry"]))
+  check("a NAME without a call does not rescue a sibling (mention ≠ invocation)",
+    !r5.has("helper"))
+
+  // The real shape this was built for, and the real shape it must not over-rescue.
+  const cda = `export async function recordCdaClosingArtifactAction(){ return uploadFinalCdAction({}) }\nexport async function uploadFinalCdAction(){ return 1 }`
+  check("cda-portal shape: the artifact entry point rescues uploadFinalCdAction",
+    reachableInFile(cda, ["recordCdaClosingArtifactAction", "uploadFinalCdAction"],
+      new Set(["recordCdaClosingArtifactAction"])).has("uploadFinalCdAction"))
+  const coord = `export async function getClosingPrep(){ return prepareForClosing() }\nexport async function prepareForClosing(){ return 1 }`
+  check("ai-transaction-coordinator shape: an UNREACHED caller rescues nothing",
+    reachableInFile(coord, ["getClosingPrep", "prepareForClosing"], new Set()).size === 0)
 }
 
 // KEYED BY FILE, NOT file:line — deliberately.
@@ -282,15 +386,19 @@ const orphanFound: string[] = []
   for (const f of actionFiles) {
     const src = readFileSync(f, "utf8")
     if (!/^["']use server["']/m.test(src)) continue
-    for (const m of src.matchAll(/export\s+async\s+function\s+(\w+)/g)) {
-      const name = m[1]
-      let referenced = false
+
+    const names = [...src.matchAll(/export\s+async\s+function\s+(\w+)/g)].map((m) => m[1])
+    // EXTERNAL reachability — the original test, unchanged: some OTHER file names it.
+    const externallyReached = new Set<string>()
+    for (const name of names) {
       for (const [cf, cs] of callerSrc) {
         if (cf === f) continue
-        if (new RegExp(`\\b${name}\\b`).test(cs)) { referenced = true; break }
+        if (new RegExp(`\\b${name}\\b`).test(cs)) { externallyReached.add(name); break }
       }
-      if (!referenced) orphanFound.push(`${f}:${name}`)
     }
+    // …then the SAME-FILE half the scan was blind to (see reachableInFile).
+    const reached = reachableInFile(stripComments(src), names, externallyReached)
+    for (const name of names) if (!reached.has(name)) orphanFound.push(`${f}:${name}`)
   }
   console.log(`  · ${actionFiles.length} action files · ${orphanFound.length} orphan actions`)
 }

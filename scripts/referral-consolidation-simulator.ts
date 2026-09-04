@@ -154,8 +154,27 @@ console.log("\n── trackReferral's four capabilities live on the wired path �
   check("…and the partner counter is skipped when there is no partner",
     /if \(params\.partnerId\) \{[\s\S]{0,600}?increment_referral_received/.test(ACTIONS))
 
-  check("[4/4] a referral created already closed is stamped closed_at",
-    /closed_at:\s*status === "closed" \? new Date\(\)\.toISOString\(\) : null/.test(ACTIONS))
+  // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2). This used to match the
+  // literal `closed_at: status === "closed" ? … : null`, so it was pinned to one
+  // way of writing the branch: hoisting the terminal into the named constant
+  // REFERRAL_TERMINAL_WON — which is what the vocabulary module now exports, and
+  // what stops a re-labelled stage leaving a stale "closed" behind — broke a
+  // check about a behaviour that had not changed.
+  //
+  // The rule is: creating a referral in the WON terminal stamps the completion
+  // columns, and creating it anywhere else leaves them null.
+  {
+    const create = ACTIONS.slice(ACTIONS.indexOf("export async function createReferral"))
+    const insert = create.slice(0, create.indexOf(".select(\"id\")"))
+    const terminalBranch = /status === (?:REFERRAL_TERMINAL_WON|"closed")/.test(insert)
+    check("[4/4] a referral created already closed is stamped closed_at",
+      terminalBranch && /closed_at/.test(insert) && /null/.test(insert))
+    // converted_at rides with it (BURN-C 2026-09-04): the ROI rollups key on
+    // converted_at, so a referral that ARRIVED won counted as closed and as
+    // never converted. Same branch, same rule.
+    check("…and converted_at with it, so the ROI rollups can see it",
+      terminalBranch && /converted_at/.test(insert))
+  }
 }
 
 console.log("\n── the create dialog's fields reach a column ──")

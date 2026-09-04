@@ -295,15 +295,36 @@ export async function getBrokerageDetailAction(brokerageId: string): Promise<
 
 // ── TIER CHANGE ──────────────────────────────────────────────────────────────
 
+/**
+ * MERGED IN (orphan doctrine §1.1, BURN-C 2026-09-04) from the duplicate
+ * app/actions/billing.ts:manualTierOverride, now deleted: the MANDATORY
+ * SUBSTANTIVE REASON.
+ *
+ * Lane G4 measured this pair against the live database on 2026-08-28 and found
+ * this action strictly fuller on every axis but one — the duplicate REFUSED a
+ * price change with no reason, this one took `reason?` and wrote `null`. That
+ * one field is the whole audit record for changing what a customer is charged,
+ * and it was the reason the duplicate could not simply be deleted.
+ *
+ * It also made this file disagree with itself: suspendBrokerageAction and
+ * cancelBrokerageAction below both demand 5+ chars, and repricing a tenant is
+ * not the lighter act of the three. The bar is the duplicate's own 10 — the
+ * stricter of the two, since collapsing onto the survivor must not relax a
+ * money gate.
+ */
 export async function changeBrokerageTierAction(params: {
   brokerageId: string
   newTier:     CanonicalTier
-  reason?:     string
+  reason:      string
 }): Promise<{ ok: boolean; error?: string; previousTier?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!["solo_agent","team","brokerage","multi_location"].includes(params.newTier)) {
     return { ok: false, error: "Invalid tier" }
+  }
+  const tierChangeReason = (params.reason ?? "").trim()
+  if (tierChangeReason.length < 10) {
+    return { ok: false, error: "A substantive reason (10+ chars) is required — this is the audit record for a price change" }
   }
   const svc = createServiceClient()
 
@@ -389,7 +410,7 @@ export async function changeBrokerageTierAction(params: {
     action:      "brokerage.tier_changed",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
+    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
@@ -418,7 +439,7 @@ export async function changeBrokerageTierAction(params: {
       brokerageId: params.brokerageId,
       entityType: "brokerage",
       entityId:   params.brokerageId,
-      metadata:   { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, changed_by: auth.userId, stripe_applied: stripeApplied },
+      metadata:   { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, changed_by: auth.userId, stripe_applied: stripeApplied },
     })
   } catch (err) {
     console.warn("[changeBrokerageTierAction] tier lifecycle event emit failed:", (err as any)?.message)

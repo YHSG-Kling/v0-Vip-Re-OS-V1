@@ -228,6 +228,13 @@ const F = {
   reputationSurface: "app/components/reputation/ReputationPanel.tsx",
   lifetimeSurface: "app/lifetime-customers/page.tsx",
   referralWriter: "app/actions/referrals/referral-actions.ts",
+  // The referral STAGE GRAPH moved here from lib/kernel/reputation.ts when the
+  // duplicate that owned it was deleted (§6 — the graph belongs beside the
+  // vocabulary it is written in). The two checks below follow it rather than
+  // staying pinned to its old address, where they would have read an empty
+  // string and passed or failed for the wrong reason.
+  statusVocab: "lib/referrals/referral-status.ts",
+  reviewLanded: "lib/reputation/review-landed.ts",
   reviewWriterA: "app/actions/multi-persona.ts",
   reviewWriterB: "app/actions/portal-lifetime.ts",
   ohLegacy: "app/actions/open-house.ts",
@@ -379,13 +386,15 @@ function staticLayer(): void {
   console.log("\n[reputation · vocabularies]")
   {
     const canonical = new Set(REFERRAL_STATUSES.map((s) => s.value as string))
-    const graph = /REFERRAL_STATUS_TRANSITIONS[^=]*=\s*\{([\s\S]*?)\n\}/.exec(S.repKernel)?.[1] ?? ""
+    const graph = /REFERRAL_STATUS_TRANSITIONS[^=]*=\s*\{([\s\S]*?)\n\}/.exec(S.statusVocab)?.[1] ?? ""
     const graphVocab = statusGraphVocabulary(graph)
     const strays = [...graphVocab].filter((v) => !canonical.has(v))
     check("REP-REFERRAL-VOCAB", "referral transition graph speaks only the canonical status vocabulary",
       graphVocab.size > 0 && strays.length === 0)
 
-    const advance = functionBody(S.repKernel, "advanceReferralStatus")
+    // The stage advance now lives on the wired survivor, not the deleted kernel
+    // command — same rule, followed to where the writing happens.
+    const advance = functionBody(S.referralWriter, "updateReferralStatus")
     check("REP-REFERRAL-TERMINAL", "the won-terminal status is taken from a named constant, not inlined",
       /REFERRAL_TERMINAL_WON/.test(advance) && !/"converted"/.test(advance))
 
@@ -463,28 +472,81 @@ function staticLayer(): void {
       /reviewsLoadError\s*&&/.test(S.lifetimeSurface))
   }
 
-  console.log("\n[deliberately unwired · second-writer guard]")
+  console.log("\n[the second writer was MERGED ONTO THE SURVIVOR, then removed]")
   {
+    // ── WHY THIS BLOCK WAS REWRITTEN (CLAUDE.md §2) ─────────────────────────
+    // It used to assert the WAYPOINT: that recordReviewAction,
+    // createReferralRequestAction and advanceReferralStatusAction still EXISTED
+    // and were still UNWIRED. Lane L6 had ruled they could not be deleted until
+    // the survivors absorbed what only they carried, and pinned that
+    // half-finished state into a guard — so the guard could only stay green
+    // while the merge remained undone, and FINISHING THE WORK WOULD HAVE TURNED
+    // IT RED. That is the exact failure §2 names.
+    //
+    // What is asserted now is the RULE the ruling was protecting: there is ONE
+    // writer per reputation fact, and nothing the deleted duplicates carried was
+    // lost on the way out. These checks survive the deletion because they
+    // describe the end state, not a step on the way to it.
     const surfaces = [S.ohSurface, S.reviewSurface, S.reputationSurface, S.lifetimeSurface].join("\n")
-    check("UNWIRED-RECORD-REVIEW", "recordReviewAction is NOT wired — agent_reviews already has writers",
-      !/\brecordReviewAction\b/.test(surfaces))
-    check("UNWIRED-RECORD-REVIEW-WRITER", "the existing agent_reviews writers are still present",
+
+    check("MERGED-DUP-GONE", "the three duplicate reputation actions are gone",
+      !/export\s+async\s+function\s+recordReviewAction\b/.test(S.repAction) &&
+      !/export\s+async\s+function\s+createReferralRequestAction\b/.test(S.repAction) &&
+      !/export\s+async\s+function\s+advanceReferralStatusAction\b/.test(S.repAction))
+    check("MERGED-KERNEL-GONE", "…and so are the kernel functions behind them, which they alone called",
+      !/export\s+async\s+function\s+recordReview\s*\(/.test(S.repKernel) &&
+      !/export\s+async\s+function\s+createReferralRequest\s*\(/.test(S.repKernel) &&
+      !/export\s+async\s+function\s+advanceReferralStatus\s*\(/.test(S.repKernel))
+    check("MERGED-NO-RESURRECTION", "no surface reaches for the deleted spellings",
+      !/\brecordReviewAction\b/.test(surfaces) &&
+      !/\bcreateReferralRequestAction\b/.test(surfaces) &&
+      !/\badvanceReferralStatusAction\b/.test(surfaces))
+
+    // THE SURVIVORS ARE STILL THE WRITERS.
+    check("SURVIVOR-REVIEW-WRITERS", "both agent_reviews writers are still present",
       /submitClientFeedback/.test(S.reviewWriterA) &&
       /from\(\s*"agent_reviews"\s*\)\s*\n?\s*\.insert/.test(S.reviewWriterA) &&
       /from\(\s*"agent_reviews"\s*\)\.insert/.test(S.reviewWriterB))
-    check("UNWIRED-REFERRAL-CREATE", "createReferralRequestAction is NOT wired — referrals already has a writer",
-      !/\bcreateReferralRequestAction\b/.test(surfaces))
-    check("UNWIRED-REFERRAL-ADVANCE", "advanceReferralStatusAction is NOT wired — referrals.status already has a writer",
-      !/\badvanceReferralStatusAction\b/.test(surfaces))
-    check("UNWIRED-REFERRAL-WRITER", "the existing referrals writers are still present and more complete",
+    check("SURVIVOR-REFERRAL-WRITER", "the referral writers are still present and still validate",
       /export\s+async\s+function\s+createReferral\s*\(/.test(S.referralWriter) &&
       /export\s+async\s+function\s+updateReferralStatus\s*\(/.test(S.referralWriter) &&
       /captureContact\s*\(/.test(functionBody(S.referralWriter, "createReferral")) &&
       /isReferralStatus\s*\(/.test(functionBody(S.referralWriter, "updateReferralStatus")))
-    check("UNWIRED-NOT-DELETED", "none of the unwired capabilities were deleted",
-      /export\s+async\s+function\s+recordReviewAction\b/.test(S.repAction) &&
-      /export\s+async\s+function\s+createReferralRequestAction\b/.test(S.repAction) &&
-      /export\s+async\s+function\s+advanceReferralStatusAction\b/.test(S.repAction))
+
+    // ── NOTHING THE DUPLICATES CARRIED WAS LOST ────────────────────────────
+    // This is the half that makes the deletion legitimate rather than a number
+    // being moved (§1). Each check names a capability that ONLY the deleted rail
+    // had, and asserts it now runs on the survivor.
+    const landed = S.reviewLanded
+    check("MERGED-REVIEW-REQUEST-CLOSED", "a landed review still closes the review_requests row it answers",
+      /from\(\s*"review_requests"\s*\)/.test(landed) && /completed_at/.test(landed))
+    check("MERGED-REVIEW-EVENT", "…and still emits REVIEW_RECEIVED",
+      /REVIEW_RECEIVED/.test(landed))
+    check("MERGED-REVIEW-BOTH-WRITERS-CALL-IT", "BOTH review writers run it — neither re-implements it",
+      /onReviewLanded\s*\(/.test(S.reviewWriterA) && /onReviewLanded\s*\(/.test(S.reviewWriterB))
+
+    const advance = functionBody(S.referralWriter, "updateReferralStatus")
+    check("MERGED-REFERRAL-GRAPH", "the stage graph is enforced on the survivor, not just the value's storability",
+      /canAdvanceReferral\s*\(/.test(advance))
+    check("MERGED-REFERRAL-CONVERTED-AT", "converted_at is stamped on the won terminal — the ROI rollups read it",
+      /converted_at/.test(advance))
+    check("MERGED-REFERRAL-EVENT", "a stage change emits REFERRAL_ADVANCED / REFERRAL_CONVERTED",
+      /REFERRAL_ADVANCED/.test(advance) && /REFERRAL_CONVERTED/.test(advance))
+    check("MERGED-REFERRAL-TENANT-REFUSAL", "a wrong-tenant advance cannot resolve cleanly as success (§3)",
+      /maybeSingle\(\)/.test(advance) && /not found/i.test(advance))
+
+    const create = functionBody(S.referralWriter, "createReferral")
+    check("MERGED-REFERRAL-REFERRER-COLUMNS", "the survivor writes the three columns only the duplicate wrote",
+      /referred_by:/.test(create) && /source_contact_name:/.test(create) && /commission_potential:/.test(create))
+
+    // THE GRAPH LIVES WITH THE VOCABULARY IT IS WRITTEN IN (§6), and the won
+    // terminal is DERIVED so inserting a stage cannot leave a stale literal.
+    const statusVocab = S.statusVocab
+    check("MERGED-GRAPH-ONE-HOME", "the transition graph sits beside the status vocabulary, and nowhere else",
+      /REFERRAL_STATUS_TRANSITIONS/.test(statusVocab) &&
+      !/REFERRAL_STATUS_TRANSITIONS\s*(?::|=)/.test(S.repKernel))
+    check("MERGED-TERMINAL-DERIVED", "the won terminal is derived from the vocabulary, not re-typed",
+      /REFERRAL_TERMINAL_WON[\s\S]{0,200}?REFERRAL_STATUSES\.find/.test(statusVocab))
   }
 
   console.log("\n[TCPA · the capability moved before the duplicate was removed]")
@@ -690,7 +752,7 @@ async function liveLayer(): Promise<"ran" | "skipped"> {
 
     // L3 — every referral status the transition graph can emit must be storable.
     {
-      const graph = /REFERRAL_STATUS_TRANSITIONS[^=]*=\s*\{([\s\S]*?)\n\}/.exec(S.repKernel)?.[1] ?? ""
+      const graph = /REFERRAL_STATUS_TRANSITIONS[^=]*=\s*\{([\s\S]*?)\n\}/.exec(S.statusVocab)?.[1] ?? ""
       const vocab = [...statusGraphVocabulary(graph)]
       const referralId = randomUUID()
       await svc.from("referrals").insert({

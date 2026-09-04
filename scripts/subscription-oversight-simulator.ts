@@ -40,16 +40,27 @@ function pureLayer() {
   check("the two trial fields reconcile (brokerage trial_ends_at when no sub trial)", classifySubscription(base({ status: null, hasSubscription: false, trialEnd: iso(2), currentPeriodEnd: null }), NOW).state === "trial_expiring")
 
   console.log("\n[summarizeOversight · pure — rollup + worst-first queue]")
+  // `email` is the DUNNING CONTACT, merged onto this row from the deleted
+  // app/actions/billing.ts:getDelinquentAccounts (BURN-C 2026-09-04). Charlie is
+  // the past-due row and carries one; Delta deliberately carries null, so the
+  // "no billing email on file" branch on the console is exercised by a fixture
+  // rather than only existing in the page.
   const rows: SubscriptionOversightRow[] = [
-    { brokerageId: "a", name: "Alpha", tier: "Team", state: "active", mrrCents: 20000, daysToTrialEnd: null, daysToRenewal: 30, attention: false, reason: "" },
-    { brokerageId: "b", name: "Bravo", tier: "Solo", state: "trial_expiring", mrrCents: 5000, daysToTrialEnd: 2, daysToRenewal: null, attention: true, reason: "" },
-    { brokerageId: "c", name: "Charlie", tier: "Brokerage", state: "past_due", mrrCents: 40000, daysToTrialEnd: null, daysToRenewal: null, attention: true, reason: "" },
-    { brokerageId: "d", name: "Delta", tier: "Solo", state: "cancelled", mrrCents: 5000, daysToTrialEnd: null, daysToRenewal: null, attention: false, reason: "" },
+    { brokerageId: "a", name: "Alpha", tier: "Team", state: "active", mrrCents: 20000, daysToTrialEnd: null, daysToRenewal: 30, attention: false, reason: "", email: "billing@alpha.test" },
+    { brokerageId: "b", name: "Bravo", tier: "Solo", state: "trial_expiring", mrrCents: 5000, daysToTrialEnd: 2, daysToRenewal: null, attention: true, reason: "", email: "ops@bravo.test" },
+    { brokerageId: "c", name: "Charlie", tier: "Brokerage", state: "past_due", mrrCents: 40000, daysToTrialEnd: null, daysToRenewal: null, attention: true, reason: "", email: "ap@charlie.test" },
+    { brokerageId: "d", name: "Delta", tier: "Solo", state: "cancelled", mrrCents: 5000, daysToTrialEnd: null, daysToRenewal: null, attention: false, reason: "", email: null },
   ]
   const s = summarizeOversight(rows)
   check("MRR sums only live subscriptions (cancelled excluded)", s.totalMrrCents === 20000 + 5000 + 40000)
   check("counts per state are correct", s.counts.active === 1 && s.counts.trial_expiring === 1 && s.counts.past_due === 1 && s.counts.cancelled === 1)
   check("queue is attention-only, PAST_DUE first (worst-first)", s.attentionCount === 2 && s.queue[0].state === "past_due" && s.queue[1].state === "trial_expiring")
+  // THE MERGE'S POINT: the worst row on the queue can say WHO TO CONTACT. A
+  // past-due alert that cannot name the billing contact is half an alert, and
+  // carrying that contact was the one thing the deleted getDelinquentAccounts
+  // did that this rollup could not.
+  check("the past-due row carries its dunning contact through the rollup",
+    s.queue[0].email === "ap@charlie.test")
 }
 
 function sourceLayer() {

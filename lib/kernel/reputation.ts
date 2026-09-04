@@ -7,13 +7,12 @@
 // performance analytics.
 //
 // Rules:
-//   - NO direct DB writes happen outside this file for reputation data.
 //   - Every mutation emits a KernelEvent via lifecycle_events.
 //   - rating must be 1–5; validated here, not in the caller.
 //   - respondToReview: reviewId must belong to the acting agentId.
 //   - createReviewRequest: no duplicate pending request per contact+platform.
-//   - createReferralRequest: referral_name required; status forced to 'new'.
-//   - advanceReferralStatus: status transitions enforced (see REFERRAL_STATUS_TRANSITIONS).
+//   - Referral creation and stage advancement live on the wired rail,
+//     app/actions/referrals/referral-actions.ts — see the tombstone below.
 //   - All functions are pure async — no global state, no module-level DB calls.
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -22,8 +21,9 @@ import { processKernelEvent } from "./notification-engine"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const VALID_RATINGS = [1, 2, 3, 4, 5] as const
-type Rating = typeof VALID_RATINGS[number]
+// TOMBSTONE (§1.1, BURN-C 2026-09-04) — VALID_RATINGS / Rating went with
+// recordReview, their only user. The 1–5 rating check now runs on the live
+// writer, app/actions/multi-persona.ts:submitClientFeedback.
 
 // THE REVIEW PLATFORM VOCABULARY IS THE CONSTRAINT'S, NOT THE DESIGNER'S.
 //
@@ -61,19 +61,24 @@ export type ReviewPlatform = typeof REVIEW_PLATFORMS[number]
 // would permit was `converting`, which the database then refused with 23514
 // (probed live). Every other stage change was rejected by the graph before it
 // ever reached the column. The pipeline was unadvanceable in both directions.
-const REFERRAL_STATUS_TRANSITIONS: Record<string, string[]> = {
-  received:       ["contacted", "qualified", "lost"],
-  contacted:      ["qualified", "lost"],
-  qualified:      ["assigned", "lost"],
-  assigned:       ["under_contract", "lost"],
-  under_contract: ["closed", "lost"],
-  closed:         [],
-  lost:           ["contacted"], // allow re-open
-}
 
-/** The status that means the referral produced a closed deal. `converted` was
- *  never storable — see the note above. */
-const REFERRAL_TERMINAL_WON = "closed"
+
+// ── TOMBSTONE (orphan doctrine §1.1) — BURN-C, 2026-09-04 ────────────────────
+// recordReview, createReferralRequest and advanceReferralStatus stood here. Their
+// only caller was app/actions/reputation-kernel.ts, whose three thin wrappers had
+// no caller of their own, so the whole chain was unreachable. Each capability was
+// MERGED ONTO ITS LIVE SURVIVOR FIRST — see the tombstone in
+// app/actions/reputation-kernel.ts for the per-function detail:
+//   recordReview            → lib/reputation/review-landed.ts:onReviewLanded, called by
+//                             app/actions/multi-persona.ts:submitClientFeedback and
+//                             app/actions/portal-lifetime.ts:submitClientTestimonial
+//   createReferralRequest   → app/actions/referrals/referral-actions.ts:createReferral
+//   advanceReferralStatus   → app/actions/referrals/referral-actions.ts:updateReferralStatus
+// The private REFERRAL_STATUS_TRANSITIONS graph and REFERRAL_TERMINAL_WON that
+// served advanceReferralStatus moved to lib/referrals/referral-status.ts, beside
+// the status vocabulary they are written in (§6). createReviewRequest,
+// respondToReview and the three loaders below are still reached through
+// app/actions/reputation-kernel.ts and stay.
 
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
@@ -167,38 +172,10 @@ export interface CreateReviewRequestInput extends ReputationActorContext {
   reviewUrl?:   string
 }
 
-export interface RecordReviewInput extends ReputationActorContext {
-  contactId?:    string
-  transactionId?: string
-  rating:        Rating
-  reviewText:    string
-  platform:      ReviewPlatform
-  sourceUrl?:    string
-  isPublished?:  boolean
-}
-
 export interface RespondToReviewInput extends ReputationActorContext {
   reviewId:     string
   responseText: string
   publishNow?:  boolean
-}
-
-export interface CreateReferralInput extends ReputationActorContext {
-  referralName:        string
-  referredBy?:         string
-  sourceContactName?:  string
-  valueEstimate?:      number
-  commissionPotential?: number
-  notes?:              string
-  referralSource?:     string
-  referredContactId?:  string
-  referredLeadId?:     string
-  partnerId?:          string
-}
-
-export interface AdvanceReferralStatusInput extends ReputationActorContext {
-  referralId: string
-  newStatus:  string
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -449,95 +426,6 @@ export async function createReviewRequest(
   }
 }
 
-// Command 3: recordReview
-// Records an inbound review (received on any platform) into agent_reviews.
-// rating must be 1–5. reviewText required.
-export async function recordReview(
-  input: RecordReviewInput,
-): Promise<KernelReputationResult<{ reviewId: string }>> {
-  if (!VALID_RATINGS.includes(input.rating)) {
-    return { success: false, error: "rating must be 1, 2, 3, 4, or 5." }
-  }
-  if (!input.reviewText?.trim()) {
-    return { success: false, error: "reviewText is required." }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    const { data, error } = await supabase
-      .from("agent_reviews")
-      .insert({
-        agent_id:       input.agentId,
-        brokerage_id:   input.brokerageId,
-        contact_id:     input.contactId     ?? null,
-        transaction_id: input.transactionId ?? null,
-        rating:         input.rating,
-        review_text:    input.reviewText.trim(),
-        platform:       input.platform,
-        source_url:     input.sourceUrl  ?? null,
-        is_published:   input.isPublished ?? true,
-        created_at:     new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? "Failed to record review." }
-    }
-
-    // ── THE REQUEST THIS REVIEW ANSWERS ──────────────────────────────────────
-    // `review_requests.completed_at` is read by the workspace loader above
-    // (loadReputationWorkspace selects it) and was written by NOBODY: a request
-    // sent to a client stayed `pending`/`sent` for ever, even after the client
-    // left the review, so the reputation workspace could not tell an outstanding
-    // ask from a satisfied one and every follow-up cadence would chase clients
-    // who had already done what was asked.
-    //
-    // THIS is the moment the fact becomes true — a review arrived from this
-    // contact on this platform for this agent. Closing it here rather than in a
-    // second reconciler keeps one writer for the transition.
-    //
-    // Requires a contact to match on: an anonymous inbound review cannot be
-    // attributed to a particular ask, and guessing would close the wrong one.
-    if (input.contactId) {
-      const { data: closed, error: closeErr } = await supabase
-        .from("review_requests")
-        .update({ status: "completed", completed_at: new Date().toISOString() })
-        .eq("agent_id",     input.agentId)
-        .eq("brokerage_id", input.brokerageId)
-        .eq("contact_id",   input.contactId)
-        .eq("platform",     input.platform)
-        .in("status",       ["pending", "sent"])
-        .is("completed_at", null)
-        .select("id")
-
-      // COUNTED (CLAUDE.md §3): an UPDATE matching nothing resolves exactly like
-      // one that landed. Zero rows here is the ORDINARY case — a review that
-      // nobody asked for — so it is not an error; a refusal is, and it is said
-      // aloud rather than swallowed into a silent no-op.
-      if (closeErr) {
-        console.error("[reputation] review request not closed out:", closeErr.message)
-      } else if ((closed ?? []).length > 0) {
-        console.log(`[reputation] closed ${closed!.length} review request(s) answered by review ${data.id}`)
-      }
-    }
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "agent_review",
-      entityId:    data.id,
-      event:       KernelEvent.REVIEW_RECEIVED,
-      metadata:    { platform: input.platform, rating: input.rating },
-    })
-
-    return { success: true, data: { reviewId: data.id } }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
 
 // Command 4: respondToReview
 // Writes response_text + response_at to agent_reviews.
@@ -612,135 +500,7 @@ export async function respondToReview(
   }
 }
 
-// Command 5: createReferralRequest
-// Creates a new referral record in the referrals table.
-// referral_name required. status forced to 'new'.
-export async function createReferralRequest(
-  input: CreateReferralInput,
-): Promise<KernelReputationResult<{ referralId: string }>> {
-  if (!input.referralName?.trim()) {
-    return { success: false, error: "referralName is required." }
-  }
 
-  try {
-    const supabase = createServiceClient()
-
-    const { data, error } = await supabase
-      .from("referrals")
-      .insert({
-        agent_id:             input.agentId,
-        brokerage_id:         input.brokerageId,
-        referral_name:        input.referralName.trim(),
-        // referrals.status ladder starts at 'received'.
-        status:               "received",
-        referred_by:          input.referredBy          ?? null,
-        source_contact_name:  input.sourceContactName   ?? null,
-        value_estimate:       input.valueEstimate        ?? null,
-        commission_potential: input.commissionPotential  ?? null,
-        notes:                input.notes                ?? null,
-        referral_source:      input.referralSource       ?? null,
-        referred_contact_id:  input.referredContactId   ?? null,
-        referred_lead_id:     input.referredLeadId      ?? null,
-        partner_id:           input.partnerId            ?? null,
-        gift_sent:            false,
-        thank_you_sent:       false,
-        created_at:           new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? "Failed to create referral." }
-    }
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "referral",
-      entityId:    data.id,
-      event:       KernelEvent.REFERRAL_CREATED,
-      metadata:    { referralName: input.referralName },
-    })
-
-    return { success: true, data: { referralId: data.id } }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
-
-// Command 6: advanceReferralStatus
-// Advances a referral through the status pipeline.
-// Only valid transitions (per REFERRAL_STATUS_TRANSITIONS) are accepted.
-export async function advanceReferralStatus(
-  input: AdvanceReferralStatusInput,
-): Promise<KernelReputationResult> {
-  try {
-    const supabase = createServiceClient()
-
-    const { data: referral } = await supabase
-      .from("referrals")
-      .select("id, status, agent_id")
-      .eq("id",           input.referralId)
-      .eq("agent_id",     input.agentId)
-      .eq("brokerage_id", input.brokerageId)
-      .maybeSingle()
-
-    if (!referral) {
-      return { success: false, error: "Referral not found or not owned by this agent." }
-    }
-
-    const allowed = REFERRAL_STATUS_TRANSITIONS[referral.status] ?? []
-    if (!allowed.includes(input.newStatus)) {
-      return {
-        success: false,
-        error: `Cannot transition referral from '${referral.status}' to '${input.newStatus}'. Allowed: [${allowed.join(", ")}]`,
-      }
-    }
-
-    const updatePayload: Record<string, unknown> = {
-      status:     input.newStatus,
-      updated_at: new Date().toISOString(),
-    }
-    if (input.newStatus === REFERRAL_TERMINAL_WON) {
-      // Both columns exist on referrals and both are read: closed_at is what
-      // app/actions/referrals/referral-actions.ts stamps, converted_at is what
-      // the ReferralRow projection and the ROI rollups read.
-      const now = new Date().toISOString()
-      updatePayload.converted_at = now
-      updatePayload.closed_at    = now
-    }
-
-    const { error } = await supabase
-      .from("referrals")
-      .update(updatePayload)
-      .eq("id",           input.referralId)
-      .eq("agent_id",     input.agentId)
-      .eq("brokerage_id", input.brokerageId)
-
-    if (error) {
-      return { success: false, error: error.message }
-    }
-
-    const kernelEvent = input.newStatus === REFERRAL_TERMINAL_WON
-      ? KernelEvent.REFERRAL_CONVERTED
-      : KernelEvent.REFERRAL_ADVANCED
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "referral",
-      entityId:    input.referralId,
-      event:       kernelEvent,
-      metadata:    { from: referral.status, to: input.newStatus },
-    })
-
-    return { success: true }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
 
 // Command 7: loadReferralPipeline
 // Reads referrals grouped by status. Returns counts per status.

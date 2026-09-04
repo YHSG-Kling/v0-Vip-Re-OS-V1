@@ -800,6 +800,23 @@ export async function submitClientFeedback(data: {
 
   if (error) throw error
 
+  // MERGED IN (§1.1, BURN-C 2026-09-04) from the deleted
+  // app/actions/reputation-kernel.ts:recordReviewAction: close out the
+  // review_requests row this review answers, and emit REVIEW_RECEIVED. This
+  // writer inserted the review and told nobody — see lib/reputation/review-landed.ts
+  // for what each half was silently costing. Best-effort by contract: the review
+  // is already saved and must not be reported as failed if the follow-up slips.
+  const { onReviewLanded } = await import("@/lib/reputation/review-landed")
+  await onReviewLanded({
+    supabase:    svc,
+    reviewId:    (review as { id: string }).id,
+    brokerageId: access.brokerageId,
+    agentId:     t.agent_id,
+    contactId:   data.contactId,
+    platform:    "internal",
+    rating,
+  })
+
   return review
 }
 

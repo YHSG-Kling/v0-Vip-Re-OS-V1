@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
-import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { currentBillingPeriodLabel } from "@/lib/usage/period"
 
 // TRUE ADMIN GATE, brokerage-wide MONEY (billing): derived from THE finance
@@ -482,205 +481,45 @@ export async function cancelSubscription(subscriptionId: string) {
 // real platform 'admin' employee was locked out while the capability-override
 // table that is supposed to govern them was never consulted.
 //
-// These three are DELIBERATELY LEFT UNWIRED — see the report. The wired, more
-// complete cross-tenant read is lib/platform/subscription-oversight.ts
-// (loadSubscriptionOversight), and the wired tier writer is
-// app/actions/superadmin/brokerage-management.ts:changeBrokerageTierAction.
+// ── TOMBSTONE (orphan doctrine §1.1) — BURN-C, 2026-09-04 ────────────────────
 //
-// ── EVIDENCE ADDED 2026-08-28 (lane G4), so the next pass does not re-derive it.
+// Three cross-tenant billing actions stood here, complete, correctly gated and
+// called by NOTHING. Lane G4 measured each against its survivor on 2026-08-28,
+// named what the survivors were missing, and then left all three in place — so
+// the census kept reporting them and the merge never happened. It happens here.
 //
-// The verdicts above were re-checked end to end against the live database rather
-// than by name, per the owner's ruling that a same-sounding function is not the
-// same capability.
+//   getAllBrokeragesBilling → lib/platform/subscription-oversight.ts:loadSubscriptionOversight
+//     Nothing to merge. The survivor returns the same tenant/tier/status/MRR per
+//     brokerage and additionally CLASSIFIES each one into an operational state
+//     with an attention flag. Deleted outright (§1.3).
 //
-//  · manualTierOverride vs changeBrokerageTierAction — SAME business process.
-//    The one thing this pair genuinely disagreed on was REACH: this action moves
-//    a subscription onto any `subscription_tiers` row by id, while the survivor
-//    takes a CanonicalTier name union of four values, so a catalog row outside
-//    that union would have been reachable only from here. Measured on
-//    hrvaqgvukzxfskkcrwbt: `subscription_tiers` holds exactly FOUR active rows —
-//    solo_agent, team, brokerage, multi_location — i.e. the union is the whole
-//    catalog and this action reaches nothing the survivor cannot. The survivor
-//    is otherwise strictly fuller (brokerages.plan_tier AND subscriptions.tier_id,
-//    the Stripe price swap, the ai_subscription_tier entitlement row, the
-//    SUBSCRIPTION_UPGRADED/DOWNGRADED kernel events and superadmin_audit_log).
-//    THE ONE PIECE THE SURVIVOR IS MISSING before it can absorb this: the
-//    MANDATORY substantive reason. Here a price change is refused without one
-//    ("A substantive reason (10+ chars) is required — this is the audit record
-//    for a price change"); on the survivor `reason` is optional and lands as
-//    null. That merge belongs in brokerage-management.ts, not here.
+//   getDelinquentAccounts → lib/platform/subscription-oversight.ts:loadSubscriptionOversight
+//     MERGED FIRST, THEN DELETED. The survivor's past-due set was already
+//     broader (it detects past_due from subscriptions.status AND from the latest
+//     unpaid invoice, where this one filtered `status = 'past_due'` alone), but
+//     it did not carry the brokerage EMAIL — the dunning contact, which on a
+//     collections queue is the actionable half. `email` is now a field on
+//     SubscriptionOversightRow, selected in loadSubscriptionOversight, and
+//     rendered on each attention row at
+//     app/dashboard/superadmin/subscriptions/page.tsx.
 //
-//  · getAllBrokeragesBilling — covered by loadSubscriptionOversight, which
-//    returns the same tenant/tier/status/MRR per brokerage and classifies it.
+//   manualTierOverride → app/actions/superadmin/brokerage-management.ts:changeBrokerageTierAction
+//     MERGED FIRST, THEN DELETED. G4 verified live that subscription_tiers holds
+//     exactly the four rows the survivor's CanonicalTier union names, so this
+//     action reached no tier the survivor cannot, and the survivor is otherwise
+//     strictly fuller (brokerages.plan_tier AND subscriptions.tier_id, the Stripe
+//     price swap, the ai_subscription_tier entitlement row, the
+//     SUBSCRIPTION_UPGRADED/DOWNGRADED kernel events, superadmin_audit_log). The
+//     one thing only this copy had was the MANDATORY 10-char reason on a price
+//     change; the survivor took `reason?` and wrote null. That gate now lives on
+//     changeBrokerageTierAction (params.reason is required, 10-char floor, and
+//     both the audit-log row and the kernel event carry the validated string),
+//     and its caller at
+//     app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx:applyTierChange
+//     checks it before the round trip.
 //
-//  · getDelinquentAccounts — the past-due set is covered (oversight detects it
-//    from subscriptions.status AND from the latest unpaid invoice, which is
-//    broader than the `status = 'past_due'` filter here). The ONE field this one
-//    carries that SubscriptionOversightRow does not is the brokerage EMAIL — the
-//    dunning contact. A collapse should add it to the oversight row first.
-
-// ─── GET ALL BROKERAGES BILLING (PLATFORM 'billing' CAPABILITY) ──────────────
-export async function getAllBrokeragesBilling(): Promise<
-  | { ok: true; rows: any[] }
-  | { ok: false; error: string }
-> {
-  const gate = await requirePlatformCapability("billing")
-  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
-
-  const supabase = await createClient()
-  // A refused cross-tenant read must NOT come back as an empty roster — an empty
-  // platform is indistinguishable from a denied one, and "we have no customers"
-  // is the wrong thing to show a finance operator.
-  const { data: brokerages, error } = await supabase
-    .from("brokerages")
-    .select(`
-      id,
-      name,
-      subscriptions:subscriptions(
-        id,
-        status,
-        current_period_end,
-        stripe_subscription_id,
-        subscription_tiers:tier_id(tier_name, display_name, monthly_price_cents)
-      )
-    `)
-    .order("name", { ascending: true })
-
-  if (error) return { ok: false, error: error.message }
-  return { ok: true, rows: brokerages ?? [] }
-}
-
-// ─── GET DELINQUENT ACCOUNTS (PLATFORM 'billing' CAPABILITY) ─────────────────
-export async function getDelinquentAccounts(): Promise<
-  | { ok: true; rows: any[] }
-  | { ok: false; error: string }
-> {
-  const gate = await requirePlatformCapability("billing")
-  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
-
-  const supabase = await createClient()
-  const { data: delinquent, error } = await supabase
-    .from("subscriptions")
-    .select(`
-      id,
-      brokerage_id,
-      status,
-      current_period_end,
-      brokerages:brokerage_id(id, name, email),
-      subscription_tiers:tier_id(tier_name, display_name)
-    `)
-    .eq("status", "past_due")
-    .order("current_period_end", { ascending: true })
-
-  if (error) return { ok: false, error: error.message }
-  return { ok: true, rows: delinquent ?? [] }
-}
-
-// ─── MANUAL TIER OVERRIDE (SUPERADMIN ONLY) ──────────────────────────────────
-/**
- * Move ONE subscription onto a different subscription_tiers row.
- *
- * This changes what a customer is charged, so it is the strictest gate in the
- * file: the platform 'billing' capability AND a resolved platform role of
- * superadmin — a platform 'admin' employee holds 'billing' for reads but must
- * not silently reprice a tenant. Records WHO (actor id + role) and WHY (a
- * required, substantive reason) into audit_log with before/after.
- *
- * IDEMPOTENT-SAFE: if the subscription already sits on the requested tier the
- * call is a no-op — it does not rewrite updated_at, does not re-run the plan_tier
- * sync, and does not append a second audit entry claiming a change that did not
- * happen. Callers get { changed: false } so a double-submit cannot manufacture a
- * pricing-change history.
- */
-export async function manualTierOverride(
-  subscriptionId: string,
-  newTierId: string,
-  reason: string
-): Promise<{ ok: true; changed: boolean; previousTierId: string | null } | { ok: false; error: string }> {
-  const gate = await requirePlatformCapability("billing", { requireWrite: true })
-  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
-  if (gate.role !== "superadmin") {
-    return { ok: false, error: "Forbidden — changing what a tenant is charged is superadmin-only" }
-  }
-  const actorId = gate.userId
-  if (!actorId) return { ok: false, error: "Unauthenticated" }
-
-  const trimmedReason = (reason ?? "").trim()
-  if (trimmedReason.length < 10) {
-    return { ok: false, error: "A substantive reason (10+ chars) is required — this is the audit record for a price change" }
-  }
-
-  const supabase = await createClient()
-
-  // Read the CURRENT tier before writing: it is both the idempotency check and
-  // the `before` half of the audit entry.
-  const { data: subRow, error: subErr } = await supabase
-    .from("subscriptions")
-    .select("id, brokerage_id, tier_id")
-    .eq("id", subscriptionId)
-    .maybeSingle()
-  if (subErr) return { ok: false, error: subErr.message }
-  if (!subRow) return { ok: false, error: "Subscription not found" }
-
-  // Refuse a tier id the catalog does not carry — subscriptions.tier_id has an FK
-  // to subscription_tiers, so a bad id would surface as an opaque 23503.
-  const { data: tierRow, error: tierErr } = await supabase
-    .from("subscription_tiers")
-    .select("id, tier_name, monthly_price_cents")
-    .eq("id", newTierId)
-    .maybeSingle()
-  if (tierErr) return { ok: false, error: tierErr.message }
-  if (!tierRow) return { ok: false, error: "Tier not found in the subscription catalog" }
-
-  const previousTierId = (subRow.tier_id as string | null) ?? null
-  if (previousTierId === newTierId) {
-    return { ok: true, changed: false, previousTierId }
-  }
-
-  const { error, count } = await supabase
-    .from("subscriptions")
-    .update({
-      tier_id: newTierId,
-      updated_at: new Date().toISOString(),
-    }, { count: "exact" })
-    .eq("id", subscriptionId)
-
-  if (error) return { ok: false, error: error.message }
-  if ((count ?? 0) === 0) {
-    // An UPDATE matching nothing still succeeds in postgrest. Reporting a price
-    // change that never landed is how a tenant ends up billed on a tier nobody
-    // believes they are on.
-    return { ok: false, error: "No subscription row was updated — the tier was NOT changed." }
-  }
-
-  // Sync brokerages.plan_tier so cap-enforcement reflects the new tier
-  // immediately. Without this, checkUsageCap would still gate on the old
-  // tier's limits until the next Stripe webhook fires.
-  if (subRow.brokerage_id) {
-    const { syncBrokeragePlanTier } = await import("@/lib/billing/sync-plan-tier")
-    await syncBrokeragePlanTier(subRow.brokerage_id as string)
-  }
-
-  // Log the override in audit_log — WHO, WHY, and what it moved from/to.
-  await supabase.from("audit_log").insert({
-    after: {
-      brokerage_id: subRow.brokerage_id,
-      tier_id: newTierId,
-      tier_name: (tierRow as any).tier_name,
-      monthly_price_cents: (tierRow as any).monthly_price_cents,
-      reason: trimmedReason,
-      actor_platform_role: gate.role,
-    },
-    before: { tier_id: previousTierId },
-    user_id: actorId,
-    action: "manual_tier_override",
-    entity_type: "subscription",
-    entity_id: subscriptionId,
-  })
-
-  // Revalidate inside function to avoid module-level server dependency
-  const { revalidatePath } = await import("next/cache")
-  revalidatePath("/dashboard/superadmin/subscriptions")
-
-  return { ok: true, changed: true, previousTierId }
-}
+// The requirePlatformCapability import went with them: these three were its only
+// users in this file. Everything left here is TENANT-scoped and gates on
+// BROKERAGE_FINANCE_ADMIN_USER_TYPES / getAgentContext instead, so nothing in
+// app/actions/billing.ts reads across tenants any more — the cross-tenant reads
+// now live behind the platform capability in lib/platform/ and app/actions/superadmin/.

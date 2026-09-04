@@ -12,20 +12,14 @@ import { createClient } from "@supabase/supabase-js"
 import { cookies } from "next/headers"
 import {
   createReviewRequest,
-  recordReview,
   respondToReview,
-  createReferralRequest,
-  advanceReferralStatus,
   loadReputationWorkspace,
   loadReferralPipeline,
   loadReviewPerformance,
 } from "@/lib/kernel/reputation"
 import type {
   CreateReviewRequestInput,
-  RecordReviewInput,
   RespondToReviewInput,
-  CreateReferralInput,
-  AdvanceReferralStatusInput,
 } from "@/lib/kernel/reputation"
 
 // ─── ACTOR CONTEXT RESOLVER ───────────────────────────────────────────────────
@@ -76,23 +70,51 @@ export async function createReviewRequestAction(
   return createReviewRequest({ ...input, ...actor })
 }
 
-// CENSUS NOTE (2026-09-03, lane L6): recordReviewAction, createReferralRequestAction and
-// advanceReferralStatusAction are DELIBERATELY UNWIRED and NOT DELETED — a prior ruling locked
-// in scripts/openhouse-reputation-wiring-simulator.ts:466-488 (guard chain) and the registry
-// entry open_house_walkin_capture, against named survivors: referral-actions.ts createReferral /
-// updateReferralStatus and multi-persona.ts submitClientFeedback / portal-lifetime.ts. Recorded
-// for a dedicated lane: the survivors are no longer strictly more complete (updateReferralStatus
-// stamps no converted_at and emits no kernel event; neither review writer closes the answering
-// review_requests row or emits REVIEW_RECEIVED — see lib/kernel/reputation.ts), so a §1.1 merge
-// must port those onto the survivors BEFORE these are deleted. Gates here are sound: tenant and
-// agent come from the session's agents row (resolveActor), never from input.
-export async function recordReviewAction(
-  input: Omit<RecordReviewInput, "agentId" | "brokerageId">,
-) {
-  const actor = await resolveActor()
-  if (!actor) return { success: false, error: "Not authenticated." }
-  return recordReview({ ...input, ...actor })
-}
+// ── TOMBSTONE (orphan doctrine §1.1) — BURN-C, 2026-09-04 ────────────────────
+//
+// recordReviewAction, createReferralRequestAction and advanceReferralStatusAction
+// stood here with no caller. Lane L6 recorded on 2026-09-03 that they could NOT
+// be deleted yet, because the named survivors were not strictly more complete —
+// a §1.1 merge had to port the missing halves FIRST. That merge is done, so they
+// are gone. Where each capability now lives:
+//
+//   recordReviewAction → the two live agent_reviews writers,
+//     app/actions/multi-persona.ts:submitClientFeedback and
+//     app/actions/portal-lifetime.ts:submitClientTestimonial.
+//     MERGED FIRST: both inserted the review and stopped. The two things only
+//     the deleted rail did now live in lib/reputation/review-landed.ts:onReviewLanded,
+//     which both call — closing the review_requests row the review answers
+//     (completed_at was READ by the workspace loader and written by nobody on any
+//     live path, so an answered ask stayed outstanding for ever and the follow-up
+//     cadence kept chasing clients who had already reviewed), and emitting
+//     KernelEvent.REVIEW_RECEIVED. Written once in lib/ rather than pasted into
+//     each writer, per §6.
+//
+//   createReferralRequestAction → app/actions/referrals/referral-actions.ts:createReferral.
+//     MERGED FIRST: the survivor wrote neither referred_by, source_contact_name
+//     nor commission_potential, and all three have live READERS
+//     (app/referrals/pipeline/page.tsx:123-129, app/referrals/page.tsx:167,
+//     lib/agents/referral-closer.ts:31) — readers with no writer. They are now
+//     CreateReferralParams fields the survivor writes. No event was ported: the
+//     survivor already emits REFERRAL_RECEIVED for the same moment the deleted
+//     rail spelled REFERRAL_CREATED, and §6 keeps one spelling.
+//
+//   advanceReferralStatusAction → app/actions/referrals/referral-actions.ts:updateReferralStatus.
+//     MERGED FIRST, three ways: (1) the STAGE GRAPH, which the survivor did not
+//     enforce at all — isReferralStatus proves a value is STORABLE, not that the
+//     move is LEGAL, so a referral could jump straight from `received` to
+//     `closed`; the graph moved to lib/referrals/referral-status.ts beside the
+//     vocabulary it is written in (§6), with the won-terminal DERIVED rather than
+//     re-typed. (2) converted_at, which the ROI rollups read and only this rail
+//     stamped. (3) the REFERRAL_ADVANCED / REFERRAL_CONVERTED lifecycle event.
+//     The survivor also now reads the row first, so a wrong-tenant update cannot
+//     resolve cleanly and report a stage change that never happened (§3).
+//
+// The kernel functions behind these three (lib/kernel/reputation.ts:recordReview,
+// createReferralRequest, advanceReferralStatus) went with them — these wrappers
+// were their only callers — as did their re-exports from lib/kernel/index.ts.
+// createReviewRequestAction, respondToReviewAction and the loaders below are
+// WIRED and stay.
 
 export async function respondToReviewAction(
   input: Omit<RespondToReviewInput, "agentId" | "brokerageId">,
@@ -102,21 +124,7 @@ export async function respondToReviewAction(
   return respondToReview({ ...input, ...actor })
 }
 
-export async function createReferralRequestAction(
-  input: Omit<CreateReferralInput, "agentId" | "brokerageId">,
-) {
-  const actor = await resolveActor()
-  if (!actor) return { success: false, error: "Not authenticated." }
-  return createReferralRequest({ ...input, ...actor })
-}
 
-export async function advanceReferralStatusAction(
-  input: Omit<AdvanceReferralStatusInput, "agentId" | "brokerageId">,
-) {
-  const actor = await resolveActor()
-  if (!actor) return { success: false, error: "Not authenticated." }
-  return advanceReferralStatus({ ...input, ...actor })
-}
 
 export async function loadReputationWorkspaceAction() {
   const actor = await resolveActor()

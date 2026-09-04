@@ -679,15 +679,17 @@ export type {
 //   • rating 1–5 only — validated in kernel, not caller
 //   • respondToReview verifies reviewId belongs to agentId before writing
 //   • createReviewRequest blocks duplicate pending per contact+platform
-//   • advanceReferralStatus enforces REFERRAL_STATUS_TRANSITIONS graph
 //   • Every mutation emits KernelEvent via lifecycle_events
+// TOMBSTONE (§1.1, BURN-C 2026-09-04) — recordReview, createReferralRequest and
+// advanceReferralStatus are gone from this barrel because they are gone from the
+// kernel: nothing called them, and each capability was merged onto its live
+// survivor first. See the tombstone in lib/kernel/reputation.ts for where each
+// went. The referral stage graph that the third one enforced now lives in
+// lib/referrals/referral-status.ts (REFERRAL_STATUS_TRANSITIONS, canAdvanceReferral).
 export {
   loadReputationWorkspace,
   createReviewRequest,
-  recordReview,
   respondToReview,
-  createReferralRequest,
-  advanceReferralStatus,
   loadReferralPipeline,
   loadReviewPerformance,
 } from "./reputation"
@@ -704,10 +706,7 @@ export type {
   LoadReviewPerformanceInput,
   LoadReferralPipelineInput,
   CreateReviewRequestInput,
-  RecordReviewInput,
   RespondToReviewInput,
-  CreateReferralInput,
-  AdvanceReferralStatusInput,
 } from "./reputation"
 
 // ─── VENDOR / PARTNER OS ─────────────────────────────────────────────────────

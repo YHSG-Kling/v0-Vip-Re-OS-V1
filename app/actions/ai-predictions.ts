@@ -561,12 +561,50 @@ export async function getLeadPredictions(leadId: string) {
 // is_lead_visible_role() (broker/admin only) so an agent surface could not read it
 // even once rows exist. Wiring this before its writer would ship a card that is
 // empty by construction.
+/**
+ * ── UNGATED PUBLIC ENDPOINT, FIXED (BURN-C, 2026-09-04) ──────────────────────
+ *
+ * This is a `"use server"` export, so it is a PUBLIC HTTP ENDPOINT (CLAUDE.md
+ * §4) — and it carried NO gate of any kind: no session check, and a query
+ * predicated on `lead_id` alone. Anyone able to reach the endpoint with a lead
+ * uuid read that lead's conversion probability, predicted deal size and
+ * timeline, whichever tenant it belonged to. That is the IDOR shape §4 names,
+ * on data §5 puts at the brokerage level.
+ *
+ * `predictive_lead_scores` carries `brokerage_id` (schema-snapshot), so the
+ * boundary was available and simply unused. The gate is the one its sibling
+ * getLeadPredictions already uses — session user → users.brokerage_id, ANDed as
+ * its own `.eq` term (never inside an `.or()`, which would widen), and `.eq`
+ * also excludes NULL so an untenanted row cannot leak the way migration-029's
+ * escape lets `ai_predictions` rows leak. One spelling for the resolver (§6).
+ *
+ * FAILS CLOSED: no session, a refused caller lookup, or a caller with no
+ * brokerage all return null — "nobody checked" must never render as "checked and
+ * fine".
+ */
 export async function getPredictiveLeadScore(leadId: string) {
   const supabase = await createClient()
+
+  const { data: { user: scoreReader } } = await supabase.auth.getUser()
+  if (!scoreReader) return null
+  const { data: scoreReaderRow, error: scoreReaderError } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", scoreReader.id)
+    .maybeSingle()
+  // supabase-js RESOLVES a refused read: a refusal and "no such user" arrive
+  // identically, and widening on either is the defect this fix removes.
+  if (scoreReaderError) {
+    console.error("[ai-predictions] getPredictiveLeadScore: caller lookup refused:", scoreReaderError.message)
+    return null
+  }
+  const scoreReaderBrokerageId = (scoreReaderRow?.brokerage_id as string | null) ?? null
+  if (!scoreReaderBrokerageId) return null
 
   const { data, error } = await supabase
     .from("predictive_lead_scores")
     .select("*")
+    .eq("brokerage_id", scoreReaderBrokerageId)
     .eq("lead_id", leadId)
     .maybeSingle()
 

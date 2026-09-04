@@ -203,6 +203,16 @@ export default async function SuperadminSubscriptionsPage() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium truncate">{r.name}</p>
                   <p className="text-xs text-muted-foreground truncate">{r.reason}</p>
+                  {/* THE DUNNING CONTACT. Merged from the deleted
+                      app/actions/billing.ts:getDelinquentAccounts, whose only
+                      advantage over this queue was carrying the brokerage email
+                      — an attention row that says a tenant is past due without
+                      saying who to reach is half an alert. */}
+                  {r.email ? (
+                    <p className="text-xs text-muted-foreground/80 truncate">{r.email}</p>
+                  ) : (
+                    <p className="text-xs italic text-muted-foreground/60 truncate">No billing email on file</p>
+                  )}
                 </div>
                 <span className="shrink-0 text-sm font-semibold">{fmtCents(r.mrrCents)}<span className="text-xs text-muted-foreground">/mo</span></span>
                 <span className="shrink-0 text-xs font-medium text-indigo-600">Manage →</span>
