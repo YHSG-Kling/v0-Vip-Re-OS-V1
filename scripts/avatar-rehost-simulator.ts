@@ -15,11 +15,25 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
-const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+/**
+ * COMMENT-STRIPPED, always (CLAUDE.md §2 — "a tombstone is not a call site").
+ *
+ * This file read RAW source and asserted `done.includes("getPublicUrl")`. When
+ * lane STORAGE routed the re-host through
+ * lib/storage/document-buckets.ts#issueBucketObjectUrl, the getPublicUrl CALL
+ * went away and the word survived only in the tombstone comment explaining why —
+ * so on raw source this guard would have stayed green while asserting a call
+ * that no longer exists. That is the exact failure that made five guards red in
+ * one wave for the opposite reason, and it is why every source read here is
+ * stripped. The single correct scanner is scripts/strip-comments.ts; never a
+ * hand-rolled one.
+ */
+const src = (p: string) => blankComments(readFileSync(join(process.cwd(), p), "utf8"))
 
 // m324 moved the completion body out of the cron and into ONE shared module
 // that the cron and the D-ID webhook both call, so the two ways this OS learns
@@ -35,8 +49,18 @@ console.log("\n── the completion path downloads + re-hosts the finished avat
   check("a rehostAvatarImage helper downloads then uploads to storage",
     /function rehostAvatarImage/.test(done) &&
     /fetch\(sourceUrl\)/.test(done) &&
-    /\.storage\.from\(AVATAR_BUCKET\)[\s\S]*?\.upload\(/.test(done) &&
-    done.includes("getPublicUrl"))
+    /\.storage\.from\(AVATAR_BUCKET\)[\s\S]*?\.upload\(/.test(done))
+  // RETARGETED (wave 27, lane STORAGE). This asserted the SPELLING
+  // `getPublicUrl`, which is a waypoint, not the rule: the rule is that the URL
+  // a writer persists is minted by the ONE issuer in
+  // lib/storage/document-buckets.ts, which returns a public URL for a
+  // public-media bucket and a signed one for a document-class bucket. Pinning
+  // getPublicUrl froze the wrong half — it would have gone red the day
+  // `twin-avatars` is reclassified (its roster entry is flagged UNRESOLVED for
+  // the owner) even though the re-host would then be MORE correct. The check is
+  // strengthened, not relaxed: a bare getPublicUrl here is now a FAILURE.
+  check("the re-host mints its URL through the ONE issuer, not a bare getPublicUrl",
+    /issueBucketObjectUrl\(/.test(done) && !/\.getPublicUrl\(/.test(done))
   check("it is best-effort (returns null on failure, caller falls back to D-ID url)",
     /return null/.test(done) && done.includes("rehosted ?? didAssetUrl"))
 }

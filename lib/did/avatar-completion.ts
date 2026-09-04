@@ -21,6 +21,7 @@
 // pending | processing | ready | failed. Nothing else is writable.
 
 import { classifyDidError } from "./contract"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 
 /** The subset of a D-ID scene-avatar payload this needs. Shape is identical on
  *  the GET /scenes/avatars/{id} response and the webhook body. */
@@ -88,8 +89,19 @@ export async function rehostAvatarImage(
     const { error } = await supabase.storage.from(AVATAR_BUCKET)
       .upload(path, bytes, { contentType, upsert: true })
     if (error) return null
-    const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path)
-    return data?.publicUrl ?? null
+    // ONE ISSUER. This was a bare `.getPublicUrl(path)`, which is the only
+    // spelling in the tree that decides a URL's class by itself rather than
+    // asking lib/storage/document-buckets.ts#issueBucketObjectUrl. It happened
+    // to be right — `twin-avatars` is on PUBLIC_MEDIA_BUCKETS — but that roster
+    // entry carries an explicit UNRESOLVED note flagged for the owner ("a voice
+    // print is closer to biometric than to marketing"), and its sibling
+    // `twin-voice-samples` is flagged the same way. If either is reclassified,
+    // every other call site starts signing and this one would have kept minting
+    // a permanent unauthenticated URL for an agent's face, silently. Routing
+    // through the issuer costs nothing today and makes that reclassification a
+    // one-line change in one file.
+    const issued = await issueBucketObjectUrl(supabase as never, { bucket: AVATAR_BUCKET, objectPath: path })
+    return issued.ok ? issued.url : null
   } catch {
     return null
   }

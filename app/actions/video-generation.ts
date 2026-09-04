@@ -1705,7 +1705,9 @@ export async function generateVideoFromScript(params: {
         // `renderScript`, not `script` — the provider speaks the disclosure; the
         // stored library row keeps the agent's own text unchanged.
         script: renderScript,
-        brokerageId: auth.brokerageId ?? undefined,
+        // `brokerageId` is no longer a parameter: generateAvatarVideo resolves
+        // the tenant from the session itself (§4), which is the same session
+        // `auth` was resolved from one frame up.
       })
       const didJobId = (didRes as { videoId?: string }).videoId
       if (didRes.success && didJobId) {

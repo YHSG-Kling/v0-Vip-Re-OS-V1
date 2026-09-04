@@ -10,6 +10,36 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Upload, FileText, CheckCircle2, AlertCircle, Download, AlertTriangle } from "lucide-react"
 import { uploadTitleDocument } from "@/app/actions/title-portal"
+import { createClient } from "@/lib/supabase/client"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THIS COMPONENT USED TO STORE NOTHING.
+//
+// It read the dropped File, threw the bytes away, and sent the server a URL it
+// had INVENTED:
+//
+//     // In a real app, you'd upload to Blob storage first
+//     const fileUrl = `/uploads/${transactionId}/${file.name}`
+//
+// `uploadTitleDocument` then wrote that string into
+// transaction_documents.storage_url. Nothing ever served `/uploads/...` — there
+// is no such route and no such directory — so the panel said "Upload
+// successful!", the row appeared in the list, and the download button beside it
+// linked to a 404. The bytes were gone the moment the tab closed.
+//
+// The documents this panel accepts are the title commitment, the ALTA/HUD, the
+// FINAL CLOSING DISCLOSURE and WIRE INSTRUCTIONS — the last of which the file
+// itself flags as a wire-fraud vector and warns the user is "flagged for
+// security review". A security review of a file that was never stored reviews
+// nothing.
+//
+// The survivor is one directory over: app/portal/lender/[transactionId]/
+// document-upload.tsx, which puts the bytes in `transaction-documents` through
+// lib/storage/put-and-sign.ts#putAndSign and undoes the upload when the row
+// write is refused. Owner ruling: "the storage of files, images, videos, etc.
+// are to be stored on supabase buckets." This is now the same path, with the
+// same bucket, the same compensating delete and the same signed URL.
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface Document {
   id: string
@@ -72,16 +102,58 @@ export function TitleDocumentUpload({
           setUploadProgress((prev) => Math.min(prev + 10, 90))
         }, 100)
 
-        // In a real app, you'd upload to Blob storage first
-        const fileUrl = `/uploads/${transactionId}/${file.name}`
-
-        await uploadTitleDocument({
-          transactionId,
-          titleUserId,
-          documentType: selectedType,
-          fileName: file.name,
-          fileUrl,
+        // The bytes go to Supabase Storage FIRST, and the URL we persist is the
+        // one the store hands back — never a path this component made up.
+        //
+        // `transaction-documents` is document-class
+        // (lib/storage/document-buckets.ts#DOCUMENT_CLASS_BUCKETS), so putAndSign
+        // returns a SIGNED, expiring URL rather than a permanent public one. A
+        // wire-instruction PDF behind a never-expiring unauthenticated link is
+        // the exact shape that module exists to prevent.
+        const supabase = createClient()
+        const filePath = `transactions/${transactionId}/title/${Date.now()}_${file.name}`
+        // Store and sign as ONE step: bailing out after the bytes are already in
+        // the bucket leaves a closing document with no row referencing it.
+        const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+        const stored = await putAndSign(supabase, {
+          bucket:      "transaction-documents",
+          path:        filePath,
+          body:        file,
+          contentType: file.type,
+          reason:      "title_portal_document_upload",
         })
+
+        if (!stored.ok) {
+          // FAIL LOUDLY. The previous shape could not fail at all, because it
+          // never attempted anything — which is why a broken upload looked
+          // byte-identical to a working one for as long as this panel existed.
+          setError(`Upload failed: ${stored.error}`)
+          clearInterval(progressInterval)
+          return
+        }
+
+        try {
+          await uploadTitleDocument({
+            transactionId,
+            titleUserId,
+            documentType: selectedType,
+            fileName: file.name,
+            fileUrl: stored.signedUrl,
+          })
+        } catch (recordErr: any) {
+          // The gate inside uploadTitleDocument (title company assigned to this
+          // transaction, same brokerage) can refuse AFTER the bytes have landed.
+          // Nothing references the file at that point, so undo the upload before
+          // rethrowing to the outer handler, which owns the message the user sees.
+          await removeOrRecordOrphan(supabase, {
+            bucket:     "transaction-documents",
+            objectPath: stored.path,
+            reason:     "title_document_record_refused",
+            detail:     recordErr?.message ?? String(recordErr),
+          })
+          clearInterval(progressInterval)
+          throw recordErr
+        }
 
         clearInterval(progressInterval)
         setUploadProgress(100)

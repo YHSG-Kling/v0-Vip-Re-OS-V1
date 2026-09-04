@@ -93,20 +93,35 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Upload to Supabase Storage for use in D-ID / listing voiceover pipeline
+    // Upload to Supabase Storage for use in D-ID / listing voiceover pipeline.
+    //
+    // ONE MEDIA HOST. This was a bare `.storage.from("video-assets").upload(...)`
+    // followed by a bare `.getPublicUrl(...)` — the only TTS byte in the tree
+    // that did not ride lib/remotion/media-host.ts#hostRenderedMedia, while
+    // lib/direct-mail/render-letter-audio.ts, lib/video/reel-voiceover.ts,
+    // lib/podcast/auto-producer.ts and lib/voicedrop/orchestrate-voicedrop-send.ts
+    // all do. Two things it therefore skipped: lib/storage/file-limits.ts
+    // #checkUpload, so an oversized clip failed as an opaque storage refusal
+    // instead of a readable ceiling; and lib/storage/document-buckets.ts
+    // #issueBucketObjectUrl, so this call site decided a URL's class by itself.
+    // `video-assets` is public-media, so the URL is unchanged — the point is
+    // that nothing was checking, and a reclassification would have moved every
+    // other TTS call site and silently missed this one.
+    //
+    // hostRenderedMedia THROWS on refusal (the Vercel Blob fallback that used to
+    // swallow it is retired), so the failure is caught here and answered with
+    // the same 500 the previous shape returned.
     const fileName = `tts/${auth.brokerageId}/${Date.now()}.mp3`
-    const { error: uploadError } = await supabase.storage
-      .from("video-assets")
-      .upload(fileName, audioBuffer, { contentType: "audio/mpeg", upsert: false })
-
-    if (uploadError) {
-      console.error("[ElevenLabs] storage upload error:", uploadError)
+    let audioUrl: string
+    try {
+      const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+      audioUrl = await hostRenderedMedia(supabase, fileName, audioBuffer, "audio/mpeg", "video-assets")
+    } catch (uploadError: any) {
+      console.error("[ElevenLabs] storage upload error:", uploadError?.message ?? uploadError)
       return NextResponse.json({ error: "Failed to upload audio to storage" }, { status: 500 })
     }
 
-    const { data: { publicUrl } } = supabase.storage.from("video-assets").getPublicUrl(fileName)
-
-    return NextResponse.json({ success: true, audio_url: publicUrl })
+    return NextResponse.json({ success: true, audio_url: audioUrl })
   } catch (error: any) {
     console.error("[ElevenLabs] tts error:", error)
     return NextResponse.json({ error: error.message ?? "Internal server error" }, { status: 500 })

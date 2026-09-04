@@ -41,6 +41,26 @@
  *      published at a permanent unauthenticated URL by an argument nobody wrote.
  *      The lesson generalises: a defect can be a DEFAULT rather than a token, and
  *      a guard that only greps for tokens will call that tree clean forever.
+ *   7. (section 10) A VENDOR URL IS SERVED IN PLACE OF BYTES WE FAILED TO STORE.
+ *      The mirror image of 1-6: those ask where our bytes went, this asks
+ *      whether bytes we never stored are being published as though we had.
+ *      app/api/cron/poll-did-videos shipped
+ *      `brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl`, so a failed
+ *      re-host still marked the render `completed` with D-ID's own ~24-48h
+ *      signed URL — which the completion block then fanned into notifications,
+ *      email/SMS/social drafts and a PUBLIC lead-magnet landing page. No public
+ *      spelling, no bucket argument, nothing for sections 1-9 to catch: a
+ *      silent degradation to someone else's server. Owner ruling: "the storage
+ *      of files, images, videos, etc. are to be stored on supabase buckets."
+ *   8. (section 11) A NEW bucket write MINTS ITS URL WITHOUT THE ONE ISSUER.
+ *      Wider and weaker than 1: every such site is on a public-media bucket
+ *      today, so every one is correct today. That is why it is a COUNT with a
+ *      shrink-only roster rather than a pass — the roster in
+ *      lib/storage/document-buckets.ts is the only thing that can change a
+ *      bucket's class, and a call site that never consults it keeps minting a
+ *      permanent unauthenticated URL after the roster has moved. Three of the
+ *      known sites sit on `twin-avatars` / `twin-voice-samples`, whose roster
+ *      entry says outright that its classification is UNRESOLVED.
  *
  * ── MEASUREMENT DISCIPLINE (CLAUDE.md §2) ────────────────────────────────────
  * · Comments are removed with scripts/strip-comments.ts — `blankComments`,
@@ -68,6 +88,15 @@
  *       it is COUNTED and PRINTED beside the finding rather than folded into the
  *       pass. Those calls are the video/audio renders the public default exists
  *       for; if one ever starts producing a PDF, section 9 will not see it.
+ *     - SECTION 10 reads STRING-MASKED source (blankStrings), not merely
+ *       comment-stripped, because lib/kernel/manager-registry.ts records the
+ *       exact expression it hunts for inside a narrative field. It matches
+ *       identifier-to-identifier `??`/`||` only: a fallback built through a
+ *       ternary, a function call or a destructured default is invisible to it,
+ *       and so is one whose names match neither vocabulary. It narrows a known
+ *       shape; it does not prove the class is absent. Its ONE acknowledged
+ *       live exception is listed by name, with its reason and the open owner
+ *       question, in VENDOR_FALLBACK_EXCEPTIONS — a set that may only shrink.
  */
 import { readFileSync, writeFileSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
@@ -383,6 +412,86 @@ export function findDocumentBytesInPublicBucket(code: string, defaultBucket: str
   return scan
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 10's FINDER — A VENDOR URL STANDING IN FOR A FAILED RE-HOST.
+//
+// WHY SECTIONS 1-9 COULD NOT SEE THIS EITHER. Every one of them asks where OUR
+// bytes went. This asks the opposite question: whether bytes we never stored are
+// being served as if we had. The shape is always the same one line —
+//
+//     const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
+//
+// — and it shipped in app/api/cron/poll-did-videos. When the re-host of a
+// finished D-ID render failed, the row was still marked `completed` with D-ID's
+// own SIGNED URL in ai_video_projects.video_url. Those expire in ~24-48h, and by
+// then the completion block had fanned the string out into an agent
+// notification, the video.generated orchestrator event (email drafts, SMS
+// drafts, social drafts, campaign assets) and a PUBLIC lead-magnet landing page.
+// Nothing raised an error at any point, because at the moment of writing the
+// link worked.
+//
+// It is the same class as the `catch {}` that lib/remotion/media-host.ts deleted
+// from its own body: a silent fallback that makes a storage failure look
+// byte-identical to success. The owner's ruling is that "the storage of files,
+// images, videos, etc. are to be stored on supabase buckets"; a vendor URL in a
+// persisted column is not that, and the correct behaviour is to REFUSE to
+// complete, so the job is retried, rather than to publish a link that rots.
+//
+// THE RULE ASSERTED: a URL our own host produced is never given a vendor URL as
+// its fallback. Waypoint-free (§2) — it names no file and no call site.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Left-hand side of the fallback: a name that means "we stored these bytes". */
+const SELF_HOSTED_NAME = /(persist|host|rehost|brand|clean|stor|bucket|final|uploaded)/i
+/** Right-hand side: a name that means "the vendor gave us this address". */
+const VENDOR_URL_NAME =
+  /^(?:did|vendor|provider|remote|source|result|external)[A-Za-z0-9_$]*(?:Url|URL)$|(?:Did|Vendor|Provider|Remote|Result)(?:Url|URL)$/
+
+export interface VendorFallbackScan {
+  hits: Hit[]
+  /** Every `x ?? y` / `x || y` whose RIGHT side is a *Url name — the denominator. */
+  expressions: number
+}
+
+/**
+ * `hostedThing ?? vendorUrl` — a self-hosted URL falling back to a vendor one.
+ *
+ * Read STRING-MASKED source, not merely comment-stripped: this repo's
+ * lib/kernel/manager-registry.ts records the very expression below inside a
+ * narrative string, and counting a mention as a use is the mistake
+ * scripts/strip-comments.ts exists to end.
+ *
+ * BLIND SPOTS, stated (§2): identifier-to-identifier only. A fallback built
+ * through a ternary, a function call or a destructured default is invisible
+ * here, and so is one whose names match neither vocabulary. This finder narrows
+ * a known defect shape; it does not prove the absence of the whole class.
+ */
+export function findVendorUrlFallback(code: string): VendorFallbackScan {
+  const scan: VendorFallbackScan = { hits: [], expressions: 0 }
+  const re = /\b([A-Za-z_$][\w$.]*)\s*(?:\?\?|\|\|)\s*([A-Za-z_$][\w$.]*(?:Url|URL))\b/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(code))) {
+    // A CHAIN, not a pair. `a ?? b ?? c` matched once as (a, b) and then resumed
+    // PAST b, so the (b, c) arm — the one carrying the vendor URL in the live
+    // defect — was never examined and the finder reported zero. Rewinding to
+    // just after the LEFT operand lets the next iteration read the second arm.
+    // Measured: without this line the control "RED: the live chain
+    // `branded ?? persisted ?? didResultUrl` is flagged" finds 0 hits.
+    re.lastIndex = m.index + m[1].length
+    scan.expressions += 1
+    const left = m[1]
+    const right = m[2].split(".").pop() ?? m[2]
+    if (SELF_HOSTED_NAME.test(left) && VENDOR_URL_NAME.test(right)) {
+      scan.hits.push({
+        line: lineOf(code, m.index),
+        bucket: right,
+        detail: `\`${m[0]}\` — a vendor URL stands in when the re-host fails`,
+      })
+    }
+  }
+  return scan
+}
+
 /** A document-class bucket written with an explicit `public: true`. */
 export function findExplicitPublicOnDocumentBucket(code: string): Hit[] {
   const hits: Hit[] = []
@@ -655,6 +764,56 @@ check("isDocumentContentType recognises the document formats and rejects media",
   isDocumentContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document") &&
   !isDocumentContentType("video/mp4") && !isDocumentContentType("image/png") && !isDocumentContentType("audio/mpeg"))
 
+// ── 6c · POSITIVE CONTROL for the section-10 finder ─────────────────────────
+console.log("\n[6c · POSITIVE CONTROL — a vendor URL standing in for a failed re-host]")
+const vendorHits = (s: string) => findVendorUrlFallback(blankStrings(s)).hits
+
+// The live defect, character for character as it shipped in poll-did-videos.
+const DIRTY_VENDOR_CHAIN = `
+  const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
+`
+const DIRTY_VENDOR_THUMB = `
+  const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
+`
+const DIRTY_VENDOR_OR = `
+  const url = hostedAsset || providerUrl
+`
+const DIRTY_VENDOR_MEMBER = `
+  const url = storedUrl ?? response.data.resultUrl
+`
+// GREEN: both arms are ours. This is the CORRECT shape and must never be
+// flagged, or the fix for the defect would itself go red.
+const CLEAN_BOTH_OURS = `
+  const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl
+`
+// GREEN: a vendor URL with a plain null default is not a stand-in for anything.
+const CLEAN_VENDOR_NULL = `
+  const didResultUrl: string | null = data.result_url ?? null
+`
+// GREEN: the same expression inside a STRING. lib/kernel/manager-registry.ts
+// really does carry `rehostedUrl ?? didAssetUrl` inside a narrative field, so a
+// finder reading comment-stripped-but-not-string-masked source counts a
+// paragraph of documentation as a live defect. That is the mention-vs-use
+// mistake, and this control is the only thing that catches it.
+const CLEAN_INSIDE_STRING = `
+  const registry = { what: "the caller falls back (persistedUrl ?? didResultUrl) so the avatar is never blank" }
+`
+check("RED: the live chain `branded ?? persisted ?? didResultUrl` is flagged",
+  vendorHits(DIRTY_VENDOR_CHAIN).length === 1,
+  "a vendor URL at the end of a fallback chain is not being seen")
+check("RED: the thumbnail form is flagged", vendorHits(DIRTY_VENDOR_THUMB).length === 1)
+check("RED: the `||` form is flagged", vendorHits(DIRTY_VENDOR_OR).length === 1)
+check("RED: a member-expression vendor URL is flagged", vendorHits(DIRTY_VENDOR_MEMBER).length === 1)
+check("GREEN: a fallback whose BOTH arms are self-hosted is NOT flagged",
+  vendorHits(CLEAN_BOTH_OURS).length === 0,
+  "the corrected shape is being reported as the defect")
+check("GREEN: `data.result_url ?? null` is NOT flagged", vendorHits(CLEAN_VENDOR_NULL).length === 0)
+check("GREEN: the same expression inside a STRING is not counted",
+  vendorHits(CLEAN_INSIDE_STRING).length === 0,
+  "string contents are being read as code — mask them")
+check("GREEN: the same expression inside a comment is not counted",
+  vendorHits(`// const u = persistedVideoUrl ?? didResultUrl\n`).length === 0)
+
 // ── 7 · the classification stays honest ─────────────────────────────────────
 console.log("\n[7 · every live bucket is classified exactly once]")
 // The eleven buckets measured live in project hrvaqgvukzxfskkcrwbt on 2026-08-22.
@@ -739,6 +898,120 @@ if (DEFAULT_HOST_BUCKET) {
 check(`GENERATED_DOCUMENT_BUCKET ('${GENERATED_DOCUMENT_BUCKET}') is document-class`,
   isDocumentClassBucket(GENERATED_DOCUMENT_BUCKET),
   bucketClassReason(GENERATED_DOCUMENT_BUCKET))
+
+// ── 10 · no vendor URL is persisted in place of bytes we failed to store ────
+console.log("\n[10 · a failed re-host never degrades to the vendor's own URL]")
+
+/**
+ * ACKNOWLEDGED, NOT ABSORBED. One live site falls back to a vendor URL on
+ * purpose, and it was ruled that way before this section existed — so it is
+ * listed BY NAME with its reason and the open question, rather than quietly
+ * matching some pattern that makes it invisible.
+ *
+ * This set may only SHRINK: a NEW file is a failure, and a listed file that no
+ * longer has a hit is reported so the list is trimmed. Nothing can join it
+ * without editing this guard, which is the point.
+ */
+const VENDOR_FALLBACK_EXCEPTIONS: Readonly<Record<string, string>> = {
+  "lib/did/avatar-completion.ts":
+    "`rehosted ?? didAssetUrl` — a ruled decision recorded in lib/kernel/manager-registry.ts#avatar_selfhosted_rehost " +
+    "(\"best-effort: rehost returns null on any failure and the caller falls back to the D-ID url, so the avatar is " +
+    "never left blank\") and pinned by scripts/avatar-rehost-simulator.ts. OPEN QUESTION FOR THE OWNER: that ruling " +
+    "predates the ruling that all file storage lives in Supabase buckets, and a D-ID CDN URL in " +
+    "agent_avatar_assets.avatar_url / agent_voice_profiles.avatar_url expires like any other. The alternative is a " +
+    "blank avatar until the next poll re-hosts it. Only the owner can choose between a stale face and no face.",
+}
+
+const vendorLive: Array<Hit & { file: string }> = []
+let vendorExprs = 0
+for (const f of files) {
+  // STRING-MASKED source for this section only — see findVendorUrlFallback.
+  const s = findVendorUrlFallback(blankStrings(readFileSync(join(root, f), "utf8")))
+  vendorExprs += s.expressions
+  for (const h of s.hits) vendorLive.push({ ...h, file: f })
+}
+const vendorFiles = [...new Set(vendorLive.map((h) => h.file))].sort()
+const vendorNew = vendorFiles.filter((f) => !(f in VENDOR_FALLBACK_EXCEPTIONS))
+const vendorStale = Object.keys(VENDOR_FALLBACK_EXCEPTIONS).filter((f) => !vendorFiles.includes(f))
+
+// The denominator and the exclusions, beside the number (§2).
+console.log(`  fallback expressions examined: ${vendorExprs} · vendor-URL fallbacks: ${vendorLive.length} · acknowledged exceptions: ${Object.keys(VENDOR_FALLBACK_EXCEPTIONS).length}`)
+console.log("  BLIND SPOT: identifier-to-identifier `??`/`||` only — a fallback built through a ternary, a function call or a destructured default is not seen.")
+for (const h of vendorLive) {
+  const known = h.file in VENDOR_FALLBACK_EXCEPTIONS
+  console.log(`     · ${known ? "ACKNOWLEDGED" : "NEW"} ${h.file}:${h.line} — ${h.detail}`)
+  if (known) console.log(`         ↳ ${VENDOR_FALLBACK_EXCEPTIONS[h.file]}`)
+}
+for (const f of vendorStale) console.log(`  ↓ ${f} no longer falls back to a vendor URL — remove it from VENDOR_FALLBACK_EXCEPTIONS`)
+check(`no NEW file serves a vendor URL when the re-host fails (${vendorNew.length} new)`,
+  vendorNew.length === 0, vendorNew.join(", "))
+check("every acknowledged exception still has a hit (the list only shrinks)", vendorStale.length === 0, vendorStale.join(", "))
+check("every acknowledged exception carries a REASON and an open question",
+  Object.values(VENDOR_FALLBACK_EXCEPTIONS).every((r) => r.length > 80 && /OPEN QUESTION/.test(r)))
+// A finder that examined nothing also reports zero.
+check(`the finder actually reached fallback expressions (${vendorExprs} examined)`, vendorExprs > 0)
+
+// ── 11 · every bucket write mints its URL through the ONE issuer ────────────
+//
+// Section 1 already fails a getPublicUrl on a DOCUMENT-CLASS bucket. This is the
+// weaker but wider question section 1 deliberately does not ask: how many call
+// sites decide a URL's class THEMSELVES rather than asking
+// lib/storage/document-buckets.ts#issueBucketObjectUrl. Every one below is on a
+// public-media bucket today, so every one is correct today — which is exactly
+// why it needs a number rather than a pass. The roster is the only thing that
+// can change a bucket's class, and a call site that never consults it will keep
+// minting a permanent unauthenticated URL after the roster has moved,
+// silently. Three of these sit on `twin-avatars` / `twin-voice-samples`, whose
+// own roster entry says in as many words that its classification is UNRESOLVED
+// and flagged for the owner ("a voice print is closer to biometric than to
+// marketing") — those are the ones a reclassification would strand.
+//
+// A RATCHET, not a gate: the list may only SHRINK. A NEW file fails; a listed
+// file that has stopped doing it is reported so the list is trimmed. This is the
+// same shape section 2's baseline uses, kept inline because it is a list of
+// KNOWN WORK rather than a machine-written measurement.
+console.log("\n[11 · bucket writes that mint a URL without the ONE issuer]")
+const BARE_PUBLIC_URL_SITES: Readonly<Record<string, string>> = {
+  "app/actions/twin-studio-upload.ts":
+    "twin-avatars / twin-voice-samples — the two buckets the roster itself flags UNRESOLVED. Highest priority of this list.",
+  "app/actions/business-card/business-card-actions.ts": "business-cards — 'the entire point is that anyone can open the link'.",
+  "app/actions/onboarding/brand.ts": "brokerage-assets — logos composited into public marketing.",
+  "app/content-studio/content-studio-client.tsx": "agent-media — content-studio assets on public agent pages.",
+  "app/dashboard/listings/[id]/media/components/media-grid.tsx": "listing-media — photos on public listing pages.",
+  "app/dashboard/videos/components/BrollPicker.tsx": "listing-media — B-roll a render worker fetches with no session.",
+  "app/dashboard/videos/create/video-create-client.tsx":
+    "listing-media — the same B-roll and listing photos as the picker above, minted here for the create-video preview and handed to the render worker, which fetches them with no session.",
+  "lib/kernel/week-in-review.ts": "video-assets — a rendered recap a player fetches by URL.",
+  "lib/providers/dispatch.ts": "media — audio a telephony CARRIER fetches unauthenticated at delivery time; this one can never be signed.",
+}
+const bareFiles: string[] = []
+let bareSites = 0
+for (const f of files) {
+  if (f === ISSUER) continue
+  // blankStrings, not blankComments: the issuer's own refusal message names
+  // getPublicUrl, and so do the tombstones left where a call site was converted
+  // (lib/did/avatar-completion.ts, app/api/cron/poll-did-videos, the ElevenLabs
+  // TTS route). A guard reading either as a live call would report the fix as
+  // the defect — CLAUDE.md §2's "a tombstone is not a call site", exactly.
+  const code = blankStrings(readFileSync(join(root, f), "utf8"))
+  const n = (code.match(/\.getPublicUrl\s*\(/g) ?? []).length
+  if (n > 0) { bareFiles.push(f); bareSites += n }
+}
+const bareNew = bareFiles.filter((f) => !(f in BARE_PUBLIC_URL_SITES))
+const bareGone = Object.keys(BARE_PUBLIC_URL_SITES).filter((f) => !bareFiles.includes(f))
+console.log(`  files: ${bareFiles.length} · call sites: ${bareSites} · known: ${Object.keys(BARE_PUBLIC_URL_SITES).length} · new: ${bareNew.length} · converted since: ${bareGone.length}`)
+console.log("  BLIND SPOT: a URL assembled by hand from a project ref and an /object/public/ path is not a getPublicUrl call and is not counted here (section 5 guards the issuer instead).")
+for (const f of bareFiles) console.log(`     · ${f in BARE_PUBLIC_URL_SITES ? "known" : "NEW"} ${f}${BARE_PUBLIC_URL_SITES[f] ? ` — ${BARE_PUBLIC_URL_SITES[f]}` : ""}`)
+for (const f of bareGone) console.log(`  ↓ ${f} now uses the issuer — remove it from BARE_PUBLIC_URL_SITES`)
+check(`no NEW file mints a URL outside the issuer (${bareNew.length} new)`, bareNew.length === 0, bareNew.join(", "))
+check("the known list only shrinks", bareGone.length === 0, bareGone.join(", "))
+check("every known site carries a REASON", Object.values(BARE_PUBLIC_URL_SITES).every((r) => r.length > 30))
+// The finder's own control: it must still recognise the call, or "0 new" means
+// the regex broke rather than that the tree is clean.
+check("the finder still recognises a bare getPublicUrl",
+  (blankStrings(`const { data } = svc.storage.from("media").getPublicUrl(p)\n`).match(/\.getPublicUrl\s*\(/g) ?? []).length === 1)
+check("…and does NOT count one inside a comment or a string",
+  (blankStrings(`// svc.storage.from("media").getPublicUrl(p)\nconst s = "svc.storage.from(b).getPublicUrl(p)"\n`).match(/\.getPublicUrl\s*\(/g) ?? []).length === 0)
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

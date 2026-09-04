@@ -236,15 +236,22 @@ export async function GET(request: NextRequest) {
           // newsletter, portal card or listing page embeds a URL that is still
           // alive next month.
           //
-          // ONE MEDIA HOST. This used to call supabase.storage directly, which
-          // meant it was the only completion path in the OS with NO fallback: a
-          // storage hiccup left persisted*Url null and the expiring D-ID URL was
-          // what got delivered — a link that rots a day later, inside an email
-          // that has already been sent. hostRenderedMedia is the same host every
-          // other finished byte rides (render coordinator, render endpoint,
-          // stills, thumbnails, voiceovers, the lib/did re-upload): Supabase
-          // storage first, Vercel Blob as the fallback, so a bucket copy exists
-          // even when storage is down.
+          // ONE MEDIA HOST. hostRenderedMedia is the same host every other
+          // finished byte rides (render coordinator, render endpoint, stills,
+          // thumbnails, voiceovers, the lib/did re-upload).
+          //
+          // THE COMMENT THAT STOOD HERE WAS FALSE. It said "Supabase storage
+          // first, Vercel Blob as the fallback, so a bucket copy exists even
+          // when storage is down." @vercel/blob was RETIRED on the owner's
+          // ruling that all file storage lives in Supabase buckets
+          // (lib/remotion/media-host.ts header, scripts/vercel-blob-retired-guard.ts):
+          // there is no second host and hostRenderedMedia THROWS when the bucket
+          // refuses. A stale comment at the exact spot a reader checks whether a
+          // failure is survivable is worse than none, because it says the
+          // failure is already handled.
+          //
+          // WHAT ACTUALLY HAPPENS WHEN THE RE-HOST FAILS is decided below, at
+          // finalVideoUrl — see the block there.
           const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
           let persistedVideoUrl: string | null = null
           let persistedThumbnailUrl: string | null = null
@@ -407,22 +414,31 @@ export async function GET(request: NextRequest) {
                 // — the clean D-ID render stays available for MLS export.
                 const agentFolder = video.agent_id ?? "shared"
                 const brandedPath = `agent-videos/${agentFolder}/${video.id}.branded.mp4`
-                const { error: brandedUploadErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(brandedPath, result.outputBuffer, {
-                    contentType: "video/mp4",
-                    upsert: true,
-                  })
-                if (!brandedUploadErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(brandedPath)
-                  brandedVideoUrl = publicUrl
+                // ONE HOST, ONE ISSUER. This was a bare
+                // `.storage.from("listing-media").upload(...)` followed by a
+                // bare `.getPublicUrl(...)` — the only bucket write in this file
+                // that skipped both the size/mime gate and
+                // lib/storage/document-buckets.ts#issueBucketObjectUrl, while
+                // the two persist calls a hundred lines above ride
+                // hostRenderedMedia. `listing-media` is public-media so the URL
+                // it minted was class-correct today; the point is that nothing
+                // was CHECKING that, and a reclassification of the bucket would
+                // have moved every other call site and silently missed this one.
+                // The bucket is named explicitly so the destination is exactly
+                // what it was before this change.
+                try {
+                  brandedVideoUrl = await hostRenderedMedia(
+                    supabase, brandedPath, result.outputBuffer, "video/mp4", "listing-media",
+                  )
                   // Compliance truth: only the BRAND band satisfies the visual
                   // overlay requirement (b-roll-only composites don't).
                   visualOverlayApplied = brandOverlayApplied
-                } else {
-                  console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr)
+                } catch (brandedUploadErr: any) {
+                  // hostRenderedMedia THROWS on a storage refusal (the Vercel
+                  // Blob fallback that used to swallow it is retired), so this
+                  // catch is what keeps the branded overlay best-effort: the
+                  // clean re-hosted cut below is still delivered.
+                  console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr?.message ?? brandedUploadErr)
                 }
               }
             } catch (overlayErr: any) {
@@ -432,9 +448,89 @@ export async function GET(request: NextRequest) {
             }
           }
 
-          // Use the branded URL when overlay succeeded → persisted URL → D-ID URL
-          const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
-          const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
+          // ─── THE DELIVERY URL IS OURS, OR THERE IS NO DELIVERY YET ────────
+          //
+          // This used to read:
+          //
+          //     const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
+          //     const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
+          //
+          // …so when the re-host above failed, the row was still marked
+          // `completed` with D-ID's own URL in video_url. That is not a
+          // degraded copy of the right answer, it is the wrong answer that
+          // LOOKS like the right one: D-ID result URLs are signed and expire in
+          // ~24-48h (this file says so twenty lines up), and by then the string
+          // has been fanned out by the `done` branch below into an agent
+          // notification, the video.generated orchestrator event (email drafts,
+          // SMS drafts, social drafts, campaign assets), the listing page, the
+          // avatar→Remotion handoff and — via lead_capture_forms.landing_content
+          // — a PUBLIC lead-magnet landing page. Every one of those keeps a copy
+          // of a link that is dead by the weekend, and nothing reports a
+          // problem, because the row says completed.
+          //
+          // Owner ruling: "the storage of files, images, videos, etc. are to be
+          // stored on supabase buckets." A vendor URL in video_url is not that.
+          //
+          // FAIL CLOSED instead (CLAUDE.md §4 — "nobody checked" must never
+          // render as "checked and fine"): if we could not host the bytes, the
+          // render is NOT complete. The row stays `generating`, retry_count is
+          // bumped, and the next tick — three minutes away, inside D-ID's own
+          // 24-48h window — tries the download again. Nothing fans out, so
+          // nothing carries the expiring URL. didResultUrl is still recorded in
+          // provider_metadata (below) so an operator can fetch it by hand.
+          //
+          // BOUNDED, because a permanently broken bucket must not spin forever:
+          // after MAX_PERSIST_ATTEMPTS ticks the row fails loudly with a reason
+          // that names storage rather than the provider, which is the true
+          // cause. A thumbnail is COSMETIC and is deliberately not part of this
+          // gate — a missing poster frame does not justify withholding a video —
+          // but it is left NULL rather than pointed at D-ID.
+          const MAX_PERSIST_ATTEMPTS = 5
+          if (didResultUrl && !persistedVideoUrl) {
+            const attempts = (video.retry_count ?? 0) + 1
+            const giveUp = attempts >= MAX_PERSIST_ATTEMPTS
+            const reason =
+              `the D-ID render finished but its bytes could not be stored in our bucket ` +
+              `(attempt ${attempts}/${MAX_PERSIST_ATTEMPTS})`
+            const { error: holdErr } = await supabase
+              .from("ai_video_projects")
+              .update({
+                status: giveUp ? "failed" : "generating",
+                provider_status: "done",
+                retry_count: attempts,
+                error_message: giveUp
+                  ? "The video rendered, but it could not be saved to storage. Please try generating it again."
+                  : reason,
+                provider_metadata: {
+                  ...((video as any).provider_metadata ?? {}),
+                  did_result_url:       didResultUrl,
+                  did_thumbnail_url:    didThumbnailUrl,
+                  persisted_to_storage: false,
+                },
+              })
+              .eq("id", video.id)
+            // supabase-js RESOLVES refusals (CLAUDE.md §3) — read the error.
+            if (holdErr) {
+              console.error(`[poll-did-videos] could not record the persist failure for ${video.id}: ${holdErr.message}`)
+            }
+            console.error(`[poll-did-videos] ${video.id}: ${reason}${giveUp ? " — giving up" : " — will retry next tick"}`)
+            if (giveUp) {
+              await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+                status: "failed",
+                errorMessage: reason,
+              })
+              results.failed++
+            } else {
+              results.still_processing++
+            }
+            continue
+          }
+
+          // Use the branded URL when the overlay succeeded, else the clean
+          // re-hosted one. BOTH are objects in our own buckets; there is no
+          // third arm, by design.
+          const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl
+          const finalThumbnailUrl = persistedThumbnailUrl
 
           await supabase
             .from("ai_video_projects")

@@ -497,22 +497,61 @@ export async function generateVideo(
   const note = notes.length > 0 ? notes.join("; ") : undefined
 
   if (videoUrl) {
-    // D-ID returns a signed URL (~24h expiry). Download + re-upload to Vercel Blob
-    // so the video URL stays valid for downstream {{step_N.video_url}} references
-    // weeks or months later.
-    try {
-      const dl = await callConnector<Buffer>({
-        connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
-        method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
-      })
-      if (dl.ok && dl.data) {
+    // D-ID returns a SIGNED URL that expires in ~24h. The bytes are pulled and
+    // re-hosted in our own Supabase bucket so a downstream
+    // {{step_N.video_url}} reference still resolves weeks later.
+    //
+    // ── WHY THE FALLBACK IS GONE ────────────────────────────────────────────
+    // This ended with
+    //
+    //     } catch { /* fall through with D-ID URL — better than nothing */ }
+    //     return { videoId: talkId, videoUrl, status: "done", … }
+    //
+    // …which returned the VENDOR URL with status "done" whenever the download
+    // or the re-host failed. It is the same shape lib/remotion/media-host.ts
+    // deleted from its own body on the owner's ruling that all file storage
+    // lives in Supabase buckets, and it fails the same way: the caller records
+    // a completed step whose video_url dies tomorrow, and no error is ever
+    // raised, so a broken bucket is indistinguishable from success for exactly
+    // as long as the vendor's signature lasts. "Better than nothing" is the
+    // claim that cannot be checked — a link that 403s next week is worse than a
+    // job the caller knows is unfinished, because only the second one gets
+    // retried.
+    //
+    // The D-ID job is NOT lost by refusing here: `talkId` is returned either
+    // way, and "processing" is the status this function already uses to say
+    // "the render exists, ask again" — app/api/cron/poll-did-videos is the
+    // async finalizer that completes it, and it re-hosts too.
+    const dl = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (dl.ok && dl.data) {
+      try {
         const bytes = dl.data
         const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
         const hosted = await hostRenderedMedia(createServiceClient(), `workflow-video/${talkId}.mp4`, bytes, "video/mp4")
         return { videoId: talkId, videoUrl: hosted, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
+      } catch (hostErr: unknown) {
+        const msg = hostErr instanceof Error ? hostErr.message : String(hostErr)
+        return {
+          videoId: talkId,
+          videoUrl: null,
+          status: "processing",
+          engine: isV4Expressive ? "expressives" : "talks",
+          note: [note, `D-ID job ${talkId} rendered but could not be stored in our bucket (${msg}) — poll-did-videos will retry the download`]
+            .filter(Boolean).join("; "),
+        }
       }
-    } catch { /* fall through with D-ID URL — better than nothing */ }
-    return { videoId: talkId, videoUrl, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
+    }
+    return {
+      videoId: talkId,
+      videoUrl: null,
+      status: "processing",
+      engine: isV4Expressive ? "expressives" : "talks",
+      note: [note, `D-ID job ${talkId} rendered but its bytes could not be downloaded (${dl.error ?? `status ${dl.status}`}) — poll-did-videos will retry`]
+        .filter(Boolean).join("; "),
+    }
   }
 
   // Timed out — return partial result so caller can record and continue
