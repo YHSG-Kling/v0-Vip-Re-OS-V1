@@ -39,11 +39,12 @@ const CALENDAR_SETTINGS_PATH = "/dashboard/settings/calendar"
  * database refused.
  *
  * HONESTY NOTE, carried into the UI: lib/kernel/calendar-sync.ts:linkCalendarProvider
- * stores no OAuth tokens (token_expires_at is written as null) and no provider
- * adapter is enabled, so "linked" here means the account is registered and sync
- * attempts will be LOGGED, not that events are flowing. The settings page states
- * that in those words and the sync log shows the provider-adapter refusal
- * verbatim.
+ * stores no OAuth tokens (token_expires_at is written as null). Both providers now have
+ * an adapter (w26 google, w27 outlook), and each resolves the ACCOUNT OWNER'S own
+ * connected Google/Microsoft credential — so "linked" means the account is registered,
+ * and whether events flow depends on that person having connected a calendar. Either way
+ * the outcome is LOGGED: the settings page states this in those words and the sync log
+ * shows any refusal verbatim.
  */
 export async function connectCalendarProvider(input: {
   providerType: string
@@ -87,9 +88,10 @@ export async function connectCalendarProvider(input: {
  *
  * The kernel writes a calendar_sync_logs row for every attempt and this returns that
  * outcome instead of swallowing it, so the UI can never report a delivery that did not
- * happen. As of w26 a google_calendar account genuinely pushes (status 'success', with a
- * calendar_sync_mappings row carrying the provider's event id); an outlook account still
- * has no adapter and logs 'partial' with the reason.
+ * happen. As of w27 BOTH live provider types genuinely push (status 'success', with a
+ * calendar_sync_mappings row carrying the provider's event id): google_calendar landed in
+ * w26, outlook in w27. A push whose account owner has no connected Google/Microsoft account
+ * THROWS with that reason and this returns it, rather than logging a success.
  */
 export async function syncEventToProvider(
   calendarEventId: string,

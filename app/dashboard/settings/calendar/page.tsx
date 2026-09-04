@@ -45,19 +45,23 @@ import { CopyToClipboardButton } from "./CopyToClipboardButton"
  * NOTHING ON THIS PAGE CLAIMS DELIVERY IT CANNOT SHOW. The sync history below prints
  * calendar_sync_logs verbatim, so the screen and the database agree.
  *
- * ── UPDATED w26 (lane C8): PUSH IS REAL FOR GOOGLE ──────────────────────────
+ * ── UPDATED w27 (lane OUTLOOK): PUSH IS REAL FOR BOTH PROVIDERS ─────────────
  * This block used to read "lib/kernel/calendar-sync.ts has no provider adapter and stores
  * no OAuth token; every push and pull writes a calendar_sync_logs row with status
- * 'partial'". Half of that is still true and half is now false, and leaving it would make
- * this page lie about its own behavior:
- *  · calendar_provider_accounts still stores NO OAuth token — that has not changed.
- *    lib/providers/calendar/google-calendar-sync-adapter.ts resolves the ACCOUNT OWNER'S
- *    own Google credential (the same connection that backs their mailbox) instead.
- *  · A google_calendar push therefore reaches Google, logs status 'success', and writes a
+ * 'partial'". w26 corrected the Google half; the Outlook half is now false too, and
+ * leaving either would make this page lie about its own behavior:
+ *  · calendar_provider_accounts still stores NO OAuth token — that has not changed, and it
+ *    is why the panel below still talks about the personal connection. Both adapters
+ *    resolve the ACCOUNT OWNER'S own credential (the same connection that backs their
+ *    mailbox) instead: google-calendar-sync-adapter.ts and outlook-calendar-sync-adapter.ts.
+ *  · A push therefore reaches the provider, logs status 'success', and writes a
  *    calendar_sync_mappings row carrying the provider's event id. The "Events synced to
  *    this calendar" list below is that table.
- *  · An outlook account has NO adapter and still logs 'partial' with the reason. PULL is
- *    still a stub for both providers.
+ *  · WHAT STILL DECIDES THE OUTCOME is whether the account's OWNER has that Google or
+ *    Microsoft account connected. A registered calendar whose owner has no connection
+ *    refuses with that reason rather than reporting a delivery.
+ *  · PULL IS STILL A STUB FOR BOTH PROVIDERS — sync is outbound only. Nothing edited in
+ *    Google Calendar or Outlook comes back into VIP OS.
  *
  * ── THE BOOKINGS CALENDAR (w8) ──────────────────────────────────────────────
  * Everything above concerns calendar_provider_accounts — a registry that holds
@@ -208,8 +212,9 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
       )}
       {sp.linked === "1" && (
         <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          Calendar account linked. No OAuth token is stored yet and no provider adapter is enabled,
-          so sync attempts are recorded below rather than delivered.
+          Calendar account linked. This registry stores no OAuth token of its own — a push uses the
+          account owner&rsquo;s connected Google or Microsoft account, so it delivers only if that
+          person has one connected. Every attempt&rsquo;s outcome is recorded below.
         </div>
       )}
       {sp.pushed === "1" && (
@@ -269,8 +274,10 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
       <div className="bg-white rounded-lg shadow p-4">
         <h2 className="text-lg font-semibold text-gray-900 mb-1">Link a Calendar Account</h2>
         <p className="text-sm text-gray-600 mb-4">
-          Registers the account so events can be queued against it. Delivery starts when a provider
-          adapter is enabled; until then every attempt is logged with the reason.
+          Registers the account so events can be pushed to it. Google Calendar and Outlook both
+          deliver, using the account owner&rsquo;s own connected Google or Microsoft account —
+          registering a calendar for someone who has not connected one logs the refusal instead.
+          Every attempt is logged either way.
         </p>
         <form
           action={async (formData: FormData) => {

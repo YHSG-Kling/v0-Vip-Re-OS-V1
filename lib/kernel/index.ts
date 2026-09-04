@@ -169,7 +169,40 @@ export type {
   StepCompletionRow,
 } from "./agent-onboarding"
 
-export { syncCalendarEventToProvider } from "./calendar-sync-orchestrator"
+// ─── CALENDAR SYNC ORCHESTRATOR — DELETED (orphan doctrine §1, wave 27) ──────
+//
+// TOMBSTONE. `syncCalendarEventToProvider(params)` is DELETED. SURVIVOR:
+// lib/kernel/calendar-sync.ts `pushCalendarEventToProvider`, which writes the
+// provider's id into the `calendar_sync_mappings` registry.
+//
+// It had NO caller — the only reference was the re-export in lib/kernel/index.ts,
+// already carried in scripts/orphan-export-baseline.json — and it was a SECOND
+// SPELLING of the survivor's job (§6): the survivor files the provider's event id
+// in `calendar_sync_mappings`, this filed it in `calendar_events.metadata.externalId`,
+// and neither read the other's record.
+//
+// NOTHING WAS PORTED, because the survivor lacks nothing this had — it is better
+// on all three axes that matter:
+//
+//  1. IT COULD NOT TELL A REAL EVENT ID FROM A FABRICATED ONE. When no calendar is
+//     connected, lib/providers/calendar/index.ts:82 returns
+//     `{ success: true, eventId: "mock-event-<ts>", mock: true }` so non-actor
+//     callers keep working. That contract is honest — it SETS `mock` — and
+//     lib/contact-validation.ts:73 reads it correctly as `success && !result.mock`.
+//     This function checked `created.success && created.eventId` and never read
+//     `mock`, so it wrote `mock-event-…` into the database as though a provider had
+//     accepted the event. The survivor cannot do this: its adapters THROW rather
+//     than returning a placeholder, and the mapping row is written only from an id
+//     an adapter actually returned.
+//  2. NO TENANT PREDICATE. It took a `brokerageId` and never used it — the read it
+//     performed was not scoped by it (CLAUDE.md §4).
+//  3. NO PROVIDER ADAPTER REGISTRY. The survivor dispatches through
+//     CALENDAR_SYNC_ADAPTERS (Google, and Outlook as of wave 27) and refuses when
+//     no adapter answers, instead of trusting whatever the generic provider shim
+//     hands back.
+//
+// The live table was checked before deleting: `calendar_events` holds 0 rows, so
+// no `mock-event-*` value was ever persisted and no backfill is owed.
 
 export { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
 

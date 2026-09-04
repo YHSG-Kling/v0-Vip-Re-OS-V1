@@ -267,6 +267,7 @@
     "test:voice-lane": "tsx scripts/voice-lane-simulator.ts",
     "test:outbound-call-gates": "tsx scripts/outbound-call-gates-simulator.ts",
     "test:self-book": "tsx scripts/self-book-simulator.ts",
+    "test:calendar-sync-adapter": "tsx scripts/calendar-sync-adapter-simulator.ts",
     "test:crm-pull": "tsx scripts/crm-pull-simulator.ts",
     "test:crm-sync-credential": "tsx scripts/crm-sync-credential-simulator.ts",
     "test:settings-authz": "tsx scripts/settings-authz-guard.ts",

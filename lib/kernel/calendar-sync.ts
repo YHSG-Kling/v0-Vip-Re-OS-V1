@@ -3,6 +3,7 @@ import { createHash } from "crypto"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import type { CalendarProvider } from "@/lib/providers/calendar/types"
 import { googleCalendarSyncAdapter } from "@/lib/providers/calendar/google-calendar-sync-adapter"
+import { outlookCalendarSyncAdapter } from "@/lib/providers/calendar/outlook-calendar-sync-adapter"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -114,20 +115,28 @@ async function assertCanAccessAccount(params: {
 // (lib/providers/calendar/types.ts) registers per provider, and `upsertEvent` returning the
 // PROVIDER'S event id is the one fact a calendar_sync_mappings row cannot exist without.
 //
-// GOOGLE IS NOW BUILT (w26, lane C8) — see lib/providers/calendar/google-calendar-sync-adapter.ts.
+// GOOGLE WAS BUILT IN w26 (lane C8) — lib/providers/calendar/google-calendar-sync-adapter.ts.
 // The long-standing do-not-fix note further down recorded that the missing half was the
-// ADAPTER, not a row; that half now exists for google_calendar, so pushCalendarEventToProvider
-// really pushes and really writes the mapping.
+// ADAPTER, not a row; that half now exists, so pushCalendarEventToProvider really pushes and
+// really writes the mapping.
 //
-// OUTLOOK IS STILL ABSENT, AND DELIBERATELY SO: the same reasoning that made a placeholder
-// mapping row forbidden makes a placeholder adapter forbidden. An outlook account therefore
-// still falls through to the 'partial' log below, which is the honest report — "nobody checked"
-// must never render as "checked and fine" (CLAUDE.md §4).
+// OUTLOOK IS NOW BUILT TOO (w27, lane OUTLOOK; owner instruction: "outlook needs adapter
+// setup") — lib/providers/calendar/outlook-calendar-sync-adapter.ts, Microsoft Graph
+// /me/events. w26 left it out on the ruling that "a placeholder adapter is as forbidden as a
+// placeholder row", and that ruling is DISCHARGED rather than waived: the Outlook adapter
+// returns a real Graph event id or THROWS, exactly like its Google sibling, so the mapping row
+// is still written from a fact and never from a guess.
+//
+// This registry is now COMPLETE against the live vocabulary: calendar_provider_accounts
+// .provider_type and calendar_sync_mappings.provider_type both admit exactly
+// ["google_calendar", "outlook"] (scripts/check-vocabularies.ts:369/:380), and both have an
+// entry. The 'partial' fall-through below is therefore no longer reachable via an unregistered
+// provider — it is kept because it is the honest report for a provider added to the CHECK
+// before its adapter lands, and deleting it would turn that future case from a logged refusal
+// into a silent one ("nobody checked" must never render as "checked and fine", CLAUDE.md §4).
 const CALENDAR_SYNC_ADAPTERS: Partial<Record<CalendarProviderType, CalendarProvider>> = {
   google_calendar: googleCalendarSyncAdapter,
-  // outlook: not built. Microsoft Graph is reachable the same way (see
-  // lib/providers/calendar/personal-calendar.ts), but an adapter nobody has exercised
-  // end to end must not be registered — registration is what turns the push path on.
+  outlook: outlookCalendarSyncAdapter,
 }
 
 /** Resolve the sync adapter for a provider, or null while none is built/registered. */
@@ -344,9 +353,11 @@ export async function pushCalendarEventToProvider(params: {
     return
   }
 
-  // NO ADAPTER FOR THIS PROVIDER (outlook today). No id, so no mapping — the same
-  // ruling as before, now scoped to the providers that genuinely lack an adapter. The
-  // 'partial' log is the honest report and names WHICH provider is unbuilt.
+  // NO ADAPTER FOR THIS PROVIDER. No id, so no mapping — the original ruling, now scoped to
+  // providers that genuinely lack an adapter. As of w27 BOTH live provider_type values are
+  // registered, so this arm is reached only by (a) a provider added to the CHECK ahead of its
+  // adapter, or (b) an accountRow that could not be read at all. Both are refusals, and a
+  // logged refusal is the point: the 'partial' row names WHICH provider was unbuilt.
   const { error: logError } = await supabase.from("calendar_sync_logs").insert({
     brokerage_id: brokerageId,
     provider_account_id: params.providerAccountId,
