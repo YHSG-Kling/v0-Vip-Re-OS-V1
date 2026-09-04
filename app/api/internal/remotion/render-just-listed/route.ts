@@ -160,6 +160,20 @@ export async function POST(req: NextRequest) {
     .eq("status", "remotion_pending")
     .select("id, brokerage_id, listing_id, agent_id, event_type, status")
     .maybeSingle()
+  // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
+  // a refusal, so a PGRST204 / transient 5xx / multi-row maybeSingle comes back
+  // as data null + error set — indistinguishable from "this promo is not in
+  // remotion_pending". Reported as `skipped` at HTTP 200 it left the ledger row
+  // at remotion_pending, and the listing-promo-render cron re-picked the same
+  // row every tick with nothing ever rendering, failing or surfacing. Not marked
+  // failed: the claim never landed, so this request never owned the row.
+  if (claim.error) {
+    console.error(`[render-just-listed] claim REFUSED for promo ${body.listing_promo_video_id}: ${claim.error.message}`)
+    return NextResponse.json({
+      ok: false, listing_promo_video_id: body.listing_promo_video_id,
+      error: `claim_refused: ${claim.error.message}`,
+    }, { status: 500 })
+  }
   const promo = claim.data as PromoRow | null
   if (!promo) {
     return NextResponse.json({ skipped: "row not in remotion_pending or not found" }, { status: 200 })
@@ -906,7 +920,19 @@ async function renderRemotionReel(args: {
             const thumbBytes = await fs.readFile(thumbPath)
             await fs.unlink(thumbPath).catch(() => {})
             const thumbUrl = await hostRenderedMedia(svcFin, `listing-promo/thumbs/${args.promoId}.png`, thumbBytes, "image/png")
-            await svcFin.from("remotion_composition_renders").update({ thumbnail_url: thumbUrl }).eq("id", rq.renderId)
+            // Reads its error for the same reason its sibling in
+            // app/api/internal/remotion/render-composition/route.ts does: a
+            // refused write leaves the PNG hosted and the row pointing at
+            // nothing, so /v/[slug] publishes no og:image over a card that
+            // exists. Warned, never thrown — the video already succeeded and a
+            // thumbnail problem must not fail a render.
+            const { error: thumbWriteError } = await svcFin
+              .from("remotion_composition_renders")
+              .update({ thumbnail_url: thumbUrl })
+              .eq("id", rq.renderId)
+            if (thumbWriteError) {
+              console.warn(`[render-just-listed] thumbnail_url write REFUSED for render ${rq.renderId} (${thumbWriteError.message}); the card at ${thumbUrl} is hosted but unreferenced`)
+            }
           } catch (te) {
             console.warn("[render-just-listed] thumbnail pass failed; video kept:", (te as Error).message)
           }

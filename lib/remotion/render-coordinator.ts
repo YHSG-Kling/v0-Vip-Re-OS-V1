@@ -305,7 +305,22 @@ export async function finalizeCoordinatedRender(
     const artifactKey = frameKey ? computeArtifactKey(frameKey, finish) : null
 
     // Audit: record the per-asset attribution alongside the standard fields.
-    await svc.from("remotion_composition_renders")
+    //
+    // THE SUCCESS WRITE READS ITS OWN ERROR (§3), for exactly the reason
+    // serveFromCache states 100 lines away in lib/remotion/render-cache.ts:206:
+    // "A rejected write here would leave the row 'rendering' forever while we
+    // reported a hit — the exact class of silent failure this OS keeps finding."
+    // The same sentence is true of this write and it was the one that did not
+    // check. supabase-js RESOLVES a refusal, so a PGRST204 on any column named
+    // here refuses the WHOLE update and nothing was recorded — yet this function
+    // went on to return ok:true with an output_url, the route returned HTTP 200
+    // with it, and the row stayed 'rendering' with output_url NULL: a finished
+    // mp4 hosted in the bucket that no render row, no cache probe and no
+    // marketing_asset can ever point at. Thrown rather than returned so the
+    // catch below takes the ONE already-proven failure path (mark the row
+    // failed, return ok:false), and the message carries the orphaned URL so the
+    // file is recoverable instead of merely lost.
+    const { error: completionError } = await svc.from("remotion_composition_renders")
       .update({
         render_status:       "succeeded",
         output_url:          uploaded.url,
@@ -318,10 +333,23 @@ export async function finalizeCoordinatedRender(
         completed_at:        new Date().toISOString(),
       })
       .eq("id", renderId)
+    if (completionError) {
+      throw new Error(
+        `render row completion write REFUSED (${completionError.message}); `
+        + `the finished file is hosted at ${uploaded.url} but the row was never moved to succeeded`,
+      )
+    }
 
-    await svc.from("remotion_compositions")
+    // Freshness telemetry — a refusal is logged, never allowed to fail a render
+    // that has already landed.
+    const { error: freshnessError } = await svc.from("remotion_compositions")
       .update({ last_rendered_at: new Date().toISOString() })
       .eq("composition_id", composition.composition_id)
+    if (freshnessError) {
+      console.warn(
+        `[render-coordinator] last_rendered_at not stamped for ${composition.composition_id}: ${freshnessError.message}`,
+      )
+    }
 
     // Capture the finished render into the reusable marketing_assets library so
     // every chart reel / section video / avatar clip / b-roll can be repurposed

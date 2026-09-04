@@ -288,8 +288,24 @@ export async function recordRenderQueued(args: {
   return { ok: true, renderId: (data as { id: string }).id }
 }
 
-/** Marks a render complete + stamps last_rendered_at on the
- *  composition row so the Asset Manager sees freshness signal. */
+/**
+ * Marks a render complete + stamps last_rendered_at on the composition row so
+ * the Asset Manager sees freshness signal.
+ *
+ * THE TERMINAL WRITE READS ITS OWN ERROR (CLAUDE.md §3). This used to return
+ * `Promise<void>` over an unchecked `.update()`, which made it the one function
+ * in the Remotion rail that could not tell you it had failed — and it is the
+ * function every render path calls to say "succeeded", "failed" or "cancelled".
+ * supabase-js RESOLVES a refusal, so a dropped/renamed column (PGRST204), a
+ * transient PostgREST 5xx or a wrong-id predicate all came back indistinguishable
+ * from a write that landed. Concretely: the render endpoint's catch block calls
+ * this with status 'failed' and then returns HTTP 500 naming the error, while the
+ * row it was talking about is still 'rendering' — so the Asset Manager never sees
+ * a failure to propose restart_failed_render on, and the video-pipeline reaper is
+ * the only thing that ever notices, minutes-to-hours later and with no reason
+ * attached. Callers that do not care still `await` it and ignore the result; the
+ * ones that can act on a refusal now can.
+ */
 export async function recordRenderCompleted(args: {
   renderId:      string
   compositionId: string
@@ -297,9 +313,9 @@ export async function recordRenderCompleted(args: {
   thumbnailUrl?: string | null
   status:        "succeeded" | "failed" | "cancelled"
   errorMessage?: string | null
-}): Promise<void> {
+}): Promise<{ ok: boolean; error?: string }> {
   const svc = createServiceClient()
-  await svc
+  const { error } = await svc
     .from("remotion_composition_renders")
     .update({
       render_status: args.status,
@@ -309,11 +325,26 @@ export async function recordRenderCompleted(args: {
       completed_at:  new Date().toISOString(),
     })
     .eq("id", args.renderId)
+  if (error) {
+    console.error(
+      `[remotion-registry] render ${args.renderId} (${args.compositionId}) could NOT be marked '${args.status}': `
+      + `${error.message}. The row is still mid-flight and nothing downstream will learn the outcome.`,
+    )
+    return { ok: false, error: error.message }
+  }
 
   if (args.status === "succeeded") {
-    await svc
+    // Freshness telemetry, not the deliverable — a refusal here is logged and
+    // does not turn a finished render into a failed one.
+    const { error: freshnessError } = await svc
       .from("remotion_compositions")
       .update({ last_rendered_at: new Date().toISOString() })
       .eq("composition_id", args.compositionId)
+    if (freshnessError) {
+      console.warn(
+        `[remotion-registry] last_rendered_at not stamped for ${args.compositionId}: ${freshnessError.message}`,
+      )
+    }
   }
+  return { ok: true }
 }

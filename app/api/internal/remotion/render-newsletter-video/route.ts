@@ -89,6 +89,18 @@ export async function POST(req: NextRequest) {
     .eq("status", "queued")
     .select("id, brokerage_id, agent_id")
     .maybeSingle()
+  // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
+  // a refusal, so a PGRST204 / transient 5xx / multi-row maybeSingle arrives as
+  // data null + error set — the same shape as "no queued row for this campaign".
+  // Reported as `skipped` the render ledger stayed 'queued' and the newsletter
+  // video was silently never made. Not marked failed: the claim never landed.
+  if (claim.error) {
+    console.error(`[render-newsletter-video] claim REFUSED for campaign ${body.newsletter_campaign_id}: ${claim.error.message}`)
+    return NextResponse.json({
+      ok: false, newsletter_campaign_id: body.newsletter_campaign_id,
+      error: `claim_refused: ${claim.error.message}`,
+    }, { status: 500 })
+  }
   const ledger = claim.data as { id: string; brokerage_id: string; agent_id: string } | null
   if (!ledger) return NextResponse.json({ skipped: "no row in 'queued' status for this campaign" })
 

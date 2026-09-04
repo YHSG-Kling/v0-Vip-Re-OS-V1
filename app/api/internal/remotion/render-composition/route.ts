@@ -95,6 +95,24 @@ export async function POST(req: NextRequest) {
     .eq("render_status", PICKABLE_RENDER_STATUS)
     .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, scope_type, scope_id, input_props")
     .maybeSingle()
+  // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
+  // a refusal: a PGRST204 on any column named in the update or the select, a
+  // transient PostgREST 5xx, or a .maybeSingle() that matched more than one row
+  // all come back with data null and error set — byte-identical to "this row is
+  // not queued". Read as the latter, the route answered HTTP 200 `skipped`, the
+  // composition-render-queue cron logged processed:1 and moved on, and the row
+  // stayed 'queued' — so the NEXT tick picked the same oldest row and did it
+  // again, forever: a video that is never rendered, never failed, and never
+  // surfaced to the Asset Manager as anything at all. The row is deliberately
+  // NOT marked failed here: the claim did not happen, so it is not ours to
+  // terminate, and a 500 is what makes the cron's own response carry the reason.
+  if (claim.error) {
+    console.error(`[render-composition] claim REFUSED for render ${body.render_id}: ${claim.error.message}`)
+    return NextResponse.json({
+      ok: false, render_id: body.render_id,
+      error: `claim_refused: ${claim.error.message}`,
+    }, { status: 500 })
+  }
   const row = claim.data as (QueuedRenderRow & { id: string }) | null
   if (!row) {
     return NextResponse.json({ skipped: "render row not in queued state or not found" }, { status: 200 })

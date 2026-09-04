@@ -65,6 +65,45 @@ function isVideoUrl(url: string): boolean {
   return ext.endsWith(".mp4") || ext.endsWith(".webm") || ext.endsWith(".mov") || ext.endsWith(".m4v")
 }
 
+/**
+ * The frame window one clip occupies, in the coordinate space of whatever
+ * sequence this layer is mounted in (composition root for ComingSoon /
+ * Neighborhood, the BODY sequence for AgentTalkingHead).
+ *
+ * EXPORTED FOR ITS PROOF, and derived here rather than inline in the render so
+ * the arithmetic is testable without a browser: scripts/broll-window-guard.ts
+ * asserts that a clip's window START is where its playback must begin.
+ */
+export interface BrollWindow {
+  /** Index into `clips`. */
+  index: number
+  /** First frame of this clip's slot. */
+  from: number
+  /** How many frames the slot runs. */
+  durationFrames: number
+}
+
+/**
+ * Which clip is on screen at `effectiveFrame`, and WHERE ITS SLOT STARTED.
+ *
+ * The second half is the part that was missing. PURE — no Remotion, no DOM.
+ */
+export function brollWindowAt(
+  clipCount: number,
+  totalFrames: number,
+  effectiveFrame: number,
+): BrollWindow | null {
+  if (clipCount <= 0 || !(totalFrames > 0)) return null
+  const perClip = Math.max(1, Math.floor(totalFrames / clipCount))
+  const index = Math.min(clipCount - 1, Math.max(0, Math.floor(effectiveFrame / perClip)))
+  // The last clip absorbs the remainder of the window, so its slot is longer
+  // than perClip whenever totalFrames does not divide evenly.
+  const durationFrames = index === clipCount - 1
+    ? Math.max(1, totalFrames - index * perClip)
+    : perClip
+  return { index, from: index * perClip, durationFrames }
+}
+
 export const BrollLayer: React.FC<BrollLayerProps> = ({
   clips, totalFrames, crossfadeFrames, overlayColor, loop,
 }) => {
@@ -75,10 +114,16 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
   const perClip     = Math.max(1, Math.floor(totalFrames / clips.length))
   const crossfade   = Math.min(crossfadeFrames ?? 10, Math.floor(perClip / 2))
   const effective   = shouldLoop ? (frame % totalFrames) : frame
+  // Where THIS pass through the clip list began, in the enclosing sequence's
+  // frames. `frame - effective` is 0 on the first pass and one whole
+  // `totalFrames` per completed loop, with no second modulo to disagree with
+  // the one above (§6).
+  const cycleStart  = frame - effective
 
   // Build the current + next clip indices + their respective opacities.
-  const activeIdx   = Math.min(clips.length - 1, Math.floor(effective / perClip))
-  const localFrame  = effective - activeIdx * perClip
+  const active      = brollWindowAt(clips.length, totalFrames, effective)!
+  const activeIdx   = active.index
+  const localFrame  = effective - active.from
   const fadingIn    = localFrame < crossfade && activeIdx > 0
   const prevIdx     = fadingIn ? activeIdx - 1 : null
   const inOpacity   = fadingIn
@@ -91,9 +136,27 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       {prevIdx !== null && (
-        <ClipFrame clip={clips[prevIdx]} opacity={outOpacity} overlayColor={overlayColor} />
+        <ClipFrame
+          clip={clips[prevIdx]}
+          opacity={outOpacity}
+          overlayColor={overlayColor}
+          // The previous clip's slot, plus the crossfade tail during which it is
+          // still visible over the incoming one.
+          startFrame={cycleStart + prevIdx * perClip}
+          spanFrames={perClip + crossfade}
+        />
       )}
-      <ClipFrame clip={clips[activeIdx]} opacity={inOpacity} overlayColor={overlayColor} />
+      <ClipFrame
+        clip={clips[activeIdx]}
+        opacity={inOpacity}
+        overlayColor={overlayColor}
+        startFrame={cycleStart + active.from}
+        // Never shorter than the frame currently being drawn. With loop=false a
+        // playhead past `totalFrames` clamps to the LAST clip (the behaviour
+        // before this change held its final frame there); a window that stopped
+        // at totalFrames would unmount it and render black instead.
+        spanFrames={Math.max(active.durationFrames, effective - active.from + 1)}
+      />
     </AbsoluteFill>
   )
 }
@@ -102,15 +165,46 @@ const ClipFrame: React.FC<{
   clip:         BrollClip
   opacity:      number
   overlayColor?: string
-}> = ({ clip, opacity, overlayColor }) => {
+  /** First frame of this clip's slot, in the enclosing sequence's frames. */
+  startFrame:   number
+  /** How long the slot runs — the media's timeline window. */
+  spanFrames:   number
+}> = ({ clip, opacity, overlayColor, startFrame, spanFrames }) => {
   const isVideo = isVideoUrl(clip.url)
   return (
     <AbsoluteFill style={{ opacity }}>
       {isVideo ? (
+        // EVERY CLIP PLAYS FROM ITS OWN FRAME 0.
+        //
+        // THE DEFECT (found 2026-09-04). This `<Video>` was mounted BARE —
+        // no `from`, no wrapping `<Sequence>` — so its playback position was the
+        // ENCLOSING sequence's frame, not the frame within this clip's own slot.
+        // Clip #1 looked right (its slot starts at 0, so the two agree) and every
+        // clip after it did not: with three clips over a 480-frame window
+        // (perClip = 160), clip #2 was asked for source second 5.3 and clip #3
+        // for source second 10.7 — of stock cutaways that lib/video/broll-picker
+        // measures and typically finds are 4-8 seconds long. Past its end the
+        // clip renders its last frame, so the reel showed a frozen still where
+        // it promised motion, and the render reported success. The same wrong
+        // offset also skipped whatever the first 5-10 seconds of each clip
+        // actually showed.
+        //
+        // `from`/`durationInFrames` on `<Video>` are the props the vendored skill
+        // documents for exactly this ("Delaying, trimming",
+        // .claude/skills/remotion-best-practices/remotion-markup/REFERENCE.md:174-192);
+        // the installed @remotion/media declares them via InteractiveBaseProps
+        // (node_modules/remotion/dist/cjs/Interactive.d.ts:9). This is the same
+        // shape remotion/PhotoWalkthroughReel.tsx:197 already uses to give each
+        // Ken Burns photo its own clock.
+        //
+        // `trimBefore={0}` is gone with it: it was the DEFAULT, and it read like
+        // a deliberate statement that the clip starts at its beginning — which is
+        // precisely what was not happening.
         <Video
           objectFit="cover"
           src={clip.url}
-          trimBefore={0}
+          from={startFrame}
+          durationInFrames={Math.max(1, spanFrames)}
           style={{ width: "100%", height: "100%" }}
         />
       ) : (
