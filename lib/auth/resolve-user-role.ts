@@ -599,6 +599,45 @@ export function isTenantCommerceAdmin(profile: {
 }
 
 /**
+ * "THE PRODUCING AGENT, OR SOMEONE WHO MAY COMMIT THE BROKERAGE" — the deal
+ * lane's question, which is NOT {@link isAgentOrTenantAdmin}'s.
+ *
+ * DERIVED: `agent` ∪ {@link TENANT_COMMERCE_ADMIN_USER_TYPES}. It is
+ * isAgentOrTenantAdmin minus exactly the role the commerce tier already
+ * subtracts, so there is still ONE roster and a seventh role added upstream
+ * tomorrow reaches both predicates without a second edit.
+ *
+ * WHY IT EXISTS, AND WHY THIS SUBTRACTION IS NOT AN OVERSIGHT BEING PRESERVED.
+ * The owner's 2026-09-04 ruling seats `compliance_officer` as tenant staff
+ * admin, which widened isAdminOrBroker — and therefore isAgentOrTenantAdmin —
+ * across every operational surface. ACCEPTING AN OFFER IS NOT AN OPERATIONAL
+ * SURFACE. It binds a client to a purchase contract; the tool-registry row for
+ * accept_offer carries `is_nar_regulated: true`; and it is the same class of
+ * consequence as the four gates TENANT_COMMERCE_ADMIN_USER_TYPES was built for,
+ * which obligate the brokerage to pay. Letting the deal lane ride the widening
+ * would have handed a supervisory seat the power to accept a purchase offer by
+ * VOICE, as a side effect of a ruling about who administers staff — the
+ * silent-widening shape §4 exists to refuse.
+ *
+ * A compliance officer keeps everything the ruling actually gave them: the
+ * operational admin surfaces, the books READ (m467), the compliance boards, and
+ * authoring a negotiation strategy — a document, not a commitment, which stays
+ * on isAgentOrTenantAdmin. What they do not get is signing on the client's
+ * behalf. ONE LINE TO REVERSE if the owner rules otherwise: point
+ * lib/voice/deal-decision.ts back at isAgentOrTenantAdmin.
+ *
+ * FAILS CLOSED on null / undefined / empty (§4), case-folded like its siblings.
+ */
+export function isAgentOrCommerceAdmin(profile: {
+  user_type?: string | null
+  role?: string | null // tolerated on input, intentionally unread — see the module header
+}): boolean {
+  const t = String(profile.user_type ?? "").trim().toLowerCase()
+  if (t.length === 0) return false
+  return t === "agent" || TENANT_COMMERCE_ADMIN_USER_TYPES.has(t)
+}
+
+/**
  * "Tenant admin OR platform staff" — for the sites that genuinely mean BOTH.
  *
  * Not a third vocabulary: it is literally the OR of the two single definitions in

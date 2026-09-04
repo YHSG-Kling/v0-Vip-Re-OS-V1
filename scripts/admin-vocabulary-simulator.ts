@@ -127,11 +127,30 @@ const SELF = fileURLToPath(import.meta.url)
 const STORABLE_USER_TYPES: readonly string[] =
   (CHECK_VOCABULARIES.users?.user_type ?? []).slice().sort()
 
-/** Accepted on INPUT, never stored. lib/security/types.ts#LEGACY_ROLE_MAP. */
+/**
+ * Role words that are REAL but are not storable `users.user_type` values, so the
+ * scans' alphabet must carry them or a correct gate reads as naming a phantom.
+ * Mostly lib/security/types.ts#LEGACY_ROLE_MAP input spellings.
+ *
+ * `title_agent` and `lender` are here for the SAME reason and it is not a legacy
+ * one: both are VENDOR CATEGORIES rather than seats (m307 removed title_agent
+ * from the CHECK; the owner's 2026-09-04 ruling — "lender is not a user type, it
+ * is a vendor category" — removed lender), and BOTH remain canonical roles in
+ * lib/security/types.ts and live values in `user_role_assignments.role`, which
+ * has no CHECK. Measured live 2026-09-04: one `lender` grant exists, and that
+ * row is what links a person to their lender vendor.
+ *
+ * `lender` was added to this list ON THE SAME DAY the regenerated vocabulary
+ * cache dropped it from the CHECK, and the count is the finding: the phantom
+ * sweep went from 0 to 17 the moment the cache caught up, all 17 naming `lender`
+ * in an array that is still correct. That is the alphabet going stale, not
+ * seventeen new defects — and leaving them "found" would have trained the next
+ * reader to ignore this sweep.
+ */
 const LEGACY_INPUT_SPELLINGS = [
   "broker_admin", "super_admin", "transaction_coordinator", "compliance_manager",
   "title", "client", "team_leader", "solo_agent", "team_member", "title_agent",
-  "marketing",
+  "marketing", "lender",
 ] as const
 
 const KNOWN_ROLE_WORDS = new Set<string>([...STORABLE_USER_TYPES, ...LEGACY_INPUT_SPELLINGS])
