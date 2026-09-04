@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1686 of 1744 pairs) — storing them would be
+ * overwhelming majority (1687 of 1745 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1819 edges across 707 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1744 unordered
+ * MEASURED AT GENERATION: 1820 edges across 707 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1745 unordered
  * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-01
+ * generated: 2026-09-04
  * source: public.live_foreign_keys_json()
- * body-sha256: b4cf2b48977c1c3455af40943d735185481be35a419d39d797c58fbc419da913
+ * body-sha256: b5fdd21344c57137680d40cfb105eb5c62588455f35d90eb397bc9c5f027d811
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -232,7 +232,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "buyer_behavior_predictions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "buyer_broker_agreements": { "agent_id": "agents", "brokerage_id": "brokerages", "buyer_contact_id": "contacts", "cancelled_by": "users", "created_by": "users", "superseded_by": "buyer_broker_agreements" },
   "buyer_fatigue_scores": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
-  "buyer_financial_profiles": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "lender_referred_partner_id": "referral_partners", "verified_by": "users" },
+  "buyer_financial_profiles": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "lender_referred_partner_id": "referral_partners", "lender_referred_vendor_id": "vendors", "verified_by": "users" },
   "buyer_intake_tokens": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "buyer_move_cases": { "brokerage_id": "brokerages" },
   "buyer_stage_coaching": { "brokerage_id": "brokerages" },

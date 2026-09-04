@@ -104,9 +104,14 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
           profileResult.profile.down_payment_amount != null ? String(profileResult.profile.down_payment_amount) : ""
         )
         setAgentNotes(profileResult.profile.agent_notes ?? "")
-        // Restore previously linked lender
-        if (profileResult.profile.lender_referred_partner_id) {
-          setSelectedLenderId(profileResult.profile.lender_referred_partner_id)
+        // Restore previously linked lender. THE VENDOR COLUMN (m605), not the
+        // referral_partners one this used to read: the picker above is
+        // getBrokerageLenders() — the brokerage's `vendors` bench — so a
+        // referral_partners id restored into it would select nothing, and the id
+        // this panel WROTE was never stored anyway (a vendors.id in a
+        // referral_partners FK is a 23503 that loses the whole statement).
+        if (profileResult.profile.lender_referred_vendor_id) {
+          setSelectedLenderId(profileResult.profile.lender_referred_vendor_id)
         }
       } else {
         setProfile(null)
@@ -243,10 +248,15 @@ ${agentName ?? "[Agent Name]"}`
         agentUserId,
         agentName: agentName ?? "Your Agent",
         buyerName: buyerName ?? "Buyer",
-        partnerId: selectedLender.id,
+        // `partnerId` is DELIBERATELY NOT PASSED (m605). It is a
+        // referral_partners id and this panel holds none — it lists the
+        // brokerage's `vendors` bench. Passing selectedLender.id there was a
+        // 23503 on every send: the buyer's profile kept no lender and the
+        // reader above restored nothing on reload.
         partnerName: selectedLender.full_name,
-        // vendors.id — getBrokerageLenders now returns the brokerage's lender
-        // VENDOR bench (owner ruling: lender is a vendor category, not a user type).
+        // vendors.id — getBrokerageLenders returns the brokerage's lender
+        // VENDOR bench (owner ruling: lender is a vendor category, not a user
+        // type). This is the id class that column now holds.
         lenderVendorId: selectedLender.id,
       })
       if (result.success) {

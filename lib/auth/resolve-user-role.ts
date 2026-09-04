@@ -422,22 +422,28 @@ export function isAgentOrTenantAdmin(profile: {
 //   comment "Reading the books is a wider circle than administering the
 //   brokerage: a compliance officer reads them and does not administer."
 //
-//   m472/m530 public.is_brokerage_finance_admin() admits
-//   ('admin','broker','broker_owner') — plus is_tenant_principal_team_lead() as
-//   a third disjunct — and NOT compliance_officer.
+//   m472/m530/m604 public.is_brokerage_finance_admin() admits
+//   ('admin','broker','broker_admin','broker_owner') — plus
+//   is_tenant_principal_team_lead() as a third disjunct — and NOT team_lead,
+//   NOT compliance_officer. This set and that function now agree exactly.
 //
-//   MEASURED LIVE 2026-09-04 on hrvaqgvukzxfskkcrwbt, CORRECTING THIS LANE'S
-//   OWN DRAFT, which had written `broker_admin` into that list. It is not there.
-//   That is a PRE-EXISTING app/DB drift, and it is recorded here rather than
-//   repaired in either direction on an integrator's judgement: the set BELOW
-//   has admitted `broker_admin` to the brokerage's books since m530 made it a
-//   storable user_type, while the SQL predicate still refuses it. So an
-//   RLS-bound finance read by a broker admin comes back as zero rows with
-//   `error` null, and a service-client finance write by one is real. Widening a
-//   MONEY predicate is an owner ruling, not a tidy-up — UNRESOLVED, and now
-//   written where the next reader is already looking instead of being restated
-//   wrongly. It does not affect the compliance_officer subtraction below, which
-//   the live definition confirms exactly.
+//   ── THE DRIFT THIS PARAGRAPH USED TO RECORD IS CLOSED, AND IT WAS NOT A
+//      RULING TO MAKE ────────────────────────────────────────────────────────
+//   Wave 27 measured `broker_admin` in this set and NOT in the live predicate,
+//   and left it UNRESOLVED on the reasoning that widening a money predicate is
+//   the owner's call. Measuring it properly showed that reasoning was wrong
+//   about the facts. m530 step 2b WROTE this exact widening, with a header
+//   explaining at length why skipping it creates precisely this defect — and it
+//   never landed. Of the seven predicates m530 lists, six carried
+//   'broker_admin' live and this one carried ZERO. There was no ruling
+//   outstanding; there was a half-applied migration.
+//
+//   m604 re-applies m530's step 2b verbatim. For the whole interval between
+//   them the app admitted a seat RLS refused: an RLS-bound finance read by a
+//   broker admin came back as zero rows with `error` null, and — worse, because
+//   several of these gates run on the SERVICE client, where the app predicate is
+//   the only gate — a finance WRITE by the same seat was real. The same person
+//   got two different answers depending on which client the surface used.
 //
 // So the live database ALREADY gives this seat the finance READ and refuses it
 // the finance WRITE. Letting the role ride along into this set would have made

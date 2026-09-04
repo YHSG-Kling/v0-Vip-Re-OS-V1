@@ -270,12 +270,24 @@ export async function convertBuyerLeadOnIntent(
   // finance_type is NOT NULL on the live schema (no honest "unknown" value exists yet).
   if (plan.startsPreapproval) {
     const pre = params.preapproval ?? {}
-    const { data: existingFin } = await svc
+    const { data: existingFin, error: existingFinErr } = await svc
       .from("buyer_financial_profiles")
-      .select("id, finance_type, is_cash_buyer, verified")
+      .select("id, finance_type, is_cash_buyer, verified, lender_referral_status")
       .eq("contact_id", contactId)
       .maybeSingle()
-    const ex = existingFin as { id: string; finance_type: string | null; is_cash_buyer: boolean | null; verified: boolean | null } | null
+    // §3: supabase-js RESOLVES refusals. A refused read here arrived as `ex = null`,
+    // which this block reads as "brand-new profile" — and a brand-new profile is
+    // exactly the case that writes the "conventional" placeholder and resets the
+    // referral status. A denied read must not be able to overwrite a real one.
+    if (existingFinErr) {
+      console.error(
+        `[convert-buyer-lead-on-intent] buyer_financial_profiles read REFUSED for contact ${contactId} — skipping the pre-approval upsert rather than treating a refusal as a new profile:`,
+        existingFinErr.message,
+      )
+    }
+    const ex = existingFinErr
+      ? undefined
+      : (existingFin as { id: string; finance_type: string | null; is_cash_buyer: boolean | null; verified: boolean | null; lender_referral_status: string | null } | null)
     const { data: profile, error: profErr } = await svc
       .from("buyer_financial_profiles")
       .upsert(
@@ -288,8 +300,32 @@ export async function convertBuyerLeadOnIntent(
           // verified stays false on a NEW request — but an already-verified profile is
           // never un-verified by a lead-intent replay.
           verified:                 ex?.verified === true,
-          // (not_referred|referred|in_progress|pre_approved|declined)
-          lender_referral_status:   "referred",
+          // ── "referred" WAS THE WRONG WORD, AND IT WALKED THE STATUS BACKWARDS ──
+          //
+          // This block's own heading says it STARTS the pre-approval step, and its
+          // comment above says it must "NEVER clobber real loan facts already on the
+          // profile". It then hardcoded `lender_referral_status: "referred"` inside an
+          // upsert — so on every intent replay it wrote "referred" over whatever the
+          // column already held.
+          //
+          // Two defects in one literal, against the live CHECK
+          // (declined | in_progress | not_referred | pre_approved | referred):
+          //
+          //   · IT NAMED THE WRONG STATE. Starting a pre-approval is not a referral.
+          //     Nobody has been introduced to any lender at this point — neither
+          //     lender_referred_vendor_id (the brokerage bench, m605) nor
+          //     lender_referred_partner_id (the agent's own rolodex) is written here,
+          //     so the row claimed a referral it could not name. `in_progress` is the
+          //     value the vocabulary already has for exactly this.
+          //   · IT REGRESSED REAL PROGRESS. An unconditional write in an upsert means
+          //     a buyer who had reached `pre_approved` was knocked back to `referred`
+          //     by an ISA replay, and the surfaces that read this column would show
+          //     the deal moving backwards for no reason a human could see.
+          //
+          // So: only ADVANCE from the resting state. An existing status is preserved
+          // exactly, and a genuinely new row starts at `in_progress` because this
+          // block is the thing that starts it.
+          lender_referral_status:   ex?.lender_referral_status ?? "in_progress",
           updated_at:               new Date().toISOString(),
         },
         { onConflict: "contact_id" },

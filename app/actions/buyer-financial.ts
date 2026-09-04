@@ -326,17 +326,46 @@ export async function markFinanciallyVerified(params: {
 
 // ─── CONNECT BUYER TO LENDER ─────────────────────────────────────────────────
 
+// ─── TWO ID CLASSES, AND THEY ARE NOT INTERCHANGEABLE (m605) ────────────────
+//
+// `partnerId` used to be REQUIRED and was written straight into
+// buyer_financial_profiles.lender_referred_partner_id, which FKs
+// `referral_partners`. Two panels call this action and only one of them holds an
+// id of that class:
+//
+//   app/crm/contacts/[contactId]/…/financial-verification-panel.tsx lists
+//     loadMortgageBrokers() — referral_partners rows scoped to the AGENT'S OWN
+//     agents.id. It passed a referral_partners id. Correct, unchanged.
+//
+//   app/crm/components/financial-verification-panel.tsx lists
+//     getBrokerageLenders() — `vendors` on the BROKERAGE'S lender bench. It
+//     passed a vendors.id into the same parameter, so every write it made was a
+//     23503 that lost the WHOLE statement: the introduction was recorded in
+//     credit_partner_referrals and an activities row, the buyer's own profile
+//     kept no lender, and the panel's own reader at :108 restored nothing on
+//     reload. It never fired in anger only because the tables are empty
+//     pre-rollout (measured 2026-09-04: 0 rows in all three).
+//
+// Both rails are REAL and neither is a duplicate of the other (§6 forbids two
+// spellings of one idea, not two ideas): a brokerage-wide vendor bench and an
+// individual agent's rolodex are different business objects with different
+// tenancy. So m605 BUILT the missing half — `lender_referred_vendor_id`, FK
+// vendors — and each rail now writes and reads its own class.
 export async function connectBuyerToLender(params: {
   contactId: string
   brokerageId?: string  // ignored — derived from contact
   agentUserId?: string  // ignored — derived from session
   agentName: string
   buyerName: string
-  partnerId: string
+  /** A `referral_partners` id — the AGENT'S OWN mortgage-broker rolodex, from
+   *  loadMortgageBrokers(). Now OPTIONAL: the brokerage-bench panel has no id of
+   *  this class and must not invent one. Omit it and pass `lenderVendorId`. */
+  partnerId?: string
   partnerName: string
-  /** vendors.id of the lender being introduced. Renamed from `lenderUserId`:
-   *  a lender is a VENDOR, not a user (owner ruling), and the id this receives
-   *  from getBrokerageLenders has always been whatever that reader returned. */
+  /** A `vendors` id — the BROKERAGE'S lender bench, from getBrokerageLenders().
+   *  Renamed from `lenderUserId` because a lender is a VENDOR, not a user
+   *  (owner ruling). Verified against the bench below before anything is
+   *  written, and persisted to lender_referred_vendor_id (m605). */
   lenderVendorId?: string
 }): Promise<{ success: boolean; error?: string }> {
   const access = await requireContactAccess(params.contactId)
@@ -345,6 +374,17 @@ export async function connectBuyerToLender(params: {
   // don't restrict to agent-only here.
 
   const supabase = createServiceClient()
+
+  // ONE OF THE TWO RAILS MUST BE NAMED. Both parameters are optional
+  // individually, so a caller supplying NEITHER would record a referral against
+  // a lender nobody can identify — the row would say an introduction happened
+  // and be unable to say to whom. Refuse it here rather than write it.
+  if (!params.partnerId && !params.lenderVendorId) {
+    return {
+      success: false,
+      error: "No lender was selected — pick one from your brokerage's bench or from your own referral partners.",
+    }
+  }
 
   // Verify the lender VENDOR (if specified) is in the caller's brokerage AND is
   // actually on the lender bench — prevents fan-out of fake "agent
@@ -393,14 +433,22 @@ export async function connectBuyerToLender(params: {
     .select("id")
     .eq("contact_id", params.contactId)
     .maybeSingle()
+  // EACH RAIL WRITES ITS OWN COLUMN (m605), and a rail the caller did not name
+  // is left UNTOUCHED rather than nulled: an agent introducing a buyer to the
+  // brokerage's bench lender must not silently erase the mortgage broker their
+  // colleague introduced last week. Both are legitimate, and the two columns are
+  // independent by design.
+  const referralFields: Record<string, unknown> = {
+    lender_referral_status: "referred",
+    updated_at:             new Date().toISOString(),
+  }
+  if (params.partnerId)      referralFields.lender_referred_partner_id = params.partnerId
+  if (params.lenderVendorId) referralFields.lender_referred_vendor_id  = params.lenderVendorId
+
   const { error: profileError } = existingProfile
     ? await supabase
         .from("buyer_financial_profiles")
-        .update({
-          lender_referral_status:     "referred",
-          lender_referred_partner_id: params.partnerId,
-          updated_at:                 new Date().toISOString(),
-        })
+        .update(referralFields)
         .eq("contact_id", params.contactId)
     : await supabase
         .from("buyer_financial_profiles")
@@ -413,9 +461,7 @@ export async function connectBuyerToLender(params: {
           // on a brand-new row and is replaced the moment real pre-approval terms land.
           finance_type:                "conventional",
           is_cash_buyer:               false,
-          lender_referral_status:      "referred",
-          lender_referred_partner_id:  params.partnerId,
-          updated_at:                  new Date().toISOString(),
+          ...referralFields,
         })
 
   if (profileError) return { success: false, error: profileError.message }
