@@ -3,6 +3,10 @@ import {
   copyContractTerms,
 } from "./contract-terms"
 import { createServiceClient } from "@/lib/supabase/service"
+// THE ONE DEFINITION of "the executed contract is on file" — imported, never
+// re-spelled, so this gate and the transaction-creation gate that now refuses on
+// the same fact cannot drift apart (CLAUDE.md §6).
+import { offerExecutionPath } from "./offer-execution-state"
 import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
@@ -133,9 +137,15 @@ export async function assertOfferReadyForTransaction(params: {
   const o = data as OfferGateRow
   if (o.transaction_id)  return { allowed: false, reason: "transaction already exists for this offer", offer: o }
   if (!o.buyer_signed_at) return { allowed: false, reason: "buyer has not signed yet", offer: o }
-  const executedViaResponse = o.seller_response_type === "accepted" && !!o.fully_signed_contract_received_at
-  const executedViaCounter  = !!o.seller_signed_at && !!o.fully_signed_contract_received_at
-  if (!executedViaResponse && !executedViaCounter) {
+  // TOMBSTONE (§1/§6, 2026-09-04): the two-line `executedViaResponse ||
+  // executedViaCounter` boolean that stood here was one of THREE copies of the
+  // same reading. SURVIVOR: lib/transactions/offer-execution-state.ts —
+  // `offerExecutionPath` (the seller half, which also carries the provenance the
+  // gate event records) and `isOfferFullyExecuted` (both legs together). The
+  // buyer leg stays its OWN refusal one line above, because "the buyer has not
+  // signed" and "the executed contract is not on file" are different remedies
+  // and this gate's messages are read by a TC.
+  if (!offerExecutionPath(o)) {
     return { allowed: false, reason: "executed contract not on file (seller_response_type or seller_signed_at + fully_signed_contract_received_at missing)", offer: o }
   }
   if (!o.compliance_passed_at) {

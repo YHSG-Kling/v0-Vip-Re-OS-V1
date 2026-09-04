@@ -43,6 +43,11 @@ import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
 // Imported, never re-spelled: this checkpoint and the gate that later refuses on
 // the identical fact must not be able to disagree (CLAUDE.md §6).
 import { findUnexecutedDocuments }   from "@/lib/transactions/transaction-creation-gate"
+// THE ONE DEFINITION of "fully executed by both buyer and seller" (§6). This
+// checkpoint refuses on it, the offer bridge refuses on it, and the
+// transaction-creation gate now refuses on it as a NAMED obligation — one
+// reading, three enforcement points, no drift.
+import { offerExecutionPath, SELLER_EXECUTION_EVIDENCE } from "@/lib/transactions/offer-execution-state"
 import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag }       from "@/lib/notifications/notify-helpers"
 import { resolveOfferComplianceFlags } from "@/lib/compliance/offer-flag-resolution"
@@ -120,9 +125,15 @@ export async function submitOfferToCompliance(
   //   B) Seller-first counter: seller_signed_at is set AND buyer signed the
   //      counter envelope (fully_signed_contract_received_at stamped by the
   //      webhook automatically when both sides signed).
-  const executedViaResponse = offer.seller_response_type === "accepted" && !!offer.fully_signed_contract_received_at
-  const executedViaCounter  = !!offer.seller_signed_at && !!offer.fully_signed_contract_received_at
-  if (!executedViaResponse && !executedViaCounter) {
+  //
+  // TOMBSTONE (§1/§6, 2026-09-04): the two-line `executedViaResponse ||
+  // executedViaCounter` boolean that stood here was the third copy of one
+  // reading. SURVIVOR: lib/transactions/offer-execution-state.ts:offerExecutionPath.
+  // It returns WHICH path established the contract, which is what step 3's gate
+  // event needs to record — a boolean alone could not have replaced this without
+  // the provenance being re-derived from a fourth copy of the same condition.
+  const executionPath = offerExecutionPath(offer as any)
+  if (!executionPath) {
     return { success: false, error: "Executed contract not on file yet — seller hasn't accepted (record seller response) or signed counter (record seller-signed counter)" }
   }
 
@@ -376,9 +387,10 @@ export async function submitOfferToCompliance(
       evidence:       buyerEvidence,
     },
     seller: {
-      established_by: executedViaResponse
-        ? "offers.seller_response_type='accepted' + offers.fully_signed_contract_received_at"
-        : "offers.seller_signed_at + offers.fully_signed_contract_received_at",
+      // The evidence STRING comes from the survivor's own table too — the
+      // durable audit record of what was read must not be a fourth spelling of
+      // the columns the predicate actually consulted.
+      established_by: SELLER_EXECUTION_EVIDENCE[executionPath],
       at:             offer.fully_signed_contract_received_at ?? null,
     },
     // Did the FIELD-LEVEL packet independently show a signature block for each

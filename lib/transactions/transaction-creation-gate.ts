@@ -10,8 +10,38 @@
  *    required document list is in the settings for the transaction coordinator
  *    or admin."
  *
- * Four obligations, ALL of which must hold:
+ * ── AND THE PRECONDITION THE OWNER PUT IN FRONT OF ALL OF IT (2026-09-04) ────
  *
+ *   "compliance is involved when an offer gates to create a transaction ONCE THE
+ *    OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER, the compliance gate runs
+ *    through the documents against an approved checklist provided by the
+ *    brokerage to make sure all documents are present and that all signatures
+ *    and initials are present, then the executed offer becomes a transaction,
+ *    WHETHER WE REPRESENT THE SELLER, OR/AND THE BUYER."
+ *
+ * Full execution was NOT one of this gate's obligations. The gate never read
+ * buyer_signed_at, seller_signed_at, seller_response_type or
+ * fully_signed_contract_received_at at all — it inferred both-sides execution
+ * only INDIRECTLY, from `signature_completeness` blobs on required documents,
+ * which is a different claim about different rows. The direct reading lived in
+ * ONE other function (offer-bridge:assertOfferReadyForTransaction) that only ONE
+ * of the five `transactions` writers runs. It is now obligation 1 HERE, so every
+ * writer that reaches this gate with an offer is held to it and the bridge's own
+ * pre-check becomes a redundant early refusal rather than the only one.
+ *
+ * REPRESENTATION DOES NOT VARY IT. `dealType` already varies the CHECKLIST (a
+ * seller-side deal requires seller-side paperwork); the EXECUTION PARTIES are
+ * deliberately both sides regardless — see TRANSACTION_CONTRACT_PARTIES. That is
+ * the owner's "whether we represent the seller, or/and the buyer", and it is
+ * why the new obligation reads the same four columns on every deal type.
+ *
+ * Five obligations, ALL of which must hold:
+ *
+ *   0. THE OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER — buyer_signed_at
+ *      set, plus the fully-signed contract actually on file by one of the two
+ *      admissible paths (the seller accepted, or the seller countered and the
+ *      buyer signed back). Read through the ONE predicate every other
+ *      enforcement point uses, lib/transactions/offer-execution-state.ts.
  *   1. COMPLIANCE IS GOOD — not pending, not unknown, not skipped. Established
  *      from the offer's own source-of-truth evidence (offers.compliance_passed_at
  *      plus the `buyer.offer.compliance.passed` audit activity) AND the absence
@@ -70,6 +100,16 @@ import {
   type DocumentClassification,
 } from "@/lib/compliance/required-documents"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+// OBLIGATION 0's reading, imported from the ONE place it is defined (§6). The
+// offer bridge and the compliance checkpoint refuse on the identical predicate,
+// so the three enforcement points cannot disagree about what "fully executed"
+// means — which is exactly how this fact came to be enforced in one function and
+// absent from the gate.
+import {
+  isOfferFullyExecuted,
+  offerExecutionPath,
+  SELLER_EXECUTION_EVIDENCE,
+} from "./offer-execution-state"
 // The flag ledger's own names — imported, never re-spelled, so this gate and the
 // resolver that closes those flags can never disagree about what "open" means.
 import { OFFER_COMPLIANCE_FLAG_EVENT, FLAG_STATUS_OPEN } from "@/lib/compliance/offer-flag-resolution"
@@ -84,6 +124,12 @@ export const TRANSACTION_CONTRACT_PARTIES = ["buyer", "seller"] as const
 
 /** Which obligation refused. Ordered as the owner stated them. */
 export type GateRequirement =
+  /**
+   * THE PRECONDITION: "once the offer is fully executed by both buyer and
+   * seller". Refuses BEFORE compliance is even consulted, because on the owner's
+   * sentence compliance is what runs once this is true.
+   */
+  | "fully_executed"
   | "compliance_good"
   | "required_documents_present"
   | "documents_fully_signed"
@@ -120,6 +166,14 @@ export interface TransactionCreationGateResult {
   /** One sentence a caller can put in an error/notification verbatim. */
   reason: string
   detail: {
+    /**
+     * Obligation 0. NULL when there was no offer to read it from — "never
+     * established" is not "established false", exactly as requiredTotal is null
+     * rather than 0 when the checklist could not be read.
+     */
+    fullyExecuted:    boolean | null
+    /** Which columns established each side, when they did. */
+    executionEvidence: string[]
     complianceState:  "passed" | "not_passed" | "unknown"
     /** null when the checklist could not be read — NOT zero. */
     requiredTotal:    number | null
@@ -210,23 +264,73 @@ export function findUnexecutedDocuments(
   return out
 }
 
-/** Compliance evidence for one offer — read fail-closed. */
+/**
+ * The columns this gate reads off the offer. Hoisted OUT of the query chain for
+ * the same reason offer-bridge hoists its own: scripts/tenant-scope-guard.ts
+ * examines the 500 characters that follow `.from("<table>")` looking for scoping
+ * evidence, and a select list long enough to push `.eq("id", …)` past that
+ * window would read as an unscoped query.
+ *
+ * THE FOUR EXECUTION COLUMNS ARE NEW HERE and are the whole point of obligation
+ * 0: this gate previously selected only `id, brokerage_id, transaction_id,
+ * compliance_passed_at`, so it could not have refused an un-executed offer even
+ * in principle — it had never read the columns that say so.
+ */
+const GATE_OFFER_COLUMNS = [
+  "id", "brokerage_id", "transaction_id", "compliance_passed_at",
+  "buyer_signed_at", "seller_signed_at", "seller_response_type",
+  "fully_signed_contract_received_at",
+].join(", ")
+
+/** Compliance AND execution evidence for one offer — read fail-closed. */
 async function readOfferCompliance(
   supabase: SupabaseClient,
   params: { offerId: string; brokerageId: string },
 ): Promise<
-  | { ok: true; passed: boolean; evidence: string[]; why: string | null }
+  | {
+      ok: true; passed: boolean; evidence: string[]; why: string | null
+      /** Obligation 0 — both sides signed and the contract is on file. */
+      fullyExecuted: boolean
+      /** Why not, when not. Null when it is. */
+      executionWhy: string | null
+      /** What established each side, for the refusal text and the detail block. */
+      executionEvidence: string[]
+    }
   | { ok: false; error: string }
 > {
   const { data: offer, error: offerErr } = await supabase
     .from("offers")
-    .select("id, brokerage_id, transaction_id, compliance_passed_at")
+    .select(GATE_OFFER_COLUMNS)
     .eq("id", params.offerId)
     .maybeSingle()
   if (offerErr) return { ok: false, error: `offer could not be read: ${offerErr.message}` }
   if (!offer)   return { ok: false, error: "offer not found" }
   if ((offer as any).brokerage_id !== params.brokerageId) {
     return { ok: false, error: "offer belongs to a different brokerage" }
+  }
+
+  // ── OBLIGATION 0: FULLY EXECUTED BY BOTH BUYER AND SELLER ─────────────────
+  // Read through the ONE predicate (§6). The refusal NAMES the missing side,
+  // because "the buyer has not signed" and "the seller has not accepted" go to
+  // different people.
+  const execPath = offerExecutionPath(offer as any)
+  const buyerSignedAt = (offer as any).buyer_signed_at as string | null
+  const fullyExecuted = isOfferFullyExecuted(offer as any)
+  const executionEvidence: string[] = []
+  if (buyerSignedAt) executionEvidence.push(`offers.buyer_signed_at=${buyerSignedAt}`)
+  if (execPath)      executionEvidence.push(SELLER_EXECUTION_EVIDENCE[execPath])
+  let executionWhy: string | null = null
+  if (!fullyExecuted) {
+    const missing: string[] = []
+    if (!buyerSignedAt) missing.push("the buyer has not signed")
+    if (!execPath) {
+      missing.push(
+        (offer as any).fully_signed_contract_received_at
+          ? "the seller has neither accepted nor signed a counter"
+          : "the fully-signed contract is not on file",
+      )
+    }
+    executionWhy = `this offer is not fully executed by both buyer and seller — ${missing.join(" and ")}`
   }
 
   const evidence: string[] = []
@@ -268,6 +372,7 @@ async function readOfferCompliance(
       passed: false,
       evidence,
       why: `${openFlags.length} compliance flag(s) still open on this offer${titles ? `: ${titles}` : ""}`,
+      fullyExecuted, executionWhy, executionEvidence,
     }
   }
 
@@ -277,10 +382,10 @@ async function readOfferCompliance(
       : !compliancePassedAt
         ? "the compliance-passed event exists but offers.compliance_passed_at was never stamped"
         : "offers.compliance_passed_at is stamped but the compliance-passed audit event is missing"
-    return { ok: true, passed: false, evidence, why: half }
+    return { ok: true, passed: false, evidence, why: half, fullyExecuted, executionWhy, executionEvidence }
   }
 
-  return { ok: true, passed: true, evidence, why: null }
+  return { ok: true, passed: true, evidence, why: null, fullyExecuted, executionWhy, executionEvidence }
 }
 
 /**
@@ -295,6 +400,8 @@ export async function assertTransactionCreationAllowed(
   const checkedAt = new Date().toISOString()
   const door = params.door ? ` (${params.door})` : ""
   const baseDetail: TransactionCreationGateResult["detail"] = {
+    fullyExecuted:      null,
+    executionEvidence:  [],
     complianceState:    "unknown",
     requiredTotal:      null,
     missingRequired:    [],
@@ -322,6 +429,11 @@ export async function assertTransactionCreationAllowed(
   const refusals: GateRefusal[] = []
   let complianceState: "passed" | "not_passed" | "unknown" = "unknown"
   let complianceEvidence: string[] = []
+  // NULL, not false: "no offer, so execution was never established" is a
+  // different fact from "an offer that is not executed", and a boolean cannot
+  // hold both. Same discipline as requiredTotal (null ≠ 0).
+  let fullyExecuted: boolean | null = null
+  let executionEvidence: string[] = []
 
   if (!params.offerId) {
     // No offer means no compliance evidence exists for this deal. The owner's
@@ -343,6 +455,18 @@ export async function assertTransactionCreationAllowed(
     }
     complianceEvidence = compliance.evidence
     complianceState = compliance.passed ? "passed" : "not_passed"
+    fullyExecuted = compliance.fullyExecuted
+    executionEvidence = compliance.executionEvidence
+    // OBLIGATION 0 REFUSES FIRST, and it refuses under its OWN name. The owner
+    // put full execution in FRONT of the compliance run ("compliance is involved
+    // … once the offer is fully executed"), so an un-executed offer must not be
+    // told its problem is compliance — the remedy is a signature, not a TC.
+    if (!compliance.fullyExecuted) {
+      refusals.push({
+        requirement: "fully_executed",
+        message: `Transaction creation refused${door}: ${compliance.executionWhy}. A transaction is created only once the offer is fully executed by both buyer and seller.`,
+      })
+    }
     if (!compliance.passed) {
       refusals.push({
         requirement: "compliance_good",
@@ -408,7 +532,7 @@ export async function assertTransactionCreationAllowed(
     return refuse([{
       requirement: "gate_could_not_run",
       message: `Transaction creation refused${door}: the required-document check could not run (${audit.unavailable_reason}). Nothing was verified, so nothing may be created.`,
-    }], { ...baseDetail, complianceState, complianceEvidence })
+    }], { ...baseDetail, fullyExecuted, executionEvidence, complianceState, complianceEvidence })
   }
 
   if (audit.missing_blocking.length > 0) {
@@ -446,6 +570,8 @@ export async function assertTransactionCreationAllowed(
   }
 
   const detail: TransactionCreationGateResult["detail"] = {
+    fullyExecuted,
+    executionEvidence,
     complianceState,
     requiredTotal:   audit.required_total,
     missingRequired: audit.missing_blocking.map(documentClassificationLabel),
@@ -460,7 +586,7 @@ export async function assertTransactionCreationAllowed(
   return {
     allowed: true,
     refusals: [],
-    reason: `Compliance gate passed at ${checkedAt} — compliance good, all ${audit.required_total} required document(s) present, every signature and every initial complete.`,
+    reason: `Compliance gate passed at ${checkedAt} — offer fully executed by both buyer and seller, compliance good, all ${audit.required_total} required document(s) present, every signature and every initial complete.`,
     detail,
   }
 }

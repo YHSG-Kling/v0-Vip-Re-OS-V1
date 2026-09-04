@@ -31,7 +31,28 @@
  *      and while the listing itself was still a draft.
  *
  * All five now run lib/transactions/transaction-creation-gate.ts, which refuses
- * unless all four obligations hold, and refuses when it cannot RUN.
+ * unless all five obligations hold, and refuses when it cannot RUN.
+ *
+ * ── OBLIGATION 0, ADDED 2026-09-04 ──────────────────────────────────────────
+ *
+ *   "compliance is involved when an offer gates to create a transaction ONCE THE
+ *    OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER … then the executed offer
+ *    becomes a transaction, whether we represent the seller, or/and the buyer."
+ *
+ * Full execution was NOT one of the gate's obligations. The gate's offer SELECT
+ * was `id, brokerage_id, transaction_id, compliance_passed_at` — it had never
+ * read buyer_signed_at, seller_signed_at, seller_response_type or
+ * fully_signed_contract_received_at, and inferred both-sides execution only
+ * indirectly from signature_completeness blobs on documents, which is a
+ * different claim about different rows. The direct reading lived in ONE other
+ * function (offer-bridge:assertOfferReadyForTransaction) that only ONE of the
+ * five writers runs. It is now a NAMED obligation on the gate itself.
+ *
+ * AND THE SAME BOOLEAN HAD THREE SPELLINGS (§6) — offer-execution-state,
+ * offer-bridge and submit-to-compliance each wrote it out. Merged onto the
+ * survivor (lib/transactions/offer-execution-state.ts), which was itself given
+ * the BUYER leg it had always been missing, and the two copies deleted with
+ * tombstones. A census guard below keeps a fourth from appearing.
  *
  * ── MEASUREMENT DISCIPLINE (CLAUDE.md §2) ────────────────────────────────────
  * Every absence assertion below carries a POSITIVE CONTROL: the same finder is
@@ -121,9 +142,25 @@ const compliancePassedActivities = () => ([
   },
 ])
 
+/**
+ * The offer as it reaches this gate LEGITIMATELY: fully executed by both buyer
+ * and seller, with compliance stamped.
+ *
+ * THE FOUR EXECUTION COLUMNS ARE NEW ON THIS FIXTURE (2026-09-04) and every
+ * "ALLOWED" assertion below depends on them. They are not decoration: obligation
+ * 0 refuses without them, and an offer that is NOT fully executed has no
+ * business reaching a compliance run at all on the owner's ruling. The old
+ * fixture omitted them because the gate never read them — which is precisely the
+ * defect being closed, so the fixture had to gain the columns the gate gained.
+ */
 const offerRow = (over: Row = {}) => ({
   id: OFFER, brokerage_id: BROKERAGE, transaction_id: null,
-  compliance_passed_at: "2026-08-01T00:00:00Z", ...over,
+  compliance_passed_at: "2026-08-01T00:00:00Z",
+  buyer_signed_at: "2026-07-30T00:00:00Z",
+  seller_response_type: "accepted",
+  seller_signed_at: null,
+  fully_signed_contract_received_at: "2026-07-31T00:00:00Z",
+  ...over,
 })
 
 /** The brokerage's SETTINGS checklist: one blocking signed_contract. */
@@ -189,6 +226,94 @@ async function main() {
     allGood.allowed === true && allGood.refusals.length === 0)
   check("  ↳ and it says so with the required TOTAL beside the verdict ('nothing required' ≠ 'nothing checked')",
     allGood.detail.requiredTotal === 1 && allGood.detail.complianceState === "passed")
+
+  // ── 0. FULLY EXECUTED BY BOTH BUYER AND SELLER ────────────────────────────
+  //
+  // Owner, 2026-09-04: "compliance is involved when an offer gates to create a
+  // transaction ONCE THE OFFER IS FULLY EXECUTED BY BOTH BUYER AND SELLER …
+  // whether we represent the seller, or/and the buyer."
+  //
+  // This gate never read buyer_signed_at, seller_signed_at, seller_response_type
+  // or fully_signed_contract_received_at — it selected four columns, none of
+  // them these. Full execution was enforced in ONE other function
+  // (offer-bridge:assertOfferReadyForTransaction) that only ONE of the five
+  // `transactions` writers runs. It is now a NAMED obligation here.
+  console.log("\n[obligation 0 — fully executed by BOTH buyer and seller]\n")
+
+  const executedFixture = (offerOver: Row) => makeClient({
+    tables: {
+      offers: [offerRow(offerOver)],
+      activities: compliancePassedActivities(),
+      brokerage_required_documents: checklist(),
+      documents: [contractDoc(FULLY_EXECUTED)],
+    },
+  })
+
+  const buyerUnsigned = await assertTransactionCreationAllowed(
+    executedFixture({ buyer_signed_at: null }), GATE_PARAMS)
+  check("REFUSED when the BUYER has not signed, even with compliance stamped and every document complete",
+    buyerUnsigned.allowed === false
+    && buyerUnsigned.refusals.some(r => r.requirement === "fully_executed"))
+  check("  ↳ …and it names the BUYER as the missing side — a signature to chase, not a TC to call",
+    /buyer has not signed/i.test(buyerUnsigned.reason))
+
+  const noSellerResponse = await assertTransactionCreationAllowed(
+    executedFixture({ seller_response_type: "countered", seller_signed_at: null }), GATE_PARAMS)
+  check("REFUSED when the SELLER has neither accepted nor signed a counter",
+    noSellerResponse.allowed === false
+    && noSellerResponse.refusals.some(r => r.requirement === "fully_executed"))
+
+  const noContractOnFile = await assertTransactionCreationAllowed(
+    executedFixture({ fully_signed_contract_received_at: null }), GATE_PARAMS)
+  check("REFUSED when the fully-signed contract is NOT on file, however the seller responded",
+    noContractOnFile.allowed === false
+    && noContractOnFile.refusals.some(r => r.requirement === "fully_executed"))
+  check("  ↳ …and it says the CONTRACT is not on file, not that somebody failed to sign",
+    /contract is not on file/i.test(noContractOnFile.reason))
+
+  // THE COUNTER PATH IS EQUALLY VALID — a gate that admitted only 'accepted'
+  // would refuse every countered deal in the product.
+  const counterPath = await assertTransactionCreationAllowed(
+    executedFixture({ seller_response_type: "countered", seller_signed_at: "2026-07-31T00:00:00Z" }), GATE_PARAMS)
+  check("ALLOWED on the COUNTER path (seller countered, buyer signed back, contract on file)",
+    counterPath.allowed === true)
+
+  // REPRESENTATION DOES NOT VARY THE EXECUTION PARTIES. The owner's "whether we
+  // represent the seller, or/and the buyer" — the checklist varies by dealType,
+  // both signatures do not.
+  for (const dealType of ["buyer", "seller", "dual"] as const) {
+    const sideRefusal = await assertTransactionCreationAllowed(
+      executedFixture({ buyer_signed_at: null }),
+      { ...GATE_PARAMS, dealType },
+    )
+    check(`  ↳ an unsigned BUYER refuses on a '${dealType}' deal too — the parties don't change with the side we represent`,
+      sideRefusal.allowed === false
+      && sideRefusal.refusals.some(r => r.requirement === "fully_executed"))
+  }
+
+  check("  ↳ POSITIVE CONTROL: the same fixture fully executed is ALLOWED (only the execution columns moved)",
+    allGood.allowed === true)
+  check("  ↳ …and the verdict RECORDS that execution was established, with the columns that established it",
+    allGood.detail.fullyExecuted === true
+    && allGood.detail.executionEvidence.some(e => /buyer_signed_at/.test(e))
+    && allGood.detail.executionEvidence.some(e => /fully_signed_contract_received_at/.test(e)))
+
+  // NEGATIVE CONTROL FOR THE OBLIGATION ITSELF — "a gate that refuses
+  // everything must also be caught". A gate wired to refuse unconditionally
+  // would pass every refusal assertion above; these two prove it discriminates.
+  check("  ↳ NEGATIVE CONTROL: the gate does NOT refuse an executed offer — it is not refusing everything",
+    counterPath.allowed === true && allGood.allowed === true
+    && allGood.refusals.length === 0)
+  check("  ↳ NEGATIVE CONTROL: no OTHER obligation fires on a purely execution-shaped miss",
+    buyerUnsigned.refusals.every(r => r.requirement === "fully_executed"))
+
+  // "NEVER ESTABLISHED" ≠ "ESTABLISHED FALSE" — the requiredTotal discipline,
+  // applied to execution. With no offer there is nothing to read it from.
+  const noOfferExec = await assertTransactionCreationAllowed(makeClient({
+    tables: { offers: [], activities: [], brokerage_required_documents: checklist(), documents: [] },
+  }), { ...GATE_PARAMS, offerId: null })
+  check("  ↳ with NO offer, fullyExecuted is NULL — 'never established' is not 'established false'",
+    noOfferExec.detail.fullyExecuted === null)
 
   // ── 1. compliance not good ────────────────────────────────────────────────
   const noCompliance = await assertTransactionCreationAllowed(makeClient({
@@ -542,13 +667,101 @@ async function main() {
   check("…keeping signatures and initials apart, and the never-scanned apart from a real gap",
     /unexecutedNeverScanned\s*=\s*unexecutedRequired\.filter\(\(u\) => u\.unscanned\)/.test(submitSrc)
     && /unexecutedRealGaps\s*=\s*unexecutedRequired\.filter\(\(u\) => !u\.unscanned\)/.test(submitSrc))
-  check("…and it WARNS rather than blocking — the ruling that turns this into a refusal does not exist",
+  // ── RETARGETED 2026-09-04, AND WHY ────────────────────────────────────────
+  //
+  // This assertion used to be justified as "the ruling that turns this into a
+  // refusal does not exist". That justification is now FALSE — the owner's
+  // 2026-09-04 sentence puts the document/signature/initial check INSIDE the
+  // compliance run ("the compliance gate runs through the documents … to make
+  // sure all documents are present and that all signatures and initials are
+  // present, THEN the executed offer becomes a transaction"). Pinning an
+  // assertion to "no ruling exists" is CLAUDE.md §2's waypoint defect: it could
+  // only stay true until a ruling arrived.
+  //
+  // THE BEHAVIOUR IS DELIBERATELY UNCHANGED IN THIS LANE and the split is an
+  // OPEN QUESTION for the owner (see lane-GATEO-report.md), because the
+  // operative half of the ruling is ALREADY enforced — no un-executed packet
+  // becomes a transaction, and the two assertions below are what prove it. What
+  // is still open is narrower: whether `compliance_passed_at` may be STAMPED on
+  // a packet that creation will then refuse. Converting that to a refusal here
+  // would also refuse every required document carrying NO signature_completeness
+  // blob (the `unscanned` class), whose live population cannot be measured from
+  // this lane — the same never-staged-packet outage shape this file already
+  // records having paid for once.
+  //
+  // So this asserts the INVARIANT, not the choice: the miss reaches somebody at
+  // submit time, AND creation refuses on it. Both stay true whichever way the
+  // owner rules on the stamp.
+  check("…the un-executed miss is a WARNING at submit (the stamp question is open with the owner, not settled here)",
     !/unexecutedRequired\.length > 0\s*\)\s*\{\s*return \{\s*success: false/.test(submitSrc))
+  check("…and the INVARIANT holds regardless: creation REFUSES on the same fact, so no un-executed packet becomes a transaction",
+    notSigned.allowed === false
+    && notSigned.refusals.some(r => r.requirement === "documents_fully_signed")
+    && initialsOut.allowed === false
+    && initialsOut.refusals.some(r => r.requirement === "initials_complete"))
   check("  ↳ POSITIVE CONTROL: the call-site finder does NOT fire on a file that never makes this reading",
     !/findUnexecutedDocuments\(/.test(src("lib/documents/listing-agreement-gate.ts")))
   check("  ↳ POSITIVE CONTROL: …and it DOES fire on a hand-written call of the same shape",
     /findUnexecutedDocuments\(\s*audit\.deal_file,\s*audit\.required_breakdown\.map\(\(r\) => r\.classification\),\s*\)/.test(
       "const u = findUnexecutedDocuments(\n    audit.deal_file,\n    audit.required_breakdown.map((r) => r.classification),\n  )"))
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ONE SPELLING OF "FULLY EXECUTED" (CLAUDE.md §6)
+  //
+  // The identical two-line boolean —
+  //   seller_response_type==='accepted' && fully_signed_contract_received_at
+  //   || seller_signed_at && fully_signed_contract_received_at
+  // — was written out in THREE places: offer-execution-state (the canonical
+  // one), offer-bridge:assertOfferReadyForTransaction, and
+  // submit-to-compliance. Merged onto the survivor and the two copies deleted
+  // with tombstones. This is the guard that keeps a fourth from appearing.
+  // ═════════════════════════════════════════════════════════════════════════
+  console.log("\n[one spelling of 'fully executed' — §6]\n")
+
+  // NOTE: src() strips comments, so the TOMBSTONES left at the two deleted
+  // copies are invisible to this scan and cannot be counted as call sites
+  // (CLAUDE.md §2 — a tombstone is not a call site).
+  const RESPELLING = /seller_response_type\s*===\s*"accepted"\s*&&\s*!!\s*\w*\.?fully_signed_contract_received_at/
+  const EXECUTION_ENFORCERS = [
+    "lib/transactions/offer-bridge.ts",
+    "app/actions/buyer-offer/submit-to-compliance.ts",
+    "lib/transactions/transaction-creation-gate.ts",
+  ]
+  for (const f of EXECUTION_ENFORCERS) {
+    check(`${f} imports the predicate instead of re-spelling the boolean`,
+      /from "(@\/lib\/transactions\/offer-execution-state|\.\/offer-execution-state)"/.test(src(f))
+      && !RESPELLING.test(src(f)))
+  }
+  check("  ↳ POSITIVE CONTROL: the re-spelling finder still recognises the boolean it was written for",
+    RESPELLING.test(`const a = o.seller_response_type === "accepted" && !!o.fully_signed_contract_received_at`))
+  check("  ↳ …and the canonical module is the ONLY place that spells the columns out",
+    /seller_response_type\s*===\s*"accepted"/.test(src("lib/transactions/offer-execution-state.ts")))
+
+  // The census: no FOURTH copy anywhere in the tree. Denominator + exclusions
+  // published beside the number (CLAUDE.md §2).
+  const { execSync: exec2 } = await import("node:child_process")
+  const execCandidates = exec2(
+    `grep -rln 'fully_signed_contract_received_at' --include=*.ts --include=*.tsx app lib services || true`,
+    { cwd: process.cwd(), encoding: "utf8" },
+  ).split("\n").filter(Boolean)
+  const respellers = execCandidates.filter(f =>
+    f !== "lib/transactions/offer-execution-state.ts" && RESPELLING.test(src(f)))
+  console.log(`  · scanned ${execCandidates.length} file(s) naming fully_signed_contract_received_at under`)
+  console.log(`    app/ lib/ services/; excluded: the canonical module itself, scripts/ (simulators),`)
+  console.log(`    e2e/, supabase/ migrations, node_modules. Comments stripped before scanning.`)
+  check(`no FOURTH spelling of the execution boolean remains (found ${respellers.length}${respellers.length ? `: ${respellers.join(", ")}` : ""})`,
+    respellers.length === 0)
+
+  // The gate must actually READ the columns it now judges — the §2 blind-guard
+  // check. A gate that selects four columns cannot refuse on the other four.
+  console.log("\n[the gate SELECTS the execution columns it judges]\n")
+  const gateSrc = src("lib/transactions/transaction-creation-gate.ts")
+  for (const col of ["buyer_signed_at", "seller_signed_at", "seller_response_type", "fully_signed_contract_received_at"]) {
+    check(`  ↳ the gate's offer SELECT carries \`${col}\``,
+      new RegExp(`"${col}"`).test(gateSrc))
+  }
+  check("  ↳ POSITIVE CONTROL: the same finder reports a column the gate genuinely does not select",
+    !/"seller_net_estimate"/.test(gateSrc))
 
   console.log("\n[the gate is not skippable on the offer path]\n")
   const bridge = src("lib/transactions/offer-bridge.ts")
@@ -594,7 +807,7 @@ async function main() {
     for (const f of fails) console.log(`    · ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ TRANSACTION_CREATION_GATE_PASS — a transaction exists only after compliance, documents, signatures and initials")
+  console.log(" ✅ TRANSACTION_CREATION_GATE_PASS — a transaction exists only after the offer is fully executed by BOTH buyer and seller, compliance is good, and every required document carries every signature and every initial")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })
