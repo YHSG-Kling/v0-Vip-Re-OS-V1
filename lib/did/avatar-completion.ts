@@ -86,9 +86,46 @@ export async function rehostAvatarImage(
     const bytes = new Uint8Array(await res.arrayBuffer())
     if (bytes.byteLength === 0) return null
     const path = `rehosted/${assetId}.${ext}`
+    // ── THE BUCKET HAS TO EXIST, AND IT DOES NOT ────────────────────────────
+    //
+    // MEASURED LIVE 2026-09-04 on hrvaqgvukzxfskkcrwbt: `storage.buckets` holds
+    // TWELVE buckets and `twin-avatars` is not one of them. This was a BARE
+    // `.upload()` with no creation step, so it returned "Bucket not found" on
+    // every call, `rehostAvatarImage` returned null, and the caller's
+    // `rehosted ?? didAssetUrl` took the vendor branch — every single time,
+    // since the module was written.
+    //
+    // That fallback is recorded in the registry as an ACKNOWLEDGED EXCEPTION
+    // awaiting an owner ruling ("a stale face versus no face is the owner's
+    // call"). It was never a policy question. The re-host could not succeed,
+    // so the exception was not a trade-off anyone was choosing — it was the
+    // only reachable path, and it made a bucket-not-found look like a
+    // deliberate preference for D-ID's CDN.
+    //
+    // Its sibling app/actions/twin-studio-upload.ts has always called
+    // ensureBucket before its three uploads, which is why the Twin wizard's own
+    // uploads work and this one does not: the bucket is created lazily by
+    // whichever path writes first, and this path never asked.
+    //
+    // ONE ensureBucket (§6) — the shared one in lib/storage/buckets.ts, which
+    // defaults visibility to the bucket's CLASSIFICATION rather than to `true`,
+    // so a bucket created by THIS path cannot be born world-readable by
+    // omission. `twin-avatars` is on PUBLIC_MEDIA_BUCKETS, so it is created
+    // public, which is the same answer the wizard's copy gave — the difference
+    // is that this one is written down in the roster instead of in an argument.
+    const { ensureBucket } = await import("@/lib/storage/buckets")
+    await ensureBucket(AVATAR_BUCKET)
     const { error } = await supabase.storage.from(AVATAR_BUCKET)
       .upload(path, bytes, { contentType, upsert: true })
-    if (error) return null
+    // §3: the error is READ, and it is REPORTED. Returning a bare null here is
+    // what let a missing bucket masquerade as a vendor-URL preference for as
+    // long as it did.
+    if (error) {
+      console.error(
+        `[avatar-completion] re-host into ${AVATAR_BUCKET} FAILED for asset ${assetId} — falling back to the vendor URL: ${error.message}`,
+      )
+      return null
+    }
     // ONE ISSUER. This was a bare `.getPublicUrl(path)`, which is the only
     // spelling in the tree that decides a URL's class by itself rather than
     // asking lib/storage/document-buckets.ts#issueBucketObjectUrl. It happened

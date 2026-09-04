@@ -146,6 +146,7 @@
     "test:vocabulary-drift": "tsx scripts/vocabulary-drift-guard.ts",
     "test:check-vocabulary": "tsx scripts/check-vocabulary-guard.ts",
     "test:contact-vocabulary": "tsx scripts/contact-vocabulary-guard.ts",
+    "test:migration-claim": "tsx scripts/migration-claim-guard.ts",
     "test:vocabulary-snapshot": "tsx scripts/vocabulary-snapshot-guard.ts",
     "test:wealth-lifecycle": "tsx scripts/wealth-opportunity-lifecycle-simulator.ts",
     "test:automation-errors": "tsx scripts/automation-error-collection-simulator.ts",

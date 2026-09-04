@@ -1,3 +1,28 @@
+-- ═════════════════════════════════════════════════════════════════════════════
+-- ⚠  THE "NOT APPLIED" CLAIM BELOW IS STALE. THIS MIGRATION *IS* APPLIED.
+--
+--    MEASURED 2026-09-04 against hrvaqgvukzxfskkcrwbt's own migration ledger,
+--    `supabase_migrations.schema_migrations`, which carries a row named
+--    `m498_…`. It was one of TWENTY files in this directory whose header said
+--    it had never run; all twenty were in the ledger. Nobody came back to
+--    update the headers after applying them.
+--
+--    THE EVIDENCE IS ONE-DIRECTIONAL, AND THAT IS STATED RATHER THAN GLOSSED:
+--    presence in the ledger PROVES a migration ran. ABSENCE PROVES NOTHING —
+--    the ledger only records migrations applied through the migration tool, and
+--    m599 and m602–m605 are all applied and all absent from it, because they
+--    were executed as direct SQL. So this banner is written only onto files the
+--    ledger positively vouches for.
+--
+--    The original header is preserved below unedited. It is the record of what
+--    its author believed when they wrote it, and CLAUDE.md §3 is the reason the
+--    belief was wrong: "a migration that exists as a .sql file has not been
+--    applied" — which is true, and cuts both ways. A file cannot tell you it
+--    ran, and it cannot tell you it did not.
+--
+--    scripts/migration-claim-guard.ts now holds this class shut.
+-- ═════════════════════════════════════════════════════════════════════════════
+
 -- m498 — cma_comparables cannot record a comp's status or source, so an asking
 --        price can only be stored in a column named sale_price.
 --

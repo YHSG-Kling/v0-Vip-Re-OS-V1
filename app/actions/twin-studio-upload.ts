@@ -14,27 +14,48 @@
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
-import { checkUpload, BUCKET_CREATION_DEFAULT_LIMIT_BYTES } from "@/lib/storage/file-limits"
+import { checkUpload } from "@/lib/storage/file-limits"
+// THE ONE bucket-creation helper (§6) — see the tombstone below for the
+// module-local copy this replaced and why the survivor is the more complete one.
+import { ensureBucket } from "@/lib/storage/buckets"
 
 const AVATAR_BUCKET = "twin-avatars"
 const VOICE_BUCKET = "twin-voice-samples"
 
-async function ensureBucket(name: string) {
-  const supabase = createServiceClient()
-  const { data: list } = await supabase.storage.listBuckets()
-  const exists = list?.some((b) => b.name === name)
-  if (!exists) {
-    await supabase.storage.createBucket(name, {
-      public: true,
-      // ONE spelling of the creation default (§6). This was a bare
-      // `50 * 1024 * 1024` here AND in lib/storage/buckets.ts#ensureBucket, so a
-      // change to either would have silently missed the other — and it is the
-      // number that decides these two buckets' real ceiling, because neither
-      // twin-avatars nor twin-voice-samples exists live yet.
-      fileSizeLimit: BUCKET_CREATION_DEFAULT_LIMIT_BYTES,
-    })
-  }
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — the module-local `ensureBucket(name)` that stood here
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED as a DUPLICATE (§1.1, 2026-09-04). Its own comment already conceded
+// half the defect — "this was a bare `50 * 1024 * 1024` here AND in
+// lib/storage/buckets.ts#ensureBucket, so a change to either would have
+// silently missed the other" — and fixed only the CONSTANT, leaving two
+// functions.
+//
+// ── THE SURVIVOR, AT file:symbol ──────────────────────────────────────────
+//     lib/storage/buckets.ts  ensureBucket
+//
+// It is STRICTLY MORE COMPLETE, and the difference is the one that matters:
+// this copy hardcoded `public: true`, while the survivor defaults visibility to
+// the bucket's CLASSIFICATION (lib/storage/document-buckets.ts) and only takes
+// `public` when a caller writes it down. The survivor's own header explains
+// why that default changed — "commission disclosures and signed contractor
+// agreements would have been born world-readable, permanently, because nobody
+// passed a flag."
+//
+// BEHAVIOUR IS UNCHANGED FOR THESE TWO BUCKETS, which is why this is a safe
+// deletion rather than a reclassification: `twin-avatars` and
+// `twin-voice-samples` are both on PUBLIC_MEDIA_BUCKETS, so
+// `!isDocumentClassBucket(name)` is `true` for each and the survivor creates
+// them public — the same answer, reached by consulting the roster instead of
+// by an argument nobody could see. If the owner resolves the UNRESOLVED note on
+// `twin-voice-samples` ("a voice print is closer to biometric than to
+// marketing"), moving it in the roster now moves this call site with it; under
+// the deleted copy it would have kept creating the bucket public forever.
+//
+// The `fileSizeLimit` default is unchanged — the survivor reads the same
+// BUCKET_CREATION_DEFAULT_LIMIT_BYTES, which is still the real ceiling for
+// these two buckets because neither exists live (measured 2026-09-04: twelve
+// buckets, neither of them among them).
 
 /**
  * NOT EXPORTED, deliberately: in a `"use server"` file every export is a public
