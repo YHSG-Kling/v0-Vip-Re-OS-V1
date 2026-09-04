@@ -40,10 +40,15 @@
  *   agents.onboarding_status          pending          → not_started
  *   marketing_campaigns.campaign_type nurture          → omni
  *   predictive_listing_actions.status approved         → queued
- *   buyer_financial_profiles.lender_referral_status requested → referred
+ *   buyer_financial_profiles.lender_referral_status requested → in_progress
+ *     (repointed off `requested`, which the column refuses; wave 28 then moved it
+ *      off the hardcoded `referred` too — see the note above the repoints table)
  *   lead_deduplication_log.action_taken merged_into_existing → merged
  *   lead_deduplication_log.stage       contact          → lead_creation
  *   referrals.status                   new              → received
+ *     (the writer has since moved to
+ *      app/actions/referrals/referral-actions.ts#createReferral, which spells it
+ *      DEFAULT_REFERRAL_STATUS — checked there, not in the tombstoned kernel)
  *   pricing_history.price_type         ai_prediction    → prediction
  *   chat_sessions.session_type         portal_ai        → portal_widget
  *   price_trend_alerts.alert_type      price_gap        → price_too_high when
@@ -106,33 +111,124 @@ console.log("\n── m299 widened four columns, and only four ──")
     ["agent_call", "ai_isa_call", "ai_inbound", "warm_transfer"].every((v) => vocab("voice_calls", "call_type").includes(v)))
 }
 
+// ── WHY THE SOURCE HALF ASSERTS A RULE AND NOT A LITERAL (CLAUDE.md §2) ──────
+// Each repoint below used to be pinned to ONE waypoint: "this file contains the
+// text `col: "newV"`". Two of the thirteen went red in wave 28 without either
+// write becoming wrong, and both for the reason §2 names — the pin recorded the
+// state the repoint happened to leave behind, not the rule it was enforcing:
+//
+//   lib/ai-isa/convert-buyer-lead-on-intent.ts wrote a hardcoded
+//     lender_referral_status:"referred" inside an UPSERT, so an ISA intent replay
+//     knocked a buyer who had reached `pre_approved` back to `referred`. It now
+//     preserves an existing status and starts a genuinely new row at
+//     `in_progress`. BOTH of those are admitted values; the pin said only one was.
+//
+//   lib/kernel/reputation.ts no longer creates referrals AT ALL. Its
+//     createReferralRequest was unreachable and was merged onto
+//     app/actions/referrals/referral-actions.ts#createReferral (§1.1 tombstone at
+//     lib/kernel/reputation.ts:66). The survivor takes the value from
+//     DEFAULT_REFERRAL_STATUS rather than a literal, so no literal probe of
+//     EITHER file could ever pass again. Following the orphan doctrine made the
+//     guard go red — exactly the failure mode §2 records.
+//
+// So the rule is stated directly: EVERY status-like literal a file names for the
+// column must be a value the column admits, and the impossible one must appear
+// nowhere. That is what "the record the product claims to make can be made"
+// means, and it survives both a legitimate second admitted value and the writer
+// moving to another file.
+//
+// BLIND SPOT, published beside the number (§2): literalWrites matches on the
+// COLUMN NAME, not on the table, so a file that writes the same column name for
+// two different tables has both sets pooled. That is live right now —
+// lib/kernel/reputation.ts writes review_requests.status:'pending' at :430 — so
+// referrals.status is checked through its survivor and its own vocabulary
+// module, not by scanning that file for the word `status`.
+// It reads the WHOLE value expression, not just a bare literal, because the
+// honest form of several of these writes is a preserve-then-default coalesce
+// (`col: existing?.col ?? "in_progress"`) — a bare-literal probe reports zero
+// against that and reads as a clean bill of health. Every quoted word in the
+// value is collected and every one of them must be admitted, so a helper call
+// with two literal arguments is judged conservatively rather than skipped.
+const literalWrites = (t: string, col: string): string[] => {
+  const out: string[] = []
+  for (const m of t.matchAll(new RegExp(`\\b${col}\\s*:([^\\n]*)`, "g"))) {
+    // Bound the value at the NEXT field key on the same line. Two fields often
+    // share a line (`campaign_type: "omni", status: "live"`), and reading to the
+    // line end pooled the neighbour's value into this column's — which accused
+    // app/crm/page.tsx of writing an impossible campaign_type when `live` is a
+    // perfectly admitted marketing_campaigns.status.
+    const cut = m[1].search(/,\s*[A-Za-z_$][\w$]*\s*:/)
+    const value = cut >= 0 ? m[1].slice(0, cut) : m[1]
+    for (const q of value.matchAll(/["']([A-Za-z0-9_]+)["']/g)) out.push(q[1])
+  }
+  for (const m of t.matchAll(new RegExp(`["']${col}["']\\s*,\\s*["']([A-Za-z0-9_]+)["']`, "g"))) out.push(m[1])
+  return [...new Set(out)]
+}
+
 console.log("\n── every repointed write names a value its column admits ──")
 {
-  const repoints: Array<[string, string, string, string, string]> = [
-    // file, table, column, oldValue (must be impossible), newValue (must be admitted)
-    ["app/actions/seller-open-house.ts", "qr_codes", "purpose", "open_house_signin", "open_house"],
-    ["app/actions/social-dm.ts", "message_provider_logs", "channel", "social_dm", "ai_social_dm"],
-    ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "applies_to", "listing", "gross"],
-    ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "direction", "reduction", "credit"],
-    ["app/api/recruiting/provision-agent/route.ts", "agents", "onboarding_status", "pending", "not_started"],
-    ["app/crm/page.tsx", "marketing_campaigns", "campaign_type", "nurture", "omni"],
-    ["app/dashboard/sphere/actions.ts", "predictive_listing_actions", "status", "approved", "queued"],
-    ["lib/ai-isa/convert-buyer-lead-on-intent.ts", "buyer_financial_profiles", "lender_referral_status", "requested", "referred"],
-    ["lib/kernel/crm.ts", "lead_deduplication_log", "action_taken", "merged_into_existing", "merged"],
-    ["lib/kernel/crm.ts", "lead_deduplication_log", "stage", "contact", "lead_creation"],
-    ["lib/kernel/reputation.ts", "referrals", "status", "new", "received"],
-    ["lib/pricing/predictive-pricing.ts", "pricing_history", "price_type", "ai_prediction", "prediction"],
-    ["app/api/portal/ai-chat/route.ts", "chat_sessions", "session_type", "portal_ai", "portal_widget"],
+  // file, table, column, oldValue (must be impossible AND absent),
+  //                      expected (every one admitted; the file must name ≥1)
+  const repoints: Array<[string, string, string, string, string[]]> = [
+    ["app/actions/seller-open-house.ts", "qr_codes", "purpose", "open_house_signin", ["open_house"]],
+    ["app/actions/social-dm.ts", "message_provider_logs", "channel", "social_dm", ["ai_social_dm"]],
+    ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "applies_to", "listing", ["gross"]],
+    ["app/actions/seller-listing/execution-engine.ts", "commission_adjustments", "direction", "reduction", ["credit"]],
+    ["app/api/recruiting/provision-agent/route.ts", "agents", "onboarding_status", "pending", ["not_started"]],
+    ["app/crm/page.tsx", "marketing_campaigns", "campaign_type", "nurture", ["omni"]],
+    ["app/dashboard/sphere/actions.ts", "predictive_listing_actions", "status", "approved", ["queued"]],
+    // in_progress on a new row, and whatever the row already held preserved —
+    // `referred` stays legal here because a later surface does set it.
+    ["lib/ai-isa/convert-buyer-lead-on-intent.ts", "buyer_financial_profiles", "lender_referral_status", "requested", ["in_progress", "referred"]],
+    ["lib/kernel/crm.ts", "lead_deduplication_log", "action_taken", "merged_into_existing", ["merged"]],
+    ["lib/kernel/crm.ts", "lead_deduplication_log", "stage", "contact", ["lead_creation"]],
+    ["lib/pricing/predictive-pricing.ts", "pricing_history", "price_type", "ai_prediction", ["prediction"]],
+    ["app/api/portal/ai-chat/route.ts", "chat_sessions", "session_type", "portal_ai", ["portal_widget"]],
   ]
-  for (const [file, table, col, oldV, newV] of repoints) {
+  for (const [file, table, col, oldV, expected] of repoints) {
     const live = vocab(table, col)
-    check(`${table}.${col}: '${oldV}' is impossible, '${newV}' is admitted`,
-      live.length > 0 && !live.includes(oldV) && live.includes(newV))
+    check(`${table}.${col}: '${oldV}' is impossible, ${expected.map((v) => `'${v}'`).join(" and ")} admitted`,
+      live.length > 0 && !live.includes(oldV) && expected.every((v) => live.includes(v)))
     const t = src(file)
-    check(`${file}: writes ${col} '${newV}', not '${oldV}'`,
-      new RegExp(`${col}:\\s*["']${newV}["']`).test(t) &&
-      !new RegExp(`${col}:\\s*["']${oldV}["']`).test(t))
+    const named = literalWrites(t, col)
+    check(`${file}: every ${col} literal it names is admitted [${named.join(", ") || "—"}]`,
+      named.length > 0 && named.every((v) => live.includes(v)))
+    check(`${file}: names at least one of the repointed values, and never '${oldV}'`,
+      expected.some((v) => named.includes(v)) && !named.includes(oldV))
   }
+
+  // POSITIVE CONTROL (§2) — a broken finder and a clean tree both report zero.
+  // Feed literalWrites the exact defect shape it was written for and prove it
+  // still recognises it, in both the write form and the filter form.
+  const specimen = `
+    .insert({ lender_referral_status: "requested" })
+    .insert({ campaign_type: "nurture", status: "live" })
+    .upsert({ price_type: existing?.price_type ?? "ai_prediction" })
+    .eq("session_type", 'portal_ai')
+  `
+  check("POSITIVE CONTROL — the finder still sees a rejected write literal",
+    literalWrites(specimen, "lender_referral_status").includes("requested"))
+  check("POSITIVE CONTROL — …and a rejected literal behind a preserve-then-default coalesce",
+    literalWrites(specimen, "price_type").includes("ai_prediction"))
+  check("POSITIVE CONTROL — …and a rejected filter literal",
+    literalWrites(specimen, "session_type").includes("portal_ai"))
+  check("NEGATIVE CONTROL — it does NOT pool the neighbouring field's value",
+    literalWrites(specimen, "campaign_type").join() === "nurture")
+
+  // referrals.status: the writer MOVED (§1.1). Assert the survivor, not the
+  // tombstone — and assert it through the one vocabulary module rather than a
+  // literal, because that is how the survivor actually spells it.
+  const REFERRAL_ACTIONS = src("app/actions/referrals/referral-actions.ts")
+  const REFERRAL_VOCAB   = src("lib/referrals/referral-status.ts")
+  check("createReferral takes referrals.status from DEFAULT_REFERRAL_STATUS, not a literal",
+    /params\.status \?\? DEFAULT_REFERRAL_STATUS/.test(REFERRAL_ACTIONS) &&
+    /DEFAULT_REFERRAL_STATUS/.test(REFERRAL_ACTIONS.split("\n").slice(0, 40).join("\n")))
+  check("DEFAULT_REFERRAL_STATUS is 'received' — a value the column admits, and 'new' is not",
+    /DEFAULT_REFERRAL_STATUS:\s*ReferralStatus\s*=\s*"received"/.test(REFERRAL_VOCAB) &&
+    vocab("referrals", "status").includes("received") &&
+    !vocab("referrals", "status").includes("new"))
+  check("the tombstoned kernel no longer names a referral status at all",
+    !/status:\s*["'](?:new|received)["']/.test(src("lib/kernel/reputation.ts")))
 }
 
 console.log("\n── the price alert picks a REAL type from the direction it computed ──")
