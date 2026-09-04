@@ -432,8 +432,8 @@ export const DEMO_USERS = [
 // ============================================
 //
 // TOMBSTONE. `ROLES` and `ROLE_PERMISSIONS` lived here and are DELETED.
-// SURVIVOR: lib/security/permission-matrix.ts:102 `ROLE_PERMISSIONS` (and
-// :34 `ROLE_HIERARCHY` for the scope half).
+// SURVIVOR: lib/security/permission-matrix.ts:125 `ROLE_PERMISSIONS` (and
+// :19 `ROLE_HIERARCHY` for the scope half).
 //
 // WHY THIS ONE WAS THE DUPLICATE AND NOT THE SURVIVOR:
 //   · CALLERS. Measured with scripts/strip-comments.ts over every file that
@@ -454,9 +454,9 @@ export const DEMO_USERS = [
 // THE RECONCILIATION THE LEAD RULING NEEDED, recorded where it was asked for:
 // this copy gave `team_lead` a 'view_team_leads' permission — the right IDEA,
 // the wrong vocabulary and no enforcement behind it. The survivor gives
-// team_lead 'leads:view' / 'leads:view_all' (lib/security/permission-matrix.ts:250)
+// team_lead 'leads:view' / 'leads:view_all' (lib/security/permission-matrix.ts:318)
 // and ROLE_HIERARCHY already records `canViewData: 'team'` for the same role
-// (:72). Under the owner's ruling — "if team tier subscriptions, they don't
+// (:95). Under the owner's ruling — "if team tier subscriptions, they don't
 // have a broker in the subscription so the team lead can see leads" — those two
 // now agree with the code that enforces them: the ADMISSION is
 // lib/auth/lead-visibility.ts#LEAD_DESK_USER_TYPES and the SCOPE is

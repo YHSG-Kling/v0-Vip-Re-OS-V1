@@ -570,6 +570,309 @@ A.push({
   ],
 })
 
+// ═════════════════════════════════════════════════════════════════════════════
+// THE SAME §5 RULE, ONE LAYER UP: THE PERMISSION MATRIX ITSELF
+// (wave 26, lane PERM2)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The twelve assertions above prove that twelve GATES ask who is calling. None
+// of them proves anything about what the answer is allowed to be. Nothing in the
+// tree did: lib/security/permission-matrix.ts — the file the manager registry
+// calls the single source of truth, read by RoleManager.hasPermission
+// (lib/security/role-manager.ts:16), by AccessControl.checkPermission
+// (lib/security/access-control.ts:9, which the requirePermission decorator at
+// lib/security/server-action-guard.ts:101 THROWS on), by UIHelpers
+// (lib/security/ui-helpers.ts:13) and by lib/auth/permissions-client.ts:72 —
+// granted the `lender` and `title_agent` seats `contacts:view_all`,
+// `transactions:view_all`, `transactions:edit`, `transactions:coordinate`,
+// `team:view_all` and `analytics:view_all`. An OUTSIDE PARTY held the whole
+// tenant's contact roster, every deal in it, the staff roster, tenant-wide
+// analytics, and a write on the transaction record — the precise inverse of
+// CLAUDE.md §5, and it sat there because no proof asserted what an external seat
+// may hold. These four assertions are that proof.
+//
+// WHY IT LIVES IN THIS FILE: same rule, same three named seats, same wave. This
+// simulator's header already quotes §5 verbatim and its own REFUSED_SEATS
+// constant is `contact`/`vendor`/`lender`. A separate script would have needed a
+// separate line in the guard chain to say the same sentence twice.
+//
+// HOW IT IS BUILT (§2): the matrix is read as SOURCE, freshly, on every run —
+// never imported. An ES import is cached, so a negative control that rewrites
+// the file on disk would be invisible to it and every control below would report
+// a clean flip it never made. Both offset-aligned views come from
+// scripts/strip-comments.ts (`blankStrings` to walk brackets and match code,
+// `blankComments` to read the grant literals themselves), so the long §5
+// rationale now sitting inside permission-matrix.ts — which names
+// `transactions:edit` and `contacts:view_all` verbatim, because a tombstone must
+// name what it replaced — cannot satisfy or violate a single assertion here.
+// A TOMBSTONE IS NOT A GRANT.
+
+const MATRIX = "lib/security/permission-matrix.ts"
+
+/**
+ * The seats CLAUDE.md §5 puts on their own record only, as they are spelled in
+ * the matrix's canonical role vocabulary.
+ *
+ * §5 names "contacts, lenders and vendors". `title_agent` is here on the DATA
+ * MODEL and not by analogy: vendors.category is a live CHECK carrying both
+ * 'lender' and 'title' (scripts/check-vocabularies.ts:1621, generated from the
+ * live database), lib/kernel/lender-linkage.ts:1-4 states "LENDERS ARE VENDORS"
+ * in as many words, and the title partner's own dashboard resolves itself
+ * through a `vendors` row (app/title/dashboard/page.tsx:38-52). A title agent is
+ * a vendor here, so §5's "vendors" reaches it. If the owner rules otherwise,
+ * drop the one entry — every other assertion stands unchanged.
+ */
+const EXTERNAL_SEATS = ["contact", "vendor", "lender", "title_agent"] as const
+
+function matchBracket(src: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "[") depth++
+    else if (src[i] === "]") { depth--; if (depth === 0) return i }
+  }
+  return -1
+}
+
+/** Both offset-aligned views of one `export const <name> = { … }` in the matrix. */
+function matrixObject(name: string): { code: string; lit: string } | null {
+  const code = codeOf(MATRIX)
+  const m = new RegExp(`export\\s+const\\s+${name}\\b`).exec(code)
+  if (!m) return null
+  const open = code.indexOf("{", m.index)
+  if (open === -1) return null
+  const close = matchBrace(code, open)
+  if (close === -1) return null
+  return { code: code.slice(open, close + 1), lit: literalsOf(MATRIX).slice(open, close + 1) }
+}
+
+/**
+ * The grant literals on one role's `permissions:` array in ROLE_PERMISSIONS, or
+ * null when that role has no such block.
+ *
+ * The role key is located on the CODE view (a role name inside a comment or a
+ * string cannot open a block), the array is walked by BRACKET depth, and the
+ * literals are then read from the LITERAL view at the same offsets.
+ */
+function grantsOf(role: string): string[] | null {
+  const o = matrixObject("ROLE_PERMISSIONS")
+  if (!o) return null
+  const m = new RegExp(`\\n\\s{2}${role}:\\s*\\{`).exec(o.code)
+  if (!m) return null
+  const open = o.code.indexOf("{", m.index)
+  const close = matchBrace(o.code, open)
+  if (close === -1) return null
+  const pm = /permissions:\s*\[/.exec(o.code.slice(open, close))
+  if (!pm) return null
+  const aOpen = o.code.indexOf("[", open + pm.index)
+  const aClose = matchBracket(o.code, aOpen)
+  if (aClose === -1) return null
+  return [...o.lit.slice(aOpen, aClose + 1).matchAll(/['"]([A-Za-z_]+:[A-Za-z_]+)['"]/g)].map((x) => x[1])
+}
+
+/** One role's `canViewData` in ROLE_HIERARCHY, or null. */
+function scopeOf(role: string): string | null {
+  const o = matrixObject("ROLE_HIERARCHY")
+  if (!o) return null
+  const m = new RegExp(`\\n\\s{2}${role}:\\s*\\{`).exec(o.code)
+  if (!m) return null
+  const open = o.code.indexOf("{", m.index)
+  const close = matchBrace(o.code, open)
+  if (close === -1) return null
+  const v = /canViewData:\s*['"]([a-z]+)['"]/.exec(o.lit.slice(open, close))
+  return v ? v[1] : null
+}
+
+/** Every `group:action` word the matrix DEFINES — the vocabulary, derived. */
+function permissionVocabulary(): string[] {
+  const o = matrixObject("PERMISSION_DEFINITIONS")
+  if (!o) return []
+  return [...o.lit.matchAll(/['"]([a-z_]+:[a-z_]+)['"]\s*:/g)].map((x) => x[1])
+}
+
+/**
+ * The grants an EXTERNAL seat may not hold, DERIVED from the vocabulary rather
+ * than hand-listed (§2: assert the RULE and derive the number, so a word added
+ * by a later migration is judged the moment it appears instead of quietly
+ * falling outside a frozen list).
+ *
+ * The rule, one clause per sentence of CLAUDE.md §5:
+ *   · financials — nothing but `view_own`. "See no financials — only their own."
+ *   · transactions — nothing but `view`. An outside party is a party to its own
+ *     deal; it does not read the tenant's book of deals and does not WRITE the
+ *     transaction record. (The lender's real writes go to transaction_milestones
+ *     / transaction_lenders / transaction_documents, gated per-deal by
+ *     requireLenderVendorActor — never through this matrix.)
+ *   · contacts — nothing but `view`. The roster belongs to the BROKERAGE (§5,
+ *     the leads ruling); an outside party sees the people on its own file.
+ *   · leads — nothing at all, for the same reason.
+ *   · analytics — nothing but `view_own`.
+ *   · listings — nothing but `view_all`. The catalogue is the brokerage's
+ *     shopfront and `contact` and `vendor` legitimately hold it today; creating
+ *     or editing a listing is staff work.
+ *   · team, admin, compliance — nothing at all. Staff rosters, platform
+ *     administration and the compliance record are not an outside party's.
+ *   · settings — nothing but `manage_account`. Your own account, not the team's
+ *     and not the brokerage's.
+ */
+function forbiddenForExternalSeat(): Set<string> {
+  const allowed: Record<string, string[]> = {
+    financials: ["view_own"],
+    transactions: ["view"],
+    contacts: ["view"],
+    leads: [],
+    analytics: ["view_own"],
+    listings: ["view_all"],
+    team: [],
+    admin: [],
+    compliance: [],
+    settings: ["manage_account"],
+  }
+  const out = new Set<string>()
+  for (const word of permissionVocabulary()) {
+    const [group, action] = word.split(":")
+    if (!(group in allowed)) continue
+    if (!allowed[group].includes(action)) out.add(word)
+  }
+  return out
+}
+
+A.push({
+  id: "matrix.the-finder-can-read-the-matrix-at-all",
+  what: "POSITIVE CONTROL for the three assertions below: the permission matrix parses, every one of the four external seats resolves to a real grant array and a real canViewData, and the derived forbidden set is non-empty — a broken parser and a clean matrix both report 'no violations', and this is what tells them apart",
+  run: () => {
+    const vocab = permissionVocabulary()
+    if (vocab.length < 40) return { ok: false, detail: `PERMISSION_DEFINITIONS yielded ${vocab.length} words — the parser is not reading the matrix` }
+    const forbidden = forbiddenForExternalSeat()
+    if (forbidden.size < 15) return { ok: false, detail: `the derived forbidden set has ${forbidden.size} members — the derivation is not seeing the vocabulary` }
+    const unresolved: string[] = []
+    for (const seat of EXTERNAL_SEATS) {
+      const g = grantsOf(seat)
+      if (g === null || g.length === 0) unresolved.push(`${seat}: no permissions array`)
+      const s = scopeOf(seat)
+      if (s === null) unresolved.push(`${seat}: no canViewData`)
+    }
+    if (unresolved.length) return { ok: false, detail: unresolved.join(" | ") }
+    return {
+      ok: true,
+      detail: `vocabulary ${vocab.length} words, ${forbidden.size} of them forbidden to an external seat; ${EXTERNAL_SEATS.length}/${EXTERNAL_SEATS.length} seats resolved (${EXTERNAL_SEATS.map((s) => `${s}=${grantsOf(s)!.length}`).join(", ")} grants)`,
+    }
+  },
+  breaks: [
+    {
+      // The table renamed out from under the parser. Every absence assertion
+      // below would otherwise report a clean tree it never read.
+      file: MATRIX,
+      find: "export const ROLE_PERMISSIONS:",
+      replace: "export const ROLE_PERMISSIONS_V2:",
+    },
+    {
+      file: MATRIX,
+      find: "export const PERMISSION_DEFINITIONS:",
+      replace: "export const PERMISSION_DEFINITIONS_V2:",
+    },
+  ],
+})
+
+A.push({
+  id: "matrix.no-external-seat-holds-a-brokerage-wide-or-writing-grant",
+  what: "CLAUDE.md §5 stated as a matrix rule: contact, vendor, lender and title_agent hold no brokerage-wide financial, contact, lead, transaction, team, analytics, admin or compliance grant and no transaction WRITE — the forbidden set is derived from the matrix's own vocabulary, not hand-listed",
+  run: () => {
+    const forbidden = forbiddenForExternalSeat()
+    if (forbidden.size < 15) return { ok: false, detail: `forbidden set is ${forbidden.size} members — refusing to report a clean tree from a dead derivation` }
+    const bad: string[] = []
+    for (const seat of EXTERNAL_SEATS) {
+      const g = grantsOf(seat)
+      if (g === null) { bad.push(`${seat}: no permissions array`); continue }
+      const held = g.filter((p) => forbidden.has(p))
+      if (held.length) bad.push(`${seat} holds ${JSON.stringify(held)}`)
+    }
+    if (bad.length) return { ok: false, detail: `${bad.join(" | ")} — CLAUDE.md §5: contacts, lenders and vendors see no financials, only their own` }
+    return {
+      ok: true,
+      detail: `${EXTERNAL_SEATS.length} external seats, 0 forbidden grants (denominator: ${forbidden.size} forbidden words out of ${permissionVocabulary().length}; seats carry ${EXTERNAL_SEATS.map((s) => `${s}:${grantsOf(s)!.join("+")}`).join(" | ")})`,
+    }
+  },
+  breaks: [
+    {
+      // The pre-wave-26 lender row, written back one grant at a time.
+      file: MATRIX,
+      find: "  lender: {\n    role: 'lender',\n    permissions: [\n      'contacts:view',",
+      replace: "  lender: {\n    role: 'lender',\n    permissions: [\n      'contacts:view_all',",
+    },
+    {
+      // The transaction WRITE — the clearest violation, on a seat that is not
+      // the party that owns the record.
+      file: MATRIX,
+      find: "  title_agent: {\n    role: 'title_agent',\n    permissions: [\n      'contacts:view',",
+      replace: "  title_agent: {\n    role: 'title_agent',\n    permissions: [\n      'transactions:edit',\n      'contacts:view',",
+    },
+    {
+      // Brokerage-wide money on the seat §5 names first.
+      file: MATRIX,
+      find: "    permissions: ['contacts:view', 'transactions:view', 'listings:view_all'],",
+      replace: "    permissions: ['contacts:view', 'transactions:view', 'listings:view_all', 'financials:view_all'],",
+    },
+  ],
+})
+
+A.push({
+  id: "matrix.no-external-seat-is-scoped-to-the-whole-tenant",
+  what: "the ROW half of the same rule: ROLE_HIERARCHY gives every external seat canViewData 'own', never 'brokerage' or 'all' — a grant narrowed in one half of this file and left tenant-wide in the other is the same violation wearing the other hat",
+  run: () => {
+    const bad: string[] = []
+    for (const seat of EXTERNAL_SEATS) {
+      const s = scopeOf(seat)
+      if (s === null) { bad.push(`${seat}: no canViewData`); continue }
+      if (s !== "own") bad.push(`${seat}: canViewData '${s}'`)
+    }
+    if (bad.length) return { ok: false, detail: `${bad.join(", ")} — an outside party's data scope is its own rows (lib/security/permissions-service.ts:312 already says 'own' for these seats; the two tables must not disagree, §6)` }
+    return { ok: true, detail: `${EXTERNAL_SEATS.length}/${EXTERNAL_SEATS.length} external seats at canViewData 'own'` }
+  },
+  breaks: [
+    {
+      file: MATRIX,
+      find: "  lender: {\n    role: 'lender',\n    level: 3,\n    canManage: [],\n    canViewData: 'own',",
+      replace: "  lender: {\n    role: 'lender',\n    level: 3,\n    canManage: [],\n    canViewData: 'brokerage',",
+    },
+    {
+      file: MATRIX,
+      find: "  vendor: {\n    role: 'vendor',\n    level: 1,\n    canManage: [],\n    canViewData: 'own',",
+      replace: "  vendor: {\n    role: 'vendor',\n    level: 1,\n    canManage: [],\n    canViewData: 'all',",
+    },
+  ],
+})
+
+A.push({
+  id: "matrix.one-vocabulary-every-grant-is-a-defined-word",
+  what: "§6 over the whole matrix: every grant literal on every role resolves to a key of PERMISSION_DEFINITIONS, so narrowing a seat cannot be done by inventing a third spelling nobody reads (a 'contacts:view_own' that no gate, no UI helper and no definition knows about grants and refuses nothing)",
+  run: () => {
+    const vocab = new Set(permissionVocabulary())
+    if (vocab.size < 40) return { ok: false, detail: `vocabulary is ${vocab.size} words — parser blind, refusing to report clean` }
+    const o = matrixObject("ROLE_PERMISSIONS")
+    if (!o) return { ok: false, detail: "ROLE_PERMISSIONS did not parse" }
+    const roles = [...o.code.matchAll(/\n {2}([a-z_]+):\s*\{/g)].map((m) => m[1])
+    if (roles.length < 10) return { ok: false, detail: `only ${roles.length} roles found in ROLE_PERMISSIONS — the walk is broken` }
+    const bad: string[] = []
+    let counted = 0
+    for (const role of roles) {
+      for (const g of grantsOf(role) ?? []) {
+        counted++
+        if (!vocab.has(g)) bad.push(`${role}:${g}`)
+      }
+    }
+    if (bad.length) return { ok: false, detail: `undefined grant words: ${bad.join(", ")}` }
+    return { ok: true, detail: `${counted} grants across ${roles.length} roles, all defined (vocabulary: ${vocab.size} words)` }
+  },
+  breaks: [
+    {
+      // A third spelling of "their own contacts" that nothing in the tree reads.
+      file: MATRIX,
+      find: "  lender: {\n    role: 'lender',\n    permissions: [\n      'contacts:view',",
+      replace: "  lender: {\n    role: 'lender',\n    permissions: [\n      'contacts:view_own',",
+    },
+  ],
+})
+
 // ─────────────────────────────────────────────────────────────────────────────
 function main() {
   console.log("═".repeat(70))
@@ -577,6 +880,7 @@ function main() {
   console.log("═".repeat(70))
   console.log(` subjects   ${SITES.length} gated bodies across ${new Set(SITES.map((s) => s.file)).size} files`)
   console.log(` roster     ${ROSTER_MODULE} (derived from ${SHARED_ROSTER_IMPORT})`)
+  console.log(` matrix     ${MATRIX} — ${EXTERNAL_SEATS.length} external seats judged against ${forbiddenForExternalSeat().size} forbidden words derived from ${permissionVocabulary().length}`)
   console.log("\n BLIND SPOTS, published beside the number (CLAUDE.md §2):")
   console.log("  · This proof reads SOURCE. It cannot prove the live rows; the seat")
   console.log(`    vocabulary is taken from ${VOCAB_CACHE}, which the integrator regenerates.`)
@@ -587,6 +891,20 @@ function main() {
   console.log("    a known, unfixed defect (three callers in files outside that lane's table).")
   console.log("  · Sites are LISTED, not discovered. A thirteenth gate of this shape would not")
   console.log("    be noticed here — assertion 0 only proves the twelve listed ones still exist.")
+  console.log("  · The four matrix assertions prove the DECLARATION, not the runtime. No lender")
+  console.log("    or title surface consults the permission matrix at all today — they gate on")
+  console.log("    ASSIGNMENT (requireLenderVendorActor / requireTitleActor, lib/kernel/portal-auth.ts")
+  console.log("    :61 and :111) — so a green here does not mean any row filter is scoped. It means")
+  console.log("    the table a future gate would read no longer declares the §5 violation.")
+  console.log("  · EXTERNAL_SEATS is a LIST of four. A fifth outside-party role added to the")
+  console.log("    matrix later is judged by nothing here until it is added to that constant.")
+  console.log("  · title_agent is judged as a VENDOR on the live data model (vendors.category")
+  console.log("    carries 'title'), not because CLAUDE.md §5 names it. That is an argument, and")
+  console.log("    it is the owner's to overturn — see the constant's comment.")
+  console.log("  · TWO SIBLING ROLE TABLES ARE OUT OF SCOPE HERE and are NOT judged by these")
+  console.log("    assertions: lib/security/permissions-service.ts ROLE_UI_PERMISSIONS (verb:surface")
+  console.log("    vocabulary) and lib/security/types.ts CANONICAL_ROLE_CONFIG (snake_case). Both")
+  console.log("    already scope these seats narrowly; neither is pinned by a proof.")
 
   let pass = 0, fail = 0
   const failures: string[] = []
@@ -652,6 +970,6 @@ function main() {
   if (negProblems.length) { console.log("\nControl problems:"); negProblems.forEach((f) => console.log("  · " + f)) }
 
   if (fail > 0 || negFail > 0) { console.log("\n ❌ CONTACT_SCOPE_ROLE_GATE_FAIL"); process.exit(1) }
-  console.log("\n ✅ CONTACT_SCOPE_ROLE_GATE_PASS — every contact-keyed gate in this census asks WHO is calling before it reads or writes another person's record, a refused read stays a refusal instead of becoming 'not found', and the seat roster is one derived definition whose every member the database can actually store")
+  console.log("\n ✅ CONTACT_SCOPE_ROLE_GATE_PASS — every contact-keyed gate in this census asks WHO is calling before it reads or writes another person's record, a refused read stays a refusal instead of becoming 'not found', the seat roster is one derived definition whose every member the database can actually store, and the permission matrix those gates would consult grants no outside party the brokerage's contacts, deals, staff roster, analytics or a transaction write")
 }
 main()
