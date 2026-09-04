@@ -30,6 +30,12 @@ import {
   requiresOnboardingRow,
   ownerNeedsTeamRow,
 } from "../lib/kernel/tenant-provisioning-spec"
+// The tenant rosters, so the invite gate below can be asked BEHAVIOURALLY rather
+// than matched by the name of whichever wrapper the action currently imports.
+import {
+  isAdminOrBroker,
+  isTenantCommerceAdmin,
+} from "../lib/auth/resolve-user-role"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -111,10 +117,44 @@ function sourceLayer() {
   const inv = src("app/actions/admin/invite-user.ts")
   // The literal this replaced carried a `superadmin` user_type matching zero
   // live rows and omitted broker_owner. The shared roster carries the ruling's
-  // five tenant admin-class roles; the platform half is a SEPARATE question,
-  // asked separately below.
+  // tenant admin-class roles; the platform half is a SEPARATE question, asked
+  // separately below.
+  //
+  // RETARGETED 2026-09-04 (§2). This read
+  // `/isAdminOrBroker\(\{\s*user_type:\s*callerType/` — the NAME of one
+  // wrapper — and went red when the gate was repointed at a NARROWER one. An
+  // invite consumes a BILLED SEAT (`seatGate` runs three lines later and offers
+  // an upgrade when the invite does not fit), so after the owner's 2026-09-04
+  // ruling seated `compliance_officer` as tenant staff admin, this site
+  // deliberately takes the commerce tier: the same roster minus that one role,
+  // because administering staff is not the same as buying the brokerage a seat.
+  // Pinning the wrapper's name made a correct narrowing look like a regression.
+  //
+  // The RULE is asked in two halves that a rename cannot break: the gate is a
+  // SHARED, IMPORTED roster predicate applied to the caller's own type, and the
+  // roster it resolves to admits the seats that could invite before and refuses
+  // the outside class.
+  const INVITE_PREDICATES: Record<string, (p: { user_type?: string | null }) => boolean> = {
+    isAdminOrBroker,
+    isTenantCommerceAdmin,
+  }
+  const invImport = inv.match(/import\s*\{([^}]*)\}\s*from\s*"@\/lib\/auth\/resolve-user-role"/)
+  const invPredicateName = (invImport?.[1] ?? "").split(",").map((x) => x.trim())
+    .find((n) => n in INVITE_PREDICATES)
+  const invPredicate = INVITE_PREDICATES[invPredicateName ?? ""] ?? (() => false)
   check("tenant admins/broker/team_lead invite THEIR OWN users via the shared core",
-    /inviteTenantMember\(\{/.test(inv) && /isAdminOrBroker\(\{\s*user_type:\s*callerType/.test(inv))
+    /inviteTenantMember\(\{/.test(inv) &&
+    !!invPredicateName &&
+    new RegExp(`\\b${invPredicateName}\\(\\{\\s*user_type:\\s*callerType`).test(inv))
+  check("…and the roster it resolves to admits every seat that could invite before",
+    ["admin", "broker", "broker_owner", "broker_admin", "team_lead"].every((r) => invPredicate({ user_type: r })))
+  check("…and refuses the outside class, and an unresolvable role (§4 fail closed)",
+    ["contact", "vendor", "agent", "isa", "tc"].every((r) => !invPredicate({ user_type: r })) &&
+    !invPredicate({ user_type: "" }))
+  // POSITIVE CONTROL — a finder that matched nothing would leave invPredicate as
+  // always-false, which satisfies the refusal line above all by itself.
+  check("POSITIVE CONTROL — the invite predicate was really discovered, and discriminates",
+    !!invPredicateName && invPredicate({ user_type: "broker" }) && !invPredicate({ user_type: "contact" }))
   const tu = src("app/actions/superadmin/tenant-users.ts")
   check("superadmin can CREATE users down into ANY tenant (gated + audited + shared core)",
     /export async function createTenantUserAction/.test(tu) && /requireSuperadmin/.test(tu) && /inviteTenantMember\(\{/.test(tu) && /"user\.created"/.test(tu))

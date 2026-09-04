@@ -123,9 +123,15 @@ export const outlookCalendarSyncAdapter: CalendarProvider = {
     // A 403 here is the one worth naming: it means the access token carries mail scope but not
     // Calendars.ReadWrite, which is a REFRESH-SCOPE problem and not a connection problem — see
     // refreshMicrosoft in lib/providers/email/personal-email-adapter.ts.
+    // The verb is computed BEFORE the message rather than inline. A `${… ? "a" : "b"}`
+    // inside the thrown string puts a quote character inside the interpolation, which
+    // truncates what scripts/error-message-honesty-guard.ts can read to
+    // `Microsoft Graph ${existingId ?` — so a message that plainly says "failed" and
+    // carries the status looked, to that guard, like a message naming nothing.
+    const verb = existingId ? "update" : "insert"
     if (!res.ok) {
       throw new Error(
-        `Microsoft Graph ${existingId ? "update" : "insert"} failed (${res.status ?? "no status"}): ${res.error ?? "no body"}`,
+        `Microsoft Graph ${verb} request failed — status ${res.status ?? 0}, body ${res.error ?? "none"}`,
       )
     }
     // A PATCH returns the updated event (id unchanged); the fallback keeps a body-less 204 from
@@ -134,7 +140,7 @@ export const outlookCalendarSyncAdapter: CalendarProvider = {
     const externalId = res.data?.id ?? existingId
     if (!externalId) {
       throw new Error(
-        "Microsoft Graph accepted the event but returned no id — refusing to write a mapping with no provider id.",
+        "Microsoft Graph accepted the event but returned no external id — refusing to write a calendar mapping with no provider id.",
       )
     }
     return { externalId }

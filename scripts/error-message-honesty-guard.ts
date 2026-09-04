@@ -271,6 +271,46 @@ function primaryClaim(message: string): string {
   return message.split(/[.;\n]|\s—\s/)[0] ?? message
 }
 
+/**
+ * A REFUSAL THAT CARRIES ITS OWN REASON, INTERPOLATED FROM THE TESTED SUBJECT.
+ *
+ * This file's header predicted this and said what to do about it: "a refusal
+ * that CARRIES ITS REASON as an interpolated value will always look misdirecting
+ * to a word-overlap heuristic, because the words that make it honest are not in
+ * the source at all — they arrive at runtime… If a third arrives, the right
+ * response is to TEACH THE DETECTOR about interpolated reason values, not to
+ * keep raising the number." A third and fourth arrived on 2026-09-04, so this is
+ * that teaching rather than another raise.
+ *
+ * THE RULE, and it is deliberately narrow: the message interpolates an
+ * expression rooted at the SAME object the condition tested. `!res.ok` whose
+ * message carries `${res.status}` and `${res.error}` is not blaming a different
+ * noun — it is handing the reader the tested subject's own account of the
+ * failure, which is strictly MORE informative than any sentence that would
+ * satisfy word overlap ("not ok").
+ *
+ * WHAT IT WILL NOT ADMIT, so this does not become a loophole:
+ *   · a bare `${…}` of anything else — interpolating an unrelated variable is
+ *     exactly how a misdirecting message launders itself;
+ *   · a root of 2 characters or fewer, matching the main matcher's own floor;
+ *   · a condition with no object root at all (`!contact` interpolating
+ *     `${contact}` proves nothing the word test would not already catch).
+ */
+function honestByInterpolatedReason(condIdent: string, message: string): boolean {
+  const root = condIdent.trim().split(/[.?[(]/)[0]?.trim() ?? ""
+  if (root.length <= 2 || !/^[A-Za-z_$][\w$]*$/.test(root)) return false
+  // The condition must be a PROPERTY of that root (`res.ok`), not the root
+  // itself — otherwise `!contact` → "${contact} missing" would qualify.
+  if (!new RegExp(`^${root}[.?[]`).test(condIdent.trim())) return false
+  for (const m of message.matchAll(/\$\{([^}]*)\}/g)) {
+    const expr = m[1] ?? ""
+    // Rooted at the same object, and NOT the identical property being tested —
+    // a message echoing `${res.ok}` says nothing the condition did not.
+    if (new RegExp(`\\b${root}\\s*[.?[]`).test(expr) && expr.trim() !== condIdent.trim()) return true
+  }
+  return false
+}
+
 /** True when the message plausibly names the thing the condition tested. */
 export function messageMatchesCondition(condIdent: string, message: string): boolean {
   const cond = tokens(condIdent)
@@ -281,7 +321,12 @@ export function messageMatchesCondition(condIdent: string, message: string): boo
       if (w === t || w.startsWith(t) || t.startsWith(w)) return true
     }
   }
-  return honestBySynonym(cond, msg)
+  if (honestBySynonym(cond, msg)) return true
+  // Checked on the WHOLE message, not primaryClaim: a refusal commonly states
+  // its claim first and interpolates the reason after the dash, and that reason
+  // is the honest part. It cannot launder a wrong claim, because the expression
+  // must be rooted at the very object the condition tested.
+  return honestByInterpolatedReason(condIdent, message)
 }
 
 interface Hit { file: string; line: number; cond: string; msg: string }
@@ -309,7 +354,34 @@ function ok(label: string, cond: boolean, detail?: string) {
 // ── A REVIEW QUEUE, NOT A BUG COUNT. Lower it as messages are corrected; never
 // raise it. Each entry needs a human to decide whether the sentence describes a
 // CONSEQUENCE (fine) or a DIFFERENT CAUSE (the defect).
-const BASELINE = 81
+// 2026-09-04: 81 → 76, DOWNWARD, and the arithmetic is written out because a
+// ratchet that moves without an account is just a number someone edited.
+//
+//   81  pre-wave
+//   +2  two new refusals in lib/providers/calendar/outlook-calendar-sync-adapter.ts
+//   -1  lib/kernel/calendar-sync-orchestrator.ts deleted (it had one)
+//   = 82, which is what turned this guard red.
+//
+//   -2  both Outlook messages REWORDED rather than excused. One said
+//       "…returned no id" while testing `externalId` ("id" is below the
+//       two-character floor, so nothing overlapped) and now says "no external
+//       id". The other embedded `${existingId ? "update" : "insert"}`, whose
+//       quote characters truncate what this file can read to
+//       `Microsoft Graph ${existingId ?` — a message plainly containing the word
+//       "failed" that this guard could not see the word "failed" in. The verb is
+//       computed into a local now. THAT IS A REAL BLIND SPOT, recorded here: a
+//       quote inside a `${…}` cuts the captured message short.
+//
+//   -4  the interpolated-reason rule below, which this file's own header
+//       instructed the next reader to write instead of raising the number again:
+//         lib/transactions/offer-bridge.ts:193 and :351   (${gate.reason})
+//         lib/ai-isa/appointment-scheduler.ts:71          (${verdict.reason})
+//         lib/did/index.ts:431                            (${budget.spent})
+//       Two of those were the very entries the header had raised the baseline
+//       for, so teaching the detector RETIRED its own excuses.
+//
+//   = 76, measured, not chosen.
+const BASELINE = 76
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()
@@ -379,6 +451,31 @@ console.log("\n═══ 3. And stays quiet on the honest forms it must not flag
   for (const [cond, msg] of HONEST) {
     ok(`quiet on  !${cond} → "${msg.slice(0, 50)}"`, messageMatchesCondition(cond, msg))
   }
+
+  // ── THE INTERPOLATED-REASON RULE, PROVED IN BOTH DIRECTIONS ───────────────
+  // A rule that only ever says YES would have silently emptied this whole
+  // guard, so each admission is paired with the near-miss it must still refuse.
+  ok('quiet on  !gate.allowed → "Gate refused transaction creation: ${gate.reason}"',
+    messageMatchesCondition("gate.allowed", "[offer-bridge] Gate refused transaction creation: ${gate.reason}"))
+  ok('quiet on  !verdict.contactId → "Cannot schedule: ${verdict.reason}"',
+    messageMatchesCondition("verdict.contactId", "Cannot schedule ISA appointment: ${verdict.reason}"))
+
+  ok("NEGATIVE CONTROL an interpolation of a DIFFERENT object is still flagged",
+    !messageMatchesCondition("gate.allowed", "Something went wrong: ${other.reason}"))
+  ok("NEGATIVE CONTROL echoing the SAME property back proves nothing and is still flagged",
+    !messageMatchesCondition("gate.allowed", "Refused: ${gate.allowed}"))
+  ok("NEGATIVE CONTROL a bare condition with no object root does not qualify",
+    !messageMatchesCondition("lead", "Contact missing: ${lead}"))
+  ok("NEGATIVE CONTROL a message with NO interpolation is unaffected by the new rule",
+    !messageMatchesCondition("gate.allowed", "Transaction could not be created"))
+  ok("NEGATIVE CONTROL a two-character root is below the floor, like the word matcher's",
+    !messageMatchesCondition("g.allowed", "Refused: ${g.reason}"))
+  // POSITIVE CONTROL that the new rule is doing REAL work rather than riding the
+  // word matcher: the SAME sentence with the interpolation written out as plain
+  // prose is still flagged. If this went quiet, the admissions above would prove
+  // nothing about interpolation — they would just be word overlap.
+  ok("POSITIVE CONTROL the same sentence WITHOUT the interpolation is still flagged",
+    !messageMatchesCondition("gate.allowed", "[offer-bridge] Gate refused transaction creation: the reason"))
 }
 
 console.log(`\n${"═".repeat(70)}`)
