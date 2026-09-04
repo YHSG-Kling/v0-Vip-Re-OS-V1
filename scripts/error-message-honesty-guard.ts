@@ -79,10 +79,18 @@
  * progress" is preceded, twenty lines up, by the existence check that rules the
  * other cause out.
  *
- * SO DO NOT GRIND THIS NUMBER DOWN. 76 is a saturated queue, not a backlog, and
- * further reduction means bending honest sentences to satisfy a word-overlap
- * heuristic — the exact inversion this file warns about above. Its remaining job
- * is the ratchet: it fails when a NEW misdirecting message appears.
+ * SO DO NOT GRIND THIS NUMBER DOWN BY REWRITING SENTENCES. The queue was
+ * saturated at 76 as a REVIEW list, and further reduction by editing prose means
+ * bending honest sentences to satisfy a word-overlap heuristic — the exact
+ * inversion this file warns about above. Its remaining job is the ratchet: it
+ * fails when a NEW misdirecting message appears.
+ *
+ * There is one other legitimate way down, and it is the opposite of bending:
+ * making the INSTRUMENT read what the code actually says. That is what took it
+ * 81 → 76 (the interpolated-reason rule) and 76 → 72 (a delimiter-aware message
+ * extractor, closing the truncation blind spot this header had recorded but
+ * worked around). Both fixed the guard, neither touched a sentence. The current
+ * figure and its full derivation are at BASELINE below.
  *
  * 76 → 79, AND THE THREE ARE NAMED, because a ratchet raised without a reason is
  * just a disabled guard. All three are on the PUBLIC website chat widget, where
@@ -171,10 +179,36 @@ const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { ret
 // that is never opened reports green, which is the failure shape §2 of CLAUDE.md
 // names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 
-/** `if (!X) ... "message"` — the guard and the sentence it blames. */
+/**
+ * `if (!X) ... "message"` — the guard and the sentence it blames.
+ *
+ * THE BODY IS DELIMITER-AWARE, AND THAT IS THE WHOLE POINT (CLAUDE.md §2).
+ * This pattern used to spell the message body `[^"'\`]{6,120}` — one class
+ * forbidding ALL THREE quote characters no matter which one opened the string.
+ * A template literal is the normal way to write a refusal that carries its
+ * reason, and quoting a value inside one is the normal way to make it readable:
+ *
+ *     throw new Error(`A referral cannot move from "${previousStatus}" to "${status}". …`)
+ *
+ * The capture stopped dead at that inner `"`, so the guard judged the fragment
+ * `A referral cannot move from` — and then reported the message as blaming a
+ * different noun, because every word that made it honest sat past the cut. Two
+ * of the three "new" findings on 2026-09-04 were this, not new misdirection:
+ * one message was truncated at its first quoted interpolation, the other
+ * (`${verdict.reason ?? "…"}`) was cut to `${verdict.reason ??` — which also
+ * hid it from honestByInterpolatedReason, the rule written for exactly that
+ * shape. A guard that cannot see the sentence it judges accuses the sentence.
+ *
+ * So the opening delimiter now decides what may appear inside it: only a
+ * backtick closes a template, only `"` closes a double-quoted string. The
+ * ceiling moves 120 → 200 for the same reason — a message longer than the
+ * ceiling did not merely truncate, it failed to match at all and dropped the
+ * guard out of the corpus silently, which is the blind spot, not a pass.
+ */
 const GUARD_RE = new RegExp(
   String.raw`if\s*\(\s*!([A-Za-z_$][\w.$?]*)\s*\)\s*\{?[^{}]{0,200}?` +
-  String.raw`(?:error:\s*|Error\(\s*|message:\s*)["'\`]([^"'\`]{6,120})["'\`]`,
+  String.raw`(?:error:\s*|Error\(\s*|message:\s*)` +
+  String.raw`(?:\`([^\`]{6,200})\`|"([^"]{6,200})"|'([^']{6,200})')`,
   "gs",
 )
 
@@ -336,7 +370,10 @@ function findMismatches(): Hit[] {
   for (const file of [...walkTs("app"), ...walkTs("lib"), ...walkTs("components"), ...rootRuntimeFiles(".")]) {
     const s = read(file)
     for (const m of s.matchAll(GUARD_RE)) {
-      const [, cond, msg] = m
+      // One of the three delimiter branches captured; the other two are undefined.
+      const cond = m[1]!
+      const msg  = m[2] ?? m[3] ?? m[4]
+      if (msg === undefined) continue
       if (messageMatchesCondition(cond, msg)) continue
       hits.push({ file, line: s.slice(0, m.index!).split("\n").length, cond, msg: msg.trim() })
     }
@@ -381,7 +418,35 @@ function ok(label: string, cond: boolean, detail?: string) {
 //       for, so teaching the detector RETIRED its own excuses.
 //
 //   = 76, measured, not chosen.
-const BASELINE = 76
+//
+// 2026-09-04, wave 28 — 76 → 72, and the blind spot recorded four lines above is
+// now CLOSED rather than worked around.
+//
+//   That note said, in this file's own words: "THAT IS A REAL BLIND SPOT,
+//   recorded here: a quote inside a `${…}` cuts the captured message short." The
+//   response at the time was to rewrite the SOURCE so the guard could read it
+//   (computing the verb into a local). This wave the guard reported 78 and named
+//   three new offenders; two of them were that blind spot firing again, on
+//   app/actions/referrals/referral-actions.ts:329 and :579 — messages truncated
+//   at an inner quote and then judged on the fragment. Rewriting two more call
+//   sites to suit the instrument would have been the third time. GUARD_RE is
+//   delimiter-aware instead, so the ceiling moves for the reason §2 gives: a
+//   guard that cannot see the code it judges is worse than no guard.
+//
+//   -3  messages that were always honest and are now READ IN FULL, so the
+//       interpolated-reason rule and the word matcher can both see them
+//       (referral-actions.ts:329 and :579 among them).
+//   -1  app/actions/referrals/referral-actions.ts:324 — a GENUINE hit, fixed in
+//       the CODE, not the guard: `const { data: current }` holding a referral row
+//       meant the guard tested `current` and the sentence said "Referral", and no
+//       reader could tell they were the same thing either. The binding is named
+//       currentReferral now.
+//   The corpus also GREW (the 120-char ceiling moves to 200 — a message longer
+//   than the ceiling did not truncate, it failed to match and dropped the guard
+//   out of the corpus entirely), and no new offender surfaced in what it added.
+//
+//   = 72, measured, not chosen.
+const BASELINE = 72
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()
@@ -476,6 +541,31 @@ console.log("\n═══ 3. And stays quiet on the honest forms it must not flag
   // nothing about interpolation — they would just be word overlap.
   ok("POSITIVE CONTROL the same sentence WITHOUT the interpolation is still flagged",
     !messageMatchesCondition("gate.allowed", "[offer-bridge] Gate refused transaction creation: the reason"))
+
+  // ── THE EXTRACTOR MUST READ THE SENTENCE IT JUDGES ────────────────────────
+  // These run GUARD_RE itself, not just the matcher, because the 2026-09-04
+  // defect was upstream of every rule above: a template literal quoting a value
+  // inside itself was truncated at that inner quote, and the fragment was then
+  // judged. A rule cannot be right about a sentence it never received.
+  const extract = (src: string) => {
+    const m = new RegExp(GUARD_RE.source, "s").exec(src)
+    return m ? { cond: m[1], msg: m[2] ?? m[3] ?? m[4] } : null
+  }
+  const tmplWithQuotes =
+    'if (!verdict.ok) { throw new Error(`A referral cannot move from "${previousStatus}" to "${status}". From here it can go to: ${verdict.allowed.join(", ")}.`) }'
+  const got = extract(tmplWithQuotes)
+  ok("POSITIVE CONTROL a template quoting a value inside itself is read WHOLE, not cut at the inner quote",
+    got !== null && got.msg!.includes("From here it can go to"))
+  ok("…and once whole, its interpolated reason is recognised, so it is not flagged",
+    got !== null && messageMatchesCondition(got.cond!, got.msg!))
+  ok("NEGATIVE CONTROL the pre-fix behaviour really did cut it — the old one-class body stops at the inner quote",
+    /(?:Error\(\s*)["'`]([^"'`]{6,120})["'`]/.exec(tmplWithQuotes)?.[1] === "A referral cannot move from ")
+  ok("a double-quoted message may contain a backtick and is still read whole",
+    extract('if (!x.ok) throw new Error("the `id` column is missing from this row")')?.msg
+      === "the `id` column is missing from this row")
+  ok("NEGATIVE CONTROL a double-quoted message still ENDS at its own closing quote",
+    extract('if (!x.ok) throw new Error("first message"); const s = "second message"')?.msg
+      === "first message")
 }
 
 console.log(`\n${"═".repeat(70)}`)

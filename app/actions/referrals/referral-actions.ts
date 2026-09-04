@@ -310,7 +310,7 @@ export async function updateReferralStatus(
   // that the move is LEGAL — so a referral could jump `received` → `closed`,
   // skipping every stage, and the pipeline's own order meant nothing. The graph
   // now lives beside the vocabulary it is written in (§6).
-  const { data: current, error: currentErr } = await db
+  const { data: currentReferral, error: currentErr } = await db
     .from("referrals")
     .select("status")
     .eq("id", referralId)
@@ -321,9 +321,13 @@ export async function updateReferralStatus(
   // No row ⇒ wrong referral or wrong tenant. The UPDATE below would match nothing
   // and resolve CLEANLY (CLAUDE.md §3), reporting a stage change that never
   // happened, so the refusal has to be caught here.
-  if (!current) throw new Error("Referral not found, or not owned by this agent.")
+  // The binding is named for what it HOLDS. As `current` it said nothing about a
+  // referral, so this guard tested one noun and blamed another as far as any
+  // reader — or the honesty guard — could tell, and the sentence is the accurate
+  // half of the pair.
+  if (!currentReferral) throw new Error("Referral not found, or not owned by this agent.")
 
-  const previousStatus = (current as { status: string }).status
+  const previousStatus = (currentReferral as { status: string }).status
   if (previousStatus !== status) {
     const verdict = canAdvanceReferral(previousStatus, status)
     if (!verdict.ok) {
