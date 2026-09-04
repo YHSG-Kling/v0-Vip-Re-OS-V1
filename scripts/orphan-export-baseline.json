@@ -7,7 +7,6 @@
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 4,
     "app/actions/ai-transaction-coordinator.ts": 2,
-    "app/actions/billing.ts": 3,
     "app/actions/cda-portal.ts": 3,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
@@ -15,7 +14,6 @@
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
-    "app/actions/reputation-kernel.ts": 3,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
     "app/actions/vendor-payments.ts": 1,
@@ -363,6 +361,7 @@
     "lib/managers/learning-loop.ts": 1,
     "lib/managers/teamwork-metrics.ts": 1,
     "lib/marketing/annual-home-value-report.ts": 1,
+    "lib/marketing/engagement-rollup.ts": 1,
     "lib/marketing/geo-faq.ts": 1,
     "lib/marketing/guide-booklet-content.ts": 1,
     "lib/marketing/image-library.ts": 2,
@@ -405,7 +404,7 @@
     "lib/platform/impersonation.ts": 1,
     "lib/platform/manager-ops.ts": 2,
     "lib/platform/nps.ts": 4,
-    "lib/platform/os-sentinel.ts": 3,
+    "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 1,
     "lib/platform/platform-sentinel.ts": 2,
     "lib/platform/platform-social.ts": 1,
@@ -472,7 +471,6 @@
     "lib/transactions/final-compliance-check.ts": 1,
     "lib/transactions/milestone-service.ts": 1,
     "lib/transactions/offer-bridge.ts": 1,
-    "lib/transactions/offer-execution-state.ts": 1,
     "lib/transactions/sync-from-provider.ts": 1,
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 1,
@@ -516,9 +514,10 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "remotion/EquityReportReel.tsx": 1,
     "remotion/VideoCoverThumb.tsx": 1,
+    "remotion/_BrollLayer.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9496,
+  "census": 9498,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -633,7 +632,7 @@
     "app/actions/autonomy-halt.ts": 1,
     "app/actions/avatar-video.ts": 2,
     "app/actions/avatar-voice-catalog.ts": 3,
-    "app/actions/billing.ts": 12,
+    "app/actions/billing.ts": 9,
     "app/actions/blog-cadence-policy.ts": 2,
     "app/actions/blog.ts": 12,
     "app/actions/brand-template-registry.ts": 12,
@@ -912,7 +911,7 @@
     "app/actions/property-evaluation.ts": 1,
     "app/actions/public/tos-acceptance.ts": 2,
     "app/actions/push-listing-to-seller-portal.ts": 1,
-    "app/actions/push-subscriptions.ts": 3,
+    "app/actions/push-subscriptions.ts": 4,
     "app/actions/qr-management.ts": 2,
     "app/actions/quarterly-review.ts": 1,
     "app/actions/recruiting-roi.ts": 7,
@@ -921,7 +920,7 @@
     "app/actions/referrals/referral-appreciation.ts": 3,
     "app/actions/repair-negotiation-copilot.ts": 2,
     "app/actions/reporting-kernel.ts": 10,
-    "app/actions/reputation-kernel.ts": 15,
+    "app/actions/reputation-kernel.ts": 12,
     "app/actions/revenue-pipeline.ts": 1,
     "app/actions/revenue-protection.ts": 3,
     "app/actions/scrape-social-media.ts": 1,
@@ -1099,7 +1098,7 @@
     "app/actions/workflow-monitoring.ts": 4,
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
-    "app/actions/workflows.ts": 9,
+    "app/actions/workflows.ts": 10,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
     "app/api/admin/billing/dashboard/route.ts": 1,
@@ -2812,7 +2811,7 @@
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
     "lib/auth/require-caller.ts": 2,
-    "lib/auth/resolve-user-role.ts": 11,
+    "lib/auth/resolve-user-role.ts": 12,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
@@ -3508,7 +3507,7 @@
     "lib/kernel/reporting-autonomy.ts": 4,
     "lib/kernel/reporting-scope.ts": 2,
     "lib/kernel/reporting.ts": 11,
-    "lib/kernel/reputation.ts": 8,
+    "lib/kernel/reputation.ts": 5,
     "lib/kernel/resolve-event-contacts.ts": 1,
     "lib/kernel/resolve-user-office.ts": 2,
     "lib/kernel/resolve-user-team.ts": 3,
@@ -3682,6 +3681,7 @@
     "lib/listings/back-on-market.ts": 1,
     "lib/listings/compute-dom.ts": 2,
     "lib/listings/expiry-decision.ts": 2,
+    "lib/listings/listing-activation-gate.ts": 1,
     "lib/listings/listing-metrics-rollup.ts": 1,
     "lib/listings/listing-metrics-shape.ts": 2,
     "lib/listings/listing-status-sync.ts": 1,
@@ -3723,7 +3723,7 @@
     "lib/marketing/content-topics.ts": 2,
     "lib/marketing/creative-playbooks.ts": 1,
     "lib/marketing/email-campaign-sender.ts": 2,
-    "lib/marketing/engagement-rollup.ts": 2,
+    "lib/marketing/engagement-rollup.ts": 3,
     "lib/marketing/geo-faq.ts": 3,
     "lib/marketing/guide-booklet-content.ts": 2,
     "lib/marketing/home-value-email.ts": 2,
@@ -3826,7 +3826,7 @@
     "lib/platform/launch-checklist.ts": 1,
     "lib/platform/manager-ops.ts": 3,
     "lib/platform/nps.ts": 9,
-    "lib/platform/os-sentinel.ts": 5,
+    "lib/platform/os-sentinel.ts": 7,
     "lib/platform/platform-controls.ts": 5,
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
@@ -3959,7 +3959,7 @@
     "lib/referrals/partner-vocabulary.ts": 4,
     "lib/referrals/referral-reciprocity-runner.ts": 1,
     "lib/referrals/referral-reciprocity.ts": 3,
-    "lib/referrals/referral-status.ts": 3,
+    "lib/referrals/referral-status.ts": 4,
     "lib/remotion/bundle-cache.ts": 1,
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
@@ -3979,6 +3979,7 @@
     "lib/repurpose/shared.ts": 1,
     "lib/repurpose/transcribe-core.ts": 1,
     "lib/repurpose/transcribe.ts": 1,
+    "lib/reputation/review-landed.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
     "lib/security/credential-rotation.ts": 3,
@@ -4083,7 +4084,7 @@
     "lib/transactions/milestone-identity.ts": 2,
     "lib/transactions/milestone-service.ts": 7,
     "lib/transactions/offer-bridge.ts": 3,
-    "lib/transactions/offer-execution-state.ts": 2,
+    "lib/transactions/offer-execution-state.ts": 3,
     "lib/transactions/participant-populator.ts": 1,
     "lib/transactions/role-guard.ts": 5,
     "lib/transactions/stage-auto-tasks.ts": 1,
@@ -4283,7 +4284,7 @@
     "remotion/TeammateExplainerReel.tsx": 1,
     "remotion/TestimonialReel.tsx": 1,
     "remotion/VideoCoverThumb.tsx": 2,
-    "remotion/_BrollLayer.tsx": 2,
+    "remotion/_BrollLayer.tsx": 3,
     "remotion/charts/AffordabilityDonut.tsx": 1,
     "remotion/charts/CompsBar.tsx": 1,
     "remotion/charts/DaysOnMarketBars.tsx": 1,
@@ -5036,10 +5037,7 @@
       "getBillingUsage",
       "getInvoiceHistory",
       "startSubscriptionCheckout",
-      "cancelSubscription",
-      "getAllBrokeragesBilling",
-      "getDelinquentAccounts",
-      "manualTierOverride"
+      "cancelSubscription"
     ],
     "app/actions/blog-cadence-policy.ts": [
       "getMyBlogCadencePolicy",
@@ -6881,6 +6879,7 @@
     "app/actions/push-subscriptions.ts": [
       "getVapidPublicKey",
       "subscribePush",
+      "listMyPushDevices",
       "unsubscribePush"
     ],
     "app/actions/qr-management.ts": [
@@ -6935,10 +6934,7 @@
     ],
     "app/actions/reputation-kernel.ts": [
       "createReviewRequestAction",
-      "recordReviewAction",
       "respondToReviewAction",
-      "createReferralRequestAction",
-      "advanceReferralStatusAction",
       "loadReputationWorkspaceAction",
       "loadReferralPipelineAction",
       "loadReviewPerformanceAction",
@@ -8110,6 +8106,7 @@
       "executeAITool",
       "generateCopilotPlan",
       "startSmartDrip",
+      "listContactDrips",
       "sendMessage",
       "generateScriptContent",
       "savePrivateScript",
@@ -13797,6 +13794,7 @@
       "isBrokerageFinanceAdmin",
       "isBrokerageFinanceAdminGrantRole",
       "isTenantCommerceAdmin",
+      "isAgentOrCommerceAdmin",
       "isTenantAdminOrPlatformStaff",
       "resolveTenantAdmin",
       "resolveBrokerageFinanceAdmin",
@@ -17414,10 +17412,7 @@
     "lib/kernel/reputation.ts": [
       "loadReputationWorkspace",
       "createReviewRequest",
-      "recordReview",
       "respondToReview",
-      "createReferralRequest",
-      "advanceReferralStatus",
       "loadReferralPipeline",
       "loadReviewPerformance"
     ],
@@ -18344,6 +18339,9 @@
       "composeExpiryDecision",
       "runExpiryDecisions"
     ],
+    "lib/listings/listing-activation-gate.ts": [
+      "assertListingActivationAllowed"
+    ],
     "lib/listings/listing-metrics-rollup.ts": [
       "rollupListingMetrics"
     ],
@@ -18560,6 +18558,7 @@
       "runScheduledEmailCampaigns"
     ],
     "lib/marketing/engagement-rollup.ts": [
+      "isMachineOpenUserAgent",
       "rollupEmailCampaignRates",
       "rollupNewsletterCampaignRates"
     ],
@@ -19102,6 +19101,8 @@
     "lib/platform/os-sentinel.ts": [
       "worstStatus",
       "classifyCount",
+      "deliveryQueueStatus",
+      "describeDeliveryQueues",
       "rollupOsHealth",
       "loadOsHealth",
       "runOsSentinelSweep"
@@ -19785,7 +19786,8 @@
     "lib/referrals/referral-status.ts": [
       "isReferralStatus",
       "referralStatusLabel",
-      "referralStatusBadgeClass"
+      "referralStatusBadgeClass",
+      "canAdvanceReferral"
     ],
     "lib/remotion/bundle-cache.ts": [
       "getBundle"
@@ -19890,6 +19892,9 @@
     ],
     "lib/repurpose/transcribe.ts": [
       "transcribeFromUrl"
+    ],
+    "lib/reputation/review-landed.ts": [
+      "onReviewLanded"
     ],
     "lib/revenue-protection/scorer.ts": [
       "calculateRevenueProtection"
@@ -20372,6 +20377,7 @@
       "createTransactionFromOffer"
     ],
     "lib/transactions/offer-execution-state.ts": [
+      "offerExecutionPath",
       "isOfferFullyExecuted",
       "shouldAutoExecuteOffer"
     ],
@@ -21302,6 +21308,7 @@
       "VideoCoverThumb"
     ],
     "remotion/_BrollLayer.tsx": [
+      "brollWindowAt",
       "BrollLayer",
       "ContextCueRow"
     ],
