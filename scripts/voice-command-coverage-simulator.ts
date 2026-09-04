@@ -204,9 +204,14 @@ function main() {
     .split(",")
     .map((s) => s.trim())
     .find((n) => n in ROSTER_PREDICATES)
+  // The detail goes to stdout rather than to check(), whose signature in this
+  // file is (name, cond) — a third argument type-checks nowhere and was the one
+  // error `tsc --noEmit` caught on the chain re-run.
+  if (!importedPredicate) {
+    console.log(`      deal-decision imports no known roster predicate from resolve-user-role (saw: ${rosterImport?.[1]?.trim() ?? "no import at all"})`)
+  }
   check("...and it is IMPORTED, not re-declared locally (a second copy is the drift the ruling forbids)",
-    !!importedPredicate,
-    `deal-decision imports no known roster predicate from resolve-user-role (saw: ${rosterImport?.[1]?.trim() ?? "no import at all"})`)
+    !!importedPredicate)
   check("backend re-checks authority ITSELF — the shared tenant-admin roster is called on the actor",
     !!importedPredicate &&
     new RegExp(`if\\s*\\([^)]*\\b${importedPredicate}\\s*\\(\\s*\\{\\s*user_type`).test(dealDecisionSrc) &&
