@@ -310,6 +310,16 @@ export async function getAgent360Action(
   const pending = allCommissions.filter(c => OWED_STATUSES.has(c.status))
   const disputed = allCommissions.filter(c => c.status === "disputed")
 
+  // MERGED IN WAVE 27 from app/actions/agents.ts:getAgentAchievements, the
+  // never-surfaced twin of this read, which was retired onto this one. The ONE
+  // thing that duplicate did and this survivor did not was REPORT A REFUSED
+  // READ: supabase-js resolves a refusal, so `(badgesRes.data ?? [])` renders
+  // "this agent has earned nothing" and "we were not allowed to look" as the
+  // same empty award ledger on a broker's 360 card. Logged here, in the same
+  // idiom `capRes.error` already uses below, before the delete landed.
+  if (badgesRes.error) {
+    console.error(`[agent-360] agent_badges read refused for agent ${agent.id}: ${badgesRes.error.message}`)
+  }
   const badges = (badgesRes.data ?? []).map((b: any): Agent360Badge => {
     const def = Array.isArray(b.gamification_badges) ? b.gamification_badges[0] : b.gamification_badges
     return {

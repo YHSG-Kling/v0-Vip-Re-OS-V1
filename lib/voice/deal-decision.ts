@@ -46,7 +46,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isAgentOrTenantAdmin } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -106,7 +106,13 @@ async function resolveActor(svc: Svc, input: VoiceAcceptOfferInput): Promise<{
   // agent plus the override roles. Enforced here too (not only at the route
   // gate) because the run_team_command free-text lane reaches this backend
   // without a per-tool registry check.
-  if (userType !== "agent" && !isAdminOrBroker({ user_type: userType })) {
+  // ONE SPELLING (§6, wave 27). This was the second hand-written copy of
+  // "agent, or someone who administers them"; the other was
+  // app/actions/negotiation-strategy.ts:requireAgentOrAdmin. Both now ask
+  // lib/auth/resolve-user-role.ts:isAgentOrTenantAdmin, which DERIVES the roster
+  // from TENANT_ADMIN_USER_TYPES. Membership is byte-identical to what stood
+  // here — a repoint, not a widening.
+  if (!isAgentOrTenantAdmin({ user_type: userType })) {
     return { error: "Deal decisions aren't available for your role — ask the assigned agent or your broker." }
   }
 

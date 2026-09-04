@@ -5,9 +5,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
+// resolveUserOffice / pickUserOffice / isBrokerageFinanceAdmin /
+// resolveTenantPrincipalTeamLead were imported here for addAgentCommission and
+// addAgentExpense only. Both were retired in wave 27 (tombstones below); their
+// survivors import what they need themselves, so the imports went with them.
 import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
-import { isAdminOrBroker, isBrokerageFinanceAdmin, resolveTenantPrincipalTeamLead } from "@/lib/auth/resolve-user-role"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // A new `agents` row invalidates any memoized "this user has no agent record" answer.
 import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
 
@@ -106,7 +109,8 @@ export async function getAgents(): Promise<
  * This gate asks isAdminOrBroker (TENANT_ADMIN_USER_TYPES — team_lead INCLUDED),
  * while every MONEY path over business_expenses asks isBrokerageFinanceAdmin
  * (the same roster MINUS team_lead): app/actions/financials.ts#exportCommissionsCSV,
- * #exportExpensesCSV, #attachExpenseReceipt, and addAgentExpense below. Two
+ * #exportExpensesCSV, #attachExpenseReceipt, and #logScopedExpense — which is
+ * where the retired addAgentExpense's other-agent branch now lives. Two
  * spellings of "who may touch this table" is normally the §6 defect, so the
  * mismatch was checked against the live database rather than reconciled on sight.
  *
@@ -473,92 +477,25 @@ export async function createAgent(agentData: {
 
 // ==================== GAMIFICATION ====================
 
-/**
- * ONE ATOMIC AWARD PATH — public.award_agent_points() (m484). Three things were
- * wrong here and all three are structural:
- *
- *   · READ-MODIFY-WRITE. SELECT the total, add, UPDATE it back. Two awards landing
- *     between the same select and update kept only one, and the ledger row was
- *     written separately, so a failure between them left the total and the ledger
- *     permanently disagreeing with no way to tell which was right.
- *   · THE LEDGER ROW CARRIED NO TENANT. `brokerage_id` was simply never supplied,
- *     and the leaderboard populator filters on exactly that column — so every point
- *     this function ever awarded was invisible to the board it was supposed to feed.
- *   · IT AWARDED ACHIEVEMENTS. `checkAndAwardAchievements` is gone with the
- *     duplicate reward ledger it wrote to (see the note below); badges are the one
- *     survivor, and `addPoints` in app/actions/gamification.ts is the path that
- *     checks them.
- *
- * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
- * This file is `"use server"`, so every export is a PUBLIC HTTP ENDPOINT. This
- * one had NO auth check of any kind — no getUser, no role gate, no tenant
- * resolution — and took `agentId` and `points` straight from its caller. As an
- * export that is an unauthenticated door for writing arbitrary point totals to
- * an arbitrary agent in any tenant, which then triggers threshold badge awards.
- * It was never meant to be a door: both call sites (:~735 recordCommission,
- * :~1300 assignAgentToContact) are in THIS file and both run their own gate
- * first. The checked PUBLIC path for awarding points is `addPoints` in
- * app/actions/gamification.ts, as the doc block above already said.
- *
- * The gate below is defence in depth, not a substitute for the callers' gates:
- * a module-private function still deserves to refuse when it cannot tell who is
- * asking (§4 fail closed). It also closes a real gap the callers do NOT close —
- * neither of them verifies that the TARGET agent belongs to the caller's
- * brokerage before crediting them.
- */
-async function awardPoints(agentId: string, points: number, reason: string, category: string) {
-  // ── GATE FIRST (§4) ───────────────────────────────────────────────────────
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
-  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
-  if (!isValidUUID(agentId)) return { error: "Invalid agent id." }
-
-  // The target agent must be in the CALLER'S tenant. Service client is used only
-  // AFTER the session has produced the brokerage to check against — never to
-  // widen the question. `.maybeSingle()` on an id+brokerage predicate: no row
-  // means either "no such agent" or "not your agent", and both are the same
-  // refusal from here.
-  const { data: targetAgent, error: targetErr } = await createServiceClient()
-    .from("agents")
-    .select("id")
-    .eq("id", agentId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-  // supabase-js RESOLVES refusals — read the error, and treat "cannot tell" as
-  // "no" rather than letting an unreadable check render as a passed one.
-  if (targetErr) {
-    console.error("[awardPoints] tenant check could not run — refusing:", targetErr.message)
-    return { error: "Could not verify that agent belongs to your brokerage." }
-  }
-  if (!targetAgent) return { error: "That agent was not found in your brokerage." }
-
-  const supabase = await createClient()
-  const { awardAgentPoints } = await import("@/lib/gamification/award-points")
-
-  const awarded = await awardAgentPoints(supabase, {
-    agentId,
-    points,
-    reason,
-    referenceType: category,
-  })
-  if (!awarded.ok) {
-    console.error("[awardPoints]", awarded.error)
-    return { error: awarded.error }
-  }
-
-  // Badges are threshold-awarded against the total the database now holds.
-  try {
-    const { checkAndAwardBadges } = await import("@/app/actions/gamification")
-    await checkAndAwardBadges(agentId, awarded.newTotal)
-  } catch (err) {
-    console.error(
-      `[awardPoints] points landed for agent ${agentId} but the badge check failed: ${err instanceof Error ? err.message : "unknown error"}`,
-    )
-  }
-
-  revalidatePath("/dashboard/admin/users")
-  return { data: { newPoints: awarded.newTotal } }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 27)
+// the module-private `awardPoints` wrapper deleted.
+//
+// SURVIVOR: lib/gamification/award-points.ts:awardAgentPoints — the ONE atomic
+// award path (public.award_agent_points(), m484: the increment and the ledger
+// row in one transaction, tenant derived from the agents row).
+//
+// It is deleted rather than kept because BOTH its call sites went in this same
+// change — they were the two duplicates retired above — leaving a private
+// function nothing can reach. Nothing was lost with it: its one job beyond the
+// survivor was proving the target agent is in the CALLER'S tenant, and every
+// remaining path to the survivor proves exactly that before awarding. The
+// reassignment that inherited this file's award says so in place
+// (app/actions/contact-reassignment.ts, the CONTACT_ASSIGNED award: "this action
+// already proved exactly that above"), and the commission rail resolves its
+// agent through the session-anchored kernel context.
+//
+// The checked PUBLIC path for awarding points remains `addPoints` in
+// app/actions/gamification.ts.
 
 /**
  * THE SECOND LEADERBOARD READER IS GONE.
@@ -595,54 +532,27 @@ async function awardPoints(agentId: string, points: number, reason: string, cate
  * that string. Badges are awarded by app/actions/gamification.ts:checkAndAwardBadges.
  */
 
-/**
- * COMPATIBILITY ALIAS over the survivor ledger. `agent_achievements` no longer
- * exists; an agent's unlocked rewards are `agent_badges` rows.
- *
- * ─── ITS KEEP-REASON HAS EXPIRED (wave 26) ──────────────────────────────────
- * The reason recorded here was "the actions barrel (app/actions/index)
- * re-exports it and that barrel is not this lane's to edit". That barrel WAS
- * deleted, so nothing re-exports this and nothing calls it.
- *
- * SURVIVOR: app/actions/admin/agent-360.ts:228 — the same agent_badges read,
- * joined to gamification_badges, but GATED on the caller's brokerage
- * (caller.brokerage_id) and rendered on the agent 360 card. This function has no
- * gate at all: it takes an agents.id straight from the caller and will read any
- * agent's badge ledger in any tenant.
- *
- * MERGED FIRST, per §1: the one field the survivor's select lacked —
- * `awarded_reason` — is now on it (agent-360.ts:229, surfaced as
- * Agent360Badge.awardedReason). Nothing else here is absent there.
- *
- * NOT deleted only because scripts/people-vendor-education-wiring-simulator.ts
- * :536-547 slices body("agents", "getAgentAchievements") to assert the refused
- * read is logged, and that helper THROWS when the function is absent. Retiring
- * this means repointing that assertion at agent-360 in the same change — a
- * scripts/ edit outside this lane. Until then it stays UNGATED and UNCALLED,
- * which is worth saying plainly rather than leaving implied.
- */
-export async function getAgentAchievements(agentId: string) {
-  const supabase = await createClient()
 
-  const { data, error } = await supabase
-    .from("agent_badges")
-    .select(`
-      id,
-      badge_id,
-      awarded_at,
-      awarded_reason,
-      badge:gamification_badges(id, badge_name, badge_description, badge_icon, badge_tier, badge_category, required_points)
-    `)
-    .eq("agent_id", agentId)
-    .order("awarded_at", { ascending: false })
-
-  if (error) {
-    console.error("[getAgentAchievements] awarded-badge read refused:", error.message)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 27)
+// `getAgentAchievements` deleted.
+//
+// SURVIVOR: app/actions/admin/agent-360.ts:getAgent360Action — the same badge
+// ledger read, joined to the badge catalog, GATED on the caller's own brokerage
+// and rendered on the agent 360 card. This twin had no gate at all: it took an
+// agents.id straight from the caller and would read any agent's award ledger in
+// any tenant.
+//
+// MERGED FIRST, both halves:
+//   · `awarded_reason` on the survivor's select, surfaced as
+//     Agent360Badge.awardedReason (wave 26);
+//   · the REFUSED-READ REPORT (wave 27) — the survivor mapped its result with
+//     `?? []`, so a refusal and an agent who has earned nothing rendered
+//     identically. It now logs the refusal, in the same idiom the cap read
+//     beside it already used.
+//
+// PROOF MOVED WITH IT: assertion A6 in
+// scripts/people-vendor-education-wiring-simulator.ts now slices
+// getAgent360Action, with its mutation control re-anchored there.
 
 // ==================== COMMISSION TRACKING ====================
 
@@ -690,172 +600,31 @@ export async function getAgentCommissions(agentId: string, year?: number, opts?:
   return { ok: true as const, error: null, commissions: data ?? [] }
 }
 
-/**
- * NOT THE CANONICAL COMMISSION CREATOR. The canonical creator on this rail is
- * lib/kernel/financial.ts:createCommissionRecord (exposed as
- * app/actions/financial-kernel.ts:createCommissionRecordAction and wired at
- * app/dashboard/financials/agent/agent-financials-client.tsx) — it applies the cap,
- * the fee schedule and the splits ledger. It is deliberately left without a UI
- * surface so agent_commissions keeps a single live writer.
- *
- * ─── THE GAP IS CLOSED; THE DELETE IS BLOCKED (wave 26) ─────────────────────
- * The two things this function carried and the survivor did not — the caller's
- * real `close_date` and the deal `side` — HAVE NOW BEEN PORTED onto the
- * survivor (lib/kernel/financial.ts:CreateCommissionRecordInput.closeDate /
- * .side, written at its agent_commissions insert). The survivor previously
- * hardcoded `close_date: new Date()` on every row while loadAgentCommissions
- * ORDERS BY that column, and never wrote `side` at all.
- *
- * So §1's "merge onto the survivor FIRST" is done, and this function is now a
- * pure duplicate with nothing left to give. It is NOT deleted because deleting
- * it breaks live proofs that read its body:
- *   · scripts/cda-financial-wiring-simulator.ts:238-246 slices
- *     fnBody(agents, "addAgentCommission") and asserts it still inserts into the
- *     ledger and no longer inserts the GENERATED columns.
- *   · scripts/wired-surface-baseline.json:6 lists it.
- * The slice helper THROWS when the function is absent, so removal is a guard
- * crash, not a silent pass. Retiring this needs those proofs repointed at the
- * survivor in the same change — a scripts/ edit outside this lane.
- *
- * It could never have run as written. Verified against the live schema:
- *   • agent_commissions.brokerage_id is NOT NULL and was never supplied (23502), and
- *   • agent_commission / brokerage_commission are GENERATED ALWAYS columns
- *     (gross_commission * agent_split_percent / 100 and its complement) — inserting
- *     into them is rejected outright.
- * So every call returned an error and the splits row below was unreachable. Both are
- * fixed here rather than left as a landmine on the money ledger.
- */
-export async function addAgentCommission(commissionData: {
-  agent_id: string
-  transaction_id: string
-  gross_commission: number
-  agent_split_percent: number
-  close_date: string
-  side: "listing" | "buying" | "both"
-}) {
-  // ── GATE FIRST (§4) ───────────────────────────────────────────────────────
-  // This is a "use server" export, so it is a PUBLIC HTTP ENDPOINT — and it
-  // writes the MONEY LEDGER. It previously ran no auth check of any kind and
-  // took agent_id, gross_commission and agent_split_percent straight from the
-  // caller, resolving the brokerage FROM the body-supplied agent id: the exact
-  // IDOR shape §4 names, on commissions rather than on a counter. Anyone able to
-  // reach the endpoint could file a commission of any size against any agent in
-  // any brokerage. The TENANT half is the same gate as awardPoints above, and for
-  // the same reason: the tenant comes from the SESSION, and the body-supplied
-  // agent must be proven to live inside it before a row is written. The ROLE
-  // half below is what a money ledger needs and a points counter does not.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
-  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
-  if (!isValidUUID(commissionData.agent_id)) return { error: "Invalid agent id." }
 
-  const supabase = await createClient()
-
-  // ── ROLE GATE (§4) — the money ledger is not the points counter ───────────
-  // The tenant gate proves the caller is SOMEONE in this brokerage; it says
-  // nothing about who may write a commission, so until 2026-09-02 any
-  // authenticated member could file one of any size against any colleague.
-  // The predicate is the ONE finance roster this repo already uses for
-  // commission writes — lib/auth/resolve-user-role.ts:isBrokerageFinanceAdmin,
-  // mirroring public.is_brokerage_finance_admin() (m472): admin / broker /
-  // broker_owner / broker_admin. `team_lead` is NOT in it, by the owner's
-  // ruling, EXCEPT as the tier-conditioned tenant principal (m526): on a
-  // team/solo tier the lead IS the tenant and keeps its books, and that fact is
-  // resolved from the SESSION's own ids by resolveTenantPrincipalTeamLead —
-  // never from the body. Same gate and same resolver as
-  // app/actions/financial-kernel.ts:78 and lib/kernel/financial.ts (§6, one
-  // vocabulary), rather than a third spelling written here.
-  //
-  // FAILS CLOSED twice over: an unreadable teams / plan_tier row comes back
-  // ok:false and is a refusal, not a false; and getAgentContext's userType
-  // falls back to "agent" when the users row cannot be read, which the roster
-  // refuses.
-  const principal = await resolveTenantPrincipalTeamLead(supabase, ctx.userId, ctx.brokerageId)
-  if (!principal.ok) return { error: principal.reason }
-  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: principal.isPrincipal })) {
-    return { error: "Only a broker or brokerage admin may file a commission." }
-  }
-
-  const agentCommission = commissionData.gross_commission * (commissionData.agent_split_percent / 100)
-  const brokerageCommission = commissionData.gross_commission - agentCommission
-
-  // agent_commissions.agent_id is agents-class, so the brokerage anchor comes off the
-  // agents row (NOT NULL on the table). The brokerage predicate is what makes this
-  // read the tenant CHECK as well as the anchor resolution — a foreign agent simply
-  // does not resolve, and "cannot tell" is treated as "no" below.
-  const { data: agentRow, error: agentErr } = await supabase
-    .from("agents").select("brokerage_id, user_id, location_id")
-    .eq("id", commissionData.agent_id)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-  if (agentErr) {
-    console.error("Error resolving agent brokerage:", agentErr)
-    return { error: agentErr.message }
-  }
-  if (!agentRow?.brokerage_id) {
-    // With the brokerage predicate above, an absent row means "no such agent" OR
-    // "not an agent of your brokerage" — indistinguishable from here, and the same
-    // refusal either way. The old wording ("agent has no brokerage") described the
-    // ungated read and would now be a false explanation.
-    return { error: "That agent was not found in your brokerage — no commission record was created." }
-  }
-
-  // OFFICE OF RECORD for the PRODUCING agent — not the caller, who may be a
-  // broker filing this on someone else's behalf. Resolved through the ONE
-  // precedence rule (lib/kernel/resolve-user-office.ts: users.location_id wins
-  // over agents.location_id); the agents row is already in hand, so an agent
-  // with no linked user takes the pure form of the same rule rather than a
-  // second one written out here. Stamped on the split below because the owner
-  // ruled a closed commission stays with the office that closed the deal — a
-  // read-time join to agents.location_id would move it when the agent transfers.
-  const office = agentRow.user_id
-    ? await resolveUserOffice(supabase, agentRow.user_id)
-    : pickUserOffice(null, agentRow.location_id)
-
-  const { data, error } = await supabase
-    .from("agent_commissions")
-    .insert({
-      ...commissionData,
-      brokerage_id: agentRow.brokerage_id,
-      // agent_commission / brokerage_commission are GENERATED — the database computes them.
-      status: "pending",
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error adding commission:", error)
-    return { error: error.message }
-  }
-
-  // Splits ledger row alongside the commission (burn-down round 4 — the agent
-  // financials page reads commission_splits). Same numbers, same lifecycle.
-  const { error: splitErr } = await supabase.from("commission_splits").insert({
-    agent_id: commissionData.agent_id,
-    brokerage_id: agentRow.brokerage_id,
-    location_id: office.locationId,
-    transaction_id: commissionData.transaction_id,
-    commission_id: data.id,
-    agent_amount: agentCommission,
-    brokerage_amount: brokerageCommission,
-    status: "pending",
-    metadata: { agent_split_percent: commissionData.agent_split_percent, side: commissionData.side },
-  })
-  if (splitErr) {
-    console.error("Error writing commission split ledger row:", splitErr)
-  }
-
-  // Update agent YTD stats
-  await updateAgentYTDStats(commissionData.agent_id)
-
-  // Award points for closing — the value comes from the ONE point table, not a
-  // literal typed here, and the reason is the canonical ledger key.
-  const { POINT_VALUES } = await import("@/lib/gamification/award-points")
-  await awardPoints(commissionData.agent_id, POINT_VALUES.LISTING_CLOSED, "LISTING_CLOSED", "transaction")
-
-  revalidatePath("/dashboard/admin/users")
-  return { data }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 27)
+// `addAgentCommission` deleted.
+//
+// SURVIVOR: lib/kernel/financial.ts:createCommissionRecord — the canonical
+// commission creator on this rail (exposed as
+// app/actions/financial-kernel.ts:createCommissionRecordAction and wired at
+// app/dashboard/financials/agent/agent-financials-client.tsx). It applies the
+// cap, the fee schedule and the splits ledger, and it takes its tenant from the
+// SESSION rather than re-deriving it from a body-supplied agent id.
+//
+// MERGED FIRST (wave 26): the two things this twin carried and the survivor did
+// not — the caller's real close date and the deal side — are on
+// CreateCommissionRecordInput.closeDate / .side and written at the survivor's
+// ledger insert.
+//
+// It could never have run as written: the ledger's brokerage anchor is NOT NULL
+// and was never supplied (23502), and the two split columns it wrote are
+// GENERATED ALWAYS, which Postgres rejects outright. Every call returned an
+// error.
+//
+// PROOFS MOVED WITH IT: the ledger layer of
+// scripts/cda-financial-wiring-simulator.ts now slices createCommissionRecord,
+// keeps all four of its checks, and gains the single-writer assertion this
+// retirement establishes.
 
 export async function updateCommissionStatus(
   commissionId: string,
@@ -966,132 +735,29 @@ export async function getAgentExpenses(agentId: string, year?: number, opts?: { 
   return { ok: true as const, error: null, expenses: data ?? [] }
 }
 
-/**
- * NOT THE CANONICAL EXPENSE WRITER — deliberately left without a UI surface.
- *
- * The canonical, WIRED writer on this rail is
- * app/actions/financials.ts:logScopedExpense (surfaced at
- * app/dashboard/financials/brokerage/scoped-expense-entry.tsx). That one is
- * strictly more complete: it resolves BOTH the actor and the tenant from the
- * session, validates the amount and the date shape, carries agent / team /
- * brokerage scope, and pushes brokerage-scoped rows to the accounting egress.
- * This one is kept because it is still reachable as an exported action, and an
- * exported action that can write an untenanted row is a hole whether or not a
- * button points at it.
- *
- * WAVE 26 re-checked it for a merge and found NOTHING the survivor lacks — it is
- * a pure duplicate, ready to retire. It is NOT deleted because
- * scripts/people-vendor-education-wiring-simulator.ts assertions A7
- * ("stamps brokerage_id AT the insert") and A8 ("writes the session-resolved
- * agent, never the caller's raw agent_id") slice this body via
- * body("agents", "addAgentExpense"), and that helper THROWS when the function is
- * absent (:298-302). Both assertions carry `neg:` positive controls, so they are
- * live proofs, not decoration. Retiring this means repointing them at
- * logScopedExpense in the same change — a scripts/ edit outside this lane.
- *
- * Two things verified live and fixed here rather than left armed:
- *   • business_expenses.brokerage_id is NULLABLE and every row this function used
- *     to write had a NULL brokerage_id. The tenant is now stamped AT the insert.
- *
- *     CORRECTED 2026-08-21 against the live policy — the version of this note that
- *     stood here quoted the tenant rule as
- *       `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`
- *     and concluded a NULL-tenant row was "readable by EVERY brokerage". That
- *     policy is no longer what the database runs, and the conclusion inverts the
- *     one it does run. MEASURED, policy `business_expenses_tenant`:
- *       USING (can_read_tenant_financials()
- *              OR (has_brokerage_access(brokerage_id) AND can_read_agent_books(agent_id)))
- *     and public.has_brokerage_access() requires `target_brokerage_id IS NOT NULL`.
- *     A NULL-tenant row is therefore readable by NO tenant — only by platform staff
- *     through can_read_tenant_financials(). Still a defect, and still worth stamping
- *     the tenant at the insert, but the failure mode is an INVISIBLE row (an agent's
- *     own spend missing from their own books) rather than a leaked one. Quoting the
- *     stale rule was making the hole read as cross-tenant exposure it is not; the
- *     column is closed for good by supabase/migrations/m516-*.sql.
- *   • agent_id came FROM THE CALLER, so any signed-in user could log spend
- *     against any agent's book. It is resolved from the session; only a
- *     broker/admin may name a different agent, and only inside their own tenant.
- */
-export async function addAgentExpense(expenseData: {
-  agent_id?: string
-  category: "marketing" | "education" | "technology" | "transportation" | "office" | "other"
-  description: string
-  amount: number
-  expense_date: string
-  receipt_url?: string
-}) {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
-  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
 
-  const amount = Number(expenseData.amount)
-  if (!Number.isFinite(amount) || amount <= 0) return { error: "Enter an amount greater than zero." }
-  if (!expenseData.description?.trim()) return { error: "A description is required." }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(expenseData.expense_date ?? "")) {
-    return { error: "Enter the expense date as YYYY-MM-DD." }
-  }
-
-  const svc = createServiceClient()
-
-  // business_expenses.agent_id FKs agents(id). Resolve the actor from the
-  // session; a named agent is only honoured for a broker/admin, and only when
-  // that agent is in the caller's own brokerage.
-  let agentId = ctx.agentId
-  if (expenseData.agent_id && expenseData.agent_id !== ctx.agentId) {
-    // BROKERAGE-WIDE MONEY (m472). business_expenses is a FINANCE table under
-    // public.is_brokerage_finance_admin(), and this branch is "book a cost
-    // against SOMEONE ELSE'S ledger" — money beyond the caller's own team, which
-    // the owner's ruling holds team_lead out of. The write below goes through the
-    // SERVICE client, which bypasses RLS, so this predicate is the only gate it
-    // has: had it stayed on the widened roster the app would not merely have
-    // disagreed with RLS, it would have overruled it.
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
-      return { error: "You can only log expenses against your own book." }
-    }
-    const { data: target, error: targetErr } = await svc
-      .from("agents")
-      .select("id, brokerage_id")
-      .eq("id", expenseData.agent_id)
-      .maybeSingle()
-    if (targetErr) return { error: targetErr.message }
-    if (!target || target.brokerage_id !== ctx.brokerageId) {
-      return { error: "That agent is not in your brokerage." }
-    }
-    agentId = target.id
-  }
-  if (!agentId) return { error: "No agent record for your account yet." }
-
-  // business_expenses has no status/is_reimbursable columns; real date col is expense_date.
-  const { data, error } = await svc
-    .from("business_expenses")
-    .insert({
-      agent_id: agentId,
-      // TENANT ANCHOR — stamped at the insert. CORRECTED 2026-08-21: this line
-      // used to claim a NULL here was "readable by every brokerage". It is the
-      // opposite. Under the live policy `business_expenses_tenant`,
-      // has_brokerage_access(NULL) is false for every non-platform caller, so a
-      // NULL-tenant row is readable by NO tenant — invisible to its own agent,
-      // visible only to platform staff. Still a defect, still stamped here; the
-      // column is closed for good by
-      // supabase/migrations/m516-an-expense-with-no-tenant-is-a-row-its-own-agent-cannot-read.sql.
-      brokerage_id: ctx.brokerageId,
-      category: expenseData.category,
-      description: expenseData.description.trim(),
-      amount,
-      expense_date: expenseData.expense_date,
-      receipt_url: expenseData.receipt_url?.trim() || null,
-    })
-    .select("id, agent_id, brokerage_id, category, amount, expense_date")
-    .single()
-
-  if (error) {
-    console.error("Error adding expense:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/dashboard/financials/expenses")
-  return { data }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 27)
+// `addAgentExpense` deleted.
+//
+// SURVIVOR: app/actions/financials.ts:logScopedExpense — the wired expense
+// writer (surfaced at
+// app/dashboard/financials/brokerage/scoped-expense-entry.tsx). It resolves both
+// the actor and the tenant from the session, validates the amount and the date
+// shape, carries agent / team / brokerage scope, and pushes brokerage-scoped
+// rows to the ONE accounting egress. The same ruling already retired
+// app/api/financial/expenses/route.ts onto it (lane N3a, tombstone in
+// scripts/opposite-missing-census.ts).
+//
+// MERGED FIRST: the one thing this twin could do that the survivor could not —
+// a brokerage finance admin booking a cost against ANOTHER agent's ledger — is
+// now an optional `agentId` on the survivor's agent scope, behind the SAME
+// narrower roster (isBrokerageFinanceAdmin, which holds team_lead out, mirroring
+// public.is_brokerage_finance_admin() from m472) and the same tenant check.
+// Omitting it changes nothing: the cost lands on the caller's own book.
+//
+// PROOFS MOVED WITH IT: assertions A7 and A8 in
+// scripts/people-vendor-education-wiring-simulator.ts now slice
+// logScopedExpense, with their mutation controls re-anchored there.
 
 /**
  * Category totals across the WHOLE tax year.
@@ -1192,145 +858,30 @@ export async function getAgentGoals(agentId: string, year?: number) {
   return data || []
 }
 
-/**
- * The vocabulary agent_goals.goal_type ACTUALLY admits. Read off the live CHECK
- * constraint `agent_goals_goal_type_check`, not off a TypeScript union somebody
- * wrote from memory.
- */
-// Module-local, not exported: every export of a "use server" module must be an
-// async function, so the vocabulary cannot leave this file as a const.
-const AGENT_GOAL_TYPES = [
-  "gross_commission",
-  "transactions_closed",
-  "listings_taken",
-  "buyer_clients",
-  "new_contacts",
-  "conversion_rate",
-  "avg_days_to_close",
-] as const
 
-type AgentGoalType = (typeof AGENT_GOAL_TYPES)[number]
-
-/**
- * NOT THE CANONICAL GOAL WRITER — deliberately left without a UI surface.
- *
- * The canonical, WIRED writer is app/actions/ai-agent-goals.ts:upsertAgentGoal
- * (surfaced at app/dashboard/goals/goals-client.tsx). That one is more complete:
- * it supplies the NOT NULL brokerage_id, upserts on the real unique constraint
- * (agent_id, year, goal_type), preserves current_value across edits, and carries
- * `notes`. Wiring a second goal writer would be exactly the duplicate the owner
- * asked to avoid.
- *
- * It is kept and repaired because as written it could NEVER have inserted a row,
- * for two independently fatal reasons verified against the live database:
- *   • agent_goals.brokerage_id is NOT NULL and was never supplied → 23502.
- *   • the TypeScript union offered "gci" | "transactions" | "listings" |
- *     "buyers" | "sphere_growth". The live CHECK admits
- *     gross_commission, transactions_closed, listings_taken, buyer_clients,
- *     new_contacts, conversion_rate, avg_days_to_close. NOT ONE of the five
- *     values this function offered is accepted by the column — every call was a
- *     23514. The vocabulary is now taken from the constraint and checked before
- *     the write, so an unknown value comes back as a sentence instead of a
- *     constraint violation.
- *
- * Also: the pre-existence probe used .single(), which RESOLVES WITH AN ERROR on
- * zero rows — `if (existing)` was skipped rather than being a real branch. It is
- * a single upsert on the unique constraint now, so there is no probe to get wrong.
- *
- * WAVE 26 re-checked it for a merge and found NOTHING the survivor lacks — a
- * pure duplicate, ready to retire. NOT deleted because
- * scripts/people-vendor-education-wiring-simulator.ts assertions A11 ("supplies
- * the NOT NULL brokerage_id it used to omit"), A12 ("refuses a goal_type the
- * CHECK constraint would reject") and A14 ("uses maybeSingle, not single")
- * slice this body via body("agents", "setAgentGoal"), and that helper THROWS
- * when the function is absent. Retiring this means repointing all three at
- * upsertAgentGoal in the same change — a scripts/ edit outside this lane.
- */
-export async function setAgentGoal(goalData: {
-  agent_id?: string
-  year: number
-  goal_type: AgentGoalType | string
-  target_value: number
-}) {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
-  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
-
-  if (!(AGENT_GOAL_TYPES as readonly string[]).includes(goalData.goal_type)) {
-    return {
-      error: `"${goalData.goal_type}" is not a goal this brokerage tracks. Choose one of: ${AGENT_GOAL_TYPES.join(", ")}.`,
-    }
-  }
-  const targetValue = Number(goalData.target_value)
-  if (!Number.isFinite(targetValue) || targetValue <= 0) {
-    return { error: "Enter a target greater than zero." }
-  }
-  const year = Number(goalData.year)
-  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
-    return { error: "Enter a four-digit year." }
-  }
-
-  const svc = createServiceClient()
-
-  // agent_goals.agent_id FKs agents(id) — resolved from the session, with a
-  // named agent honoured only for a broker/admin inside their own tenant.
-  let agentId = ctx.agentId
-  if (goalData.agent_id && goalData.agent_id !== ctx.agentId) {
-    if (!isAdminOrBroker({ user_type: ctx.userType })) {
-      return { error: "You can only set your own goals." }
-    }
-    const { data: target, error: targetErr } = await svc
-      .from("agents")
-      .select("id, brokerage_id")
-      .eq("id", goalData.agent_id)
-      .maybeSingle()
-    if (targetErr) return { error: targetErr.message }
-    if (!target || target.brokerage_id !== ctx.brokerageId) {
-      return { error: "That agent is not in your brokerage." }
-    }
-    agentId = target.id
-  }
-  if (!agentId) return { error: "No agent record for your account yet." }
-
-  // Preserve progress across an edit — a re-target must not reset the counter.
-  const { data: existing, error: existingErr } = await svc
-    .from("agent_goals")
-    .select("id, current_value")
-    .eq("agent_id", agentId)
-    .eq("year", year)
-    .eq("goal_type", goalData.goal_type)
-    .maybeSingle()
-  if (existingErr) {
-    console.error("Error reading the existing goal:", existingErr)
-    return { error: existingErr.message }
-  }
-
-  const { data, error } = await svc
-    .from("agent_goals")
-    .upsert(
-      {
-        agent_id: agentId,
-        // TENANT ANCHOR — NOT NULL on this table, stamped at the write.
-        brokerage_id: ctx.brokerageId,
-        year,
-        goal_type: goalData.goal_type,
-        target_value: targetValue,
-        current_value: existing?.current_value ?? 0,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "agent_id,year,goal_type" },
-    )
-    .select("id, agent_id, brokerage_id, year, goal_type, target_value, current_value")
-    .single()
-
-  if (error) {
-    console.error("Error setting agent goal:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/dashboard/goals")
-  return { data }
-}
+// TOMBSTONE (orphan doctrine §1.1 and §6 one-vocabulary; wave 27)
+// `setAgentGoal`, and the file-local goal-type vocabulary that existed only to
+// serve it, deleted.
+//
+// SURVIVOR (writer): app/actions/ai-agent-goals.ts:upsertAgentGoal — the wired
+// goal writer (surfaced at app/dashboard/goals/goals-client.tsx). It upserts on
+// the real unique constraint (agent_id, year, goal_type), preserves
+// current_value across edits, carries `notes`, and validates the vocabulary
+// before the write. Nothing here was missing from it.
+//
+// SURVIVOR (vocabulary): lib/goals/goal-types.ts:AGENT_GOAL_TYPES — the ONE list
+// the picker, the validator and the live-value sync all read. The copy that
+// stood here was a second spelling of the same idea and had already drifted:
+// it held seven members while the live constraint has admitted NINE since m373
+// (referrals_generated, reviews_requested). Two spellings of one vocabulary
+// cannot both be right, and this one was the wrong one.
+//
+// PROOFS MOVED WITH IT: assertions A11, A12, A13 and A14 in
+// scripts/people-vendor-education-wiring-simulator.ts now slice upsertAgentGoal
+// and lib/goals/goal-types.ts, with their mutation controls re-anchored there.
+// A13's expectation is now DERIVED from scripts/check-vocabularies.ts (the
+// generated cache of the live CHECKs) instead of a hand-typed list, because the
+// hand-typed list was the seven-member one.
 
 export async function updateGoalProgress(goalId: string, currentValue: number) {
   const supabase = await createClient()
@@ -1353,101 +904,32 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
 
 // ==================== AGENT ASSIGNMENT ====================
 
-/**
- * NOT THE CANONICAL CONTACT-ROUTING WRITER — deliberately left without a UI surface.
- *
- * The canonical, WIRED writer is
- * app/actions/contact-reassignment.ts:reassignContactAction (surfaced at
- * app/crm/components/reassign-contact-dialog.tsx, and re-used by the voice rail
- * at lib/voice/broker-commands.ts). It is strictly more complete: it moves the
- * contact AND the work that follows the client — their leads, their in-flight
- * deal roles, their open tasks, their active property alerts — validates that the
- * receiving agent is ACTIVE and in the same brokerage, counts every move with
- * { count: "exact" }, and writes a CONTACT_REASSIGNED audit event. This one only
- * ever re-pointed contacts.agent_id and left every downstream row owned by the
- * previous agent.
- *
- * ─── THE GAP IS CLOSED; THE DELETE IS BLOCKED (wave 26) ─────────────────────
- * The ONE thing this function did that the survivor did not — award 10
- * gamification points for a new assignment — HAS NOW BEEN PORTED onto the
- * survivor (app/actions/contact-reassignment.ts, after the audit + notification,
- * through the canonical awardAgentPoints RPC; a refused award is logged and
- * never rolls back the move). The earlier note here said that port was outside
- * that pass's file set; it is done.
- *
- * §1's "merge onto the survivor FIRST" is therefore satisfied and this function
- * has nothing left the survivor lacks. It is NOT deleted because live proofs
- * slice its body: scripts/people-vendor-education-wiring-simulator.ts assertions
- * A15 ("counts its UPDATE and refuses a zero-row match") and A16 ("refuses a
- * receiving agent outside the caller's brokerage") both call
- * body("agents", "assignAgentToContact"), and that helper THROWS when the
- * function is absent (:298-302) — removal crashes the guard. Retiring this needs
- * those two assertions repointed at reassignContactAction in the same change.
- *
- * Hardened here: the receiving agent was never checked. A broker could route one
- * of their own contacts to an agents row belonging to ANOTHER brokerage —
- * contacts.agent_id FKs agents(id) with no tenant predicate of its own, so the
- * database would have accepted it.
- */
-export async function assignAgentToContact(contactId: string, agentId: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: "Not authenticated" }
 
-  if (!isValidUUID(contactId) || !isValidUUID(agentId)) {
-    return { error: "A valid contact and agent are required." }
-  }
-
-  const { data: userRow, error: userErr } = await supabase
-    .from("users")
-    .select("user_type, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (userErr) return { error: userErr.message }
-  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? "" })) {
-    return { error: "Only brokers / admins / team leads can assign contacts" }
-  }
-  if (!userRow.brokerage_id) {
-    return { error: "Your account is not linked to a brokerage yet." }
-  }
-
-  // The RECEIVING agent must be active and in the caller's brokerage.
-  // agents.id and users.id are distinct id spaces — this resolves, never substitutes.
-  const { data: targetAgent, error: targetErr } = await supabase
-    .from("agents")
-    .select("id, is_active, brokerage_id")
-    .eq("id", agentId)
-    .eq("brokerage_id", userRow.brokerage_id)
-    .maybeSingle()
-  if (targetErr) return { error: targetErr.message }
-  if (!targetAgent) return { error: "That agent is not in your brokerage." }
-  if (targetAgent.is_active === false) return { error: "That agent is not active." }
-
-  // Tenant isolation — only operate on contacts in the caller's brokerage.
-  // { count: "exact" } because an UPDATE that matches NOTHING still succeeds in
-  // postgrest; a zero-row move must be reported as a refusal, not as a save.
-  const { data, error, count } = await supabase
-    .from("contacts")
-    .update({ agent_id: agentId }, { count: "exact" })
-    .eq("id", contactId)
-    .eq("brokerage_id", userRow.brokerage_id)
-    .select("id, agent_id, brokerage_id")
-
-  if (error) {
-    console.error("Error assigning agent to contact:", error)
-    return { error: error.message }
-  }
-  if (!count) {
-    return { error: "That contact was not found in your brokerage — nothing was changed." }
-  }
-
-  // Award points for new contact assignment
-  const { POINT_VALUES: PV } = await import("@/lib/gamification/award-points")
-  await awardPoints(agentId, PV.CONTACT_ASSIGNED, "CONTACT_ASSIGNED", "lead")
-
-  revalidatePath("/crm")
-  return { data: data?.[0] ?? null }
-}
+// TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 27)
+// `assignAgentToContact` deleted.
+//
+// SURVIVOR: app/actions/contact-reassignment.ts:reassignContactAction — the
+// wired reassignment (surfaced at app/crm/components/reassign-contact-dialog.tsx
+// and re-used by the voice rail at lib/voice/broker-commands.ts). It is strictly
+// more complete: it moves the contact AND the work that follows the client —
+// their leads, their in-flight deal roles, their open tasks, their active
+// property alerts — validates that the receiving agent is ACTIVE and in the same
+// brokerage, and writes a CONTACT_REASSIGNED audit event. This twin only ever
+// re-pointed the contact's owning agent and left every downstream row with the
+// previous agent.
+//
+// MERGED FIRST, both halves, before this delete:
+//   · the 10-point gamification award for a new assignment (wave 26 —
+//     app/actions/contact-reassignment.ts, through the canonical
+//     awardAgentPoints RPC; a refused award is logged and never rolls the move
+//     back);
+//   · the COUNTED move (wave 27 — the survivor's contact update is now
+//     { count: "exact" } and refuses a zero-row match, which is the one
+//     discipline this twin had and the survivor lacked).
+//
+// PROOFS MOVED WITH IT, not dropped: assertions A15 and A16 in
+// scripts/people-vendor-education-wiring-simulator.ts now slice
+// reassignContactAction, with their mutation controls re-anchored there.
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAgentContacts` deleted.
 // SURVIVOR: app/actions/contacts.ts:getContacts — the session-scoped contact

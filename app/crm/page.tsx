@@ -3381,8 +3381,18 @@ export default function CRMPage() {
                         if (!user?.id) return
                         setDraftingFor(insight.contactId)
                         try {
-                          const body = await draftSmartEmail(insight.contactId, insight.reason)
-                          if (!body) return
+                          const result = await draftSmartEmail(insight.contactId, insight.reason)
+                          // A BARE `return` USED TO BE THE WHOLE ERROR HANDLING
+                          // (wave 27). draftSmartEmail answered "" for a refused
+                          // seat, an unreadable contact and an empty model reply
+                          // alike, and this button silently did nothing for all
+                          // three — the agent pressed it and got no draft, no
+                          // toast, and no reason.
+                          if (!result.ok) {
+                            toast.error(result.reason)
+                            return
+                          }
+                          const body = result.body
                           const supabase = createClient()
                           // Resolve brokerage_id from user metadata or users table
                           const { data: userData } = await supabase

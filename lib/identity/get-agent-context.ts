@@ -30,7 +30,12 @@ export interface AgentContext {
    * teams.id, a third id space. Never substitute one for another.
    */
   teamId: string | null
-  /** Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent' */
+  /**
+   * Source priority: users.user_type > user_role_assignments.role > auth metadata.
+   * NO 'agent' FALLBACK (wave 27, §4): a seat whose role cannot be resolved gets
+   * the EMPTY STRING, which every roster predicate refuses. An unresolvable role
+   * must never be graded as a granted one.
+   */
   userType: string
   /** Alias for userType — backward compat for all callers that reference .role */
   role: string
@@ -43,14 +48,26 @@ export interface AgentContext {
   impersonationMode?: string | null
 }
 
-/** Safe default returned when the user is not authenticated. Never throws. */
+/**
+ * Safe default returned when the user is not authenticated. Never throws.
+ *
+ * `userType` IS THE EMPTY STRING HERE FOR THE SAME REASON IT IS BELOW (§4).
+ * It read "agent" until wave 27, alongside the resolver's `?? "agent"` final
+ * fallback — so the shape returned for NOBODY AT ALL claimed a producing agent's
+ * role. `isAuthenticated: false` is the intended guard, but it is an OPT-IN one:
+ * a caller that reads `.userType` without checking it got a grant handed to it by
+ * a default. Fixing the resolver and leaving this would have left the weaker of
+ * the two paths carrying the stronger claim, which is the disagreement, not the
+ * fix. Both now say "unknown", and every roster predicate in this repo refuses
+ * the empty string.
+ */
 const UNAUTHENTICATED_CONTEXT: AgentContext = {
   userId: "",
   agentId: null,
   brokerageId: null,
   teamId: null,
-  userType: "agent",
-  role: "agent",
+  userType: "",
+  role: "",
   isAuthenticated: false,
 }
 
@@ -58,7 +75,8 @@ const UNAUTHENTICATED_CONTEXT: AgentContext = {
  * Resolves authenticated user to a fully typed AgentContext.
  * Works for all user types (agent, broker, admin, tc, compliance_officer, vendor, etc.)
  * NEVER throws — returns safe defaults on any failure including unauthenticated.
- * Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent'
+ * Source priority: users.user_type > user_role_assignments.role > auth metadata; an
+ * unresolvable role is the empty string, never 'agent' (§4 fail closed).
  */
 export async function getAgentContext(): Promise<AgentContext> {
   try {
@@ -95,14 +113,33 @@ export async function getAgentContext(): Promise<AgentContext> {
     }
     const grants = rolesResult.ok ? rolesResult.grants : []
 
-    // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'.
-    // The seat's own declared identity still wins; the grant half is now chosen by
+    // Source priority: users.user_type > role_assignments.role > auth metadata.
+    // The seat's own declared identity still wins; the grant half is chosen by
     // explicit authority order rather than by row order.
+    //
+    // ── THE FINAL FALLBACK IS NO LONGER 'agent' (§4 fail closed, wave 27) ──────
+    //
+    // It used to be `?? "agent"`, which GRADED A SEAT WHOSE ROLE COULD NOT BE
+    // RESOLVED AS AN AGENT — the exact reading lib/auth/require-caller.ts:187
+    // deliberately refuses, and the disagreement lane SEC3 §8.4 recorded between
+    // this repo's two identity survivors. "Nobody could tell what this seat is"
+    // must never render as "checked, and they are an agent"; that is not a
+    // default, it is a grant. The three sources this fallback stands behind are
+    // exhaustive for a real seat — measured live by the integrator, ZERO users
+    // rows carry a NULL user_type — so failing closed here locks nobody out and
+    // only changes what happens when the answer is genuinely unknown.
+    //
+    // The empty string, not null, so `AgentContext.userType` stays `string` and
+    // no caller's type changes. Every roster predicate in this repo normalises
+    // with `String(x ?? "").toLowerCase()` and answers NO to it
+    // (isAdminOrBroker, isBrokerageFinanceAdmin, isAgentOrTenantAdmin,
+    // isCrmContactStaff — the last two refuse an empty string explicitly), so an
+    // unresolvable role is refused by every gate rather than admitted by one.
     const userType: string =
       userData?.user_type ??
       selectPrimaryRole(grants) ??
       (user.user_metadata?.user_type as string | undefined) ??
-      "agent"
+      ""
 
     // brokerageId: users table > role assignments > auth metadata > null.
     // An untenanted grant (contact/lender, brokerage_id NULL) can no longer win and

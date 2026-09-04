@@ -233,22 +233,47 @@ function payoutLadderLayer() {
 }
 
 function agentsLedgerLayer() {
-  console.log("\n[source · the second commission writer that could never run]")
-  const agents = code("app/actions/agents.ts")
-  const add = fnBody(agents, "addAgentCommission")
+  // ── RETARGETED IN WAVE 27 ──────────────────────────────────────────────────
+  // This layer asserted its four rules against app/actions/agents.ts:
+  // addAgentCommission — the SECOND commission writer, which could never have
+  // run (it omitted the NOT NULL brokerage anchor and inserted two GENERATED
+  // ALWAYS columns). Wave 26 ported the only two things it carried that the
+  // canonical creator did not — the caller's real `close_date` and the deal
+  // `side` — onto lib/kernel/financial.ts:createCommissionRecord, and wave 27
+  // retired the duplicate (tombstone in app/actions/agents.ts naming that
+  // survivor).
+  //
+  // The rules did not move with the duplicate; they moved onto the writer that
+  // now has to obey them. Every one is kept, and two got STRICTER in the move:
+  // the brokerage anchor is asserted as the SESSION's tenant (`ctx.brokerageId`)
+  // rather than one re-derived from a body-supplied agent id, and the
+  // splits-ledger check is now scoped to the survivor's body instead of being
+  // matched anywhere in a 1,500-line action file.
+  //
+  // The first check is this layer's positive control: fnBody returns "" for a
+  // function that is absent or renamed, so a slice that silently stopped
+  // resolving fails here rather than reporting a clean bill of health.
+  console.log("\n[source · the ONE commission writer on this rail]")
+  const kernel = code("lib/kernel/financial.ts")
+  const create = fnBody(kernel, "createCommissionRecord")
 
   // agent_commission / brokerage_commission are GENERATED ALWAYS columns; inserting into
   // them is rejected by Postgres outright.
   // Scoped to the agent_commissions insert itself — the splits-ledger insert further down
   // carries a brokerage_id too, and would otherwise satisfy the anchor assertion for it.
-  const commissionInsert = (add.match(/from\("agent_commissions"\)\s*\.insert\(\{([\s\S]*?)\}\)/) ?? [])[1] ?? ""
-  check("addAgentCommission still inserts into the commission ledger", commissionInsert.length > 0)
-  check("addAgentCommission no longer inserts the GENERATED columns",
-    !/agent_commission:\s/.test(commissionInsert) && !/brokerage_commission:\s/.test(commissionInsert))
-  check("...and supplies the NOT NULL brokerage anchor",
-    /brokerage_id:\s*agentRow\.brokerage_id/.test(commissionInsert))
+  const commissionInsert = (create.match(/from\("agent_commissions"\)\s*\.insert\(\{([\s\S]*?)\}\)/) ?? [])[1] ?? ""
+  check("the canonical creator still inserts into the commission ledger", commissionInsert.length > 0)
+  check("it does not insert the GENERATED columns",
+    commissionInsert.length > 0
+    && !/agent_commission:\s/.test(commissionInsert) && !/brokerage_commission:\s/.test(commissionInsert))
+  check("...and supplies the NOT NULL brokerage anchor FROM THE SESSION",
+    /brokerage_id:\s*ctx\.brokerageId/.test(commissionInsert))
   check("...and checks the splits-ledger write",
-    /const\s*\{\s*error:\s*splitErr\s*\}\s*=\s*await\s+supabase\.from\("commission_splits"\)/.test(agents))
+    /const\s*\{\s*error:\s*splitErr\s*\}\s*=\s*await\s+supabase\.from\("commission_splits"\)/.test(create))
+  // The single-writer rule the retirement establishes, asserted on STRIPPED
+  // source so the tombstone that records it cannot satisfy it.
+  check("agents.ts holds no second writer of the commission ledger",
+    !/from\("agent_commissions"\)\s*\.insert\(/.test(code("app/actions/agents.ts")))
 }
 
 async function liveLayer() {

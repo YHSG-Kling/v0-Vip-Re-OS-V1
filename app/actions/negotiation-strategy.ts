@@ -35,8 +35,29 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { writeNegotiationStrategy } from "@/lib/negotiation/strategy-writer"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isAdminOrBroker, isAgentOrTenantAdmin } from "@/lib/auth/resolve-user-role"
 
+/**
+ * ONE SPELLING OF "AGENT, OR SOMEONE WHO ADMINISTERS THEM" (§6, wave 27).
+ *
+ * The test below was written out here as `userType !== "agent" &&
+ * !isAdminOrBroker({ user_type: userType })` — a fourth hand-written spelling of
+ * the staff ladder (lane SEC3 §8.3), duplicated verbatim at
+ * lib/voice/deal-decision.ts:resolveActor. Both now ask
+ * lib/auth/resolve-user-role.ts:isAgentOrTenantAdmin, which DERIVES the roster
+ * from TENANT_ADMIN_USER_TYPES rather than restating it.
+ *
+ * MEMBERSHIP IS UNCHANGED — this is a repoint, not a widening. The predicate is
+ * `agent` ∪ TENANT_ADMIN_USER_TYPES, exactly what stood here. In particular it
+ * is NOT the CRM contact roster (lib/auth/crm-contact-staff.ts), which also
+ * admits tc / isa / compliance_officer: right for working a contact's channels,
+ * wrong for authoring a negotiation strategy on a deal.
+ *
+ * §3 ALSO CLOSED HERE: the `users` read discarded its error. supabase-js
+ * RESOLVES a refusal, so an RLS denial of the caller's own row arrived as
+ * `row === null` and was answered "Brokerage not configured" — an outage
+ * reported as a configuration fact, on the sentence the agent would then act on.
+ */
 async function requireAgentOrAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
   | { ok: false; error: string }
@@ -45,15 +66,16 @@ async function requireAgentOrAdmin(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
 
-  const { data: row } = await supabase
+  const { data: row, error: rowError } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
+  if (rowError) return { ok: false, error: "Access check failed" }
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
 
-  const userType = row.user_type as string
-  if (userType !== "agent" && !isAdminOrBroker({ user_type: userType })) {
+  const userType = (row.user_type as string | null) ?? ""
+  if (!isAgentOrTenantAdmin({ user_type: userType })) {
     return { ok: false, error: "Forbidden" }
   }
   return {
@@ -262,30 +284,54 @@ export async function getNegotiationStrategyForOfferAction(
   offerId: string,
   side?:   "buyer" | "seller",
 ): Promise<{ ok: true; strategy: NegotiationStrategyView | null } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  // ── THE ROLE TEST THAT WAS MISSING (wave 26 lane SEC3 §8.2, closed here) ────
+  //
+  // This had the identical shape to the twelve sites SEC3 fixed — session user,
+  // `users.brokerage_id`, the target's brokerage_id, and admission on EQUALITY
+  // ALONE — and it was outside that census only because it is keyed on an OFFER
+  // rather than a contact. `users.user_type` can hold `contact` and `vendor` on
+  // rows that carry a brokerage_id, so either seat could name
+  // ANY offer id in the tenant and read back the AGENT-side negotiation playbook:
+  // the counter strategy, the escalation cap, the concession matrix. Handing a
+  // party's own seat the other side's walk-away number is the worst version of
+  // this defect in the file. §5: those seats see only their own.
+  //
+  // (`lender` was a THIRD such seat when this was written and is no longer a
+  // storable user_type at all — the owner's 2026-09-04 ruling made it a vendor
+  // category and scripts/lender-is-not-a-user-type.sql dropped it from the
+  // CHECK. Those seats are `vendor` now, so they are still in the class this
+  // gate refuses; the count of spellings changed, the exposure did not.)
+  //
+  // The gate is this file's own `requireAgentOrAdmin` — the same one
+  // generateAndPersistNegotiationStrategyAction and the disposition actions use,
+  // now derived from the shared roster — because the only caller is the CRM
+  // offer workspace (app/components/features/offers/negotiation-copilot-panel.tsx,
+  // mounted at /crm/contacts/[contactId]/offers/[offerId]). The CUSTOMER-facing
+  // mirror is a different export and keeps its portal gate:
+  // getNegotiationStrategyForContactAction below.
+  const auth = await requireAgentOrAdmin()
+  if (!auth.ok) return { ok: false, error: auth.error }
 
-  // Verify the offer belongs to caller's brokerage before reading strategy
-  const { data: offerRow } = await supabase
+  const supabase = await createClient()
+
+  // Verify the offer belongs to caller's brokerage before reading strategy.
+  // §3: the error is destructured and read — supabase-js RESOLVES a refusal, so
+  // a denied read used to arrive as `offerRow === null` and be answered "Offer
+  // not found", telling an agent a real offer does not exist.
+  const { data: offerRow, error: offerError } = await supabase
     .from("offers")
     .select("brokerage_id")
     .eq("id", offerId)
     .maybeSingle()
+  if (offerError) return { ok: false, error: "Access check failed" }
   if (!offerRow) return { ok: false, error: "Offer not found" }
-  if (offerRow.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
+  if (offerRow.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
 
   let q = supabase
     .from("negotiation_strategies")
     .select(AGENT_STRATEGY_SELECT)
     .eq("offer_id", offerId)
-    .eq("brokerage_id", u.brokerage_id)
+    .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(1)
   if (side) q = q.eq("side", side)

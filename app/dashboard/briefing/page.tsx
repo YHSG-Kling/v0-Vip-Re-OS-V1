@@ -256,25 +256,20 @@ export default function BriefingPage() {
     setDraftingFor(contactId)
     setDraftError(null)
     setDraft(null)
-    const draftText = await draftSmartEmail(contactId, context)
+    const result = await draftSmartEmail(contactId, context)
     setDraftingFor(null)
-    // draftSmartEmail returns a PLAIN STRING and gives back "" for FOUR
-    // different reasons — auth failure, missing contact, contact outside the
-    // caller's brokerage, or the model returning nothing. An empty string is
-    // therefore a REFUSAL, not an empty draft; a blank compose box would read as
-    // "the AI had nothing to say".
-    //
-    // The message says only what we actually know — no draft came back. Naming
-    // one of the four causes would be a guess, and a plausible wrong cause is
-    // worse than a vague one: the reader goes and investigates the thing it
-    // accused. (The real fix is upstream: draftSmartEmail should return a
-    // discriminated result instead of collapsing four failures into "". Left
-    // alone here because it has two other callers and that is its own change.)
-    if (!draftText) {
-      setDraftError("No draft was returned. Try again.")
+    // THE UPSTREAM FIX LANDED (wave 27). What stood here was a paragraph
+    // explaining that this page could not tell the caller WHY no draft came
+    // back, because draftSmartEmail returned a bare string and answered "" for
+    // four different refusals plus an empty model reply. It now returns a
+    // discriminated result and names the reason, so the agent is told whether
+    // their seat was refused, the contact could not be read, or the model simply
+    // came back empty — three different next actions.
+    if (!result.ok) {
+      setDraftError(result.reason)
       return
     }
-    setDraft({ contactId, text: draftText })
+    setDraft({ contactId, text: result.body })
   }
   const [agentName, setAgentName] = useState<string>("Agent")
   const [showings, setShowings] = useState<Showing[]>([])

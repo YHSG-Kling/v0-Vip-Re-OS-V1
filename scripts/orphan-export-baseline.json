@@ -1,7 +1,6 @@
 {
   "files": {
     "app/actions/accounting-sync.ts": 1,
-    "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 1,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
@@ -115,7 +114,6 @@
     "lib/charts/geometry.ts": 3,
     "lib/cma/customer-facing-guard.ts": 1,
     "lib/commission/cda-discrepancy.ts": 2,
-    "lib/commission/finalization.ts": 1,
     "lib/commission/ledger-sync.ts": 5,
     "lib/communication/call-compliance.ts": 1,
     "lib/communication/phone-reachability.ts": 1,
@@ -430,6 +428,7 @@
     "lib/portal/home-maintenance.ts": 1,
     "lib/portal/lifetime-segment.ts": 1,
     "lib/portal/portal-showing-feed.ts": 2,
+    "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/email/personal-email-adapter.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
@@ -519,7 +518,7 @@
     "remotion/VideoCoverThumb.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9497,
+  "census": 9496,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -569,7 +568,7 @@
     "app/actions/agent-public-profile.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
-    "app/actions/agents.ts": 15,
+    "app/actions/agents.ts": 10,
     "app/actions/ai-agent-goals.ts": 6,
     "app/actions/ai-agent-onboarding.ts": 3,
     "app/actions/ai-auto-response.ts": 6,
@@ -2813,7 +2812,7 @@
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
     "lib/auth/require-caller.ts": 2,
-    "lib/auth/resolve-user-role.ts": 9,
+    "lib/auth/resolve-user-role.ts": 11,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
     "lib/avm/provider-chain.ts": 3,
@@ -3370,7 +3369,6 @@
     "lib/kernel/brand-voice.ts": 1,
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
-    "lib/kernel/calendar-sync-orchestrator.ts": 1,
     "lib/kernel/calendar-sync.ts": 7,
     "lib/kernel/call-intelligence.ts": 6,
     "lib/kernel/campaign-center.ts": 4,
@@ -3449,7 +3447,7 @@
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
     "lib/kernel/lead-magnets.ts": 9,
-    "lib/kernel/lender-linkage.ts": 6,
+    "lib/kernel/lender-linkage.ts": 7,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
     "lib/kernel/listing-archive.ts": 3,
@@ -3914,6 +3912,7 @@
     "lib/property-risk/buyer-target-analyzer.ts": 1,
     "lib/property-risk/deal-killer-runner.ts": 1,
     "lib/providers/calendar/free-slots.ts": 1,
+    "lib/providers/calendar/graph-event-shape.ts": 2,
     "lib/providers/calendar/index.ts": 4,
     "lib/providers/calendar/personal-calendar.ts": 5,
     "lib/providers/content-safety.ts": 1,
@@ -4524,17 +4523,12 @@
     "app/actions/agents.ts": [
       "getAgents",
       "createAgent",
-      "getAgentAchievements",
       "getAgentCommissions",
-      "addAgentCommission",
       "updateCommissionStatus",
       "getAgentExpenses",
-      "addAgentExpense",
       "getExpenseSummary",
       "getAgentGoals",
-      "setAgentGoal",
       "updateGoalProgress",
-      "assignAgentToContact",
       "getAgentStats",
       "getBrokerageStats"
     ],
@@ -13799,8 +13793,10 @@
       "isPlatformStaffIdentity",
       "isAdminOrBroker",
       "isTenantAdminGrantRole",
+      "isAgentOrTenantAdmin",
       "isBrokerageFinanceAdmin",
       "isBrokerageFinanceAdminGrantRole",
+      "isTenantCommerceAdmin",
       "isTenantAdminOrPlatformStaff",
       "resolveTenantAdmin",
       "resolveBrokerageFinanceAdmin",
@@ -16547,9 +16543,6 @@
     "lib/kernel/calendar-engine.ts": [
       "emitCalendarEvent"
     ],
-    "lib/kernel/calendar-sync-orchestrator.ts": [
-      "syncCalendarEventToProvider"
-    ],
     "lib/kernel/calendar-sync.ts": [
       "resolveCalendarSyncAdapter",
       "linkCalendarProvider",
@@ -17067,6 +17060,7 @@
       "lenderFilterIds",
       "resolveLenderVendorForTransaction",
       "lenderVendorForUser",
+      "lenderVendorUserIds",
       "lenderVendorTransactionIds",
       "linkLenderVendorToTransaction"
     ],
@@ -19554,6 +19548,10 @@
     ],
     "lib/providers/calendar/free-slots.ts": [
       "computeFreeSlots"
+    ],
+    "lib/providers/calendar/graph-event-shape.ts": [
+      "graphDateTimeUtc",
+      "toGraphEvent"
     ],
     "lib/providers/calendar/index.ts": [
       "createCalendarEvent",

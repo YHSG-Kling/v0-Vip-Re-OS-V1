@@ -590,11 +590,21 @@ export function BuyerMatchPanel({
                   const matchSummary = matches.slice(0, 5).map(m =>
                     `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
                   ).join("\n")
-                  const draft = await draftSmartEmail(
+                  const result = await draftSmartEmail(
                     contactId,
                     `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
                   )
-                  setEmailDraft(draft)
+                  // A REFUSAL NO LONGER OPENS AN EMPTY COMPOSE BOX (wave 27).
+                  // draftSmartEmail used to answer "" for a refused seat, an
+                  // unreadable contact and an empty model reply alike, and this
+                  // handler put that "" straight into the dialog — so "you may
+                  // not do this" and "the AI had nothing to say" looked the
+                  // same, on a screen that invites you to hit Send.
+                  if (!result.ok) {
+                    toast.error(result.reason)
+                    return
+                  }
+                  setEmailDraft(result.body)
                   setEmailDialogOpen(true)
                 } catch {
                   toast.error("Could not generate email draft")

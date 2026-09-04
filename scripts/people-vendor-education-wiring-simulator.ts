@@ -24,13 +24,34 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 // The repo runs as ESM, so __dirname is absent; this file is always executed
 // from the repository root by the command in the report.
 const ROOT = resolve(process.cwd())
 
+// RETARGETED IN WAVE 27 — the five duplicates in app/actions/agents.ts that
+// checks A6, A7, A8, A11-A16 used to slice (getAgentAchievements,
+// addAgentExpense, setAgentGoal, assignAgentToContact, and the file-local
+// AGENT_GOAL_TYPES) were retired onto the survivors below, each named in a
+// tombstone at its old site. Every assertion moved WITH them: same rule, same
+// mutation control, re-anchored at the survivor. Nothing was dropped, and
+// nothing was widened — where a survivor did not yet hold the property its
+// duplicate proved (the refused-read report on the badge ledger, the counted
+// contact move, the other-agent expense gate) the property was PORTED first and
+// the assertion follows it there.
 const FILES = {
   agents: "app/actions/agents.ts",
+  /** SURVIVOR of agents.ts:getAgentAchievements — see A6. */
+  agent360: "app/actions/admin/agent-360.ts",
+  /** SURVIVOR of agents.ts:addAgentExpense — see A7, A8. */
+  financials: "app/actions/financials.ts",
+  /** SURVIVOR of agents.ts's file-local AGENT_GOAL_TYPES — see A13. */
+  goalTypes: "lib/goals/goal-types.ts",
+  /** SURVIVOR of agents.ts:setAgentGoal — see A11, A12, A14. */
+  aiGoals: "app/actions/ai-agent-goals.ts",
+  /** SURVIVOR of agents.ts:assignAgentToContact — see A15, A16. */
+  contactReassign: "app/actions/contact-reassignment.ts",
   vendorsKernel: "app/actions/vendors-kernel.ts",
   educationKernel: "app/actions/education-kernel.ts",
   vendorClient: "app/dashboard/vendors/vendor-directory-client.tsx",
@@ -261,6 +282,26 @@ function jsxBlock(masked: string, stripped: string, tag: string, nth = 0): Slice
   }
 }
 
+/**
+ * The object literal of `const NAME[: Type] = { ... }` INSIDE a slice.
+ *
+ * callPayload above only sees a payload written INLINE at the call —
+ * `.insert({ … })`. A writer that builds its row first and then writes
+ * `.insert(row)` is the same construct with a name, and a payload assertion
+ * that cannot follow it there would silently pass on any row at all.
+ * app/actions/financials.ts:logScopedExpense is exactly that shape.
+ */
+function constObject(masked: string, stripped: string, region: Slice, name: string): Slice | null {
+  const re = new RegExp(String.raw`\bconst\s+` + name + String.raw`\s*(?::[^=;]*)?=\s*\{`)
+  const m = re.exec(masked.slice(region.start, region.end))
+  if (!m) return null
+  const open = masked.indexOf("{", region.start + m.index)
+  if (open < 0 || open >= region.end) return null
+  const end = matchPair(masked, open)
+  if (end < 0) return null
+  return { start: open + 1, end: end - 1, text: stripped.slice(open + 1, end - 1) }
+}
+
 /** Contents of a top-level `const NAME = [ ... ]` array, as string entries. */
 function constArrayValues(masked: string, stripped: string, name: string): string[] | null {
   const re = new RegExp(String.raw`\bconst\s+` + name + String.raw`\s*(?::[^=]*)?=\s*\[`)
@@ -407,10 +448,14 @@ function liveRefusingBranch(text: string, cond: string, window = 320): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LIVE = {
-  agentGoalTypes: [
-    "gross_commission", "transactions_closed", "listings_taken", "buyer_clients",
-    "new_contacts", "conversion_rate", "avg_days_to_close",
-  ],
+  // DERIVED, NOT TYPED (§2, wave 27). What stood here was a seven-member
+  // hand-typed copy of agent_goals_goal_type_check. The constraint has admitted
+  // NINE values since m373 (referrals_generated, reviews_requested), so this
+  // list had gone stale against the database it claims to mirror — it would
+  // have failed the correct vocabulary and passed the drifted one. It now reads
+  // scripts/check-vocabularies.ts, the generated cache of the live CHECKs,
+  // which the schema-cache-drift guard holds in agreement with the database.
+  agentGoalTypes: CHECK_VOCABULARIES.agent_goals?.goal_type ?? [],
   vendorAssignmentTypes: [
     "inspector", "lender", "title", "stager", "photographer",
     "cleaner", "contractor", "mover", "insurance", "other",
@@ -530,66 +575,108 @@ const CHECKS: Check[] = [
     // Agent 360); m484 merges the `category` idea onto it, migrates any rows and drops
     // the duplicate. The honest-failure property the old check guarded is asserted
     // here against the surviving reader instead of being dropped.
+    // RETARGETED AGAIN IN WAVE 27. It then pointed at
+    // app/actions/agents.ts:getAgentAchievements — which by wave 26 was the
+    // UNGATED, UNCALLED twin of the Agent 360 badge read, kept alive only
+    // because this slice throws on a missing function. That duplicate is now
+    // retired (tombstone in app/actions/agents.ts naming
+    // app/actions/admin/agent-360.ts:getAgent360Action), so the rule is asserted
+    // where it now has to hold. This is NOT a move onto an already-green
+    // survivor: `(badgesRes.data ?? [])` swallowed a refusal, so the property
+    // was PORTED onto agent-360.ts in the same change and this assertion
+    // guards the port.
     id: "A6-reward-ledger-reader-reports-a-refused-read",
     desc: "the surviving reward-ledger reader reads agent_badges and reports a refused read instead of an empty ledger",
     run: () => {
-      const b = body("agents", "getAgentAchievements")
+      const b = body("agent360", "getAgent360Action")
       if (!/agent_badges/.test(b.text)) return "the reader does not read the surviving ledger (agent_badges)"
-      if (!/const\s*\{[^}]*\berror\b[^}]*\}\s*=\s*await/.test(b.text)) {
-        return "the reader does not destructure error"
-      }
-      return /if \(error\)/.test(b.text) && /console\.error/.test(b.text)
+      if (!/\bbadgesRes\b/.test(b.text)) return "the badge read's result is never bound, so no error can be read"
+      const i = b.text.indexOf("if (badgesRes.error)")
+      if (i < 0) return "the reader does not branch on the badge read's error"
+      return b.text.slice(i, i + 260).includes("console.error")
         ? true
         : "a refused read is swallowed as an empty ledger"
     },
     neg: {
-      file: "agents",
-      find: '    console.error("[getAgentAchievements] awarded-badge read refused:", error.message)',
-      replace: "    void 0",
+      file: "agent360",
+      find: "  if (badgesRes.error) {\n    console.error(",
+      replace: "  if (false) {\n    console.error(",
     },
   },
   {
-    id: "A7-addAgentExpense-stamps-tenant",
-    desc: "addAgentExpense stamps brokerage_id AT the insert (the tenant policy admits NULL)",
+    // RETARGETED IN WAVE 27 from app/actions/agents.ts:addAgentExpense, the
+    // second business_expenses writer, onto the ONE that was always the
+    // canonical, surfaced one. The duplicate is retired (tombstone in
+    // app/actions/agents.ts naming app/actions/financials.ts:logScopedExpense).
+    // The RULE is unchanged and so is its control; only the anchor moved. The
+    // survivor builds its row under a name and writes `.insert(row)`, so the
+    // payload is sliced with constObject rather than callPayload — and the
+    // `.insert(row)` link is asserted too, so a row that stamps the tenant but
+    // is never the row written cannot satisfy this.
+    id: "A7-scoped-expense-stamps-tenant",
+    desc: "logScopedExpense stamps brokerage_id AT the insert (business_expenses.brokerage_id is NOT NULL since m516)",
     run: () => {
-      const b = body("agents", "addAgentExpense")
-      const p = callPayload(M("agents"), S("agents"), b, "insert")
-      if (!p) return "no insert payload found in addAgentExpense"
+      const b = body("financials", "logScopedExpense")
+      const p = constObject(M("financials"), S("financials"), b, "row")
+      if (!p) return "no named insert row found in logScopedExpense"
+      if (!/\.from\("business_expenses"\)\s*\.insert\(row\)/.test(b.text)) {
+        return "the row that is built is not the row that is written"
+      }
       return /brokerage_id\s*:\s*ctx\.brokerageId/.test(p.text)
         ? true
-        : "the business_expenses INSERT payload leaves brokerage_id NULL — readable by every brokerage"
+        : "the business_expenses INSERT payload leaves brokerage_id NULL — a row no tenant can read"
     },
     neg: {
-      file: "agents",
-      find: "      brokerage_id: ctx.brokerageId,\n      category: expenseData.category,",
-      replace: "      category: expenseData.category,",
+      file: "financials",
+      find: "    brokerage_id: ctx.brokerageId,\n    category:",
+      replace: "    category:",
     },
   },
   {
-    id: "A8-addAgentExpense-actor-from-session",
-    desc: "addAgentExpense writes the session-resolved agent, never the caller's raw agent_id",
+    // RETARGETED IN WAVE 27 with A7, onto the same survivor. The branch this
+    // asserts — "a broker books a cost against ANOTHER agent's ledger" — was the
+    // one thing app/actions/agents.ts:addAgentExpense could do that
+    // logScopedExpense could not, so §1 required it PORTED before the delete;
+    // it was (app/actions/financials.ts, agent scope). The roster is unchanged:
+    // `isFinanceAdmin` in that file IS `isBrokerageFinanceAdmin`, the narrower
+    // brokerage-money tier that holds team_lead out, mirroring
+    // public.is_brokerage_finance_admin() (m472). The write still goes through
+    // the SERVICE client, so this predicate is still the only gate it has.
+    id: "A8-scoped-expense-actor-from-session",
+    desc: "logScopedExpense writes the session-resolved agent, and gates naming someone else's ledger on the brokerage-money roster",
     run: () => {
-      const b = body("agents", "addAgentExpense")
-      const p = callPayload(M("agents"), S("agents"), b, "insert")
-      if (!p) return "no insert payload found in addAgentExpense"
-      if (/agent_id\s*:\s*expenseData\.agent_id/.test(p.text)) {
+      const b = body("financials", "logScopedExpense")
+      if (/row\.agent_id\s*=\s*input\.agentId/.test(b.text)) {
         return "the insert takes agent_id straight from the caller"
       }
-      if (!/agent_id\s*:\s*agentId/.test(p.text)) return "the insert does not carry the resolved agentId"
-      // The NARROWER tier, deliberately. Booking a cost against someone else's
-      // ledger is brokerage-wide money — business_expenses is a FINANCE table
-      // under is_brokerage_finance_admin() (m472), which holds team_lead out —
-      // and this write goes through the SERVICE client, so RLS is bypassed and
-      // this predicate is the only gate it has. Asserting the WIDE roster here
-      // would have blessed an app gate that overrules the database.
-      return refusingBranch(b.text, "isBrokerageFinanceAdmin({ user_type: ctx.userType })")
+      if (!/let\s+agentId\s*=\s*ctx\.agentId/.test(b.text)) {
+        return "the actor is not resolved from the session"
+      }
+      if (!/row\.agent_id\s*=\s*agentId/.test(b.text)) return "the insert does not carry the resolved agentId"
+      // THE BRANCH IS SLICED, NOT WINDOWED. A fixed character window is the
+      // wrong tool twice over: too short and it misses the tenant check at the
+      // bottom of a branch that grew a comment (measured: 1,008 characters from
+      // the anchor, so a 1,000-char window failed a CORRECT file); too long and
+      // it reaches the NEXT scope's own isFinanceAdmin call and passes on it.
+      // Walk the braces on the string-blanked view instead, so the region is
+      // exactly this branch however long it gets.
+      const at = M("financials").indexOf("input.agentId !== ctx.agentId", b.start)
+      if (at < 0 || at >= b.end) return "there is no branch for naming another agent's ledger"
+      const open = M("financials").indexOf("{", at)
+      const close = open >= 0 ? matchPair(M("financials"), open) : -1
+      if (open < 0 || close < 0 || open >= b.end) return "the other-agent branch does not close"
+      const branch = S("financials").slice(at, close)
+      if (!liveRefusingBranch(branch, "isFinanceAdmin(ctx.userType)")) {
+        return "naming another agent's ledger is not gated on the brokerage-money roster"
+      }
+      return /!==\s*ctx\.brokerageId/.test(branch)
         ? true
-        : "naming another agent's ledger is not gated on the brokerage-money roster"
+        : "the named agent is not proved to be inside the caller's own tenant"
     },
     neg: {
-      file: "agents",
-      find: "      agent_id: agentId,\n      // TENANT ANCHOR",
-      replace: "      agent_id: expenseData.agent_id,\n      // TENANT ANCHOR",
+      file: "financials",
+      find: '      if (!isFinanceAdmin(ctx.userType)) return { success: false, error: "forbidden_agent_scope" }',
+      replace: '      if (false) return { success: false, error: "forbidden_agent_scope" }',
     },
   },
   {
@@ -623,102 +710,148 @@ const CHECKS: Check[] = [
     },
   },
   {
-    id: "A11-setAgentGoal-stamps-tenant",
-    desc: "setAgentGoal supplies the NOT NULL brokerage_id it used to omit",
+    // RETARGETED IN WAVE 27 from app/actions/agents.ts:setAgentGoal — the
+    // second, never-surfaced agent_goals writer — onto the canonical one this
+    // repo already ships (tombstone in app/actions/agents.ts naming
+    // app/actions/ai-agent-goals.ts:upsertAgentGoal). Same rule, same control.
+    id: "A11-goal-writer-stamps-tenant",
+    desc: "upsertAgentGoal supplies the NOT NULL brokerage_id",
     run: () => {
-      const b = body("agents", "setAgentGoal")
-      const p = callPayload(M("agents"), S("agents"), b, "upsert")
-      if (!p) return "no upsert payload found in setAgentGoal"
-      return /brokerage_id\s*:\s*ctx\.brokerageId/.test(p.text)
+      const b = body("aiGoals", "upsertAgentGoal")
+      const p = callPayload(M("aiGoals"), S("aiGoals"), b, "upsert")
+      if (!p) return "no upsert payload found in upsertAgentGoal"
+      return /brokerage_id\s*:\s*params\.brokerageId/.test(p.text)
         ? true
-        : "the agent_goals write still omits brokerage_id, which is NOT NULL"
+        : "the agent_goals write omits brokerage_id, which is NOT NULL"
     },
     neg: {
-      file: "agents",
-      find: "        // TENANT ANCHOR — NOT NULL on this table, stamped at the write.\n        brokerage_id: ctx.brokerageId,",
-      replace: "",
+      file: "aiGoals",
+      find: "          brokerage_id: params.brokerageId,\n          year,",
+      replace: "          year,",
     },
   },
   {
-    id: "A12-setAgentGoal-vocabulary-gate",
-    desc: "setAgentGoal refuses a goal_type the CHECK constraint would reject",
+    id: "A12-goal-writer-vocabulary-gate",
+    desc: "upsertAgentGoal refuses a goal_type the CHECK constraint would reject",
     run: () => {
-      const b = body("agents", "setAgentGoal")
+      const b = body("aiGoals", "upsertAgentGoal")
       // liveRefusingBranch, not refusingBranch: the token survives inside a
       // gutted `if (false && ...)` and a token-presence check would call that
       // a validated vocabulary.
-      if (!liveRefusingBranch(b.text, "AGENT_GOAL_TYPES as readonly string[]).includes(goalData.goal_type)")) {
-        return "setAgentGoal does not validate goal_type in a live refusing branch before the write"
+      if (!liveRefusingBranch(b.text, "isAgentGoalType(params.goalType)")) {
+        return "upsertAgentGoal does not validate goalType in a live refusing branch before the write"
       }
-      return orderedIn(b.text, "AGENT_GOAL_TYPES", ".upsert(")
+      return orderedIn(b.text, "isAgentGoalType(", ".upsert(")
         ? true
         : "the vocabulary gate does not run before the write"
     },
     neg: {
-      file: "agents",
-      find: "  if (!(AGENT_GOAL_TYPES as readonly string[]).includes(goalData.goal_type)) {",
-      replace: "  if (false && !(AGENT_GOAL_TYPES as readonly string[]).includes(goalData.goal_type)) {",
+      file: "aiGoals",
+      find: "  if (!isAgentGoalType(params.goalType)) {",
+      replace: "  if (false && !isAgentGoalType(params.goalType)) {",
     },
   },
   {
+    // RETARGETED IN WAVE 27, AND ITS EXPECTATION DERIVED RATHER THAN TYPED.
+    //
+    // It read the file-LOCAL AGENT_GOAL_TYPES in app/actions/agents.ts — a
+    // second spelling of one vocabulary (§6) that existed only to serve
+    // setAgentGoal, and which went with it. The survivor is
+    // lib/goals/goal-types.ts:AGENT_GOAL_TYPES, the one list the picker, the
+    // validator and the live-value sync all read.
+    //
+    // The expectation now comes from scripts/check-vocabularies.ts, the
+    // GENERATED cache of the live CHECK constraints, instead of a hand-typed
+    // list beside it. That is not a cosmetic change: the hand-typed list here
+    // had SEVEN members and the constraint has had NINE since m373 added
+    // referrals_generated and reviews_requested, so this assertion had been
+    // measuring source against a stale copy of the database — it would have
+    // FAILED the correct survivor and passed the stale duplicate. §2: assert
+    // the rule, derive the number.
     id: "A13-agent-goal-vocabulary-matches-db",
-    desc: "AGENT_GOAL_TYPES is exactly the live agent_goals_goal_type_check vocabulary",
+    desc: "the ONE AGENT_GOAL_TYPES is exactly the live agent_goals_goal_type_check vocabulary",
     run: () => {
-      const v = constArrayValues(M("agents"), S("agents"), "AGENT_GOAL_TYPES")
-      if (!v) return "AGENT_GOAL_TYPES not found"
+      const v = constArrayValues(M("goalTypes"), S("goalTypes"), "AGENT_GOAL_TYPES")
+      if (!v) return "AGENT_GOAL_TYPES not found in lib/goals/goal-types.ts"
+      if (LIVE.agentGoalTypes.length === 0) return "the live goal_type vocabulary could not be read from the cache"
       return sameSet(v, LIVE.agentGoalTypes)
         ? true
-        : `AGENT_GOAL_TYPES drifted from the column: [${v.join(", ")}]`
+        : `AGENT_GOAL_TYPES drifted from the column: [${v.join(", ")}] vs [${LIVE.agentGoalTypes.join(", ")}]`
     },
     neg: {
-      file: "agents",
+      file: "goalTypes",
       find: "  \"gross_commission\",\n  \"transactions_closed\",",
       replace: "  \"gci\",\n  \"transactions_closed\",",
     },
   },
   {
-    id: "A14-setAgentGoal-no-single-probe",
-    desc: "setAgentGoal's pre-existence probe uses maybeSingle, not single (single errors on zero rows)",
+    id: "A14-goal-writer-no-single-probe",
+    desc: "upsertAgentGoal's pre-existence probe uses maybeSingle, not single (single errors on zero rows)",
     run: () => {
-      const b = body("agents", "setAgentGoal")
-      const probe = b.text.slice(0, b.text.indexOf(".upsert("))
+      const b = body("aiGoals", "upsertAgentGoal")
+      const at = b.text.indexOf(".upsert(")
+      if (at < 0) return "upsertAgentGoal does not write agent_goals"
+      const probe = b.text.slice(0, at)
+      if (!probe.includes('.from("agent_goals")')) return "there is no pre-existence probe before the write"
       if (probe.includes(".single()")) return "the probe still uses .single(), whose zero-row error skips the branch"
       return probe.includes(".maybeSingle()") ? true : "the probe does not use maybeSingle"
     },
     neg: {
-      file: "agents",
-      find: "    .eq(\"goal_type\", goalData.goal_type)\n    .maybeSingle()\n  if (existingErr) {",
-      replace: "    .eq(\"goal_type\", goalData.goal_type)\n    .single()\n  if (existingErr) {",
+      file: "aiGoals",
+      find: "      .eq(\"goal_type\",    params.goalType)\n      .maybeSingle()",
+      replace: "      .eq(\"goal_type\",    params.goalType)\n      .single()",
     },
   },
   {
-    id: "A15-assignAgentToContact-counts-the-move",
-    desc: "assignAgentToContact counts its UPDATE and refuses a zero-row match",
+    // RETARGETED IN WAVE 27 from app/actions/agents.ts:assignAgentToContact —
+    // the never-surfaced twin that only ever re-pointed contacts.agent_id and
+    // left the leads, deal roles, tasks and alerts with the previous agent —
+    // onto the reassignment this repo actually ships (tombstone in
+    // app/actions/agents.ts naming
+    // app/actions/contact-reassignment.ts:reassignContactAction).
+    //
+    // The counted UPDATE was the ONE discipline the survivor lacked, so §1
+    // required it PORTED before the delete, and it was: the contact move is now
+    // `{ count: "exact" }` and a zero-row match is refused instead of being
+    // reported as `contactMoved: true`. This assertion guards that port.
+    id: "A15-contact-move-counts-the-move",
+    desc: "reassignContactAction counts its contact UPDATE and refuses a zero-row match",
     run: () => {
-      const b = body("agents", "assignAgentToContact")
-      const p = callPayload(M("agents"), S("agents"), b, "update")
-      if (!p) return "no update payload found"
-      const call = S("agents").slice(p.start, p.start + 400)
+      const b = body("contactReassign", "reassignContactAction")
+      const i = b.text.indexOf('.from("contacts")\n      .update(')
+      if (i < 0) return "no contacts UPDATE found in reassignContactAction"
+      const call = b.text.slice(i, i + 400)
       if (!/count:\s*"exact"/.test(call)) return "the UPDATE is not counted, so a zero-row move reads as a save"
+      // The binding sits BEFORE the builder chain (`const { error, count } = await svc`),
+      // so it is looked for behind the anchor, not ahead of it.
+      if (!/const\s*\{\s*error,\s*count\s*\}\s*=\s*await/.test(b.text.slice(Math.max(0, i - 120), i))) {
+        return "the count is never bound, so it cannot be read"
+      }
       return refusingBranch(b.text, "if (!count)") ? true : "a zero-row match is not refused"
     },
     neg: {
-      file: "agents",
-      find: "  if (!count) {\n    return { error: \"That contact was not found in your brokerage — nothing was changed.\" }\n  }",
+      file: "contactReassign",
+      find: "    if (!count) {\n      return { ...empty, error: \"That contact was not found in your brokerage — nothing was changed.\" }\n    }",
       replace: "",
     },
   },
   {
-    id: "A16-assignAgentToContact-checks-receiver",
-    desc: "assignAgentToContact refuses a receiving agent outside the caller's brokerage",
+    id: "A16-contact-move-checks-receiver",
+    desc: "reassignContactAction refuses a receiving agent outside the caller's brokerage",
     run: () => {
-      const b = body("agents", "assignAgentToContact")
-      if (!orderedIn(b.text, "targetAgent", "update(")) return "the receiving agent is not resolved before the move"
-      return refusingBranch(b.text, "if (!targetAgent)") ? true : "an unknown receiving agent is not refused"
+      const b = body("contactReassign", "reassignContactAction")
+      if (!orderedIn(b.text, '.from("agents")', ".update(")) {
+        return "the receiving agent is not resolved before the move"
+      }
+      const at = b.text.indexOf('.from("agents")')
+      if (!/\.eq\("brokerage_id",\s*auth\.brokerageId\)/.test(b.text.slice(at, at + 400))) {
+        return "the receiving-agent read is not scoped to the caller's brokerage"
+      }
+      return refusingBranch(b.text, "if (!target)") ? true : "an unknown receiving agent is not refused"
     },
     neg: {
-      file: "agents",
-      find: "  if (!targetAgent) return { error: \"That agent is not in your brokerage.\" }",
+      file: "contactReassign",
+      find: "  if (!target) return { ...empty, error: \"Target agent not found in this brokerage\" }",
       replace: "",
     },
   },

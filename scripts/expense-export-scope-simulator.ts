@@ -340,7 +340,10 @@ function sourceLayer() {
   console.log(`      denominator: ${exported.length} exported server actions in app/actions/financials.ts`)
   console.log(`      of which ${takesAgentId.length} take an agentId parameter: ${takesAgentId.join(", ")}`)
   console.log(`      audited here: ${EXPORT_ACTIONS.length} — ${EXPORT_ACTIONS.join(", ")}`)
-  console.log(`      EXCLUSIONS: actions that derive the agent from the session only; and`)
+  console.log(`      EXCLUSIONS: actions that derive the agent from the session only — note that`)
+  console.log(`      logScopedExpense now appears in the list above because wave 27 merged`)
+  console.log(`      addAgentExpense's other-agent branch onto it; it is a WRITE, not a ledger`)
+  console.log(`      export, and its own gate is proved by test:people-vendor-education-wiring (A8); and`)
   console.log(`      generateAIForecast, which takes agentId inside an OBJECT param and is not`)
   console.log(`      an export-a-ledger-as-a-file action — reported separately, not gated here.`)
 

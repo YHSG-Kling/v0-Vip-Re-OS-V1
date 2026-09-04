@@ -125,7 +125,32 @@ Return as JSON array: [{"contactId": "...", "suggestion": "...", "action": "..."
   }
 }
 
-export async function draftSmartEmail(contactId: string, context: string): Promise<string> {
+/**
+ * The result of a draft attempt.
+ *
+ * FOUR REFUSALS USED TO SHARE ONE EMPTY STRING (wave 26 lane SEC3 §8.1, closed
+ * here). `draftSmartEmail` returned a bare `string` and answered `""` for
+ * unauthenticated, forbidden, refused read, contact-not-found AND "the model
+ * returned nothing" — five states, one value. app/dashboard/briefing/page.tsx
+ * had to write a paragraph explaining that it could not tell the caller which
+ * had happened, and the other two callers treated `""` as "nothing to say": the
+ * CRM page silently did nothing, and the buyer-match panel opened a compose
+ * dialog with an empty body, which reads as "the AI had nothing to say" when in
+ * fact the seat was refused.
+ *
+ * Same shape as the sibling actions this repo already fixed — `ok` plus a
+ * `reason` the caller may show (app/actions/documents.ts:ContactDocumentsResult,
+ * app/actions/contacts/update-channel-controls.ts:ContactChannelControlsResult)
+ * — so this is the one vocabulary, not a third (§6).
+ */
+export type DraftSmartEmailResult =
+  | { ok: true; body: string }
+  | { ok: false; reason: string }
+
+export async function draftSmartEmail(
+  contactId: string,
+  context: string,
+): Promise<DraftSmartEmailResult> {
   // Auth gate — AI inference + contact PII access.
   //
   // ── THE ROLE TEST THAT WAS MISSING (wave 26, lane SEC3) ─────────────────────
@@ -140,8 +165,10 @@ export async function draftSmartEmail(contactId: string, context: string): Promi
   // agent-facing (the CRM page, the CRM buyer-match panel and the daily
   // briefing), so the back-office roster is the question.
   const auth = await requireCaller()
-  if (!auth.ok) return ""
-  if (!isCrmContactStaff(auth.userType)) return ""
+  if (!auth.ok) return { ok: false, reason: auth.error }
+  if (!isCrmContactStaff(auth.userType)) {
+    return { ok: false, reason: "Your seat cannot draft messages to a contact." }
+  }
 
   const supabase = createServiceClient()
 
@@ -155,9 +182,14 @@ export async function draftSmartEmail(contactId: string, context: string): Promi
     .eq("id", contactId)
     .maybeSingle()
 
-  if (contactError) return ""
-  if (!contact) return ""
-  if (contact.brokerage_id !== auth.brokerageId) return ""
+  // Three distinguishable outcomes, three distinguishable answers. "We could not
+  // read" must never share a sentence with "there is no such contact", and
+  // neither may read as an empty draft.
+  if (contactError) return { ok: false, reason: "That contact could not be read — nothing was drafted." }
+  if (!contact) return { ok: false, reason: "That contact was not found." }
+  if (contact.brokerage_id !== auth.brokerageId) {
+    return { ok: false, reason: "That contact is not in your brokerage." }
+  }
 
   const { text } = await generateText({
     brokerageId: auth.brokerageId,
@@ -178,5 +210,10 @@ Write a concise email (3-4 sentences) that:
 Return only the email body, no subject line.`,
   })
 
-  return text
+  // The FIFTH state, which the bare string could not express either: the gate
+  // passed, the contact was read, and the model came back with nothing. That is
+  // a retryable model outcome, not a refusal, and it says so.
+  if (!text?.trim()) return { ok: false, reason: "The model returned an empty draft. Try again." }
+
+  return { ok: true, body: text }
 }

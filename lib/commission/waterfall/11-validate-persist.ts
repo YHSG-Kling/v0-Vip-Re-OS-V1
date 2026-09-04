@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { transitionLifecycle } from '@/lib/kernel/lifecycle'
+import { isCommissionFinalized } from '@/lib/commission/finalization'
 import { centsToDollars, dollarsToCents } from '../utils'
 import { CURRENT_ENGINE_VERSION } from '../types'
 import type { WaterfallContext, CommissionCalculationResult } from '../types'
@@ -103,21 +104,36 @@ export async function validateAndPersist(
   // Return the locked commission instead of inserting a second summary row (this is
   // also what stops the duplicate-commissions-row bug on a re-run). The lock is set
   // AFTER the close-time calc, so the first/authoritative calc is never blocked.
+  //
+  // ONE SPELLING OF THE LOCK (§6, wave 27). This step used to read the lock
+  // column off `transactions` itself — a second reader beside
+  // lib/commission/finalization.ts:isCommissionFinalized, whose own header
+  // already claimed "the waterfall engine consults isCommissionFinalized" while
+  // nothing in the tree did. The helper is the survivor and this asks it; the
+  // §3 error-read this step carried was ported onto the helper first, so the
+  // refusal is still reported rather than silently read as "not finalized".
+  //
+  // IT COSTS A SECOND ROUND TRIP, deliberately. `close_date` is still needed
+  // from the same table for the ledger insert below, so the two facts no longer
+  // arrive in one read. One spelling of an immutability lock is worth one query
+  // on a close-time calculation that already makes a dozen.
+  const finalized = await isCommissionFinalized(supabase, context.transactionId)
+
   const { data: txn, error: txnErr } = await supabase
     .from('transactions')
-    .select('commission_finalized_at, close_date')
+    .select('close_date')
     .eq('id', context.transactionId)
-    .maybeSingle<{ commission_finalized_at: string | null; close_date: string | null }>()
-  // supabase-js RESOLVES refusals (§3). A refused read here previously read as
-  // "not finalized", which would let the engine re-persist a LOCKED commission
-  // and insert a second summary row — the exact duplicate this lock exists to
-  // prevent. Surfaced rather than swallowed.
+    .maybeSingle<{ close_date: string | null }>()
+  // supabase-js RESOLVES refusals (§3). This read no longer decides the lock,
+  // but it still decides the ledger row's close_date, and a refusal falling
+  // through to "today" would date a deal wrong on the column
+  // loadAgentCommissions ORDERS BY.
   if (txnErr) {
-    console.error('[waterfall/validate-persist] transaction lock read refused — treating as NOT finalized:', txnErr.message)
+    console.error('[waterfall/validate-persist] transaction close-date read refused — the ledger row will fall back to today:', txnErr.message)
   }
 
   {
-    if (txn?.commission_finalized_at) {
+    if (finalized) {
       // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
       // net_to_agent/net_to_brokerage are the post-fee waterfall results — the
       // generated agent_commission/brokerage_commission columns are the pre-fee

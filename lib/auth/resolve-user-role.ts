@@ -347,6 +347,42 @@ export function isTenantAdminGrantRole(role: string | null | undefined): boolean
   return TENANT_ADMIN_USER_TYPES.has(String(role ?? "").toLowerCase())
 }
 
+/**
+ * "THE PRODUCING AGENT, OR SOMEONE WHO ADMINISTERS THEM" — asked once (§6).
+ *
+ * DERIVED, NOT RETYPED: it is literally `agent` plus TENANT_ADMIN_USER_TYPES
+ * above, so a role added to the tenant roster reaches this predicate with no
+ * second edit, and the two cannot drift into different answers.
+ *
+ * WHY IT EXISTS. This exact test was written out by hand in two places, as a
+ * fourth spelling of the staff ladder (CLAUDE.md §6, reported by lane SEC3 §8.3):
+ *
+ *     if (userType !== "agent" && !isAdminOrBroker({ user_type: userType })) …
+ *
+ * — app/actions/negotiation-strategy.ts:requireAgentOrAdmin and
+ * lib/voice/deal-decision.ts:resolveActor. Both now ask this.
+ *
+ * IT IS DELIBERATELY NARROWER THAN THE CRM CONTACT ROSTER and must stay that
+ * way. lib/auth/crm-contact-staff.ts:CRM_CONTACT_STAFF_USER_TYPES also admits
+ * `tc`, `isa` and `compliance_officer`, which are correct for working a
+ * CONTACT's channels and wrong for authoring or deciding a NEGOTIATION on a
+ * deal. Collapsing the two rosters into one would have widened three seats into
+ * the negotiation rail, so they stay two predicates over two rosters — which is
+ * not the §6 defect: §6 forbids two spellings of ONE idea, not two ideas.
+ *
+ * FAILS CLOSED on null / undefined / empty (§4). Case-folded for exactly the
+ * reason isAdminOrBroker is — users.user_type is CHECK-constrained to lowercase,
+ * but a caller holding only the legacy free-form `role` can pass 'Agent'.
+ */
+export function isAgentOrTenantAdmin(profile: {
+  user_type?: string | null
+  role?: string | null // tolerated on input, intentionally unread — see the module header
+}): boolean {
+  const t = String(profile.user_type ?? "").trim().toLowerCase()
+  if (t.length === 0) return false
+  return t === "agent" || isAdminOrBroker({ user_type: t })
+}
+
 // ─── BROKERAGE-WIDE MONEY — THE SAME ROSTER, ONE ROLE SHORTER ────────────────
 //
 // OWNER RULING, verbatim:

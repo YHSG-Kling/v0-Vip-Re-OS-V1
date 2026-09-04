@@ -178,13 +178,26 @@ export async function reassignContactAction(input: {
   const result: ReassignContactResult = { ...empty, ok: false }
 
   // ── 1. The contact row ──
+  //
+  // COUNTED, MERGED IN WAVE 27 from app/actions/agents.ts:assignAgentToContact
+  // before that duplicate was retired onto this action. §3: an UPDATE that
+  // matches NOTHING also resolves with `error: null` and is byte-identical to
+  // one that worked. The tenancy read above has already proved this contact is
+  // in `auth.brokerageId`, so zero rows here means the predicate refused between
+  // the read and the write — and reporting that as `contactMoved: true` tells an
+  // agent a client is theirs when the row never moved. Whether zero rows is a
+  // failure is the caller's call, and here it is: this is the ONE move the other
+  // five steps are bookkeeping for.
   {
-    const { error } = await svc
+    const { error, count } = await svc
       .from("contacts")
-      .update({ agent_id: input.toAgentId, updated_at: nowIso })
+      .update({ agent_id: input.toAgentId, updated_at: nowIso }, { count: "exact" })
       .eq("id", input.contactId)
       .eq("brokerage_id", auth.brokerageId)
     if (error) return { ...empty, error: `Contact move failed: ${error.message}` }
+    if (!count) {
+      return { ...empty, error: "That contact was not found in your brokerage — nothing was changed." }
+    }
     result.contactMoved = true
   }
 

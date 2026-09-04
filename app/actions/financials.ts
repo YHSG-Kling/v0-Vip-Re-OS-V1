@@ -71,14 +71,34 @@ export async function generateAIForecast(params: {
     // Fetch last 3 years of earnings for trend analysis — agent_monthly_earnings
     // is the canonical rollup (written by the earnings-rollup cron from
     // agent_commissions); earnings_history was a writer-less twin (repointed).
-    const { data: monthly } = await supabase
+    // transaction_count: the earnings-rollup cron writes it per month
+    // (app/api/cron/earnings-rollup/route.ts:144) and only the YTD/MTD aggregate
+    // on agent_earnings was ever read (:235 / :250 below) — so the monthly HISTORY had
+    // dollars with no deal count beside them, and the forecast this feeds was
+    // asked to project a year off gross alone. Merge, not delete:
+    // agent_earnings.transaction_count stays the survivor for the aggregate;
+    // the monthly table gains its reader.
+    const { data: monthly, error: monthlyError } = await supabase
       .from("agent_monthly_earnings")
-      .select("month_year, gross_total, net_total")
+      .select("month_year, gross_total, net_total, transaction_count")
       .eq("agent_id", targetAgentId)
       .order("month_year", { ascending: false })
       .limit(36)
+    // §3: supabase-js RESOLVES refusals. A refused read here used to fall
+    // through as an empty history, and the prompt below then told the model
+    // "No historical data available" — an outage rendered as a fact about the
+    // agent, inside a forecast a broker acts on.
+    if (monthlyError) {
+      console.error(
+        `[generateAIForecast] agent_monthly_earnings read REFUSED for agent ${targetAgentId} — the forecast below is built with NO history:`,
+        monthlyError.message,
+      )
+    }
     const history = (monthly ?? []).map((m: any) => ({
       paid_date: m.month_year, gross_commission: m.gross_total, agent_net: m.net_total,
+      // Null = the rollup did not record a count for that month. Never 0, which
+      // would read as "a month with earnings and no closings".
+      transaction_count: m.transaction_count ?? null,
     }))
 
     const avgMonthlyGCI =
@@ -89,7 +109,11 @@ export async function generateAIForecast(params: {
       history && history.length > 0
         ? history
             .slice(0, 12)
-            .map((h: any) => `${h.paid_date}: $${(h.gross_commission || 0).toLocaleString()}`)
+            .map((h: any) =>
+              `${h.paid_date}: $${(h.gross_commission || 0).toLocaleString()}` +
+              // A null count prints NOTHING rather than "0 deals" — the rollup
+              // not having recorded a number is not a month with no closings.
+              (h.transaction_count != null ? ` (${h.transaction_count} deals)` : ""))
             .join(", ")
         : "No historical data available"
 
@@ -756,6 +780,16 @@ export async function logScopedExpense(input: {
   amount: number
   expenseDate: string // YYYY-MM-DD
   teamId?: string | null
+  /**
+   * AGENT SCOPE ONLY — book the cost against ANOTHER agent's ledger.
+   *
+   * MERGED IN WAVE 27 from app/actions/agents.ts:addAgentExpense, the second,
+   * never-surfaced business_expenses writer, before that duplicate was retired
+   * onto this one. It was the ONE thing it could do that this action could not.
+   * Omitted or equal to the caller's own agents.id it changes nothing: the
+   * expense lands on the caller's own book exactly as before.
+   */
+  agentId?: string | null
   receiptUrl?: string | null
 }): Promise<{ success: boolean; expenseId?: string; error?: string }> {
   const ctx = await getAgentContext()
@@ -777,8 +811,31 @@ export async function logScopedExpense(input: {
 
   if (input.scope === "agent") {
     // business_expenses.agent_id FKs agents(id) — pass-11 identity rule.
-    if (!ctx.agentId) return { success: false, error: "no_agent_context" }
-    row.agent_id = ctx.agentId
+    // The ACTOR comes from the SESSION (§4); `input.agentId` is only ever
+    // honoured after the two gates below, and never becomes the tenant.
+    let agentId = ctx.agentId
+    if (input.agentId && input.agentId !== ctx.agentId) {
+      // BROKERAGE-WIDE MONEY (m472). business_expenses is a FINANCE table under
+      // public.is_brokerage_finance_admin(), and this branch is "book a cost
+      // against SOMEONE ELSE'S ledger" — money beyond the caller's own team,
+      // which the owner's ruling holds team_lead out of. `isFinanceAdmin` in
+      // this file IS that predicate (see its definition at the top), so this
+      // does not add a fourth roster. The write below goes through the SERVICE
+      // client, which bypasses RLS, so this predicate is the only gate it has.
+      if (!isFinanceAdmin(ctx.userType)) return { success: false, error: "forbidden_agent_scope" }
+      const { data: targetAgent, error: targetErr } = await svc
+        .from("agents")
+        .select("id, brokerage_id")
+        .eq("id", input.agentId)
+        .maybeSingle()
+      if (targetErr) return { success: false, error: targetErr.message }
+      if (!targetAgent || (targetAgent.brokerage_id as string | null) !== ctx.brokerageId) {
+        return { success: false, error: "agent_not_in_brokerage" }
+      }
+      agentId = targetAgent.id as string
+    }
+    if (!agentId) return { success: false, error: "no_agent_context" }
+    row.agent_id = agentId
   } else if (input.scope === "team") {
     // Team leads log against their own team; brokers/admins may pick any team
     // in the tenant. Always verify the team belongs to this brokerage.
