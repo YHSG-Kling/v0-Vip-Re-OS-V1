@@ -4,13 +4,14 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * A ROLE COMPARED IN THE WRONG CASE IS A PERMISSION THAT SILENTLY NEVER FIRES.
  *
- * The live CHECK on public.users is:
+ * public.users carries `users_user_type_check`, a VALIDATED single-column CHECK.
+ * Its values are NOT enumerated in this comment on purpose: a transcribed
+ * constraint is a waypoint, true the day it is typed and quietly wrong after the
+ * next migration (this header used to list fourteen values and was already stale
+ * on both ends — missing 'broker_admin', still carrying 'lender'). The live set
+ * is read from scripts/check-vocabularies.ts below.
  *
- *   users_user_type_check CHECK (user_type = ANY (ARRAY[
- *     'admin','agent','broker','broker_owner','compliance_officer','contact',
- *     'isa','lender','superadmin','support','system','tc','team_lead','vendor']))
- *
- * Everything is lower_snake_case. 'TC' is not a legal value.
+ * Everything in it is lower_snake_case. 'TC' is not a legal value.
  *
  * Three real defects motivated this guard, all found in one sweep, all invisible:
  *
@@ -53,6 +54,9 @@ import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { toCanonicalRole, rawRoleVariants, isCanonicalRole } from "../lib/security/types"
 import { stripComments as canonicalStripComments } from "./strip-comments"
+// The MACHINE-WRITTEN snapshot of every live CHECK. The user_type roster below is
+// derived from it rather than retyped — see its comment.
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -64,17 +68,32 @@ const check = (n: string, c: boolean, detail?: string) => {
 const ROOT = process.cwd()
 
 /**
- * The live CHECK, transcribed once. Kept here rather than derived from the
- * canonicalizer because the two are DIFFERENT sets and the difference matters:
- * 'broker_owner' and 'support' are storable user_types that the canonical role
- * model does not name, and 'title_agent' is a canonical role that is not a
- * storable user_type. A filter literal is legal if the DB can store it OR the
- * canonicalizer knows it as an alias.
+ * The live CHECK. Still NOT derived from the canonicalizer — the two are
+ * DIFFERENT sets and the difference is the whole point: 'broker_owner' and
+ * 'support' are storable user_types the canonical role model does not name, and
+ * 'title_agent' is a canonical role that is not a storable user_type. A filter
+ * literal is legal if the DB can store it OR the canonicalizer knows it as an
+ * alias.
+ *
+ * ── RETARGETED (owner ruling, 2026-09-04: "lender is not a user type, it is a
+ *    vendor category") ─────────────────────────────────────────────────────────
+ *
+ * It used to be a HAND-TRANSCRIBED literal, and that is the waypoint trap
+ * CLAUDE.md §2 names: a snapshot of a constraint is true on the day it is typed
+ * and silently wrong afterwards. Measured, it already WAS wrong in both
+ * directions at once — it omitted 'broker_admin' (added to the CHECK by m530, so
+ * a legitimate `.eq("user_type","broker_admin")` would have been reported as an
+ * offender) and it still admitted 'lender' (which
+ * scripts/lender-is-not-a-user-type.sql removes, so a filter that can never match
+ * would have been graded legal).
+ *
+ * Derived from scripts/check-vocabularies.ts instead — the MACHINE-WRITTEN cache
+ * of the live constraint, which scripts/schema-cache-drift-guard.ts pins to the
+ * database. The RULE this guard enforces is unchanged; only the number is now
+ * derived rather than remembered, so applying the migration and regenerating the
+ * cache tightens this guard automatically instead of leaving it behind.
  */
-const LIVE_USER_TYPE_CHECK = new Set([
-  "admin", "agent", "broker", "broker_owner", "compliance_officer", "contact",
-  "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor",
-])
+const LIVE_USER_TYPE_CHECK = new Set(CHECK_VOCABULARIES.users?.user_type ?? [])
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Role vocabulary — a filter that matches nothing is not a filter")

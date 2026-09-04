@@ -65,11 +65,17 @@ export async function POST(request: Request) {
       brokerage: null,
     },
     {
+      // A LENDER IS A VENDOR (owner ruling: lender is a vendor category, not a
+      // user type). This seed used to write user_type='lender'; after the CHECK
+      // drops that value the whole UPSERT would be refused (23514) and the seed
+      // would report a failure it could not fix. The lender-ness of this account
+      // lives on its vendors row (category 'lender') + a user_role_assignments
+      // grant carrying that vendor_id — see lib/kernel/lender-linkage.ts.
       email: "lender@nexus.local",
       first_name: "Larry",
       last_name: "Lender",
-      user_type: "lender",
-      role: "lender",
+      user_type: "vendor",
+      role: "vendor",
       brokerage: null,
     },
   ]

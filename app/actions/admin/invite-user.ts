@@ -33,9 +33,13 @@ export interface InviteUserResult {
   seatDecision?: import("@/lib/kernel/tier-role-matrix").SeatDecision
 }
 
-// Roles a team lead is allowed to assign (never admin/broker)
+// Roles a team lead is allowed to assign (never admin/broker).
+// 'lender' removed (owner ruling: lender is a vendor CATEGORY, not a user type).
+// tierAllowsRole below already refused it — see roleRefusalReason in
+// lib/kernel/tier-role-matrix.ts — so this entry was a second spelling of a value
+// that could not be invited, and the kind of leftover that gets copied forward.
 const BROKERAGE_ASSIGNABLE_ROLES = new Set([
-  "agent", "tc", "isa", "team_lead", "compliance_officer", "lender", "vendor",
+  "agent", "tc", "isa", "team_lead", "compliance_officer", "vendor",
 ])
 
 // Roles only platform staff can assign. Tenant admins/brokers CAN invite

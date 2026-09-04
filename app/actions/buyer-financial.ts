@@ -27,6 +27,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+// LENDERS ARE VENDORS (owner ruling). The bench is a vendors.category question,
+// never a users.user_type one — one vocabulary, from one module.
+import { LENDER_BENCH_CATEGORIES, lenderVendorUserIds } from "@/lib/kernel/lender-linkage"
 
 async function requireContactAccess(contactId: string): Promise<
   | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
@@ -331,7 +334,10 @@ export async function connectBuyerToLender(params: {
   buyerName: string
   partnerId: string
   partnerName: string
-  lenderUserId?: string
+  /** vendors.id of the lender being introduced. Renamed from `lenderUserId`:
+   *  a lender is a VENDOR, not a user (owner ruling), and the id this receives
+   *  from getBrokerageLenders has always been whatever that reader returned. */
+  lenderVendorId?: string
 }): Promise<{ success: boolean; error?: string }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok) return { success: false, error: access.error }
@@ -340,13 +346,25 @@ export async function connectBuyerToLender(params: {
 
   const supabase = createServiceClient()
 
-  // Verify the lender user (if specified) is in caller's brokerage —
-  // prevents fan-out of fake "agent introductions" to lenders across tenants.
-  if (params.lenderUserId) {
-    const { data: lenderRow } = await supabase
-      .from("users").select("brokerage_id").eq("id", params.lenderUserId).maybeSingle()
-    if (!lenderRow || lenderRow.brokerage_id !== access.brokerageId) {
-      return { success: false, error: "Forbidden: lender not in your brokerage" }
+  // Verify the lender VENDOR (if specified) is in the caller's brokerage AND is
+  // actually on the lender bench — prevents fan-out of fake "agent
+  // introductions" across tenants, and prevents a non-lender vendor being
+  // introduced as one. It used to look the id up in `users`, which was the
+  // duplicate spelling of lender-ness; the category is the survivor.
+  // §3: the error is READ — a refused lookup must not read as "not in your
+  // brokerage", and it must not read as "fine" either. Fail closed.
+  if (params.lenderVendorId) {
+    const { data: lenderRow, error: lenderError } = await supabase
+      .from("vendors").select("brokerage_id, category").eq("id", params.lenderVendorId).maybeSingle()
+    if (lenderError) {
+      return { success: false, error: "Could not verify that lender just now — please try again" }
+    }
+    if (
+      !lenderRow ||
+      lenderRow.brokerage_id !== access.brokerageId ||
+      !(LENDER_BENCH_CATEGORIES as readonly string[]).includes(String(lenderRow.category ?? ""))
+    ) {
+      return { success: false, error: "Forbidden: lender not on your brokerage's lender bench" }
     }
   }
 
@@ -402,19 +420,29 @@ export async function connectBuyerToLender(params: {
 
   if (profileError) return { success: false, error: profileError.message }
 
-  // 3. Notify lender if they have an account
-  if (params.lenderUserId) {
-    await supabase.from("notifications").insert({
-      user_id:     params.lenderUserId,
-      brokerage_id: access.brokerageId,
-      type:        "lender_introduction",
-      title:       `New buyer introduction: ${params.buyerName}`,
-      body:        `Agent ${params.agentName} has introduced a buyer who may need financing assistance.`,
-      entity_type: "contact",
-      entity_id:   params.contactId,
-      priority:    "high",
-      channel:     "in_app",
-    })
+  // 3. Notify the lender's people, if the vendor has any linked accounts.
+  //
+  // `notifications.user_id` FKs `users` (scripts/schema-fk-map.ts:532), and a
+  // vendor is a COMPANY — inserting a vendors.id here is a 23503 that loses the
+  // whole row. The hop from vendor to person is user_role_assignments, resolved
+  // once in lib/kernel/lender-linkage.ts rather than re-derived here. A lender
+  // vendor with no linked account simply has nobody to notify; the referral row
+  // and the activity above are still the record that the introduction happened.
+  if (params.lenderVendorId) {
+    const recipientIds = await lenderVendorUserIds(supabase, params.lenderVendorId)
+    for (const recipientId of recipientIds) {
+      await supabase.from("notifications").insert({
+        user_id:     recipientId,
+        brokerage_id: access.brokerageId,
+        type:        "lender_introduction",
+        title:       `New buyer introduction: ${params.buyerName}`,
+        body:        `Agent ${params.agentName} has introduced a buyer who may need financing assistance.`,
+        entity_type: "contact",
+        entity_id:   params.contactId,
+        priority:    "high",
+        channel:     "in_app",
+      })
+    }
   }
 
   // 4. Log activity. This row IS the record that the introduction was made —
@@ -477,6 +505,21 @@ export async function loadFinancialProfile(params: {
  * up". Deleted rather than read: the tenant lives in the SESSION, resolved two lines
  * below by the act-as seam (resolveActingContext), and that is the survivor.
  */
+/**
+ * The brokerage's LENDER BENCH — vendors, not users.
+ *
+ * OWNER RULING: "lender is not a user type, it is a vendor category." This read
+ * was the other spelling: `.eq("user_type", "lender")` against `users`, which is
+ * a filter that will match zero rows forever once the CHECK stops admitting the
+ * value — and a query that matches nothing is a SUCCESSFUL query (CLAUDE.md §3),
+ * so the lender picker would have gone permanently, silently empty. The vendor
+ * bench is the survivor: `vendors.category` carries 'lender' AND
+ * 'refinance_lender' in its live CHECK, and every other lender surface already
+ * resolves through it (lib/kernel/lender-linkage.ts, lib/kernel/portal-auth.ts).
+ *
+ * `id` is now a `vendors.id`. Callers that hand it back — connectBuyerToLender's
+ * `lenderVendorId` — verify it against `vendors` for the same reason.
+ */
 export async function getBrokerageLenders(): Promise<{ success: boolean; lenders?: { id: string; full_name: string; email: string | null; phone: string | null }[]; error?: string }> {
   const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.brokerageId) {
@@ -486,15 +529,15 @@ export async function getBrokerageLenders(): Promise<{ success: boolean; lenders
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
-    .from("users")
-    .select("id, first_name, last_name, email, phone")
+    .from("vendors")
+    .select("id, name, email, phone, category, status")
     .eq("brokerage_id", ctx.brokerageId)
-    .eq("user_type", "lender")
-    .is("deleted_at", null)
-    .order("last_name", { ascending: true })
+    .in("category", [...LENDER_BENCH_CATEGORIES])
+    .eq("status", "active")
+    .order("name", { ascending: true })
 
   if (error) return { success: false, error: error.message }
-  return { success: true, lenders: (data ?? []).map((u: any) => ({ id: u.id, full_name: `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unnamed Lender", email: u.email ?? null, phone: u.phone ?? null })) }
+  return { success: true, lenders: (data ?? []).map((v: any) => ({ id: v.id, full_name: (v.name ?? "").trim() || "Unnamed Lender", email: v.email ?? null, phone: v.phone ?? null })) }
 }
 
 // ─── LOAD MORTGAGE BROKER PARTNERS ───────────────────────────────────────────

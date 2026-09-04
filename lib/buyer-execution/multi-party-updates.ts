@@ -17,6 +17,10 @@ import { assertVendorAssignedToContact } from '@/lib/vendor/assignment-access'
 // lib/kernel/agent-identity-resolver.ts: that one is `server-only` and pulling it
 // into this graph would break any plain guard/page that reaches this module.
 import { resolveUserIdForAgentRecord } from '@/lib/kernel/agent-identity'
+// LENDERS ARE VENDORS — the ONE resolver for "is this person a lender".
+// Client-agnostic like the rest of this module's imports (lender-linkage pulls
+// only lib/kernel/vendor-categories, which is pure).
+import { lenderVendorForUser } from '@/lib/kernel/lender-linkage'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
@@ -218,23 +222,27 @@ export async function lenderConfirmFinancialVerification(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const { contactId, lenderId, verificationType, expiresAt, metadata } = params
 
-  // Verify lender identity. A lender is a vendor-user role — key on user_type
-  // (the canonical column: real lender users carry user_type 'lender'|'vendor'
-  // and a null/inconsistent legacy `role`, so the old `role === 'lender'` check
-  // silently rejected genuine lenders). role is kept only as a legacy fallback.
+  // ── VERIFY LENDER IDENTITY THROUGH THE VENDOR RECORD ────────────────────────
+  //
+  // OWNER RULING: "lender is not a user type, it is a vendor category."
+  //
+  // This gate used to ask users.user_type for the answer and admit
+  // 'lender' | 'vendor'. Both halves of that were wrong in the same direction:
+  // 'lender' is being removed from users_user_type_check (a filter on a value the
+  // CHECK forbids can only ever match nothing), and a bare 'vendor' admitted ANY
+  // vendor — a stager, a photographer — to a FINANCING gate. The survivor is the
+  // one the rest of the lender surfaces already use: lenderVendorForUser resolves
+  // user_role_assignments.vendor_id → a lender-category vendor, so the caller is a
+  // lender because their VENDOR RECORD says so.
+  //
+  // The per-contact assignment check below is unchanged and still does the real
+  // authorization work; this narrows WHO may reach it.
   const supabase = createServiceClient()
-  const { data: user } = await supabase
-    .from('users')
-    .select('user_type, role')
-    .eq('id', lenderId)
-    .single()
-
-  const userType = String((user as { user_type?: string; role?: string } | null)?.user_type
-    ?? (user as { role?: string } | null)?.role ?? '').toLowerCase()
-  if (!user || (userType !== 'lender' && userType !== 'vendor')) {
+  const lenderVendor = await lenderVendorForUser(supabase, lenderId)
+  if (!lenderVendor) {
     return {
       success: false,
-      error: 'Only lender / vendor accounts can confirm financial verification'
+      error: 'Only a lender on the brokerage vendor bench can confirm financial verification'
     }
   }
 

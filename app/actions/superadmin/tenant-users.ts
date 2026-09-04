@@ -183,8 +183,17 @@ export async function searchUsersByEmailAction(query: string): Promise<
 
 // Roles a superadmin can create INTO a tenant from the god console. (superadmin is
 // deliberately excluded — platform staff are provisioned through their own path.)
+// 'lender' REMOVED (owner ruling, 2026-09-04: "lender is not a user type, it is a
+// vendor category"). This console is the ONE creation path with a
+// `superadminOverride` that waives the tier matrix, so it was the only surface
+// that could still mint a `users.user_type='lender'` row after
+// lib/kernel/tier-role-matrix.ts:125 dropped lender from PARTNER_ROLES. A lender
+// is provisioned as a VENDOR (vendors.category 'lender') through the vendor
+// invite flow — see lib/kernel/lender-linkage.ts, which is the source of truth
+// for lender identity, and roleRefusalReason() in tier-role-matrix.ts for the
+// sentence a caller gets.
 const TENANT_CREATABLE_ROLES = new Set<string>([
-  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor",
+  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor",
 ])
 
 /**

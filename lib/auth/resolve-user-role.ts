@@ -38,11 +38,9 @@ export type UserRole =
   | "admin"
   | "tc"
   | "vendor"
-  | "lender"
   | "isa"
   | "team_lead"
   | "compliance_officer"
-  | "title_agent"
   | "contact"
   | "system"
   | "superadmin"
@@ -52,9 +50,29 @@ export type UserRole =
   // one too, and it is a DIFFERENT set: that one is the CANONICAL ROLE
   // vocabulary (what a user may BE after mapping), this one is the raw
   // users.user_type COLUMN vocabulary (what the row may literally store — hence
-  // 'system' and 'support', which are not canonical roles). A value added to
-  // one and not the other leaves assignments unassignable, so they move
-  // together or not at all.
+  // 'system' and 'support', which are not canonical roles).
+  //
+  // THE TWO DO NOT MOVE TOGETHER, AND THAT IS THE POINT. An earlier note here
+  // said a value must be added to both "or not at all". That is exactly wrong in
+  // the subtraction direction, and the tree already proves it: 'title_agent' is a
+  // CANONICAL ROLE (lib/security/types.ts:23, with a full ROLE_PERMISSIONS entry)
+  // and has NOT been a storable user_type since m307 — a title company is a
+  // VENDOR (vendors.category='title'). scripts/role-vocabulary-guard.ts:66-72
+  // states the same asymmetry from the other side.
+  //
+  // ── 'lender' and 'title_agent' REMOVED FROM THIS UNION ──────────────────────
+  // OWNER RULING, 2026-09-04: "lender is not a user type, it is a vendor
+  // category." The survivor for BOTH is the vendor record — vendors.category
+  // carries 'lender' and 'title' in its live CHECK — and lender-ness is resolved
+  // from it by lib/kernel/lender-linkage.ts (isLenderVendorCategory /
+  // lenderVendorForUser) and gated by lib/kernel/portal-auth.ts
+  // (requireLenderVendorActor / requireTitleActor). This union claims to be the
+  // COLUMN's vocabulary, so carrying a value the CHECK refuses is not
+  // conservative, it is a false statement a compiler will happily enforce:
+  // `user_type === 'lender'` type-checks, matches zero rows, and reads as
+  // "there is nobody in that role". 'title_agent' had been stale here since m307;
+  // 'lender' goes with the migration in scripts/lender-is-not-a-user-type.sql.
+  // Both remain CANONICAL ROLES in lib/security/types.ts — untouched.
   //
   // A `member` value briefly lived in both and was removed from both (m470),
   // on the owner's ruling that the user_type IS the seat and a role grant only

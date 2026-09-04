@@ -32,6 +32,12 @@
  * lib/kernel/vendor-categories.ts is the single copy now, and all five import it.
  */
 import { readFileSync } from "node:fs"
+import { join, relative } from "node:path"
+// The shared walker (scripts/runtime-roots.ts:81) — never a private readdirSync
+// copy; there were 82 of those and the survivor is this one.
+import { walkTs } from "./runtime-roots"
+// LENDERS ARE VENDORS — the survivor module for the owner's 2026-09-04 ruling.
+import { isLenderVendorCategory, LENDER_BENCH_CATEGORIES } from "../lib/kernel/lender-linkage"
 import {
   VENDOR_CATEGORIES,
   VENDOR_CATEGORY_LABELS,
@@ -56,6 +62,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   stripComments(readFileSync(p, "utf8"))
+const ROOT = process.cwd()
 
 console.log("\n── the module matches the live CHECK, exactly ──")
 {
@@ -501,6 +508,206 @@ console.log("\n── m561 · both booking pickers author the CHECK, not a list 
   const one = src("app/components/vendors/vendor-category-select.tsx")
   check("the one control still reads VENDOR_CATEGORY_GROUPS",
     /VENDOR_CATEGORY_GROUPS/.test(one) && !OWN_LIST.test(one))
+}
+
+console.log("\n── owner ruling (2026-09-04) · LENDER IS A VENDOR CATEGORY, NOT A USER TYPE ──")
+{
+  // OWNER, verbatim: "lender is not a user type, it is a vendor category."
+  //
+  // WHY THIS BLOCK IS HERE AND NOT IN A ROLE GUARD. The two spellings of "this
+  // person is a lender" were `vendors.category='lender'` and
+  // `users.user_type='lender'`, and the survivor is the category — so the rule
+  // belongs beside the category vocabulary it is a statement about. It also has
+  // to run: scripts/role-vocabulary-guard.ts and scripts/seat-display-simulator.ts
+  // are BOTH absent from `npm run guard` (measured — package.json `guard` does not
+  // name test:role-vocabulary or test:seat-display), while test:vendor-categories
+  // is in the chain. A proof nobody runs is not a proof.
+  //
+  // WHAT IT COST, so the rule is not read as tidiness: public.transactions has
+  // five SELECT policies and the external-partner one is
+  // `current_user_type() = 'vendor' AND vendor_has_transaction_access(id)`. A user
+  // typed 'lender' matched NONE of them, and supabase-js RESOLVES a refusal, so
+  // app/lender/pipeline/page.tsx rendered "0 active loans" for every lender,
+  // forever, with no error anywhere.
+
+  const liveUserTypes = CHECK_VOCABULARIES.users?.user_type ?? []
+  const liveCategories = CHECK_VOCABULARIES.vendors?.category ?? []
+  check("the two vocabularies are both readable (denominator for everything below)",
+    liveUserTypes.length > 0 && liveCategories.length > 0)
+
+  // ── 1 · THE SURVIVOR IS ONE MODULE, AND IT AGREES WITH THE LIVE CHECK ──────
+  // DERIVED, NOT PINNED (CLAUDE.md §2): the assertion is "every member of the
+  // lender bench is a value vendors.category can actually hold, and the in-memory
+  // predicate accepts each of them" — not "lender and refinance_lender". Adding a
+  // lender-ish trade to the taxonomy cannot make this wrong for the wrong reason.
+  const bench = [...LENDER_BENCH_CATEGORIES]
+  check(`the lender bench is non-empty and every member is a live vendors.category (${bench.length})`,
+    bench.length > 0 && bench.every((c) => liveCategories.includes(c)))
+  check("…and the in-memory predicate accepts every member of the filter list",
+    bench.every((c) => isLenderVendorCategory(c)))
+  check("…and the two do not disagree the other way: the predicate's own constant is on the bench",
+    (bench as readonly string[]).includes(VENDOR_CATEGORY_LENDER))
+  // NEGATIVE CONTROL — a predicate that says yes to everything proves nothing.
+  check("negative control · the lender predicate refuses a non-lender trade",
+    !isLenderVendorCategory("stager") && !isLenderVendorCategory("inspector") && !isLenderVendorCategory(""))
+
+  // ── 2 · NOTHING RESOLVES LENDER-NESS FROM users.user_type ─────────────────
+  // The rule the ruling makes enforceable. Three finders, because the duplicate
+  // appeared in three shapes: a Postgres filter, an in-memory comparison, and a
+  // membership array.
+  //
+  // STRIPPED SOURCE ONLY (CLAUDE.md §2). Every site repaired for this ruling
+  // carries a tombstone that QUOTES the defect verbatim — buyer-financial.ts:512
+  // quotes `.eq("user_type", "lender")` and resolve-user-role.ts:72 quotes
+  // `user_type === 'lender'` — so a raw scan would accuse the fix of being the
+  // defect and stay red forever while the tree was correct.
+  const EQ_USER_TYPE_LENDER = /\.(?:eq|neq)\(\s*["']user_type["']\s*,\s*["']lender["']\s*\)/
+  const CMP_USER_TYPE_LENDER = /(?:user_?[tT]ype)\s*[=!]==\s*["']lender["']|["']lender["']\s*[=!]==\s*(?:user_?[tT]ype)/
+  const IN_USER_TYPE_LENDER = /\.in\(\s*["']user_type["']\s*,\s*\[[^\]]*["']lender["']/
+
+  const offenders: string[] = []
+  const scanned = [...walkTs(join(ROOT, "app")), ...walkTs(join(ROOT, "lib"))]
+  for (const abs of scanned) {
+    const rel = relative(ROOT, abs).replace(/\\/g, "/")
+    const s = stripComments(readFileSync(abs, "utf8"))
+    if (EQ_USER_TYPE_LENDER.test(s)) offenders.push(`${rel}: .eq("user_type","lender")`)
+    if (CMP_USER_TYPE_LENDER.test(s)) offenders.push(`${rel}: user_type === "lender"`)
+    if (IN_USER_TYPE_LENDER.test(s)) offenders.push(`${rel}: .in("user_type", […"lender"…])`)
+  }
+  // BLIND SPOTS, PUBLISHED BESIDE THE NUMBER (CLAUDE.md §2): app/ and lib/ only.
+  // scripts/ is excluded (simulators quote the defect as fixture text) and so is
+  // the SQL corpus; a `.rpc()` or a DB trigger comparing user_type is invisible to
+  // any source scan and is covered instead by check 5's CHECK-overlap rule.
+  console.log(`  · ${scanned.length} files scanned (app/ + lib/, stripped; scripts/ and SQL excluded)`)
+  check(`no source resolves lender-ness from users.user_type (${offenders.length})`,
+    offenders.length === 0)
+  if (offenders.length) offenders.slice(0, 8).forEach((o) => console.log(`      ${o}`))
+
+  // POSITIVE CONTROLS — an absence claim with a broken finder is a blind guard
+  // reporting a clean bill of health. Each finder must still recognise the exact
+  // code it was written to catch (these three strings are the real prior code).
+  check("positive control · the filter finder still recognises the removed getBrokerageLenders read",
+    EQ_USER_TYPE_LENDER.test(`.eq("user_type", "lender")`))
+  check("positive control · the comparison finder still recognises the removed gate",
+    CMP_USER_TYPE_LENDER.test(`if (!user || (userType !== 'lender' && userType !== 'vendor')) {`))
+  check("positive control · the membership finder still recognises an .in() roster",
+    IN_USER_TYPE_LENDER.test(`.in("user_type", ["lender", "vendor"])`))
+  // NEGATIVE CONTROLS — the finders must not fire on the SURVIVOR, or the ruling
+  // would forbid the very thing it mandates.
+  check("negative control · the finders ignore the vendor-category spelling",
+    !EQ_USER_TYPE_LENDER.test(`.eq("category", "lender")`) &&
+    !CMP_USER_TYPE_LENDER.test(`category === "lender"`) &&
+    !IN_USER_TYPE_LENDER.test(`.in("category", ["lender", "refinance_lender"])`))
+
+  // ── 3 · THE LENDER SURFACES RESOLVE THROUGH THE VENDOR RECORD ─────────────
+  // The half that BUILDS the missing reader, not just deletes the writer.
+  {
+    const pipeline = src("app/lender/pipeline/page.tsx")
+    check("the loan pipeline resolves the caller's lender VENDOR from the session",
+      /lenderVendorForUser\(/.test(pipeline))
+    // THE ORIGINAL DEFECT: an unfiltered read of `transactions`. The assertion is
+    // the presence of the assignment filter, because "0 active loans" and "every
+    // deal in the database, refused by RLS" render identically.
+    check("…and scopes the read to that vendor's ASSIGNED transactions",
+      /lenderVendorTransactionIds\(/.test(pipeline) && /\.in\(\s*['"]id['"]/.test(pipeline))
+    check("…and READS the error, so a refusal cannot render as an empty pipeline (§3)",
+      /const \{ data: transactions, error \}/.test(pipeline) && /if \(error\)/.test(pipeline))
+
+    const extList = src("app/(external-portal)/lender/transactions/page.tsx")
+    check("the external lender transaction list gates on the vendor record, not userType",
+      /lenderVendorForUser\(/.test(extList) && !/toCanonicalRole\(/.test(extList))
+
+    const multiParty = src("lib/buyer-execution/multi-party-updates.ts")
+    check("the lender financial-verification gate resolves the lender vendor",
+      /lenderVendorForUser\(/.test(multiParty))
+
+    const buyerFin = src("app/actions/buyer-financial.ts")
+    check("the brokerage lender picker reads the vendor bench",
+      /\.from\(\s*["']vendors["']\s*\)/.test(buyerFin) && /LENDER_BENCH_CATEGORIES/.test(buyerFin))
+  }
+
+  // ── 4 · NO CREATION PATH CAN MINT THE DRIFT AGAIN ─────────────────────────
+  // Deleting the rows without closing the writers is a repair with a leak.
+  {
+    const writers: Array<[string, RegExp]> = [
+      ["lib/kernel/users.ts (UserDomainRole — the provisioning vocabulary)", /\|\s*["']lender["']/],
+      ["lib/auth/resolve-user-role.ts (UserRole — the users.user_type column vocabulary)", /\|\s*["']lender["']/],
+      ["app/actions/superadmin/tenant-users.ts (TENANT_CREATABLE_ROLES — the one override path)", /["']lender["']/],
+      ["app/dashboard/admin/users/[userId]/user-edit-form.tsx (USER_TYPE_OPTIONS — writes user_type)", /value:\s*["']lender["']/],
+    ]
+    for (const [label, re] of writers) {
+      const path = label.split(" (")[0]
+      check(`${label} no longer offers 'lender'`, !re.test(src(path)))
+    }
+    check("positive control · the union finder still recognises a union member",
+      /\|\s*["']lender["']/.test(`  | "vendor"\n  | "lender"\n  | "admin"`))
+    check("positive control · the option finder still recognises a <Select> option",
+      /value:\s*["']lender["']/.test(`  { value: "lender", label: "Lender" },`))
+  }
+
+  // ── 5 · THE COLUMN VOCABULARIES DO NOT OVERLAP, OR THE OVERLAP IS ACCOUNTED FOR ─
+  // THE RULE, WITH THE NUMBER DERIVED (CLAUDE.md §2 — never pin to a waypoint).
+  // "A value may not be both a users.user_type and a vendors.category" is the
+  // ruling generalised. It is not asserted as a bare zero, because the migration
+  // that makes it zero is WRITTEN, NOT APPLIED (lanes write, the integrator
+  // applies) — a guard pinned to the post-migration count would be red on a
+  // correct tree today and would have to be edited again tomorrow, which is the
+  // waypoint trap. Instead every overlapping value must be NAMED by SQL in the
+  // tree that removes it from users_user_type_check. When the integrator applies
+  // it and regenerates the cache the overlap becomes empty and this passes
+  // vacuously — the assertion never changes.
+  {
+    const overlap = liveUserTypes.filter((t) => liveCategories.includes(t))
+    const migration = (() => {
+      try { return readFileSync(join(ROOT, "scripts/lender-is-not-a-user-type.sql"), "utf8") }
+      catch { return "" }
+    })()
+    // The rebuilt CHECK's value list, extracted once. An empty string here makes
+    // every value unaccounted rather than every value accounted — the direction
+    // that fails loudly if the migration is deleted or renamed.
+    const rebuiltCheck =
+      migration.match(/ADD CONSTRAINT users_user_type_check CHECK \(([\s\S]*?)\);/)?.[1] ?? ""
+    const accounted = (v: string) =>
+      // BOTH halves, or it is not a repair: the drifted rows are repointed AND the
+      // value is absent from the CHECK the migration rebuilds.
+      rebuiltCheck.length > 0 &&
+      new RegExp(`UPDATE public\\.users SET user_type = '[a-z_]+' WHERE user_type = '${v}'`).test(migration) &&
+      !rebuiltCheck.includes(`'${v}'`)
+    const unaccounted = overlap.filter((v) => !accounted(v))
+    console.log(`  · users.user_type ∩ vendors.category = [${overlap.join(", ") || "none"}]`)
+    check(`every value that is BOTH a user_type and a vendor category is removed by SQL in the tree (${unaccounted.length} unaccounted)`,
+      unaccounted.length === 0)
+    if (unaccounted.length) console.log(`      unaccounted: ${unaccounted.join(", ")}`)
+
+    // POSITIVE CONTROL — the accounting must be able to say NO. A value that no
+    // migration mentions must come back unaccounted, or this check is a blind
+    // "everything is fine" that would pass with an empty file.
+    check("positive control · a fabricated overlap value is NOT accounted for",
+      !accounted("stager"))
+    check("positive control · the migration is present and does both halves",
+      /UPDATE public\.users SET user_type = 'vendor'/.test(migration) &&
+      /ADD CONSTRAINT users_user_type_check/.test(migration))
+    check("…and it is honest that it has not been applied",
+      /WRITTEN, NOT APPLIED/.test(migration))
+  }
+
+  // ── 6 · THE BOUNDARY OF THE RULING, PINNED SO IT IS NOT OVER-APPLIED ──────
+  // 'lender' stays a CANONICAL ROLE. The seat is 'vendor'; the PERMISSIONS are
+  // still spelled 'lender', and user_role_assignments.role carries that value with
+  // the vendor_id that links the person to their lender vendor (that column has no
+  // CHECK). This is the same asymmetry 'title_agent' has had since m307, and
+  // scripts/role-vocabulary-guard.ts:66-72 states it from the other side. Asserted
+  // POSITIVELY so a later sweep cannot "finish the job" by deleting the half the
+  // ruling deliberately keeps.
+  {
+    const secTypes = src("lib/security/types.ts")
+    check("'lender' is STILL a canonical role (the permission vocabulary is not the seat vocabulary)",
+      /\|\s*['"]lender['"]/.test(secTypes))
+    check("…exactly as 'title_agent' has been since m307, which is the precedent",
+      /\|\s*['"]title_agent['"]/.test(secTypes))
+    check("…and vendor_assignments.assignment_type still carries 'lender' (which lane a vendor works)",
+      (CHECK_VOCABULARIES.vendor_assignments?.assignment_type ?? []).includes("lender"))
+  }
 }
 
 console.log("\n──────────────────────────────────────────────────")

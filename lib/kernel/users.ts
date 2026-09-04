@@ -81,7 +81,18 @@ export type UserDomainRole =
   | "team_lead"
   | "compliance_officer"
   | "vendor"
-  | "lender"
+  // TOMBSTONE — 'lender' REMOVED (owner ruling, 2026-09-04: "lender is not a user
+  // type, it is a vendor category"). The survivor is vendors.category='lender',
+  // resolved by lib/kernel/lender-linkage.ts:isLenderVendorCategory /
+  // lenderVendorForUser and gated by lib/kernel/portal-auth.ts:
+  // requireLenderVendorActor. This union is the PROVISIONING vocabulary — every
+  // member is a value inviteTenantMember may write to users.user_type — and
+  // tier-role-matrix.ts already refused it (PARTNER_ROLES is `["vendor"]`, and
+  // roleRefusalReason names the vendor invite flow), so keeping it here only kept
+  // the value alive for the god console, which is the one path that could still
+  // mint the drift. scripts/lender-is-not-a-user-type.sql drops it from the CHECK.
+  // It remains a CANONICAL ROLE in lib/security/types.ts — a lender vendor's
+  // permissions are still spelled 'lender'; only the SEAT is 'vendor'.
   | "superadmin"
   // Platform/OS staff — admitted by the users.user_type CHECK, absent from this
   // union. Like superadmin it is NOT a tenant seat.

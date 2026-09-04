@@ -28,7 +28,19 @@ const OPTIONAL_ONBOARDING_ROLES = new Set<SetupRole>(["tc", "isa", "compliance_o
 /** Roles that are NOT part of onboarding at all — no setup checklist (overview only). (Business rule.) */
 const NON_ONBOARDING_ROLES = new Set<SetupRole>(["vendor", "lender", "superadmin"])
 
-/** Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles. */
+/**
+ * Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles.
+ *
+ * `SetupRole` is an OVERVIEW BUCKET, not the users.user_type vocabulary — the two
+ * are deliberately different sets (this one has no 'contact', no 'system', no
+ * 'support'). "lender" survives here as a bucket even though 'lender' is no longer
+ * a storable user_type (owner ruling, 2026-09-04: lender is a vendor CATEGORY):
+ * a lender seats as user_type 'vendor' and lands on the "vendor" bucket, which is
+ * in NON_ONBOARDING_ROLES exactly like this one, so the behaviour is identical.
+ * The 'lender'/'title_agent' aliases below are kept for legacy inputs (the
+ * `user_role_assignments.role` grant still spells 'lender', and that column has no
+ * CHECK) — they are an alias table, not a claim about what the column stores.
+ */
 export function normalizeSetupRole(userType: string | null | undefined): SetupRole {
   switch ((userType ?? "").toLowerCase()) {
     case "broker": case "broker_owner": return "broker"

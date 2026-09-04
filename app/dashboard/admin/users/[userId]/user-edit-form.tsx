@@ -29,7 +29,10 @@ const USER_TYPE_OPTIONS = [
   { value: "isa", label: "ISA" },
   { value: "team_lead", label: "Team Lead" },
   { value: "vendor", label: "Vendor" },
-  { value: "lender", label: "Lender" },
+  // 'lender' REMOVED (owner ruling: lender is a vendor CATEGORY, not a user type).
+  // This <Select> WRITES users.user_type, so it was a live path for re-creating
+  // the drift the migration repairs. A lender is a vendor whose vendors.category
+  // is 'lender' — set that on the vendor record, not here.
   { value: "superadmin", label: "Superadmin" },
 ]
 

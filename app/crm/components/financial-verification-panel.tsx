@@ -63,11 +63,11 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
   const [agentNotes, setAgentNotes] = useState<string>("")
   const [bypassReason, setBypassReason] = useState<string>("")
 
-  // Lender intro — userId-based
+  // Lender intro — the brokerage's lender VENDOR bench (vendors.id).
   const [lenders, setLenders] = useState<LenderUser[]>([])
   // The agent's OUTSIDE mortgage-broker referral partners. A DIFFERENT
-  // population from `lenders` above: getBrokerageLenders reads in-house
-  // users with user_type='lender', while loadMortgageBrokers
+  // population from `lenders` above: getBrokerageLenders reads the in-house
+  // lender bench (vendors.category 'lender'/'refinance_lender'), while loadMortgageBrokers
   // (app/actions/buyer-financial.ts:508) reads referral_partners with
   // partner_type='mortgage_broker', scoped to the SESSION's agent. Wired in wave
   // 26 — it had no caller, so an agent's own broker partners were never shown
@@ -245,7 +245,9 @@ ${agentName ?? "[Agent Name]"}`
         buyerName: buyerName ?? "Buyer",
         partnerId: selectedLender.id,
         partnerName: selectedLender.full_name,
-        lenderUserId: selectedLender.id,
+        // vendors.id — getBrokerageLenders now returns the brokerage's lender
+        // VENDOR bench (owner ruling: lender is a vendor category, not a user type).
+        lenderVendorId: selectedLender.id,
       })
       if (result.success) {
         toast.success(`Introduction sent to ${selectedLender.full_name} — they'll see it in their portal.`)
@@ -449,9 +451,9 @@ ${agentName ?? "[Agent Name]"}`
 
                 {/* YOUR MORTGAGE-BROKER PARTNERS — read-only on purpose.
                     referral_partners.id is a DIFFERENT ID CLASS from the
-                    users.id the picker above selects (§3): connectBuyerToLender
-                    takes `lenderUserId`, so folding these into that <Select>
-                    would send a referral_partners id where a users id is
+                    vendors.id the picker above selects (§3): connectBuyerToLender
+                    takes `lenderVendorId`, so folding these into that <Select>
+                    would send a referral_partners id where a vendors id is
                     expected and match nothing. They are shown as contact details
                     the agent acts on directly. */}
                 {(brokerPartners.length > 0 || brokerPartnersNote) && (

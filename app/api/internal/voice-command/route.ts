@@ -713,7 +713,7 @@ Respond with ONLY the intent string, nothing else.`,
       } else {
         const extract = await generateText({
           model: resolveModel("openai/gpt-4o-mini"),
-          system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","isa","compliance_officer","lender","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
+          system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","isa","compliance_officer","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
           messages: [{ role: "user", content: transcript }],
           maxOutputTokens: 200,
         })

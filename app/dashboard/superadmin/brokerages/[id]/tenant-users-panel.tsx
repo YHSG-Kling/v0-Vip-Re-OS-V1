@@ -18,7 +18,11 @@ import {
 } from "@/app/actions/superadmin/tenant-users"
 import { enterTenantAction } from "@/app/actions/superadmin/impersonation"
 
-const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor"]
+// Mirrors TENANT_CREATABLE_ROLES in app/actions/superadmin/tenant-users.ts — a menu
+// offering a role the action refuses is a dead end. 'lender' removed with it (owner
+// ruling: lender is a vendor CATEGORY, not a user type — invite them as a vendor
+// and pick the lender category).
+const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor"]
 
 function fmtLastLogin(iso: string | null): string {
   if (!iso) return "—"

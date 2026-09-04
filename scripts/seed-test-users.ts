@@ -14,8 +14,15 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 })
 
 // ─── Canonical test users ─────────────────────────────────────────────────────
-// user_type must be one of: broker | admin | agent | vendor | lender | TC | compliance_officer | contact
-// role must be a canonical role: broker | admin | agent | vendor | lender | tc | compliance_officer | contact
+// user_type must be a value users_user_type_check admits — the live list is in
+// scripts/check-vocabularies.ts (users.user_type), never retyped here, because a
+// transcribed constraint goes stale silently. 'lender' and 'title_agent' are NOT
+// among them: both are VENDOR CATEGORIES, not seats (owner ruling; m307 and
+// scripts/lender-is-not-a-user-type.sql). Note 'TC' is not legal either — the
+// value is lowercase 'tc'.
+// role must be a canonical role (lib/security/types.ts) — a DIFFERENT set, which
+// DOES include lender and title_agent: that is the permission vocabulary, and it
+// is what carries user_role_assignments.vendor_id.
 
 interface SeedUser {
   email: string
@@ -83,11 +90,17 @@ const TEST_USERS: SeedUser[] = [
     needs_brokerage: false,
   },
   {
+    // A LENDER IS A VENDOR (owner ruling: lender is a vendor category, not a user
+    // type). user_type is the SEAT and it is 'vendor'; the lender-ness lives on the
+    // vendors row (category 'lender'). canonical_role stays 'lender' — that is the
+    // user_role_assignments/permission vocabulary, which is deliberately a
+    // DIFFERENT set from the users.user_type CHECK (see the header of
+    // scripts/role-vocabulary-guard.ts), and it is what carries the vendor_id link.
     email: 'lender@nexus.local',
     password: 'TestLender123!',
     first_name: 'Lender',
     last_name: 'Pro',
-    user_type: 'lender',
+    user_type: 'vendor',
     canonical_role: 'lender',
     needs_brokerage: false,
   },

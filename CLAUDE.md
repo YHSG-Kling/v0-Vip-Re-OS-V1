@@ -126,6 +126,19 @@ Supabase project `hrvaqgvukzxfskkcrwbt`.
 - Tenant roster: `broker`, `broker_admin`, `broker_owner`, `team_lead`, `admin`.
 - **Platform staff live in the `platform_role` column** — NOT `user_type='superadmin'`,
   which no live row has.
+- **A LENDER IS NOT A USER TYPE — it is a VENDOR CATEGORY** (owner, 2026-09-04),
+  and so is a title agent. The seat is `user_type='vendor'`; the lender-ness is
+  `vendors.category='lender'` (or `'refinance_lender'`; title is `'title'`).
+  Resolve it through `lib/kernel/lender-linkage.ts` (`isLenderVendorCategory`,
+  `lenderVendorForUser`, `LENDER_BENCH_CATEGORIES`) and gate it with
+  `lib/kernel/portal-auth.ts` (`requireLenderVendorActor`). Never write a second
+  resolver, and never ask `users.user_type` — `public.transactions`' five SELECT
+  policies admit `current_user_type() = 'vendor'` and nothing else external, so a
+  user typed `'lender'` matches none of them and every read comes back
+  successfully EMPTY. `'title_agent'` left the CHECK in m307;
+  `scripts/lender-is-not-a-user-type.sql` does the same for `'lender'`.
+  BOTH remain CANONICAL ROLES in `lib/security/types.ts` — the permission
+  vocabulary and the seat vocabulary are deliberately different sets.
 - Team lead anchors on `teams.team_lead_id`. A team is a mini brokerage.
 - Teams see only their own board; platform sees all tenants.
 
