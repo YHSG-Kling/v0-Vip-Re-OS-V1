@@ -131,18 +131,29 @@ export async function resolveLandingTemplate(
     // rather than refusing — but say so, because "your chosen template was not
     // used" is exactly what an agent needs to hear and silence is what they got
     // before m606.
-    const fell = await resolveByPrecedence(supabase, params, base)
+    const fell = await resolveByPrecedence(params, base)
     return {
       ...fell,
       reason: fell.reason ?? "the chosen template is not an active listing-page template in this brokerage; used the default instead",
     }
   }
 
-  return resolveByPrecedence(supabase, params, base)
+  return resolveByPrecedence(params, base)
 }
 
+/**
+ * The precedence walk. It takes `base` — the shared, already-filtered query builder —
+ * and NOT a SupabaseClient, deliberately.
+ *
+ * The first draft accepted a `supabase` argument it never used, because every query
+ * here goes through `base()`, which closes over the client. The opposite-missing
+ * sweep flagged it as an INERT PARAMETER, and it was right to: a parameter a
+ * function does not read is a lie in its signature. A reader would take it to mean
+ * this helper does its own I/O against that client, and the next person to change it
+ * would try to add a query using the argument rather than extending `base` — quietly
+ * dropping the category and is_active filters that every arm here depends on.
+ */
 async function resolveByPrecedence(
-  supabase: SupabaseClient,
   params: { brokerageId: string; agentId?: string | null },
   base: () => any,
 ): Promise<LandingTemplateResolution> {
