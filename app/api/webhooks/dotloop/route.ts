@@ -5,6 +5,7 @@ import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { STATUS_AFTER_LISTING_AGREEMENT_GATE } from "@/lib/listings/listing-status-sync"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -216,7 +217,7 @@ export async function POST(request: NextRequest) {
             // status is the MLS-status column, not part of the stage machine.
             await supabase
               .from("listings")
-              .update({ status: "coming_soon", stage_entered_at: now })
+              .update({ status: STATUS_AFTER_LISTING_AGREEMENT_GATE, stage_entered_at: now })
               .eq("id", matchedAgreement.listing_id)
           }
         }

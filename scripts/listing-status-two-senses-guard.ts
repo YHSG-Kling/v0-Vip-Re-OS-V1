@@ -246,6 +246,17 @@ function statusWriteLiterals(): Map<string, string[]> {
       if (!found.has(m[1])) found.set(m[1], [])
       if (!found.get(m[1])!.includes(f)) found.get(m[1])!.push(f)
     }
+    // A WRITER THAT NAMES THE CONSTANT IS STILL A WRITER. The three real
+    // agreement-signed writers used to spell `status: "coming_soon"` as a
+    // literal; they now import STATUS_AFTER_LISTING_AGREEMENT_GATE (§6, one
+    // spelling). A literal-only scan called that value writerless the moment the
+    // duplication was removed — i.e. it would have punished the fix and rewarded
+    // the drift. The constant's value is resolved from the module, not assumed.
+    if (src.includes("STATUS_AFTER_LISTING_AGREEMENT_GATE")) {
+      const v = STATUS_AFTER_LISTING_AGREEMENT_GATE as string
+      if (!found.has(v)) found.set(v, [])
+      if (!found.get(v)!.includes(f)) found.get(v)!.push(f)
+    }
   }
   return found
 }
@@ -253,7 +264,19 @@ function statusWriteLiterals(): Map<string, string[]> {
 function reportWriterlessStatuses() {
   const literals = statusWriteLiterals()
   // POSITIVE CONTROL for the write scanner itself: a status we KNOW is written must be found.
-  check("POSITIVE CONTROL: the write scanner finds a known write ('coming_soon')",
+  // POSITIVE CONTROL ON A SPECIMEN, NOT ON THE TREE (§2). This asserted that the
+  // scanner found the LITERAL "coming_soon" somewhere in the production writers —
+  // which made the control depend on the defect it was written beside. When those
+  // writers were changed to import STATUS_AFTER_LISTING_AGREEMENT_GATE instead of
+  // repeating the literal, the control went red although the scanner was fine and
+  // the code had strictly improved. A control must prove the FINDER still works,
+  // and a finder is proved against input the finder is handed.
+  const SPECIMEN = 'await db.from("listings").update({ status: "coming_soon" })'
+  check("POSITIVE CONTROL: the literal finder still recognises a literal status write",
+    /status:\s*"([a-z_]+)"/.exec(SPECIMEN)?.[1] === RULING_STATUS)
+  check("NEGATIVE CONTROL: it does not fire on a status write that names no literal",
+    /status:\s*"([a-z_]+)"/.exec('update({ status: SOME_CONSTANT })') === null)
+  check("the ruling's status is reached by a real writer, by literal OR by the shared constant",
     literals.has(RULING_STATUS), `found: ${[...literals.keys()].join(", ") || "nothing"}`)
 
   // A status the canonical map can EMIT is written by transitionLifecycle's synced update, which is

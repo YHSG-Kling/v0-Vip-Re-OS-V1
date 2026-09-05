@@ -34,6 +34,7 @@ import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { STATUS_AFTER_LISTING_AGREEMENT_GATE } from "@/lib/listings/listing-status-sync"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -461,7 +462,7 @@ export async function finalizeLegacyEsignArtifacts(
       }, supabase)
       await supabase
         .from("listings")
-        .update({ status: "coming_soon", stage_entered_at: now })
+        .update({ status: STATUS_AFTER_LISTING_AGREEMENT_GATE, stage_entered_at: now })
         .eq("id", matchedAgreement.listing_id)
     }
   }

@@ -344,12 +344,13 @@
     "lib/learning-router/composer.ts": 1,
     "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
-    "lib/listing-presentation/prelisting-delivery.ts": 3,
+    "lib/listing-presentation/prelisting-delivery.ts": 2,
     "lib/listing-presentation/section-drip.ts": 4,
     "lib/listing-presentation/section-narration-orchestrator.ts": 1,
     "lib/listing-presentation/section-narration.ts": 1,
     "lib/listing-presentation/section-render.ts": 1,
     "lib/listings/expiry-decision.ts": 1,
+    "lib/listings/listing-status-sync.ts": 1,
     "lib/listings/mls-verification.ts": 3,
     "lib/listings/photo-intelligence.ts": 6,
     "lib/listings/relist-recovery.ts": 1,
@@ -482,7 +483,6 @@
     "lib/vendors/vendor-scope.ts": 1,
     "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/avatar-render-orchestrator.ts": 1,
-    "lib/video/broll-picker.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 12,
     "lib/video/director-eval-harness.ts": 3,
@@ -514,10 +514,10 @@
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "remotion/EquityReportReel.tsx": 1,
     "remotion/VideoCoverThumb.tsx": 1,
-    "remotion/_BrollLayer.tsx": 1,
+    "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9498,
+  "census": 9502,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3684,7 +3684,7 @@
     "lib/listings/listing-activation-gate.ts": 1,
     "lib/listings/listing-metrics-rollup.ts": 1,
     "lib/listings/listing-metrics-shape.ts": 2,
-    "lib/listings/listing-status-sync.ts": 1,
+    "lib/listings/listing-status-sync.ts": 2,
     "lib/listings/market-pulse-runner.ts": 1,
     "lib/listings/market-pulse.ts": 3,
     "lib/listings/marketing-channels.ts": 1,
@@ -4134,7 +4134,8 @@
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/avatar-track-submit.ts": 1,
-    "lib/video/broll-picker.ts": 2,
+    "lib/video/broll-picker.ts": 1,
+    "lib/video/broll-plan.ts": 1,
     "lib/video/caption-plan.ts": 2,
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
@@ -4284,7 +4285,7 @@
     "remotion/TeammateExplainerReel.tsx": 1,
     "remotion/TestimonialReel.tsx": 1,
     "remotion/VideoCoverThumb.tsx": 2,
-    "remotion/_BrollLayer.tsx": 3,
+    "remotion/_BrollLayer.tsx": 6,
     "remotion/charts/AffordabilityDonut.tsx": 1,
     "remotion/charts/CompsBar.tsx": 1,
     "remotion/charts/DaysOnMarketBars.tsx": 1,
@@ -18350,7 +18351,8 @@
       "sumViewCounts"
     ],
     "lib/listings/listing-status-sync.ts": [
-      "statusForStage"
+      "statusForStage",
+      "mappedStages"
     ],
     "lib/listings/market-pulse-runner.ts": [
       "ensureNationalMarketPulse"
@@ -20606,8 +20608,10 @@
       "submitAvatarTrack"
     ],
     "lib/video/broll-picker.ts": [
-      "selectBrollPlan",
       "pickBrollClips"
+    ],
+    "lib/video/broll-plan.ts": [
+      "selectBrollPlan"
     ],
     "lib/video/caption-plan.ts": [
       "buildCaptionPlan",
@@ -21309,6 +21313,9 @@
     ],
     "remotion/_BrollLayer.tsx": [
       "brollWindowAt",
+      "clipFrames",
+      "brollSlots",
+      "brollDrawAt",
       "BrollLayer",
       "ContextCueRow"
     ],

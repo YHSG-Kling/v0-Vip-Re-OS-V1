@@ -14,6 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
+import { STATUS_AFTER_LISTING_AGREEMENT_GATE } from "@/lib/listings/listing-status-sync"
 
 export const complianceListingAutoCreateChain: WorkflowChain = {
   key: "compliance-listing-auto-create",
@@ -94,7 +95,7 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             city:            data.city ?? null,
             state:           data.state ?? null,
             zip:             data.zipCode ?? null,
-            status:          "coming_soon",
+            status:          STATUS_AFTER_LISTING_AGREEMENT_GATE,
             lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             metadata: {
               source_document_id: ctx.metadata.document_id,
@@ -166,10 +167,16 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             listing_date: data.listDate ?? null,
             expiration_date: data.expirationDate ?? null,
             commission_rate: data.commissionRate ?? null,
-            // listings_status_check allows coming_soon|active|pending|sold|expired|
-            // withdrawn — a freshly auto-created (signed, pre-MLS) listing is
-            // "coming_soon". ("pending_mls" violated the constraint → insert threw.)
-            status: "coming_soon",
+            // A freshly auto-created (signed, pre-MLS) listing carries the status the
+            // owner's ruling puts on a listing whose compliance gate has passed, taken
+            // from the one place that spells it (§6) instead of a literal here.
+            // The comment this replaced listed SIX values as "listings_status_check
+            // allows …"; the live CHECK admits TEN (draft, listing_signed, coming_soon,
+            // active, pending, withdrawn, cancelled, off_market, expired, sold). A
+            // hand-copied constraint list is a claim about the database that ages badly
+            // — the same defect the deleted 7-value ListingStatus in
+            // lib/listings/listing-status-sync.ts carried (CLAUDE.md §3).
+            status: STATUS_AFTER_LISTING_AGREEMENT_GATE,
             lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             created_via: "compliance_auto_create",
             metadata: {

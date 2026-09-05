@@ -222,7 +222,7 @@ export function brollSlots(
 
 /** Which slot contains `frame`. Clamps to the last slot for a playhead past the
  *  window (the loop=false case), matching brollWindowAt's own clamp. */
-export function slotAt(slots: BrollWindow[], frame: number): number {
+function slotAt(slots: BrollWindow[], frame: number): number {
   if (slots.length === 0) return -1
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i]
