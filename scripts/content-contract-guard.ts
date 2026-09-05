@@ -824,8 +824,14 @@ console.log("\n═══ 15. ONE voiceover census — the set, the compositions,
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
   if (!url || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     console.log("  ⏭  skipped — no SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.")
-    console.log("     The LIVE requires_voiceover column is UNVERIFIED against the set in this run")
-    console.log("     (m601 is WRITTEN, NOT APPLIED until the integrator applies it).")
+    console.log("     The LIVE requires_voiceover column is UNVERIFIED against the set in this run.")
+    console.log("     m601 IS APPLIED — its own header records 'APPLIED 2026-09-03 by the")
+    console.log("     integrator', and the integrator re-verified live on 2026-09-05: 33")
+    console.log("     remotion_compositions, 14 with requires_voiceover, matching the code set.")
+    console.log("     (This line carried the opposite claim for two days after m601 landed.")
+    console.log("     A skip already means 'unverified here' — attaching a migration-status")
+    console.log("     reason to it turns an honest gap into a false statement, and the")
+    console.log("     reason is the half that goes stale.)")
   } else {
     const { createServiceClient } = await import("../lib/supabase/service")
     const { data, error } = await createServiceClient()

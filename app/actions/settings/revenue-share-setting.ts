@@ -197,9 +197,18 @@ export interface RevenueShareModelInput {
 
 /**
  * The ONE writer of the five m575 model columns. Validated against the same
- * vocabularies the CHECKs enforce, counted (§3 — zero rows updated ≠ saved),
- * and pre-apply honest: naming absent columns refuses the WHOLE update
- * (PGRST204), reported as "m575 written, not applied" rather than a mystery.
+ * vocabularies the CHECKs enforce, and counted (§3 — zero rows updated is NOT
+ * saved, and supabase-js resolves that case with error null).
+ *
+ * ON PGRST204. Naming a column PostgREST does not know refuses the WHOLE update,
+ * not the one field (CLAUDE.md §3), so this branch has to say something. It used
+ * to say "migration m575 is written but not applied" — true when it was written,
+ * and FALSE since the integrator applied it: verified live 2026-09-05, all six
+ * revenue_share_* columns are on public.brokerages. An error that names a cause
+ * which can no longer be the cause is the misdirecting-message defect §2 calls
+ * the most expensive pattern in this codebase per instance — it is plausible, so
+ * the reader goes and investigates a migration that is already in. The message
+ * now names what a PGRST204 here would ACTUALLY mean and what to do about it.
  */
 export async function setRevenueShareDistributionModel(
   input: RevenueShareModelInput,
@@ -241,7 +250,7 @@ export async function setRevenueShareDistributionModel(
     .select("id")
   if (error) {
     if ((error as { code?: string }).code === "PGRST204") {
-      return { ok: false, error: "The distribution-model columns do not exist yet — migration m575 is written but not applied." }
+      return { ok: false, error: "The distribution-model columns are not visible to the API — nothing was saved. This usually means PostgREST's schema cache is stale after a migration; reloading it (NOTIFY pgrst, 'reload schema') is the fix. If it persists, the revenue_share_* columns are missing from public.brokerages and that is a schema problem, not a settings one." }
     }
     return { ok: false, error: error.message }
   }

@@ -338,8 +338,16 @@ function distributionModelLayer() {
   check("settings home: setRevenueShareDistributionModel is the ONE writer — gated, validated against the vocabularies, COUNTED (§3)",
     /setRevenueShareDistributionModel/.test(setting) && /REVENUE_SHARE_SOURCES\.includes/.test(setting) &&
     /revenue_share_duration_months: durationMonths/.test(setting) && /saved\.length === 0/.test(setting))
-  check("settings home: pre-apply honesty — PGRST204 is reported as 'm575 written, not applied', never a mystery",
-    /PGRST204/.test(setting) && /m575/.test(setting))
+  // RETARGETED OFF A WAYPOINT (§2). This asserted the message said "m575 written,
+  // not applied" — a sentence that could only be right while m575 was pending, and
+  // that went stale the moment the integrator applied it (verified live 2026-09-05:
+  // all six revenue_share_* columns are on public.brokerages). The RULE is that a
+  // PGRST204 is caught and explained with something the reader can act on, and
+  // that the explanation does NOT blame an applied migration.
+  check("settings home: PGRST204 is caught and explained with an actionable cause, never a mystery",
+    /PGRST204/.test(setting) && /schema cache/i.test(setting) && /nothing was saved/i.test(setting))
+  check("…and it no longer blames a migration that is already applied",
+    !/m575 is written but not applied/i.test(setting))
   check("settings home: the model READ uses select('*') so the same code is correct pre-apply (absent column → unconfigured, no 42703)",
     /getRevenueShareDistributionModel/.test(setting) && /\.select\("\*"\)\.eq\("id", ctx\.brokerageId\)/.test(setting))
   const card = src("app/components/settings/BenefitOfferingsCard.tsx")

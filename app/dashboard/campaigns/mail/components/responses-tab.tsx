@@ -36,6 +36,31 @@ import { Loader2 } from "lucide-react"
 import { trackCampaignResponse } from "@/app/actions/ai-direct-mail"
 import type { Campaign, Response } from "../mail-dashboard"
 
+/**
+ * Render the response metadata cell, or null when there is nothing to show.
+ *
+ * EMPTINESS, NOT TRUTHINESS. `mail_response_tracking.response_metadata` is a
+ * nullable jsonb with column DEFAULT '{}' (verified live). Both writers pass
+ * `?? null`, so today's rows are NULL — but any INSERT that omits the column
+ * takes the default and lands `{}`, which is TRUTHY in JS. The previous
+ * `metadata ? … : "-"` therefore printed a bare "{}" for those rows and "-" for
+ * the others: one fact, two cells. An empty object and an absent one both mean
+ * "the responder told us nothing", so this collapses them (§6) rather than
+ * teaching the reader a second spelling.
+ */
+function metadataSummary(metadata: unknown) {
+  if (metadata === null || metadata === undefined) return null
+  const json = JSON.stringify(metadata)
+  // "{}" / "[]" / '""' — serialised nothing, in every shape jsonb can hold it.
+  if (!json || json === "{}" || json === "[]" || json === '""') return null
+  return (
+    <code className="text-xs bg-muted px-1 py-0.5 rounded">
+      {json.slice(0, 50)}
+      {json.length > 50 && "..."}
+    </code>
+  )
+}
+
 interface ResponsesTabProps {
   responses: Response[]
   campaigns: Campaign[]
@@ -295,14 +320,16 @@ export function ResponsesTab({
                           )}
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {response.response_metadata ? (
-                            <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                              {JSON.stringify(response.response_metadata).slice(0, 50)}
-                              {JSON.stringify(response.response_metadata).length > 50 && "..."}
-                            </code>
-                          ) : (
-                            "-"
-                          )}
+                          {/* "No metadata" arrives in TWO spellings and only one of them was
+                              handled (§6). mail_response_tracking.response_metadata is a
+                              NULLABLE jsonb whose column DEFAULT is '{}' (verified live),
+                              while both writers pass `?? null` explicitly — so a row written
+                              by the current writers is NULL and a row from any INSERT that
+                              omits the column is `{}`. `{}` is TRUTHY, so the truthiness test
+                              alone rendered a literal "{}" for the second kind and "-" for the
+                              first: the same fact, two different cells. Emptiness is what the
+                              reader actually cares about, so it asks that instead. */}
+                          {metadataSummary(response.response_metadata) ?? "-"}
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {formatDistanceToNow(new Date(response.created_at))} ago

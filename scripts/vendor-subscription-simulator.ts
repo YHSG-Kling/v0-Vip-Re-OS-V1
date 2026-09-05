@@ -200,7 +200,15 @@ async function liveLayer() {
       console.log(`    refusal: ${bareErr.message}`)
     } else if (bare) {
       const b = bare as any
-      console.log("  ⊘ PENDING — m571 is WRITTEN, NOT APPLIED: the insert still succeeded via column defaults")
+      // REPORT THE OBSERVATION, DO NOT NAME A CAUSE THIS PROBE CANNOT SEE (§2).
+      // This line asserted "m571 is WRITTEN, NOT APPLIED" as the explanation and
+      // kept asserting it after m571 landed (verified live 2026-09-05:
+      // vendor_marketplace_profiles.subscription_tier and .subscription_status are
+      // both NOT NULL with no default, which is exactly what m571 does). A probe
+      // that saw a row appear cannot tell WHY; a defaulted insert surviving now
+      // would mean something new and worse, not a pending migration.
+      console.log("  ⊘ UNEXPECTED — the value-less insert SUCCEEDED. The columns should be NOT NULL")
+      console.log("     with no default; a row landing here means the fail-closed shape is gone.")
       check("live: (positive control while pending) the probe still SEES the defaults it exists to remove",
         b.subscription_status === "active" && b.subscription_tier === "basic" && b.status === "pending")
       await svc.from("vendor_marketplace_profiles").delete().eq("id", b.id)

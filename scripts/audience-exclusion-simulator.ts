@@ -523,9 +523,17 @@ async function main() {
   console.log("     · DENOMINATOR: this lane asserts on a 10-row AUDIENCE FIXTURE. The live")
   console.log("       tenant holds ZERO facebook_custom_audiences rows (2026-08-22), so every")
   console.log("       gate here would 'pass' a live check by having nothing to judge.")
-  console.log("     · m538 is WRITTEN, NOT APPLIED. Until the integrator applies it the audit")
-  console.log("       stamp refuses with PGRST204 and that refusal is surfaced as")
-  console.log("       suppressionAuditWarning. The GATE does not depend on those columns.")
+  // DERIVED, NOT ASSERTED (§2). This line used to say "m538 is WRITTEN, NOT
+  // APPLIED" unconditionally, and went on saying it after the integrator applied
+  // m538 — a blind-spot note is exactly where a stale claim does the most damage,
+  // because it is what the next reader trusts when the number looks clean. It now
+  // reads the same `liveYet` the check above derives from the generated snapshot.
+  console.log(liveYet
+    ? "     · m538 IS APPLIED — used_as_suppression_at / _by_campaign_id are in the live\n" +
+      "       snapshot, so the audit stamp lands. The GATE never depended on them."
+    : "     · m538 is written and not yet in the snapshot. Until it is applied the audit\n" +
+      "       stamp refuses with PGRST204, surfaced as suppressionAuditWarning. The GATE\n" +
+      "       does not depend on those columns.")
   console.log("     · NOT COVERED, and not claimable: an operator with direct Meta Ads Manager")
   console.log("       access can still build an audience there and exclude it by hand. No")
   console.log("       software in this repo is in that path. What changed is that the")

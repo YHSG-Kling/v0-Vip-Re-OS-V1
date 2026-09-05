@@ -100,7 +100,22 @@ function claimOf(sql: string): Claim {
   // say "the claim below is wrong" — so it is recognised as a single
   // `applied` claim rather than read as a contradiction.
   if (/THE "NOT APPLIED" CLAIM BELOW IS STALE/.test(head)) return "applied"
-  const saysApplied = /APPLIED LIVE|✅\s*APPLIED/i.test(head)
+  // THE RECOGNISER MUST SEE EVERY SPELLING THE TREE ACTUALLY USES (§2, §6).
+  // It began as /APPLIED LIVE|✅ APPLIED/, the two banner forms this guard's own
+  // wave had written — and a recogniser scoped to the forms its author happened
+  // to write is blind by construction. m601 states its status as
+  //   "APPLIED 2026-09-03 by the integrator (MCP apply_migration; postflight: …)"
+  // with no "LIVE" and no ✅, so this returned "unstated" and layer 2 could not
+  // adjudicate it. The result was the worst possible reading: a guard script said
+  // "m601 is WRITTEN, NOT APPLIED" while the migration's own header said applied
+  // and the database agreed (verified live 2026-09-05 — 33 remotion_compositions,
+  // 14 with requires_voiceover, exactly the postflight the header records), and
+  // this guard reported no contradiction because it could not read one side.
+  // The third alternative is APPLIED followed by a date, and the `(?!\s*LIVE)`
+  // is not needed — "APPLIED LIVE" already matches the first branch.
+  // \bNOT APPLIED\b is checked separately below and wins ties via the "both" case,
+  // so a header saying "NOT APPLIED" can never be mistaken for one of these.
+  const saysApplied = /APPLIED LIVE|✅\s*APPLIED|(?<!NOT )\bAPPLIED\s+\d{4}-\d{2}-\d{2}\b/i.test(head)
   const saysNot = /\bNOT APPLIED\b/i.test(head)
   if (saysApplied && saysNot) return "both"
   if (saysApplied) return "applied"
@@ -138,35 +153,114 @@ console.log("\n[1 · a file states its status one way, or not at all]")
 check(`no migration header claims BOTH applied and not-applied (${both.length})`,
   both.length === 0, both.join(", "))
 
-// ── 2 · The registry and the files agree ───────────────────────────────────
+// ── 2 · Every PROSE claim in the repo agrees with the migration's own file ──
 //
-// The registry names migrations in PROSE, so this reads it comment-stripped
-// (it is a .ts file whose payload is string literals) and then looks for the
-// two spellings the tree actually uses. blankStrings is deliberately NOT used:
-// here the string literals ARE the payload.
-console.log("\n[2 · the manager registry does not contradict a migration's own file]")
-const registrySrc = stripComments(readFileSync(join(ROOT, "lib", "kernel", "manager-registry.ts"), "utf8"))
-const registryNotAppliedClaims = new Set<string>()
-for (const m of registrySrc.matchAll(/\b(m\d+[a-z]?)\b[^.]{0,80}?\b(?:is\s+)?(?:WRITTEN|written)[,\s]+(?:and\s+)?(?:NOT|not)\s+(?:APPLIED|applied)/g)) {
-  registryNotAppliedClaims.add(m[1])
-}
-for (const m of registrySrc.matchAll(/\b(m\d+[a-z]?)\b[^.]{0,40}?\((?:WRITTEN|written)[,\s]+(?:NOT|not)\s+(?:APPLIED|applied)\)/g)) {
-  registryNotAppliedClaims.add(m[1])
-}
-const appliedPrefixes = new Set(applied.map(prefixOf).filter(Boolean) as string[])
-const contradicted = [...registryNotAppliedClaims].filter((p) => appliedPrefixes.has(p)).sort()
-console.log(`  registry claims ${registryNotAppliedClaims.size} migration(s) un-applied: ${[...registryNotAppliedClaims].sort().join(", ") || "none"}`)
-check(`no registry claim contradicts a migration file that says it IS applied (${contradicted.length})`,
-  contradicted.length === 0,
-  contradicted.length ? `${contradicted.join(", ")} — the file says applied, the registry says not` : undefined)
+// The claim is read comment-stripped from .ts files whose payload is string
+// literals; blankStrings is deliberately NOT used, because here the string
+// literals ARE the payload.
+//
+// THE CORPUS IS WIDER THAN THE REGISTRY, AND IT HAD TO BECOME SO (2026-09-05).
+// This layer originally read exactly one file — lib/kernel/manager-registry.ts —
+// because that was where the twenty stale claims had been found. Scoping a
+// finder to the place a defect was last seen is how the next instance survives:
+// on 2026-09-05 `scripts/writerless-arrivals-simulator.ts:583` was printing
+// "m515 is written and NOT applied" in its published blind-spot block, and m515
+// had in fact landed (verified live: idx_comp_risk_flags_open and
+// idx_compliance_alerts_open both present in pg_indexes). A GUARD'S OWN OUTPUT
+// is exactly where a stale claim does the most damage, because a blind-spot
+// note is what the next reader trusts when the number looks clean.
+//
+// So the corpus is now every .ts under scripts/ and lib/kernel/ — the two places
+// this repo keeps its record of what is still open. Migration FILES are excluded
+// (layer 1 already adjudicates those, and their headers legitimately discuss
+// other migrations' status in prose).
+console.log("\n[2 · no prose claim in the repo contradicts a migration's own file]")
+const CLAIM_NOT_APPLIED_A = /\b(m\d+[a-z]?)\b[^.]{0,80}?\b(?:is\s+)?(?:WRITTEN|written)[,\s]+(?:and\s+)?(?:NOT|not)\s+(?:APPLIED|applied)/g
+const CLAIM_NOT_APPLIED_B = /\b(m\d+[a-z]?)\b[^.]{0,40}?\((?:WRITTEN|written)[,\s]+(?:NOT|not)\s+(?:APPLIED|applied)\)/g
 
-// POSITIVE CONTROL — a finder that matched nothing would pass line 2 vacuously.
-check("POSITIVE CONTROL — the registry claim-finder recognises the shape it hunts",
+function claimCorpus(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.name.endsWith(".ts") || e.name.endsWith(".tsx")) out.push(p)
+    }
+  }
+  walk(join(ROOT, "scripts"))
+  walk(join(ROOT, "lib", "kernel"))
+  return out
+}
+
+const appliedPrefixes = new Set(applied.map(prefixOf).filter(Boolean) as string[])
+// migration -> the files claiming it un-applied
+const proseClaims = new Map<string, string[]>()
+for (const file of claimCorpus()) {
+  // This guard's OWN header quotes both claim shapes as specimens. Reading it
+  // would make the guard accuse itself forever — a tombstone is not a call site
+  // (§2), and neither is a documented specimen.
+  if (file.endsWith("migration-claim-guard.ts")) continue
+  const src = stripComments(readFileSync(file, "utf8"))
+  const rel = file.slice(ROOT.length + 1)
+  for (const re of [CLAIM_NOT_APPLIED_A, CLAIM_NOT_APPLIED_B]) {
+    for (const m of src.matchAll(new RegExp(re.source, "g"))) {
+      const list = proseClaims.get(m[1]) ?? []
+      if (!list.includes(rel)) list.push(rel)
+      proseClaims.set(m[1], list)
+    }
+  }
+}
+const contradicted = [...proseClaims.keys()].filter((p) => appliedPrefixes.has(p)).sort()
+console.log(`  ${claimCorpus().length} file(s) scanned · prose claims ${proseClaims.size} migration(s) un-applied: ${[...proseClaims.keys()].sort().join(", ") || "none"}`)
+check(`no prose claim contradicts a migration file that says it IS applied (${contradicted.length})`,
+  contradicted.length === 0,
+  contradicted.length
+    ? contradicted.map((p) => `${p} — the ledger vouches it RAN, but ${(proseClaims.get(p) ?? []).join(" + ")} says not`).join("; ")
+    : undefined)
+
+// ── CONTROLS ON THE STATUS RECOGNISER ITSELF ───────────────────────────────
+// claimOf decides which side of layer 2 a file lands on, so a gap in it makes
+// the whole layer report "no contradiction" for files it simply cannot read.
+// That is exactly what happened to m601. Each spelling the tree actually uses
+// gets a control, and each is paired with the near-miss it must still refuse.
+check("recogniser: the banner form",            claimOf("-- ✅ APPLIED LIVE 2026-01-01 to x") === "applied")
+check("recogniser: APPLIED + a date (m601's form, which it used to miss)",
+  claimOf("-- APPLIED 2026-09-03 by the integrator (MCP apply_migration)") === "applied")
+check("NEGATIVE CONTROL recogniser: NOT APPLIED is never read as applied",
+  claimOf("-- WRITTEN, NOT APPLIED — the integrator applies it") === "not_applied")
+check("NEGATIVE CONTROL recogniser: 'not applied 2026-09-03' does not slip through the dated form",
+  claimOf("-- this is NOT APPLIED 2026-09-03") === "not_applied")
+check("NEGATIVE CONTROL recogniser: a header stating nothing stays unstated",
+  claimOf("-- m999 adds a column and an index") === "unstated")
+check("NEGATIVE CONTROL recogniser: saying both at once is still 'both', not a silent pick",
+  claimOf("-- ✅ APPLIED LIVE … and also NOT APPLIED") === "both")
+
+// POSITIVE CONTROL — a finder that matched nothing would pass layer 2 vacuously.
+check("POSITIVE CONTROL — the claim-finder recognises the shape it hunts",
   /\b(m\d+[a-z]?)\b[^.]{0,80}?\b(?:is\s+)?(?:WRITTEN|written)[,\s]+(?:and\s+)?(?:NOT|not)\s+(?:APPLIED|applied)/
     .test("m999 is written and NOT applied"))
-check("…and does NOT fire on a migration merely being mentioned",
+check("…and the parenthesised spelling too",
+  /\b(m\d+[a-z]?)\b[^.]{0,40}?\((?:WRITTEN|written)[,\s]+(?:NOT|not)\s+(?:APPLIED|applied)\)/
+    .test("m999 (written, not applied) adds the column"))
+check("NEGATIVE CONTROL …and does NOT fire on a migration merely being mentioned",
   !/\b(m\d+[a-z]?)\b[^.]{0,80}?\b(?:is\s+)?(?:WRITTEN|written)[,\s]+(?:and\s+)?(?:NOT|not)\s+(?:APPLIED|applied)/
     .test("m999 applied the canonical CHECK and is the survivor"))
+
+// THE CORPUS CONTROL — this is the assertion that would have caught the 2026-09-05
+// miss, and it asserts the RULE (the record of what is open is searched wherever
+// this repo keeps it) rather than the waypoint (a hardcoded file list). Scoping
+// layer 2 to lib/kernel/manager-registry.ts alone let a stale "m515 is written
+// and NOT applied" sit in a GUARD'S published blind-spot text for several waves.
+{
+  const corpus = claimCorpus().map((f) => f.slice(ROOT.length + 1))
+  check("the claim corpus reaches BOTH places this repo records open work, not just the registry",
+    corpus.some((f) => f === "lib/kernel/manager-registry.ts") &&
+    corpus.some((f) => f.startsWith("scripts/")),
+    `${corpus.length} files`)
+  check("…and it reaches guard scripts specifically, where a stale claim reads as a clean bill of health",
+    corpus.includes("scripts/writerless-arrivals-simulator.ts"))
+}
 
 // ── 3 · The un-applied list may only shrink ────────────────────────────────
 //
