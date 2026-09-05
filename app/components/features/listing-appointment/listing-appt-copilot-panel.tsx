@@ -325,6 +325,21 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
           <p className="text-[11px] text-muted-foreground">
             First lands {formatDateShort(prep.drip.firstTouchAt)} · last {formatDateShort(prep.drip.lastTouchAt)}
           </p>
+          {/* WHAT THE SELLER OPENED. The line above is the PLAN — what we scheduled.
+              This is the outcome, read from presentation_sections.viewed_at, which the
+              seller's own /portal/listing-plan/[id] stamps. The agent is about to walk
+              into this appointment; "watched 5 of 7" and "opened nothing" are different
+              rooms to walk into.
+              `null` means NOT MEASURED (no presentation, or a refused read) and renders
+              as nothing at all — never as a zero, which would accuse the seller of
+              ignoring a plan we may simply have failed to read. */}
+          {prep.drip.sectionsViewed !== null && prep.drip.sectionsDelivered !== null && (
+            <p className="text-[11px] text-muted-foreground">
+              {prep.drip.sectionsViewed === 0
+                ? `Seller has not opened the plan yet (${prep.drip.sectionsDelivered} section${prep.drip.sectionsDelivered === 1 ? "" : "s"} delivered)`
+                : `Seller viewed ${prep.drip.sectionsViewed} of ${prep.drip.sectionsDelivered} section${prep.drip.sectionsDelivered === 1 ? "" : "s"}${prep.drip.lastViewedAt ? ` · last ${formatDateShort(prep.drip.lastViewedAt)}` : ""}`}
+            </p>
+          )}
         </div>
       )}
 

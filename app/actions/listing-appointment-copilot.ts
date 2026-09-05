@@ -73,6 +73,31 @@ export interface ListingApptDripSummary {
   touchpointsScheduled: number
   firstTouchAt:         string | null
   lastTouchAt:          string | null
+  /**
+   * WHAT THE SELLER ACTUALLY OPENED — the other half of "what we sent".
+   *
+   * Everything above this line comes from the enroll_drip STEP OUTPUT: it is the
+   * plan, recorded at the moment the plan was made. None of it can tell the agent
+   * whether the seller ever looked. app/portal/listing-plan/[id] stamps
+   * presentation_sections.viewed_at (and moves status delivered → viewed) when the
+   * seller opens their plan, and until now NOTHING READ EITHER — a column written
+   * by code and read by nobody, which the opposite-missing sweep flagged the same
+   * day the writer landed.
+   *
+   * This is the reader, and it is put HERE rather than anywhere else because of
+   * what the drip is for: the owner's whole premise is winning the seller over
+   * "before the agent steps inside the home for the appointment". The one moment
+   * that information changes what a human does is the pre-appointment brief. An
+   * agent walking into a listing appointment knowing the seller watched five of
+   * seven segments prepares differently from one whose seller opened nothing.
+   *
+   * `null` means NOT MEASURED (no presentation, or the read was refused) and is
+   * deliberately distinguishable from 0, which means measured-and-none: an
+   * unreadable engagement figure must never render as "the seller ignored you".
+   */
+  sectionsDelivered:    number | null
+  sectionsViewed:       number | null
+  lastViewedAt:         string | null
 }
 
 export interface ListingApptPrepDetail {
@@ -417,10 +442,45 @@ export async function getListingAppointmentPrepDetail(params: {
   let drip: ListingApptDripSummary | null = null
   const dripOutput = stepOutputs.enroll_drip
   if (dripOutput) {
+    // ── WHAT THE SELLER OPENED (the reader for presentation_sections.viewed_at) ──
+    // Measured, never assumed. All three stay null when there is no presentation
+    // to measure or when the read is REFUSED — supabase-js resolves a refusal with
+    // data null and error set (CLAUDE.md §3), and a refused read rendered as 0
+    // would tell the agent the seller ignored them. "Not measured" and "measured,
+    // nobody looked" are different facts and the brief must not merge them.
+    let sectionsDelivered: number | null = null
+    let sectionsViewed:    number | null = null
+    let lastViewedAt:      string | null = null
+    if (presentationId) {
+      const { data: secRows, error: secErr } = await supabase
+        .from("presentation_sections")
+        .select("status, viewed_at")
+        .eq("presentation_id", presentationId)
+      if (secErr) {
+        console.error(
+          `[listing-appt-copilot] section engagement read REFUSED for presentation ${presentationId} — the brief will say "not measured" rather than "not viewed":`,
+          secErr.message,
+        )
+      } else {
+        const rows = (secRows ?? []) as Array<{ status: string | null; viewed_at: string | null }>
+        // `viewed` is a terminal the seller reaches THROUGH `delivered`, so a
+        // delivered count that excluded it would shrink as engagement grew.
+        sectionsDelivered = rows.filter((r) => r.status === "delivered" || r.status === "viewed").length
+        sectionsViewed    = rows.filter((r) => r.viewed_at !== null).length
+        lastViewedAt      = rows
+          .map((r) => r.viewed_at)
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+          .sort()
+          .pop() ?? null
+      }
+    }
     drip = {
       touchpointsScheduled: (dripOutput.touchpointsScheduled as number | undefined) ?? 0,
       firstTouchAt:         (dripOutput.firstTouchAt as string | undefined) ?? null,
       lastTouchAt:          (dripOutput.lastTouchAt as string | undefined) ?? null,
+      sectionsDelivered,
+      sectionsViewed,
+      lastViewedAt,
     }
   }
 
