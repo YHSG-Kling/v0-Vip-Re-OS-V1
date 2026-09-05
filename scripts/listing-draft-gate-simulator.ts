@@ -182,9 +182,23 @@ console.log("\n── the signed agreement adopts the draft, it does not duplica
     /\.eq\("brokerage_id",\s*ctx\.brokerageId\)/.test(CHAIN))
   check("…matched on the property, not just the seller",
     /draftAddress/.test(CHAIN) && /existingDraft/.test(CHAIN))
+  // RETARGETED OFF A LITERAL (§2). This required the promotion object to spell
+  // `status: "coming_soon"` inline. That literal was one of FOUR copies of the
+  // same business fact scattered across the tree, and when they were merged onto
+  // lib/listings/listing-status-sync.ts::STATUS_AFTER_LISTING_AGREEMENT_GATE (§6,
+  // one vocabulary) this assertion went red — punishing the fix and rewarding the
+  // duplication, which is precisely the waypoint failure §2 describes. The RULE is
+  // that the promotion carries the agreement-signed status and promotes the row in
+  // place; HOW that value is spelled is not the rule, and the shared constant is
+  // the better spelling. Both forms are accepted so the check survives either, and
+  // the constant's VALUE is verified against the live vocabulary separately by
+  // test:listing-status-two-senses rather than re-asserted here.
   check("…and promotes that row in place",
-    /const promotion = \{[\s\S]{0,700}?status:\s*"coming_soon"/.test(CHAIN) &&
+    /const promotion = \{[\s\S]{0,700}?status:\s*(?:"coming_soon"|STATUS_AFTER_LISTING_AGREEMENT_GATE)/.test(CHAIN) &&
     /\.update\(promotion\)\s*\n\s*\.eq\("id",\s*existingDraft\.id\)/.test(CHAIN))
+  check("POSITIVE CONTROL: the promotion finder still rejects a promotion with NO status at all",
+    !/const promotion = \{[\s\S]{0,700}?status:\s*(?:"coming_soon"|STATUS_AFTER_LISTING_AGREEMENT_GATE)/
+      .test('const promotion = { list_price: 1, lifecycle_stage: "LISTING_AGREEMENT_SIGNED" }'))
   check("…with the tenant anchor on the WRITE, not just the read",
     /\.update\(promotion\)[\s\S]{0,200}?\.eq\("brokerage_id",\s*ctx\.brokerageId\)/.test(CHAIN))
 
