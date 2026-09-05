@@ -65,6 +65,7 @@ import {
   brollDrawAt,
   brollWindowAt,
   clipFrames,
+  isVideoUrl,
   type BrollClip,
   type BrollWindow,
 } from "../remotion/_BrollLayer"
@@ -408,6 +409,39 @@ console.log("\n═══ 6. Crossfades come out of real footage, never a frozen 
     ok("...and the fade is spending REAL reserved footage, not dissolving from a still:\n    an outgoing clip is drawn past its slot but never past its own end",
       spentTail && overruns === 0)
   }
+}
+
+console.log("\n── the one producer that supplies NO measurements supplies only stills ──")
+{
+  const PRODUCER = stripComments(readFileSync("lib/agents/seller-update-reel-producer.ts", "utf8"))
+  const LAYER    = stripComments(readFileSync("remotion/_BrollLayer.tsx", "utf8"))
+
+  // WHY THIS IS HERE AND NOT A MEASUREMENT ASSERTION. A carried finding said this
+  // producer sits outside the slot rule because it measures nothing. It does — and
+  // it does not need to: it supplies LISTING PHOTOS, which _BrollLayer mounts as
+  // <Img>, and a still has no timeline to run past. The rule's failure mode cannot
+  // occur for it. What CAN occur is a video URL arriving in listings.photos, which
+  // would mount <Video> in an evenly divided slot with no measured length — the
+  // exact frozen still. So the assertion is about EXCLUSION, not measurement.
+  ok("the layer's video predicate is EXPORTED, so a producer can ask the same question",
+    /export function isVideoUrl/.test(LAYER))
+  ok("the producer uses THAT predicate rather than a second copy of the extension list (§6)",
+    /isVideoUrl/.test(PRODUCER) &&
+    !/\.mp4|\.webm|\.m4v/.test(PRODUCER),
+    "a second extension list would drift, and the producer would believe it sent a photo while the layer mounted a Video")
+  ok("a video URL in listings.photos is EXCLUDED from the b-roll, not passed along unmeasured",
+    /filter\(\(u\) => !isVideoUrl\(u\)\)/.test(PRODUCER))
+  ok("…and the exclusion is REPORTED, so a listing carrying video tours is visible rather than silently trimmed",
+    /EXCLUDED from the b-roll/.test(PRODUCER))
+
+  ok("POSITIVE CONTROL: the predicate calls a video URL a video",
+    isVideoUrl("https://cdn.example.com/tour.mp4"))
+  ok("POSITIVE CONTROL: …and survives a query string, which every signed URL has",
+    isVideoUrl("https://cdn.example.com/tour.mov?token=abc&x=1"))
+  ok("NEGATIVE CONTROL: a listing photo is NOT a video",
+    !isVideoUrl("https://cdn.example.com/front.jpg"))
+  ok("NEGATIVE CONTROL: the second-list finder would fire on a producer that re-spelled the extensions",
+    /\.mp4|\.webm|\.m4v/.test('const isVid = (u) => u.endsWith(".mp4")'))
 }
 
 console.log("\n──────────────────────────────────────────────────")

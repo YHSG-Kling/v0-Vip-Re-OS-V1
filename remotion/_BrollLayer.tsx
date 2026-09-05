@@ -86,7 +86,24 @@ export interface BrollLayerProps {
   loop?:               boolean
 }
 
-function isVideoUrl(url: string): boolean {
+/**
+ * Does this URL render through `<Video>` (rather than `<Img>`)?
+ *
+ * EXPORTED so PRODUCERS can ask the same question this layer will ask at render
+ * time. A producer that supplies photos needs to know whether a URL it is about
+ * to hand over is secretly a video, and the only honest way to know is to use the
+ * predicate the renderer itself uses — a second copy of this extension list in a
+ * producer would be two spellings of one rule (§6), and the day they disagreed
+ * the producer would believe it had sent a photo while the layer mounted a
+ * `<Video>` with no measured duration.
+ *
+ * BLIND SPOT, stated where the function is: this reads the EXTENSION, not the
+ * bytes. A video served from an extensionless URL, or behind a redirect, or with
+ * a `.jpg` name, is not detectable here — by either the layer or a producer. What
+ * the export buys is that both sides are wrong in the SAME direction at the same
+ * time, which is the most a syntactic check can offer.
+ */
+export function isVideoUrl(url: string): boolean {
   const ext = url.split("?")[0].split("#")[0].toLowerCase()
   return ext.endsWith(".mp4") || ext.endsWith(".webm") || ext.endsWith(".mov") || ext.endsWith(".m4v")
 }

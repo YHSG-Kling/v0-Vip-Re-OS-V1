@@ -361,8 +361,36 @@ export async function requestSellerUpdateReel(
   try {
     const { data: lphotos } = await supabase.from("listings").select("photos, primary_photo_url").eq("id", listingId).maybeSingle()
     const photoList = Array.isArray((lphotos as any)?.photos) ? ((lphotos as any).photos as unknown[]) : []
-    const urls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
-      .filter((u): u is string => typeof u === "string" && u.startsWith("http")).slice(0, 5)
+    // ── PHOTOS ONLY, AND THAT IS WHY THERE IS NO DURATION HERE ─────────────
+    // A carried finding read: "this producer builds brollClips from BARE URLs with
+    // no measurement, so AgentTalkingHeadReel keeps the even slot division and sits
+    // outside the rule test:broll-slot enforces." True as written — and the harm it
+    // implies does not apply, which is worth writing down so the next reader does
+    // not go measuring things that have nothing to measure.
+    //
+    // These are LISTING PHOTOS. _BrollLayer picks its primitive by extension:
+    // .mp4/.webm/.mov/.m4v mount `<Video>`, everything else mounts `<Img>`. A still
+    // has no timeline, so there is no "past its end" to freeze on and an even
+    // division is exactly right for it. durationSeconds would be a number invented
+    // to satisfy a rule rather than to describe anything.
+    //
+    // THE REAL RISK, WHICH IS NARROWER: nothing guarantees listings.photos holds
+    // only images. A video-tour URL from an MLS feed or an upload lands in the same
+    // array, and it WOULD mount `<Video>` — in an evenly divided slot, with no
+    // measured length, which is precisely the frozen-still defect the slot rule
+    // exists to prevent, arriving through the one producer that supplies no
+    // measurements. So a video URL is EXCLUDED here rather than passed along
+    // unmeasured, using the RENDERER'S OWN predicate so the two cannot drift (§6).
+    const { isVideoUrl } = await import("@/remotion/_BrollLayer")
+    const allUrls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
+      .filter((u): u is string => typeof u === "string" && u.startsWith("http"))
+    const videoUrls = allUrls.filter(isVideoUrl)
+    if (videoUrls.length > 0) {
+      console.warn(
+        `[seller-update-reel] listing ${listingId}: ${videoUrls.length} video URL(s) in listings.photos were EXCLUDED from the b-roll. This producer supplies stills, which need no measured duration; an unmeasured video would be given an evenly divided slot and would freeze on its last frame.`,
+      )
+    }
+    const urls = allUrls.filter((u) => !isVideoUrl(u)).slice(0, 5)
     if (urls.length > 0) props.brollClips = urls.map((url) => ({ url }))
   } catch { /* no photos → the solid-brand layout stands */ }
 
