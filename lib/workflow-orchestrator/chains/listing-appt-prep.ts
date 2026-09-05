@@ -60,9 +60,77 @@ const realExecutors: ListingApptPrepExecutors = {
   // with no session), and the action's supabase.auth.getUser() gate returned
   // "Unauthorized" there — step 2 failed before it did any work. The core takes
   // the tenant explicitly from the run's context instead of from a session.
+  // ── THE ARTIFACT SET THE OWNER NAMED (ruling 2026-09-05) ────────────────────
+  // "the original autonomous should be cma + marketing plan + presentation/slide
+  //  deck (packet is for printouts) turned into chapter reels"
+  //
+  // This called generateAiListingPresentation, which writes a listing_presentations
+  // row carrying ONLY the AI narrative. It populates NONE of the typed columns the
+  // readers actually read — cma_low_value / cma_mid_value / cma_high_value /
+  // cma_narrative / marketing_plan / slide_deck / net_sheet are all left NULL — and
+  // three separate surfaces read exactly those columns:
+  //     app/dashboard/listings/presentations/[id]/page.tsx   (the agent's viewer,
+  //       which coerces with `Number(pres.cma_low_value ?? 0)`, so the agent saw $0)
+  //     app/portal/listing-plan/[id]/page.tsx                (the seller's plan)
+  //     lib/listing-presentation/section-drip.ts             (the drip sections)
+  //
+  // AND IT SILENTLY BLOCKED THE REPAIR. The listing-presentation-prep cron is
+  // idempotent by design — it SKIPS any appointment that already has a
+  // listing_presentations row (route.ts:149). So whichever producer ran first won,
+  // and when this chain won, the complete builder never ran for that seller at all:
+  // a presentation with a $0 range, no marketing plan and no slide deck, permanently.
+  //
+  // THE SURVIVOR (§1.1) is lib/workflow/intelligence/listing-presentation-builder.ts
+  // ::buildListingPresentation — the same producer the cron and the on-demand
+  // workflow route already use. It writes the owner's set exactly: the CMA snapshot
+  // columns, the 3-price net sheet, the marketing plan, the slide deck, and the
+  // listing-agreement packet (which stays what the owner says it is — the printout,
+  // not part of what becomes reels). Pointing this chain at it makes ALL THREE
+  // autonomous entry points one producer, so "which ran first" stops mattering.
+  //
+  // NOT A DELETION, AND NOT A REVERSAL OF THE EARLIER RULING.
+  // generateAiListingPresentation survives on its own authenticated door
+  // (app/actions/ai-listing-presentation.ts, reached from the CMA → Presentation
+  // tab), where it was already adjudicated the survivor of a DIFFERENT pair — see
+  // the tombstone at app/actions/cma-presentation/presentation-assembler.ts:28. The
+  // two are not duplicates of each other: that door is an agent ASKING for an AI
+  // narrative in their own words, and its update arm attaches that narrative to the
+  // existing row rather than creating a second one, so the two now compose on ONE
+  // row per appointment instead of racing to define it.
   generatePresentation: async (args) => {
-    const { generateAiListingPresentation } = await import("@/lib/listing-presentation/generate-ai-presentation")
-    return generateAiListingPresentation(args)
+    const { buildListingPresentation } = await import("@/lib/workflow/intelligence/listing-presentation-builder")
+    const p = args.propertyData ?? {}
+    const built = await buildListingPresentation({
+      brokerageId:     args.brokerageId,
+      // The builder takes agentUserId (users.id); this chain resolved an agents.id
+      // for the CMA step. agents.id and users.id are DISJOINT (CLAUDE.md §3), so the
+      // run's own agentUserId is passed rather than the agent row's id.
+      agentUserId:     args.agentUserId ?? null,
+      contactId:       args.contactId ?? null,
+      appointmentId:   args.appointmentId ?? null,
+      appointmentAt:   args.appointmentAt ?? null,
+      listingId:       args.listingId ?? null,
+      propertyAddress: p.address,
+      state:           p.state,
+      city:            p.city ?? null,
+      zip:             p.zipCode ?? p.zip ?? null,
+      bedrooms:        p.bedrooms ?? null,
+      bathrooms:       p.bathrooms ?? null,
+      sqft:            p.sqft ?? null,
+      yearBuilt:       p.yearBuilt ?? null,
+    })
+    if (!built.success || !built.result) {
+      return { success: false, error: built.error ?? "Listing presentation build failed" }
+    }
+    // Shape-adapt to what step 2's handler already returns, so the chapter-video and
+    // drip steps downstream are untouched. `chapters` comes from the slide deck —
+    // the deck IS the chapter list the owner is describing.
+    return {
+      success: true,
+      presentationId: built.result.presentationId,
+      chapters: (built.result.slideDeck ?? []).map((s: { title: string }) => ({ title: s.title })),
+      content: built.result,
+    }
   },
   // Lazily import the D-ID + ElevenLabs chapter-video pipeline so merely loading
   // this chain module (e.g. in a tsx simulator) does NOT eagerly pull the video/
@@ -258,6 +326,17 @@ export const listingApptPrepChain: WorkflowChain = {
           // started unattended by the AI-ISA and by the kernel event lane.
           brokerageId: ctx.brokerageId,
           agentId: agent.id,
+          // BOTH ID CLASSES, DELIBERATELY. `agentId` is an agents.id (what the CMA
+          // step resolved); `agentUserId` is a users.id. They are DISJOINT (§3), and
+          // the presentation builder wants the users.id — passing the agents.id
+          // there would be a 23503 that loses the whole row. Both travel so the
+          // executor picks the one its producer takes rather than converting.
+          agentUserId: ctx.agentUserId ?? null,
+          // The listing this appointment is for, when there is one. The builder uses
+          // it to load the seller's recorded improvements so the CMA narrative
+          // accounts for what they have done to the home — the last clause of the
+          // owner's CMA ruling. A prospect with no listing yet passes null.
+          listingId: ctx.listingId ?? null,
           contactId: ctx.contactId ?? null,
           appointmentId,
           appointmentAt: ctx.metadata.appointment_date ?? null,

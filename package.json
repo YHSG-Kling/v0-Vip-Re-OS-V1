@@ -428,6 +428,7 @@
     "test:closing-war-room": "tsx scripts/closing-war-room-simulator.ts",
     "test:anniversary-equity": "tsx scripts/anniversary-equity-simulator.ts",
     "test:equity-trigger": "tsx scripts/equity-trigger-simulator.ts",
+    "test:artifact-set": "tsx scripts/autonomous-artifact-set-guard.ts",
     "test:listing-appt-prep": "tsx scripts/listing-appt-prep-simulator.ts",
     "test:seller-appt-conversion": "tsx scripts/seller-appt-conversion-simulator.ts",
     "test:inbound-intent": "tsx scripts/inbound-intent-simulator.ts",
