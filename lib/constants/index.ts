@@ -356,6 +356,19 @@ export function canonicalPropertyType(raw: string | null | undefined): PropertyT
 // This list is now the full admitted set, matched to the CHECK, and it is USED:
 // the picker renders from it and updateListingStatus validates against it, so a
 // value that cannot be stored can no longer be offered or submitted.
+//
+// A FOURTH disagreeing list was found on 2026-09-05 and folded in here:
+// lib/listings/listing-status-sync.ts declared its own 7-value `ListingStatus`
+// and `LISTING_STATUS_VALUES` under the comment "the 7 allowed listings.status
+// values (live CHECK constraint)" — false in the same direction as the second
+// bullet above (missing listing_signed, cancelled, off_market). That file now
+// IMPORTS this constant and re-exports it; there is one definition. See the
+// tombstone at lib/listings/listing-status-sync.ts.
+//
+// STILL DISAGREEING, recorded rather than silently "fixed" because it is a
+// different lane's file and a different vocabulary question: lib/domain/types.ts
+// ::ListingStatus carries `under_contract` and `canceled` (one l) — neither is
+// admitted by the CHECK, so either would be refused on write.
 export const LISTING_STATUSES = [
   "draft",
   "listing_signed",

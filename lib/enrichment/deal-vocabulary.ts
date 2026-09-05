@@ -66,8 +66,10 @@
 /**
  * listings.lifecycle_stage — the 34-state machine, NOT NULL, advanced by
  * transitionLifecycle. This is the AUTHORITATIVE column for "is the seller a
- * live client", because `status` is the coarse 7-value market state that
- * lib/listings/listing-status-sync.ts only writes at market-state BOUNDARIES:
+ * live client", because `status` is the coarse market state (TEN values in the
+ * live CHECK — corrected 2026-09-05; this line said "7-value", which was the
+ * same false claim lib/listings/listing-status-sync.ts used to carry in its own
+ * header) that lib/listings/listing-status-sync.ts only writes at BOUNDARIES:
  * a listing sitting at LISTING_AGREEMENT_SIGNED still carries whatever status
  * it was created with (often 'draft'). Keying suppression off `status` alone
  * would enrich a seller the day after they signed.
@@ -123,7 +125,34 @@ export const LISTING_STAGES_AFTER = [
   "SELLER_DECLINED",
 ] as const
 
-/** listings.status — coarse market state. Corroborating signal only (see below). */
+/**
+ * listings.status — coarse market state. Corroborating signal only (see below).
+ *
+ * THIS IS THE LIVE-CLIENT SET: the statuses that mean the seller is a client
+ * with an engagement running, so enrichment must be SUPPRESSED. `pending` is in
+ * it (under contract is very much a live client); `draft` is not (pre-deal, no
+ * engagement yet).
+ *
+ * ── NOT THE SAME SET AS lib/ads/audience-source-rules.ts ────────────────────
+ * Adjudicated 2026-09-05 (CLAUDE.md §6). That file used to carry
+ * `ACTIVE_LISTING_STATUSES` — a name one letter-order away from this one, with
+ * DIFFERENT members — which reads as vocabulary drift and is not. It asks the
+ * opposite question ("may we still advertise to this seller?"), so it INCLUDES
+ * `draft` and EXCLUDES `pending`, the exact complement of this set on those two
+ * members. Neither was deleted: it was renamed to
+ * `MARKETABLE_SELLER_LISTING_STATUSES` so the difference is legible from the
+ * name. Merging the two would have broken one of the two rules in silence.
+ *
+ * A THIRD, still un-adjudicated spelling exists and is recorded rather than
+ * touched: lib/inbound-mail/offer-intake.ts:92 `ACTIVE_LISTING_STATUSES =
+ * ["active","coming_soon","pending"]` — "a listing that may receive an offer".
+ * That is a third question again; it belongs to another lane's file.
+ *
+ * With LISTING_STATUSES_INACTIVE below, these two partition the live
+ * `listings_status_check` set EXACTLY — asserted as a derived property (never a
+ * hardcoded count) by scripts/listing-status-two-senses-guard.ts, so a status
+ * added to the CHECK cannot land in neither bucket and read as handled.
+ */
 export const LISTING_STATUSES_ACTIVE = ["listing_signed", "coming_soon", "active", "pending"] as const
 /** 'draft' is pre-deal; the rest are terminal. */
 export const LISTING_STATUSES_INACTIVE = [

@@ -277,17 +277,46 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
         <CoverScene brand={brand} weekLabel={weekLabel} agentName={agentName} />
       </Sequence>
 
-      {/* EARNED CARDS — the presenter rides every card */}
+      {/* EARNED CARDS */}
       {cards.map((card, i) => (
         <Sequence key={i} from={COVER + per * i} durationInFrames={per}>
           <CardScene card={card} index={i} total={cards.length} brand={brand} />
-          <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
         </Sequence>
       ))}
 
       {/* THE ONE ASK */}
       <Sequence from={COVER + cardTotal} durationInFrames={ASK}>
         <AskScene brand={brand} oneAsk={oneAsk} />
+      </Sequence>
+
+      {/* THE PRESENTER RIDES EVERY CARD — AS ONE CONTINUOUS TAKE.
+          THE DEFECT (found 2026-09-05, lane BROLL, auditing remotion/ against
+          .claude/skills/remotion-best-practices). `<AvatarPIP>` was mounted
+          INSIDE each card's `<Sequence>` and again inside the ask's — cards.length
+          + 1 separate mounts of the SAME `avatarVideoUrl`. A `<Video>` inside a
+          `<Sequence>` starts at that sequence's frame 0, which is exactly right
+          for one clip in one slot and exactly wrong here: the presenter RESTARTED
+          at every card boundary, so the reel only ever showed the clip's first
+          `per` frames and never reached the rest of the take — and, because
+          `<Video>` from @remotion/media plays the media's audio, the D-ID clip's
+          lip-synced narration RE-SPOKE its opening line once per card while the
+          root-level `<CaptionLayer>` ran one continuous caption track over the
+          top. The captions and the audio disagreed, and the render reported
+          success — the same silent-wrong-thing shape as the B-roll freeze this
+          lane closed (scripts/broll-slot-guard.ts).
+
+          One mount over the whole presenter window [COVER, durationInFrames −
+          OUTRO) gives the clip ONE clock, so it plays through. Placed after the
+          card/ask sequences so the PIP still draws on top of them, and before
+          the outro so the outro still draws on top of it. The window meets the
+          outro exactly: COVER + cardTotal + ASK === durationInFrames − OUTRO.
+
+          UNRESOLVED and NOT invented here: if the D-ID clip is SHORTER than this
+          window it holds its final frame, the same class of defect the B-roll
+          layer now bounds with a measured duration. Nothing in this composition's
+          props carries the avatar clip's length, so there is no honest number to
+          bound it with — see the report, not a guess. */}
+      <Sequence from={COVER} durationInFrames={cardTotal + ASK}>
         <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
       </Sequence>
 

@@ -81,6 +81,16 @@ export const PUBLIC_ROUTES = [
   '/portal/lender',
   '/portal/title',
   '/portal/vendor',
+  // The seller-facing pre-listing landing page the drip emails out. The
+  // recipient is a PROSPECT who has not hired the agent yet and has no portal
+  // login, so /portal is protected but this one child is not — same shape as
+  // /portal/login above. PUBLIC_ROUTES is matched (startsWith) BEFORE
+  // PROTECTED_ROUTES in proxy.ts, so this entry is what lets the link resolve
+  // at all. Access is not "open": app/portal/listing-plan/[id]/page.tsx refuses
+  // unless a human stamped listing_presentations.delivery_approved_at, and it
+  // renders no financials. Removing this line silently 302s every seller who
+  // clicks "Open your listing plan" to /login.
+  '/portal/listing-plan',
   '/home-value',
   '/open-house',
   '/showings/feedback',

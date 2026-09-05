@@ -326,8 +326,28 @@ const INACTIVE_BUYER_STAGES = [
  * `sold`, `withdrawn`, `cancelled`, `off_market` and `expired` are deliberately
  * absent: a seller whose listing already went pending is not an "active seller",
  * and the audience's name would be false for them.
+ *
+ * ── NOT THE SAME SET AS lib/enrichment/deal-vocabulary.ts::LISTING_STATUSES_ACTIVE ──
+ * Adjudicated 2026-09-05 (CLAUDE.md §6). The two used to be spelled
+ * `MARKETABLE_SELLER_LISTING_STATUSES` here and `LISTING_STATUSES_ACTIVE` there — two names
+ * one letter-order apart, with DIFFERENT members — which reads as a drift defect
+ * and is not one. They answer different questions, and the disagreement is the
+ * answer, not the bug:
+ *
+ *   · THIS ONE asks "is this seller still looking for a buyer, so may we
+ *     advertise to them?" It INCLUDES `draft` (a seller preparing to list is a
+ *     prospect worth reaching) and EXCLUDES `pending` (already under contract —
+ *     advertising to them is spend on a deal that is done).
+ *   · THE OTHER asks "is this seller a live client, so must we SUPPRESS
+ *     enrichment?" It EXCLUDES `draft` (pre-deal, no engagement yet) and
+ *     INCLUDES `pending` (very much a live client).
+ *
+ * They are exact complements on those two members precisely because the two
+ * questions are opposites there. Merging them would break one of the two rules
+ * silently. Renamed instead of deleted, so the difference is legible from the
+ * name: this is the MARKETABLE-SELLER set, not the live-client set.
  */
-const ACTIVE_LISTING_STATUSES = ["draft", "listing_signed", "coming_soon", "active"] as const
+const MARKETABLE_SELLER_LISTING_STATUSES = ["draft", "listing_signed", "coming_soon", "active"] as const
 
 /**
  * `transactions_status_check` — a deal that is live. `closed`/`funded`/`lost`/
@@ -663,7 +683,7 @@ const NARROWERS: Record<SourceRuleType, Narrower> = {
       ruleType: "active_sellers",
       label:
         "sellers who hold a listing that is pre-listing or live on market " +
-        `(listings.status in ${[...ACTIVE_LISTING_STATUSES].join("/")})`,
+        `(listings.status in ${[...MARKETABLE_SELLER_LISTING_STATUSES].join("/")})`,
       predicates: [
         { column: "contact_type", op: "in", value: [...SELLER_CONTACT_TYPES], says: "a seller" },
       ],
@@ -678,7 +698,7 @@ const NARROWERS: Record<SourceRuleType, Narrower> = {
           {
             column: "status",
             op: "in",
-            value: [...ACTIVE_LISTING_STATUSES],
+            value: [...MARKETABLE_SELLER_LISTING_STATUSES],
             says: "listing is pre-listing or live",
           },
         ],

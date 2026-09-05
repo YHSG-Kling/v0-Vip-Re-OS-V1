@@ -13,13 +13,11 @@
  *
  * Two seams:
  *
- *   · selectBrollPlan (PURE, no DB) — given an ordered library of clips and a
- *     B-roll timeline length, SEQUENCE / LOOP / TRUNCATE the clips to FILL the
- *     timeline. Deterministic: the same library + timeline always yields the
- *     same ordered plan. This is the math the BrollLayer divides time across —
- *     we compute the explicit (url, start, duration) plan so the picker can
- *     reason about fit, loop the library when it is shorter than the timeline,
- *     and truncate the final clip so the plan never overruns.
+ *   · selectBrollPlan (PURE, no DB) — MOVED to lib/video/broll-plan.ts and
+ *     re-exported from here; see the tombstone below. Given an ordered library
+ *     of clips and a B-roll timeline length it SEQUENCEs / LOOPs / TRUNCATEs
+ *     the clips to FILL the timeline, and never gives a clip a slot longer than
+ *     the clip is.
  *
  *   · pickBrollClips (DB) — walk the scope cascade, fetch b_roll / neighborhood
  *     video_assets rows for the most-specific available scope, probe each clip's
@@ -27,8 +25,25 @@
  *     Remotion encoder packages — else the stored video_assets.duration_seconds,
  *     else a sensible per-clip default), run selectBrollPlan, and return BOTH
  *     the ordered plan AND the BrollClip[] shape the compositions consume
- *     ({ url, caption? } — the _BrollLayer primitive divides the composition's
- *     B-roll window evenly across the clips and loops itself).
+ *     ({ url, durationSeconds, caption? }).
+ *
+ * WHERE THE PLAN GOES, PRECISELY (recorded 2026-09-05, because the previous
+ * wording read as if the layer already honored it):
+ *   · `PickBrollResult.plan` is the plan FOR THE TIMELINE THE CALLER SUPPLIED.
+ *     `lib/video/video-director.ts` supplies NO `neededSeconds`, so its plan is
+ *     the natural-sum sequence (each clip once) and NOT the composition's B-roll
+ *     window — the Director cannot know that window, because it is a constant
+ *     inside each composition (ComingSoonReel TOTAL=360, NeighborhoodSpotlight
+ *     TOTAL=480, AgentTalkingHeadReel BODY=300, and BODY ≠ TOTAL there). Teaching
+ *     the Director a second table of per-composition B-roll windows would be the
+ *     §6 defect.
+ *   · So the SEQUENCING happens where the window is known — in the layer, using
+ *     this same `selectBrollPlan` (§6: one implementation, two callers). What
+ *     the layer needed from here was the MEASUREMENTS, and those now ride
+ *     `PickedBrollClip.durationSeconds`.
+ *   · `plan` keeps its readers: `scripts/broll-picker-simulator.ts` asserts the
+ *     fill/loop/truncate/honest-empty semantics on it, and any caller that DOES
+ *     know its timeline (passing `neededSeconds`) gets the finished plan.
  *
  * HONEST: an empty scope (no b_roll uploaded anywhere in the cascade) returns
  * an EMPTY plan + EMPTY clips. The composition then renders WITHOUT B-roll
@@ -45,105 +60,55 @@ export interface PickedBrollClip {
   url:       string
   /** Optional segment caption ("Brickell promenade"). */
   caption?:  string
+  /**
+   * THE CLIP'S MEASURED LENGTH IN SECONDS — Mediabunny probe, else the stored
+   * `video_assets.duration_seconds`, else DEFAULT_CLIP_SECONDS. Carried onto
+   * the composition-facing shape (2026-09-05) because it is the ONE fact the
+   * B-roll layer could not know and could not guess.
+   *
+   * THE DEFECT IT CLOSES. This module measured every clip and handed the
+   * measurements to `selectBrollPlan`; the Director kept only `picked.clips`
+   * and the measurements died here. `remotion/_BrollLayer.tsx` therefore
+   * divided its frame window EVENLY across N clips, and a clip shorter than
+   * its even slot was asked to play past its own end — where a `<Video>` holds
+   * its LAST FRAME. The reel showed a frozen still and the render reported
+   * success. With this field populated the layer re-runs the SAME
+   * `selectBrollPlan` against the window it actually owns
+   * (`lib/video/broll-plan.ts`), so no clip is ever given a slot longer than
+   * it is. `scripts/broll-slot-guard.ts` asserts that rule.
+   *
+   * OPTIONAL because the shape is also produced by callers that never measured
+   * (`lib/agents/seller-update-reel-producer.ts` maps bare URLs). Absent →
+   * the layer falls back to the even division, exactly as before.
+   */
+  durationSeconds?: number
 }
 
-/** One clip in the ordered B-roll timeline plan. */
-export interface BrollPlanEntry {
-  /** The source clip URL. */
-  url:             string
-  /** When this clip starts in the composition's B-roll window, in seconds. */
-  startSeconds:    number
-  /** How long this clip plays, in seconds (the final entry may be truncated
-   *  so the plan ends exactly at the timeline length). */
-  durationSeconds: number
-  /** Optional caption carried through from the source clip. */
-  caption?:        string
-}
+// ── TOMBSTONE (§1): the PURE timeline math — `selectBrollPlan`,
+//    `BrollPlanEntry`, `BrollSourceClip`, `DEFAULT_CLIP_SECONDS` — moved to
+//    lib/video/broll-plan.ts:1 so `remotion/_BrollLayer.tsx` can import it
+//    without dragging this module's `await import("@/lib/supabase/service")`
+//    into the Remotion webpack bundle (that module is `server-only`).
+//    THIS FILE REMAINS THE SURVIVOR for SOURCING clips (pickBrollClips, the
+//    video_assets scope cascade, the Mediabunny probe) and re-exports the math
+//    unchanged, so `scripts/broll-picker-simulator.ts` and every other importer
+//    keep working against `@/lib/video/broll-picker`. ──
+//    Relative, not `@/…`: `scripts/broll-picker-simulator.ts` loads this file
+//    through tsx by relative path, and `remotion/components/CaptionLayer.tsx`
+//    already proves relative is what the Remotion bundler resolves.
+export {
+  selectBrollPlan,
+  DEFAULT_CLIP_SECONDS,
+  type BrollPlanEntry,
+  type BrollSourceClip,
+} from "./broll-plan"
 
-/** A library clip handed to selectBrollPlan — a URL + its (probed/stored)
- *  length. duration must be > 0; selectBrollPlan defends against bad input. */
-export interface BrollSourceClip {
-  url:             string
-  durationSeconds: number
-  caption?:        string
-}
-
-/** When a clip's true duration is unknown (no Mediabunny probe + no stored
- *  duration_seconds), assume this many seconds. Long enough that a single
- *  unknown clip can carry a short window, short enough that the loop logic
- *  still cycles a library of unknowns. */
-export const DEFAULT_CLIP_SECONDS = 4
-
-/**
- * selectBrollPlan — PURE. Sequence the supplied clips in order to fill exactly
- * `neededSeconds` of B-roll timeline.
- *
- *   · If `perClipSeconds` is supplied (> 0), every clip is shown for that long
- *     (capped to its own duration so we never ask a 3s clip to play 5s),
- *     looping the library until the timeline is full.
- *   · Otherwise each clip plays for its own duration.
- *   · LOOP: when the library is shorter than the timeline, the clips repeat
- *     from the top until the timeline is filled.
- *   · TRUNCATE: the final clip is clipped so the plan ends exactly at
- *     `neededSeconds` (never overruns).
- *
- * Deterministic — same inputs, same ordered plan. Empty library or a
- * non-positive timeline returns [].
- */
-export function selectBrollPlan(
-  clips:         BrollSourceClip[],
-  neededSeconds: number,
-  perClipSeconds?: number,
-): BrollPlanEntry[] {
-  if (!Array.isArray(clips) || clips.length === 0) return []
-  if (!(neededSeconds > 0)) return []
-
-  // Normalize each source clip to a positive duration.
-  const lib = clips
-    .filter((c) => c && typeof c.url === "string" && c.url.length > 0)
-    .map((c) => ({
-      url:      c.url,
-      caption:  c.caption,
-      duration: c.durationSeconds > 0 ? c.durationSeconds : DEFAULT_CLIP_SECONDS,
-    }))
-  if (lib.length === 0) return []
-
-  const plan: BrollPlanEntry[] = []
-  let cursor = 0
-  let i = 0
-  // Hard cap on iterations so a degenerate input (e.g. all-zero perClip) can
-  // never spin forever; the timeline is finite so this is only a guardrail.
-  const maxEntries = 10_000
-
-  while (cursor < neededSeconds - 1e-6 && plan.length < maxEntries) {
-    const src = lib[i % lib.length]
-    // How long this clip WANTS to play: a fixed per-clip beat (capped to the
-    // clip's own length) or its full natural duration.
-    const want = perClipSeconds && perClipSeconds > 0
-      ? Math.min(perClipSeconds, src.duration)
-      : src.duration
-    // Truncate the final clip so the plan ends exactly at the timeline length.
-    const remaining = neededSeconds - cursor
-    const dur = Math.min(want, remaining)
-    if (dur <= 1e-6) break
-
-    plan.push({
-      url:             src.url,
-      startSeconds:    round3(cursor),
-      durationSeconds: round3(dur),
-      ...(src.caption ? { caption: src.caption } : {}),
-    })
-    cursor += dur
-    i += 1
-  }
-
-  return plan
-}
-
-/** Round to ms precision so the plan numbers are clean + comparable. */
-function round3(n: number): number {
-  return Math.round(n * 1000) / 1000
-}
+import {
+  selectBrollPlan,
+  DEFAULT_CLIP_SECONDS,
+  type BrollPlanEntry,
+  type BrollSourceClip,
+} from "./broll-plan"
 
 // ── Minimal structural type for the Supabase client this module accepts.
 //    Mirrors how lib/video/video-director threads its AnyClient so the picker
@@ -174,9 +139,11 @@ export interface PickBrollResult {
   /** The ordered B-roll timeline plan ((url, start, duration) per entry).
    *  EMPTY when the scope has no b_roll anywhere in the cascade. */
   plan:  BrollPlanEntry[]
-  /** The composition-facing clip list ({ url, caption? }) — the brollClips
-   *  prop ComingSoonReel / NeighborhoodSpotlightReel consume. EMPTY when the
-   *  scope is empty (the composition renders WITHOUT B-roll, like today). */
+  /** The composition-facing clip list ({ url, durationSeconds, caption? }) —
+   *  the brollClips prop ComingSoonReel / NeighborhoodSpotlightReel consume.
+   *  EMPTY when the scope is empty (the composition renders WITHOUT B-roll,
+   *  like today). Carries each clip's MEASURED length so the layer can size its
+   *  own slots — see PickedBrollClip.durationSeconds. */
   clips: PickedBrollClip[]
   /** Diagnostics — how many rows the cascade returned + which scope they came
    *  from (for the Director's video_metadata + the simulator's assertions). */
@@ -275,16 +242,24 @@ export async function pickBrollClips(
 
   const plan = selectBrollPlan(source, timeline, input.perClipSeconds)
 
-  // The composition consumes a flat ordered { url, caption? } list. Derive it
-  // from the source clips in cascade order (deduped to distinct URLs so a
-  // looped plan doesn't repeat the same clip in the prop — _BrollLayer loops
-  // for us). Falls back to the plan order when count caps below the library.
+  // The composition consumes a flat ordered { url, durationSeconds, caption? }
+  // list. Derive it from the source clips in cascade order (deduped to distinct
+  // URLs so a looped plan doesn't repeat the same clip in the prop — the layer
+  // re-runs selectBrollPlan against its OWN window and loops the library there,
+  // where the window length is actually known).
   const seen = new Set<string>()
   const clips: PickedBrollClip[] = []
   for (const c of source) {
     if (seen.has(c.url)) continue
     seen.add(c.url)
-    clips.push({ url: c.url, ...(c.caption ? { caption: c.caption } : {}) })
+    clips.push({
+      url: c.url,
+      // THE MEASUREMENT TRAVELS WITH THE CLIP (2026-09-05). Without this the
+      // layer had nothing to divide by but the clip COUNT, and a clip shorter
+      // than its even slot froze on its last frame. See PickedBrollClip.
+      durationSeconds: c.durationSeconds,
+      ...(c.caption ? { caption: c.caption } : {}),
+    })
   }
 
   return { plan, clips, sourcedCount: rows.length, sourcedScope }
