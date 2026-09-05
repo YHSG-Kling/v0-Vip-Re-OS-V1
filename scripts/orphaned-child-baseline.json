@@ -1,7 +1,7 @@
 {
-  "generated": "2026-08-23",
+  "generated": "2026-09-05",
   "counts": {
-    "oc1": 101,
+    "oc1": 98,
     "oc2": 1,
     "oc3": 0,
     "oc4": 0
@@ -13,8 +13,6 @@
       "ad_retarget_presets.created_by",
       "agent_commissions.approved_by",
       "agent_credentials.created_by",
-      "agent_onboarding_sessions.recruit_id",
-      "agent_onboarding_steps.completed_by",
       "agent_retention_scores.agent_id",
       "agent_tax_profile.agent_id",
       "ai_assistant_notes.created_by",
@@ -39,7 +37,6 @@
       "compliance_alerts.resolved_by",
       "contact_consent_events.agent_id",
       "contact_property_insights.contact_id",
-      "direct_mail_campaigns.contact_id",
       "direct_mail_presets.created_by",
       "document_downloads.user_id",
       "document_folders.created_by",
