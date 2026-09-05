@@ -176,21 +176,29 @@ const STATUS_FOR_GATED_STAGE: Record<string, { status: ListingStatus; gate: keyo
  *  EXACTLY as before this change: the eight ungated boundaries map as they always did, and the one
  *  gated stage returns undefined and leaves status untouched. Nothing they write moves.
  *
- *  ── NOT YET WIRED, AND SAYING SO RATHER THAN PRETENDING ─────────────────────
- *  Because none of the three passes a verdict, the 2026-09-05 ruling is EXPRESSED here but is not
- *  yet in force on any live path. That is deliberate, and it is the honest half of the choice: the
- *  alternative was to map LISTING_AGREEMENT_SIGNED unconditionally, which would hand `coming_soon`
+ *  ── WIRED 2026-09-05. THE RULING IS NOW IN FORCE ────────────────────────────
+ *  All three callers now resolve the verdict and pass it. Each does so LAZILY — `isGatedStage()`
+ *  below is asked first, and only a gated target stage pays for the read, so the overwhelming
+ *  majority of transitions (every ungated boundary, every intermediate stage) do exactly what they
+ *  did before with no extra round trip. The verdict comes from
+ *  lib/listings/listing-activation-gate.ts::listingAgreementComplianceState, which delegates to the
+ *  same readListingCompliance the full gate uses, so there is ONE implementation of the question.
+ *  A `"unknown"` state (the read was REFUSED — supabase-js resolves refusals, §3) is passed through
+ *  as NOT proven and logged as unknown, never as a clean negative.
+ *
+ *  ── THE ALTERNATIVE THAT WAS REJECTED ───────────────────────────────────────
+ *  The tempting shortcut was to map LISTING_AGREEMENT_SIGNED unconditionally, which would hand `coming_soon`
  *  to any transition into that stage — including one that never touched compliance — and the
  *  ruling says AFTER THE GATE PASSES.
  *
- *  TO WIRE IT (one line per caller, plus one export, all in other lanes' files):
- *    1. lib/listings/listing-activation-gate.ts exports its obligation-1 read, e.g.
- *       `listingAgreementCompliancePassed(supabase, { listingId, brokerageId }): Promise<boolean>`
- *       — that file is already the ONE authority on the question, so nothing new is spelled.
- *    2. each caller above passes it through when the target stage is gated:
- *       `statusForStage(toState, { listingAgreementCompliancePassed: await …(…) })`.
- *  Until then the three ad-hoc writers named on STATUS_AFTER_LISTING_AGREEMENT_GATE remain the
- *  only paths that put a listing at `coming_soon` on agreement signature.
+ *  to any transition into that stage — including one that never touched compliance — and the ruling
+ *  says AFTER THE GATE PASSES.
+ *
+ *  The three ad-hoc writers named on STATUS_AFTER_LISTING_AGREEMENT_GATE (the two e-sign webhooks
+ *  and the compliance auto-create chain) are NOT replaced by this and are not duplicates of it:
+ *  they write at the moment their own provider confirms execution, on a listing that may have no
+ *  stage transition at all. They and this map now spell the value one way (§6); which of them fires
+ *  first for a given listing is a race that resolves to the same status either way.
  */
 export function statusForStage(stage: string, gate?: ListingStatusGate): ListingStatus | undefined {
   const ungated = STATUS_FOR_STAGE[stage]
@@ -199,6 +207,16 @@ export function statusForStage(stage: string, gate?: ListingStatusGate): Listing
   const gated = STATUS_FOR_GATED_STAGE[stage]
   if (!gated) return undefined
   return gate?.[gated.gate] === true ? gated.status : undefined
+}
+
+/** PURE. Is this stage's status conditional on a gate verdict? DERIVED from the gated map, never a
+ *  typed list — a caller that hardcoded "COMING_SOON_PREP" would be pinning a WAYPOINT (§2) and
+ *  would silently stop paying for the verdict the day a second gated stage is added.
+ *
+ *  Callers ask this BEFORE doing any I/O: only a gated target stage needs a database read, so an
+ *  ungated transition costs exactly what it always did. */
+export function isGatedStage(stage: string): boolean {
+  return Object.prototype.hasOwnProperty.call(STATUS_FOR_GATED_STAGE, stage)
 }
 
 /** PURE. Every lifecycle_stage this module maps at all, gated or not — so a guard can enumerate the

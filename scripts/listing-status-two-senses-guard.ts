@@ -205,6 +205,8 @@ function main() {
   console.log("\n[9] Measurement, published beside its denominator (§2) — NOT an enforcement")
   reportWriterlessStatuses()
 
+  inForceLayer()
+
   finish()
 }
 
@@ -354,6 +356,67 @@ function positiveControls() {
     caught: /status:\s*"([a-z_]+)"/.test(`.update({ status: "coming_soon" })`) })
 
   for (const c of controls) check(`POSITIVE CONTROL — ${c.what}`, c.caught)
+}
+
+/**
+ * ── IS THE RULING ACTUALLY IN FORCE? ─────────────────────────────────────────
+ *
+ * Everything above proves the MAP is right. None of it proves any live path asks
+ * the map the gated question — and for one wave it did not: the map expressed the
+ * owner's ruling while all three writers called statusForStage with no verdict, so
+ * a listing reaching the gated stage got no status at all. "Expressed" and "in
+ * force" are different claims and only one of them is worth anything in
+ * production, so this layer asserts the second.
+ *
+ * It reads STRIPPED source, because this repo has burned itself on prose before:
+ * the header of listing-status-sync.ts DESCRIBES the wiring in detail, and a raw
+ * scan would happily accept that description as the wiring (§2 — a tombstone, or a
+ * plan, is not a call site).
+ */
+function inForceLayer() {
+  console.log("\n[10] The ruling is IN FORCE — the callers ask the gated question, not just the map")
+  const SYNC  = stripComments(read("lib/listings/listing-status-sync.ts"))
+  const GATE  = stripComments(read("lib/listings/listing-activation-gate.ts"))
+  const KERN  = stripComments(read("lib/kernel/lifecycle.ts"))
+  const APPL  = stripComments(read("lib/application/listing-lifecycle.ts"))
+
+  check("the map exposes isGatedStage, DERIVED from the gated map rather than a typed stage list",
+    /export function isGatedStage/.test(SYNC) &&
+    /hasOwnProperty\.call\(STATUS_FOR_GATED_STAGE, stage\)/.test(SYNC) &&
+    !/isGatedStage[\s\S]{0,200}"COMING_SOON_PREP"/.test(SYNC))
+
+  check("ONE authority answers 'did compliance pass' — the gate exports it and DELEGATES to its own reader",
+    /export async function listingAgreementComplianceState/.test(GATE) &&
+    /return readListingCompliance\(|res = await readListingCompliance\(|await readListingCompliance\(/.test(GATE))
+  check("…and it is THREE-valued, so a REFUSED read cannot masquerade as a clean negative (§3/§4)",
+    /"passed" \| "not_passed" \| "unknown"/.test(GATE) &&
+    /if \(!res\.ok\) return "unknown"/.test(GATE))
+
+  // Both writers of listings.lifecycle_stage must ask. Named individually so a
+  // failure says WHICH door stopped asking rather than "something regressed".
+  for (const [label, src] of [["lib/kernel/lifecycle.ts", KERN], ["lib/application/listing-lifecycle.ts", APPL]] as const) {
+    check(`${label}: asks isGatedStage BEFORE doing any I/O (an ungated transition pays nothing)`,
+      /isGatedStage\(/.test(src))
+    check(`${label}: resolves the verdict from the gate module, never re-deriving the predicate (§6)`,
+      /listingAgreementComplianceState/.test(src) &&
+      !/compliance_passed[\s\S]{0,120}esign_status/.test(src))
+    check(`${label}: passes the verdict INTO the map — statusForStage is no longer called bare`,
+      /statusForStage\([^)]*,\s*\w/.test(src))
+    check(`${label}: FAILS CLOSED — only an explicit pass yields the gated status`,
+      /=== "passed"/.test(src))
+    check(`${label}: an UNKNOWN verdict is reported as unknown, not as "compliance has not passed"`,
+      /REFUSED/.test(src) && /NOT/.test(src))
+  }
+
+  // NEGATIVE CONTROLS — each of the five shapes above, in a specimen that must FAIL.
+  // Without these, a regex that silently stopped matching would report five green ticks.
+  const bare = 'const s = statusForStage(toState)'
+  check("NEGATIVE CONTROL: a bare statusForStage call is NOT accepted as wired",
+    !/statusForStage\([^)]*,\s*\w/.test(bare))
+  check("NEGATIVE CONTROL: a caller that re-derives the predicate itself is caught",
+    /compliance_passed[\s\S]{0,120}esign_status/.test('.select("compliance_passed, esign_status, fully_executed_at")'))
+  check("NEGATIVE CONTROL: a hardcoded stage name in isGatedStage would be caught",
+    /isGatedStage[\s\S]{0,200}"COMING_SOON_PREP"/.test('function isGatedStage(s){ return s === "COMING_SOON_PREP" }'))
 }
 
 function finish() {

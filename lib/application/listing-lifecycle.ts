@@ -14,7 +14,7 @@ import {
 import { validateStageTransition } from "@/lib/listing-lifecycle/transition-validator"
 import { evaluateReadinessChecks } from "@/lib/listing-lifecycle/readiness-checker"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { statusForStage } from "@/lib/listings/listing-status-sync"
+import { statusForStage, isGatedStage, type ListingStatusGate } from "@/lib/listings/listing-status-sync"
 
 // =====================================================
 // LISTING LIFECYCLE APPLICATION SERVICE
@@ -385,11 +385,14 @@ export async function updateListingStageService(params: {
   // buyer search / the public pages never see it. (There is no `notes` column on
   // listings.) This note sits above the statement, not inside the chain, so the
   // brokerage filter stays visibly attached to the write it scopes.
+  // Same gate as the advance path below — only a gated target stage pays for a read.
+  const statusGate = await resolveListingStatusGate(supabase, params.stage, params.listing_id, gate.brokerageId)
+
   const { data, error } = await supabase
     .from("listings")
     .update({
       lifecycle_stage: params.stage,
-      ...(statusForStage(params.stage) ? { status: statusForStage(params.stage) } : {}),
+      ...(statusForStage(params.stage, statusGate) ? { status: statusForStage(params.stage, statusGate) } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -400,6 +403,41 @@ export async function updateListingStageService(params: {
   if (error) throw error
 
   return { success: true as const, listing: data, fromStage: gate.fromStage, stage: params.stage }
+}
+
+
+/**
+ * Resolve the gate verdict the status map needs — ONCE, for both writers in this file.
+ *
+ * WHY IT IS A FUNCTION AND NOT TWO INLINE BLOCKS: this file has two writers of
+ * listings.lifecycle_stage, and a second copy of "did compliance pass?" is exactly the
+ * two-spellings defect §6 forbids. The verdict itself is not computed here either — it comes
+ * from lib/listings/listing-activation-gate.ts, which owns the question.
+ *
+ * COST: returns undefined immediately for an ungated stage, so the overwhelming majority of
+ * transitions do no I/O at all. isGatedStage is derived from the map, never a hardcoded stage
+ * name (§2 — a hardcoded name is a waypoint that stops paying attention the day the map grows).
+ *
+ * FAIL CLOSED (§4): a refused read yields `false`, which the pure map treats as NOT PROVEN and
+ * answers with undefined — status untouched. The refusal is logged as UNKNOWN and explicitly not
+ * as "compliance has not passed", because the two send a transaction coordinator to different
+ * places and only one of them is a real errand.
+ */
+async function resolveListingStatusGate(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  toStage: string,
+  listingId: string,
+  brokerageId: string,
+): Promise<ListingStatusGate | undefined> {
+  if (!isGatedStage(toStage)) return undefined
+  const { listingAgreementComplianceState } = await import("@/lib/listings/listing-activation-gate")
+  const state = await listingAgreementComplianceState(supabase as any, { listingId, brokerageId })
+  if (state === "unknown") {
+    console.error(
+      `[listing-lifecycle] listing ${listingId} → ${toStage}: the listing-agreement compliance read was REFUSED, so the gate could not run. listings.status is left untouched — this is NOT "compliance has not passed" and must not be chased as one`,
+    )
+  }
+  return { listingAgreementCompliancePassed: state === "passed" }
 }
 
 export async function advanceListingStageService(
@@ -463,6 +501,13 @@ export async function advanceListingStageService(
     return { success: false, error: `Could not record the stage change: ${historyError.message}` }
   }
 
+  // ── THE RULING'S GATE (owner 2026-09-05) ────────────────────────────────────
+  // Only a GATED target stage pays for a read; isGatedStage is derived from the map
+  // itself, so an ungated advance costs exactly what it did before. `gate.brokerageId`
+  // here is the one this service already authorized against — the tenant is not
+  // re-derived from anything a caller supplied (§4).
+  const statusGate = await resolveListingStatusGate(supabase, toStage, listingId, gate.brokerageId)
+
   const { error: stageError } = await supabase
     .from("listings")
     .update({
@@ -471,8 +516,9 @@ export async function advanceListingStageService(
       // Keep the coarse listings.status in lockstep with the stage machine —
       // the same rule lib/kernel/lifecycle.ts applies on its path, from the
       // same shared map, so the two writers cannot disagree about whether a
-      // listing is publicly live.
-      ...(statusForStage(toStage) ? { status: statusForStage(toStage) } : {}),
+      // listing is publicly live. `statusGate` is resolved above, and only when
+      // the target stage is gated.
+      ...(statusForStage(toStage, statusGate) ? { status: statusForStage(toStage, statusGate) } : {}),
       updated_at:        now,
     })
     .eq("id", listingId)

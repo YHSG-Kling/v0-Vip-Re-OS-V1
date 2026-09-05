@@ -130,6 +130,41 @@ export interface ListingActivationGateParams {
   door?: string
 }
 
+/**
+ * OBLIGATION 1 ALONE, for the status map. Three states, and the third is the point.
+ *
+ * lib/listings/listing-status-sync.ts is PURE and does no I/O, so it takes the
+ * gate's VERDICT rather than re-deriving it. This is where that verdict comes
+ * from, and it DELEGATES to readListingCompliance — the same private function
+ * assertListingActivationAllowed uses for the same obligation — so there is
+ * exactly one implementation of "has the listing agreement cleared compliance?"
+ * in the tree (§6). A second predicate spelling those three column checks again
+ * is the defect this export exists to prevent, not a shortcut it permits.
+ *
+ * WHY THE RETURN IS THREE-VALUED AND NOT A BOOLEAN. supabase-js RESOLVES a
+ * refusal (CLAUDE.md §3), so `false` would fuse two facts a caller must keep
+ * apart: "read fine, the gate has not passed" and "the read was REFUSED, we do
+ * not know". §4 is explicit that a gate which cannot run must refuse rather than
+ * pass — but it must also not masquerade as a clean negative, because a caller
+ * that logs "not passed" for a refused read sends someone to chase paperwork
+ * that is already complete. `"unknown"` is that third state, and the status map
+ * treats it exactly as it treats `"not_passed"`: no status change.
+ *
+ * This reads ONLY obligation 1. It is NOT a substitute for the full gate — a
+ * listing whose agreement is compliant can still be missing required documents,
+ * signatures or initials, and only assertListingActivationAllowed answers that.
+ * Anything deciding whether a listing may go PUBLICLY LIVE must call the gate.
+ */
+export async function listingAgreementComplianceState(
+  supabase: SupabaseClient,
+  params: { listingId: string; brokerageId: string },
+): Promise<"passed" | "not_passed" | "unknown"> {
+  if (!UUID_RE.test(params.listingId) || !UUID_RE.test(params.brokerageId)) return "unknown"
+  const res = await readListingCompliance(supabase, params)
+  if (!res.ok) return "unknown"
+  return res.passed ? "passed" : "not_passed"
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function refuse(

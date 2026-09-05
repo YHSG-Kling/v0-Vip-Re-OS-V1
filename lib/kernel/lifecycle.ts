@@ -10,7 +10,7 @@ import type { TransitionLifecycleParams } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
-import { statusForStage } from "@/lib/listings/listing-status-sync"
+import { statusForStage, isGatedStage, type ListingStatusGate } from "@/lib/listings/listing-status-sync"
 
 // ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
 // Map lifecycle transitions to kernel events (explicit, not derived)
@@ -201,7 +201,40 @@ export async function transitionLifecycle(
   // MLS_ACTIVE but status still 'coming_soon'). Only market-state boundaries map; intermediate stages
   // leave status untouched. See lib/listings/listing-status-sync.ts.
   if (entityType.toLowerCase() === "listing_stage_machine") {
-    const syncedStatus = statusForStage(toState)
+    // A GATED STAGE COSTS A READ; NOTHING ELSE DOES. isGatedStage is derived from the map itself,
+    // so this stays correct if a second gated stage is ever added and never pays for a verdict the
+    // map would ignore. Every ungated boundary below behaves exactly as it did before wiring.
+    let gate: ListingStatusGate | undefined
+    if (isGatedStage(toState)) {
+      const { data: row, error: rowErr } = await (supabase as any)
+        .from("listings")
+        .select("brokerage_id")
+        .eq("id", entityId)
+        .maybeSingle()
+      // TENANCY: the brokerage comes from the LISTING ROW, not from a caller's parameter (§4). This
+      // is a self-consistency read — the agreement must belong to the listing's own brokerage — and
+      // the authorization to move this stage already happened upstream. A wrong or missing value
+      // can only NARROW the agreement query to nothing, i.e. to a refusal, never widen it.
+      const brokerageId = (row as { brokerage_id?: string } | null)?.brokerage_id ?? null
+      let state: "passed" | "not_passed" | "unknown" = "unknown"
+      if (rowErr || !brokerageId) {
+        console.error(
+          `[lifecycle] listing ${entityId} → ${toState} is a GATED stage but its brokerage could not be read (${rowErr?.message ?? "no brokerage_id on the row"}); the compliance verdict is UNKNOWN and listings.status is left untouched`,
+        )
+      } else {
+        const { listingAgreementComplianceState } = await import("@/lib/listings/listing-activation-gate")
+        state = await listingAgreementComplianceState(supabase as any, { listingId: entityId, brokerageId })
+        if (state === "unknown") {
+          console.error(
+            `[lifecycle] listing ${entityId} → ${toState}: the listing-agreement compliance read was REFUSED, so the gate could not run. status left untouched — this is NOT the same as "compliance has not passed" and must not be chased as one`,
+          )
+        }
+      }
+      // FAIL CLOSED (§4). Only an explicit pass yields the gated status; not_passed and unknown both
+      // leave listings.status exactly as it was. "Nobody checked" never renders as "checked and fine".
+      gate = { listingAgreementCompliancePassed: state === "passed" }
+    }
+    const syncedStatus = statusForStage(toState, gate)
     if (syncedStatus) updatePayload.status = syncedStatus
   }
   const { error: updateError } = await (supabase as any)
