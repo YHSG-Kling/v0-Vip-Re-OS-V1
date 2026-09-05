@@ -80,6 +80,37 @@ export interface ListingPresentationInput {
   bathrooms?:      number | null
   sqft?:           number | null
   yearBuilt?:      number | null
+  /**
+   * A CMA THE CALLER HAS ALREADY PAID FOR. Supply it and this builder will NOT run
+   * its own — the one lever that stops the same property being valued twice.
+   *
+   * WHY THIS EXISTS. lib/workflow-orchestrator/chains/listing-appt-prep.ts runs
+   * generate_cma as step 1 (writing a cma_reports row) and then builds the
+   * presentation as step 2. Both call the SAME engine, lib/cma/ai-cma-orchestrator
+   * ::runAiCma, and each sources comps from a PAID provider — so every autonomous
+   * appointment bought two valuations of one house. Worse than the spend: the two
+   * runs are independent, so the number in the agent's CMA report could disagree
+   * with the number in the seller's presentation and in the pricing chapter reel,
+   * for the same home on the same day.
+   *
+   * IT IS A NARROW STRUCTURAL TYPE, NOT AiCmaResult, on purpose. These five fields
+   * are exactly what this builder reads. Accepting the full result would invite a
+   * caller to hand over a partially-built one and would couple this file to the
+   * whole orchestrator surface; naming the five keeps the contract honest and lets
+   * the compiler refuse anything short.
+   *
+   * UNITS: confidenceScore is the engine's native 0..1, NOT the 0..100
+   * `confidenceLevel` that generateAICMA also returns for display. Passing the
+   * percentage here would render a confidence of 8500% and would look right in
+   * every type check — which is why generateAICMA now returns both.
+   */
+  cma?: {
+    estimatedValueLow:  number
+    estimatedValueMid:  number
+    estimatedValueHigh: number
+    confidenceScore:    number
+    aiNarrative:        string
+  }
 }
 
 export interface ListingPresentationResult {
@@ -346,8 +377,11 @@ export async function buildListingPresentation(
         })()
       : []
 
-    // 1. Run CMA (existing infrastructure) — now feeds enriched fields when available
-    const cma = await runAiCma({
+    // 1. THE CMA. Reuse the caller's when it supplied one — see ListingPresentationInput.cma
+    //    — otherwise run the engine here as before. `??` and not `||`: a caller
+    //    passing a legitimately zero-valued field must not fall through to a second
+    //    paid run.
+    const cma = input.cma ?? await runAiCma({
       mode: "standard",
       brokerageId: input.brokerageId,
       agentUserId: input.agentUserId ?? null,

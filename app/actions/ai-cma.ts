@@ -353,6 +353,15 @@ export async function generateAICMA(params: CMAParams) {
         estimatedValueLow: cma.estimatedValueLow,
         estimatedValueHigh: cma.estimatedValueHigh,
         confidenceLevel: Math.round(cma.confidenceScore * 100),
+        // THE RAW SCORE, BESIDE THE PERCENTAGE, AND THE TWO ARE NOT THE SAME UNIT.
+        // `confidenceLevel` is 0..100 for display. Every downstream consumer of the
+        // ENGINE's output (lib/workflow/intelligence/listing-presentation-builder.ts
+        // among them) works in confidenceScore's native 0..1, and a caller reusing
+        // this valuation to avoid a second paid run would otherwise have to divide
+        // by 100 to recover it — a conversion that is lossy below one percent and,
+        // far worse, silently right-looking if forgotten: 0.85 would render as a
+        // confidence of 8500%. Carrying both means nobody has to convert.
+        confidenceScore: cma.confidenceScore,
         valuationMethod: "Adjusted comparable sales (state appraiser guideline rates)",
         narrative: cma.aiNarrative,
       },

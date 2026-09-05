@@ -118,6 +118,11 @@ const realExecutors: ListingApptPrepExecutors = {
       bathrooms:       p.bathrooms ?? null,
       sqft:            p.sqft ?? null,
       yearBuilt:       p.yearBuilt ?? null,
+      // THE CMA STEP 1 ALREADY PAID FOR. Without this the builder runs the SAME
+      // engine again (lib/cma/ai-cma-orchestrator::runAiCma), buying a second set
+      // of comps for the same house — and producing a second, independent number
+      // that can disagree with the cma_reports row the agent opens.
+      cma:             args.cma ?? undefined,
     })
     if (!built.success || !built.result) {
       return { success: false, error: built.error ?? "Listing presentation build failed" }
@@ -338,6 +343,37 @@ export const listingApptPrepChain: WorkflowChain = {
           // owner's CMA ruling. A prospect with no listing yet passes null.
           listingId: ctx.listingId ?? null,
           contactId: ctx.contactId ?? null,
+          // ── STEP 1'S CMA, REUSED RATHER THAN RE-BOUGHT ──────────────────────
+          // The comment introducing this step has said "(uses CMA output)" since it
+          // was written, and until now it did not: generate_cma's output was never
+          // read by anything, so the builder ran the engine a second time. Mapped
+          // into the builder's narrow shape here.
+          //
+          // UNITS: confidenceScore is the engine's native 0..1. `valuation` also
+          // carries confidenceLevel (0..100) for display — passing THAT would look
+          // correct to every type check and render an 8500% confidence.
+          //
+          // Absent or malformed (a gated/skipped step 1, an older run replayed) it
+          // stays undefined and the builder values the property itself, exactly as
+          // before. Reuse is an optimisation, never a precondition.
+          cma: (() => {
+            const v = ctx.previousStepOutputs.generate_cma?.valuation as
+              | { estimatedValueLow?: number; estimatedValue?: number; estimatedValueHigh?: number; confidenceScore?: number; narrative?: string }
+              | undefined
+            if (
+              typeof v?.estimatedValueLow !== "number" ||
+              typeof v?.estimatedValue !== "number" ||
+              typeof v?.estimatedValueHigh !== "number" ||
+              typeof v?.confidenceScore !== "number"
+            ) return undefined
+            return {
+              estimatedValueLow:  v.estimatedValueLow,
+              estimatedValueMid:  v.estimatedValue,
+              estimatedValueHigh: v.estimatedValueHigh,
+              confidenceScore:    v.confidenceScore,
+              aiNarrative:        v.narrative ?? "",
+            }
+          })(),
           appointmentId,
           appointmentAt: ctx.metadata.appointment_date ?? null,
           propertyData: {

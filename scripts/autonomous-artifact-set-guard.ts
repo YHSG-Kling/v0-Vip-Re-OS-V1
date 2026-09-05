@@ -108,6 +108,37 @@ check("the chapter-video generator names no packet",
 check("the chain hands no packet to the reel step",
   !/packet[\s\S]{0,80}generateChapterVideos/.test(CHAIN))
 
+console.log("\n── 3b · the house is valued ONCE, not twice ──")
+{
+  const BUILDER_SRC = BUILDER
+  const CMA_ACTION  = src("app/actions/ai-cma.ts")
+  check("the builder ACCEPTS a caller-supplied CMA",
+    /cma\?:\s*\{/.test(BUILDER_SRC))
+  check("…and skips its own paid run when one is given",
+    /input\.cma \?\? await runAiCma\(/.test(BUILDER_SRC),
+    "`??` and not `||` — a legitimately zero-valued field must not fall through to a second paid run")
+  check("the chain forwards step 1's valuation into that seam",
+    /previousStepOutputs\.generate_cma\?\.valuation/.test(CHAIN) && /cma:\s*args\.cma/.test(CHAIN))
+  check("step 1's output is READ — the step comment has claimed 'uses CMA output' since it was written",
+    /previousStepOutputs\.generate_cma/.test(CHAIN))
+
+  // THE UNIT TRAP, asserted rather than hoped. generateAICMA returns BOTH
+  // confidenceLevel (0..100, for display) and confidenceScore (0..1, the engine's
+  // native unit). The builder wants the score. Handing it the level type-checks
+  // perfectly and renders a confidence of 8500%.
+  check("generateAICMA returns the RAW confidenceScore beside the display percentage",
+    /confidenceScore: cma\.confidenceScore/.test(CMA_ACTION) && /confidenceLevel: Math\.round/.test(CMA_ACTION))
+  check("the chain maps confidenceScore, NOT confidenceLevel, into the builder",
+    /confidenceScore:\s*v\.confidenceScore/.test(CHAIN) && !/confidenceScore:\s*v\.confidenceLevel/.test(CHAIN))
+  check("a malformed or absent step-1 valuation falls back to valuing in the builder (reuse is an optimisation, not a precondition)",
+    /return undefined/.test(CHAIN) && /typeof v\?\.estimatedValueLow !== "number"/.test(CHAIN))
+
+  check("POSITIVE CONTROL: the seam finder rejects an unconditional run",
+    !/input\.cma \?\? await runAiCma\(/.test("const cma = await runAiCma({ mode: 'standard' })"))
+  check("POSITIVE CONTROL: the unit finder would catch confidenceLevel being passed as the score",
+    /confidenceScore:\s*v\.confidenceLevel/.test("confidenceScore: v.confidenceLevel,"))
+}
+
 console.log("\n── 4 · id classes are not crossed on the way in (§3) ──")
 check("the chain passes agentUserId (users.id) to the builder, which is what it takes",
   /agentUserId:\s*args\.agentUserId/.test(CHAIN) && /agentUserId/.test(BUILDER))
