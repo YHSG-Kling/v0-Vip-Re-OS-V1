@@ -1310,11 +1310,36 @@ export async function generateListingLandingPage(params: {
       if (listing) listingData = listing as Record<string, unknown>
     }
 
+    // ── THE TEMPLATE THE COLUMN ALWAYS MEANT (owner ruling 2026-09-05) ────────
+    // Resolved agent > brokerage > global from content_templates, the table that
+    // was already live and carrying this exact shape. A refused lookup is
+    // REPORTED, not folded into "no template configured": those are different
+    // facts and an agent debugging why their template did not apply must not be
+    // told it does not exist (§3 — supabase-js resolves refusals).
+    const { resolveLandingTemplate, applyLandingTemplateToPrompt } = await import("@/lib/marketing/landing-template")
+    const templateChoice = await resolveLandingTemplate(supabase, {
+      brokerageId: params.brokerageId,
+      agentId: params.agentUserId ?? null,
+      explicitTemplateId: params.templateId ?? null,
+    })
+    if (templateChoice.lookupFailed) {
+      console.error(
+        `[listing-landing] template lookup REFUSED for brokerage ${params.brokerageId} — the page is still generated free-form, but this is NOT "no template configured":`,
+        templateChoice.reason,
+      )
+    } else if (templateChoice.reason) {
+      console.warn(`[listing-landing] ${templateChoice.reason}`)
+    }
+
     // Generate AI description for the landing page
-    const prompt = `Write a compelling property landing page headline and description.
+    const basePrompt = `Write a compelling property landing page headline and description.
 Property: ${JSON.stringify(listingData)}.
 Output a JSON object with: headline (string, max 80 chars), subheadline (string, max 120 chars), body (string, max 300 chars).
 Them-first: focus on what the buyer gains, not agent promotion.`
+    // The template STEERS the model. It is never executed or interpolated as code —
+    // these rows are tenant-authored, and a template that could execute would be a
+    // tenant-authored code path.
+    const prompt = applyLandingTemplateToPrompt(basePrompt, templateChoice.template)
 
     let pageContent: Record<string, string> = {
       headline: `Beautiful Home — ${listingData.address ?? "Available Now"}`,
@@ -1337,26 +1362,18 @@ Them-first: focus on what the buyer gains, not agent promotion.`
       .upsert({
         brokerage_id: params.brokerageId,
         contact_id: params.contactId ?? null,
-        // UNRESOLVED, RECORDED (orphan doctrine §1, 2026-09-04). `template_id`
-        // is written here and by lib/workflow/adapters/listing-landing-page.ts:49
-        // and read by NOBODY, and the reason is that the OTHER HALF OF THE
-        // FEATURE DOES NOT EXIST: there is no landing-page template table
-        // anywhere in this tree (the column carries no FK — see
-        // scripts/schema-fk-map.ts:461, where listing_landing_pages has FKs to
-        // brokerages/contacts/listings and nothing else), and the value comes
-        // from a bare uuid box in the sequence step palette
-        // (lib/workflow/step-palette.ts:245, `listing_page_template_id`). The
-        // page's markup is generated free-form by the model above, so no
-        // template is applied at render time either.
+        // RESOLVED 2026-09-05 (the note that stood here recorded this as an open
+        // owner question; the owner said templates are wanted). The column now
+        // records the template that ACTUALLY shaped this page — the resolved one,
+        // not the one that was asked for. Those differ whenever an agent names a
+        // template that is not an active listing-page template in their brokerage,
+        // and storing the request rather than the outcome would make the page claim
+        // a provenance it does not have.
         //
-        // So this is NOT a wiring gap a lane can close: the missing half is a
-        // template system, which is a product decision, not a reader. Deleting
-        // the column would silently drop the ids agents have already typed into
-        // that field, and building a fake reader would report a template as
-        // "applied" when nothing applies it. Left as-is, named here so the next
-        // census pass does not re-litigate it. Integrator: this one needs the
-        // owner to say whether landing-page templates are wanted.
-        template_id: params.templateId ?? null,
+        // m606 gave the column its id class: it FKs content_templates ON DELETE SET
+        // NULL, so a published page with its own URL and lead history outlives the
+        // template that shaped it. NULL means genuinely free-form.
+        template_id: templateChoice.template?.id ?? null,
         listing_id: params.listingId ?? null,
         slug: pageSlug,
         content: pageContent,
