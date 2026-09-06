@@ -806,7 +806,23 @@ export async function launchListingAction(params: {
  * and keeping the listing_stage_history write — and it is still out of scope here.
  * Until then this action stays exported, correct and unwired: two writers is the one
  * outcome worse than one.
- *
+
+ * ── STATUS-SYNC STAKE, ADDED 2026-09-05 (wave 30) ─────────────────────────────
+ * The two writers' asymmetry now carries MORE weight than when the paragraph above
+ * was written. Only the advanceListingStageService path keeps listings.status in
+ * lockstep with lifecycle_stage (lib/listings/listing-status-sync.ts::statusForStage,
+ * called with the compliance-gate VERDICT resolved from
+ * lib/listings/listing-activation-gate.ts::listingAgreementComplianceState). The
+ * executeListingTransition path this action takes reaches transitionLifecycle, which
+ * ALSO syncs — but only for entityType listing_stage_machine, and the two code paths
+ * resolve the gate verdict independently. Since wave 30 the map also stamps
+ * `listing_signed` on LISTING_AGREEMENT_SIGNED (owner: "the listing signed is part of
+ * the gate to start compliance") and `coming_soon` on COMING_SOON_PREP only when the
+ * gate has PASSED. Wiring this action as a second door would therefore give a listing
+ * two independent readers of one gate on one column — the CONSOLIDATION named above
+ * must make executeListingTransition delegate the status sync to the same call, not
+ * re-derive it. That is the stake; it is recorded here for whoever lands it.
+ * *
  * Proof of the gate: scripts/lifecycle-lib-defects-simulator.ts (defect d1).
  */
 export async function updateListingStageAction(params: {
@@ -910,6 +926,10 @@ export async function generateListingDescriptionAction(params: {
  *
  * Wire it once the stage-writer consolidation lands; it is then the natural home for
  * an explicit "Close this listing" control.
+ *
+ * STATUS-SYNC STAKE (wave 30): CLOSED maps to `sold` in listing-status-sync.ts, so
+ * whichever writer lands the consolidation must keep that sync on ONE path — see the
+ * paragraph of the same name on updateListingStageAction above.
  */
 export async function closeListingAction(listingId: string) {
   const ctx = await resolveCallerContext()
@@ -992,6 +1012,10 @@ export async function prefillListingFormAction(listingId: string) {
  *
  * Wire this when a listing surface exists that is NOT the lifecycle page — a mobile
  * workspace or an embedded panel.
+ *
+ * STATUS-SYNC STAKE (wave 30): a READ, so none — but any surface that wires this and
+ * shows listings.status must expect the wave-30 sequence listing_signed → coming_soon
+ * → active, and must not render `listing_signed` as "not yet signed".
  */
 export async function loadListingWorkspaceAction(listingId: string) {
   const ctx = await resolveCallerContext()

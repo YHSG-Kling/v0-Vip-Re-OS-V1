@@ -298,15 +298,27 @@ function reportWriterlessStatuses() {
        "and only literal `status: \"…\"` object keys. Writes via a variable, an .rpc(), a migration " +
        "backfill or a DB trigger are invisible to it (CLAUDE.md §3) and are NOT evidence of a " +
        "writerless value. This is a published measurement, not an enforcement.")
-  if (unwritten.includes("listing_signed")) {
-    note("OWNER QUESTION (recorded, not acted on): `listing_signed` is admitted by the live CHECK " +
-         "and NO AUTOMATED PATH emits it. Stated precisely, because 'writerless' would overstate " +
-         "it: app/actions/listings-kernel.ts::updateListingStatus writes whatever the picker " +
-         "submits, and the picker renders all ten, so a HUMAN can set it by hand — the scan cannot " +
-         "see that write because the value arrives in a variable. What is absent is any code path " +
-         "that sets it on its own. The 2026-09-05 ruling puts `coming_soon` at the " +
-         "agreement-signed moment, so `listing_signed` stays automation-writerless. NOTHING is " +
-         "deleted from any vocabulary on that basis (§1) and it is NOT repurposed here.")
+  // ── RESOLVED 2026-09-05 — owner: "the listing signed is part of the gate to start compliance." ──
+  // The OWNER QUESTION that stood here (listing_signed admitted by the CHECK, written by no
+  // automated path) is answered: it is the status at the moment compliance BEGINS, stamped
+  // UNGATED on LISTING_AGREEMENT_SIGNED. These assert the ruling rather than a waypoint — the
+  // status is derived from the map, the sequence from the three stages the owner named.
+  {
+    const signed = mappedStages().find((m) => m.stage === "LISTING_AGREEMENT_SIGNED")
+    check("LISTING_AGREEMENT_SIGNED yields a status (compliance STARTS here — it is not silent)",
+      signed !== undefined)
+    check("…and that status is listing_signed, the live CHECK value nothing automated wrote before",
+      signed?.status === "listing_signed" && LIVE_STATUS.includes("listing_signed"))
+    check("…UNGATED: starting compliance needs no pass, only the executed agreement",
+      signed?.gate === null)
+    const prep = mappedStages().find((m) => m.stage === "COMING_SOON_PREP")
+    check("the sequence reads in the owner's words: listing_signed → coming_soon (gated) → active (MLS only)",
+      signed?.status === "listing_signed" && prep?.status === "coming_soon" && prep?.gate !== null &&
+      mappedStages().filter((m) => m.status === "active").every((m) => m.stage === "MLS_ACTIVE"))
+    check("listing_signed is therefore no longer writerless (the published measurement moves for a reason)",
+      !unwritten.includes("listing_signed"))
+    check("NEGATIVE CONTROL: the stage finder returns nothing for a stage the map does not carry",
+      mappedStages().find((m) => m.stage === "MEDIA_CAPTURE") === undefined)
   }
 }
 

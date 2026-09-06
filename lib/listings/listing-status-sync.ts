@@ -95,6 +95,16 @@ export interface ListingStatusGate {
 // lifecycle_stage → coarse status, at market-state boundaries only. Unlisted stages → undefined
 // (status untouched). Keys must be valid lifecycle_stage values (live CHECK).
 const STATUS_FOR_STAGE: Record<string, ListingStatus> = {
+  // ── OWNER RULING 2026-09-05: "the listing signed is part of the gate to start compliance." ──
+  // The signed agreement is the moment compliance BEGINS, not the moment it passes — so this
+  // stage is UNGATED and yields `listing_signed`, the live CHECK value that until now nothing
+  // automated ever wrote (recorded as an OWNER QUESTION in test:listing-status-two-senses; this
+  // is the answer). The pass is a different stage: COMING_SOON_PREP, gated below, yields
+  // `coming_soon`. The status sequence therefore reads in the owner's words —
+  //   listing_signed (compliance started) → coming_soon (compliance passed) → active (MLS-live) —
+  // and no two of those are the same fact. markAgreementSigned reaches this through
+  // transitionLifecycle, so the stamp is autonomous: no surface has to remember to set it.
+  LISTING_AGREEMENT_SIGNED: "listing_signed",
   COMING_SOON_ACTIVE: "coming_soon", // publicly teased, pre-MLS
   MLS_ACTIVE:         "active",      // live on MLS — must surface in buyer search. THE ONLY 'active'.
   UNDER_CONTRACT:     "pending",     // accepted offer, off the active market
