@@ -29,6 +29,7 @@ import { Video } from "@remotion/media"
 import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
+import { isVideoUrl } from "../lib/video/broll-url"
 
 export interface BrollClip {
   /** Either an image URL OR a video URL. The helper detects by
@@ -103,10 +104,11 @@ export interface BrollLayerProps {
  * the export buys is that both sides are wrong in the SAME direction at the same
  * time, which is the most a syntactic check can offer.
  */
-export function isVideoUrl(url: string): boolean {
-  const ext = url.split("?")[0].split("#")[0].toLowerCase()
-  return ext.endsWith(".mp4") || ext.endsWith(".webm") || ext.endsWith(".mov") || ext.endsWith(".m4v")
-}
+// MOVED to lib/video/broll-url.ts (2026-09-06) and re-exported here so the
+// layer and its proof keep one predicate. A server producer that imported it
+// from THIS file dragged ./components/SafeImg (useState) across the React
+// Server Component boundary and broke next-build — see that module's header.
+export { isVideoUrl } from "../lib/video/broll-url"
 
 /**
  * The frame window one clip occupies, in the coordinate space of whatever

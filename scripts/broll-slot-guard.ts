@@ -423,12 +423,21 @@ console.log("\n── the one producer that supplies NO measurements supplies on
   // occur for it. What CAN occur is a video URL arriving in listings.photos, which
   // would mount <Video> in an evenly divided slot with no measured length — the
   // exact frozen still. So the assertion is about EXCLUSION, not measurement.
-  ok("the layer's video predicate is EXPORTED, so a producer can ask the same question",
-    /export function isVideoUrl/.test(LAYER))
+  // The predicate lives in lib/video/broll-url.ts (no React in it) and the layer
+  // RE-EXPORTS it. The producer must import the pure module, never the component
+  // file: remotion/_BrollLayer.tsx imports SafeImg (useState), and a server module
+  // reaching it — even by dynamic import — is an RSC-boundary break that turned
+  // next-build red on every commit of the branch (2026-09-06).
+  ok("the layer re-exports the ONE video predicate from the pure module",
+    /export \{ isVideoUrl \} from "\.\.\/lib\/video\/broll-url"/.test(LAYER))
+  ok("the producer imports the PURE module for it, never the component file (RSC boundary)",
+    /import\("@\/lib\/video\/broll-url"\)/.test(PRODUCER) && !/@\/remotion\/_BrollLayer/.test(PRODUCER))
   ok("the producer uses THAT predicate rather than a second copy of the extension list (§6)",
     /isVideoUrl/.test(PRODUCER) &&
     !/\.mp4|\.webm|\.m4v/.test(PRODUCER),
     "a second extension list would drift, and the producer would believe it sent a photo while the layer mounted a Video")
+  ok("POSITIVE CONTROL: the boundary finder catches the old import",
+    /@\/remotion\/_BrollLayer/.test('const { isVideoUrl } = await import("@/remotion/_BrollLayer")'))
   ok("a video URL in listings.photos is EXCLUDED from the b-roll, not passed along unmeasured",
     /filter\(\(u\) => !isVideoUrl\(u\)\)/.test(PRODUCER))
   ok("…and the exclusion is REPORTED, so a listing carrying video tours is visible rather than silently trimmed",

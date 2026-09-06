@@ -381,7 +381,11 @@ export async function requestSellerUpdateReel(
     // exists to prevent, arriving through the one producer that supplies no
     // measurements. So a video URL is EXCLUDED here rather than passed along
     // unmeasured, using the RENDERER'S OWN predicate so the two cannot drift (§6).
-    const { isVideoUrl } = await import("@/remotion/_BrollLayer")
+    // The PURE module, never the component file: importing remotion/_BrollLayer
+    // from this server module dragged SafeImg (useState) across the RSC boundary
+    // and next-build refused the whole branch (2026-09-06). Same predicate — the
+    // layer re-exports it from lib/video/broll-url.ts.
+    const { isVideoUrl } = await import("@/lib/video/broll-url")
     const allUrls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
       .filter((u): u is string => typeof u === "string" && u.startsWith("http"))
     const videoUrls = allUrls.filter(isVideoUrl)
