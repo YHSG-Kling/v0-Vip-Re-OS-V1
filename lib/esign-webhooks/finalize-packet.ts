@@ -247,6 +247,25 @@ async function finalizeMatchingOffer(
         status:                           "accepted",
       })
       .eq("id", matchedOffer.id)
+
+    // THE OFFER COMPLIANCE LOOP STARTS HERE (owner, 2026-09-06: "…looped for
+    // offers turning into active transactions after pass and if fail, same as
+    // the listing autonomous loop"). Both sides have now signed; the loop asks
+    // the ONE gate (submitOfferToCompliance) and on a pass the transaction is
+    // created under contract with no click. Until this wire existed a counter
+    // executed through this webhook sat fully signed forever unless a human
+    // pressed "submit to compliance". Best-effort: a webhook never fails on it.
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase, {
+        brokerageId: matchedOffer.brokerage_id as string,
+        offerId:     matchedOffer.id as string,
+        trigger:     "agreement_executed",
+        actorUserId: null,
+      })
+    } catch (err) {
+      console.error("[finalize-packet] offer compliance loop failed (non-fatal):", (err as Error).message)
+    }
   } else {
     // Standard buyer-first path (original offer, not yet seller-countered):
     // mark buyer side as signed; seller side still pending the agent's

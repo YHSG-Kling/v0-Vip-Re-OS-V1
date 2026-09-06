@@ -149,27 +149,54 @@ export async function POST(request: NextRequest) {
       if (loop_id) {
         const { data: matchedOffer } = await supabase
           .from("offers")
-          .select("id, contact_id")
+          .select("id, contact_id, brokerage_id, transaction_id, buyer_signed_at, seller_signed_at, fully_signed_contract_received_at")
           .eq("esign_provider", loop_id)
           .maybeSingle()
 
         if (matchedOffer) {
-          await supabase
+          // A dotloop loop reaching "fully signed" is the provider attesting that
+          // EVERY signer signed. The execute predicate
+          // (lib/transactions/offer-execution-state.ts) reads the OS's own
+          // vocabulary for that same fact — buyer_signed_at, seller_signed_at,
+          // fully_signed_contract_received_at — so those are stamped here where
+          // still empty. A leg a human already recorded is never overwritten.
+          const { error: offerStampError } = await supabase
             .from("offers")
             .update({
-              esign_status:       "fully_signed",
-              esign_completed_at: now,
+              esign_status:                      "fully_signed",
+              esign_completed_at:                now,
+              buyer_signed_at:                   (matchedOffer as any).buyer_signed_at ?? now,
+              seller_signed_at:                  (matchedOffer as any).seller_signed_at ?? now,
+              fully_signed_contract_received_at: (matchedOffer as any).fully_signed_contract_received_at ?? now,
             })
             .eq("id", matchedOffer.id)
+          if (offerStampError) console.error(`[dotloop] offer ${matchedOffer.id} fully-signed stamp refused: ${offerStampError.message}`)
 
           await logEventAndTrigger({
-            brokerage_id: "",
+            brokerage_id: (matchedOffer as any).brokerage_id ?? "",
             event_type: OFFER_AUDIT_EVENT.ESIGN_COMPLETED,
             user_id:    matchedOffer.contact_id,
             payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
             source:     "webhook",
             dedupe_key: `offer-esign-complete-${matchedOffer.id}`,
           } as any)
+
+          // THE OFFER COMPLIANCE LOOP STARTS HERE — same door as finalize-packet.
+          // Both sides signed → the ONE gate → transaction under contract on a
+          // pass, blockers to tc + compliance officer + agents on a fail.
+          if (!offerStampError && (matchedOffer as any).brokerage_id) {
+            try {
+              const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+              await runOfferComplianceLoop(supabase as any, {
+                brokerageId: (matchedOffer as any).brokerage_id as string,
+                offerId:     matchedOffer.id as string,
+                trigger:     "agreement_executed",
+                actorUserId: null,
+              })
+            } catch (err) {
+              console.error("[dotloop] offer compliance loop failed (non-fatal):", (err as Error).message)
+            }
+          }
         }
 
         // ── Esign completion: listing_agreements ─────────────────────────────

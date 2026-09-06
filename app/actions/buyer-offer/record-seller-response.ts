@@ -278,10 +278,18 @@ export async function recordSellerResponse(
   // FULLY EXECUTED (seller accepted) → autonomously run the compliance scan + create the transaction
   // (under contract). No separate "submit to compliance" click — the loop completes itself. Self-
   // gating (no transaction on a failed scan) + idempotent. Best-effort; never blocks the response.
+  // Entered through the offer compliance LOOP (lib/transactions/offer-compliance-loop.ts)
+  // so this door records its verdict on offers.metadata.compliance_gate like every other
+  // door; the loop calls the same autoExecuteFullySignedOffer this used to call directly.
   if (responseType === "accepted") {
     try {
-      const { autoExecuteFullySignedOffer } = await import("@/lib/transactions/auto-execute-offer")
-      await autoExecuteFullySignedOffer(offerId, supabase)
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase as any, {
+        brokerageId: offer.brokerage_id as string,
+        offerId,
+        trigger:     "agreement_executed",
+        actorUserId: userId,
+      })
     } catch (err: any) {
       console.error("[record-seller-response] auto-execute failed (non-fatal):", err?.message ?? err)
     }

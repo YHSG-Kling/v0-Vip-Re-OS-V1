@@ -33,6 +33,7 @@
  * Returns the new transaction_id when success.
  */
 
+import { createHash }           from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID }          from "@/lib/validations"
 import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
@@ -370,20 +371,61 @@ export async function submitOfferToCompliance(
       ? packetScan.blockers.map(b => b.body).filter(Boolean)
       : []
 
-    await notifyComplianceFlag(supabase as any, {
-      brokerageId: offer.brokerage_id as string,
-      agentUserId: userId,
-      alsoNotifyUserIds: dealRecipients,
-      flag: {
-        type:        "compliance.submit_blocked",
-        severity:    "high",
-        title:       `Submit to compliance blocked: ${summaryBits.join(", ")}`,
-        body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nNot fully executed: ${unexecutedSummary.join("; ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.${remedies.length > 0 ? `\nWhat to do: ${remedies.join(" ")}` : ""}`,
-        entityType:  "offer",
-        entityId:    offerId,
-        offerId,
-      },
-    })
+    // IDEMPOTENT ON THE FAIL ARM — the same rule the listing loop keeps
+    // (lib/listings/listing-compliance-loop.ts). This arm is re-entered on every
+    // upload linked to the offer and on every e-sign completion; without memory
+    // it would page the TC, the compliance officer and both agents on every
+    // unrelated upload for as long as one document is missing. The blocker set
+    // is hashed and kept on offers.metadata.compliance_gate; the audience is
+    // paged only when the set CHANGES — a new blocker, or one cleared. The live
+    // blockers are always written back, so the surface a human opens shows the
+    // current list even when nobody was paged.
+    const blockers: string[] = [
+      ...audit.missing_blocking.map((d) => `missing document: ${d}`),
+      ...unexecutedSummary.map((s) => `not fully executed: ${s}`),
+      ...packetScan.blockers.map((b) => `packet: ${b.title}`),
+    ]
+    const blockersHash = createHash("sha256").update([...blockers].sort().join("\n")).digest("hex").slice(0, 16)
+    const priorMeta = ((offer.metadata ?? {}) as Record<string, unknown>)
+    const priorGate = (priorMeta.compliance_gate ?? {}) as { blockers_hash?: string }
+    const blockerSetChanged = priorGate.blockers_hash !== blockersHash
+
+    if (blockerSetChanged) {
+      await notifyComplianceFlag(supabase as any, {
+        brokerageId: offer.brokerage_id as string,
+        agentUserId: userId,
+        alsoNotifyUserIds: dealRecipients,
+        flag: {
+          type:        "compliance.submit_blocked",
+          severity:    "high",
+          title:       `Submit to compliance blocked: ${summaryBits.join(", ")}`,
+          body:        `Missing required: ${audit.missing_blocking.join(", ") || "(none)"}.\nNot fully executed: ${unexecutedSummary.join("; ") || "(none)"}.\nPacket blockers: ${packetScan.blockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.${remedies.length > 0 ? `\nWhat to do: ${remedies.join(" ")}` : ""}`,
+          entityType:  "offer",
+          entityId:    offerId,
+          offerId,
+        },
+      })
+    }
+
+    // An UPDATE matching nothing also resolves (§3): tenant filter on the write,
+    // rows counted, so a refused or unmatched write is not silence.
+    const { data: gateRows, error: gateWriteError } = await supabase
+      .from("offers")
+      .update({
+        metadata: {
+          ...priorMeta,
+          compliance_gate: {
+            state: "blocked", blockers, blockers_hash: blockersHash,
+            checked_at: new Date().toISOString(), notified: blockerSetChanged,
+          },
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", offerId)
+      .eq("brokerage_id", offer.brokerage_id as string)
+      .select("id")
+    if (gateWriteError) console.error(`[submit-to-compliance] gate state for offer ${offerId} not recorded: ${gateWriteError.message}`)
+    else if (!gateRows || gateRows.length === 0) console.error(`[submit-to-compliance] gate state for offer ${offerId} matched no row (wrong tenant?)`)
 
     return {
       success: false,

@@ -324,6 +324,28 @@ export async function scanUploadedDocument(params: {
     }
   }
 
+  // Post-scan hook 0c — THE OFFER COMPLIANCE LOOP RE-ENTERS HERE (owner, 2026-09-06:
+  // "…looped for offers turning into active transactions after pass and if fail,
+  // same as the listing autonomous loop"). A document uploaded against an offer
+  // (metadata.linked_offer_id — the same link the participant populator below
+  // reads) re-asks the ONE offer gate; on a pass the transaction is created under
+  // contract, on a fail the blockers are re-recorded and the roles are paged only
+  // if the set changed. Idle for an offer that is not yet fully executed.
+  const linkedOfferId = ((doc as any).metadata?.linked_offer_id as string | undefined) ?? null
+  if (linkedOfferId) {
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase as any, {
+        brokerageId: doc.brokerage_id as string,
+        offerId:     linkedOfferId,
+        trigger:     "document_uploaded",
+        actorUserId: ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] offer compliance loop failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   // Post-scan hook: when the classification yields participant info (PAL →
   // lender; signed_contract → title_company), wire the extracted fields
   // straight into transaction_participants if a transaction already exists.

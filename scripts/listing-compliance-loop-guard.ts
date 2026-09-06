@@ -104,6 +104,34 @@ check("dotloop likewise",
 check("the auto-create INSERT uses the START status constant, not the passed one",
   /STATUS_AT_LISTING_AGREEMENT_SIGNED/.test(AUTOCR) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(AUTOCR))
 
+console.log("\n── 7 · chronology: coming-soon prep never jumps to MLS active (owner, 2026-09-06) ──")
+{
+  // The engine's edges, DERIVED from its own fromState/toState pairs rather than
+  // typed here, so this section measures the live process and not a memory of it.
+  const engineEdges: Array<[string, string]> = []
+  const re = /fromState:\s*"([A-Z_]+)",\s*toState:\s*"([A-Z_]+)"/g
+  for (let m = re.exec(ENGINE); m; m = re.exec(ENGINE)) engineEdges.push([m[1], m[2]])
+  check("the engine's transition edges were found (a finder that saw none would pass everything below)", engineEdges.length >= 10, `found ${engineEdges.length}`)
+
+  const forbidden = engineEdges.filter(([f, t]) => {
+    const def = getStageDefinition(t as never)
+    return !!def && def.allowedFrom.length > 0 && !(def.allowedFrom as readonly string[]).includes(f)
+  })
+  check("EVERY engine hop is an edge the stage table allows (two spellings of one chronology are a §6 defect — this held 0 before the merge; a count that moves is the finding)",
+    forbidden.length === 0, forbidden.map(([f, t]) => `${f}→${t}`).join(", "))
+  check("no engine hop goes COMING_SOON_PREP → MLS_ACTIVE",
+    !engineEdges.some(([f, t]) => f === "COMING_SOON_PREP" && t === "MLS_ACTIVE"))
+  const mlsActive = getStageDefinition("MLS_ACTIVE")
+  check("the table enters MLS_ACTIVE only from MLS_READY or OPEN_HOUSE_MARKETING — never from a prep stage",
+    !!mlsActive && (mlsActive.allowedFrom as readonly string[]).every((s) => s === "MLS_READY" || s === "OPEN_HOUSE_MARKETING"))
+  check("the loop's window ENDS at COMING_SOON_PREP", /WINDOW_END:\s*ListingStage = "COMING_SOON_PREP"/.test(LOOP))
+  check("…and the loop never names a live stage as a hop target",
+    !/toState:\s*"(MLS_ACTIVE|MLS_READY|COMING_SOON_ACTIVE)"/.test(LOOP) && !/WINDOW_\w+:\s*ListingStage = "(MLS_ACTIVE|MLS_READY|COMING_SOON_ACTIVE)"/.test(LOOP))
+  const activeWriters = (ENGINE.match(/toState:\s*"MLS_ACTIVE"/g) ?? []).length
+  check("the engine writes MLS_ACTIVE from exactly one door (activateMLS, behind the gate)", activeWriters === 1, `found ${activeWriters}`)
+  check("POSITIVE CONTROL: the edge finder sees a pair", /fromState:\s*"([A-Z_]+)",\s*toState:\s*"([A-Z_]+)"/.test('fromState:   "COMING_SOON_PREP",\n    toState:     "MLS_ACTIVE",'))
+}
+
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the trigger finder sees a wired call", wired('await runListingComplianceLoop(db, { brokerageId, listingId, trigger: "document_uploaded" })', "document_uploaded"))
 check("NEGATIVE CONTROL: …and rejects the wrong trigger", !wired('runListingComplianceLoop(db, { trigger: "agreement_executed" })', "document_uploaded"))

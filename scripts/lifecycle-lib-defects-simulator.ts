@@ -197,9 +197,16 @@ function everyRouteTo(target: string, mustPassThrough: string, table: ParsedStag
     const def = byName.get(stage)
     if (!def) return [...path, `${stage}(unknown)`]
     if (def.allowedFrom.length === 0) return [...path, stage] // reached a root
-    const key = `${stage}::${path.length}`
-    if (seen.has(key)) return null
-    seen.add(key)
+    // A stage already on the current path is a CYCLE (the 2026-09-06 chronology
+    // merge made prep ⇄ media one: COMING_SOON_PREP ← MEDIA_APPROVED ←
+    // MEDIA_CAPTURE ← COMING_SOON_PREP). A cycle never reaches a root, so it is
+    // not a route around the requirement; the old memo keyed on path LENGTH and
+    // recursed forever on it. Whether a root is reachable from `stage` without
+    // crossing `mustPassThrough` does not depend on how we got here, so the
+    // memo is keyed on the stage alone.
+    if (path.includes(stage)) return null
+    if (seen.has(stage)) return null
+    seen.add(stage)
     for (const prev of def.allowedFrom) {
       const bad = walk(prev, [...path, stage])
       if (bad) return bad
@@ -371,7 +378,7 @@ const assertions: Assertion[] = [
       // only ever needed to drift allowedFrom; it is now anchored on the stage's
       // IDENTITY plus the one line it actually changes, so a future change to
       // this stage's readiness checks cannot break it again.
-      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["LEAD"],` },
+      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["MLS_READY", "OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["LEAD"],` },
     ],
   },
   {
@@ -394,7 +401,7 @@ const assertions: Assertion[] = [
     breaks: [
       // Anchored on stage identity + the allowedFrom line only — see the note on
       // the sibling fixture above for why readinessChecks was dropped from it.
-      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["OPEN_HOUSE_MARKETING", "LEAD"],` },
+      { file: F.defs, find: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["MLS_READY", "OPEN_HOUSE_MARKETING"],`, replace: `    stage: "MLS_ACTIVE",\n    label: "MLS Active",\n    description: "Live on MLS",\n    allowedFrom: ["MLS_READY", "OPEN_HOUSE_MARKETING", "LEAD"],` },
       // This one still pins LISTING_AGREEMENT_SIGNED's own checks, which the
       // assertion reads directly (it fails when that stage declares none), so
       // the literal IS the thing under test rather than a waypoint beside it.

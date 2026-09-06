@@ -161,16 +161,20 @@ function pureLayer() {
     check(`${g.target} is a real stage with a declared allowedFrom`,
       !!def && Array.isArray(def.allowedFrom) && def.allowedFrom.length > 0)
   }
-  // The specific chain that made the old "media approved AND coming soon
-  // activated" wording expressible as a single stage check.
+  // The chain that makes the old "media approved AND coming soon activated"
+  // wording expressible as a stage check. Asserted as the RULE — every route
+  // into MLS_READY passes through MEDIA_APPROVED or COMING_SOON_ACTIVE, and
+  // media is approved only after it is captured — not as an exact predecessor
+  // list (§2: the list gained the engine's edges on the owner's 2026-09-06
+  // chronology ruling and a pinned `join(",") === ...` went stale with it).
   const mls = getStageDefinition("MLS_READY" as never)
-  check("MLS_READY is entered only from MEDIA_APPROVED",
-    mls?.allowedFrom.join(",") === "MEDIA_APPROVED")
+  check("MLS_READY is entered from MEDIA_APPROVED or COMING_SOON_ACTIVE, and from nothing earlier",
+    !!mls && mls.allowedFrom.length > 0 && mls.allowedFrom.every((s) => s === "MEDIA_APPROVED" || s === "COMING_SOON_ACTIVE"))
   const mediaApproved = getStageDefinition("MEDIA_APPROVED" as never)
   check("...MEDIA_APPROVED only from MEDIA_CAPTURE", mediaApproved?.allowedFrom.join(",") === "MEDIA_CAPTURE")
   const capture = getStageDefinition("MEDIA_CAPTURE" as never)
-  check("...MEDIA_CAPTURE only from COMING_SOON_ACTIVE — so the stage carries both conditions",
-    capture?.allowedFrom.join(",") === "COMING_SOON_ACTIVE")
+  check("...MEDIA_CAPTURE only from the coming-soon stages (prep or active) — media is part of pre-listing prep",
+    !!capture && capture.allowedFrom.length > 0 && capture.allowedFrom.every((s) => s === "COMING_SOON_PREP" || s === "COMING_SOON_ACTIVE"))
 
   // A stage nobody can enter is a dead end; catching that here is cheap.
   const entryPoints = LISTING_LIFECYCLE_STAGES.filter((s) => s.allowedFrom.length === 0)
