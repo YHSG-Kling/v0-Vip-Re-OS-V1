@@ -13,7 +13,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { runVoiceIntegrityRegistration, describeVoiceIntegrityState, nextVoiceIntegrityStep } from "@/lib/voice/a2p-registration"
 
 async function requireProviders(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
@@ -21,7 +21,7 @@ async function requireProviders(): Promise<{ ok: true; userId: string; email: st
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "providers")) return { ok: false, error: "Forbidden — platform providers access required" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }
@@ -44,7 +44,7 @@ export async function registerVoiceIntegrityAction(brokerageId: string): Promise
   // silenced (the write-sentinel ratchet forbids new '.then(undefined, …)').
   const evt = await svc.from("phone_number_events").insert({
     brokerage_id: brokerageId, phone_number: "a2p",
-    event_type: "vapi_registered", source: "a2p_registration",
+    event_type: "webhooks_bound", source: "a2p_registration",
     notes: `Voice integrity (CNAM + SHAKEN/STIR) ran → ${r.advancedTo}${r.error ? ` (error: ${r.error.slice(0, 160)})` : ""}`,
   })
   if (evt.error) console.error("[voice-integrity] phone_number_events log failed:", evt.error.message)

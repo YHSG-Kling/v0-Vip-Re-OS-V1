@@ -179,9 +179,23 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
     sessionToken,
   })
 
+  // SIMILAR LISTINGS ARE THIS BROKERAGE'S, NOT EVERY BROKERAGE'S.
+  // Owner ruling (2026-08-24): "public landing pages should not show cross
+  // brokerage comps. not sure how that got figured in?" — nobody figured it in.
+  // getSimilarListings took an OPTIONAL brokerageId and this call site, its only
+  // caller, never passed one, so the tenant predicate never fired. The parameter
+  // is now REQUIRED (app/actions/listing-landing.ts) and the id comes from the
+  // listing being shown.
+  //
+  // The query is CREATED ONLY INSIDE the guarded branch: `listings.brokerage_id`
+  // is nullable, and a listing with no brokerage has no "my brokerage's other
+  // listings" to show. The falsy path therefore renders no section rather than
+  // falling back to everyone's — fail closed, per CLAUDE.md §4.
   const [neighborhoodData, similarListings] = await Promise.all([
     getNeighborhoodData(listing.id),
-    getSimilarListings(listing.id, listing.zip),
+    listing.brokerage_id
+      ? getSimilarListings(listing.id, listing.zip, listing.brokerage_id)
+      : Promise.resolve([]),
   ])
 
   const daysOnMarket = calculateDaysOnMarket(listing.go_live_date ?? null)

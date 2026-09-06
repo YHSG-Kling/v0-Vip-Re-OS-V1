@@ -36,16 +36,32 @@ async function main() {
 
   console.log("\n[coverage map is honest]")
   const cov = reaperCoverage()
-  check("totalManagers = 13", cov.totalManagers === 13)
+  // 13 → 14: cron_manager was added to the registry AFTER this net was built.
+  check("totalManagers = 14", cov.totalManagers === 14)
   check("covered managers include deal_coordinator (2 domains)", cov.coveredManagers.includes("deal_coordinator"))
   check("finance_manager now covers 2 domains (leak + tracking-drift)", REAPER_NET.filter((e) => e.manager === "finance_manager").length === 2)
   check("covered incl finance + compliance + marketing + ads + recruiting", ["asset_manager", "campaign_orchestrator", "sphere_of_influence", "data_steward", "finance_manager", "compliance_officer", "marketing_agent", "ads_manager", "recruiting_manager"].every((m) => cov.coveredManagers.includes(m as any)))
   check("predictor-backed incl shopping + listing", ["shopping_agent", "listing_concierge"].every((m) => cov.predictorBackedManagers.includes(m as any)))
   check("predictor-backed are NOT double-counted as dedicated", cov.predictorBackedManagers.every((m) => !cov.coveredManagers.includes(m)))
   check("effective coverage = dedicated ∪ predictor-backed", cov.effectiveCoveredManagers.length === new Set([...cov.coveredManagers, ...cov.predictorBackedManagers]).size)
-  check("effective + uncovered = all 13 (honest, no overlap)", cov.effectiveCoveredManagers.length + cov.uncoveredManagers.length === 13)
-  check("effective coverage is now FULL 13/13", cov.effectiveCoveredManagers.length === 13)
-  check("ZERO uncovered managers — full reaper coverage", cov.uncoveredManagers.length === 0)
+  check("effective + uncovered = all 14 (honest, no overlap)", cov.effectiveCoveredManagers.length + cov.uncoveredManagers.length === 14)
+  check("effective coverage is 13 of 14", cov.effectiveCoveredManagers.length === 13)
+  // THE ONE UNCOVERED MANAGER, NAMED RATHER THAN ASSERTED AWAY.
+  // This used to demand ZERO uncovered, and it was true when written. cron_manager
+  // ("schedules, heartbeat & loop health") was added later and no REAPER_NET entry
+  // covers it — coverage silently went 13/13 → 13/14 and nothing said so, because
+  // this simulator was never wired to CI.
+  //
+  // It is uncovered BY DESIGN, not by omission: REAPER_NET entries are PER-TENANT
+  // sweeps over a brokerage's own stuck records, and loop health is a PLATFORM
+  // concern — lib/platform/os-sentinel.ts and lib/platform/ai-ops.ts watch cron
+  // health cross-tenant, from the superadmin surface, which is the right place for
+  // it. A per-brokerage "reap the crons" sweep would be the wrong shape.
+  //
+  // Pinned as an exact set, not a count, so ANY other manager losing coverage
+  // fails here instead of hiding behind a tolerated number.
+  check("exactly one uncovered manager, and it is cron_manager (platform-scoped by design)",
+    cov.uncoveredManagers.length === 1 && cov.uncoveredManagers[0] === "cron_manager")
   check("uncovered managers are genuinely unregistered", cov.uncoveredManagers.every((m) => !managersUnderReaperCoverage().includes(m)))
   check("coverage domains list = 14", cov.domains.length === 14)
 

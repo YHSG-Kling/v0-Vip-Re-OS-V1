@@ -5,8 +5,11 @@ import { Brain, Zap, TrendingUp, Users, AlertTriangle, Gauge, DollarSign } from 
 import { getCurrentMonthUsage } from "@/lib/ai/cost-tracking"
 import { getAgentAICostRanking } from "@/app/actions/pl-truth-engine"
 import { getBrokerageAIQuotaStatus } from "@/lib/ai/fair-use"
+import { getAIOverageStatus, getAIOverageBillingHistory } from "@/lib/billing/ai-overage"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const dynamic = "force-dynamic"
 
@@ -44,19 +47,36 @@ export default async function AIUsagePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Read user_type + brokerage_id to gate dollar visibility (superadmin only).
+  // Read BOTH identity columns + brokerage_id to gate dollar visibility
+  // (superadmin only). `profile?.user_type === "superadmin"` alone was FALSE for
+  // the platform's only superadmin, whose row is (user_type='admin',
+  // platform_role='superadmin') — so every dollar figure on this page (per-model
+  // cost, per-feature cost, the per-agent cost column and the ROI badge) was
+  // hidden from the one person the gate was written to show them to, and the page
+  // rendered its token-only broker view instead. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type, brokerage_id")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  const isSuperadmin = profile?.user_type === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(profile?.user_type, (profile as any)?.platform_role)
   const brokerageId  = profile?.brokerage_id as string | null
 
-  const [usage, agentRankingResult, quota] = await Promise.all([
+  // Money (the projected overage bill) is finance-admin territory; tokens are
+  // not. Superadmin keeps its platform-wide dollar view.
+  const isFinanceAdmin = isSuperadmin || isBrokerageFinanceAdmin({ user_type: profile?.user_type })
+
+  const [usage, agentRankingResult, quota, overage, overageHistory] = await Promise.all([
     getCurrentMonthUsage({ brokerageId: brokerageId ?? undefined }),
     getAgentAICostRanking(),
     brokerageId ? getBrokerageAIQuotaStatus(brokerageId) : Promise.resolve(null),
+    brokerageId ? getAIOverageStatus(brokerageId) : Promise.resolve(null),
+    // The BILLED ledger for periods already closed. Only fetched for the people
+    // allowed to see money — the projection card above draws the same line.
+    brokerageId && isFinanceAdmin ? getAIOverageBillingHistory(brokerageId) : Promise.resolve(null),
   ])
 
   if (!usage) {
@@ -81,6 +101,18 @@ export default async function AIUsagePage() {
   const agentRows = agentRankingResult.ok ? agentRankingResult.rows : []
   const maxAgentTokens = agentRows[0]?.token_count ?? 1
   const totalAgentTokens = agentRows.reduce((s, r) => s + (r.token_count ?? 0), 0) || 1
+
+  // Overage (m479): over the included quota AI is SERVED and billed, not
+  // refused — when the tier's terms allow it. Derived at read time from
+  // usage_counters; nothing here accrues.
+  const overageOk = overage && overage.ok ? overage : null
+  const overageActive = !!(overageOk && overageOk.overageAllowed && overageOk.overageTokens > 0)
+
+  // BILLED history (the ledger runAIOverageBilling writes). A refusal renders
+  // as a refusal — an empty table would read as "you were never charged",
+  // which is exactly the silent-zero this page must not tell a finance admin.
+  const historyOk = overageHistory && overageHistory.ok ? overageHistory : null
+  const historyError = overageHistory && !overageHistory.ok ? overageHistory.error : null
 
   // ROI is still meaningful even though brokers don't see dollar cost — it's
   // token efficiency: agent X's GCI ÷ tokens consumed. We render it as the
@@ -113,7 +145,9 @@ export default async function AIUsagePage() {
               </CardTitle>
               <div className="flex items-center gap-2">
                 <Badge variant="outline">{tierLabel(quota.planTier)} plan</Badge>
-                {quotaBadge(quota.quotaStatus)}
+                {overageActive
+                  ? <Badge className="bg-blue-100 text-blue-800">Over included — billed as overage</Badge>
+                  : quotaBadge(quota.quotaStatus)}
               </div>
             </div>
           </CardHeader>
@@ -133,7 +167,12 @@ export default async function AIUsagePage() {
               }
             />
             <p className="text-xs text-muted-foreground">
-              {quota.quotaStatus === "blocked" && (
+              {quota.quotaStatus === "blocked" && overageActive && (
+                <span className="text-blue-700 font-medium">
+                  You&apos;ve used your plan&apos;s included AI allowance — AI keeps working, and additional usage is billed as overage at period close.
+                </span>
+              )}
+              {quota.quotaStatus === "blocked" && !overageActive && (
                 <span className="text-red-700 font-medium">
                   Your plan has reached its monthly AI allowance. AI features will resume next month, or upgrade to continue immediately.
                 </span>
@@ -150,6 +189,159 @@ export default async function AIUsagePage() {
                 <span>Your plan has no AI usage limit.</span>
               )}
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Overage card (m479) — included vs used vs overage for the current
+          period. The projected DOLLAR figure is money → finance admins only
+          (isBrokerageFinanceAdmin) / superadmin; tokens show to everyone the
+          page already admits. A refused overage read renders nothing rather
+          than a fake zero. */}
+      {overageOk && overageOk.includedTokens >= 0 && (
+        <Card className={overageActive ? "border-blue-300 bg-blue-50/40" : ""}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-primary" />
+              Overage this period
+              {overageOk.overageAllowed
+                ? <Badge variant="outline" className="ml-2">Served &amp; billed over quota</Badge>
+                : <Badge variant="outline" className="ml-2">Overage not enabled for your plan</Badge>}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Included quota</p>
+                <p className="text-xl font-bold">{formatTokens(overageOk.includedTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Used</p>
+                <p className="text-xl font-bold">{formatTokens(overageOk.usedTokens)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Overage tokens</p>
+                <p className={`text-xl font-bold ${overageOk.overageTokens > 0 ? "text-blue-700" : ""}`}>
+                  {formatTokens(overageOk.overageTokens)}
+                </p>
+              </div>
+              {isFinanceAdmin && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1">Projected overage cost</p>
+                  <p className={`text-xl font-bold ${overageOk.overageAmountCents > 0 ? "text-blue-700" : ""}`}>
+                    {formatCost(overageOk.overageAmountCents)}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    at {formatCost(overageOk.overageRateCents)}/1K tokens
+                  </p>
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">
+              AI is included in your subscription up to your plan&apos;s quota
+              {overageOk.overageAllowed
+                ? "; usage past it keeps working and is invoiced as overage when the billing period closes."
+                : ". Your plan does not include overage billing — AI pauses at the quota until next period or an approved quota increase."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* BILLED overage history — the reader half of the ai_overage_invoices
+          writethrough (lib/billing/ai-overage.ts:getAIOverageBillingHistory).
+          Finance-gated, same line the projected-cost figure above draws. */}
+      {isFinanceAdmin && (historyOk || historyError) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-primary" />
+              Overage billed — closed periods
+              {historyOk && historyOk.pendingCount > 0 && (
+                <Badge className="ml-2 bg-amber-100 text-amber-800">
+                  {historyOk.pendingCount} awaiting reconciliation
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {historyError && (
+              <p className="text-sm text-red-700">
+                Billing history could not be read: {historyError}. This is a refusal, not a zero —
+                do not read it as &ldquo;never billed&rdquo;.
+              </p>
+            )}
+            {historyOk && historyOk.rows.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No AI overage has been billed to this brokerage yet.
+              </p>
+            )}
+            {historyOk && historyOk.rows.length > 0 && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Billed to date</p>
+                    <p className="text-xl font-bold">{formatCost(historyOk.billedTotalCents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Overage tokens billed</p>
+                    <p className="text-xl font-bold">{formatTokens(historyOk.billedTokensTotal)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Periods on record</p>
+                    <p className="text-xl font-bold">{historyOk.rows.length}</p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-muted-foreground border-b">
+                        <th className="py-2 pr-3 font-medium">Period</th>
+                        <th className="py-2 pr-3 font-medium">Included</th>
+                        <th className="py-2 pr-3 font-medium">Used</th>
+                        <th className="py-2 pr-3 font-medium">Over</th>
+                        <th className="py-2 pr-3 font-medium">Rate /1K</th>
+                        <th className="py-2 pr-3 font-medium">Amount</th>
+                        <th className="py-2 pr-3 font-medium">Status</th>
+                        <th className="py-2 font-medium">Invoice item</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyOk.rows.map(r => (
+                        <tr key={r.id} className="border-b last:border-0">
+                          <td className="py-2 pr-3 whitespace-nowrap">
+                            {r.periodStartIso.slice(0, 10)} → {r.periodEndIso.slice(0, 10)}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {r.includedTokens < 0 ? "Unlimited" : formatTokens(r.includedTokens)}
+                          </td>
+                          <td className="py-2 pr-3">{formatTokens(r.usedTokens)}</td>
+                          <td className="py-2 pr-3">{formatTokens(r.overageTokens)}</td>
+                          <td className="py-2 pr-3">{formatCost(r.overageRateCentsPer1k)}</td>
+                          <td className="py-2 pr-3 font-medium">{formatCost(r.amountCents)}</td>
+                          <td className="py-2 pr-3">
+                            {r.status === "billed" ? (
+                              <Badge className="bg-emerald-100 text-emerald-800">
+                                Billed {r.billedAtIso ? r.billedAtIso.slice(0, 10) : ""}
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-amber-100 text-amber-800">Pending claim</Badge>
+                            )}
+                          </td>
+                          <td className="py-2 text-xs text-muted-foreground font-mono">
+                            {r.stripeInvoiceItemId ?? (r.stripeCustomerId ? `cust ${r.stripeCustomerId}` : "—")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground mt-3">
+                  A &ldquo;pending claim&rdquo; is a period the biller reserved but for which no
+                  provider result came back. It is <strong>not</strong> money charged and is excluded
+                  from the totals above — a human reconciles it against Stripe.
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       )}

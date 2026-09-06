@@ -3,6 +3,14 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { SEQUENCE_TYPES } from "@/lib/campaigns/sequence-constants"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+  detectFairHousingRedFlags,
+  detectProhibitedPhraseRedFlags,
+} from "@/lib/video/script-compliance"
 
 /**
  * SECURITY: every entry point that mutates per-tenant data verifies the
@@ -33,12 +41,111 @@ async function assertOwnership(
  */
 export async function executeAITool(toolName: string, inputData: any, context: any) {
   try {
-    // Route to appropriate AI tool handler
+    // Route to appropriate AI tool handler.
+    //
+    // THE CONTENT-STUDIO DOORS (2026-08-28). The studio's three buttons call
+    // executeWorkflow("publish-content" | "send-newsletter" | "send-direct-mail"),
+    // names this table did not know — every press resolved
+    // { success: false, error: "Unknown tool" } and the UI dutifully reported
+    // it (the buttons were honest about doing nothing). Each name now routes
+    // to the CANONICAL implementation rather than growing a twin (§1):
+    // newsletter sends through ai-newsletter.ts:sendNewsletter (feature-gated,
+    // subscriber-resolved, ownership-verified), direct mail through
+    // direct-mail.ts:sendCampaign (feature-gated, provider-resolved) with the
+    // actor derived from the SESSION — never from inputData (§4) — and the
+    // omni-channel content push books a campaign_calendar row through
+    // content-studio.ts:scheduleContent ('publish' is in the calendar's
+    // event_type CHECK); the channel sends themselves keep their own doors.
     const handlers: Record<string, Function> = {
-      "fair-housing-check": checkFairHousingCompliance,
+      // "fair-housing-check" routes to the CANONICAL scanner (§1): the local
+      // regex twin `checkFairHousingCompliance` was deleted 2026-08-28 (lane
+      // E2) — see the tombstone below. The old direct entry was also
+      // arity-broken: handler(inputData, context) landed inputData in the
+      // twin's ignored _userId slot and scanned `undefined`.
+      "fair-housing-check": async (input: any) => {
+        const text =
+          typeof input?.content === "string" && input.content.trim() ? input.content.trim()
+          : typeof input?.text === "string" && input.text.trim() ? input.text.trim()
+          : ""
+        if (!text) return { success: false, error: "No content to scan" }
+        const { scanContentCompliance } = await import("./compliance-monitoring")
+        try {
+          const scan = await scanContentCompliance({
+            contentBody: text,
+            contentType: typeof input?.contentType === "string" && input.contentType ? input.contentType : "marketing",
+            targetAudience: typeof input?.targetAudience === "string" && input.targetAudience ? input.targetAudience : "general",
+            distributionChannels: Array.isArray(input?.channels) ? input.channels : [],
+            agentState: typeof input?.agentState === "string" ? input.agentState : "",
+          })
+          return { success: true, scan }
+        } catch (e: any) {
+          // Fail CLOSED and say so — an unscanned "pass" is the one answer a
+          // compliance door must never give (§4 fail-closed).
+          return { success: false, error: e?.message ?? "Compliance scan failed" }
+        }
+      },
       "generate-plan": generateCopilotPlan,
       "send-message": sendMessage,
-      "calculate-metrics": calculateListingMetrics,
+      // Smart drip — enrolls the contact into the matching compliance-gated
+      // sequence via startSmartDrip (restored lane F1 2026-08-28; identity from
+      // the session inside the action, never from inputData §4).
+      "start-smart-drip": async (input: any) => {
+        const contactId = typeof input?.contactId === "string" ? input.contactId : ""
+        const dripType = typeof input?.dripType === "string" && input.dripType
+          ? input.dripType
+          : typeof input?.drip_type === "string" ? input.drip_type : ""
+        if (!contactId) return { success: false, error: "No contact named" }
+        if (!dripType) return { success: false, error: "No drip type named" }
+        return startSmartDrip(contactId, dripType)
+      },
+      // "calculate-metrics" removed with its handler `calculateListingMetrics`
+      // (deleted 2026-08-28, lane E2 — see tombstone below; the live listing
+      // metric engine is lib/listing-health/health-scorer.ts). Nothing in the
+      // tree ever dispatched the name.
+      "publish-content": async (input: any) => {
+        const channel = typeof input?.channel === "string" && input.channel.trim() ? input.channel.trim() : null
+        if (!channel) return { success: false, error: "No channel named" }
+        const text = typeof input?.content === "string" ? input.content.trim() : ""
+        if (!text) return { success: false, error: "No content to publish" }
+        try {
+          const { scheduleContent } = await import("./content-studio")
+          const row = await scheduleContent({
+            title: text.length > 180 ? `${text.slice(0, 177)}…` : text,
+            contentType: "publish",
+            scheduledDate: new Date().toISOString(),
+            platform: channel,
+            notes: input?.contentId ? `content-studio push (content ${input.contentId})` : "content-studio push",
+          })
+          // scheduleContent THROWS on a refused insert and returns the row
+          // otherwise; a null row would mean the insert was silently empty.
+          if (!row) return { success: false, error: "Calendar write returned no row" }
+          return { success: true, calendarId: (row as { id?: string }).id }
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? "Failed to schedule the publish" }
+        }
+      },
+      "send-newsletter": async (input: any) => {
+        if (typeof input?.campaignId !== "string" || !input.campaignId) {
+          return { success: false, error: "No newsletter campaign id" }
+        }
+        const { sendNewsletter } = await import("./ai-newsletter")
+        return sendNewsletter({ newsletterId: input.campaignId })
+      },
+      "send-direct-mail": async (input: any) => {
+        if (typeof input?.campaignId !== "string" || !input.campaignId) {
+          return { success: false, error: "No direct-mail campaign id" }
+        }
+        const ctx = await getAgentContext()
+        if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+          return { success: false, error: "Not authenticated" }
+        }
+        const { sendCampaign } = await import("./direct-mail")
+        return sendCampaign({
+          campaignId: input.campaignId,
+          actorUserId: ctx.userId,
+          brokerageId: ctx.brokerageId,
+        })
+      },
     }
 
     const handler = handlers[toolName]
@@ -53,61 +160,20 @@ export async function executeAITool(toolName: string, inputData: any, context: a
   }
 }
 
-/**
- * Check message content for fair housing compliance violations.
- */
-export async function checkFairHousingCompliance(
-  _userId: string | undefined, // ignored — derived from session
-  contentType: string,
-  text: string
-): Promise<{ success: boolean; compliant: boolean; violations?: string[] }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, compliant: false }
-    const brokerageId = ctx.brokerageId
-
-    // Fair Housing compliance check patterns
-    const fairHousingViolations = [
-      { pattern: /familial status|children|pregnant/gi, rule: "No familial status discrimination" },
-      { pattern: /disability|handicap|medical condition/gi, rule: "No disability discrimination" },
-      { pattern: /religion|church|synagogue|mosque/gi, rule: "No religious discrimination" },
-      { pattern: /race|color|ethnicity/gi, rule: "No racial discrimination" },
-      { pattern: /national origin|immigrant/gi, rule: "No national origin discrimination" },
-      { pattern: /gender|sexual orientation|LGBTQ/gi, rule: "No gender/orientation discrimination" },
-      { pattern: /age|senior|elderly/gi, rule: "No age discrimination" },
-    ]
-
-    const violations: string[] = []
-    fairHousingViolations.forEach(({ pattern, rule }) => {
-      if (pattern.test(text)) {
-        violations.push(rule)
-      }
-    })
-
-    // Log compliance check
-    if (violations.length > 0) {
-      await supabase.from("activities").insert({
-        brokerage_id: brokerageId,
-        entity_type: "compliance",
-        activity_type: "fair_housing_violation_detected",
-        title: "Fair Housing Violation Detected",
-        description: violations.join("; "),
-        status: "flagged",
-      })
-    }
-
-    return {
-      success: true,
-      compliant: violations.length === 0,
-      violations: violations.length > 0 ? violations : undefined,
-    }
-  } catch (error: any) {
-    console.error("[checkFairHousingCompliance] Error:", error)
-    return { success: false, compliant: false }
-  }
-}
+// TOMBSTONE (§1 keep-one + §6 one-vocabulary, lane E2 2026-08-28) —
+// `checkFairHousingCompliance` deleted. SURVIVOR:
+// app/actions/compliance-monitoring.ts:scanContentCompliance →
+// lib/application/compliance-monitoring.ts:scanContentComplianceService (the
+// DB-driven prohibited-phrase + AI scanner, wired at
+// app/components/compliance/FairHousingScanner.tsx and
+// app/components/shared/compliance/submit-content-form.tsx). The dispatcher
+// name "fair-housing-check" in executeAITool above now routes to that
+// survivor through a correctly-shaped adapter; the old entry passed
+// (inputData, context) into this function's (userId, contentType, text)
+// signature and scanned `undefined`. Nothing merged: the survivor's phrase
+// vocabulary lives in the database (compliance_phrases), where §5's
+// compliance-first ruling keeps it maintained, and its violations land in the
+// canonical compliance ledger rather than this twin's activities rows.
 
 /**
  * Generate a 7-day copilot plan for a contact.
@@ -199,41 +265,236 @@ Generate a specific 7-day plan with daily actions.`,
 }
 
 /**
- * Start a smart drip campaign for a contact.
+ * Start a smart drip on one contact — RESTORED (owner ruling, lane F1
+ * 2026-08-28) with its MISSING HALF built.
+ *
+ * The deleted version inserted a bare drip_campaigns row {contact_id,
+ * drip_type, status 'active'} and stopped. A drip row carries NO message
+ * content, and the queue-drain cron (app/api/cron/queue-drain
+ * :drainDripCampaigns) refuses to invent any: it services such a row by
+ * enrolling the contact into an active, compliance-gated campaign_sequences
+ * row whose sequence_type === drip_type — whose STEPS carry the real copy,
+ * executed by the campaign-sequence-steps cron. When no such sequence exists,
+ * the drain pauses the row with the reason. So the bare insert was a silent
+ * no-op whenever the sequence was missing, and a 5-minute-deferred enrollment
+ * when it wasn't.
+ *
+ * The restore does the drain's honest service INLINE — one enrollment engine,
+ * two doors (§6): the same enrollContact the drain calls, so the caller learns
+ * NOW whether the contact is actually in a cadence. The drip_campaigns row is
+ * still written, as the ledger the drain would have produced (same completed
+ * shape + metadata keys), or left status 'active' for the drain to retry when
+ * the enrollment refusal is transient.
+ *
+ * `drip_type` must be a campaign_sequences.sequence_type the drain can match
+ * (live CHECK: drip | nurture | re_engagement | transaction | post_close);
+ * anything else could never resolve a sequence and is refused up front.
  */
 export async function startSmartDrip(
   contactId: string,
   drip_type: string,
   _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; dripId?: string; error?: string }> {
+): Promise<{
+  success: boolean
+  dripId?: string
+  sequenceId?: string
+  sequenceName?: string
+  enrollmentId?: string
+  alreadyEnrolled?: boolean
+  error?: string
+}> {
   try {
-    const supabase = await createClient()
     const ctx = await getAgentContext()
 
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
     const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
+    const agentId = ctx.agentId // agents.id — drip_campaigns.agent_id FKs agents
 
     // Verify contact ownership
     const own = await assertOwnership("contacts", contactId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
-    const { data: drip } = await supabase
+    // The five values are NOT spelled out here any more: they are the live
+    // `campaign_sequences.sequence_type` CHECK, held once in
+    // lib/campaigns/sequence-constants.ts and shared with the sequences UI's
+    // picker, so a type the picker can create is a type this drain can service.
+    // Imported, never re-exported — this is a "use server" file, where every
+    // export is a public HTTP endpoint (§4).
+    const sequenceTypeValues = SEQUENCE_TYPES.map((t) => t.value)
+    if (!sequenceTypeValues.includes(drip_type)) {
+      return {
+        success: false,
+        error: `'${drip_type}' is not a sequence type the drip drain can service (one of: ${sequenceTypeValues.join(", ")})`,
+      }
+    }
+
+    const svc = createServiceClient()
+
+    // The SAME sequence resolution the queue-drain performs on a drip row.
+    const { data: sequence, error: seqErr } = await svc
+      .from("campaign_sequences")
+      .select("id, name")
+      .eq("brokerage_id", brokerageId)
+      .eq("sequence_type", drip_type)
+      .eq("is_active", true)
+      .eq("compliance_gated", true)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (seqErr) return { success: false, error: seqErr.message }
+    if (!sequence) {
+      // Honest absence, and NO row inserted: an active drip row here would only
+      // be paused by the drain with this same reason five minutes later.
+      return {
+        success: false,
+        error: `No active compliance-gated '${drip_type}' sequence exists in this brokerage — a drip carries no message content of its own, so there is nothing honest to send. Build the sequence first.`,
+      }
+    }
+
+    const { enrollContact } = await import("@/lib/campaign-sequences/enrollment-engine")
+    const enrollment = await enrollContact({
+      sequenceId: sequence.id as string,
+      contactId,
+      brokerageId,
+      enrolledBy: ctx.userId,
+    })
+
+    const now = new Date().toISOString()
+    const enrolledOk = enrollment.success || !!enrollment.alreadyEnrolled
+
+    // The ledger row — completed with its enrollment link (the drain's own
+    // completed shape), or left 'active' for the drain to retry a transient
+    // enrollment failure. `error` and the returned row are both read (§3).
+    const { data: drip, error: dripErr } = await svc
       .from("drip_campaigns")
       .insert({
-        contact_id: contactId,
-        agent_id: agentId,
+        contact_id:   contactId,
+        agent_id:     agentId,
         brokerage_id: brokerageId,
         drip_type,
-        status: "active",
+        status:       enrolledOk ? "completed" : "active",
+        started_at:   now,
+        ...(enrolledOk ? { completed_at: now } : {}),
+        metadata: enrolledOk
+          ? {
+              sequence_id:      sequence.id,
+              sequence_name:    sequence.name,
+              enrollment_id:    enrollment.enrollmentId ?? null,
+              already_enrolled: !!enrollment.alreadyEnrolled,
+              drained_by:       "startSmartDrip",
+            }
+          : { enroll_error: enrollment.error ?? "unknown", requested_by: "startSmartDrip" },
       })
-      .select()
+      .select("id")
       .single()
+    if (dripErr) return { success: false, error: dripErr.message }
 
-    return { success: true, dripId: drip?.id }
+    if (!enrolledOk) {
+      return {
+        success: false,
+        dripId: drip?.id,
+        sequenceId: sequence.id as string,
+        error: `Enrollment refused (${enrollment.error ?? "unknown"}) — the drip row stays queued and the queue-drain will retry it.`,
+      }
+    }
+
+    return {
+      success: true,
+      dripId: drip?.id,
+      sequenceId: sequence.id as string,
+      sequenceName: (sequence.name as string | null) ?? undefined,
+      enrollmentId: enrollment.enrollmentId,
+      alreadyEnrolled: !!enrollment.alreadyEnrolled,
+    }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to start drip" }
+  }
+}
+
+/**
+ * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+ *
+ * `drip_campaigns` carried a full LIFECYCLE that nothing on earth read:
+ * `agent_id`, `started_at`, `completed_at` (written by startSmartDrip above,
+ * :370) and `paused_at` (written by the queue drain,
+ * app/api/cron/queue-drain/route.ts:517 when no compliance-gated sequence of
+ * the drip_type exists). An agent could press "Start drip", and five minutes
+ * later the drain could PAUSE that drip with an honest reason — and the agent
+ * would never learn it, because the card that started it showed no history.
+ * That is the "queued into a cadence that cannot send" failure the card's own
+ * header promises never happens.
+ *
+ * No duplicate reader existed anywhere (the only other `drip_campaigns`
+ * selects are the drain's own worklist and its two updates), so the reader is
+ * BUILT here rather than merged. Read-only; tenant + agent scope come from the
+ * SESSION (§4), never from a parameter.
+ */
+export interface ContactDripRow {
+  id: string
+  dripType: string | null
+  status: string | null
+  /** True when this drip was started by the CALLING agent (drip_campaigns.agent_id). */
+  startedByMe: boolean
+  startedAt: string | null
+  completedAt: string | null
+  pausedAt: string | null
+  /** The drain's honest reason a drip was paused, or the sequence it completed into. */
+  outcome: string | null
+}
+
+export async function listContactDrips(
+  contactId: string
+): Promise<{ success: boolean; drips?: ContactDripRow[]; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
+
+    const svc = createServiceClient()
+    // brokerage_id is re-asserted on the drip rows themselves: the contact
+    // check above proves the CONTACT is ours, this proves no cross-tenant drip
+    // row hanging off the same contact id can be read.
+    const { data, error } = await svc
+      .from("drip_campaigns")
+      .select("id, agent_id, drip_type, status, started_at, completed_at, paused_at, metadata")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+    // §3 — supabase-js RESOLVES refusals; a swallowed error would render as
+    // "this contact has never been dripped", which is the opposite of the truth.
+    if (error) return { success: false, error: error.message }
+
+    const drips: ContactDripRow[] = (data ?? []).map((row: any) => {
+      const meta = (row.metadata ?? {}) as Record<string, unknown>
+      const outcome =
+        typeof meta.drain_reason === "string"
+          ? (meta.drain_reason as string)
+          : typeof meta.sequence_name === "string"
+            ? `Enrolled in “${meta.sequence_name as string}”`
+            : typeof meta.enroll_error === "string"
+              ? `Enrollment refused (${meta.enroll_error as string}) — queued for retry`
+              : null
+      return {
+        id: row.id as string,
+        dripType: (row.drip_type as string | null) ?? null,
+        status: (row.status as string | null) ?? null,
+        startedByMe: !!ctx.agentId && row.agent_id === ctx.agentId,
+        startedAt: (row.started_at as string | null) ?? null,
+        completedAt: (row.completed_at as string | null) ?? null,
+        pausedAt: (row.paused_at as string | null) ?? null,
+        outcome,
+      }
+    })
+
+    return { success: true, drips }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to read drip history" }
   }
 }
 
@@ -286,162 +547,188 @@ export async function sendMessage(
   }
 }
 
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `calculateListingMetrics`
+// deleted, and its "calculate-metrics" dispatcher entry in executeAITool
+// removed (nothing ever dispatched the name). SURVIVOR:
+// lib/listing-health/health-scorer.ts:calculateListingHealth — the live
+// listing metric engine (wired at app/actions/listing-health-actions.ts and
+// the app/api/cron/listing-health-scan sweep). This twin computed
+// price-per-sqft plus two hardcoded placeholders (dom_percentile: null,
+// market_position: "neutral") and returned them without persisting anything.
+// Nothing merged.
+
+// TOMBSTONE (§1, 2026-08-31) — `triggerCMAPackage` deleted. SURVIVOR:
+// app/actions/ai-cma.ts:generateAICMA — the live CMA engine, wired at
+// app/components/dashboard/listings/cma-history-sheet.tsx and
+// app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx, writing the
+// canonical cma_reports table. This function's only real effect (a
+// cma_packages status:'generating' row nothing updated or read) was already
+// removed by an earlier keep-one sweep, leaving auth checks and an
+// unconditional `{ success: true }` — a trigger that triggered nothing and
+// REPORTED SUCCESS anyway, which is the "checked and fine" shape §4 forbids.
+// Its callers went with the n8n shim (see lib/migration-status.ts); the one
+// thing keeping it off the orphan census was its own name inside the old
+// migrationStatus prose STRING, which the caller scan counted as a reference
+// until M4 de-coded that file to comments. Nothing merged.
+
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `grantPortalAccess` deleted.
+// SURVIVOR: app/actions/portal-invites.ts:createPortalInviteForContact (wired
+// at app/crm/page.tsx:36) — the thing that actually GRANTS portal access by
+// minting the contact's invite. This twin granted nothing: it wrote a
+// portal_access_logs row that merely CLAIMED access was active, which is a log
+// entry impersonating a grant. A stripped-source census found zero callers
+// outside the app/actions/index.ts barrel, which itself has zero importers.
+// Nothing merged.
+
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `triggerComplianceChecklist`
+// deleted. SURVIVOR: app/actions/ai-transaction-documents.ts:
+// checkTransactionDisclosures (wired at
+// app/dashboard/transactions/[id]/transaction-detail-client.tsx:1101), which
+// upserts the SAME compliance_checklists row on the same
+// (transaction_id, checklist_type) arbiter and, unlike this ensure-exists
+// twin, actually populates items and compliance_score. Sibling writer:
+// app/actions/ai-document-intelligence.ts:aiCheckDisclosures. This third
+// writer contributed only an empty shell row; a stripped-source census found
+// zero callers outside the app/actions/index.ts barrel, which itself has zero
+// importers. Nothing merged.
+
 /**
- * Calculate real estate listing metrics.
+ * Which journey a marketing script is graded against by the compliance gate.
+ * Seller-side subjects (a listing, a homeowner, a farm, a sale) grade as
+ * "seller"; everything else speaks to a buyer — the same split
+ * app/actions/video-generation.ts draws from its purpose keys.
  */
-export async function calculateListingMetrics(listingId: string, _params: any = {}) {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-
-    // Verify listing ownership
-    const own = await assertOwnership("listings", listingId, ctx.brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", listingId)
-      .maybeSingle()
-
-    if (!listing) return { success: false, error: "Listing not found" }
-
-    // Calculate metrics
-    const metrics = {
-      price_per_sqft: listing.price && listing.square_feet ? listing.price / listing.square_feet : null,
-      dom_percentile: null, // Would be calculated from market data
-      market_position: "neutral",
-    }
-
-    return { success: true, metrics }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to calculate metrics" }
-  }
+function scriptJourneyType(scriptType: string): "buyer" | "seller" {
+  return /sell|listing|sold|farm|expired|fsbo|homeowner/i.test(scriptType) ? "seller" : "buyer"
 }
 
 /**
- * Trigger CMA package generation.
+ * The compliance grade + THE single `scripts` INSERT, fused so no path can
+ * reach the write without passing the gate (§5). Both doors below —
+ * generateScriptContent (model-written text) and savePrivateScript
+ * (agent-written text) — store through here and nowhere else, which is what
+ * keeps `scripts` on ONE writer path (§1; lib/video/viral-script-share.ts is
+ * an UPDATE-only promoter, not a second writer).
+ *
+ * THE HARD LINE (owner's §5 ruling): advisory findings pass through — they are
+ * returned for the surface to show, and the store proceeds. A HARD fair-housing
+ * red flag (deterministic protected-class/steering hit) or a phrase the
+ * brokerage graded BLOCKING refuses the store. The red-flag set is re-derived
+ * the way lib/video/script-compliance.ts:assessScriptCompliance builds it —
+ * detectFairHousingRedFlags is pure/synchronous (so a DB outage can never make
+ * a protected-class hit read as clean), and the blocking phrase findings are
+ * recovered from postcheckScript's flat list by their contract prefix.
+ *
+ * Store notes (m429):
+ *   · title is NOT NULL; scriptType→category (no CHECK — free vocabulary);
+ *     the status CHECK is draft|approved|archived and is the EDITORIAL
+ *     lifecycle.
+ *   · brokerage_id — the session tenant, never a caller-supplied one. An
+ *     untenanted script is a PLATFORM-catalogue script under m429, which the
+ *     SELECT policy publishes to every brokerage on the OS; the CHECK
+ *     constraint and the INSERT policy both refuse it from a non-platform
+ *     author, and this is the writer half of that.
+ *   · visibility 'private' — an agent's script starts as their own work.
+ *     lib/video/viral-script-share.ts is the ONLY thing that promotes it to
+ *     'brokerage', and only when a video rendered from it crosses
+ *     VIRAL_VIEW_THRESHOLD.
+ *   · `error` IS DESTRUCTURED, AND THAT IS NOT NEGOTIABLE. supabase-js
+ *     RESOLVES a refused write, so a bare `await …insert()` returns normally
+ *     for a row that was never created. Until m429 the INSERT policy was
+ *     `is_platform_admin()` with no per-author clause, so this write was
+ *     refused for every ordinary agent — which is why the table held zero
+ *     rows. The policy is fixed; the honesty stays.
  */
-export async function triggerCMAPackage(
-  propertyId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; packageId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
+async function gateAndStorePrivateScript(params: {
+  actor: { userId: string; brokerageId: string; teamId?: string }
+  title: string
+  category: string
+  content: string
+  journeyType: "buyer" | "seller"
+}): Promise<{
+  scriptId?: string
+  storeError?: string
+  /** Advisory + UNKNOWN lines for the surface to show. Never blocking. */
+  complianceWarnings?: string[]
+  /** Non-empty means the store was REFUSED. */
+  redFlags: string[]
+}> {
+  const { actor, content, journeyType } = params
 
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
+  const complianceWarnings = await postcheckScript(actor, content, journeyType)
 
-    // Verify property/listing ownership (CMA packages target listings)
-    const own = await assertOwnership("listings", propertyId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // NOTE: cma_reports is the canonical CMA content table (read across the app).
-    // The old cma_packages insert here created a status:'generating' row that was
-    // never updated or read anywhere — dead write removed (keep-one sweep).
-
-    return { success: true }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to trigger CMA" }
+  const redFlags = [
+    ...detectFairHousingRedFlags(content, journeyType),
+    ...detectProhibitedPhraseRedFlags(complianceWarnings ?? []),
+  ]
+  if (redFlags.length > 0) {
+    return { redFlags, complianceWarnings }
   }
+
+  const supabase = await createClient()
+  const { data: stored, error: storeError } = await supabase
+    .from("scripts")
+    .insert({
+      title: params.title,
+      category: params.category,
+      content,
+      status: "draft",
+      created_by: actor.userId,
+      brokerage_id: actor.brokerageId,
+      visibility: "private",
+    })
+    .select("id")
+    .single()
+
+  if (storeError) return { redFlags: [], complianceWarnings, storeError: storeError.message }
+  if (!stored?.id) return { redFlags: [], complianceWarnings, storeError: "the scripts write returned no row" }
+  return { redFlags: [], complianceWarnings, scriptId: stored.id as string }
 }
 
 /**
- * Grant portal access to a contact.
- */
-export async function grantPortalAccess(
-  contactId: string,
-  accessType: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; accessId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify contact ownership
-    const own = await assertOwnership("contacts", contactId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // portal_access_logs is the canonical portal-access-log table. Map the
-    // legacy access_type → action; the active/inactive flag lives in metadata
-    // since the real schema doesn't carry a `status` column.
-    const { data: access } = await supabase
-      .from("portal_access_logs")
-      .insert({
-        contact_id: contactId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        module_key: "portal",
-        action: accessType,
-        metadata: { status: "active" },
-      })
-      .select()
-      .single()
-
-    return { success: true, accessId: access?.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to grant portal access" }
-  }
-}
-
-/**
- * Trigger compliance checklist for a transaction.
- */
-export async function triggerComplianceChecklist(
-  transactionId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; checklistId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify transaction ownership
-    const own = await assertOwnership("transactions", transactionId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // compliance_checklists has no agent_id/status; checklist_type is NOT NULL.
-    const { data: checklist } = await supabase
-      .from("compliance_checklists")
-      .insert({
-        transaction_id: transactionId,
-        brokerage_id: brokerageId,
-        checklist_type: "disclosures",
-      })
-      .select()
-      .single()
-
-    return { success: true, checklistId: checklist?.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to trigger compliance checklist" }
-  }
-}
-
-/**
- * Generate marketing script content.
+ * Generate marketing script content and save it as the caller's PRIVATE script.
+ *
+ * WIRE STATE (updated 2026-08-28, lane E1 — supersedes the lane CD note that
+ * recorded `scripts` as reader-only): the agent-authored script lane
+ * (m429: private → viral promotion to brokerage via
+ * lib/video/viral-script-share.ts, read back by the video-create saved-scripts
+ * picker, #186) now has a LIVE door. video-create-client.tsx imports
+ * savePrivateScript (below) — "Save as my private script", beside the curated
+ * save-to-library button — and both that action and this one store through
+ * gateAndStorePrivateScript above, the file's single `scripts` INSERT. This
+ * function's own generate-and-store composite is wired too (lane E6
+ * 2026-08-28, after the importer-less app/actions/index.ts barrel was
+ * deleted): the "Generate new private script" door in
+ * video-create-client.tsx's script step calls it with the wizard's current
+ * script type + description and replaces the working script with the result.
+ * executeAITool's routing table still carries no "generate-script" name
+ * because no workflow definition sends one; add the adapter only when a
+ * caller exists.
+ * NOT a duplicate of the curated video lane
+ * (app/actions/video/generate-script.ts + saveVideoScript →
+ * video_scripts_library): that is a different table with an approval queue.
+ *
+ * THE COMPLIANCE GATE (§5, sixth generator on
+ * scripts/video-script-compliance-guard.ts's roster): the caller-supplied
+ * context is PRE-checked for fair housing before any tokens are spent, the
+ * shared compliance blocks (brand voice, ThemFirst, Fair Housing, the
+ * brokerage's prohibited words) ride IN the writing prompt, and the generated
+ * script is post-checked — advisory warnings pass through in
+ * complianceWarnings, a hard red flag refuses the store (see
+ * gateAndStorePrivateScript).
  */
 export async function generateScriptContent(
   scriptType: string,
   context: any,
   _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; content?: string; error?: string }> {
+): Promise<{
+  success: boolean
+  content?: string
+  scriptId?: string
+  complianceWarnings?: string[]
+  error?: string
+}> {
   try {
-    const supabase = await createClient()
     const ctx = await getAgentContext()
 
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
@@ -449,67 +736,154 @@ export async function generateScriptContent(
     const brokerageId = ctx.brokerageId
     const agentId = ctx.agentId
 
-    const { generateText } = await import("ai")
-    const { anthropic } = await import("@ai-sdk/anthropic")
+    const actor = { userId: ctx.userId, brokerageId, teamId: ctx.teamId ?? undefined }
+    const journeyType = scriptJourneyType(scriptType)
 
-    const { text: script } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
+    // The context is the only caller-authored prose here — scriptType is a
+    // vocabulary key. Pre-check it BEFORE the model runs (§5: a protected-class
+    // brief is refused, not laundered into cleaner-sounding copy).
+    const contextProse = typeof context === "string" ? context : context ? JSON.stringify(context) : ""
+    if (contextProse?.trim()) {
+      const preCheck = await precheckBriefForFairHousing(actor, contextProse, journeyType)
+      if (preCheck.blocked) {
+        return {
+          success: false,
+          error: `Script context contains a Fair Housing violation: ${preCheck.reason}`,
+        }
+      }
+    }
+
+    // ON THE GATEWAY. This used to construct an `@ai-sdk/anthropic` client
+    // directly — `anthropic("claude-sonnet-4-20250514")` — which reached the
+    // provider on ANTHROPIC_API_KEY, off the gateway's key/bill/egress, and
+    // skipped the routing table, the fair-use pre-flight, the Data Guard
+    // redaction and the ai_tool_usage cost ledger that every other generation
+    // on this platform goes through. generateTextRouted resolves
+    // "marketing_script_generation" → claude-sonnet → the SAME model
+    // (anthropic/claude-sonnet-4-20250514, MODEL_CONFIG in lib/ai/models.ts),
+    // so the output is unchanged and the accounting now exists.
+    const { generateTextRouted } = await import("@/lib/ai/models")
+
+    // Brand voice + ThemFirst + Fair Housing + the brokerage's own prohibited
+    // words, injected proactively — the rules are an INPUT to the writing, not
+    // only a grade on what came out (§5).
+    const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
+
+    const { text: script } = await generateTextRouted({
       prompt: `Generate a ${scriptType} script for a real estate agent. Context: ${JSON.stringify(context)}`,
+      system: complianceBlocks.length ? complianceBlocks.join("\n\n") : undefined,
+      feature: "marketing_script_generation",
+      userId: ctx.userId,
+      brokerageId,
+      agentId: agentId ?? undefined,
     })
 
-    // Store generated script. scripts is scoped by created_by (no agent_id/brokerage_id);
-    // title is NOT NULL; script_type→category; status CHECK is draft|approved|archived.
-    await supabase.from("scripts").insert({
+    const gated = await gateAndStorePrivateScript({
+      actor,
       title: `${scriptType} script`,
       category: scriptType,
       content: script,
-      status: "draft",
-      created_by: ctx.userId,
+      journeyType,
     })
 
-    return { success: true, content: script }
+    if (gated.redFlags.length > 0) {
+      // The store is REFUSED, and the caller is told exactly why. The text is
+      // still returned so the agent can see what was flagged and fix it — but
+      // success is false, so no automation can mistake this for a saved script.
+      return {
+        success: false,
+        content: script,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Not saved — hard compliance flag: ${gated.redFlags[0]}`,
+      }
+    }
+    if (gated.storeError) {
+      // A refused store still returns the generated text (it is the useful
+      // output) WITH the error saying it was not saved — never a silent success.
+      console.error("[workflows] script generated but NOT stored:", gated.storeError)
+      return {
+        success: true,
+        content: script,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Script generated but not saved: ${gated.storeError}`,
+      }
+    }
+
+    return {
+      success: true,
+      content: script,
+      scriptId: gated.scriptId,
+      complianceWarnings: gated.complianceWarnings,
+    }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to generate script" }
   }
 }
 
 /**
- * Send a newsletter campaign.
+ * Save agent-written script text as the caller's own PRIVATE script (m429
+ * lane): `public.scripts`, visibility 'private', tenant from the SESSION (§4).
+ * The door for this is the "Save as my private script" button beside the
+ * curated save-to-library button in
+ * app/dashboard/videos/create/video-create-client.tsx — private is the honest
+ * verb for the text the agent already has (regenerating would discard their
+ * edits), so this stores the CURRENT working text through the same fused
+ * gate+store as generateScriptContent rather than duplicating the writer.
+ *
+ * The content is a FINISHED script, not a brief headed for a model, so it is
+ * POST-checked (postcheckScript inside gateAndStorePrivateScript) rather than
+ * pre-checked — no `if (x?.trim())` prose gate here by design; that marker is
+ * for caller prose entering a writing prompt
+ * (scripts/video-script-compliance-guard.ts unprecheckedProseGates). Advisory
+ * findings come back in complianceWarnings and the store proceeds; a hard
+ * fair-housing red flag or a phrase the brokerage graded blocking refuses it.
  */
-export async function sendNewsletterCampaign(
-  campaignId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; sentCount?: number; error?: string }> {
+export async function savePrivateScript(params: {
+  title: string
+  /** Vocabulary key (e.g. a video_scripts_library script_type) — not prose. */
+  scriptType: string
+  content: string
+}): Promise<{
+  success: boolean
+  scriptId?: string
+  complianceWarnings?: string[]
+  error?: string
+}> {
   try {
-    const supabase = await createClient()
     const ctx = await getAgentContext()
 
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    if (!params.content?.trim()) return { success: false, error: "There is no script text to save" }
 
-    // newsletter_campaigns has no brokerage_id column — scope ownership via
-    // created_by = caller's user id. Brokerage-wide visibility isn't modelled
-    // on this table yet; this prevents cross-tenant send commands.
-    const svc = createServiceClient()
-    const { data: campaign } = await svc
-      .from("newsletter_campaigns")
-      .select("*")
-      .eq("id", campaignId)
-      .maybeSingle()
-    if (!campaign) return { success: false, error: "Campaign not found" }
-    if (campaign.created_by && campaign.created_by !== ctx.userId) {
-      return { success: false, error: "Forbidden" }
+    const gated = await gateAndStorePrivateScript({
+      actor: { userId: ctx.userId, brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? undefined },
+      title: params.title?.trim() || `${params.scriptType} script`,
+      category: params.scriptType,
+      content: params.content,
+      journeyType: scriptJourneyType(params.scriptType),
+    })
+
+    if (gated.redFlags.length > 0) {
+      return {
+        success: false,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Not saved — hard compliance flag: ${gated.redFlags[0]}`,
+      }
+    }
+    if (gated.storeError) {
+      // Storing IS the whole job here, so a refused write is a failure — not a
+      // success with a footnote.
+      return {
+        success: false,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Script not saved: ${gated.storeError}`,
+      }
     }
 
-    // Mark campaign as sent
-    await supabase
-      .from("newsletter_campaigns")
-      .update({ status: "sent", send_date: new Date().toISOString() })
-      .eq("id", campaignId)
-
-    return { success: true, sentCount: campaign.recipient_count }
+    return { success: true, scriptId: gated.scriptId, complianceWarnings: gated.complianceWarnings }
   } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to send campaign" }
+    return { success: false, error: error?.message ?? "Failed to save script" }
   }
 }
 
@@ -527,36 +901,37 @@ export async function retryFailedWorkflow(
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
     const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
+    void supabase
 
-    // Verify workflow ownership — the prior execution row holds brokerage_id.
-    // workflowId here is the workflow_executions.workflow_id text key; look up
-    // the most recent execution for that workflow in this brokerage to confirm
-    // the caller has the right to retry it.
+    // The retired Engine A's workflow_executions retry table is gone. A "failed
+    // workflow" is now an automation_errors row (the automations console). Verify
+    // ownership, then RESOLVE the error — the retry acknowledges + clears it.
+    // workflowId here is the automation_errors.id.
     const svc = createServiceClient()
-    const { data: priorExec } = await svc
-      .from("workflow_executions")
-      .select("brokerage_id")
-      .eq("workflow_id", workflowId)
+    const { data: errRow } = await svc
+      .from("automation_errors")
+      .select("id, brokerage_id")
+      .eq("id", workflowId)
       .eq("brokerage_id", brokerageId)
-      .limit(1)
       .maybeSingle()
-    if (!priorExec) {
+    if (!errRow) {
       return { success: false, error: "Forbidden" }
     }
 
-    const { data: retry } = await supabase
-      .from("workflow_executions")
-      .insert({
-        workflow_id: workflowId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        status: "retrying",
+    const { error: updErr } = await svc
+      .from("automation_errors")
+      .update({
+        status: "resolved",
+        resolved_at: new Date().toISOString(),
+        resolved_by: ctx.userId,
+        resolution_notes: "Retried from the automations console",
       })
-      .select()
-      .single()
+      .eq("id", workflowId)
+    if (updErr) {
+      return { success: false, error: updErr.message }
+    }
 
-    return { success: true, retryId: retry?.id }
+    return { success: true, retryId: workflowId }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to retry workflow" }
   }

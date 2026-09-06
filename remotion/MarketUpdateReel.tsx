@@ -34,14 +34,9 @@
  * just renders.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -142,7 +137,7 @@ const StatCard: React.FC<{
         display: "inline-block", padding: "6px 16px", borderRadius: 4,
         backgroundColor: accentColor, color: "#0F172A",
         fontSize: 18, fontWeight: 700, letterSpacing: 4, marginBottom: 24,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         STAT {index}
       </div>
@@ -150,7 +145,7 @@ const StatCard: React.FC<{
       {/* Huge number */}
       <div style={{
         fontSize: 168, fontWeight: 900, lineHeight: 0.95, color: "#fff",
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         marginBottom: 16,
       }}>
         {stat.value}
@@ -171,7 +166,7 @@ const StatCard: React.FC<{
           padding: "10px 20px", borderRadius: 8,
           backgroundColor: `${dirColor}33`,  // 20% alpha
           color: dirColor, fontSize: 28, fontWeight: 700,
-          opacity: interpolate(frame, [18, 36], [0, 1]),
+          opacity: interpolate(frame, [18, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}>
           <span style={{ fontSize: 32 }}>{DIR_ARROW[stat.direction]}</span>
           <span>{stat.delta}</span>
@@ -213,15 +208,15 @@ const AvatarPIP: React.FC<{
   if (avatarVideoUrl) {
     return (
       <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }} />
       </div>
     )
   }
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -259,27 +254,27 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 64, objectFit: "contain", marginBottom: 36,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "10px 24px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 5, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [6, 22], [0, 1]),
+            marginBottom: 28, opacity: interpolate(frame, [6, 22], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Market update
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {areaName}
           </div>
           <div style={{
-            fontSize: 32, color: "#fff", opacity: interpolate(frame, [18, 36], [0, 0.7]),
+            fontSize: 32, color: "#fff", opacity: interpolate(frame, [18, 36], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {period}

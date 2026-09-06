@@ -28,10 +28,14 @@
  */
 
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia (owner ruling — all file storage
+// lives in Supabase buckets).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { classifyDidError, externalKeyHeader, DID_STATUS_IN_FLIGHT } from "./contract"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -62,9 +66,11 @@ export interface GenerateVideoInput {
    *  for `expression`/`expressionIntensity` when caller didn't pass them. */
   agentUserId?: string
   /**
-   * URL of the agent's photo used as the talking-head source.
-   * Resolved from agents.avatar_image_url by the caller; pass null to use
-   * the brokerage's configured default D-ID actor URL instead.
+   * URL of the agent's photo used as the talking-head source, resolved by the
+   * CALLER (agents.avatar_image_url / agent_voice_profiles.did_photo_url).
+   * Null/omitted no longer means "use the brokerage's default" — there is no
+   * brokerage default, by owner rule. With no actorId either, the render is
+   * REFUSED rather than handed to D-ID's stock presenter.
    */
   avatarImageUrl?: string | null
   /** D-ID actor ID (alternative to avatarImageUrl; preferred if set) */
@@ -79,7 +85,9 @@ export interface GenerateVideoInput {
   outroUrl?: string | null
   /** Logo/watermark URL — composited onto output video (requires ffmpeg; Sprint C) */
   logoUrl?: string | null
-  /** Brokerage ID — used to resolve brokerage-level D-ID config when agent has none */
+  /** Brokerage ID — the METERING and BUDGET scope for this render (vendor spend
+   *  ledger + the monthly vendor ceiling). It no longer resolves any identity:
+   *  a brokerage never supplies the face or the voice for an agent's video. */
   brokerageId: string
   /** Submit the D-ID job and return immediately (status='processing' + the talk id) WITHOUT
    *  inline-polling. For the AUTONOMOUS pipeline: the caller stamps the talk id onto an
@@ -92,8 +100,10 @@ export interface GenerateVideoResult {
   /** Permanent video (mp4) or audio (mp3) URL — null if still processing */
   videoUrl: string | null
   /** Which D-ID engine rendered it — RECORDED at submit (talks = V2 photo,
-   *  expressives = V4). Pollers key off this; never guess from id shapes. */
-  engine?: "talks" | "expressives"
+   *  expressives = V4). Pollers key off this; never guess from id shapes.
+   *  Typed as DidEngine (§6, 2026-08-31, lane M4): this field used to respell
+   *  the union inline, leaving the named type below with no reader. */
+  engine?: DidEngine
   /** D-ID talk/clip job ID for later polling */
   videoId: string
   /** Processing status at return time */
@@ -121,9 +131,22 @@ async function didPost(path: string, body: unknown): Promise<{ id: string }> {
     path,
     method: "POST",
     auth: { style: "basic", username: didKey(), password: "" },
+    // OUR ElevenLabs key, so OUR voice clones resolve. The D-ID reference is
+    // explicit that x-api-key-external is "your own ElevenLabs API key for TTS
+    // (IVC voices only)". Every agent voice in this OS is an IVC clone created
+    // in our ElevenLabs account, so without this header D-ID looks the voice_id
+    // up in ITS account, where our clones do not exist — the avatar renders in
+    // a stock voice that is not the agent's, and nothing reports a problem.
+    // Absent key → no header → D-ID's own voices, which is the honest fallback.
+    headers: externalKeyHeader(),
     body,
   })
-  if (!res.ok || !res.data) throw new Error(`D-ID API error (${res.status ?? "—"}): ${res.error ?? "unknown"}`)
+  if (!res.ok || !res.data) {
+    // Structured, per the published contract, so a 402/451/400 is legible and
+    // the caller can tell "never going to work" from "try again".
+    const failure = classifyDidError(res.status ?? null, (res as { data?: unknown }).data ?? { description: res.error })
+    throw new Error(`D-ID ${failure.kind}: ${failure.userMessage}`)
+  }
   return res.data
 }
 
@@ -139,26 +162,53 @@ async function didGet(path: string): Promise<Record<string, unknown>> {
   return res.data
 }
 
-/** Poll until done/error or timeout. Returns null on timeout (still processing). */
-async function pollUntilDone(talkId: string): Promise<string | null> {
+/**
+ * The statuses that mean the job is still being worked on.
+ *
+ * DELIBERATELY AN ALLOW-LIST, not a deny-list of terminal states. The previous
+ * loop continued on anything that was not exactly "done" or "error", so ANY
+ * status this code does not know about — a rejection, a moderation block, a
+ * cancellation, whatever the provider adds next — polled silently to the
+ * timeout and then reported "still processing" for a job that would never
+ * finish. Inverting it means an unrecognised status is surfaced immediately,
+ * with its own name in the message, which is correct whatever the provider's
+ * vocabulary turns out to be.
+ */
+const DID_IN_FLIGHT_STATUSES = new Set<string>(DID_STATUS_IN_FLIGHT)
+
+/** Which endpoint holds a given job — known at SUBMIT time, never guessed. */
+export type DidEngine = "talks" | "expressives"
+
+/**
+ * Poll until the job reaches a terminal state, or the deadline passes.
+ * Returns null ONLY on timeout (genuinely still processing).
+ *
+ * The engine is a PARAMETER because the caller already knows it: generateVideo
+ * computes it from the avatar id and returns it, and the poll cron records it
+ * on the row as provider_metadata.mode. The old code threw that away and
+ * probed — `try { GET /talks/id } catch { GET /expressives/id }` — which is
+ * wrong in both directions: a transient 5xx or a rate-limit on /talks diverted
+ * a healthy talks job to /expressives, where it 404s, and the 404 surfaced as
+ * "D-ID poll failed" on a render that was fine.
+ */
+async function pollUntilDone(talkId: string, engine: DidEngine): Promise<string | null> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-    // Both engines: photo avatars live at /talks; V4 expressive at /expressives.
-    let data: Record<string, unknown>
-    try {
-      data = await didGet(`/talks/${talkId}`)
-    } catch {
-      data = await didGet(`/expressives/${talkId}`)
-    }
-    const status = data.status as string | undefined
+    const data = await didGet(`/${engine}/${talkId}`)
+    const status = String(data.status ?? "")
     if (status === "done") {
       return (data.result_url as string) ?? null
     }
-    if (status === "error") {
-      throw new Error(`D-ID talk failed: ${String(data.error ?? "unknown error")}`)
-    }
-    // status === "created" | "started" — continue polling
+    if (DID_IN_FLIGHT_STATUSES.has(status)) continue
+    // Terminal, and not success. "error" carries a description; anything else
+    // is named verbatim so an unhandled provider state is legible rather than
+    // silently indistinguishable from a slow render.
+    throw new Error(
+      status === "error"
+        ? `D-ID ${engine} failed: ${String(data.error ?? "unknown error")}`
+        : `D-ID ${engine} ended in status "${status || "(none)"}": ${String(data.error ?? "no description")}`,
+    )
   }
   return null // timed out — still processing
 }
@@ -167,28 +217,35 @@ async function pollUntilDone(talkId: string): Promise<string | null> {
 // Avatar source resolution
 // ---------------------------------------------------------------------------
 
+/**
+ * WHOSE FACE. Exactly two answers, both from the caller: the actor id the caller
+ * resolved, or the photo the caller resolved. There is no third answer.
+ *
+ * There used to be two more, and both were wrong for the same reason.
+ *
+ *   · A BROKERAGE FALLBACK — brokerages.did_actor_id / did_avatar_url. Against
+ *     the owner's rule that every user sets up their own avatar with no fallback
+ *     to the brokerage, and dead besides: those columns were added by a schema
+ *     reconciliation script and have NO writer anywhere in the app and no UI, so
+ *     nothing could ever populate them. Live check: 0 of 2 brokerages had either
+ *     set. The branch existed only to be skipped.
+ *
+ *   · AN "ULTIMATE FALLBACK" of returning {} and letting the request go out with
+ *     neither actor_id nor source_url — which does not mean "no video". It means
+ *     D-ID RENDERS WITH ITS OWN DEFAULT PRESENTER: a stock stranger. The job
+ *     succeeded, the poller marked it done, and a contact received a talking-head
+ *     video of someone who has never worked at the brokerage, under their agent's
+ *     name. Nothing in the pipeline could tell that apart from a real render.
+ *
+ * That is the whole defect class in one branch — the OS collects the intent
+ * (this agent's twin) and silently ships something else. Now the absence of a
+ * face is a refusal the caller can act on, not a stranger.
+ */
 async function resolveAvatarSource(
-  input: Pick<GenerateVideoInput, "avatarImageUrl" | "actorId" | "brokerageId">
+  input: Pick<GenerateVideoInput, "avatarImageUrl" | "actorId">
 ): Promise<{ sourceUrl?: string; actorId?: string }> {
-  // Caller-provided actor ID takes priority
   if (input.actorId) return { actorId: input.actorId }
-
-  // Caller-provided avatar photo URL
   if (input.avatarImageUrl) return { sourceUrl: input.avatarImageUrl }
-
-  // Fall back to brokerage-configured D-ID source
-  try {
-    const svc = createServiceClient()
-    const { data } = await svc
-      .from("brokerages")
-      .select("did_avatar_url, did_actor_id")
-      .eq("id", input.brokerageId)
-      .maybeSingle()
-    if ((data as any)?.did_actor_id) return { actorId: (data as any).did_actor_id }
-    if ((data as any)?.did_avatar_url) return { sourceUrl: (data as any).did_avatar_url }
-  } catch { /* best-effort */ }
-
-  // Ultimate fallback — D-ID will use its default presenter
   return {}
 }
 
@@ -213,16 +270,19 @@ async function generateAudioOnly(
     }
   }
 
-  // Upload to Vercel Blob
+  // `video-assets` (public): D-ID fetches this MP3 by URL with no session of
+  // ours, so a signed URL would expire mid-job.
   const slug = Math.random().toString(36).slice(2, 9)
-  const blob = await put(`workflow-audio/${slug}.mp3`, ttsResult.audioBuffer, {
-    access: "public",
-    contentType: "audio/mpeg",
-  })
+  const audioUrl = await hostRenderedMedia(
+    createServiceClient(),
+    `workflow-audio/${slug}.mp3`,
+    ttsResult.audioBuffer,
+    "audio/mpeg",
+  )
 
   return {
     videoId: `audio-${slug}`,
-    videoUrl: blob.url,
+    videoUrl: audioUrl,
     status: "done",
     note: "Voice-only mode — audio file (no avatar rendering)",
   }
@@ -271,6 +331,25 @@ export async function generateVideo(
   // ---------------------------------------------------------------------------
 
   const avatarSrc = await resolveAvatarSource(input)
+
+  // NO FACE → NO RENDER. Refused here, before the budget gate and before a
+  // single provider call, because a D-ID submit with neither actor_id nor
+  // source_url does not fail — it renders a stock stranger and reports success.
+  // Callers that legitimately have no face already have a path for it: pass
+  // voiceOnly (partners-meeting does exactly this, degrading to audio), or
+  // handle the error and degrade to a memo. Every caller already branches on
+  // status === "error" / a null videoUrl, so this reaches them as a real
+  // instruction instead of a silent substitution.
+  if (!avatarSrc.actorId && !avatarSrc.sourceUrl) {
+    return {
+      videoId: "",
+      videoUrl: null,
+      status: "error",
+      note:
+        "No avatar to render with — this agent has no D-ID twin or photo configured. " +
+        "Set one up in Settings → Voice & Avatar, or request voice-only output.",
+    }
+  }
 
   const scriptBlock: Record<string, unknown> = {
     type: "text",
@@ -330,13 +409,14 @@ export async function generateVideo(
     config,
   }
 
-  // Actor vs source_url
+  // Actor vs source_url. One of the two is guaranteed present — the no-face case
+  // returned above, because "neither" is the branch where D-ID substitutes its
+  // own default presenter and nothing downstream can tell.
   if (avatarSrc.actorId) {
     bodyBase.actor_id = avatarSrc.actorId
-  } else if (avatarSrc.sourceUrl) {
+  } else {
     bodyBase.source_url = avatarSrc.sourceUrl
   }
-  // If neither is set, D-ID uses its default presenter
 
   // ---------------------------------------------------------------------------
   // 2. Submit the D-ID job
@@ -408,7 +488,7 @@ export async function generateVideo(
 
   let videoUrl: string | null = null
   try {
-    videoUrl = await pollUntilDone(talkId)
+    videoUrl = await pollUntilDone(talkId, isV4Expressive ? "expressives" : "talks")
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`D-ID poll failed: ${msg}`)
@@ -417,22 +497,61 @@ export async function generateVideo(
   const note = notes.length > 0 ? notes.join("; ") : undefined
 
   if (videoUrl) {
-    // D-ID returns a signed URL (~24h expiry). Download + re-upload to Vercel Blob
-    // so the video URL stays valid for downstream {{step_N.video_url}} references
-    // weeks or months later.
-    try {
-      const dl = await callConnector<Buffer>({
-        connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
-        method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
-      })
-      if (dl.ok && dl.data) {
+    // D-ID returns a SIGNED URL that expires in ~24h. The bytes are pulled and
+    // re-hosted in our own Supabase bucket so a downstream
+    // {{step_N.video_url}} reference still resolves weeks later.
+    //
+    // ── WHY THE FALLBACK IS GONE ────────────────────────────────────────────
+    // This ended with
+    //
+    //     } catch { /* fall through with D-ID URL — better than nothing */ }
+    //     return { videoId: talkId, videoUrl, status: "done", … }
+    //
+    // …which returned the VENDOR URL with status "done" whenever the download
+    // or the re-host failed. It is the same shape lib/remotion/media-host.ts
+    // deleted from its own body on the owner's ruling that all file storage
+    // lives in Supabase buckets, and it fails the same way: the caller records
+    // a completed step whose video_url dies tomorrow, and no error is ever
+    // raised, so a broken bucket is indistinguishable from success for exactly
+    // as long as the vendor's signature lasts. "Better than nothing" is the
+    // claim that cannot be checked — a link that 403s next week is worse than a
+    // job the caller knows is unfinished, because only the second one gets
+    // retried.
+    //
+    // The D-ID job is NOT lost by refusing here: `talkId` is returned either
+    // way, and "processing" is the status this function already uses to say
+    // "the render exists, ask again" — app/api/cron/poll-did-videos is the
+    // async finalizer that completes it, and it re-hosts too.
+    const dl = await callConnector<Buffer>({
+      connector: "asset-download", baseUrl: "", path: "", url: videoUrl,
+      method: "GET", auth: { style: "none" }, responseType: "arraybuffer", timeoutMs: 60_000,
+    })
+    if (dl.ok && dl.data) {
+      try {
         const bytes = dl.data
         const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
         const hosted = await hostRenderedMedia(createServiceClient(), `workflow-video/${talkId}.mp4`, bytes, "video/mp4")
         return { videoId: talkId, videoUrl: hosted, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
+      } catch (hostErr: unknown) {
+        const msg = hostErr instanceof Error ? hostErr.message : String(hostErr)
+        return {
+          videoId: talkId,
+          videoUrl: null,
+          status: "processing",
+          engine: isV4Expressive ? "expressives" : "talks",
+          note: [note, `D-ID job ${talkId} rendered but could not be stored in our bucket (${msg}) — poll-did-videos will retry the download`]
+            .filter(Boolean).join("; "),
+        }
       }
-    } catch { /* fall through with D-ID URL — better than nothing */ }
-    return { videoId: talkId, videoUrl, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
+    }
+    return {
+      videoId: talkId,
+      videoUrl: null,
+      status: "processing",
+      engine: isV4Expressive ? "expressives" : "talks",
+      note: [note, `D-ID job ${talkId} rendered but its bytes could not be downloaded (${dl.error ?? `status ${dl.status}`}) — poll-did-videos will retry`]
+        .filter(Boolean).join("; "),
+    }
   }
 
   // Timed out — return partial result so caller can record and continue

@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
+import { DollarSign, TrendingUp, Clock, FileCheck } from 'lucide-react'
 import Link from 'next/link'
 import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
 import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
@@ -14,6 +14,7 @@ import {
   ExternalDocStatusPanel,
   ExternalCommunicationPanel,
 } from '../../(external-portal)/components/os'
+import { getLenderTransactionDetail } from '@/app/actions/lender-portal-actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,6 +46,38 @@ export default async function LenderDashboardPage() {
 
   const active = (transactions || []).filter((t: any) => !['closed', 'cancelled'].includes(t.status))
   const closing = (transactions || []).filter((t: any) => t.status === 'pending')
+
+  // ExternalDocStatusPanel below was mounted on a hardcoded [] while
+  // getLenderTransactionDetail already returned the lender-visible documents
+  // (loan commitment / appraisal / CD / loan conditions) for every deal this
+  // lender is assigned to. Capped at the first 5 active files because the loader
+  // runs several queries per transaction.
+  const lenderDetails = await Promise.all(
+    active.slice(0, 5).map(async (t: any) => {
+      try {
+        return await getLenderTransactionDetail(t.id)
+      } catch {
+        // Throws unless the caller is the lender vendor assigned to this transaction —
+        // one unassigned deal drops out instead of failing the dashboard.
+        return null
+      }
+    })
+  )
+
+  // Loader already aliases the columns (file_name ← doc_label, file_url ← storage_url).
+  // Its select does not include transaction_documents.status, and requiredness is not
+  // modelled, so status is the honest 'uploaded' and `required` stays false.
+  const lenderDocuments = lenderDetails.flatMap((d) =>
+    ((d?.documents || []) as any[]).map((doc) => ({
+      id: doc.id,
+      name: doc.file_name || doc.document_type,
+      type: doc.document_type,
+      status: 'uploaded' as const,
+      required: false,
+      uploadedAt: doc.created_at,
+      fileUrl: doc.file_url || undefined,
+    }))
+  )
 
   // Today's AI brief for this lender
   const lenderBrief = await generateUserTypeBrief({
@@ -148,9 +181,12 @@ export default async function LenderDashboardPage() {
           urgency: 'medium',
           actionRequired: false,
         }))} />
-        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={[]} />
+        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={lenderDocuments} />
       </div>
 
+      {/* Honestly empty: the lender portal WRITES messages (flagLenderIssue,
+          issueClearToClose) but no loader reads a lender's thread back — every
+          client_portal_messages reader in the codebase is contact- or agent-scoped. */}
       <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} messages={[]} />
     </div>
   )

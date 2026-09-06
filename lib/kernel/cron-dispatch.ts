@@ -11,7 +11,7 @@
 // computes what is due and fans out internal HTTPS calls (Bearer CRON_SECRET — the
 // exact header Vercel itself would send), so every target route runs unchanged.
 //
-// The simulator closes the drift loop in BOTH directions: every app/api/cron/*/route.ts
+// The simulator closes the drift loop in BOTH directions: every app/api/cron/…/route.ts
 // must be registered here, and every registry path must resolve to a real route file —
 // adding a cron route without registering it fails the regression.
 //
@@ -33,6 +33,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/generate-brokerage-fee-charges", schedule: "0 6 * * *" },    // documented
   { path: "/api/cron/listing-presentation-prep",      schedule: "0 17 * * *" },   // documented
   { path: "/api/cron/listing-presentation-prep?phase=deliver", schedule: "0 19 * * *" },
+  // Buyer twin of listing-presentation-prep — builds the buyer-consultation
+  // deck (BuyerConsultationSlide producer) for booked buyer consultations.
+  // Staggered half an hour after the listing prep tick (documented in route).
+  { path: "/api/cron/buyer-consultation-prep",        schedule: "30 17 * * *" },
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },
@@ -48,6 +52,16 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/recalculate-roi",                schedule: "15 1 * * *" }, // (staggered r43)
   { path: "/api/cron/review-request-on-close",        schedule: "0 16 * * *" },
   { path: "/api/cron/sync-facebook-audiences",        schedule: "0 */6 * * *" },
+  // GEO / AI-search visibility loop ingress — record citation observations for
+  // published reels + FAQ landing pages, then raise geo_visibility_gap signals
+  // that the manager-signals cron turns into gated regenerate_faq proposals.
+  { path: "/api/cron/geo-citation-monitor",           schedule: "37 8 * * *" },
+  // Storage orphan sweep — retry the removes that the compensating delete in
+  // lib/storage/put-and-sign.ts could not complete. Off-peak and daily: the
+  // worklist only ever holds objects whose UNDO was refused, so it is short by
+  // construction, and a refused remove is rarely transient enough to be worth
+  // hammering hourly.
+  { path: "/api/cron/storage-orphan-sweep",           schedule: "48 4 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
   { path: "/api/cron/idle-hands",                     schedule: "5 * * * *" }, // (staggered r43)
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.
@@ -94,7 +108,6 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/document-retention-scan"             , schedule: "54 6 * * 1" }, // (staggered r43)
   { path: "/api/cron/context-spine-refresh"               , schedule: "24 */4 * * *" }, // (staggered r43)
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
-  { path: "/api/alerts/cron"                              , schedule: "6,21,36,51 * * * *" }, // (staggered r43)
   { path: "/api/cron/audience-sync-runner"                , schedule: "*/15 * * * *" },
   { path: "/api/cron/buyer-reel-deliver"                  , schedule: "*/15 * * * *" },
   { path: "/api/cron/enrichment-processor"                , schedule: "11,26,41,56 * * * *" }, // (staggered r43)
@@ -103,7 +116,6 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/presentation-section-drip"           , schedule: "*/15 * * * *" },
   { path: "/api/cron/publish-social-posts"                , schedule: "*/15 * * * *" },
   { path: "/api/cron/social-analytics-sync"               , schedule: "45 7 * * *" }, // real platform metrics for published posts → social_media_analytics (round 30)
-  { path: "/api/cron/workflow-retries"                    , schedule: "*/15 * * * *" },
   { path: "/api/property-alerts/run?frequency=instant"    , schedule: "*/15 * * * *" },
   { path: "/api/cron/intro-video-email-backfill"          , schedule: "*/2 * * * *" },
   { path: "/api/cron/listing-promo-hybrid-composite"      , schedule: "*/2 * * * *" },
@@ -115,6 +127,13 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/fire-drill"                          , schedule: "27,57 * * * *" }, // (staggered r43)
   { path: "/api/cron/manager-signals"                     , schedule: "23,53 * * * *" }, // (staggered r43)
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
+  // Lead action plan — touches 2..N for a pre-conversion lead, plus the settings-
+  // governed release of the LEAD-recipient proposals the creative producers stage.
+  // speed-to-lead only ever fires touch ONE (`first_touched_at IS NULL`), so this is
+  // what makes max_touches_lead / touch_interval_days mean anything. Every 15 minutes:
+  // the cadence it governs is measured in DAYS, so a tighter tick buys nothing and
+  // only re-reads the same rows.
+  { path: "/api/cron/lead-action-plan"                    , schedule: "*/15 * * * *" },
   // Unified queue drain — email_queue / push_notification_queue / orchestrator_tasks /
   // drip_campaigns (write-only-ledger burn-down: queues finally get a consumer).
   { path: "/api/cron/queue-drain"                         , schedule: "*/5 * * * *" },
@@ -127,7 +146,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/automation-error-monitor"            , schedule: "0 * * * *" },
   { path: "/api/cron/connector-auto-applier"              , schedule: "0 * * * *" },
   { path: "/api/cron/consent-recovery"                    , schedule: "47 * * * *" }, // (staggered r43)
-  { path: "/api/cron/gbp-auto-posts"                      , schedule: "0 * * * *" },
+  { path: "/api/cron/listing-promo-catchup"                      , schedule: "0 * * * *" },
   { path: "/api/cron/open-house-reminder"                 , schedule: "0 * * * *" },
   { path: "/api/cron/predictive-listing-execute"          , schedule: "0 * * * *" },
   { path: "/api/cron/publish-newsletters"                 , schedule: "0 * * * *" },
@@ -167,12 +186,18 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/webhook-deliveries"                  , schedule: "*/5 * * * *" }, // tenant outbound webhooks: enqueue from lifecycle_events + drain due deliveries (round 24)
   { path: "/api/cron/affiliate-commissions"               , schedule: "0 6 28 * *" }, // monthly MRR commission accrual, idempotent per (referral, period) (round 24)
   { path: "/api/cron/stripe-drift"                        , schedule: "0 9 * * 1" }, // weekly plan-catalog vs Stripe price drift watch — notifies superadmins, never auto-fixes (round 33)
+  { path: "/api/cron/ai-overage-billing"                  , schedule: "23 1 1 * *" }, // monthly, 1st 01:23 UTC — bills the CLOSED period's derived AI overage as Stripe invoice items; idempotent per (brokerage, period) via ai_overage_invoices claim (m479)
   { path: "/api/cron/platform-lead-distribution"          , schedule: "0 */2 * * *" }, // batch sweep for platform leads whose inline distribution found no subscriber — speed-to-lead once a zip gains one (round 38)
   { path: "/api/cron/platform-prospect-followup"          , schedule: "0 15 * * *" },
   { path: "/api/cron/support-sla"                         , schedule: "30 * * * *" },
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/open-house-followup"                 , schedule: "45 * * * *" },
   { path: "/api/cron/voice-call-analysis"                 , schedule: "20 * * * *" },
+  // Zoom transcript reconciliation (lane Z2) — re-asks Zoom's recordings API for
+  // past meetings whose transcript webhook never landed, and feeds the SAME
+  // ingest the webhook uses. Every 2h: transcripts render within an hour of the
+  // meeting, so a lost delivery recovers inside two ticks; batch-bounded (25).
+  { path: "/api/cron/zoom-transcript-reconcile"           , schedule: "25 */2 * * *" },
   { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/board-packet"                        , schedule: "0 13 1 * *" },
   { path: "/api/cron/board-packet?phase=deliver"          , schedule: "0 13 2 * *" },
@@ -223,6 +248,29 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/voice-distiller-weekly"              , schedule: "0 9 * * 5" },
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
   { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
+  { path: "/api/cron/task-overdue"                        , schedule: "20 * * * *" }, // TASK_OVERDUE had live notification_rules and no emitter (wave 26)
+  // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
+  // Each was reachable only from its own simulator; the capability had never run
+  // against a live tenant. Cadence is chosen from what each one WATCHES.
+  //
+  // Wire fraud is the one that cannot wait: a spoofed wire is a same-day,
+  // irreversible loss, so the sentinel ticks four times an hour on free minutes.
+  { path: "/api/cron/wire-fraud-sentinel"                 , schedule: "4,19,34,49 * * * *" },
+  // Pre-offer property red flags — a buyer's target list changes over days, and
+  // the runner spends an AI call per flagged property, so six-hourly + capped.
+  { path: "/api/cron/deal-killer-radar"                   , schedule: "40 */6 * * *" },
+  // Agent workload is a daily-grain fact; the output is a gated rebalance
+  // recommendation a broker reads once a day.
+  { path: "/api/cron/capacity-guardian"                   , schedule: "50 6 * * *" },
+  // The cross-lane "about to be dropped" digest — one gated card per tenant per day.
+  { path: "/api/cron/nothing-dropped-sweep"               , schedule: "8 13 * * *" },
+  // Move-up choreography: turns on a listing stage + close date, so six-hourly
+  // catches a morning stage change without waiting for tomorrow.
+  { path: "/api/cron/dual-transaction-timing"             , schedule: "28 */6 * * *" },
+  // Offer expiry — the unattended door for PENDING → EXPIRED. `markOfferExpired`
+  // is session-gated by design, so without this nothing ever expired an offer
+  // whose `offers.response_deadline` had passed. Offset from deadline-watcher.
+  { path: "/api/cron/offer-expiry"                        , schedule: "52 * * * *" },
   { path: "/api/cron/marketing-agent-weekly-measure"      , schedule: "30 22 * * 0" },
   { path: "/api/cron/refresh-market-rates"                , schedule: "30 6 * * *" },
   { path: "/api/cron/market-insights-weekly"              , schedule: "30 6 * * 1" },
@@ -232,6 +280,18 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/sphere-resonance"                    , schedule: "30 7 * * *" },
   { path: "/api/cron/weekly-ai-metrics"                   , schedule: "54 7 * * 1" }, // (staggered r43)
   { path: "/api/cron/variant-outcomes-aggregator"         , schedule: "30 8 * * *" },
+  // Permit signal scan — the daily cadence socrata-market-registry.ts described in prose and
+  // nobody built: recentPermits() per registered dataset per ACTIVE brokerage market, matched to
+  // the tenant's own leads by address, filed into motivated_seller_signals. Off-peak and daily:
+  // city portals publish overnight and the 7-day lookback absorbs their backfill.
+  { path: "/api/cron/permit-signal-scan"                  , schedule: "40 5 * * *" },
+  // Conversation-insights refresh — the TRIGGER for the one conversation_insights
+  // writer (updateConversationMemory). Sweeps conversations whose message activity
+  // is newer than their stored insight and re-extracts, so the communications-
+  // intelligence dashboard, the AI-quality review count and the buyer-search
+  // intent merge read live numbers instead of a table nothing ever wrote to.
+  // Every 4 hours, capped at 25 AI extractions per run (cost bound in the route).
+  { path: "/api/cron/conversation-insights-refresh"       , schedule: "35 */4 * * *" },
 ]
 
 /** Pure: one cron field against a value. Supports "*", "*\/n", "a,b,c". */

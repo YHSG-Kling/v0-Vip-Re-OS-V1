@@ -4,12 +4,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink } from "lucide-react"
+import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink, FileWarning, ScrollText, BookMarked, FileBarChart, Plus } from "lucide-react"
 import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
-import { calculateComplianceRiskScore } from "@/app/actions/multi-persona"
+import { calculateComplianceRiskScore, getComplianceOfficerDashboard } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { RegulatoryChangesPanel, type RegChangeRow } from "./regulatory-changes-panel"
 import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
 import PendingApprovalsList from "@/app/components/shared/compliance/pending-approvals-list"
 import ViolationsDashboard from "@/app/components/shared/compliance/violations-dashboard"
@@ -40,7 +42,14 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore] = await Promise.all([
+  // OFFICER LEDGER — the two tables this command center never read.
+  // compliance_events (allowed=false) is the GATE ledger: every outbound action
+  // the platform structurally refused. compliance_flags is the content-moderation
+  // queue, and the page could already RESOLVE a flag (ExceptionReviewPanelWrapper
+  // → submitComplianceReviewDecision writes compliance_flags) while never LISTING
+  // one, so the officer could close a flag they had no way to see. Both come from
+  // getComplianceOfficerDashboard, which is brokerage-scoped via requireCaller().
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore, officerLedger] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
@@ -50,7 +59,27 @@ export default async function ComplianceDashboardPage() {
     getAllTransactionComplianceLogs({ limit: 100 }),
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
     user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
+    getComplianceOfficerDashboard().catch(() => ({ pendingReviews: [], recentViolations: [] })),
   ])
+
+  const blockedGateEvents = (officerLedger?.pendingReviews ?? []) as Array<{
+    id: string
+    gate_name: string | null
+    blocked_reason: string | null
+    entity_type: string | null
+    entity_id: string | null
+    severity: string | null
+    actor_role: string | null
+    created_at: string | null
+  }>
+  const flaggedContent = (officerLedger?.recentViolations ?? []) as Array<{
+    id: string
+    violation_type: string | null
+    severity: string | null
+    content_type: string | null
+    flagged_content: string | null
+    detected_at: string | null
+  }>
 
   // Resolve brokerage for the AI brief
   let brokerageId: string | null = null
@@ -61,6 +90,33 @@ export default async function ComplianceDashboardPage() {
       .eq("id", user.id)
       .maybeSingle()
     brokerageId = userRow?.brokerage_id ?? null
+  }
+
+  // Regulatory changes — the review UI over the weekly regulatory watcher
+  // (reg_change_observations is a compliance-officer/data-steward ledger, read
+  // via the service client scoped to this brokerage; the page already gated the
+  // user to their brokerage + a compliance role above).
+  let regChanges: RegChangeRow[] = []
+  if (brokerageId) {
+    const svc = createServiceClient()
+    const { data: regRows } = await svc
+      .from("reg_change_observations")
+      .select("id, title, source, url, severity_tier, effective_date, affected_surfaces, surface_detail, escalated_at, observed_at")
+      .eq("brokerage_id", brokerageId)
+      .order("observed_at", { ascending: false })
+      .limit(15)
+    regChanges = (regRows ?? []).map((r: any) => ({
+      id: r.id,
+      title: r.title ?? "Regulatory change",
+      source: r.source ?? null,
+      url: r.url ?? null,
+      severityTier: r.severity_tier ?? null,
+      effectiveDate: r.effective_date ?? null,
+      affectedSurfaces: Array.isArray(r.affected_surfaces) ? r.affected_surfaces : [],
+      surfaceDetail: Array.isArray(r.surface_detail) ? r.surface_detail : [],
+      escalatedAt: r.escalated_at ?? null,
+      observedAt: r.observed_at ?? null,
+    }))
   }
 
   const complianceBrief = user
@@ -146,6 +202,78 @@ export default async function ComplianceDashboardPage() {
   }
   const todayDateStr = today.toISOString().split("T")[0]
 
+  // ── Document scan verdicts (compliance_checks) ─────────────────────────────
+  // Every client-document upload persists its signature/state scan here
+  // (app/actions/documents.ts), and until now the only readers COUNTED rows by
+  // status — check_type and the findings payload themselves were write-only, so
+  // the officer could see "3 pending" but never WHAT was scanned or what it
+  // found. This list is the reader for both columns.
+  let scanRows: Array<{
+    id: string
+    check_type: string | null
+    status: string | null
+    findings: Record<string, unknown> | null
+    created_at: string | null
+  }> = []
+  // ── Open field obligations (compliance_tasks) ──────────────────────────────
+  // recordDeposit files a deposit-delivery duty per AGENT
+  // (app/actions/ai-financial-management.ts stamps agent_id) but every reader
+  // keyed on transaction_id only — the "whose duty is this" column had no
+  // reader. Resolved agents.id → users.id (§3: the two id spaces are disjoint).
+  let openTasks: Array<{
+    id: string
+    task_type: string | null
+    description: string | null
+    due_date: string | null
+    status: string | null
+    agentName: string | null
+  }> = []
+  if (brokerageId) {
+    const svc = createServiceClient()
+    const [{ data: checks, error: checksError }, { data: tasks, error: tasksError }] = await Promise.all([
+      svc
+        .from("compliance_checks")
+        .select("id, check_type, status, findings, created_at")
+        // Same tenant predicate as the officer brief (tc-compliance-lender-vendor):
+        // the .is.null arm admits only legacy rows written before the column was stamped.
+        .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+        .order("created_at", { ascending: false })
+        .limit(10),
+      svc
+        .from("compliance_tasks")
+        .select("id, task_type, description, due_date, status, agent_id")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
+        .order("due_date", { ascending: true })
+        .limit(10),
+    ])
+    if (checksError) console.error("[compliance] compliance_checks read refused:", checksError.message)
+    if (tasksError) console.error("[compliance] compliance_tasks read refused:", tasksError.message)
+    scanRows = (checks ?? []) as typeof scanRows
+
+    const taskRows = (tasks ?? []) as Array<{ id: string; task_type: string | null; description: string | null; due_date: string | null; status: string | null; agent_id: string | null }>
+    const taskAgentIds = Array.from(new Set(taskRows.map((t) => t.agent_id).filter(Boolean))) as string[]
+    const nameByAgentId = new Map<string, string>()
+    if (taskAgentIds.length) {
+      const { data: taskAgents } = await svc
+        .from("agents")
+        .select("id, user_id, users(first_name, last_name)")
+        .in("id", taskAgentIds)
+      for (const a of (taskAgents ?? []) as any[]) {
+        const composed = [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ")
+        nameByAgentId.set(a.id, composed || "Agent")
+      }
+    }
+    openTasks = taskRows.map((t) => ({
+      id: t.id,
+      task_type: t.task_type,
+      description: t.description,
+      due_date: t.due_date,
+      status: t.status,
+      agentName: t.agent_id ? nameByAgentId.get(t.agent_id) ?? null : null,
+    }))
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -159,6 +287,52 @@ export default async function ComplianceDashboardPage() {
             Risk-first compliance monitoring and content moderation
           </p>
         </div>
+      </div>
+
+      {/* Governance & records — the single hub for the compliance workflow
+          pages (the standalone /compliance dashboard was retired and now
+          redirects here; these sub-pages live on and are surfaced here). */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <Link
+          href="/compliance/violations"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <FileWarning className="h-4 w-4 text-red-600" />
+          <span className="text-sm font-medium">Violations log</span>
+          <span className="text-xs text-muted-foreground">Open compliance flags</span>
+        </Link>
+        <Link
+          href="/compliance/violations/new"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <Plus className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Log a violation</span>
+          <span className="text-xs text-muted-foreground">File a new flag</span>
+        </Link>
+        <Link
+          href="/compliance/audits"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <ScrollText className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Audit log</span>
+          <span className="text-xs text-muted-foreground">System audit trail</span>
+        </Link>
+        <Link
+          href="/compliance/policies"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <BookMarked className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Policies</span>
+          <span className="text-xs text-muted-foreground">Brokerage policy catalog</span>
+        </Link>
+        <Link
+          href="/compliance/reports"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <FileBarChart className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Reports</span>
+          <span className="text-xs text-muted-foreground">Compliance report</span>
+        </Link>
       </div>
 
       {/* Today's Focus — AI Brief */}
@@ -242,6 +416,99 @@ export default async function ComplianceDashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Blocked gate events + flagged content — the officer ledger.
+          Neither table had a reader on this page; the gate refusals and the
+          content-moderation queue were both invisible here. */}
+      {(blockedGateEvents.length > 0 || flaggedContent.length > 0) && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <FileWarning className="h-4 w-4 text-red-600" />
+                Blocked Actions
+                <Badge variant="destructive" className="text-xs">{blockedGateEvents.length}</Badge>
+              </CardTitle>
+              <CardDescription>
+                Outbound actions the compliance gate refused — most recent first
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {blockedGateEvents.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No blocked actions on record.</p>
+              ) : (
+                blockedGateEvents.map((e) => (
+                  <div key={e.id} className="rounded-md border p-2.5 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">
+                        {(e.gate_name ?? "gate").replace(/_/g, " ")}
+                      </span>
+                      {e.severity && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{e.severity}</Badge>
+                      )}
+                      {e.actor_role && (
+                        <span className="text-[10px] text-muted-foreground">{e.actor_role}</span>
+                      )}
+                    </div>
+                    {e.blocked_reason && (
+                      <p className="text-xs text-muted-foreground">{e.blocked_reason}</p>
+                    )}
+                    <p className="text-[10px] text-muted-foreground">
+                      {e.entity_type ?? "entity"}
+                      {e.created_at ? ` · ${new Date(e.created_at).toLocaleString()}` : ""}
+                    </p>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                Flagged Content Queue
+                <Badge variant="outline" className="text-xs">{flaggedContent.length}</Badge>
+              </CardTitle>
+              <CardDescription>
+                compliance_flags awaiting a review decision
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {flaggedContent.length === 0 ? (
+                <p className="text-xs text-muted-foreground">Nothing in the flagged queue.</p>
+              ) : (
+                flaggedContent.map((f) => (
+                  <div key={f.id} className="rounded-md border p-2.5 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-medium">
+                        {(f.violation_type ?? "violation").replace(/_/g, " ")}
+                      </span>
+                      {f.severity && (
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{f.severity}</Badge>
+                      )}
+                      {f.content_type && (
+                        <span className="text-[10px] text-muted-foreground">{f.content_type}</span>
+                      )}
+                    </div>
+                    {f.flagged_content && (
+                      <p className="text-xs text-muted-foreground line-clamp-2">{f.flagged_content}</p>
+                    )}
+                    {f.detected_at && (
+                      <p className="text-[10px] text-muted-foreground">
+                        {new Date(f.detected_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Regulatory changes — review UI over the weekly regulatory watcher */}
+      <RegulatoryChangesPanel changes={regChanges} />
 
       {/* OS Intelligence Grid - 3 Column Layout */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -328,6 +595,100 @@ export default async function ComplianceDashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Document scan verdicts + open field obligations — the readers for
+          compliance_checks.check_type/findings and compliance_tasks.agent_id */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-primary" />
+              Document Scan Verdicts
+            </CardTitle>
+            <CardDescription>
+              Signature and state-compliance scans recorded on client document uploads
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {scanRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2 text-center">
+                No document scans recorded yet. Scans run automatically on client document uploads.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {scanRows.map((row) => {
+                  const f = (row.findings ?? {}) as Record<string, any>
+                  const sig = f.signatureCompleteness as Record<string, any> | undefined
+                  const missing = [
+                    ...(Array.isArray(sig?.missingSignatures) ? sig!.missingSignatures : []),
+                    ...(Array.isArray(sig?.missingInitials) ? sig!.missingInitials : []),
+                  ]
+                  const stateIssues = Array.isArray(f.stateComplianceIssues) ? f.stateComplianceIssues : []
+                  const bad = row.status === "fail" || missing.length > 0 || stateIssues.length > 0
+                  return (
+                    <div key={row.id} className={`p-3 rounded-lg border ${bad ? "border-amber-200 bg-amber-50" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium capitalize">
+                          {(row.check_type ?? "check").replace(/_/g, " ")}
+                        </p>
+                        <Badge variant={bad ? "destructive" : "outline"} className="text-xs capitalize shrink-0">
+                          {row.status ?? "unknown"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {missing.length > 0 && `Missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`}
+                        {missing.length > 0 && stateIssues.length > 0 && " · "}
+                        {stateIssues.length > 0 && `${stateIssues.length} state issue${stateIssues.length !== 1 ? "s" : ""}`}
+                        {missing.length === 0 && stateIssues.length === 0 && "No missing signatures or state issues found"}
+                        {row.created_at && ` · ${new Date(row.created_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              Open Field Obligations
+            </CardTitle>
+            <CardDescription>
+              Pending compliance duties (escrow deposit delivery, etc.) and the agent each one sits with
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {openTasks.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2 text-center">
+                No open obligations. Deposit-delivery duties appear here when deposits are recorded.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {openTasks.map((t) => {
+                  const overdue = !!t.due_date && t.due_date.slice(0, 10) <= todayDateStr
+                  return (
+                    <div key={t.id} className={`p-3 rounded-lg border ${overdue ? "border-red-200 bg-red-50" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium capitalize">{(t.task_type ?? "task").replace(/_/g, " ")}</p>
+                        <Badge variant={overdue ? "destructive" : "outline"} className="text-xs shrink-0">
+                          {t.due_date ? `due ${new Date(t.due_date).toLocaleDateString()}` : "no due date"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {t.agentName ? `Agent: ${t.agentName}` : "Unassigned"}
+                        {t.description && ` · ${t.description}`}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Alert Banner */}
       <Alert>

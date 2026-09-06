@@ -12,6 +12,7 @@ import {
   type FinancialAction,
 } from '../components/os'
 import { AddExpenseDialog } from './components/add-expense-dialog'
+import { DeleteExpenseButton } from './components/delete-expense-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,29 +27,45 @@ export default async function ExpensesPage() {
   // pass 11: business_expenses.agent_id FKs agents(id), not users(id) — the
   // old user.id filter returned zero for every agent. Resolve the agents.id.
   const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
-  const expenseAgentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
-  const { data: expenses } = await supabase
-    .from('business_expenses')
-    .select('id, category, amount, description, expense_date, receipt_url')
-    .eq('agent_id', expenseAgentId)
-    .gte('expense_date', `${currentYear}-01-01`)
-    .order('expense_date', { ascending: false })
-    .limit(100)
+  // NOT `?? user.id` (m353) — same self-cancelling shape as the comment above:
+  // it says the user.id filter "returned zero for every agent", then restores it.
+  const expenseAgentId = await resolveAgentId(supabase as any, user.id)
+  if (!expenseAgentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your expenses.
+      </div>
+    )
+  }
+  // KEEP-ONE (§1, lane E6 2026-08-28): the table read goes through
+  // app/actions/agents.ts:getAgentExpenses — the survivor the dashboard-data
+  // lane recorded for the `expenses` type (lib/dashboard/data-survivors.ts),
+  // already sitting next to getExpenseSummary below. It re-derives the caller
+  // from the session (requireAgentLedgerAccess), pins the tenant, and reports a
+  // refused read instead of the dropped-error empty table this replaces.
+  const { getAgentExpenses } = await import("@/app/actions/agents")
+  const expensesResult = await getAgentExpenses(expenseAgentId, currentYear, { limit: 100 })
+  const expensesError = expensesResult.ok ? null : (expensesResult.error ?? "Could not read your expenses.")
 
-  const expenseData = expenses || []
-  const totalExpenses = expenseData.reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
+  const expenseData = expensesResult.expenses || []
   const mtdExpenses = expenseData.filter((e: any) => {
     const expenseMonth = new Date(e.expense_date).getMonth() + 1
     return expenseMonth === currentMonth
   }).reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
-  const byCategory: Record<string, { total: number; count: number }> = {}
-  expenseData.forEach((e: any) => {
-    const cat = e.category || 'Other'
-    if (!byCategory[cat]) byCategory[cat] = { total: 0, count: 0 }
-    byCategory[cat].total += (e.amount || 0)
-    byCategory[cat].count += 1
-  })
+  // The category breakdown and the YTD total come from getExpenseSummary, which
+  // aggregates EVERY row in the tax year. They used to be computed inline from
+  // the same `.limit(100)` page this table renders — so an agent past a hundred
+  // receipts was shown a chart that silently omitted the rest of their year, a
+  // category count that was wrong, and a "total YTD" that was really "total of
+  // the hundred most recent". It also reports a refused read instead of folding
+  // it into a zero.
+  const { getExpenseSummary } = await import("@/app/actions/agents")
+  const summaryResult = await getExpenseSummary(expenseAgentId, currentYear)
+  const byCategory = summaryResult.summary
+  const totalExpenses = summaryResult.total
+  const summaryError = summaryResult.ok ? null : (summaryResult.error ?? "Could not read your expense totals.")
+  const truncatedTable = expenseData.length >= 100
 
   // Build action stack
   const expenseActions: FinancialAction[] = [
@@ -121,7 +138,7 @@ export default async function ExpensesPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Total Records</p>
-            <p className="text-2xl font-bold text-blue-600 mt-1">{expenseData.length}</p>
+            <p className="text-2xl font-bold text-blue-600 mt-1">{summaryResult.count}</p>
           </CardContent>
         </Card>
         <Card>
@@ -131,6 +148,21 @@ export default async function ExpensesPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* An unread total must say so rather than render as $0 spent. */}
+      {summaryError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your year-to-date totals could not be read: {summaryError}. The figures above and the
+          category breakdown below are not complete.
+        </div>
+      )}
+
+      {/* Same rule for the table itself — a refused read is not an empty year. */}
+      {expensesError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your expense records could not be read: {expensesError}. The table below is not complete.
+        </div>
+      )}
 
       {/* Expense Intelligence Panel */}
       {(() => { const Panel = ExpenseIntelligencePanel as any; return <Panel expenses={expenseData} userId={user.id} /> })()}
@@ -143,7 +175,10 @@ export default async function ExpensesPage() {
               <TrendingDown className="w-5 h-5 text-orange-600" />
               Expenses by Category
             </CardTitle>
-            <CardDescription>YTD breakdown showing where you're spending</CardDescription>
+            <CardDescription>
+              YTD breakdown showing where you&apos;re spending — every expense in {currentYear},
+              not just the most recent page.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
@@ -178,7 +213,12 @@ export default async function ExpensesPage() {
             <Receipt className="w-5 h-5 text-orange-600" />
             All Expense Records
           </CardTitle>
-          <CardDescription>Sorted by date (newest first)</CardDescription>
+          <CardDescription>
+            Sorted by date (newest first)
+            {truncatedTable
+              ? ` — showing the 100 most recent of ${summaryResult.count}; the totals above cover all of them.`
+              : ""}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {expenseData.length === 0 ? (
@@ -197,6 +237,7 @@ export default async function ExpensesPage() {
                     <th className="text-left py-2 px-2 font-semibold">Category</th>
                     <th className="text-right py-2 px-2 font-semibold">Amount</th>
                     <th className="text-center py-2 px-2 font-semibold">Receipt</th>
+                    <th className="w-10 py-2 px-2"><span className="sr-only">Delete</span></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -214,6 +255,16 @@ export default async function ExpensesPage() {
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
+                      </td>
+                      {/* deleteExpense was unreachable before this: a wrong or
+                          duplicated receipt could not be removed, and kept
+                          inflating the YTD deduction total above. */}
+                      <td className="py-3 px-2 text-right">
+                        <DeleteExpenseButton
+                          expenseId={e.id}
+                          description={e.description || 'Business Expense'}
+                          amount={e.amount || 0}
+                        />
                       </td>
                     </tr>
                   ))}

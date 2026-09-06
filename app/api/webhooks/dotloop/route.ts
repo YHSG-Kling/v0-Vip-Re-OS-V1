@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -148,27 +149,54 @@ export async function POST(request: NextRequest) {
       if (loop_id) {
         const { data: matchedOffer } = await supabase
           .from("offers")
-          .select("id, contact_id")
+          .select("id, contact_id, brokerage_id, transaction_id, buyer_signed_at, seller_signed_at, fully_signed_contract_received_at")
           .eq("esign_provider", loop_id)
           .maybeSingle()
 
         if (matchedOffer) {
-          await supabase
+          // A dotloop loop reaching "fully signed" is the provider attesting that
+          // EVERY signer signed. The execute predicate
+          // (lib/transactions/offer-execution-state.ts) reads the OS's own
+          // vocabulary for that same fact — buyer_signed_at, seller_signed_at,
+          // fully_signed_contract_received_at — so those are stamped here where
+          // still empty. A leg a human already recorded is never overwritten.
+          const { error: offerStampError } = await supabase
             .from("offers")
             .update({
-              esign_status:       "fully_signed",
-              esign_completed_at: now,
+              esign_status:                      "fully_signed",
+              esign_completed_at:                now,
+              buyer_signed_at:                   (matchedOffer as any).buyer_signed_at ?? now,
+              seller_signed_at:                  (matchedOffer as any).seller_signed_at ?? now,
+              fully_signed_contract_received_at: (matchedOffer as any).fully_signed_contract_received_at ?? now,
             })
             .eq("id", matchedOffer.id)
+          if (offerStampError) console.error(`[dotloop] offer ${matchedOffer.id} fully-signed stamp refused: ${offerStampError.message}`)
 
           await logEventAndTrigger({
-            brokerage_id: "",
-            event_type: "buyer.offer.esign.completed",
+            brokerage_id: (matchedOffer as any).brokerage_id ?? "",
+            event_type: OFFER_AUDIT_EVENT.ESIGN_COMPLETED,
             user_id:    matchedOffer.contact_id,
             payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
             source:     "webhook",
             dedupe_key: `offer-esign-complete-${matchedOffer.id}`,
           } as any)
+
+          // THE OFFER COMPLIANCE LOOP STARTS HERE — same door as finalize-packet.
+          // Both sides signed → the ONE gate → transaction under contract on a
+          // pass, blockers to tc + compliance officer + agents on a fail.
+          if (!offerStampError && (matchedOffer as any).brokerage_id) {
+            try {
+              const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+              await runOfferComplianceLoop(supabase as any, {
+                brokerageId: (matchedOffer as any).brokerage_id as string,
+                offerId:     matchedOffer.id as string,
+                trigger:     "agreement_executed",
+                actorUserId: null,
+              })
+            } catch (err) {
+              console.error("[dotloop] offer compliance loop failed (non-fatal):", (err as Error).message)
+            }
+          }
         }
 
         // ── Esign completion: listing_agreements ─────────────────────────────
@@ -212,11 +240,28 @@ export async function POST(request: NextRequest) {
               metadata:    { agreementId: matchedAgreement.id, loop_id, provider: "dotloop", source: "webhook" },
             }, supabase)
 
-            // status is the MLS-status column, not part of the stage machine.
+            // stage_entered_at is the stage machine's clock; listings.status is NOT written here —
+            // transitionLifecycle synced it (listing_signed) from the shared map one call above.
             await supabase
               .from("listings")
-              .update({ status: "coming_soon", stage_entered_at: now })
+              .update({ stage_entered_at: now })
               .eq("id", matchedAgreement.listing_id)
+            // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ─────────
+            // The executed agreement is where compliance STARTS. The kernel transition above
+            // already stamped `listing_signed` through the shared map; the explicit
+            // `status: coming_soon` write that stood here overwrote it and declared the
+            // gate passed before it had run. Now the loop runs the ONE gate: a pass walks the
+            // listing to COMING_SOON_PREP (status coming_soon), a fail names what is missing
+            // to the TC, the compliance officer and the agent, and every later upload
+            // re-enters it. Non-fatal — the webhook has already recorded the signature.
+            try {
+              const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+              await runListingComplianceLoop(supabase as any, {
+                brokerageId: listingRow.brokerage_id, listingId: matchedAgreement.listing_id, trigger: "agreement_executed", actorUserId: null,
+              })
+            } catch (err: any) {
+              console.error("[dotloop] listing compliance loop failed (non-fatal):", err?.message ?? err)
+            }
           }
         }
 

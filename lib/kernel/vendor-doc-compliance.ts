@@ -12,7 +12,21 @@
 import type { createServiceClient } from "@/lib/supabase/service"
 type Svc = ReturnType<typeof createServiceClient>
 
-export const REMINDER_WINDOWS = [60, 30, 7] as const
+// The insurance vocabulary + its PURE calculator live in a client-safe module
+// (no server-only in its graph) because both vendor surfaces render the
+// posture. Re-exported here so server callers keep importing it from the
+// kernel and there is still exactly ONE definition of each.
+export {
+  REMINDER_WINDOWS,
+  daysUntil,
+  INSURANCE_EXPIRING_DAYS,
+  readVendorInsurance,
+  type InsurancePosture,
+  type InsuranceRecord,
+  type InsuranceStatus,
+} from "@/lib/vendors/insurance-posture"
+import { REMINDER_WINDOWS, daysUntil } from "@/lib/vendors/insurance-posture"
+
 export const LICENSE_GRACE_DAYS = 14
 
 export type CredentialType = "license" | "insurance" | "certification" | "bond"
@@ -31,14 +45,6 @@ export interface CredentialEvaluation {
 }
 
 const HARD_SUSPEND_TYPES = new Set(["insurance"])
-
-/** PURE: days between now and an ISO date (negative when past). Null when no/invalid date. */
-export function daysUntil(expiry: string | null | undefined, now: Date): number | null {
-  if (!expiry) return null
-  const t = Date.parse(expiry)
-  if (Number.isNaN(t)) return null
-  return Math.floor((t - now.getTime()) / 86_400_000)
-}
 
 /**
  * PURE: evaluate a single credential. A missing expiry is 'ok'/'none' (honest — nothing to act on, never a
@@ -68,6 +74,21 @@ export function evaluateCredential(cred: CredentialInput, now: Date): Credential
   }
   return { type, expiry: cred.expiry!, daysOut, window: "ok", action: "none", reason: `${type} valid (${daysOut}d out)` }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CERTIFICATE OF INSURANCE, AS A READABLE POSTURE (m376)
+//
+// evaluateCredential above answers "what should the AUTOMATION do tonight". It
+// deliberately says nothing a human can scan, and it collapses the two states a
+// broker most needs told apart: a vendor with NO certificate on file and a
+// vendor whose certificate is current both come back action:'none'. On a
+// referral screen those are opposite facts — one is "safe to send to a client",
+// the other is "we have never checked".
+//
+// So the posture below is derived from the SAME stored expiry, never asserted,
+// and it keeps every honest gap visible as its own state instead of rounding it
+// to a verdict. Nothing here decides anything; the suspend/flag decisions stay
+// with evaluateCredential.
 
 export interface VendorComplianceEvaluation {
   credentials: CredentialEvaluation[]
@@ -117,14 +138,35 @@ export async function runVendorDocCompliance(svc: Svc, params: { brokerageId: st
     if (evalResult.shouldSuspend && v.status === "active") {
       const flags = Array.isArray(v.verification_flags) ? v.verification_flags : []
       const reason = evalResult.credentials.find((c) => c.action === "suspend")?.reason ?? "credential expired"
-      await svc.from("vendors").update({ status: "inactive", verification_flags: [...flags, `suspended:${reason}`], updated_at: new Date().toISOString() }).eq("id", v.id)
-      out.suspended += 1
+      // THE SUSPENSION. status='inactive' is what stops a vendor with an expired
+      // insurance certificate being booked or shown to a client. `out.suspended`
+      // was incremented unconditionally, so a refused write reported a
+      // suspension that never happened — the run's own summary said the vendor
+      // was pulled while they stayed bookable.
+      const { error: suspendError } = await svc.from("vendors").update({ status: "inactive", verification_flags: [...flags, `suspended:${reason}`], updated_at: new Date().toISOString() }).eq("id", v.id)
+      if (suspendError) {
+        console.error(
+          `[vendor-doc-compliance] vendors suspension REFUSED for vendor ${v.id} (${reason}) — the vendor is STILL ACTIVE and bookable:`,
+          suspendError.message,
+        )
+      } else {
+        out.suspended += 1
+      }
     } else if (evalResult.shouldSoftFlag) {
       const flags: string[] = Array.isArray(v.verification_flags) ? v.verification_flags : []
       const flagText = `license_grace:${week}`
       if (!flags.includes(flagText)) {
-        await svc.from("vendors").update({ verification_flags: [...flags, flagText], updated_at: new Date().toISOString() }).eq("id", v.id)
-        out.flagged += 1
+        // The grace flag is the compliance record that this vendor's licence is
+        // lapsing. `out.flagged` was incremented regardless of the outcome.
+        const { error: flagError } = await svc.from("vendors").update({ verification_flags: [...flags, flagText], updated_at: new Date().toISOString() }).eq("id", v.id)
+        if (flagError) {
+          console.error(
+            `[vendor-doc-compliance] vendors grace-flag write REFUSED for vendor ${v.id} — ${flagText} is UNRECORDED:`,
+            flagError.message,
+          )
+        } else {
+          out.flagged += 1
+        }
       }
     }
 

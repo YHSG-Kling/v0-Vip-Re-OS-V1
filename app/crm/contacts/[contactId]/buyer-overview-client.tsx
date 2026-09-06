@@ -12,7 +12,6 @@ import { FatiguePanel }                       from "./components/fatigue-panel"
 import { BuyerEngagementHealthCard }          from "./components/buyer-engagement-health-card"
 import { BuyerLifecyclePanel }               from "./components/buyer-lifecycle-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
-import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 import { TourPipelineStepper }                from "@/app/components/shared/TourPipelineStepper"
 import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,6 +21,7 @@ import { Users, Calendar, AlertTriangle, Zap, Loader2, FileText, Home } from "lu
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
+import { timelineLabel }                      from "@/constants/crm-standards"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -119,13 +119,17 @@ interface BuyerOverviewClientProps {
   nextTour:      any | null
   dualAgencyListings: Array<{ listing_id: string; address: string }> | null
   enabledGates?: string[]
+  /** Decided on the SERVER by lib/buyer-lifecycle/gating-helpers:isOfferAllowed.
+   *  Never re-derive it here: the gate reads lifecycle state and financial verification
+   *  with the service-role client, which must never reach a client bundle. */
+  offerAllowed?: boolean
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
-  dualAgencyListings, enabledGates = [],
+  dualAgencyListings, enabledGates = [], offerAllowed = false,
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -285,7 +289,7 @@ export function BuyerOverviewClient({
               {contact.email && <span>{contact.email}</span>}
               {contact.phone && <span>{contact.phone}</span>}
               {contact.status && <span className="capitalize">{contact.status}</span>}
-              {contact.timeline && <span>{contact.timeline}</span>}
+              {contact.timeline && <span>{timelineLabel(contact.timeline)}</span>}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -360,8 +364,11 @@ export function BuyerOverviewClient({
         </div>
       ) : activeTab === "Offers" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {/* isOfferAllowed is async — used here as a placeholder; server should pre-compute */}
-          {(isOfferAllowed as any)(currentStage) ? (
+          {/* Decided on the server (see page.tsx). This used to call the async
+              isOfferAllowed here and branch on the returned PROMISE, which is always
+              truthy — so this path rendered open for every buyer, whatever their
+              lifecycle state or financial verification said. */}
+          {offerAllowed ? (
             <Link
               href={`/crm/contacts/${buyerId}/offers`}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -875,7 +882,7 @@ export function BuyerOverviewClient({
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Timeline</p>
-                  <p className="font-medium">{contact.timeline ?? "—"}</p>
+                  <p className="font-medium">{timelineLabel(contact.timeline) ?? "—"}</p>
                 </div>
                 {profile && (
                   <>

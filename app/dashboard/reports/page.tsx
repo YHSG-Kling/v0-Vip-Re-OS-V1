@@ -4,7 +4,6 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { ReportsClient } from "./reports-client"
 import {
   generateCampaignROIReport,
-  generateFinancialSummaryReport,
   generateReputationReport,
   generateSourcePerformanceReport,
 } from "@/lib/kernel/reporting"
@@ -26,7 +25,10 @@ export default async function ReportsPage() {
 
   const today      = new Date()
   const ytdStart   = `${today.getFullYear()}-01-01`
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split("T")[0]
+  // `monthStart` removed with the prop it fed — ReportsClient computes its own
+  // window from the selected period (reports-client.tsx periodStart()), so the
+  // value was calculated here and thrown away. See the tombstone on
+  // ReportsClientProps.
 
   // Ensure agentId is resolved — fallback to agents table lookup
   let resolvedAgentId = agentCtx.agentId ?? ""
@@ -36,7 +38,12 @@ export default async function ReportsPage() {
       .select("id")
       .eq("user_id", user.id)
       .maybeSingle()
-    resolvedAgentId = agentRow?.id ?? user.id
+    // NOT `?? user.id` (m348). Every report this page prefetches is keyed on
+    // agents-class columns, so the users id produced a full set of zeroed
+    // reports that looked like a real, quiet month. An empty id leaves them
+    // empty too, but without an ambiguous value travelling into the ctx below
+    // and out to every report reader.
+    resolvedAgentId = agentRow?.id ?? ""
   }
 
   const ctx = {
@@ -46,11 +53,12 @@ export default async function ReportsPage() {
     userType:    agentCtx.role ?? "agent",
   }
 
-  // Prefetch all report types in parallel — gives client zero loading flash
-  const [campaignResult, financialResult, reputationResult, sourceResult, autonomyResult, coachingResult] =
+  // Prefetch report types in parallel — gives client zero loading flash.
+  // NOTE: commission/financials are intentionally NOT loaded here — they live in
+  // Financials → Commission Tracker; Reports is analytics only.
+  const [campaignResult, reputationResult, sourceResult, autonomyResult, coachingResult] =
     await Promise.all([
       generateCampaignROIReport({ ctx }),
-      generateFinancialSummaryReport({ ctx, dateFrom: ytdStart }),
       generateReputationReport({ ctx }),
       generateSourcePerformanceReport({ ctx, dateFrom: ytdStart }),
       generateAutonomyImpactReport({ ctx }),
@@ -93,13 +101,7 @@ export default async function ReportsPage() {
         </section>
       )}
       <ReportsClient
-      agentId={resolvedAgentId}
-      brokerageId={agentCtx.brokerageId ?? ""}
-      role={agentCtx.role || "agent"}
-      userId={user.id}
-      monthStart={monthStart}
       initialCampaignData={campaignResult.data ?? null}
-      initialFinancialData={financialResult.data ?? null}
       initialReputationData={reputationResult.data ?? null}
       initialSourceData={sourceResult.data ?? null}
     />

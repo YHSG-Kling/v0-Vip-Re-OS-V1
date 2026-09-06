@@ -69,6 +69,8 @@ const VALID_PERSONAS: Persona[] = [
   "senior",
   "expired",
   "foreclosure",
+  // Owner ruling 2026-08-31: "investor is a persona and not a contact type" (m589).
+  "investor",
   "other",
 ]
 

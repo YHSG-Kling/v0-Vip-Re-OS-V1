@@ -3,9 +3,34 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isValidUUID } from "@/lib/validations"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+// ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext()
+// and writes through its `db`. Cookie (RLS) client for normal tenant users;
+// service client ONLY under an active FULL impersonation grant re-validated at
+// call time (read_only is refused). Before this, all four writers here used the
+// cookie client bare: under act-as the staff auth.uid() has no tenant, tenant
+// RLS matched zero rows, and supabase-js RESOLVED the refusal — delete reported
+// success over nothing. New tenant-writing actions should adopt this seam.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
+// The ONE way a notifications row gets its tenant — the recipient's users.brokerage_id,
+// which is the exact value the badge-count reader compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 /**
- * Get all tasks for a user or filtered by parameters
+ * Get all tasks for a user or filtered by parameters.
+ *
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `tasks` branch: the
+ * SESSION-DERIVED tenant filter and the session-pinned assignee scope.
+ *
+ * Every filter here was optional and caller-supplied and none was applied by
+ * default, so `getTasks()` returned every task on the platform and
+ * `getTasks({ assignedTo })` returned any agent's worklist by id. The tenant is
+ * now applied unconditionally and first; `assignedTo` may only NARROW, and only
+ * for a broker/admin inside their own tenant.
  */
 export async function getTasks(params?: {
   assignedTo?: string
@@ -13,29 +38,230 @@ export async function getTasks(params?: {
   listingId?: string
   transactionId?: string
   status?: string
+  /**
+   * Due-date window (YYYY-MM-DD, inclusive) — MERGED from the calendar shell's
+   * inline tasks read when that duplicate was rewired onto this survivor (lane
+   * E6 2026-08-28, app/dashboard/calendar/components/os/calendar-shell.tsx).
+   * Narrowing only; the session-derived tenant + assignee scope above still
+   * applies first.
+   */
+  dueDateFrom?: string
+  dueDateTo?: string
 }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tasks: [] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", tasks: [] }
+    }
+
+    // tasks.assigned_to_agent_id → agents.id. Resolved from the session, never
+    // substituted from users.id.
+    let assigneeFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      assigneeFilter = params?.assignedTo
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found", tasks: [] }
+      assigneeFilter = ctx.agentId
+    }
+
     const supabase = await createClient()
 
+    // `agents` has NO first_name / last_name (verified against
+    // information_schema) — the assignee's name lives on `users`, reached
+    // through agents_user_id_fkey (the only agents→users FK, so an OBJECT).
+    // Naming them here made PostgREST reject the ENTIRE query, so getTasks
+    // threw on every call and the task list rendered as "no tasks".
+    // The !tasks_assigned_to_agent_id_fkey hint stays: `tasks` has TWO FKs to
+    // agents (assigned_to_agent_id and created_by_agent_id).
     let query = supabase
       .from("tasks")
-      .select("*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, first_name, last_name)")
+      .select(
+        "*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, users:user_id(first_name, last_name))",
+      )
+      .eq("brokerage_id", ctx.brokerageId)
       .order("due_date", { ascending: true })
 
-    if (params?.assignedTo) query = query.eq("assigned_to_agent_id", params.assignedTo)
+    if (assigneeFilter) query = query.eq("assigned_to_agent_id", assigneeFilter)
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
     if (params?.listingId) query = query.eq("listing_id", params.listingId)
     if (params?.transactionId) query = query.eq("transaction_id", params.transactionId)
     if (params?.status) query = query.eq("status", params.status)
+    if (params?.dueDateFrom) query = query.gte("due_date", params.dueDateFrom)
+    if (params?.dueDateTo) query = query.lte("due_date", params.dueDateTo)
 
     const { data, error } = await query
 
     if (error) throw error
 
-    return { success: true, tasks: data }
+    // Flattened back to the declared assigned_agent shape (id/first_name/
+    // last_name), the form every agent-name reader in the app already uses.
+    const tasks = (data ?? []).map((t: any) => {
+      const a = t?.assigned_agent ?? null
+      const u = a?.users ?? null
+      return {
+        ...t,
+        assigned_agent: a
+          ? { id: a.id, first_name: u?.first_name ?? null, last_name: u?.last_name ?? null }
+          : null,
+      }
+    })
+
+    return { success: true, tasks }
   } catch (error) {
     return handleError(error, "getTasks")
   }
+}
+
+/**
+ * One `tasks` row as getTasks/getTaskById return it: every column of the
+ * table (scripts/schema-snapshot.ts `tasks`) plus the assignee flattened to
+ * the id/first_name/last_name shape every agent-name reader in the app uses.
+ */
+export type TaskWithAssignee = {
+  id: string
+  brokerage_id: string
+  title: string
+  description: string | null
+  status: string | null
+  priority: string | null
+  due_date: string | null
+  completed_at: string | null
+  assigned_to_agent_id: string | null
+  created_by_agent_id: string | null
+  assignee_type: string | null
+  auto_generated: boolean | null
+  source: string | null
+  source_enrollment_id: string | null
+  stage_key: string | null
+  tags: string[] | null
+  contact_id: string | null
+  listing_id: string | null
+  transaction_id: string | null
+  created_at: string | null
+  updated_at: string | null
+  assigned_agent: { id: string; first_name: string | null; last_name: string | null } | null
+}
+
+/**
+ * One task by id, for the agent-facing detail page (app/dashboard/tasks/[taskId]).
+ *
+ * BUILT (orphan doctrine §1.2, lane G3 2026-09-03): the daily brief had minted
+ * `/dashboard/tasks/<id>` CTAs (lib/intelligence/user-type-briefs/index.ts
+ * `complete_task`) against a page that did not exist, and no reader anywhere
+ * opened a task by id. This is the missing half.
+ *
+ * SAME SCOPE AS getTasks, not a second rule: tenant first and unconditional
+ * (brokerage_id from the SESSION), then assignee-or-tenant-admin through the
+ * one roster (isAdminOrBroker — team_lead is inside it). A task the caller may
+ * not see answers with the SAME string as a task that does not exist, so a
+ * forbidden id cannot be told apart from a foreign or absent one.
+ */
+export async function getTaskById(
+  taskId: string,
+): Promise<{ success: true; task: TaskWithAssignee } | { success: false; error: string }> {
+  try {
+    if (!isValidUUID(taskId)) return { success: false, error: "Task not found in your brokerage" }
+
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet." }
+    }
+    const isTenantAdmin = isAdminOrBroker({ user_type: ctx.userType })
+    // Fail closed: a non-admin seat with no agents row can own nothing.
+    if (!isTenantAdmin && !ctx.agentId) return { success: false, error: "Agent profile not found" }
+
+    const supabase = await createClient()
+
+    // The disambiguated embed getTasks uses (see the comment above its query):
+    // `tasks` has TWO FKs to agents, so a bare embed is PGRST201.
+    const { data, error } = await supabase
+      .from("tasks")
+      .select(
+        "*, assigned_agent:agents!tasks_assigned_to_agent_id_fkey(id, users:user_id(first_name, last_name))",
+      )
+      .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
+    if (!isTenantAdmin && data.assigned_to_agent_id !== ctx.agentId) {
+      // Deliberately the not-found string — do not leak that the id exists.
+      return { success: false, error: "Task not found in your brokerage" }
+    }
+
+    const a = (data as any).assigned_agent ?? null
+    const u = a?.users ?? null
+    const task: TaskWithAssignee = {
+      ...(data as any),
+      assigned_agent: a
+        ? { id: a.id, first_name: u?.first_name ?? null, last_name: u?.last_name ?? null }
+        : null,
+    }
+    return { success: true, task }
+  } catch (error) {
+    return handleError(error, "getTaskById")
+  }
+}
+
+/**
+ * Tell the person who just inherited a task that they have it.
+ *
+ * MODULE-PRIVATE ON PURPOSE — this file is `"use server"`, so every export is a public
+ * HTTP endpoint. A notification writer that anyone could call by name would let a caller
+ * post an arbitrary "New Task Assigned" notice to any user.
+ *
+ * Returns a warning STRING when the notice could not be written, and undefined when it
+ * was. The reassignment itself has already landed by then, so a failure here must not be
+ * reported as a failed reassignment — nor swallowed, which is how the predecessor's
+ * phantom insert stayed invisible for its whole life.
+ */
+async function notifyNewAssignee(
+  supabase: any,
+  newAgentId: string,
+  task: { id: string; title?: string | null },
+): Promise<string | undefined> {
+  // tasks.assigned_to_agent_id is an agents.id; notifications.user_id is a users.id.
+  // The two spaces are DISJOINT — the translation is not optional.
+  const { data: agent, error: agentError } = await supabase
+    .from("agents")
+    .select("user_id")
+    .eq("id", newAgentId)
+    .maybeSingle()
+  if (agentError || !agent?.user_id) {
+    console.error(
+      `[tasks] updateTask: could not resolve a user for agent ${newAgentId} (${agentError?.message ?? "no user_id"}) — assignment notice NOT written`,
+    )
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+
+  // TENANT — the RECIPIENT's users.brokerage_id, which is the value the badge-count
+  // reader ANDs against. Unstamped or stamped from the actor, the row exists and the
+  // bell stays dark. See lib/notifications/recipient-tenant.ts.
+  const tenant = await resolveRecipientBrokerageId(supabase, agent.user_id)
+  if (!tenant.ok || !tenant.brokerageId) {
+    console.error(
+      `[tasks] updateTask: ${tenant.ok ? `recipient ${agent.user_id} has no brokerage` : tenant.reason} — assignment notice NOT written rather than written where the bell cannot count it`,
+    )
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+
+  const { error: notifyError } = await supabase.from("notifications").insert({
+    user_id: agent.user_id,
+    brokerage_id: tenant.brokerageId,
+    type: "task_delegated",
+    title: "New Task Assigned",
+    body: `You've been assigned: ${task.title ?? "a task"}`,
+    entity_type: "task",
+    entity_id: task.id,
+  })
+  if (notifyError) {
+    console.error("[tasks] task_delegated notification insert refused:", notifyError.message)
+    return "Task reassigned, but the new assignee could not be notified"
+  }
+  return undefined
 }
 
 /**
@@ -51,7 +277,10 @@ export async function updateTask(params: {
   status?: "pending" | "in_progress" | "completed" | "cancelled"
 }) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
     const updates: any = {}
     if (params.title !== undefined) updates.title = params.title
@@ -61,19 +290,69 @@ export async function updateTask(params: {
     if (params.priority !== undefined) updates.priority = params.priority
     if (params.status !== undefined) updates.status = params.status
 
+    // ── MERGED FROM app/actions/assistant.ts:handleTaskDelegated (now deleted) ──
+    // That duplicate wrote the same column (assigned_to_agent_id) and held two things
+    // this survivor did not: an OWNERSHIP TEST before a reassignment, and a notice to
+    // the person who inherits the task. Both are carried here; the tenant predicate
+    // this function already had is what the duplicate lacked.
+    //
+    // The read is scoped by brokerage too, so "not found" means the same thing at both
+    // steps and a cross-tenant task id cannot even be probed for its assignee.
+    const { data: before, error: beforeError } = await supabase
+      .from("tasks")
+      .select("id, title, assigned_to_agent_id, created_by_agent_id")
+      .eq("id", params.taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (beforeError) throw beforeError
+    if (!before) return { success: false, error: "Task not found in your brokerage" }
+
+    const reassigning =
+      params.assignedTo !== undefined && params.assignedTo !== before.assigned_to_agent_id
+    if (reassigning) {
+      // Scoped to REASSIGNMENT alone, which is the write the duplicate performed.
+      // Editing a task's own fields stays a tenant-level permission; handing it to
+      // someone else is the act that needs standing, exactly as the duplicate had it:
+      // the current assignee, the creator, or a broker/admin.
+      const isOwner =
+        !!ctx.agentId &&
+        (before.assigned_to_agent_id === ctx.agentId || before.created_by_agent_id === ctx.agentId)
+      if (!isOwner && !isAdminOrBroker({ user_type: ctx.userType })) {
+        return { success: false, error: "Forbidden: not your task to reassign" }
+      }
+    }
+
     const { data, error } = await supabase
       .from("tasks")
       .update(updates)
       .eq("id", params.taskId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
+
+    let warning: string | undefined
+    if (reassigning) {
+      warning = await notifyNewAssignee(supabase, params.assignedTo!, data)
+      // TASK_ASSIGNED on reassignment too (integrator, 2026-09-03) — see createTask.
+      const { error: emitError } = await emitKernelEvent({
+        event: KernelEvent.TASK_ASSIGNED,
+        brokerageId: ctx.brokerageId,
+        entityType: "task",
+        entityId: data.id,
+        actorUserId: ctx.userId ?? undefined,
+        metadata: { assigned_to_agent_id: params.assignedTo, reassigned_from: before.assigned_to_agent_id, title: data.title },
+      })
+      if (emitError) console.error(`[updateTask] TASK_ASSIGNED emit refused for task ${data.id}: ${emitError}`)
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
-    return { success: true, task: data }
+    return warning ? { success: true, task: data, warning } : { success: true, task: data }
   } catch (error) {
     return handleError(error, "updateTask")
   }
@@ -84,7 +363,10 @@ export async function updateTask(params: {
  */
 export async function completeTask(taskId: string) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext() // ACT-AS WRITE SEAM — see header
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
     const { data, error } = await supabase
       .from("tasks")
@@ -93,13 +375,16 @@ export async function completeTask(taskId: string) {
         completed_at: new Date().toISOString(),
       })
       .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Task not found in your brokerage" }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true, task: data }
   } catch (error) {
@@ -112,14 +397,28 @@ export async function completeTask(taskId: string) {
  */
 export async function deleteTask(taskId: string) {
   try {
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext() // ACT-AS WRITE SEAM — see header
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+    const supabase = ctx.db
 
-    const { error } = await supabase.from("tasks").delete().eq("id", taskId)
+    // `.select("id")` makes the affected rows observable: a zero-row DELETE
+    // resolves with `error: null`, and this action used to report success on it.
+    const { data: deleted, error } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", taskId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!deleted || deleted.length === 0) {
+      return { success: false, error: "Task not found in your brokerage" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true }
   } catch (error) {
@@ -138,21 +437,20 @@ export async function createTask(params: {
   priority?: "low" | "medium" | "high" | "urgent"
 }) {
   try {
-    const supabase = await createClient()
+    // ACT-AS WRITE SEAM — see header. Identity comes from the seam's context
+    // (the IMPERSONATED tenant identity under act-as), not from a bare cookie
+    // read of the caller's own agents row, which for acting staff has no row
+    // at all and refused every create.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const supabase = ctx.db
 
     // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5 live
     // catch — this hub action failed for EVERY caller that omitted an
     // assignee, and always missed brokerage_id). Resolve both from the
-    // session: the caller's own agent row is the default assignee.
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
-    const { data: callerAgent } = await supabase
-      .from("agents")
-      .select("id, brokerage_id")
-      .eq("user_id", user.id)
-      .maybeSingle()
-    const assignee = params.assignedTo ?? callerAgent?.id
-    const brokerageId = callerAgent?.brokerage_id
+    // session context: the effective identity's agent row is the default assignee.
+    const assignee = params.assignedTo ?? ctx.agentId
+    const brokerageId = ctx.brokerageId
     if (!assignee || !brokerageId) {
       return { success: false, error: "No agent profile for this user — cannot create the task" }
     }
@@ -176,8 +474,25 @@ export async function createTask(params: {
 
     if (error) throw error
 
+    // TASK_ASSIGNED (integrator, 2026-09-03): notification_rules holds live
+    // task_assigned rows and the label exists in the notification engine, but
+    // nothing ever emitted it — a created task bellowed nobody. Best-effort:
+    // a refused audit row must not undo a task that was created.
+    const { error: emitError } = await emitKernelEvent({
+      event: KernelEvent.TASK_ASSIGNED,
+      brokerageId,
+      entityType: "task",
+      entityId: data.id,
+      actorUserId: ctx.userId ?? undefined,
+      contactId: params.contactId ?? undefined,
+      transactionId: params.transactionId ?? undefined,
+      metadata: { assigned_to_agent_id: assignee, title: params.title, due_date: params.dueDate ?? null },
+    })
+    if (emitError) console.error(`[createTask] TASK_ASSIGNED emit refused for task ${data.id}: ${emitError}`)
+
     revalidatePath("/dashboard")
     revalidatePath("/tasks")
+    revalidatePath("/dashboard/tasks")
 
     return { success: true, task: data }
   } catch (error) {

@@ -36,20 +36,20 @@ export const SEO_BASE_SCORE = 70
 export const READABILITY_BASE_SCORE = 75
 
 /** Ideal keyword density window, as a percentage of total words. */
-export const KEYWORD_DENSITY_MIN = 1
-export const KEYWORD_DENSITY_MAX = 3
+const KEYWORD_DENSITY_MIN = 1
+const KEYWORD_DENSITY_MAX = 3
 
 /** Word-count window that earns the overall-score length bonus. */
-export const OVERALL_WORDCOUNT_MIN = 300
-export const OVERALL_WORDCOUNT_MAX = 800
+const OVERALL_WORDCOUNT_MIN = 300
+const OVERALL_WORDCOUNT_MAX = 800
 
 /** Subject-line length window that earns the overall-score bonus. */
-export const SUBJECT_MIN_LEN = 40
-export const SUBJECT_MAX_LEN = 60
+const SUBJECT_MIN_LEN = 40
+const SUBJECT_MAX_LEN = 60
 
 /** Readability length penalties. */
-export const READABILITY_SHORT_THRESHOLD = 300
-export const READABILITY_LONG_THRESHOLD = 1000
+const READABILITY_SHORT_THRESHOLD = 300
+const READABILITY_LONG_THRESHOLD = 1000
 
 /** Recommendation trigger thresholds. */
 export const READABILITY_RECOMMEND_BELOW = 70

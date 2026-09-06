@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -22,7 +22,6 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
-  Search,
   Loader2,
   HelpCircle,
   Send,
@@ -535,7 +534,15 @@ export function DocumentsClient({
                 {docs.map((doc) => {
                   const log = extractionByDocId[doc.id]
                   const hasExtractedData = doc.extracted_data && Object.keys(doc.extracted_data).length > 0
-                  const canAnalyze = (doc.status === "uploaded" || doc.status === "under_review") && !log
+                  // A FAILED extraction is still analysable. `!log` alone would
+                  // have locked a document out of ever being retried the moment
+                  // a failure row existed for it — and failure rows now exist
+                  // (app/actions/ai-transaction-documents.ts writes one in its
+                  // catch; before that, a failed extraction left no row at all,
+                  // which is why this condition read the way it did).
+                  const extractionFailed = log?.processing_status === "failed"
+                  const canAnalyze =
+                    (doc.status === "uploaded" || doc.status === "under_review") && (!log || extractionFailed)
                   const docType = doc.doc_type
 
                   return (
@@ -587,6 +594,30 @@ export function DocumentsClient({
                             )}
                           </div>
                         </div>
+
+                        {/* AI Analysis — FAILED.
+                            `error_message` was selected by the page and written
+                            by nobody, so a document the AI could not read showed
+                            the client absolutely nothing and sat there looking
+                            like it was still being processed. The message is
+                            summarised, not dumped: the client is told the
+                            analysis did not run and that nothing is required of
+                            them, and the raw reason is available to the agent on
+                            the extraction log. */}
+                        {extractionFailed && (
+                          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                            <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                            <div className="text-sm text-amber-900">
+                              <p className="font-medium">We couldn&apos;t read this document automatically.</p>
+                              <p className="text-xs text-amber-800 mt-0.5">
+                                Your agent has been notified and will review it by hand — there is nothing you need to do.
+                                {log?.processed_at && (
+                                  <> Last attempted {formatDistanceToNow(new Date(log.processed_at), { addSuffix: true })}.</>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                        )}
 
                         {/* AI Analysis Section */}
                         {log && log.processing_status === "completed" && (

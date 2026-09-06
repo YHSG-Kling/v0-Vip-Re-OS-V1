@@ -46,6 +46,22 @@ interface FetchedMetrics {
   impressions: number | null
   engagements: number | null
   clicks: number | null
+  /**
+   * THE BREAKDOWN, kept rather than summed away.
+   *
+   * `engagements` above is a single number, and `social_posts.engagement_data`
+   * — read by lib/agents/marketing-agent.ts:587 (the agent's own social
+   * snapshot and its top-post pick) and by lib/marketing/campaign-measurer.ts
+   * (the campaign ROI board's social leg) — wants the per-kind shape
+   * {likes, comments, shares, reactions}. Both readers had NO writer, so the
+   * agent's totalEngagement28d was a permanent 0 and topPostByEngagement was
+   * permanently null: it only records a post whose sum is > 0.
+   *
+   * Every fetcher below already HELD these counts and threw them away in the
+   * addition. A key is present only when the platform actually exposed it —
+   * absent is "this surface does not report it", never a zero-filled guess.
+   */
+  breakdown: { likes?: number; comments?: number; shares?: number; reactions?: number }
 }
 
 // ── Per-platform metric fetches (real API calls; null = metric not exposed) ──
@@ -65,6 +81,13 @@ async function fetchTwitterMetrics(externalId: string, accessToken: string): Pro
     impressions: m.impression_count ?? null,
     engagements: (m.like_count ?? 0) + (m.retweet_count ?? 0) + (m.reply_count ?? 0) + (m.quote_count ?? 0),
     clicks: null, // not exposed on the public_metrics surface
+    // A quote-tweet is a share of the post, not a reply to it — X splits them
+    // and folding quotes into comments would move the number to the wrong kind.
+    breakdown: {
+      likes:    m.like_count ?? undefined,
+      comments: m.reply_count ?? undefined,
+      shares:   (m.retweet_count ?? 0) + (m.quote_count ?? 0),
+    },
   }
 }
 
@@ -87,7 +110,16 @@ async function fetchFacebookMetrics(externalId: string, accessToken: string): Pr
     (d.likes?.summary?.total_count ?? 0) +
     (d.comments?.summary?.total_count ?? 0) +
     (d.shares?.count ?? 0)
-  return { impressions: null, engagements, clicks: null }
+  return {
+    impressions: null,
+    engagements,
+    clicks: null,
+    breakdown: {
+      likes:    d.likes?.summary?.total_count,
+      comments: d.comments?.summary?.total_count,
+      shares:   d.shares?.count,
+    },
+  }
 }
 
 async function fetchInstagramMetrics(externalId: string, accessToken: string): Promise<FetchedMetrics> {
@@ -105,6 +137,9 @@ async function fetchInstagramMetrics(externalId: string, accessToken: string): P
     impressions: null,
     engagements: (d.like_count ?? 0) + (d.comments_count ?? 0),
     clicks: null,
+    // Instagram's Graph surface exposes no share count — the key is OMITTED
+    // rather than set to 0, so a reader can tell "no shares" from "not reported".
+    breakdown: { likes: d.like_count, comments: d.comments_count },
   }
 }
 
@@ -126,6 +161,10 @@ async function fetchLinkedInMetrics(externalId: string, accessToken: string): Pr
     impressions: null,
     engagements: (d.likesSummary?.totalLikes ?? 0) + (d.commentsSummary?.aggregatedTotalComments ?? 0),
     clicks: null,
+    breakdown: {
+      likes:    d.likesSummary?.totalLikes,
+      comments: d.commentsSummary?.aggregatedTotalComments,
+    },
   }
 }
 
@@ -211,6 +250,39 @@ export async function syncSocialAnalytics(
         ? await svc.from("social_media_analytics").update(row).eq("id", (existing as { id: string }).id)
         : await svc.from("social_media_analytics").insert(row)
       if (write.error) { result.errors++; continue }
+
+      // ── social_posts.engagement_data — THE SECOND READER OF THE SAME FACT ──
+      // social_media_analytics is the time-series measurement row. The POST row
+      // carries its own engagement_data jsonb, and that is what the marketing
+      // agent's snapshot and the campaign ROI board read — neither of them
+      // queries social_media_analytics. Written by nobody, both reported zero
+      // engagement for every post this OS has ever published, and the agent's
+      // "top post" pick (which only records a post whose sum exceeds 0) was
+      // permanently null.
+      //
+      // NOT a duplicate of the row above: this is a per-post CURRENT snapshot
+      // with the per-kind breakdown, the analytics row is the timestamped
+      // measurement series with impressions/clicks. `measured_at` is carried in
+      // so a reader can tell how stale the snapshot is.
+      const engagementData = {
+        ...metrics.breakdown,
+        total: metrics.engagements ?? 0,
+        measured_at: now.toISOString(),
+        source: "analytics_sync",
+      }
+      const { error: postWriteError } = await svc
+        .from("social_posts")
+        .update({ engagement_data: engagementData })
+        .eq("id", post.id)
+        .eq("brokerage_id", post.brokerage_id)
+      if (postWriteError) {
+        // Counted as an error rather than swallowed: a refused write here means
+        // the agent keeps reading the previous snapshot (or a zero) and has no
+        // way to know it is stale.
+        console.error(`[analytics-sync] social_posts.engagement_data refused for ${post.id}: ${postWriteError.message}`)
+        result.errors++
+        continue
+      }
       result.synced++
     } catch {
       result.errors++

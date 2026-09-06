@@ -1,7 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
-import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -37,75 +36,47 @@ interface LeadRow {
 // Consolidated into lib/lead-assignment/rule-matcher.ts (pure) — the SAME matcher
 // powers this engine, the settings UI's routing preview, and the simulator, so
 // what the broker previews is exactly what the engine does.
-import { evaluateRuleConditions, pickRoundRobinAgent } from "./rule-matcher"
+import { evaluateRuleConditions, pickAgentForRule } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `toRoutingProfiles`, `ROUTING_PROFILE_COLUMNS` and the type `AgentProfileForRouting`
+// were imported here and read by NOTHING in this file: the profile load they served
+// moved into the one shared loader at lib/lead-assignment/routing-profiles.ts:19
+// (loadRoutingProfiles), which this file calls at assignment-engine.ts:118. That loader is the
+// survivor and still names all three — routing-profiles.ts:17 imports them, :29 uses
+// ROUTING_PROFILE_COLUMNS, :65 calls toRoutingProfiles, :23 returns
+// Record<string, AgentProfileForRouting>. Nothing was lost; only the leftover binding went.
+import { loadRoutingProfiles } from "./routing-profiles"
+// The SOLO shortcut and the brokerage-DEFAULT fallback are no longer imported
+// here: they are steps of the tier-aware policy and moved with it into
+// ./tier-routing, which this file's evaluateAndAssignLead delegates to.
 
-// ─── LOAD-BALANCE FALLBACK ────────────────────────────────────────────────────
-// CAPACITY-AWARE — shares the SAME picker as resolveAgentForContact + the Capacity
-// Guardian (working load = contacts + leads + deals against the tier ceiling), so a lead
-// is never handed to an agent who is already at/over capacity. (Consolidated: the old
-// "fewest assigned leads" heuristic was a third, divergent load metric — removed.)
 
-async function loadBalanceFallback(brokerageId: string): Promise<string | null> {
-  const supabase = createServiceClient()
-
-  const { data: agents } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-
-  if (!agents || agents.length === 0) return null
-
-  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
-  return selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
+/** What the rule pass decided for a lead. */
+export interface RuleResolution {
+  agentId: string | null
+  ruleId: string | null
+  method: string | null
+  /** A matched rule chose MANUAL: assign nobody, and do not fall through. */
+  held?: boolean
+  reason?: string
+  error?: string
 }
 
-// ─── evaluateAndAssignLead ────────────────────────────────────────────────────
-
-export async function evaluateAndAssignLead(params: {
-  leadId: string
-  brokerageId: string
-}): Promise<{ assigned: boolean; agentId?: string; reason: string }> {
-  const { leadId, brokerageId } = params
-  const supabase = createServiceClient()
-
-  // Step 1: Fetch lead
-  const { data: leadData, error: leadError } = await supabase
-    .from("leads")
-    .select(
-      "id, brokerage_id, lifecycle_state, lead_stage, lead_score, property_zip_code, " +
-        "source, urgency_level, agent_id, motivation_type, persona"
-    )
-    .eq("id", leadId)
-    .single()
-
-  if (leadError || !leadData) {
-    return { assigned: false, reason: `Lead not found: ${leadError?.message ?? "no data"}` }
-  }
-
-  // Step 2: Engine 2 fires only on QUALIFIED leads.
-  // The ISA must have completed qualification (lead_stage = 'qualified') AND
-  // the contact must have given explicit consent (lifecycle_state = 'consented'
-  // or beyond). This replaces the prior consent-only gate which fired too early.
-  const typedLead0 = leadData as unknown as LeadRow
-  const isQualified = typedLead0.lead_stage === "qualified"
-  const isConsented =
-    typedLead0.lifecycle_state === "consented" ||
-    typedLead0.lifecycle_state === "qualified" ||
-    typedLead0.lifecycle_state === "assigned"
-
-  if (!isQualified || !isConsented) {
-    return {
-      assigned: false,
-      reason: `Engine 2 requires lead_stage='qualified' AND lifecycle_state in (consented|qualified|assigned). ` +
-        `Got lead_stage='${typedLead0.lead_stage}', lifecycle_state='${typedLead0.lifecycle_state}'.`,
-    }
-  }
-
-  // Step 3: Fetch active rules — team-scoped rules (team tier / multi-location
-  // office) outrank brokerage-wide rules at equal priority. A team rule without
-  // explicit agent_ids routes within the team's active members.
+/**
+ * THE canonical assignment-rule pass. Engine 2 and the lead-governance rail both
+ * call it, so the broker's configured method applies wherever a lead is routed.
+ *
+ * Governance used to bypass rules entirely: lib/lead-governance/agent-selector.ts
+ * sorted active agents by id and took the first, then logged it as
+ * "load_balanced". Any brokerage that had configured a round-robin or a ZIP farm
+ * saw none of it on that path.
+ */
+export async function resolveAgentByRules(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  lead: LeadRow,
+): Promise<RuleResolution> {
   const { data: rules, error: rulesError } = await supabase
     .from("assignment_rules")
     .select("id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered")
@@ -114,25 +85,20 @@ export async function evaluateAndAssignLead(params: {
     .order("priority", { ascending: false })
 
   if (rulesError) {
-    return { assigned: false, reason: `Failed to load rules: ${rulesError.message}` }
+    return { agentId: null, ruleId: null, method: null, error: `Failed to load rules: ${rulesError.message}` }
   }
 
-  const typedLead = typedLead0
-  let matchedAgentId: string | null = null
-  let matchedRuleId: string | null = null
-  let matchedMethod = "load_balance"
-
-  // Step 4: Evaluate rules in priority order (team rules first at equal priority —
-  // canonical precedence: agent → team → brokerage → platform)
+  // Team-scoped rules outrank brokerage-wide rules at equal priority — the
+  // canonical precedence: agent → team → brokerage → platform.
   const orderedRules = ((rules ?? []) as Array<AssignmentRule & { team_id: string | null }>)
     .sort((a, b) =>
       b.priority - a.priority !== 0
         ? b.priority - a.priority
         : Number(!!b.team_id) - Number(!!a.team_id),
     )
+
   for (const rule of orderedRules) {
-    const matched = evaluateRuleConditions(typedLead, rule.conditions ?? {})
-    if (!matched) continue
+    if (!evaluateRuleConditions(lead, rule.conditions ?? {})) continue
 
     let pool = rule.agent_ids ?? []
     if (pool.length === 0 && rule.team_id) {
@@ -146,58 +112,84 @@ export async function evaluateAndAssignLead(params: {
     }
     if (pool.length === 0) continue
 
-    // Pick agent based on rule type
-    if (rule.rule_type === "round_robin") {
-      matchedAgentId = pickRoundRobinAgent(pool, rule.times_triggered)
-    } else {
-      // geo_based / specialization / load_balance — use first agent in pool as default
-      matchedAgentId = pool[0]
+    // Apply the rule's METHOD. Every branch except round_robin used to be
+    // pool[0], so a broker who chose "Load Balance" or "Specialization" sent
+    // every matching lead to the same agent, forever.
+    const pick = pickAgentForRule(rule as never, pool, lead, await loadRoutingProfiles(supabase, brokerageId, pool))
+
+    if (pick.kind === "manual") {
+      // A deliberate hold, not a routing failure. Falling through to
+      // load-balance would defeat the whole point of choosing it.
+      return {
+        agentId: null, ruleId: rule.id, method: "manual", held: true,
+        reason: `Rule "${rule.name}" is set to manual assignment — the lead is held for a person to route.`,
+      }
     }
 
-    matchedRuleId = rule.id
-    matchedMethod = rule.team_id ? `team_${rule.rule_type}` : rule.rule_type
-    break
-  }
+    const agentId = pick.kind === "agent"
+      ? pick.agentId
+      : await selectAgentByCapacity(
+          supabase, brokerageId, pick.candidates,
+          await resolveBrokerageMaxLoad(supabase, brokerageId),
+        )
+    if (!agentId) continue   // nobody in this rule's pool is routable
 
-  // Step 5: Load-balance fallback if no rule matched
-  if (!matchedAgentId) {
-    matchedAgentId = await loadBalanceFallback(brokerageId)
-    matchedMethod = "load_balance"
-    if (!matchedAgentId) {
-      return { assigned: false, reason: "No eligible agent found" }
-    }
-  }
-
-  // Step 5b: COVERAGE MODE (l52-s01) — an agent on leave never silently
-  // collects new leads: active coverage redirects the pick to the covering
-  // agent (one hop, never chained). The away agent's existing book is
-  // untouched — coverage is reversible by construction.
-  {
-    const { redirectForCoverage } = await import("@/lib/agents/coverage-mode")
-    const redirected = await redirectForCoverage(supabase, matchedAgentId)
-    if (redirected !== matchedAgentId) {
-      matchedAgentId = redirected
-      matchedMethod = `${matchedMethod}_coverage`
+    return {
+      agentId,
+      ruleId: rule.id,
+      method: rule.team_id ? `team_${pick.method}` : pick.method,
     }
   }
 
-  // Step 6: Call handleLeadAssigned — advances lifecycle_state + auto-creates contact
-  await handleLeadAssigned({
-    leadId,
-    brokerageId,
-    agentId: matchedAgentId,
-    ruleId: matchedRuleId ?? undefined,
-    method: matchedMethod,
-    scoreAtAssignment: typedLead.lead_score ?? 0,
+  return { agentId: null, ruleId: null, method: null }
+}
+
+// ─── evaluateAndAssignLead ────────────────────────────────────────────────────
+
+/**
+ * ENGINE 2 — the qualified lead → owned contact handoff. Kept as the name every
+ * caller already imports (the AI ISA qualification hook, the ISA handoff
+ * acceptance action, the voice broker command, the admin Assign action), and it
+ * now DELEGATES rather than deciding.
+ *
+ * WHAT MOVED, AND WHY IT HAD TO. The body used to be the whole policy: a solo
+ * shortcut, a rule pass, a brokerage default, coverage, then the write. It knew
+ * about exactly ONE tier (solo_agent) and treated the other three identically —
+ * so a `team` tenant's lead was routed across the whole agents table, ignoring
+ * the team and ignoring teams.team_lead_id, and the owner's rule that "if team
+ * lead subscription, team lead has agent assignment settings" had no code.
+ *
+ * The tier-aware policy now lives in ONE place, lib/lead-assignment/tier-routing.ts,
+ * which every automatic path calls — including Lane 1's positive-feedback
+ * conversion. Two implementations of "whose lead is this" is exactly the drift a
+ * single resolver exists to prevent, so this function is a thin adapter that
+ * preserves the historical return shape and names its trigger.
+ *
+ * The two behaviours the old body had that the new one keeps, unchanged: the
+ * qualification+consent gate (it is stricter there, not looser) and the coverage
+ * redirect. The one it drops is writing a DECORATED method string into
+ * assignment_log.assignment_method — m489 proved those were refused outright by
+ * assignment_log_assignment_method_check, and the insert is not destructured, so
+ * every such assignment wrote no ledger row at all.
+ */
+export async function evaluateAndAssignLead(params: {
+  leadId: string
+  brokerageId: string
+}): Promise<{ assigned: boolean; agentId?: string; reason: string }> {
+  const { autoAssignLead } = await import("./tier-routing")
+  const out = await autoAssignLead({
+    leadId: params.leadId,
+    brokerageId: params.brokerageId,
+    trigger: "ai_isa_qualified",
   })
-
-  // Step 7: Increment times_triggered on the matched rule
-  if (matchedRuleId) {
-    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId })
+  // An already-assigned lead reports as assigned to this caller: the historical
+  // contract is "does the lead now have an owner", and it does. The distinction
+  // is preserved on autoAssignLead's own result for callers that need it.
+  return {
+    assigned: out.assigned || !!out.alreadyAssigned,
+    agentId: out.agentId,
+    reason: out.reason,
   }
-
-  // Step 8: Return result
-  return { assigned: true, agentId: matchedAgentId, reason: `Assigned via ${matchedMethod}` }
 }
 
 // ─── claimLead (race-condition safe) ─────────────────────────────────────────

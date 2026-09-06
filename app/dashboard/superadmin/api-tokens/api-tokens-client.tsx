@@ -36,7 +36,10 @@ type TokenRow = {
   last_used_at: string | null
 }
 
-export function ApiTokensClient({ initialRows, loadError }: { initialRows: TokenRow[]; loadError: string | null }) {
+export function ApiTokensClient(
+  { initialRows, loadError, canMint }:
+  { initialRows: TokenRow[]; loadError: string | null; canMint: boolean },
+) {
   const { toast } = useToast()
   const router = useRouter()
   const [rows, setRows] = useState<TokenRow[]>(initialRows)
@@ -108,9 +111,14 @@ export function ApiTokensClient({ initialRows, loadError }: { initialRows: Token
             actions a token may call; the raw token is shown once at mint and only its hash is stored.
           </p>
         </div>
-        <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) resetDialog() }}>
+        {/* Minting/revoking is superadmin-only in the action; a platform admin
+            reads this page under the 'providers' capability but is not offered
+            a control the server will refuse. */}
+        <Dialog open={open && canMint} onOpenChange={(v) => { setOpen(v); if (!v) resetDialog() }}>
           <DialogTrigger asChild>
-            <Button><KeyRound className="h-4 w-4 mr-1" />Mint Token</Button>
+            <Button disabled={!canMint} title={canMint ? undefined : "Minting a token is superadmin-only"}>
+              <KeyRound className="h-4 w-4 mr-1" />Mint Token
+            </Button>
           </DialogTrigger>
           <DialogContent className="max-w-lg">
             {minted ? (
@@ -216,7 +224,7 @@ export function ApiTokensClient({ initialRows, loadError }: { initialRows: Token
                         </Badge>
                       </td>
                       <td className="py-2 text-right">
-                        {r.is_active && (
+                        {r.is_active && canMint && (
                           <Button size="sm" variant="ghost" className="text-destructive" onClick={() => revoke(r.id)} disabled={revoking === r.id}>
                             {revoking === r.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Ban className="h-3 w-3 mr-1" />}Revoke
                           </Button>

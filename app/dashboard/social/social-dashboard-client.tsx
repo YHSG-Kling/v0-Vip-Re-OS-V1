@@ -55,15 +55,19 @@ import {
   Pencil,
 } from "lucide-react"
 import {
-  scheduleSocialPost,
   approveSocialPost,
   rejectSocialPost,
   retryFailedPost,
   deleteSocialPost,
   getSocialMediaAnalytics,
   rescheduleSocialPost,
+  getSocialQueue,
+  getPublishLog,
+  getSocialEngagement,
+  refreshPostEngagementFromSync,
 } from "@/app/actions/social-media-automation"
-import { shareListingPost } from "@/app/actions/social-share"
+import { cn } from "@/lib/utils"
+import { shareListingPost, canAgentSharePost, getAgentShareHistory } from "@/app/actions/social-share"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import { BarChart3, Sparkles } from "lucide-react"
@@ -72,6 +76,7 @@ import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-cale
 import { PostComposerDialog } from "./components/post-composer-dialog"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
 import { toast } from "sonner"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ── Platform config ──────────────────────────────────────────────────────────
 
@@ -86,7 +91,6 @@ const PLATFORM_CONFIG: Record<string, { icon: string; color: string; bgColor: st
 }
 
 // Roles allowed to approve/reject posts
-const APPROVER_ROLES = new Set(["broker", "admin", "superadmin", "teamlead"])
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -141,26 +145,53 @@ export function SocialDashboardClient({
   const [analytics, setAnalytics] = useState<any>(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
+  const [shareHistory, setShareHistory] = useState<any[]>([])
+  const [shareHistoryLoaded, setShareHistoryLoaded] = useState(false)
+  const [shareHistoryLoading, setShareHistoryLoading] = useState(false)
 
   // Reschedule
   const [reschedulingPostId, setReschedulingPostId] = useState<string | null>(null)
   const [rescheduleDate, setRescheduleDate] = useState("")
 
-  const isApprover = APPROVER_ROLES.has(userRole)
+  // Server-backed queue reload (getSocialQueue) — the page's initial payload is
+  // capped and unfiltered; this reloads the tenant's queue for the platform the
+  // user actually picked, and surfaces a refused read instead of blanking out.
+  const [queueLoading, setQueueLoading] = useState(false)
+  const [queueError, setQueueError] = useState<string | null>(null)
+
+  // Delivery log / measurement drawer for one post
+  const [logPost, setLogPost] = useState<any>(null)
+  const [logLoading, setLogLoading] = useState(false)
+  const [logError, setLogError] = useState<string | null>(null)
+  const [logAttempts, setLogAttempts] = useState<any[]>([])
+  const [logMeasurements, setLogMeasurements] = useState<any[]>([])
+  const [metricsPulling, setMetricsPulling] = useState(false)
+
+  const isApprover = isAdminOrBroker({ user_type: userRole })
 
   // ── Computed ──────────────────────────────────────────────────────────────
 
+  // APPROVAL IS NOT A STATUS. social_posts_status_check (live) allows only
+  // draft|scheduled|publishing|published|failed|cancelled — there has never
+  // been a 'pending_approval' status value, so this tab and its stat card
+  // filtered on a string the column cannot hold and were permanently zero
+  // however many posts were actually awaiting a broker. Approval lives in
+  // social_posts.approval_status (pending|approved|rejected).
+  const matchesTab = useCallback((p: any, tab: string) => {
+    if (tab === "all") return true
+    if (tab === "pending_approval") return p.approval_status === "pending"
+    return p.status === tab
+  }, [])
+
   const getFilteredPosts = useCallback((status: string) => {
-    let filtered = status === "all"
-      ? posts
-      : posts.filter(p => p.status === status)
+    let filtered = posts.filter(p => matchesTab(p, status))
     if (platformFilter) filtered = filtered.filter(p => p.platform === platformFilter)
     return filtered
-  }, [posts, platformFilter])
+  }, [posts, platformFilter, matchesTab])
 
   const counts = useMemo(() => ({
     draft:            posts.filter(p => p.status === "draft").length,
-    pending_approval: posts.filter(p => p.status === "pending_approval").length,
+    pending_approval: posts.filter(p => p.approval_status === "pending").length,
     scheduled:        posts.filter(p => p.status === "scheduled").length,
     publishing:       posts.filter(p => p.status === "publishing").length,
     published:        posts.filter(p => p.status === "published").length,
@@ -231,14 +262,46 @@ export function SocialDashboardClient({
 
   const handleShare = async (postId: string, platform: string) => {
     setLoadingPostId(postId)
+    // THE GATE, CONSULTED BEFORE THE SHARE. The button is only drawn for a post
+    // that looked shareable when this page was rendered — approval can be
+    // revoked, and brand compliance re-run, in the meantime. canAgentSharePost
+    // re-reads the post's live approval + brand-compliance state under the
+    // session's brokerage and says WHICH one failed; shareListingPost enforces
+    // the same two conditions on the write, so this adds the reason, never the
+    // permission.
+    const gate = await canAgentSharePost({ socialPostId: postId })
+    if (!gate.canShare) {
+      toast.error(gate.reason || "This post cannot be shared")
+      setLoadingPostId(null)
+      return
+    }
     const result = await shareListingPost({ socialPostId: postId, agentUserId: userId, sharePlatform: platform, brokerageId })
     if (result.success) {
       router.refresh()
       toast.success("Post shared")
+      // A completed share belongs on the agent's own share record — refresh it
+      // if it is on screen.
+      if (shareHistoryLoaded) void loadShareHistory()
     } else {
       toast.error(result.error || "Share failed")
     }
     setLoadingPostId(null)
+  }
+
+  // ── THE AGENT'S OWN SHARE RECORD ────────────────────────────────────────────
+  // agent_social_shares is written on every share above and was read by nothing:
+  // an agent could not see what they had personally pushed out, on which
+  // network, or when. Session-scoped inside the action — it is always the
+  // caller's own history, never another agent's.
+  const loadShareHistory = async () => {
+    setShareHistoryLoading(true)
+    try {
+      const rows = await getAgentShareHistory({ limit: 50 })
+      setShareHistory(rows as any[])
+    } finally {
+      setShareHistoryLoaded(true)
+      setShareHistoryLoading(false)
+    }
   }
 
   const handlePredictPerformance = async (post: any) => {
@@ -263,10 +326,77 @@ export function SocialDashboardClient({
   const handleLoadAnalytics = async () => {
     if (analyticsLoaded) return
     setAnalyticsLoading(true)
-    const data = await getSocialMediaAnalytics(brokerageId).catch(() => null)
+    // Tenant comes from the session inside the action now; the argument is ignored.
+    const data = await getSocialMediaAnalytics().catch(() => null)
     setAnalytics(data)
     setAnalyticsLoaded(true)
     setAnalyticsLoading(false)
+  }
+
+  /**
+   * Reload the queue from the server for the platform currently selected.
+   * Reads the action's verdict: an RLS refusal is shown as a refusal, not as
+   * an empty queue.
+   */
+  const handleReloadQueue = async () => {
+    setQueueLoading(true)
+    setQueueError(null)
+    const result = await getSocialQueue({
+      platform: platformFilter ?? undefined,
+      limit: 500,
+    }).catch((e: unknown) => ({ ok: false as const, error: String(e) }))
+    if (result.ok) {
+      setPosts(result.posts)
+    } else {
+      setQueueError(result.error)
+      toast.error(result.error)
+    }
+    setQueueLoading(false)
+    router.refresh()
+  }
+
+  /** Open the per-post delivery log: every publish attempt + measurement history. */
+  const handleOpenLog = async (post: any) => {
+    setLogPost(post)
+    setLogLoading(true)
+    setLogError(null)
+    setLogAttempts([])
+    setLogMeasurements([])
+    const [logResult, engResult] = await Promise.all([
+      getPublishLog(post.id).catch((e: unknown) => ({ ok: false as const, error: String(e) })),
+      getSocialEngagement(post.id).catch((e: unknown) => ({ ok: false as const, error: String(e) })),
+    ])
+    if (logResult.ok) setLogAttempts(logResult.attempts)
+    else setLogError(logResult.error)
+    if (engResult.ok) setLogMeasurements(engResult.measurements)
+    else setLogError(prev => prev ?? engResult.error)
+    setLogLoading(false)
+  }
+
+  /**
+   * Pull the latest REAL platform measurement (written by the nightly
+   * analytics sync from the platform's own API) into this post's engagement
+   * row. Never fabricates a number: if the sync has not measured this post the
+   * server says so and nothing is written.
+   */
+  const handlePullMetrics = async () => {
+    if (!logPost) return
+    setMetricsPulling(true)
+    const result = await refreshPostEngagementFromSync(logPost.id).catch((e: unknown) => ({
+      success: false as const,
+      error: String(e),
+    }))
+    if (result.success) {
+      toast.success(
+        `Metrics updated from the ${new Date(result.measuredAt!).toLocaleString()} platform measurement`
+      )
+      const engResult = await getSocialEngagement(logPost.id).catch(() => null)
+      if (engResult?.ok) setLogMeasurements(engResult.measurements)
+      router.refresh()
+    } else {
+      toast.error(result.error || "Could not refresh metrics")
+    }
+    setMetricsPulling(false)
   }
 
   const handleReschedule = async (postId: string) => {
@@ -336,14 +466,25 @@ export function SocialDashboardClient({
           <p className="text-muted-foreground text-sm">Schedule and manage your social posts</p>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={() => router.refresh()}>
-            <RefreshCw className="h-4 w-4 mr-2" />Refresh
+          <Button variant="outline" size="sm" onClick={handleReloadQueue} disabled={queueLoading}>
+            <RefreshCw className={cn("h-4 w-4 mr-2", queueLoading && "animate-spin")} />
+            {queueLoading ? "Reloading…" : "Refresh"}
           </Button>
           <Button onClick={() => { setEditingPost(null); setComposerOpen(true) }}>
             <Plus className="h-4 w-4 mr-2" />New Post
           </Button>
         </div>
       </div>
+
+      {/* Queue reload refusal — shown as a refusal, never as an empty queue */}
+      {queueError && (
+        <Card className="mb-6 border-red-200 bg-red-50">
+          <CardContent className="py-4 flex items-center gap-3 text-sm text-red-800">
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+            Could not reload the queue: {queueError}. What is shown below may be stale.
+          </CardContent>
+        </Card>
+      )}
 
       {/* No accounts notice */}
       {accounts.length === 0 && (
@@ -435,6 +576,48 @@ export function SocialDashboardClient({
 
         {/* Analytics */}
         <TabsContent value="analytics" className="space-y-4">
+          {/* Your shares — agent_social_shares, the ledger every Share button writes. */}
+          <Card>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <p className="text-sm font-semibold">Your Shares</p>
+                <Button size="sm" variant="outline" onClick={loadShareHistory} disabled={shareHistoryLoading}>
+                  {shareHistoryLoading ? (
+                    <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <Share2 className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  {shareHistoryLoaded ? "Refresh" : "Load my shares"}
+                </Button>
+              </div>
+              {!shareHistoryLoaded && !shareHistoryLoading && (
+                <p className="text-xs text-muted-foreground">
+                  Every post you personally shared, on which network and when.
+                </p>
+              )}
+              {shareHistoryLoaded && shareHistory.length === 0 && (
+                <p className="text-xs text-muted-foreground">You have not shared any posts yet.</p>
+              )}
+              {shareHistory.length > 0 && (
+                <div className="space-y-2">
+                  {shareHistory.map((sh) => (
+                    <div key={sh.id} className="flex items-start justify-between gap-2 p-2 rounded border text-xs">
+                      <div className="min-w-0">
+                        <p className="font-medium capitalize">{sh.share_platform}</p>
+                        <p className="text-muted-foreground line-clamp-2">
+                          {sh.share_variant_text || sh.social_posts?.content || "(no caption recorded)"}
+                        </p>
+                      </div>
+                      <span className="text-muted-foreground shrink-0">
+                        {sh.shared_at ? new Date(sh.shared_at).toLocaleString() : "—"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {analyticsLoading && (
             <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
               <RefreshCw className="h-4 w-4 animate-spin mr-2" />Loading analytics…
@@ -719,6 +902,10 @@ export function SocialDashboardClient({
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              {/* Delivery log — every publish attempt + measured engagement */}
+                              <DropdownMenuItem onClick={() => handleOpenLog(post)}>
+                                <ExternalLink className="h-4 w-4 mr-2" />Delivery log
+                              </DropdownMenuItem>
                               {/* Edit — only draft/scheduled */}
                               {["draft", "scheduled"].includes(post.status) && (
                                 <DropdownMenuItem onClick={() => { setEditingPost(post); setComposerOpen(true) }}>
@@ -756,6 +943,113 @@ export function SocialDashboardClient({
         ))}
       </Tabs>
 
+      {/* Delivery log + measured engagement for one post */}
+      <Dialog open={!!logPost} onOpenChange={(o) => { if (!o) setLogPost(null) }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Delivery log</DialogTitle>
+            <DialogDescription>
+              Every publish attempt this post made, and the engagement measurements
+              recorded against it.
+            </DialogDescription>
+          </DialogHeader>
+
+          {logLoading && (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin inline mr-2" />Loading…
+            </div>
+          )}
+
+          {!logLoading && logError && (
+            <div className="p-3 rounded border border-red-200 bg-red-50 text-sm text-red-700">
+              <AlertCircle className="h-4 w-4 inline mr-1" />
+              {logError}
+            </div>
+          )}
+
+          {!logLoading && !logError && (
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">
+                  Publish attempts ({logAttempts.length})
+                </p>
+                {logAttempts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No publish attempt has been logged for this post yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {logAttempts.map((a: any) => (
+                      <div key={a.id} className="rounded border p-2 text-xs space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge
+                            variant={a.publish_status === "failed" ? "destructive" : "outline"}
+                            className="text-xs capitalize"
+                          >
+                            {a.publish_status}
+                          </Badge>
+                          <span className="capitalize">{a.platform}</span>
+                          <span className="text-muted-foreground">
+                            {a.created_at ? new Date(a.created_at).toLocaleString() : ""}
+                          </span>
+                        </div>
+                        {a.external_post_id && (
+                          <p className="text-muted-foreground">Platform post id: {a.external_post_id}</p>
+                        )}
+                        {a.error_message && <p className="text-red-700">{a.error_message}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Measured engagement ({logMeasurements.length})
+                  </p>
+                  {logPost?.status === "published" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={handlePullMetrics}
+                      disabled={metricsPulling}
+                    >
+                      <RefreshCw className={cn("h-3 w-3 mr-1", metricsPulling && "animate-spin")} />
+                      Pull latest metrics
+                    </Button>
+                  )}
+                </div>
+                {logMeasurements.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No engagement has been measured for this post yet. Metrics come from
+                    the nightly platform analytics sync — nothing here is estimated.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {logMeasurements.map((m: any) => (
+                      <div key={m.id} className="rounded border p-2 text-xs">
+                        <p className="text-muted-foreground mb-1">
+                          {m.captured_at ? new Date(m.captured_at).toLocaleString() : ""} · {m.platform}
+                        </p>
+                        <div className="flex items-center gap-4 flex-wrap">
+                          <span className="flex items-center gap-1"><Eye className="h-3 w-3" />{m.impressions_count ?? 0}</span>
+                          <span className="flex items-center gap-1"><ThumbsUp className="h-3 w-3" />{m.likes_count ?? 0}</span>
+                          <span className="flex items-center gap-1"><MessageCircle className="h-3 w-3" />{m.comments_count ?? 0}</span>
+                          <span className="flex items-center gap-1"><Share2 className="h-3 w-3" />{m.shares_count ?? 0}</span>
+                          <span>Clicks {m.clicks_count ?? 0}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Post Composer Dialog */}
       <PostComposerDialog
         open={composerOpen}
@@ -769,7 +1063,9 @@ export function SocialDashboardClient({
         requiresBrokerApproval={requiresBrokerApproval}
         onSaved={(post) => {
           handlePostSaved(post)
-          if (requiresBrokerApproval && post?.status === "pending_approval") {
+          // approval_status, not status — 'pending_approval' is not a value the
+          // social_posts.status CHECK constraint permits, so this never fired.
+          if (requiresBrokerApproval && post?.approval_status === "pending") {
             setActiveTab("pending_approval")
           }
         }}

@@ -21,13 +21,16 @@
 //     rule, enforced in the engine, matched by this lane.
 //   • LEADS ARE NOT AGENT-SPEAKABLE (round-33 owner policy: RAW LEADS =
 //     PLATFORM ONLY / LEADS = BROKERAGE + PLATFORM). voiceConvertLead admits
-//     only the broker/admin lead-desk role set.
+//     only the ONE lead-desk answer, lib/auth/lead-visibility.ts — which since
+//     the team-tier ruling also admits a team_lead, ROW-SCOPED to their own
+//     team's leads. It never restates a roster of its own.
 //   • BROADCAST IS IN-APP ONLY — the canonical action writes notifications
 //     rows (channel "in_app") and never touches email/SMS; this backend adds
 //     no egress of its own.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveLeadVisibility, applyLeadRowScope } from "@/lib/auth/lead-visibility"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -42,21 +45,57 @@ interface BrokerCtx {
   actorUserId: string
 }
 
-/** Same lead-desk role set the lead lifecycle actions admit (LEAD_DESK_ROLES). */
-const LEAD_DESK_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"])
+// TOMBSTONE (lead-visibility consolidation): the inline `LEAD_DESK_ROLES` set is
+// DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility,
+// used by voiceConvertLead below.
+//
+//   · team_lead ADMITTED (owner ruling), and TEAM-SCOPED: the lead this lane
+//     resolves is looked up through applyLeadRowScope, so a team lead may
+//     convert a lead their own team is working and no other. The old comment
+//     here said the exclusion mirrored lead-management "which deliberately
+//     excludes team_lead"; lead-management no longer does, and mirroring a
+//     roster by hand is what let the sixteen answers drift in the first place.
+//   · 'broker_admin' REMOVED — this set was matched against `users.user_type`,
+//     which cannot hold that value, so the entry matched nothing. ('superadmin'
+//     and 'super_admin' had already been removed here for the same class of
+//     reason; platform staff reach this lane through the survivor's
+//     platform_role arm.)
+//
+// NOT a lead roster and therefore NOT widened by this lane:
+/** The manager set contact-reassignment's requireReassignAuthority admits.
+ *
+ *  THIS GOVERNS CONTACTS, NOT LEADS, so the owner's lead ruling does not reach
+ *  it and it is left as it stands — widening it would be a second ruling nobody
+ *  made. A team lead who is not on this list still reaches the verb through the
+ *  isTenancyPrincipal fallback below, which is where team authority over a
+ *  team's people is already expressed.
+ *
+ *  'superadmin' was already removed (dead as users.user_type); 'broker_admin' is
+ *  removed now for the same reason — not a storable user_type, so matching
+ *  against it here could only ever match nothing. Neither removal changes who is
+ *  admitted. */
+const REASSIGN_MANAGER_ROLES = new Set(["broker", "broker_owner", "admin"])
 
-/** Same manager set contact-reassignment's requireReassignAuthority admits. */
-const REASSIGN_MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
-
-async function loadActor(svc: Svc, ctx: BrokerCtx): Promise<{ userType: string; brokerageId: string | null } | null> {
+async function loadActor(
+  svc: Svc,
+  ctx: BrokerCtx,
+): Promise<{ userType: string; brokerageId: string | null; platformRole: string | null } | null> {
   const { data } = await svc
     .from("users")
-    .select("user_type, brokerage_id")
+    // platform_role joins the select because staff identity is DUAL-COLUMN:
+    // 'superadmin' as a user_type is dead (0 live rows) and the platform's one
+    // superadmin is (user_type='admin', platform_role='superadmin'). Reading only
+    // user_type here made "unknown" indistinguishable from "not staff".
+    .select("user_type, brokerage_id, platform_role")
     .eq("id", ctx.actorUserId)
     .maybeSingle()
   if (!data) return null
-  const row = data as { user_type?: string | null; brokerage_id?: string | null }
-  return { userType: String(row.user_type ?? "agent"), brokerageId: row.brokerage_id ?? null }
+  const row = data as { user_type?: string | null; brokerage_id?: string | null; platform_role?: string | null }
+  return {
+    userType: String(row.user_type ?? "agent"),
+    brokerageId: row.brokerage_id ?? null,
+    platformRole: row.platform_role ?? null,
+  }
 }
 
 async function busReceipt(svc: Svc, input: {
@@ -99,27 +138,41 @@ export async function voiceConvertLead(input: VoiceConvertLeadInput, client?: Sv
   const svc = client ?? createServiceClient()
   if (!input.brokerageId || !input.actorUserId) return { ok: false, spoken: "I can't tell who's asking — reopen the assistant and try again." }
 
-  // ── Guard 1 (this lane): broker/admin roles only — leads are NOT agent-speakable ──
+  // ── Guard 1 (this lane): the ONE lead-visibility answer — admission AND row
+  //    scope. Leads are NOT agent-speakable; a team lead speaks only for their
+  //    own team's board. ──
   const actor = await loadActor(svc, input)
   if (!actor) return { ok: false, spoken: "Acting user not found." }
-  if (!LEAD_DESK_ROLES.has(actor.userType)) {
-    return { ok: false, spoken: "Converting a lead is a broker call — it isn't available for your role by voice." }
-  }
   if (actor.brokerageId !== input.brokerageId) {
     return { ok: false, spoken: "Your account isn't in this brokerage, so I can't convert leads here." }
   }
+  const vis = await resolveLeadVisibility(svc, {
+    userId: input.actorUserId,
+    userType: actor.userType,
+    platformRole: actor.platformRole,
+    brokerageId: actor.brokerageId,
+  })
+  if (!vis.allowed) {
+    return {
+      ok: false,
+      spoken: vis.status === "forbidden"
+        ? "Converting a lead is a broker call — it isn't available for your role by voice."
+        : "I couldn't confirm what you're allowed to reach, so I'm not going to convert anything.",
+    }
+  }
+  const leadScope = vis.scope
 
   // ── Resolve the lead (explicit id, else unique name match, in-tenancy,
   //    not-yet-converted only). ──
   let leadId = (input.leadId ?? "").trim() || null
   let leadRow: { id: string; lead_stage: string | null; contact_id: string | null } | null = null
   if (leadId) {
-    const { data } = await svc
-      .from("leads")
-      .select("id, lead_stage, contact_id")
-      .eq("id", leadId)
-      .eq("brokerage_id", input.brokerageId)
-      .maybeSingle()
+    // The SCOPE supplies the tenant pin (and, for a team lead, the agent pin) —
+    // a lead outside the speaker's board comes back as "not found", never as a row.
+    const { data } = await applyLeadRowScope(
+      svc.from("leads").select("id, lead_stage, contact_id").eq("id", leadId),
+      leadScope,
+    ).maybeSingle()
     if (!data) return { ok: false, spoken: "I couldn't find that lead in your brokerage." }
     leadRow = data as any
   } else {
@@ -128,13 +181,15 @@ export async function voiceConvertLead(input: VoiceConvertLeadInput, client?: Sv
       return { ok: false, spoken: "Whose lead should I convert? Give me the name on the lead." }
     }
     const tokens = name.split(/\s+/)
-    let q = svc
-      .from("leads")
-      .select("id, lead_stage, contact_id")
-      .eq("brokerage_id", input.brokerageId)
-      .is("contact_id", null)
-      .eq("is_active", true)
-      .limit(5)
+    let q = applyLeadRowScope(
+      svc
+        .from("leads")
+        .select("id, lead_stage, contact_id")
+        .is("contact_id", null)
+        .eq("is_active", true)
+        .limit(5),
+      leadScope,
+    )
     q = tokens.length >= 2
       ? q.ilike("first_name", `%${tokens[0]}%`).ilike("last_name", `%${tokens[tokens.length - 1]}%`)
       : q.or(`first_name.ilike.%${name}%,last_name.ilike.%${name}%`)

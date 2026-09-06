@@ -63,6 +63,13 @@ export const CHAIN_STEP_LABELS: Record<ChainStepKey, string> = {
   closing_date: "Closing",
 }
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: STEP_RUNWAY_DAYS, TIGHT_SLACK_DAYS.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /**
  * DOCUMENTED RUNWAY MODEL: the minimum days a standard residential deal needs
  * BETWEEN each step and closing for the remaining chain to fit (inspection →
@@ -70,7 +77,7 @@ export const CHAIN_STEP_LABELS: Record<ChainStepKey, string> = {
  * A step dated closer to closing than its runway means the chain no longer fits —
  * closing is at risk. These are documented planning constants, not predictions.
  */
-export const STEP_RUNWAY_DAYS: Record<ChainStepKey, number> = {
+const STEP_RUNWAY_DAYS: Record<ChainStepKey, number> = {
   inspection_deadline: 21,
   appraisal_deadline: 14,
   financing_deadline: 7,
@@ -79,7 +86,7 @@ export const STEP_RUNWAY_DAYS: Record<ChainStepKey, number> = {
 }
 
 /** Slack thresholds (days) for severity: slack < 0 → at_risk; 0..TIGHT → tight; else ok. */
-export const TIGHT_SLACK_DAYS = 3
+const TIGHT_SLACK_DAYS = 3
 
 export type ChainSeverity = "ok" | "tight" | "at_risk"
 

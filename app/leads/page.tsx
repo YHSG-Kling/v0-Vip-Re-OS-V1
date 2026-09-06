@@ -2,7 +2,12 @@
 
 import { useState, useEffect, Fragment, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// TOMBSTONE (orphan doctrine §1.3): `CardHeader` and `CardTitle` were imported here
+// and rendered NOWHERE across this 2,300-line surface — every one of its 12 cards is a
+// bare <Card><CardContent> with its heading laid out inline. The SURVIVORS are the
+// CardHeader/CardTitle exports of components/ui/card.tsx, used by the surfaces that do
+// render a titled card. Nothing moved out of this file and no heading was lost.
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -33,7 +38,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Upload,
   Search,
-  Eye,
   Sparkles,
   UserPlus,
   X,
@@ -52,7 +56,6 @@ import {
   Bot,
   ShieldCheck,
 } from "lucide-react"
-import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
 import { LeadStatusBadge } from "@/app/components/leads/LeadStatusBadge"
 import {
@@ -61,6 +64,8 @@ import {
   rejectLead,
 } from "@/app/actions/lead-management"
 import { convertLeadToContact, listUnassignedLeads } from "@/app/actions/lead-lifecycle"
+import { batchEvaluateLeadReadiness } from "@/app/actions/lead-readiness/evaluate-readiness"
+import { importLeads } from "@/app/actions/lead-management"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,15 +77,22 @@ import {
   AlertDialogTitle,
 } from "@/app/components/ui/alert-dialog"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
-import { getTopConversionCandidates, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
+// aiPropertyMatchGenius is deliberately NOT imported here: it resolves against
+// contacts and refuses everything else (owner ruling), and every row on this
+// screen is pre-conversion. See the note above the table.
+import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
 import {
   getIntelligenceDashboardStats,
   getMotivatedSellers,
   getUnifiedLeadProfiles,
   deliverIntelligentValue,
+  updateLeadProfile,
+  getAgentWorkloadStats,
+  runBatchDataSellerSignalProbe,
 } from "@/app/actions/lead-intelligence"
+import type { AgentWorkloadRow } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
-import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { initiateWhisperBridge, triggerAiVoiceCall } from "@/app/actions/voice-call-bridge"
 import { aiBatchReengagement } from "@/app/actions/ai-lead-nurturing"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import { StaleLeadQueue } from "@/app/leads/components/StaleLeadQueue"
@@ -89,6 +101,27 @@ import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
+// TOMBSTONE (lead-visibility consolidation): the two-step
+// isTenantAdminOrPlatformStaff + resolveTenantAdmin dance this surface performed
+// is DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility,
+// which does BOTH halves (user_type and a tenant-pinned grant, plus platform
+// staff) in one call AND returns the ROW SCOPE this page needs.
+//
+// Those two functions were never wrong here — they are the tenant-ADMIN answer,
+// and this surface needs the lead-DESK answer, which is a different question
+// with the same members plus 'isa'. Deriving it once means this page and the
+// server actions it calls cannot disagree about who sees the lead desk, which
+// they did before this lane: the page admitted team_lead through
+// TENANT_ADMIN_USER_TYPES while the actions it calls refused them, so a team
+// lead reached a fully-rendered lead desk whose every action returned Forbidden.
+//
+// It is pure of server-only and runs client-side; the users / user_role_assignments
+// / teams / agents reads it makes are subject to RLS exactly as the server-side
+// call is.
+import {
+  resolveLeadVisibility,
+  type LeadRowScope,
+} from "@/lib/auth/lead-visibility"
 
 export default function LeadsPage() {
   const router = useRouter()
@@ -96,9 +129,132 @@ export default function LeadsPage() {
   // Role resolution state
   const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
   const [roleResolved, setRoleResolved] = useState(false)
+  /**
+   * The resolved ROW SCOPE. Null until role resolution finishes, and null is not
+   * "no restriction" — every read below is guarded on `isAdminOrBroker`, which
+   * only becomes true once a scope exists.
+   */
+  const [leadRowScope, setLeadRowScope] = useState<LeadRowScope | null>(null)
 
-  // Available leads sheet (agents)
-  const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
+  // ── CSV IMPORT ──────────────────────────────────────────────────────────────
+  // The dialog above used to be a picture of a dropzone over an importLeads
+  // action with zero callers. These carry the real thing.
+  const [importRows, setImportRows] = useState<Array<Record<string, string>>>([])
+  const [importFileName, setImportFileName] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  /**
+   * Minimal RFC-4180-ish CSV parse: quoted fields, escaped quotes, commas and
+   * newlines inside quotes. Deliberately small — a dependency is not warranted
+   * for a four-column contact list — but NOT naive `split(",")`, because a lead
+   * named "Smith, Jr." would silently shift every column after it and import
+   * garbage under a real person's name.
+   */
+  const parseCsv = (text: string): Array<Record<string, string>> => {
+    const rows: string[][] = []
+    let row: string[] = [], field = "", inQuotes = false
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i]
+      if (inQuotes) {
+        if (c === '"') {
+          if (text[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+        } else field += c
+        continue
+      }
+      if (c === '"') { inQuotes = true; continue }
+      if (c === ",") { row.push(field); field = ""; continue }
+      if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++
+        row.push(field); field = ""
+        if (row.some((v) => v.trim() !== "")) rows.push(row)
+        row = []
+        continue
+      }
+      field += c
+    }
+    row.push(field)
+    if (row.some((v) => v.trim() !== "")) rows.push(row)
+    if (rows.length < 2) return []
+
+    const headers = rows[0].map((h) => h.trim().toLowerCase())
+    return rows.slice(1).map((r) => {
+      const o: Record<string, string> = {}
+      headers.forEach((h, i) => { o[h] = (r[i] ?? "").trim() })
+      return o
+    })
+  }
+
+  const handleCsvFile = async (file: File) => {
+    setImportMsg(null)
+    setImportFileName(file.name)
+    try {
+      const parsed = parseCsv(await file.text())
+      setImportRows(parsed)
+      if (parsed.length === 0) {
+        setImportMsg({ ok: false, text: "No data rows found. The first line must be a header." })
+      }
+    } catch {
+      setImportRows([])
+      setImportMsg({ ok: false, text: "That file could not be read as CSV." })
+    }
+  }
+
+  const handleImport = async () => {
+    if (importRows.length === 0) return
+    setImporting(true)
+    setImportMsg(null)
+
+    // Map the documented header set onto the Lead shape, tolerating the common
+    // spellings. A row with neither an email nor a phone is DROPPED rather than
+    // imported: it is unreachable, and importing it would inflate the count with
+    // records no one can act on.
+    const leads = importRows
+      .map((r) => {
+        const full = r["name"] ?? `${r["first_name"] ?? ""} ${r["last_name"] ?? ""}`.trim()
+        const [first, ...rest] = full.split(/\s+/)
+        return {
+          first_name: r["first_name"] || first || "",
+          last_name:  r["last_name"] || rest.join(" ") || "",
+          email:      r["email"] || null,
+          phone:      r["phone"] || r["phone_number"] || null,
+          source:     r["source"] || "csv_import",
+        }
+      })
+      .filter((l) => l.email || l.phone)
+
+    const skipped = importRows.length - leads.length
+    if (leads.length === 0) {
+      setImporting(false)
+      setImportMsg({ ok: false, text: "No row had an email or a phone number, so nothing could be imported." })
+      return
+    }
+
+    const res = await importLeads(leads as any)
+    setImporting(false)
+    // importLeads returns { success, error, imported, deduped, unassigned } and
+    // never throws — read it, so a refusal is not a silent no-op.
+    if (!res.success) {
+      setImportMsg({ ok: false, text: res.error ?? "Import failed" })
+      return
+    }
+    setImportMsg({
+      ok: true,
+      text: `Imported ${res.imported}` +
+        (res.deduped ? ` · ${res.deduped} already existed` : "") +
+        (res.unassigned ? ` · ${res.unassigned} unassigned` : "") +
+        (skipped ? ` · ${skipped} skipped (no email or phone)` : ""),
+    })
+    setImportRows([])
+    setImportFileName(null)
+    router.refresh()
+  }
+
+  // RETIRED: the "Available Leads" sheet and its `availableSheetOpen` state.
+  // Owner ruling — "agents can't claim leads when they can only see contacts."
+  // There is no brokerage pool for an agent to reach into: a lead belongs to the
+  // brokerage until the tier's policy assigns it (automatically on positive
+  // feedback) or a tenant admin assigns it by hand in AdminAssignmentPanel below.
 
   // Unassigned lead count for admin badge
   const [unassignedCount, setUnassignedCount] = useState<number | null>(null)
@@ -117,6 +273,16 @@ export default function LeadsPage() {
   const [userId, setUserId] = useState('')
 
   const [leads, setLeads] = useState<Lead[]>([])
+  /**
+   * Readiness state per lead id, from `batchEvaluateLeadReadiness`, which had no
+   * caller. Its own docstring says it is for "dashboard views showing lead pipeline
+   * status" and this is that view: without it the readiness lane was reachable only
+   * one lead at a time from /leads/[leadId], so a pipeline could not be triaged by
+   * who is actually ready. The action is authenticated, intersects the ids with the
+   * caller's brokerage server-side and caps the batch at 200, so passing the visible
+   * page of ids is safe.
+   */
+  const [readiness, setReadiness] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -128,6 +294,13 @@ export default function LeadsPage() {
   const [intentFilter, setIntentFilter] = useState<LeadIntent | "all">("all")
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all")
   const [sourceFilter, setSourceFilter] = useState<LeadSource | "all">("all")
+  // AI-ISA ownership. The table has rendered an AI-ISA column for admins the
+  // whole time with no way to filter on it; the filter itself only became
+  // available when app/actions/leads.ts:getLeads was retired onto getLeadsAdmin
+  // and its `ai_isa_owner` predicate came with it.
+  const [isaFilter, setIsaFilter] = useState<"all" | "ai" | "human">("all")
+  /** The refusal from the last list read, or null. Rendered — never swallowed. */
+  const [leadsError, setLeadsError] = useState<string | null>(null)
 
   // Sorting
   const [sortBy, setSortBy] = useState("created_at")
@@ -164,6 +337,15 @@ export default function LeadsPage() {
   const [unifiedProfiles, setUnifiedProfiles] = useState<any[]>([])
   const [profilesLoading, setProfilesLoading] = useState(false)
 
+  // TRIAGE — the profile card showed the AI's verdict and gave the agent no way
+  // to correct or claim it. updateLeadProfile existed the whole time with no
+  // caller, so a wrong temperature stayed wrong and nobody could take a profile.
+  const [triagingId, setTriagingId] = useState<string | null>(null)
+
+  // Who is carrying which share of the qualified pipeline (broker/admin only).
+  const [workload, setWorkload] = useState<AgentWorkloadRow[]>([])
+  const [workloadLoading, setWorkloadLoading] = useState(false)
+
   // Selected lead for inline LeadIntelligencePanel
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [selectedLeadData, setSelectedLeadData] = useState<any>(null)
@@ -172,23 +354,49 @@ export default function LeadsPage() {
   const [batchReengagementLoading, setBatchReengagementLoading] = useState(false)
   const [batchReengagementResult, setBatchReengagementResult] = useState<any>(null)
 
-  // AI Property Match Genius per lead
-  const [matchGeniusLoading, setMatchGeniusLoading] = useState<string | null>(null)
-  const [matchGeniusResults, setMatchGeniusResults] = useState<Record<string, any>>({})
-
-  const handleMatchGenius = async (leadId: string) => {
-    setMatchGeniusLoading(leadId)
-    try {
-      const result = await aiPropertyMatchGenius(leadId) as any
-      if (result && !result.error) {
-        setMatchGeniusResults((prev) => ({ ...prev, [leadId]: result }))
+  // BATCHDATA SELLER-SIGNAL PROBE — the session-triggered half of the lane whose
+  // scheduled half is /api/cron/permit-signal-scan. The cron rotates the whole
+  // lead base at 200 lookups a run; this button probes 25 for the operator who
+  // does not want to wait for tomorrow's sweep.
+  const [sellerProbeLoading, setSellerProbeLoading] = useState(false)
+  const [sellerProbeResult, setSellerProbeResult] = useState<
+    | null
+    | {
+        success: boolean
+        error?: string
+        signalsWritten?: number
+        alreadyRecorded?: number
+        leadsProbed?: number
+        leadsAvailable?: number
+        // BOTH BOARDS, as of the owner ruling "motivated sellers source is for
+        // leads and contacts". The probe covers contacts too, so a panel that
+        // reported only leads would understate what the run did AND misname it.
+        contactsProbed?: number
+        contactsAvailable?: number
+        leadsSkippedConverted?: number
+        writtenByType?: Record<string, number>
+        writtenByEntity?: { lead: number; contact: number }
+        errors?: string[]
       }
-    } catch (err) {
-      console.error("[v0] aiPropertyMatchGenius failed:", err)
-    } finally {
-      setMatchGeniusLoading(null)
-    }
-  }
+  >(null)
+
+  // AI PROPERTY MATCH GENIUS — WITHDRAWN FROM THIS SCREEN BY OWNER RULING.
+  //
+  // The action behind this button now resolves its subject against the contacts
+  // table and refuses anything else, because property search through IDX Broker is
+  // a contacts capability. Every row on this screen comes from the pre-conversion
+  // lane, so the button could only ever have produced a refusal — and a control
+  // that reliably errors is worse than one that is not there, because it teaches
+  // the agent to ignore failures.
+  //
+  // It is not deleted silently: the cell below says what happened and what to do
+  // instead. The capability itself is intact on the contact record
+  // (app/crm/contacts/[contactId] — the buyer overview calls the same action with a
+  // contacts.id), so the route out of here is Convert, which is the button next to
+  // this note.
+  //
+  // The result state and its inline panel went with it; there is no longer any way
+  // to populate them from this screen.
 
   const handleBatchReengagement = async () => {
     if (!agentId) return
@@ -201,6 +409,33 @@ export default function LeadsPage() {
       setBatchReengagementResult({ success: false, error: "Failed to run batch reengagement" })
     } finally {
       setBatchReengagementLoading(false)
+    }
+  }
+
+  // READS ITS OUTCOME. The action returns success:false when ANY lookup or write
+  // was refused — the connector gateway and supabase-js both RESOLVE their
+  // failures, so a run that wrote nothing looks identical to a clean one unless
+  // the caller inspects `errors`. Nothing here says "triggered" or "refreshed";
+  // it says what came back, and a refusal is rendered as a refusal.
+  //
+  // NO ARGUMENTS ARE PASSED, and none can be: the action takes no parameters
+  // and resolves the tenant from the session. A brokerage id crossing this wire
+  // would be the IDOR shape (CLAUDE.md §4).
+  const handleSellerSignalProbe = async () => {
+    setSellerProbeLoading(true)
+    setSellerProbeResult(null)
+    try {
+      const res = await runBatchDataSellerSignalProbe()
+      setSellerProbeResult(res)
+      if (res.success) {
+        // Newly written signals change the motivated-seller count on this tab.
+        const stats = await getIntelligenceDashboardStats().catch(() => null)
+        if (stats?.success) setIntelligenceStats(stats.stats)
+      }
+    } catch (err) {
+      setSellerProbeResult({ success: false, error: "The seller-signal probe could not be reached." })
+    } finally {
+      setSellerProbeLoading(false)
     }
   }
 
@@ -221,15 +456,69 @@ export default function LeadsPage() {
       sortBy,
       sortOrder,
       adminView: isAdminOrBroker,
+      // Merged onto this action from the retired app/actions/leads.ts:getLeads.
+      aiIsaOwner: isaFilter === "all" ? undefined : isaFilter === "ai",
     })
 
     if (result.success) {
-      setLeads(result.leads as Lead[])
+      const rows = result.leads as Lead[]
+      setLeads(rows)
       setTotal(result.total)
       setTotalPages(result.totalPages)
+      setLeadsError(null)
+
+      // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
+      // THE WRITER FOR `readiness` — the half this surface was missing. The state at
+      // page.tsx:280 and the Readiness column that renders it were already here, and
+      // `batchEvaluateLeadReadiness` was already IMPORTED at page.tsx:62 — but nothing
+      // ever called setReadiness, so the column could only ever print "—" and the
+      // import was dead. That is one orphan seen from both ends: an action with no
+      // caller and a rendered cell with no writer.
+      //
+      // It goes here rather than in its own effect so the evaluation is pinned to the
+      // page of rows that just arrived; a separate effect would race the list and
+      // could stamp the previous page's verdicts onto the new rows.
+      //
+      // SAFE BY THE ACTION'S OWN CONTRACT (see evaluate-readiness.ts:91-103): it is
+      // authenticated, it INTERSECTS the ids with the caller's brokerage server-side,
+      // and it caps the batch at 200 — this page asks for 10. Ids are never trusted
+      // from here, and none of that gate is duplicated client-side.
+      //
+      // BEST-EFFORT AND NON-BLOCKING. Readiness is an ADVISORY column; a refusal must
+      // not blank the lead list that already loaded. But it must not lie either — a
+      // failed evaluation clears the map to "—" (unknown) rather than leaving the
+      // previous page's verdicts on screen, which is the same mistake `setLeadsError`
+      // above exists to prevent.
+      try {
+        const ids = rows.map((l) => l.id).filter(Boolean)
+        if (ids.length === 0) {
+          setReadiness({})
+        } else {
+          const readinessRes = await batchEvaluateLeadReadiness(ids)
+          if (readinessRes.error) {
+            console.warn("[leads] readiness evaluation refused:", readinessRes.error)
+            setReadiness({})
+          } else {
+            const next: Record<string, string> = {}
+            for (const e of readinessRes.evaluations) {
+              if (e.evaluation?.state) next[e.leadId] = e.evaluation.state
+            }
+            setReadiness(next)
+          }
+        }
+      } catch (err) {
+        console.warn("[leads] readiness evaluation failed:", (err as any)?.message)
+        setReadiness({})
+      }
+    } else {
+      // READ THE OUTCOME. A refused list used to leave the previous page of rows
+      // on screen with no indication that the refresh had failed.
+      setLeads([])
+      setReadiness({})
+      setLeadsError(result.error ?? "The lead list could not be loaded.")
     }
     setLoading(false)
-  }, [roleResolved, isAdminOrBroker, search, scoreFilter, intentFilter, statusFilter, sourceFilter, page, sortBy, sortOrder])
+  }, [roleResolved, isAdminOrBroker, search, scoreFilter, intentFilter, statusFilter, sourceFilter, isaFilter, page, sortBy, sortOrder])
 
   useEffect(() => {
     fetchLeads()
@@ -247,28 +536,49 @@ export default function LeadsPage() {
       // Resolve user role
       const { data: profile } = await supabase
         .from("users")
-        .select("user_type, role, platform_role")
+        // brokerage_id joins the select because the GRANT half of the admin rule
+        // must be PINNED to the caller's own tenant — a grant administering a
+        // different brokerage authorises nothing.
+        .select("user_type, role, platform_role, brokerage_id")
         .eq("id", user.id)
         .single()
 
       const resolvedType = profile?.user_type ?? profile?.role ?? "agent"
 
-      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. This surface
-      // is usable only by brokerage-LEVEL roles (broker/admin family) and
-      // platform staff. team_lead / TC / compliance_officer / isa / vendor /
-      // lender are redirected — they work contacts, not the lead desk. Agents
-      // fall through to the explanatory gate screen below (no lead data is
-      // fetched or rendered for them). Server actions re-enforce this gate.
-      if (["tc", "transaction_coordinator", "vendor", "lender", "team_lead", "team_leader", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
+      // ROUTING, NOT ACCESS. This list decides which seats belong on a DIFFERENT
+      // screen; it is not a lead roster and must not be read as one. TC /
+      // compliance_officer / vendor / lender / title_agent work contacts, and
+      // `isa` — which the one lead roster DOES admit — has its own console at
+      // /dashboard/isa, so it is sent there rather than to a second lead desk.
+      // Agents fall through to the explanatory gate screen below (no lead data is
+      // fetched or rendered for them). Server actions re-enforce the real gate.
+      //
+      // team_lead is deliberately NOT in this list: on a team-tier tenant the
+      // team lead IS the admin (owner ruling), and this redirect used to bounce
+      // them off the only surface where their assignment settings are exercised.
+      if (["tc", "transaction_coordinator", "vendor", "lender", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
         router.push("/dashboard")
         return
       }
 
-      const platformStaff = ["superadmin", "admin", "marketing", "support"].includes(
-        String((profile as any)?.platform_role ?? "")
-      )
-      const adminBroker =
-        ["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(resolvedType) || platformStaff
+      // THE ONE LEAD-VISIBILITY ANSWER — admission and ROW SCOPE together, both
+      // role sources plus platform staff, in a single call. It replaces the
+      // pure-predicate-then-grant-read pair this page used to run by hand.
+      //
+      // The SECOND SEAT is still admitted: the grant half is inside the resolver
+      // (MEASURED live, on the solo tenant 231f4e64-… that person is
+      // agent1@yourbrokerage.com, user_type 'agent' holding an 'admin' grant
+      // pinned to their own brokerage). A refused grant read is still NOT an
+      // admin answer — the resolver returns `allowed:false, status:"unresolved"`,
+      // so this page stays closed exactly as the server actions do.
+      const vis = await resolveLeadVisibility(supabase, {
+        userId: user.id,
+        userType: resolvedType,
+        platformRole: String((profile as any)?.platform_role ?? "") || null,
+        brokerageId: (profile as any)?.brokerage_id ?? null,
+      })
+      const adminBroker = vis.allowed
+      setLeadRowScope(vis.allowed ? vis.scope : null)
       setIsAdminOrBroker(adminBroker)
 
       // Resolve brokerageId from users table
@@ -293,18 +603,32 @@ export default function LeadsPage() {
       // Mark role resolved — triggers fetchLeads
       setRoleResolved(true)
 
-      // Load unassigned lead count for admin badge
+      // Load unassigned lead count for admin badge.
+      //
+      // TEAM ROW SCOPE: the unassigned pool belongs to the BROKERAGE (an unworked
+      // lead has no agent and therefore no team), so under a true team scope the
+      // server action returns an empty list and this badge is 0 — correct, not
+      // broken. Where the actor's team IS the tenant the resolver has already
+      // collapsed the scope to 'brokerage' and the badge counts normally.
       if (adminBroker && userRow?.brokerage_id) {
         listUnassignedLeads({ brokerageId: userRow.brokerage_id, limit: 1 })
           .then((r) => setUnassignedCount(r.total ?? (r.leads?.length ?? 0)))
           .catch(() => setUnassignedCount(null))
 
-        // Load pipeline stats for admin stats bar — single query, client-side aggregate
-        supabase
+        // Load pipeline stats for admin stats bar — single query, client-side aggregate.
+        // The scope is applied HERE too: a stats bar counting brokerage-wide over a
+        // table showing one team's rows tells the reader they are looking at their
+        // own board when they are not.
+        let statsQuery = supabase
           .from("leads")
           .select("lead_stage, agent_id, reengagement_status, lifecycle_state")
           .eq("brokerage_id", userRow.brokerage_id)
           .eq("is_active", true)
+        if (vis.allowed && vis.scope.kind === "team") {
+          const ids = vis.scope.agentIds
+          statsQuery = statsQuery.in("agent_id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"])
+        }
+        statsQuery
           .then(({ data }: { data: { lead_stage: any; agent_id: any; reengagement_status: any; lifecycle_state: any }[] | null }) => {
             if (data) {
               setPipelineStats({
@@ -353,6 +677,60 @@ export default function LeadsPage() {
     }
     loadHotLeads()
   }, [])
+
+  // Workload distribution — only meaningful to someone who can move work
+  // between agents, so it loads only once the role is known to be broker/admin.
+  useEffect(() => {
+    if (!roleResolved || !isAdminOrBroker) return
+    let cancelled = false
+    const loadWorkload = async () => {
+      setWorkloadLoading(true)
+      try {
+        const result = await getAgentWorkloadStats()
+        if (!cancelled && result.success) setWorkload(result.workload)
+      } catch (error) {
+        console.error("[leads] Agent workload load failed:", error)
+      } finally {
+        if (!cancelled) setWorkloadLoading(false)
+      }
+    }
+    loadWorkload()
+    return () => {
+      cancelled = true
+    }
+  }, [roleResolved, isAdminOrBroker])
+
+  /**
+   * Apply one triage change to a unified profile and reflect the row the server
+   * actually wrote — not the value that was clicked. updateLeadProfile resolves
+   * "me" to an agents.id and refuses a profile outside this brokerage, so a
+   * refused change must not look applied.
+   */
+  const applyProfileTriage = async (
+    profileId: string,
+    updates: Parameters<typeof updateLeadProfile>[1],
+  ) => {
+    setTriagingId(profileId)
+    try {
+      const result = await updateLeadProfile(profileId, updates)
+      if (!result.success) {
+        toast.error(result.error ?? "Could not update this profile")
+        return
+      }
+      setUnifiedProfiles((prev) =>
+        prev.map((p) => (p.id === profileId ? { ...p, ...result.profile } : p)),
+      )
+      toast.success("Profile updated")
+      if (isAdminOrBroker) {
+        const refreshed = await getAgentWorkloadStats()
+        if (refreshed.success) setWorkload(refreshed.workload)
+      }
+    } catch (error: any) {
+      toast.error(error?.message ?? "Could not update this profile")
+    } finally {
+      setTriagingId(null)
+    }
+  }
 
   // Debounced search — only runs after role is resolved
   useEffect(() => {
@@ -435,10 +813,10 @@ export default function LeadsPage() {
     setCallingId(null)
   }
 
-  const handleVapiBot = async (contactId: string, triggerEvent: string) => {
-    setCallingId(contactId + 'vapi')
+  const handleAiVoiceCall = async (contactId: string, triggerEvent: string) => {
+    setCallingId(contactId + 'ai-voice')
     try {
-      await triggerVapiVoiceBot({ contactId, triggerEvent })
+      await triggerAiVoiceCall({ contactId, triggerEvent })
     } catch {}
     setCallingId(null)
   }
@@ -535,16 +913,10 @@ export default function LeadsPage() {
                 </Button>
               </div>
             )}
-            {/* Available Leads pool — visible to agents only */}
-            {roleResolved && !isAdminOrBroker && (
-              <Button
-                variant="outline"
-                onClick={() => setAvailableSheetOpen(true)}
-              >
-                <Zap className="h-4 w-4 mr-2 text-yellow-500" />
-                Available Leads
-              </Button>
-            )}
+            {/* RETIRED: the agents-only "Available Leads" button. Agents see
+                contacts, not a lead pool — the whole page already returns the
+                "Leads are managed by your brokerage" gate above for non-admins,
+                so this button was unreachable AND wrong in principle. */}
             {/* Import Leads — admin/broker only */}
             {roleResolved && isAdminOrBroker && (
               <Dialog>
@@ -557,14 +929,63 @@ export default function LeadsPage() {
                 <DialogContent>
                   <DialogHeader>
                     <DialogTitle>Import Leads</DialogTitle>
-                    <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
+                    <DialogDescription>Upload a CSV file to import</DialogDescription>
                   </DialogHeader>
+                  {/* THIS DIALOG WAS A PICTURE OF A DROPZONE. A dashed border, an
+                      upload icon and the words "Drop CSV file here or click to
+                      browse" — with no <input type="file">, no onClick, no onDrop
+                      and no submit button. Nothing could be dropped, nothing
+                      opened when clicked, and there was no way to commit. Behind
+                      it, importLeads was complete (dedupe, assignment, tenant
+                      gate) with ZERO callers anywhere in the repo. */}
                   <div className="space-y-4 py-4">
-                    <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+                    <label
+                      htmlFor="lead-csv-input"
+                      className="border-2 border-dashed border-border rounded-lg p-8 text-center block cursor-pointer hover:border-primary/50 transition-colors"
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        const f = e.dataTransfer.files?.[0]
+                        if (f) handleCsvFile(f)
+                      }}
+                    >
                       <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                      <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
+                      <p className="text-sm text-foreground font-medium">
+                        {importFileName ?? "Drop CSV file here or click to browse"}
+                      </p>
                       <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
-                    </div>
+                      <input
+                        id="lead-csv-input"
+                        type="file"
+                        accept=".csv,text/csv"
+                        className="hidden"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]
+                          if (f) handleCsvFile(f)
+                        }}
+                      />
+                    </label>
+
+                    {importRows.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        {importRows.length} row{importRows.length === 1 ? "" : "s"} parsed and ready to import.
+                      </p>
+                    )}
+                    {importMsg && (
+                      <p className={`text-xs ${importMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                        {importMsg.text}
+                      </p>
+                    )}
+
+                    <Button
+                      className="w-full"
+                      disabled={importing || importRows.length === 0}
+                      onClick={handleImport}
+                    >
+                      {importing
+                        ? "Importing…"
+                        : `Import ${importRows.length || ""} lead${importRows.length === 1 ? "" : "s"}`.trim()}
+                    </Button>
                   </div>
                 </DialogContent>
               </Dialog>
@@ -698,7 +1119,7 @@ export default function LeadsPage() {
         {/* Filters Card */}
         <Card>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
               {/* Search */}
               <div className="md:col-span-2">
                 <div className="relative">
@@ -755,6 +1176,21 @@ export default function LeadsPage() {
                   <SelectItem value="rejected">Rejected</SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* AI-ISA Filter — reads leads.ai_isa_owner, the predicate merged
+                  onto getLeadsAdmin from the retired app/actions/leads.ts:getLeads.
+                  The table already renders an AI-ISA column for admins; this is
+                  the control that column never had. */}
+              <Select value={isaFilter} onValueChange={(v) => { setIsaFilter(v as "all" | "ai" | "human"); setPage(1) }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All Owners" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Owners</SelectItem>
+                  <SelectItem value="ai">AI-ISA owned</SelectItem>
+                  <SelectItem value="human">Human owned</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Active Filters */}
@@ -783,7 +1219,23 @@ export default function LeadsPage() {
                   </button>
                 </Badge>
               )}
+              {isaFilter !== "all" && (
+                <Badge variant="secondary" className="gap-1">
+                  Owner: {isaFilter === "ai" ? "AI-ISA" : "Human"}
+                  <button onClick={() => { setIsaFilter("all"); setPage(1) }} className="ml-1 hover:bg-muted rounded-full">
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              )}
             </div>
+
+            {/* THE LIST REFUSED. Shown instead of an empty table that reads as
+                "this brokerage has no leads". */}
+            {leadsError && (
+              <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                Lead list not loaded — {leadsError}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -811,7 +1263,7 @@ export default function LeadsPage() {
                     key={lead.id}
                     lead={lead}
                     onWhisperBridge={handleWhisperBridge}
-                    onVapiBot={handleVapiBot}
+                    onAiVoiceCall={handleAiVoiceCall}
                     callingId={callingId}
                     compact={false}
                   />
@@ -1058,6 +1510,140 @@ export default function LeadsPage() {
               </div>
             )}
 
+            {/* MOTIVATED-SELLER SIGNAL PROBE — the session-triggered half of the
+                BatchData seller-signal lane. The scheduled half rides
+                /api/cron/permit-signal-scan nightly; this is where a broker or
+                admin who does not want to wait for the sweep asks for it now.
+                It reads the tenant's OWN leads and looks each one's address up
+                at the provider — it creates no lead and no contact, so it is
+                outside the owner's fence around lead scraping. */}
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-1.5">
+                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    Motivated-Seller Signal Probe
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Looks up your own leads&apos; addresses at BatchData and files sale-propensity,
+                    pre-foreclosure, tax-delinquency, lien, vacancy and absentee signals. Up to 25
+                    leads per run; the nightly sweep covers the rest. No new leads are created.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSellerSignalProbe}
+                  disabled={sellerProbeLoading}
+                  className="gap-1.5 shrink-0"
+                >
+                  {sellerProbeLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Home className="h-3.5 w-3.5 text-amber-500" />}
+                  Probe 25 Leads
+                </Button>
+              </div>
+
+              {/* THE OUTCOME IS READ, NOT ASSUMED. The action returns
+                  success:false whenever ANY lookup or write was refused, and the
+                  refusals ride back in `errors` — a "signals updated" toast over
+                  a failed run is the exact defect this panel must not repeat. */}
+              {sellerProbeResult && (
+                sellerProbeResult.success ? (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+                    <p className="font-medium">
+                      {sellerProbeResult.signalsWritten ?? 0} new signal
+                      {(sellerProbeResult.signalsWritten ?? 0) === 1 ? "" : "s"} filed from{" "}
+                      {sellerProbeResult.leadsProbed ?? 0} lead
+                      {(sellerProbeResult.leadsProbed ?? 0) === 1 ? "" : "s"} and{" "}
+                      {sellerProbeResult.contactsProbed ?? 0} contact
+                      {(sellerProbeResult.contactsProbed ?? 0) === 1 ? "" : "s"} probed
+                      {typeof sellerProbeResult.leadsAvailable === "number"
+                        ? ` of ${sellerProbeResult.leadsAvailable + (sellerProbeResult.contactsAvailable ?? 0)} with a usable address`
+                        : ""}.
+                    </p>
+                    {(sellerProbeResult.alreadyRecorded ?? 0) > 0 && (
+                      <p className="text-emerald-800">
+                        {sellerProbeResult.alreadyRecorded} signal
+                        {sellerProbeResult.alreadyRecorded === 1 ? " was" : "s were"} already on
+                        record and not duplicated.
+                      </p>
+                    )}
+                    {sellerProbeResult.writtenByType &&
+                      Object.keys(sellerProbeResult.writtenByType).length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {Object.entries(sellerProbeResult.writtenByType).map(([type, n]) => (
+                            <span
+                              key={type}
+                              className="rounded-full border border-emerald-300 bg-white px-2 py-0.5 text-[11px] capitalize"
+                            >
+                              {type.replace(/_/g, " ")}: {n as number}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    {(sellerProbeResult.signalsWritten ?? 0) === 0 && (
+                      <p className="text-emerald-800">
+                        The run completed and found nothing new — that is a result, not a failure.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900 space-y-1">
+                    <p className="font-medium">Probe did not complete.</p>
+                    {sellerProbeResult.error && <p>{sellerProbeResult.error}</p>}
+                    {sellerProbeResult.errors?.map((e, i) => (
+                      <p key={i} className="font-mono text-[11px] leading-relaxed">{e}</p>
+                    ))}
+                    {(sellerProbeResult.signalsWritten ?? 0) > 0 && (
+                      <p>
+                        {sellerProbeResult.signalsWritten} signal
+                        {sellerProbeResult.signalsWritten === 1 ? " was" : "s were"} written before
+                        the run was interrupted — the count above is partial.
+                      </p>
+                    )}
+                  </div>
+                )
+              )}
+            </div>
+
+          {/* WHO IS CARRYING WHAT. getAgentWorkloadStats aggregated the qualified
+              pipeline by assigned agent and had no caller — so "Assign to me"
+              above had no counterweight and nobody could see a lopsided desk. */}
+            {isAdminOrBroker && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="h-4 w-4 text-primary" />
+                  <h2 className="text-base font-semibold">Qualified Pipeline by Agent</h2>
+                  <span className="text-xs text-muted-foreground">assigned unified profiles</span>
+                </div>
+                {workloadLoading ? (
+                  <div className="h-20 bg-muted animate-pulse rounded-lg" />
+                ) : workload.length === 0 ? (
+                  <Card>
+                    <CardContent className="py-6 text-center text-muted-foreground text-sm">
+                      No profiles are assigned to an agent yet.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="rounded-lg border bg-card divide-y">
+                    {workload.map((row) => (
+                      <div key={row.agentId} className="flex items-center justify-between gap-3 px-4 py-2">
+                        <p className="text-sm font-medium truncate">{row.agentName}</p>
+                        <div className="flex items-center gap-1.5 text-[11px] shrink-0">
+                          <span className="rounded-full bg-red-100 text-red-700 px-2 py-0.5">{row.hot} hot</span>
+                          <span className="rounded-full bg-amber-100 text-amber-700 px-2 py-0.5">{row.warm} warm</span>
+                          <span className="rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{row.cold} cold</span>
+                          <span className="rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5">{row.ready} ready</span>
+                          <span className="text-muted-foreground">· {row.total} total</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
           {/* Part C — Top Profiles Ready for Outreach */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -1168,6 +1754,61 @@ export default function LeadsPage() {
                             )}
                           </button>
                         </div>
+
+                        {/* TRIAGE — correct the AI, or claim the lead. */}
+                        <div
+                          className="flex flex-wrap items-center gap-1 border-t pt-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {(["hot", "warm", "cold"] as const).map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              disabled={triagingId === profile.id}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void applyProfileTriage(profile.id, { temperature: t })
+                              }}
+                              className={`rounded px-2 py-0.5 text-[11px] border capitalize transition-colors disabled:opacity-60 ${
+                                profile.temperature === t
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-background hover:bg-muted text-muted-foreground border-border"
+                              }`}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            disabled={triagingId === profile.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void applyProfileTriage(profile.id, {
+                                ready_for_outreach: !profile.ready_for_outreach,
+                              })
+                            }}
+                            className="rounded px-2 py-0.5 text-[11px] border bg-background hover:bg-muted text-muted-foreground border-border transition-colors disabled:opacity-60"
+                          >
+                            {profile.ready_for_outreach ? "Hold" : "Mark ready"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={triagingId === profile.id}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // "me" is resolved server-side to this user's
+                              // agents.id — the browser never guesses an id class.
+                              void applyProfileTriage(profile.id, { assigned_agent_id: "me" })
+                            }}
+                            className="rounded px-2 py-0.5 text-[11px] border bg-background hover:bg-muted text-muted-foreground border-border transition-colors disabled:opacity-60"
+                          >
+                            {triagingId === profile.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              "Assign to me"
+                            )}
+                          </button>
+                        </div>
                       </button>
                     )
                   })}
@@ -1250,6 +1891,19 @@ export default function LeadsPage() {
         </Tabs>
 
         {/* Admin pipeline stats bar */}
+        {/* THE SCOPE IS SAID OUT LOUD. A team lead's numbers below are their
+            TEAM's, not the brokerage's, and a stats bar that does not say so
+            invites the reader to act on a total they think is the tenant's.
+            Rendered only for a true team scope: where the team is the whole
+            tenant the resolver collapsed the scope to 'brokerage' and there is
+            nothing to qualify. */}
+        {isAdminOrBroker && leadRowScope?.kind === "team" && (
+          <p className="text-xs text-muted-foreground">
+            Showing your team&apos;s board — leads worked by your {leadRowScope.agentIds.length} team
+            {leadRowScope.agentIds.length === 1 ? " member" : " members"}. Unassigned brokerage leads are
+            not on a team board.
+          </p>
+        )}
         {isAdminOrBroker && pipelineStats && (
           <div className="grid grid-cols-5 gap-3">
             {/* Unassigned */}
@@ -1332,6 +1986,17 @@ export default function LeadsPage() {
 
         <Card>
           <CardContent className="p-0">
+            {/* Says why the AI Property Match control in each row is inert, rather
+                than leaving an agent to discover it by clicking. */}
+            <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2.5">
+              <Brain className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                <span className="font-medium text-foreground">AI Property Match runs on contacts, not on this screen.</span>{" "}
+                Property search reads the brokerage&apos;s IDX Broker feed, which is a contact capability — convert a
+                record here and open it in the CRM to use it. The control in each row is disabled for that reason, not
+                because it is unavailable.
+              </p>
+            </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -1367,6 +2032,7 @@ export default function LeadsPage() {
                     </TableHead>
                     <TableHead>Intent</TableHead>
                     <TableHead>Stage</TableHead>
+                    <TableHead>Readiness</TableHead>
                     {isAdminOrBroker && <TableHead>AI-ISA</TableHead>}
                     <TableHead>
                       <button
@@ -1392,14 +2058,14 @@ export default function LeadsPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-12">
+                      <TableCell colSpan={isAdminOrBroker ? 12 : 11} className="text-center py-12">
                         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
                         <p className="text-sm text-muted-foreground mt-2">Loading leads...</p>
                       </TableCell>
                     </TableRow>
                   ) : leads.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-16">
+                      <TableCell colSpan={isAdminOrBroker ? 12 : 11} className="text-center py-16">
                         <Search className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
                         <p className="text-sm font-medium text-foreground mb-1">No leads match your filters</p>
                         <p className="text-xs text-muted-foreground mb-4">Try clearing filters or importing new leads</p>
@@ -1440,6 +2106,22 @@ export default function LeadsPage() {
                         <TableCell>
                           <LeadStatusBadge lead={lead} />
                         </TableCell>
+                        <TableCell>
+                          {readiness[lead.id] ? (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "capitalize text-xs",
+                                readiness[lead.id] === "broker_review_required" &&
+                                  "border-red-200 bg-red-50 text-red-700",
+                              )}
+                            >
+                              {readiness[lead.id].replace(/_/g, " ")}
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                         {isAdminOrBroker && (
                           <TableCell>
                             {lead.reengagement_status === "active" ? (
@@ -1470,21 +2152,17 @@ export default function LeadsPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              title="AI Property Match Genius"
-                              onClick={() => handleMatchGenius(lead.id)}
-                              disabled={matchGeniusLoading === lead.id}
-                            >
-                              {matchGeniusLoading === lead.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : matchGeniusResults[lead.id] ? (
-                                <Brain className="h-4 w-4 text-indigo-500" />
-                              ) : (
-                                <Eye className="h-4 w-4" />
-                              )}
-                            </Button>
+                            {/* AI Property Match Genius USED to sit here. It is a
+                                CONTACT capability (owner ruling), so it is gone
+                                from this screen rather than left disabled.
+                                A disabled control with no handler is INERT, and
+                                this repo holds a zero-inert-controls invariant
+                                (scripts/wired-surface-simulator.ts): a control
+                                that cannot reach a capability teaches an agent to
+                                ignore controls. The withdrawal is not silent —
+                                the banner above this table says what moved and
+                                where to, once, instead of a dead icon on every
+                                row. */}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -1544,47 +2222,6 @@ export default function LeadsPage() {
                           </div>
                         </TableCell>
                       </TableRow>
-                      {/* AI Property Match Genius inline result */}
-                      {matchGeniusResults[lead.id] && (
-                        <TableRow className="bg-indigo-50/60">
-                          <TableCell colSpan={7} className="py-3 px-4">
-                            <div className="flex items-start gap-3">
-                              <Brain className="h-4 w-4 text-indigo-500 mt-0.5 shrink-0" />
-                              <div className="space-y-1.5 flex-1 min-w-0">
-                                <p className="text-xs font-semibold text-indigo-900">
-                                  Property Match Genius
-                                </p>
-                                {matchGeniusResults[lead.id].matchSummary && (
-                                  <p className="text-xs text-indigo-800 leading-relaxed">
-                                    {matchGeniusResults[lead.id].matchSummary}
-                                  </p>
-                                )}
-                                {matchGeniusResults[lead.id].topMatches?.length > 0 && (
-                                  <div className="flex flex-wrap gap-2 mt-1">
-                                    {matchGeniusResults[lead.id].topMatches.slice(0, 4).map((m: any, i: number) => (
-                                      <span
-                                        key={i}
-                                        className="inline-flex items-center gap-1 text-xs bg-white border border-indigo-200 text-indigo-700 rounded-full px-2.5 py-0.5"
-                                      >
-                                        <Home className="h-3 w-3" />
-                                        {m.address ?? m.listing_id ?? `Match ${i + 1}`}
-                                        {m.matchScore != null && (
-                                          <span className="font-semibold ml-1">{m.matchScore}%</span>
-                                        )}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {matchGeniusResults[lead.id].recommendedAction && (
-                                  <p className="text-xs text-indigo-700 font-medium">
-                                    Next: {matchGeniusResults[lead.id].recommendedAction}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )}
                       </Fragment>
                     ))
                   )}
@@ -1629,16 +2266,9 @@ export default function LeadsPage() {
         )}
       </div>
 
-      {/* Available Leads Sheet — agents claim from the brokerage pool */}
-      <AvailableLeadsSheet
-        open={availableSheetOpen}
-        onOpenChange={setAvailableSheetOpen}
-        agentId={agentId}
-        brokerageId={brokerageId}
-        onLeadClaimed={() => fetchLeads()}
-      />
-
-      {/* Admin Assignment Panel — admin/broker only */}
+      {/* Admin Assignment Panel — the ONE manual-assignment surface, tenant
+          admins and team leads only. AvailableLeadsSheet (agent claiming) was
+          deleted with the verb it called. */}
       {isAdminOrBroker && (
         <AdminAssignmentPanel
           open={adminPanelOpen}

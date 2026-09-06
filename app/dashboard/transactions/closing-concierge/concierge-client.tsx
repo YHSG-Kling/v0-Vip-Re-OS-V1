@@ -181,6 +181,31 @@ export function ClosingConciergeClient({ board }: Props) {
         })}
       </div>
 
+      {/* ── Closing window — war-room readiness per deal (next 14 days) ──── */}
+      {board.closings.length > 0 && (
+        <Card className="mb-6">
+          <CardContent className="py-3 px-4 space-y-1.5">
+            <p className="text-xs uppercase tracking-wide font-medium text-muted-foreground">
+              Closing window · next 14 days
+            </p>
+            {board.closings.map((c) => (
+              <Link
+                key={c.transactionId}
+                href={`/dashboard/transactions/${c.transactionId}`}
+                className="flex flex-wrap items-center justify-between gap-2 text-sm hover:underline"
+              >
+                <span className="truncate">{c.label}</span>
+                <span className={cn("text-xs shrink-0", c.ready ? "text-emerald-700" : "text-amber-700")}>
+                  {c.daysToClose !== null ? `${c.daysToClose}d` : "—"}
+                  {" · "}
+                  {c.ready ? "ready to close" : `${c.blockers} blocker${c.blockers === 1 ? "" : "s"}`}
+                </span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* ── Empty state ─────────────────────────────────────────────────── */}
       {board.actions.length === 0 && (
         <Card className="border-dashed">
@@ -252,10 +277,21 @@ export function ClosingConciergeClient({ board }: Props) {
                               {dtd != null && dtd > 0 ? `${dtd} day${dtd === 1 ? "" : "s"} to deadline` : dtd === 0 ? "due today" : `${Math.abs(dtd ?? 0)} day${Math.abs(dtd ?? 0) === 1 ? "" : "s"} overdue`}
                             </span>
                           )}
+                          {/* transaction_pending_actions.dispatched_email_id, read
+                              back at last. An action that already had an email sent
+                              looked identical to one that had not, so the same
+                              lender got chased twice. The stamp records THAT a send
+                              happened, not which message — the label says only what
+                              the column can support. */}
+                          {action.emailDispatched && (
+                            <span className="inline-flex items-center gap-1 text-emerald-700">
+                              <Mail className="h-3 w-3" /> Email already sent for this item
+                            </span>
+                          )}
                         </div>
                         <div className="flex gap-2 pt-1">
-                          <Button size="sm" variant="default" onClick={() => openDraft(action)}>
-                            <Sparkles className="h-3 w-3 mr-1" /> Draft email
+                          <Button size="sm" variant={action.emailDispatched ? "outline" : "default"} onClick={() => openDraft(action)}>
+                            <Sparkles className="h-3 w-3 mr-1" /> {action.emailDispatched ? "Draft another" : "Draft email"}
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => handleResolve(action.id)} disabled={busyId === action.id || pending}>
                             <CheckCircle2 className="h-3 w-3 mr-1" /> Mark done
@@ -278,6 +314,51 @@ export function ClosingConciergeClient({ board }: Props) {
           )
         })}
       </div>
+
+      {/* ── WHAT WAS CLEARED, AND BY WHOM ───────────────────────────────── */}
+      {/* The board above shows only status='open'. resolved_at / resolved_by /
+          resolution_note were written on every resolve and dismiss and read by
+          nothing, so the account of how a closing blocker was handled — and who
+          handled it — existed only in the row. A dismissal is labelled as a
+          dismissal: closing it out is not the same as fixing it. */}
+      {board.recentlyResolved.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+              Recently closed out ({board.recentlyResolved.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {board.recentlyResolved.map((r) => (
+              <div key={r.id} className="border-b last:border-0 pb-2 last:pb-0 space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <Badge
+                    variant="outline"
+                    className={cn("text-[10px]", r.status === "dismissed" && "text-muted-foreground")}
+                  >
+                    {r.status}
+                  </Badge>
+                  <span className="font-medium">{r.headline}</span>
+                  <Link
+                    href={`/dashboard/transactions/${r.transactionId}`}
+                    className="text-xs text-muted-foreground hover:underline"
+                  >
+                    {r.transactionLabel}
+                  </Link>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {r.resolvedByName ?? "unknown user"}
+                    {r.resolvedAt ? ` · ${new Date(r.resolvedAt).toLocaleDateString()}` : ""}
+                  </span>
+                </div>
+                {r.resolutionNote && (
+                  <p className="text-xs text-muted-foreground whitespace-pre-wrap">{r.resolutionNote}</p>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Draft + dispatch dialog ─────────────────────────────────────── */}
       <Dialog open={draftOpen} onOpenChange={(o) => { if (!o) setDraftOpen(false) }}>

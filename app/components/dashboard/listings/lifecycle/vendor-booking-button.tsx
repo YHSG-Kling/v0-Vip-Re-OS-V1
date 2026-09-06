@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select"
 import { Wrench, Loader2 } from "lucide-react"
 import { createVendorBooking } from "@/app/actions/vendor-marketplace"
+import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
 
 interface Vendor {
   id: string
@@ -38,19 +39,33 @@ interface VendorBookingButtonProps {
   vendors: Vendor[]
 }
 
-const SERVICE_TYPES = [
-  "Photography",
-  "Staging",
-  "Inspection",
-  "Appraisal",
-  "Cleaning",
-  "Landscaping",
-  "Repairs",
-  "Moving",
-  "Title",
-  "Escrow",
-  "Other",
-]
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (m561, CLAUDE.md §1.1 / §6). A THIRD SERVICE-TYPE PICK LIST lived
+// here:
+//
+//   ["Photography","Staging","Inspection","Appraisal","Cleaning","Landscaping",
+//    "Repairs","Moving","Title","Escrow","Other"]
+//
+// …rendered with `value={s.toLowerCase()}`, which is where the AI action's
+// ten-value union came from. Measured live against the 39-value
+// vendors_category_check (2026-08-25): eight of those eleven lowercased tokens
+// are not members of the vocabulary, and `escrow` has no member at all. The
+// value went to `vendor_bookings.service_type`, which carries NO CHECK — so
+// nothing refused it; it was simply written into the booking ledger in a
+// spelling no bench read and no per-trade cost rollup could ever match.
+//
+// SURVIVOR: app/components/vendors/vendor-category-select.tsx — "THE ONE CONTROL
+// THAT AUTHORS A VENDOR CATEGORY", built from VENDOR_CATEGORY_GROUPS at
+// lib/kernel/vendor-categories.ts:99, which the palette guard proves is exactly
+// VENDOR_CATEGORIES. It renders labels and submits tokens, so widening the
+// taxonomy widens this picker and it cannot drift again.
+//
+// COUNT THAT MOVED, and its direction: 11 options → 39, and all 39 now match a
+// bench row. Nothing was lost — every retired spelling still resolves through
+// VENDOR_CATEGORY_SYNONYMS, and `escrow` resolves to `title` (see that map's
+// header for why it is a spelling and not a missing trade).
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 export function VendorBookingButton({
   listingId,
@@ -146,21 +161,15 @@ export function VendorBookingButton({
             )}
           </div>
 
-          {/* Service type */}
+          {/* Service type — the ONE control that authors a vendor trade. */}
           <div className="space-y-1.5">
             <Label htmlFor="serviceType">Service Type *</Label>
-            <Select value={serviceType} onValueChange={setServiceType}>
-              <SelectTrigger id="serviceType">
-                <SelectValue placeholder="Select service type" />
-              </SelectTrigger>
-              <SelectContent>
-                {SERVICE_TYPES.map((s) => (
-                  <SelectItem key={s} value={s.toLowerCase()}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <VendorCategorySelect
+              id="serviceType"
+              value={serviceType}
+              onChange={setServiceType}
+              placeholder="Select service type"
+            />
           </div>
 
           {/* Date */}

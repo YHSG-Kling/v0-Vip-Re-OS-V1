@@ -2,12 +2,19 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { TransactionDetailClient } from "./transaction-detail-client"
 import { ClosingWatchtowerSection } from "./closing-watchtower-section"
+import { MilestoneDeadlinesButton } from "./milestone-deadlines-button"
 import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { BuyerMoveSection } from "./buyer-move-section"
+import { HazardInsuranceSection } from "./hazard-insurance-section"
+import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-hazard-insurance"
+import { AiCoordinatorPanel } from "./ai-coordinator-panel"
+import { SmartChecklistPanel } from "./smart-checklist-panel"
 import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
 import { FEATURES } from "@/lib/constants"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { trackTitleIssues } from "@/app/actions/multi-persona"
 
 export const dynamic = "force-dynamic"
 
@@ -23,6 +30,13 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user profile with brokerage. Canonical: users.user_type (kernel
   // identity layer never reads .role outside the kernel).
   const { data: profile } = await supabase
@@ -80,8 +94,20 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   if (txnError || !transaction) notFound()
 
-  // Auth: owning agent OR broker/admin/TC in same brokerage
-  const isOwningAgent = transaction.agent_id === user.id
+  // Auth: owning agent OR broker/admin/TC in same brokerage.
+  //
+  // IDENTITY CLASS — this comparison was `transaction.agent_id === user.id`,
+  // which pits two DIFFERENT id spaces against each other and is therefore
+  // always false. transactions.agent_id FKs agents(id) (pg_constraint:
+  // transactions_agent_id_fkey -> agents.id) and agents.id is never equal to
+  // users.id in this database (checked live: every agents row has a distinct
+  // user_id). The consequence was total: an ordinary user_type='agent' failed
+  // BOTH branches and was redirected away from their own deal — only
+  // broker/admin/tc could ever open a transaction. Resolved through the
+  // identity helper rather than papered over with `??`.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const identity = await getAgentContext()
+  const isOwningAgent = !!identity.agentId && transaction.agent_id === identity.agentId
   const hasAdminAccess = ["broker", "admin", "tc"].includes(userType)
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
@@ -158,15 +184,32 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     label: (v.name as string) || "Lender",
   }))
 
-  // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc
-  const { data: contractSigsRows } = await supabase
-    .from("contract_signatures")
-    .select("id, contract_type, esign_status, provider_name, sent_at, agent_signed_at, fully_signed_at")
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: false })
+  // Signature state for THIS transaction's documents.
+  //
+  // WAS: a brokerage-wide `contract_signatures` read with NO transaction scope at
+  // all, keyed by contract_type "most recent wins". `contract_signatures` carries
+  // brokerage_id / agent_id / contract_type and NO transaction_id (verified live),
+  // so that map held OTHER open deals' signature rows: the "Signatures Pending"
+  // card listed doc types this transaction does not even have, and the per-document
+  // e-sign panel bound `existingSignatureId` from a different deal — so "Resend"
+  // could resend another transaction's envelope.
+  //
+  // Both reads now come from app/actions/transaction-document-signatures.ts, which
+  // resolves the link the row is missing the only way it can be: `transaction_documents`
+  // IS transaction-scoped, so this transaction's own signable doc_types are the
+  // bridge and signatures are narrowed to those. RESIDUAL LIMIT, stated not hidden:
+  // two open deals in one brokerage that need the SAME doc_type still share these
+  // rows — closing that needs a transaction_id column on contract_signatures and a
+  // backfill, i.e. a migration, deliberately not invented here.
+  const { getTransactionSignatureStatuses, getUnsignedDocumentBlockers } =
+    await import("@/app/actions/transaction-document-signatures")
+  const [contractSigsRows, unsignedDocBlockers] = await Promise.all([
+    getTransactionSignatureStatuses(id),
+    getUnsignedDocumentBlockers(id),
+  ])
 
   // Key by contract_type (doc_type) — most recent wins
-  const contractSignatures = (contractSigsRows ?? []).reduce((acc, s) => {
+  const contractSignatures = contractSigsRows.reduce((acc, s) => {
     if (!acc[s.contract_type]) {
       acc[s.contract_type] = {
         id: s.id,
@@ -377,6 +420,25 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   // Get insurance quotes from vendor services
   const insuranceQuotes = (vendorServices ?? []).filter(v => v.service_type === "insurance_quote")
 
+  // HAZARD INSURANCE (m385) — the tracked policy + the marketplace recommendations,
+  // resolved together by the action so the panel and the closing-orchestration cron
+  // read the same evaluator. Fetched here rather than in the client component so the
+  // service-role reads and the vendor resolver never reach the browser bundle.
+  const hazardInsuranceView = await getTransactionHazardInsuranceAction(
+    id,
+    (transaction as any).brokerage_id ?? undefined,
+  )
+
+  // TITLE ISSUE TRIAGE — transaction_title_escrow.title_issues is a TEXT column
+  // the platform writes as a JSON array of { text, status, severity }. The Title
+  // & Escrow card rendered that raw blob inside one destructive badge, so a
+  // resolved issue and an open critical one looked identical and the
+  // closing-blocking verdict was never computed. trackTitleIssues is the parser
+  // that answers it (critical / moderate / canClose) and had no caller.
+  const titleIssueSummary = titleEscrow
+    ? await trackTitleIssues(id).catch(() => null)
+    : null
+
   // Build stage stepper data
   const stages = Object.values(TRANSACTION_STAGES).filter(s => s !== "LOST") as TransactionStage[]
   const currentStageIndex = stages.indexOf(transaction.stage as TransactionStage)
@@ -386,6 +448,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       {/* Title & Closing Watchtower — server-rendered date-chain status with
           severity badges (pure core shared with the hourly watchtower cron). */}
       <ClosingWatchtowerSection milestones={(milestones ?? []) as any} />
+      {/* THE DATES, ON A CALENDAR. createDeadlineEventsFromMilestones turns each
+          pending milestone with a target_date into a system-generated deadline
+          event. Its docblock said "called when a transaction is created or
+          updated" and it was called from nowhere — so the very dates the
+          Watchtower above builds its critical path from never reached anyone's
+          calendar. */}
+      <div className="px-4 sm:px-6">
+        <MilestoneDeadlinesButton transactionId={id} />
+      </div>
       {/* Closing-Day War Room — the final-mile cockpit; renders only inside the
           closing window (closing_date within N days). Clear-to-close conditions,
           the REUSED critical-path timeline, wire/EMD, and the open-items list. */}
@@ -407,7 +478,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
               }
             : null
         }
-        signatures={(contractSigsRows ?? []).map((s) => ({ esign_status: s.esign_status }))}
+        signatures={contractSigsRows.map((s) => ({ esign_status: s.esign_status }))}
         tasks={(tasks ?? []) as any}
         pendingActions={(warRoomPendingActions ?? []) as any}
         closeDate={(transaction as any).close_date ?? null}
@@ -433,6 +504,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
             : []
         }
       />
+      {/* Hazard / homeowner's insurance — the tracked policy (or its stated absence,
+          with the lender's lead-time deadline) plus insurance vendors from the
+          brokerage marketplace, each linked to its existing portal spot. */}
+      <HazardInsuranceSection
+        transactionId={id}
+        brokerageId={(transaction as any).brokerage_id}
+        view={hazardInsuranceView}
+      />
       {/* Buyer Move Services — post-contract move-in concierge (utilities, address, movers) with
           guided-DIY vs Utility Connect handoff (handoff execution feature-flagged until creds exist). */}
       <BuyerMoveSection
@@ -442,6 +521,22 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         canBootstrap={canBootstrapMove}
         utilityConnectEnabled={FEATURES.BUYER_MOVE_UTILITY_CONNECT}
       />
+      {/* AI Transaction Coordinator — the surface for the four coordinator
+          capabilities that had no caller anywhere: smart tasks, deadline
+          prediction, participant communication drafting (recorded, then read
+          back), and the post-closing touchpoint plan. Every control reports the
+          server's applied count, not an optimistic success. */}
+      <AiCoordinatorPanel
+        transactionId={id}
+        stage={(transaction as any).stage ?? null}
+        closeDate={(transaction as any).close_date ?? null}
+      />
+      {/* Smart Checklist — the surface for smart_checklists / task_items. The
+          generator wrote per-deal compliance checklists (owners, priorities,
+          deadlines) that no page could show, and the generator itself had no
+          caller. Reader + completion writer + generate control, all reporting
+          the server's verdict. */}
+      <SmartChecklistPanel transactionId={id} stage={(transaction as any).stage ?? null} />
       <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}
@@ -461,6 +556,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       tasks={tasks ?? []}
       timeline={timeline ?? []}
       titleEscrow={titleEscrow}
+      titleIssueSummary={titleIssueSummary}
       inspections={inspections ?? []}
       pendingQuoteApprovals={pendingQuoteApprovals ?? []}
       vendorServices={vendorServices ?? []}
@@ -476,6 +572,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       connectedEsignProvider={connectedEsignProvider}
       linkedOffer={linkedOfferRow ?? null}
       contractSignatures={contractSignatures}
+      unsignedDocBlockers={unsignedDocBlockers}
       currentCoordinatorId={currentCoordinatorId}
       availableTCs={availableTCs ?? []}
       currentLenderUserId={currentLenderUserId}

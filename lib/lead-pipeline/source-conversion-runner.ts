@@ -32,7 +32,7 @@ export async function loadSourceConversions(
   if (contactIds.length > 0) {
     const { data: txns } = await svc.from("transactions")
       .select("contact_id, status, purchase_price")
-      .eq("brokerage_id", brokerageId).in("status", ["closed", "completed"]).in("contact_id", contactIds)
+      .eq("brokerage_id", brokerageId).in("status", ["closed"]).in("contact_id", contactIds)
     for (const t of (txns ?? []) as { contact_id: string | null; purchase_price: number | null }[]) {
       if (t.contact_id) closedByContact.set(t.contact_id, (closedByContact.get(t.contact_id) ?? 0) + (t.purchase_price ?? 0))
     }

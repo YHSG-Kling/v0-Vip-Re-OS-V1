@@ -104,13 +104,63 @@ export function sanitizeFairHousing(text: string, opts: FairHousingOpts = {}): s
   return scanFairHousing(text, opts).clean
 }
 
-/** Sanitize a whole buyer-facing match explanation (headline + bullets + narrative + CTA). Pure. */
-export function sanitizeExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(exp: T, opts: FairHousingOpts = {}): T {
-  return {
-    ...exp,
-    headline: sanitizeFairHousing(exp.headline, opts),
-    bullets: (exp.bullets ?? []).map((b) => sanitizeFairHousing(b, opts)).filter((b) => b.trim().length > 0),
-    narrative: sanitizeFairHousing(exp.narrative, opts),
-    callToAction: sanitizeFairHousing(exp.callToAction, opts),
+/** A whole-explanation scan: the cleaned explanation plus what the sanitizer rewrote. */
+export interface FairHousingExplanationScan<T> {
+  clean: T
+  /** deduped labels of the protected-class rules that fired across ALL fields (for audit/logging). */
+  flagged: string[]
+}
+
+/**
+ * Scan + sanitize a whole buyer-facing match explanation (headline + bullets + narrative + CTA),
+ * RETURNING WHAT WAS REWRITTEN. Pure.
+ *
+ * This is the reporting half that `sanitizeExplanation` throws away, and it exists for the same
+ * reason `scanFairHousing` sits under `sanitizeFairHousing`: a rewrite nobody is told about is
+ * indistinguishable from no rewrite at all. lib/lead-governance/protected-class-signals.ts names
+ * that defect in its own header — "a silently-narrowed query is the measurement defect this repo
+ * keeps paying for" — and it is the same defect here: the search engine showed the buyer cleaned
+ * copy and reported nothing, so "the sanitizer fired 40 times today" and "the sanitizer is
+ * unwired" produced byte-identical output.
+ *
+ * Same vocabulary as the rest of this file (CLAUDE.md §6): `scanX` returns { clean, flagged },
+ * `sanitizeX` returns the clean value only.
+ */
+export function scanExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(
+  exp: T,
+  opts: FairHousingOpts = {},
+): FairHousingExplanationScan<T> {
+  const flagged: string[] = []
+  const one = (s: string): string => {
+    const r = scanFairHousing(s, opts)
+    if (r.flagged.length) flagged.push(...r.flagged)
+    return r.clean
   }
+  const clean = {
+    ...exp,
+    headline: one(exp.headline),
+    bullets: (exp.bullets ?? []).map(one).filter((b) => b.trim().length > 0),
+    narrative: one(exp.narrative),
+    callToAction: one(exp.callToAction),
+  }
+  return { clean, flagged: Array.from(new Set(flagged)) }
+}
+
+/**
+ * Convenience: the cleaned explanation only. Pure.
+ *
+ * Prefer `scanExplanation` on any path that can REPORT the rewrite — this overload discards the
+ * audit trail by design and should only be used where there is genuinely nowhere to put it.
+ *
+ * NO PRODUCTION CALLER TODAY, stated so it is a known fact rather than a discovery. The buyer
+ * search engine moved to `scanExplanation` when the discarded `flagged[]` became a reported one
+ * (lib/buyer-search/search-engine.ts:254 and :395); what is left calling this is
+ * scripts/buyer-nl-search-simulator.ts:74. It is kept as the convenience half of the same
+ * scan/sanitize pair `scanFairHousing`/`sanitizeFairHousing` forms above — one vocabulary, two
+ * arities (CLAUDE.md §6) — not because a caller needs it. If the pair is ever collapsed, collapse
+ * BOTH halves together; deleting one spelling and leaving the other is the drift this rule exists
+ * to stop.
+ */
+export function sanitizeExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(exp: T, opts: FairHousingOpts = {}): T {
+  return scanExplanation(exp, opts).clean
 }

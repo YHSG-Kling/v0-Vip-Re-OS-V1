@@ -3,10 +3,33 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { uploadBufferToBucket } from "@/lib/storage/buckets"
+// THE EXPENSE CSV LIVES THERE, NOT HERE. This file is "use server": every export
+// in it is a public HTTP endpoint and must be async (CLAUDE.md §4), so the pure
+// builder cannot live alongside the action. Keeping it in one importable module
+// is also what lets scripts/expense-export-scope-simulator.ts run the REAL
+// builder and PROVE the owner's "no credentials in csv" ruling holds.
+import { buildExpenseCsv, type ExpenseCsvInput } from "@/lib/finance/expense-csv"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
-const ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
+// BROKERAGE-WIDE MONEY. Owner ruling (m472): admin surfaces admit team_lead,
+// the brokerage's books do not. This file reads and writes agent_commissions,
+// commission_splits, brokerage_p_l and business_expenses — all FINANCE tables
+// under public.is_brokerage_finance_admin(), which excludes team_lead. The gate
+// is the ONE shared roster, not a local literal, so the app and RLS cannot
+// answer differently. Several paths below use the SERVICE client, which bypasses
+// RLS, so this predicate is the only gate they have.
+//
+// The two roles the old local literal carried and this set does not are PROVEN
+// dead, not dropped: MEASURED live, ZERO users rows hold user_type 'superadmin'
+// (the platform's one superadmin is user_type='admin' WITH
+// platform_role='superadmin', already admitted through 'admin'), and
+// 'super_admin' is not a storable user_type at all — users_user_type_check
+// admits fourteen values and that is not one of them, and it is VALIDATED, so
+// no row was grandfathered either. Removing them changes no behaviour.
+const isFinanceAdmin = (userType: string) => isBrokerageFinanceAdmin({ user_type: userType })
 
 // ─── AI FORECAST ─────────────────────────────────────────────────────────────
 
@@ -39,7 +62,7 @@ export async function generateAIForecast(params: {
     if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden: admin only" }
     }
   }
@@ -48,14 +71,34 @@ export async function generateAIForecast(params: {
     // Fetch last 3 years of earnings for trend analysis — agent_monthly_earnings
     // is the canonical rollup (written by the earnings-rollup cron from
     // agent_commissions); earnings_history was a writer-less twin (repointed).
-    const { data: monthly } = await supabase
+    // transaction_count: the earnings-rollup cron writes it per month
+    // (app/api/cron/earnings-rollup/route.ts:144) and only the YTD/MTD aggregate
+    // on agent_earnings was ever read (:235 / :250 below) — so the monthly HISTORY had
+    // dollars with no deal count beside them, and the forecast this feeds was
+    // asked to project a year off gross alone. Merge, not delete:
+    // agent_earnings.transaction_count stays the survivor for the aggregate;
+    // the monthly table gains its reader.
+    const { data: monthly, error: monthlyError } = await supabase
       .from("agent_monthly_earnings")
-      .select("month_year, gross_total, net_total")
+      .select("month_year, gross_total, net_total, transaction_count")
       .eq("agent_id", targetAgentId)
       .order("month_year", { ascending: false })
       .limit(36)
+    // §3: supabase-js RESOLVES refusals. A refused read here used to fall
+    // through as an empty history, and the prompt below then told the model
+    // "No historical data available" — an outage rendered as a fact about the
+    // agent, inside a forecast a broker acts on.
+    if (monthlyError) {
+      console.error(
+        `[generateAIForecast] agent_monthly_earnings read REFUSED for agent ${targetAgentId} — the forecast below is built with NO history:`,
+        monthlyError.message,
+      )
+    }
     const history = (monthly ?? []).map((m: any) => ({
       paid_date: m.month_year, gross_commission: m.gross_total, agent_net: m.net_total,
+      // Null = the rollup did not record a count for that month. Never 0, which
+      // would read as "a month with earnings and no closings".
+      transaction_count: m.transaction_count ?? null,
     }))
 
     const avgMonthlyGCI =
@@ -66,11 +109,18 @@ export async function generateAIForecast(params: {
       history && history.length > 0
         ? history
             .slice(0, 12)
-            .map((h: any) => `${h.paid_date}: $${(h.gross_commission || 0).toLocaleString()}`)
+            .map((h: any) =>
+              `${h.paid_date}: $${(h.gross_commission || 0).toLocaleString()}` +
+              // A null count prints NOTHING rather than "0 deals" — the rollup
+              // not having recorded a number is not a month with no closings.
+              (h.transaction_count != null ? ` (${h.transaction_count} deals)` : ""))
             .join(", ")
         : "No historical data available"
 
     const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "unspecified",
       messages: [
         {
@@ -126,13 +176,13 @@ export async function generatePLReport(params: {
 
   // Brokerage-level P&L → admin only
   if (params.isBrokerage) {
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden: admin only" }
     }
   } else if (params.agentId) {
     // Per-agent P&L → must be the same agent OR an admin in the same brokerage
     if (params.agentId !== ctx.agentId) {
-      if (!ADMIN_ROLES.has(ctx.userType)) {
+      if (!isFinanceAdmin(ctx.userType)) {
         return { success: false, error: "Forbidden" }
       }
       const { data: targetAgent } = await svc
@@ -184,7 +234,7 @@ export async function generatePLReport(params: {
         .from("agent_earnings")
         .select("gross_commission, agent_net, total_fees, transaction_count")
         .eq("agent_id", params.agentId)
-        .eq("period_type", "annual")
+        .eq("period_type", "ytd")
         .order("computed_at", { ascending: false })
         .limit(1)
         .maybeSingle()
@@ -206,6 +256,9 @@ export async function generatePLReport(params: {
       grossCommission > 0 ? ((netProfit / grossCommission) * 100).toFixed(1) : "0"
 
     const { text } = await generateTextRouted({
+      brokerageId: effectiveBrokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "unspecified",
       messages: [
         {
@@ -260,12 +313,28 @@ export async function exportCommissionsCSV(agentId: string) {
 
   // Caller may export their own commissions, or an admin/broker can export
   // for any agent within their brokerage.
+  //
+  // ONE refusal string for every failure — not-an-admin, no-such-agent,
+  // agent-in-another-tenant. Distinct messages would make this an ID ORACLE: a
+  // caller could enumerate which agent uuids exist without ever reading a row.
   if (agentId !== ctx.agentId) {
-    if (!ADMIN_ROLES.has(ctx.userType)) {
+    if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden" }
     }
-    const { data: targetAgent } = await svc
+    // MERGED ONTO THE SURVIVOR (CLAUDE.md §1, 2026-08-21). This gate is the shape
+    // exportExpensesCSV was rebuilt onto, but it was missing the one thing that
+    // shape needs most: supabase-js RESOLVES refusals, so `const { data }` alone
+    // left `targetAgent` null on a REFUSED read and the gate reported it as "no
+    // such agent" — the right answer for the wrong reason, and the wrong answer
+    // entirely the day this lookup is refused for an agent who does exist. The
+    // error is now read and the gate FAILS CLOSED on it (§4). A malformed uuid
+    // lands here too (22P02) rather than reaching the ledger read.
+    const { data: targetAgent, error: targetError } = await svc
       .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (targetError) {
+      console.error("[exportCommissionsCSV] agent tenant check refused:", targetError.message)
+      return { success: false, error: "Forbidden" }
+    }
     if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
@@ -327,41 +396,193 @@ export async function exportCommissionsCSV(agentId: string) {
 
 // ─── EXPORT EXPENSES AS CSV ───────────────────────────────────────────────────
 
+// OWNER RULING (wave 15), verbatim: "user should only be able to export their own
+// expenses. brokerages' admins and owner can export their brokerages' expenses."
+//
+// WHAT THIS USED TO BE. The only check was `auth.getUser()` — "somebody is signed
+// in" — and the row scope came ENTIRELY from the `agentId` PARAMETER. This is a
+// "use server" export called from CLIENT components
+// (app/components/features/financial/ExportCSVButton.tsx:24,
+// app/dashboard/financials/reports/reports-client.tsx:148), so that parameter
+// crosses the network and is caller-controlled whatever the page passes. Any
+// signed-in user could name any agent id and receive that agent's expense ledger
+// — dates, categories, descriptions, amounts and receipt links — for the year.
+//
+// The gate below is NOT a second invention: it is the same shape as the sibling
+// exportCommissionsCSV above (:268-289), on the same ONE roster. Merging onto the
+// survivor rather than writing a parallel gate is the orphan doctrine (CLAUDE.md
+// §1) and the one-vocabulary rule (§6): two money exports over the same brokerage
+// must not be able to answer "may you?" differently.
+//
+// isFinanceAdmin is admin / broker / broker_owner (BROKERAGE_FINANCE_ADMIN_USER_TYPES
+// = the tenant roster MINUS team_lead) — precisely "brokerages' admins and owner"
+// as the owner ruled it, and precisely what public.is_brokerage_finance_admin()
+// enforces in RLS. `broker_admin` rides along as an INPUT spelling only; it is not
+// a storable user_type (it canonicalizes to `broker`), which is why nothing here
+// compares a bare "broker_admin" string against a live row.
 export async function exportExpensesCSV(agentId: string) {
+  // AUTH GATE — this action had none beyond "signed in". See the header above.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+
+  // Caller may export their OWN expenses, or a brokerage admin/owner may export
+  // for any agent within their OWN brokerage.
+  //
+  // ONE refusal string for three different failures — not-an-admin, no-such-agent,
+  // agent-in-another-tenant — deliberately. A gate that says "no such agent" for an
+  // unknown id and "not in your brokerage" for a real one is an ID ORACLE: it lets
+  // a caller enumerate which agent uuids exist on the platform without ever being
+  // allowed to read a row.
+  if (agentId !== ctx.agentId) {
+    if (!isFinanceAdmin(ctx.userType)) {
+      return { success: false, error: "Forbidden" }
+    }
+    // supabase-js RESOLVES refusals — a swallowed error here would leave
+    // `targetAgent` null and read as "no such agent", so the error is read and
+    // the gate FAILS CLOSED on it (CLAUDE.md §4). A malformed uuid also lands
+    // here (22P02) rather than reaching the ledger read.
+    const { data: targetAgent, error: targetError } = await svc
+      .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (targetError) {
+      console.error("[exportExpensesCSV] agent tenant check refused:", targetError.message)
+      return { success: false, error: "Forbidden" }
+    }
+    if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+  }
 
   const currentYear = new Date().getFullYear()
 
   try {
+    // TENANT PINNED ON THE QUERY, exactly as the commissions sibling pins it at
+    // :301 and as getAgentExpenses pins it at app/actions/agents.ts:829. The gate
+    // above already proved the agent is in this tenant, so this is the second lock
+    // rather than the first — it is what keeps the read correct if this query is
+    // ever moved onto the service client, which bypasses RLS.
+    //
+    // ── THE ORDER TRAP, AND WHY THE PIN IS NOT WHAT DROPS ROWS ────────────────
+    //
+    // A tenant pin added BEFORE the backfill in supabase/migrations/m516-*.sql is
+    // applied looks like it would silently cut a user's own NULL-tenant expenses
+    // out of their own export. MEASURED, live 2026-08-21, it does not — for two
+    // separate reasons, and both were checked rather than assumed:
+    //
+    //   1. business_expenses is EMPTY: null_tenant = 0, total = 0. Both numbers
+    //      published together, because a bare "0 NULLs" would read as "already
+    //      fixed" when it actually says "nothing has been written here yet".
+    //   2. Even on a non-empty table the pin removes nothing this client could
+    //      otherwise see. Policy `business_expenses_tenant`, read live, is
+    //        USING (can_read_tenant_financials()
+    //               OR (has_brokerage_access(brokerage_id)
+    //                   AND can_read_agent_books(agent_id)))
+    //      and public.has_brokerage_access(target) is
+    //        is_platform_admin() OR (target IS NOT NULL AND target = current_user_brokerage_id())
+    //      so for any non-platform caller has_brokerage_access(NULL) is FALSE and a
+    //      NULL-tenant row is ALREADY invisible on this RLS client. The pin is
+    //      redundant with RLS here, not narrower than it.
+    //
+    // So the rows are dropped by the NULL itself, not by this pin — the failure
+    // mode is INVISIBILITY, not exposure.
+    //
+    // UPDATED 2026-08-22. The writer this paragraph used to name —
+    // app/api/financial/expenses/route.ts, which inserted `{ ...request.json() }`
+    // on the service client and so took brokerage_id from the request BODY — no
+    // longer exists in that shape. (It was first fixed to derive agent+tenant
+    // from the session with a five-column allowlist, then DELETED outright —
+    // lane N3a 2026-09-01 — as a strict subset of logScopedExpense in this
+    // file; tombstone in scripts/opposite-missing-census.ts.) And m516 IS
+    // applied live: `business_expenses.brokerage_id` is NOT NULL (verified
+    // 2026-08-22 against hrvaqgvukzxfskkcrwbt via information_schema.columns),
+    // with trigger business_expenses_derive_tenant_trg standing behind it.
+    //
+    // The probe below is therefore a PERMANENT ZERO now, not a live count. It is
+    // kept rather than deleted because a zero it reports is evidence the column
+    // stayed closed, and because a refused probe must still be distinguishable
+    // from a genuine zero — see the error handling.
     const { data: expenses, error } = await supabase
       .from("business_expenses")
       .select("id, expense_date, category, description, amount, receipt_url")
       .eq("agent_id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .gte("expense_date", `${currentYear}-01-01`)
       .order("expense_date", { ascending: false })
 
     if (error) throw error
 
-    const headers = ["Date", "Category", "Description", "Amount", "Receipt URL"]
-    const rows = (expenses ?? []).map((e: any) => [
-      e.expense_date ?? "",
-      e.category ?? "",
-      e.description ?? "",
-      (e.amount ?? 0).toFixed(2),
-      e.receipt_url ?? "",
-    ])
+    // DENOMINATOR FOR THE EXPORT (CLAUDE.md §2 — publish the blind spot beside the
+    // number). Counts this agent's rows for the same year that carry NO tenant and
+    // are therefore absent from the CSV above. Runs on the service client because
+    // that is the only client that can SEE them — RLS hides them from everyone but
+    // platform staff, which is precisely the bug being reported.
+    //
+    // supabase-js RESOLVES refusals, so `{ count, error }` is destructured and the
+    // error read. A failed probe must NOT fail the export — the CSV is already
+    // correct — but it must not silently report zero either, so the count comes
+    // back null and the caller is told the blind spot could not be measured.
+    let untenantedRowCount: number | null = 0
+    const { count: nullTenantCount, error: probeError } = await svc
+      .from("business_expenses")
+      .select("id", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .is("brokerage_id", null)
+      .gte("expense_date", `${currentYear}-01-01`)
 
-    const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n")
+    if (probeError) {
+      console.error("[exportExpensesCSV] untenanted-row probe failed:", probeError.message)
+      untenantedRowCount = null
+    } else {
+      untenantedRowCount = nullTenantCount ?? 0
+      if (untenantedRowCount > 0) {
+        console.warn(
+          `[exportExpensesCSV] ${untenantedRowCount} expense row(s) for agent ${agentId} have a NULL brokerage_id and are OMITTED from this export. This should be IMPOSSIBLE: business_expenses.brokerage_id is NOT NULL since m516 (verified live 2026-08-22). A non-zero count here means the constraint was dropped or the rows predate it — investigate before trusting any expense total.`,
+        )
+      }
+    }
+
+    // NO CREDENTIAL LEAVES IN THIS FILE.
+    //
+    // OWNER RULING (finding #294), verbatim: "294 no credentials should be listed
+    // in csv." What it resolves: this export used to emit `receipt_url` as its
+    // fifth column, and `receipt_url` is a SIGNED URL into the PRIVATE `receipts`
+    // bucket — minted by attachExpenseReceipt below with `bucket: "receipts"`,
+    // `public: false`, `signedTtlSeconds: 60 * 60 * 24 * 365`. Anyone holding that
+    // string fetches the receipt for a YEAR with no session and no gate, so the
+    // exported CSV did not reference the credential, it WAS the credential — and
+    // it outlived the export the moment the file was mailed to a bookkeeper.
+    //
+    // WHAT A READER SHOULD USE INSTEAD: the `Receipt` column says whether a receipt
+    // exists ("on file" / "missing" — the deduction-readiness fact, which the URL
+    // was only carrying by accident), and `Expense ID` is the locator: open that
+    // expense in the app, signed in, and follow the receipt from there, where this
+    // gate still applies. A uuid authorizes nothing on its own; RLS decides.
+    //
+    // DO NOT ADD THE URL BACK, and do not add a short-lived one "just for the
+    // export" — the owner ruled on PRESENCE, not on TTL. The columns, the
+    // vocabulary and the reasoning for rejecting the storage-path and deep-link
+    // alternatives all live in lib/finance/expense-csv.ts, which is also what the
+    // simulator runs to prove the credential is gone.
+    const exported = (expenses ?? []) as ExpenseCsvInput[]
+    const csv = buildExpenseCsv(exported)
 
     return {
       success: true,
       csv,
       filename: `expenses-${currentYear}.csv`,
-      rowCount: rows.length,
+      rowCount: exported.length,
+      // The blind spot, carried back beside the number. 0 = nothing omitted;
+      // >0 = that many of this agent's rows are untenanted and missing from the
+      // CSV; null = the probe itself could not run, so the omission is UNKNOWN
+      // rather than zero. Both current callers
+      // (app/components/features/financial/ExportCSVButton.tsx,
+      // app/dashboard/financials/reports/reports-client.tsx) read only
+      // success/csv/filename/error, so this is additive and breaks neither.
+      untenantedRowCount,
     }
   } catch (err: any) {
     return { success: false, error: err.message ?? "Export failed" }
@@ -402,6 +623,114 @@ export async function deleteExpense(expenseId: string) {
   return { success: true }
 }
 
+// ─── ATTACH A RECEIPT TO AN EXISTING EXPENSE ─────────────────────────────────
+// Deduction readiness counts "missing receipts" and the panel offers an upload
+// per row; there was no capability behind it, so the count could never come
+// down for an expense that was logged without a receipt. This is that capability.
+//
+// The file lands in the PRIVATE `receipts` bucket (a receipt is tax material —
+// it must not be world-readable), so receipt_url holds a signed URL. Storage
+// uses the service client, which is why authorization happens FIRST: the row is
+// re-read and ownership proved through the RLS-scoped client before any
+// privileged write.
+
+export async function attachExpenseReceipt(input: {
+  expenseId: string
+  /** base64 (no data: prefix) — the browser reads the File and encodes it. */
+  base64: string
+  mimeType: string
+  fileName?: string
+}): Promise<{ success: boolean; receiptUrl?: string; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!input.expenseId) return { success: false, error: "expense_required" }
+  if (!input.base64) return { success: false, error: "file_required" }
+
+  const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"])
+  const mimeType = (input.mimeType || "").toLowerCase()
+  if (!ALLOWED.has(mimeType)) {
+    return { success: false, error: "A receipt must be a JPEG, PNG, WebP, HEIC or PDF" }
+  }
+
+  let buffer: Buffer
+  try {
+    buffer = Buffer.from(input.base64, "base64")
+  } catch {
+    return { success: false, error: "The file could not be decoded" }
+  }
+  if (buffer.length === 0) return { success: false, error: "The file was empty" }
+
+  // "15 MB" was a number this file invented; the receipt arrives as base64 in a
+  // Server Action body, so the real ceiling is ~3.4 MB of file and the bucket's
+  // own limit, whichever is smaller. `receipts` does not exist live yet, so its
+  // ceiling is the one ensureBucket will stamp on it at first write — answered
+  // from the same place rather than assumed to be unlimited.
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+  const receiptGate = checkUpload({
+    bucket: "receipts",
+    transport: "server_action_base64",
+    bytes: buffer.length,
+    contentType: mimeType,
+  })
+  if (!receiptGate.ok) return { success: false, error: receiptGate.reason }
+
+  // AUTHORIZE FIRST, through the caller's own RLS-scoped client.
+  const supabase = await createClient()
+  const { data: expense, error: readError } = await supabase
+    .from("business_expenses")
+    .select("id, agent_id, team_id, brokerage_id")
+    .eq("id", input.expenseId)
+    .maybeSingle()
+
+  if (readError) return { success: false, error: readError.message }
+  if (!expense) return { success: false, error: "That expense is not visible in your workspace" }
+
+  // business_expenses.agent_id → agents.id. ctx.agentId is already an agents.id;
+  // it is never substituted with ctx.userId.
+  const ownsAsAgent = expense.agent_id != null && expense.agent_id === ctx.agentId
+  const sameBrokerage = expense.brokerage_id != null && expense.brokerage_id === ctx.brokerageId
+  const isAdmin = isFinanceAdmin(ctx.userType)
+  if (!ownsAsAgent && !(isAdmin && sameBrokerage)) {
+    return { success: false, error: "That expense is not yours to attach a receipt to" }
+  }
+
+  const ext =
+    mimeType === "application/pdf" ? "pdf"
+      : mimeType === "image/png" ? "png"
+        : mimeType === "image/webp" ? "webp"
+          : mimeType === "image/heic" ? "heic"
+            : "jpg"
+  const path = `${ctx.brokerageId}/${expense.id}/${Date.now()}.${ext}`
+
+  const upload = await uploadBufferToBucket({
+    bucket: "receipts",
+    path,
+    buffer,
+    contentType: mimeType,
+    public: false,
+    // A receipt is referenced from the P&L export for a whole tax year.
+    signedTtlSeconds: 60 * 60 * 24 * 365,
+  })
+  if (!upload.ok) return { success: false, error: upload.error }
+
+  const svc = createServiceClient()
+  const { data: updated, error: updateError } = await svc
+    .from("business_expenses")
+    .update({ receipt_url: upload.url })
+    .eq("id", expense.id)
+    .select("id")
+
+  if (updateError) return { success: false, error: updateError.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "The receipt uploaded but the expense row was not updated" }
+  }
+
+  revalidatePath("/dashboard/financials/expenses")
+  revalidatePath("/dashboard/financials/agent")
+  revalidatePath("/dashboard/financials")
+  return { success: true, receiptUrl: upload.url }
+}
+
 // ─── UPDATE COMMISSION STATUS (broker only) ───────────────────────────────────
 
 export async function updateCommissionStatus(
@@ -413,13 +742,19 @@ export async function updateCommissionStatus(
   if (!user) return { success: false, error: "Unauthorized" }
 
   const context = await getAgentContext()
-  if (!["broker", "admin", "superadmin"].includes(context.userType)) {
+  // Marking a commission PAID is the brokerage's money moving. Found by the shape
+  // scan in scripts/finance-authority-simulator.ts, which fails a module that asks
+  // the shared finance predicate while ALSO keeping a role array of its own — this
+  // one had been left behind, and it refused broker_owner from their own ledger.
+  if (!isFinanceAdmin(context.userType)) {
     return { success: false, error: "Insufficient permissions" }
   }
 
   const { error } = await supabase
-    .from("commissions")
-    .update({ status, paid_date: status === "paid" ? new Date().toISOString().split("T")[0] : null })
+    // KEEP-ONE (m283): agent_commissions is the canonical ledger.
+    // Column translation: commissions.paid_date (date) -> paid_at (timestamptz).
+    .from("agent_commissions")
+    .update({ status, paid_at: status === "paid" ? new Date().toISOString() : null })
     .eq("id", commissionId)
     .eq("brokerage_id", context.brokerageId!)
 
@@ -445,6 +780,16 @@ export async function logScopedExpense(input: {
   amount: number
   expenseDate: string // YYYY-MM-DD
   teamId?: string | null
+  /**
+   * AGENT SCOPE ONLY — book the cost against ANOTHER agent's ledger.
+   *
+   * MERGED IN WAVE 27 from app/actions/agents.ts:addAgentExpense, the second,
+   * never-surfaced business_expenses writer, before that duplicate was retired
+   * onto this one. It was the ONE thing it could do that this action could not.
+   * Omitted or equal to the caller's own agents.id it changes nothing: the
+   * expense lands on the caller's own book exactly as before.
+   */
+  agentId?: string | null
   receiptUrl?: string | null
 }): Promise<{ success: boolean; expenseId?: string; error?: string }> {
   const ctx = await getAgentContext()
@@ -466,8 +811,31 @@ export async function logScopedExpense(input: {
 
   if (input.scope === "agent") {
     // business_expenses.agent_id FKs agents(id) — pass-11 identity rule.
-    if (!ctx.agentId) return { success: false, error: "no_agent_context" }
-    row.agent_id = ctx.agentId
+    // The ACTOR comes from the SESSION (§4); `input.agentId` is only ever
+    // honoured after the two gates below, and never becomes the tenant.
+    let agentId = ctx.agentId
+    if (input.agentId && input.agentId !== ctx.agentId) {
+      // BROKERAGE-WIDE MONEY (m472). business_expenses is a FINANCE table under
+      // public.is_brokerage_finance_admin(), and this branch is "book a cost
+      // against SOMEONE ELSE'S ledger" — money beyond the caller's own team,
+      // which the owner's ruling holds team_lead out of. `isFinanceAdmin` in
+      // this file IS that predicate (see its definition at the top), so this
+      // does not add a fourth roster. The write below goes through the SERVICE
+      // client, which bypasses RLS, so this predicate is the only gate it has.
+      if (!isFinanceAdmin(ctx.userType)) return { success: false, error: "forbidden_agent_scope" }
+      const { data: targetAgent, error: targetErr } = await svc
+        .from("agents")
+        .select("id, brokerage_id")
+        .eq("id", input.agentId)
+        .maybeSingle()
+      if (targetErr) return { success: false, error: targetErr.message }
+      if (!targetAgent || (targetAgent.brokerage_id as string | null) !== ctx.brokerageId) {
+        return { success: false, error: "agent_not_in_brokerage" }
+      }
+      agentId = targetAgent.id as string
+    }
+    if (!agentId) return { success: false, error: "no_agent_context" }
+    row.agent_id = agentId
   } else if (input.scope === "team") {
     // Team leads log against their own team; brokers/admins may pick any team
     // in the tenant. Always verify the team belongs to this brokerage.
@@ -479,14 +847,14 @@ export async function logScopedExpense(input: {
     if (!teamId) return { success: false, error: "no_team_context" }
     const { data: team } = await svc.from("teams").select("id, brokerage_id").eq("id", teamId).maybeSingle()
     if (!team || (team.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "team_not_in_brokerage" }
-    if (!ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "team_lead") {
+    if (!isFinanceAdmin(ctx.userType) && ctx.userType !== "team_lead") {
       // Non-lead agents may still log against THEIR OWN team (split dues etc.).
       const { data: self } = await svc.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
       if ((self?.team_id as string | null) !== teamId) return { success: false, error: "forbidden_team_scope" }
     }
     row.team_id = teamId
   } else if (input.scope === "brokerage") {
-    if (!ADMIN_ROLES.has(ctx.userType)) return { success: false, error: "forbidden_brokerage_scope" }
+    if (!isFinanceAdmin(ctx.userType)) return { success: false, error: "forbidden_brokerage_scope" }
     // agent_id and team_id stay NULL — that IS the brokerage-scope marker.
   } else {
     return { success: false, error: "unknown_scope" }

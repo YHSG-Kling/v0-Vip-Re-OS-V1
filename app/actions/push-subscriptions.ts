@@ -80,6 +80,73 @@ export async function subscribePush(
   }
 }
 
+/**
+ * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+ *
+ * `user_agent`, `last_seen_at` and `disabled_reason` were written by
+ * subscribePush/unsubscribePush (:55) and by the delivery rail's soft-disable
+ * (lib/providers/web-push.ts:110, reason "endpoint_gone") and read by NOBODY.
+ * The two live readers select only what they need to SEND
+ * (web-push.ts:74 → id/endpoint/p256dh/auth) or to count
+ * (lib/onboarding/critical-setup.ts:515 → id), so the user could never see
+ * that the browser they enabled push on months ago had been silently pruned:
+ * the toggle on THIS browser says "Disabled" and says nothing about the other
+ * four devices, one of which the push service hung up on.
+ *
+ * This is the missing reader: the signed-in user's OWN devices, with why each
+ * dead one died. Scope is the SESSION user id (§4) — there is no parameter to
+ * spoof, and a user never sees another user's endpoints.
+ */
+export interface PushDeviceRow {
+  id: string
+  /** Raw UA string as the browser reported it at subscribe time; may be null. */
+  userAgent: string | null
+  lastSeenAt: string | null
+  disabledAt: string | null
+  /** "user_unsubscribed" | "endpoint_gone" | null — the honest reason. */
+  disabledReason: string | null
+}
+
+export async function listMyPushDevices(): Promise<{
+  success: boolean
+  devices?: PushDeviceRow[]
+  error?: string
+}> {
+  try {
+    const supabase = await createClient()
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+    if (!authUser) return { success: false, error: "Not authenticated" }
+
+    const svc = createServiceClient()
+    const { data, error } = await svc
+      .from("push_subscriptions")
+      .select("id, user_agent, last_seen_at, disabled_at, disabled_reason")
+      .eq("user_id", authUser.id)
+      .order("last_seen_at", { ascending: false, nullsFirst: false })
+      .limit(25)
+    // §3 — a swallowed refusal would render as "you have no devices", which is
+    // exactly the false all-clear this list exists to prevent.
+    if (error) {
+      console.error("[v0] listMyPushDevices: select failed:", error.message)
+      return { success: false, error: "Failed to read your push devices" }
+    }
+
+    return {
+      success: true,
+      devices: (data ?? []).map((row: any) => ({
+        id: row.id as string,
+        userAgent: (row.user_agent as string | null) ?? null,
+        lastSeenAt: (row.last_seen_at as string | null) ?? null,
+        disabledAt: (row.disabled_at as string | null) ?? null,
+        disabledReason: (row.disabled_reason as string | null) ?? null,
+      })),
+    }
+  } catch (e) {
+    console.error("[v0] listMyPushDevices failed:", e)
+    return { success: false, error: e instanceof Error ? e.message : "Failed to read push devices" }
+  }
+}
+
 export async function unsubscribePush(
   input: { endpoint: string },
 ): Promise<{ success: boolean; error?: string }> {

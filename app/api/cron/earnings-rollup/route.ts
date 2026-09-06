@@ -8,6 +8,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { readCapProgress, pickCapWindow, type CapLedgerRow } from "@/lib/finance/cap-progress"
 
 export async function GET(req: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -47,10 +48,18 @@ export async function GET(req: NextRequest) {
     if (agentsError) {
       errors.push(`Failed to load agents: ${agentsError.message}`)
     } else {
-      const agg = (rows: Array<{ gross_commission?: number | null; agent_commission?: number | null; brokerage_commission?: number | null }>) => ({
+      // NET-PREFERENCE RULE (owner ruling 2026-08-28, the cap ruling's rollup
+      // sibling — see lib/finance/brokerage-earnings-writer.ts:foldCommissionRows):
+      // agent_commission / brokerage_commission are GENERATED pre-cap splits;
+      // the waterfall's ACTUAL post-cap, post-fee results are the stored
+      // net_to_agent / net_to_brokerage. Post-cap they disagree on purpose
+      // (agent keeps 100%, brokerage $0), so prefer the stored net when
+      // non-null and fall back to the generated split only for manually
+      // entered rows that carry a split percent and no net.
+      const agg = (rows: Array<{ gross_commission?: number | null; agent_commission?: number | null; brokerage_commission?: number | null; net_to_agent?: number | null; net_to_brokerage?: number | null }>) => ({
         gross: rows.reduce((s, r) => s + (r.gross_commission ?? 0), 0),
-        net: rows.reduce((s, r) => s + (r.agent_commission ?? 0), 0),
-        brok: rows.reduce((s, r) => s + (r.brokerage_commission ?? 0), 0),
+        net: rows.reduce((s, r) => s + (r.net_to_agent ?? r.agent_commission ?? 0), 0),
+        brok: rows.reduce((s, r) => s + (r.net_to_brokerage ?? r.brokerage_commission ?? 0), 0),
         count: rows.length,
       })
 
@@ -62,7 +71,7 @@ export async function GET(req: NextRequest) {
           // (close_date is always set; payout via paid_at can lag).
           const { data: ytdRows } = await supabase
             .from("agent_commissions")
-            .select("gross_commission, agent_commission, brokerage_commission, close_date")
+            .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, close_date")
             .eq("agent_id", agent.id)
             .gte("close_date", startOfYear.toISOString())
 
@@ -71,6 +80,28 @@ export async function GET(req: NextRequest) {
           const y = agg(ytdRows)
           const m = agg(mtdRows)
           const computedAt = new Date().toISOString()
+
+          // ── THE CAP, WHICH THIS ROLLUP HAS NEVER CARRIED ────────────────────
+          // agent_earnings.cap_status and .cap_progress_pct are READ by the AI
+          // goal-setter (app/actions/ai-agent-goals.ts:182 — it printed "Cap
+          // status: Unknown" for every agent and set next year's GCI targets
+          // without it) and by the agent's earnings report
+          // (app/dashboard/financials/reports/page.tsx:33). Nothing wrote
+          // either. The cap LEDGER — agent_cap_tracking — already exists and is
+          // what the payout engine and the agent financials page read, so the
+          // number is carried across rather than invented, through the ONE
+          // reading (lib/finance/cap-progress.ts) the kernel summary now shares.
+          //
+          // The window in force TODAY is the one the payout engine applies; a
+          // ledger row outside its anniversary window is history, and scoring an
+          // agent against last year's cap is worse than saying nothing.
+          const { data: capRows } = await supabase
+            .from("agent_cap_tracking")
+            .select("cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
+            .eq("agent_id", agent.id)
+            .eq("brokerage_id", agent.brokerage_id)
+            .limit(20)
+          const cap = readCapProgress(pickCapWindow(capRows as CapLedgerRow[] | null, now))
 
           // Populate agent_earnings — THE table the earnings P&L dashboard reads
           // (period_type mtd/ytd). Without this the dashboard showed $0 on closed
@@ -87,6 +118,13 @@ export async function GET(req: NextRequest) {
                 brokerage_net: a.brok,
                 total_fees: 0,
                 transaction_count: a.count,
+                // NULL when the agent has no cap window in force — "uncapped" is
+                // not a status, and `below_cap` would assert a ceiling the payout
+                // engine will never apply. The CHECK on cap_status admits only
+                // below_cap / at_cap / post_cap, and a value outside it refuses
+                // this WHOLE upsert (the dashboard's $0 defect, one column over).
+                cap_status: cap.status,
+                cap_progress_pct: cap.pct,
                 computed_at: computedAt,
               },
               { onConflict: "agent_id,period_type,period_label" }
@@ -117,9 +155,37 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Earnings rollup failed: ${err.message}`)
-    void supabase
+    // PLATFORM-WIDE FAILURE, WRITTEN DELIBERATELY UNTENANTED — the one place in
+    // this wave where no tenant is the honest answer, and it is defended rather
+    // than assumed.
+    //
+    // This catch is the OUTER catch of a sweep that runs across EVERY brokerage
+    // (the per-item failures are caught inside the loop and pushed to `errors`).
+    // What failed is the job, not one tenant's work, so there is no record to
+    // resolve a tenant through and inventing one would attribute a platform
+    // outage to whichever brokerage happened to be first.
+    //
+    // Writing it untenanted is not "a row nobody can read", which is the rule
+    // this wave otherwise follows. Measured, not assumed: `lib/platform/ai-ops.ts:73`
+    // reads `automation_errors` CROSS-TENANT on the service client with NO
+    // brokerage predicate (`.not("status","in","(resolved,dismissed)")`), its row
+    // type carries `brokerageId: string | null` explicitly, and
+    // `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by
+    // id with no brokerage predicate either. So this row IS visible and IS
+    // resolvable — on the platform AI-ops console, which is exactly the audience
+    // a platform-wide cron failure belongs to, and is invisible to tenants, which
+    // is exactly right for a failure that is not theirs.
+    //
+    // The `void` fire-and-forget it replaces discarded the insert's own outcome,
+    // so a refused error-log looked identical to a filed one.
+    const { error: earnings_rollup_log_error } = await supabase
       .from("automation_errors")
-      .insert({ workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
+      .insert({ brokerage_id: null, workflow_name: "earnings-rollup", error_message: err.message, severity: "error", created_at: ranAt })
+    if (earnings_rollup_log_error) {
+      // The ORIGINAL failure is already in `errors` and in the response body, so a
+      // failure to FILE it is reported beside it and never replaces it.
+      console.error("[EarningsRollup] automation_errors insert refused:", earnings_rollup_log_error.message)
+    }
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

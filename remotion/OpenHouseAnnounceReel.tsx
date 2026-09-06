@@ -18,14 +18,9 @@
  *     before the 4th frame.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -103,7 +98,7 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
         }}>
           {heroImg && (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               {/* Tint so the headline reads */}
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}D9` }} />
             </AbsoluteFill>
@@ -113,26 +108,26 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               display: "inline-block", padding: "10px 24px", borderRadius: 6,
               backgroundColor: brand.accentColor, color: brand.primaryColor,
               fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1]),
+              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               Open House
             </div>
             <div style={{
               fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.95,
-              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1]),
+              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {dateLabel}
             </div>
             <div style={{
               fontSize: 48, color: brand.accentColor, fontWeight: 800,
-              opacity: interpolate(frame, [20, 42], [0, 1]),
+              opacity: interpolate(frame, [20, 42], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {timeLabel}
             </div>
           </div>
           {brand.logoUrl && (
             <div style={{ position: "absolute", top: 32, left: 32 }}>
-              <Img src={brand.logoUrl} style={{
+              <SafeImg src={brand.logoUrl} style={{
                 height: 48, objectFit: "contain", opacity: 0.85,
               }} />
             </div>
@@ -148,14 +143,14 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
             restImgs.map((url, idx) => (
               <Sequence key={idx} from={idx * perPhoto} durationInFrames={perPhoto}>
                 <AbsoluteFill>
-                  <Img src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <SafeImg src={url} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
                 </AbsoluteFill>
               </Sequence>
             ))
           ) : heroImg ? (
             <AbsoluteFill>
-              <Img src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              <SafeImg src={heroImg} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               <AbsoluteFill style={{ backgroundColor: `${brand.primaryColor}B3` }} />
             </AbsoluteFill>
           ) : null}

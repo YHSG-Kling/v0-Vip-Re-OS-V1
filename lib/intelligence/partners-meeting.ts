@@ -15,6 +15,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { dealCommission, toPipeline, forecastGci } from "@/lib/kernel/commission-forecaster"
 import { summarizeComplianceLedger, PREFLIGHT_GATE } from "@/lib/kernel/compliance-ledger"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -131,7 +134,33 @@ const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer =>
   } catch { return null }
 }
 
-export interface PartnersMeetingResult { meetings: number; video: number; audio: number; memo: number }
+/**
+ * What happened to the ONE reel a producer tries to queue per period (§6: one
+ * vocabulary — the weekly show and the monthly board packet both speak it).
+ *
+ *   queued          a render row landed
+ *   already_queued  the period's row exists; nothing to do
+ *   refused         the CONTENT CONTRACT said no BEFORE any row or spend —
+ *                   `reason` is the describeMissingContent sentence a manager reads
+ *   failed          the insert or a resolver threw — `reason` is the message
+ *
+ * A refusal is COUNTED AND NAMED, never a bare `false`: the old boolean
+ * collapsed "already queued" and "the backstop will cancel this" into the same
+ * value, and the caller's best-effort catch turned both into silence.
+ */
+export type ReelQueueOutcome =
+  | { status: "queued" }
+  | { status: "already_queued"; reason: string }
+  | { status: "refused"; reason: string }
+  | { status: "failed"; reason: string }
+
+export interface PartnersMeetingResult {
+  meetings: number; video: number; audio: number; memo: number
+  /** The weekly show's disposition (see ReelQueueOutcome). */
+  reel: ReelQueueOutcome["status"]
+  /** Present whenever `reel` is not "queued". */
+  reelReason?: string
+}
 
 /**
  * Produce this week's partners' meeting for the brokerage's leadership (admin/broker
@@ -180,7 +209,7 @@ export async function producePartnersMeeting(
       .eq("brokerage_id", brokerageId).eq("status", "closed").gte("updated_at", weekAgo).limit(500),
     supabase.from("transactions")
       .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-      .eq("brokerage_id", brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(500),
+      .eq("brokerage_id", brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(500),
   ])
   const gciClosedThisWeek = ((closedRows ?? []) as any[]).reduce((s, t) => s + dealCommission(t), 0)
   const gciWeightedPipeline = forecastGci(0, toPipeline((pipelineRows ?? []) as any[]), now).weightedPipeline
@@ -272,15 +301,25 @@ export async function producePartnersMeeting(
   // same earned numbers as branded 1080p stat cards, with the D-ID avatar clip
   // (the broker's cloned voice, already generated above) in the PIP. Queued on
   // the shared render rail; the Monday ?phase=deliver sweep notifies leadership.
-  // Best-effort — a render-queue hiccup never blocks the meeting itself. ──
+  // Best-effort — a render-queue hiccup never blocks the meeting itself, but
+  // its disposition is REPORTED, not swallowed (a zero-activity week yields
+  // `cards: []`, which the contract refuses; the caller must be able to see
+  // "refused" rather than infer it from a missing video on Monday). ──
+  let reel: ReelQueueOutcome
   try {
-    await queuePartnersMeetingReel(supabase, {
+    reel = await queuePartnersMeetingReel(supabase, {
       brokerageId, week, avatarVideoUrl: avatarClipUrl,
       agentUserId: avatarUserId ?? audience[0]?.id ?? null, now,
     })
-  } catch { /* reel is additive */ }
+  } catch (e) {
+    reel = { status: "failed", reason: e instanceof Error ? e.message : String(e) }
+  }
 
-  return { meetings, video, audio, memo }
+  return {
+    meetings, video, audio, memo,
+    reel: reel.status,
+    ...(reel.status === "queued" ? {} : { reelReason: reel.reason }),
+  }
 }
 
 /** entity_type on the weekly show's render row (dedupe + delivery-sweep key). */
@@ -288,17 +327,18 @@ export const PARTNERS_MEETING_REEL_ENTITY = "partners_meeting_reel"
 
 /** Queue ONE weekly-show render per brokerage per week, branded from the live
  *  tenant brand tables, with a branded VideoCoverThumb pass. Idempotent on the
- *  render ledger (entity + 6-day window). */
+ *  render ledger (entity + 6-day window). Returns the disposition, never a
+ *  bare boolean (see ReelQueueOutcome). */
 export async function queuePartnersMeetingReel(
   supabase: Svc,
   p: { brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null; agentUserId: string | null; now: Date },
-): Promise<boolean> {
+): Promise<ReelQueueOutcome> {
   const sinceIso = new Date(p.now.getTime() - 6 * 86_400_000).toISOString()
   const { data: existing } = await supabase.from("remotion_composition_renders").select("id")
     .eq("brokerage_id", p.brokerageId).eq("composition_id", "PartnersMeetingReel")
     .eq("entity_type", PARTNERS_MEETING_REEL_ENTITY).eq("entity_id", p.brokerageId)
     .gte("created_at", sinceIso).limit(1).maybeSingle()
-  if (existing) return false
+  if (existing) return { status: "already_queued", reason: "one show per brokerage per week; this week's row exists" }
 
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
   const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
@@ -314,6 +354,19 @@ export async function queuePartnersMeetingReel(
     agentPhotoUrl: identity.avatarPhotoUrl, brand,
   })
   const props = req.inputProps as unknown as Record<string, unknown>
+  // THE CONTENT GATE, before any spend (the voiceover below is a TTS call) and
+  // before the insert — the same question the render backstop asks. Every
+  // `cards.push` in partners-meeting-reel-props.ts is gated on a count > 0, so
+  // a zero-activity week yields `cards: []`; the contract reads that as
+  // unsupplied, render-composition would cancel the row, and this function
+  // used to return `true` for it. Refused by NAME instead.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(req.compositionId, props)
+  if (missing.length > 0) {
+    const reason = describeMissingContent(req.compositionId, missing)
+    console.warn(`[partners-meeting] ${req.compositionId} for brokerage ${p.brokerageId} skipped — ${reason}`)
+    return { status: "refused", reason }
+  }
   // Voice on every video (owner rule): the assistant NARRATES the show in its
   // own voice — the same script the reel shows as cards. Best-effort; silent
   // video when no voice is configured, never a blocked render.
@@ -323,18 +376,35 @@ export async function queuePartnersMeetingReel(
     voiceId: identity.voiceId, renderKey: `partners-${p.brokerageId.slice(0, 8)}`,
   })
   if (vo) props.voiceover_url = vo.url
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED by the content contract on
+  // VideoCoverThumb and this producer omitted it, so the card printed the
+  // just-listed composition's SAMPLE sentence as this show's summary line
+  // (remotion/VideoCoverThumb.tsx renders the hint under the subtitle and as the
+  // hero image's alt text). It is now cut VERBATIM from the show's own
+  // narration — the same script the cards show.
+  //
+  // CAPPED AT THE FRAMING SENTENCE (§5). composePartnersMeetingScript's second
+  // paragraph is the Finance Manager's line — "…in gross commission booked this
+  // week" — and this card is the og:image the moment a broker publishes the
+  // render to /v/[slug]. Commission belongs on the broker's own board and
+  // nowhere else, so the hint stops before the money is spoken.
+  const cardSeoHint = seoHintFromNarration(req.inputProps.narration, SEO_HINT_MAX_CHARS, 1)
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: "Partners' Meeting", subtitle: p.week.weekLabel, eyebrow: "THE AI TEAM'S WEEK",
     agentName: brand.brokerageName,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: cardSeoHint,
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[partners-meeting] no companion share card for brokerage ${p.brokerageId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId, compositionId: req.compositionId,
     entityType: PARTNERS_MEETING_REEL_ENTITY, entityId: p.brokerageId,
     inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",
   })
-  return r.ok
+  if (r.ok) return { status: "queued" }
+  return { status: "failed", reason: ("error" in r && typeof r.error === "string" ? r.error : null) ?? "render row insert refused" }
 }
 
 /** Monday-afternoon sweep: completed weekly shows → leadership notified. */

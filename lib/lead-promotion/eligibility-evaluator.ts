@@ -1,120 +1,51 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published evaluatePromotionEligibility(rawRecordId) as a
+// public HTTP door — a GATED one (the session/tenant compare below, which
+// stays) — that nobody addressed: its only importer is the barrel
+// lib/lead-promotion/index.ts:2, whose only value importer is
+// scripts/raw-lead-promotion-simulator.ts:72, and that imports the ungated CORE
+// rather than this door. No app/ module, route, or client component calls it
+// (re-verified 2026-09-03). So the directive published nothing anyone needed.
+// `server-only` makes a future client import fail at build time instead of
+// bundling the service credential. The gate is kept exactly as it was — it is
+// now the in-process tenant check for whichever server caller wires this door
+// next, and scripts/lead-pipeline-simulator.ts and
+// scripts/conversion-gate-auto-enrichment-simulator.ts both pin its shape.
+import "server-only"
 
+import { getAgentContext } from '@/lib/identity'
 import { createServiceClient } from '@/lib/supabase/service'
-
-interface EligibilityResult {
-  eligible: boolean
-  reason: string
-  rawRecord?: any
-  dedupLog?: any
-}
+import { evaluatePromotionEligibilityCore } from './eligibility-core'
 
 /**
- * Evaluates whether a raw record is eligible for promotion to leads.
- * Reads existing enrichment and dedup outputs - does NOT re-run them.
- * 
- * Returns eligible: true only if:
- * 1. Enrichment is marked complete in pipeline processor
- * 2. Record is NOT marked as duplicate in dedup log
- * 3. Required identity fields exist
+ * PUBLIC DOOR — gated. See eligibility-core.ts for why this split exists.
+ *
+ * Gate first, then the service client — the pattern named at
+ * lib/kernel/manager-registry.ts. The tenant comes from the SESSION and is
+ * compared against the record's own brokerage_id; it is never accepted from
+ * the caller. FAILS CLOSED: no session, or a record belonging to another
+ * brokerage, is refused with the SAME message as a missing record, so this
+ * cannot be used to probe which ids exist.
  */
-export async function evaluatePromotionEligibility(
-  rawRecordId: string
-): Promise<EligibilityResult> {
-  const supabase = createServiceClient()
+export async function evaluatePromotionEligibility(rawRecordId: string) {
+  const REFUSAL = { eligible: false as const, reason: 'Raw record not found' }
 
-  // 1. Fetch the raw record
-  const { data: rawRecord, error: rawError } = await supabase
+  let brokerageId: string | null | undefined
+  try {
+    ({ brokerageId } = await getAgentContext())
+  } catch {
+    return REFUSAL
+  }
+  if (!brokerageId) return REFUSAL
+
+  const { data, error } = await createServiceClient()
     .from('raw_scraped_leads')
-    .select('*')
+    .select('brokerage_id')
     .eq('id', rawRecordId)
-    .single()
+    .maybeSingle()
 
-  if (rawError || !rawRecord) {
-    return {
-      eligible: false,
-      reason: 'Raw record not found',
-    }
-  }
+  if (error || !data || data.brokerage_id !== brokerageId) return REFUSAL
 
-  // 2. Check if record has been enriched via the pipeline processor.
-  // The pipeline processor terminal statuses are 'promoted', 'duplicate_post_enrich',
-  // 'insufficient_identity_for_promotion', or 'error'.
-  // 'promoted' means the record already became a lead — reject further promotion.
-  // Allow re-evaluation only for 'insufficient_identity_for_promotion' (may gain identity via retry).
-  const terminalStatuses = ['promoted', 'duplicate_pre_enrich', 'duplicate_post_enrich', 'territory_mismatch', 'error']
-  if (terminalStatuses.includes(rawRecord.processing_status)) {
-    return {
-      eligible: false,
-      reason: `Record is in terminal status: ${rawRecord.processing_status}`,
-      rawRecord,
-    }
-  }
-  const enrichedStatuses = ['enriching', 'queued_for_enrichment', 'insufficient_identity_for_promotion']
-  if (!enrichedStatuses.includes(rawRecord.processing_status) && rawRecord.processing_status !== 'pending') {
-    return {
-      eligible: false,
-      reason: `Enrichment not complete. Current status: ${rawRecord.processing_status}`,
-      rawRecord,
-    }
-  }
-
-  // 3. Check deduplication log - consume existing dedup output
-  const { data: dedupLog } = await supabase
-    .from('lead_deduplication_log')
-    .select('*')
-    .eq('raw_record_id', rawRecordId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single()
-
-  // If dedup log says it's a duplicate, reject promotion
-  if (dedupLog && dedupLog.action_taken === 'merged') {
-    return {
-      eligible: false,
-      reason: 'Record was merged with existing lead/contact',
-      rawRecord,
-      dedupLog,
-    }
-  }
-
-  if (dedupLog && dedupLog.action_taken === 'skipped' && dedupLog.skip_reason) {
-    return {
-      eligible: false,
-      reason: `Skipped: ${dedupLog.skip_reason}`,
-      rawRecord,
-      dedupLog,
-    }
-  }
-
-  // 4. Canonical eligibility gate — shared helper used by BOTH lead-creation paths so they can
-  //    never drift apart. Owner canonical rule (round 39): first name AND last name AND
-  //    (email AND/OR mailing address). Names resolve first-class column → raw_data jsonb,
-  //    the same chain the pipeline processor uses, so enrichment-backfilled names count.
-  const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
-  const rawData = rawRecord.raw_data || {}
-  const eligibility = evaluateCanonicalLeadEligibility({
-    first_name:               rawRecord.first_name ?? rawData.first_name ?? rawData.firstName,
-    last_name:                rawRecord.last_name ?? rawData.last_name ?? rawData.lastName,
-    email:                    rawRecord.email ?? rawData.email,
-    phone:                    rawRecord.phone ?? rawData.phone,
-    mailing_address:          rawRecord.mailing_address ?? rawData.mailing_address ?? null,
-    mailing_address_verified: rawRecord.mailing_address_verified ?? rawData.mailing_address_verified ?? false,
-  })
-  if (!eligibility.eligible) {
-    return {
-      eligible: false,
-      reason:   eligibility.reason,
-      rawRecord,
-      dedupLog,
-    }
-  }
-
-  // 5. All checks passed - eligible for promotion
-  return {
-    eligible: true,
-    reason: 'All eligibility checks passed',
-    rawRecord,
-    dedupLog,
-  }
+  return evaluatePromotionEligibilityCore(rawRecordId)
 }

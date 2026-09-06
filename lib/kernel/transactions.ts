@@ -17,9 +17,19 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { KernelEvent }         from "@/lib/kernel/events"
-import { processKernelEvent }  from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
+// never called. Survivor: `emitKernelEvent` at lib/kernel/emit.ts:112, reached
+// through emitTransactionEvent below (fanOutKernelEvent, the earlier survivor,
+// was itself folded onto emitKernelEvent on 2026-09-03 — see the tombstone in
+// lib/kernel/event-fanout.ts). The emit adds the audit row, contact/buyer/
+// seller/listing resolution, portal updates and sequence auto-enrolment on top;
+// the direct call would have skipped all of them.
 import { isValidUUID }         from "@/lib/validations"
+import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -108,8 +118,29 @@ export interface CreateTransactionInput {
 export interface SeedMilestonesInput {
   transactionId: string
   brokerageId:   string
-  contractDate:  string
-  contractTerms: {
+  /**
+   * transactions.deal_type as it is actually written by the two creators:
+   * 'buyer' | 'seller' | 'dual' (offer-bridge) and 'purchase' | 'sale' | 'lease'
+   * (createManualTransaction). Only the SELL side changes the journey, so
+   * 'seller' and 'sale' select the seller catalog and anything else — including
+   * a legacy NULL — selects the buyer one. Never guessed from the caller.
+   */
+  dealType?:     string | null
+  /**
+   * The dates the deal already lives by, read off the transaction row by the
+   * caller. Used to FILL deadline target dates on the required milestones and to
+   * mirror them into transaction_deadlines + calendar_events — the job
+   * ensureRequiredMilestones does. Absent terms stay absent: nothing here
+   * invents a date.
+   *
+   * There is deliberately NO contractDate field any more. The old body used it
+   * for `contract_date + days_from_contract` template math that this function no
+   * longer performs (see the note on the function), and a parameter that is
+   * accepted and ignored is the same lie as a docstring describing wiring that
+   * does not exist. The one canonical contract-anchored derivation lives at
+   * lib/transactions/offer-bridge.ts:deriveContractDeadlines.
+   */
+  contractTerms?: {
     closingDate?:        string
     inspectionDeadline?: string
     appraisalDeadline?:  string
@@ -162,46 +193,42 @@ export async function emitTransactionEvent(params: {
   const { event, brokerageId, entityId, actorUserId, metadata } = params
   const entityType = params.entityType ?? "transaction"
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   entityType,
-    entity_id:     entityId,
-    event_type:    event,
-    actor_user_id: actorUserId,
-    metadata:      metadata ?? {},
-  })
-
   // ── Enrich the event with contact + transaction + listing context (shared resolver — the SAME
-  //    logic the kernel reactor uses for bare processKernelEvent callers, so there's one resolution
-  //    path, no drift) so fanOutKernelEvent can fire portal updates + sequence enrollment for both
-  //    buyer and seller without each call site re-resolving.
+  //    logic the kernel reactor uses for bare callers, so there's one resolution path, no drift)
+  //    so the fan-out can fire portal updates + sequence enrollment for both buyer and seller
+  //    without each call site re-resolving.
   const { resolveEventContacts } = await import("./resolve-event-contacts")
   const { contactId, buyerContactId, sellerContactId, listingId, transactionId } =
     await resolveEventContacts(supabase, entityType, entityId)
 
-  // Single canonical fan-out (replaces direct processKernelEvent call) —
-  // notifications + sequence auto-enroll + portal update happen here.
-  const { fanOutKernelEvent } = await import("./event-fanout")
-  await fanOutKernelEvent({
+  // Single canonical emit — the lifecycle_events row (with the actor) AND the fan-out
+  // (notifications + sequence auto-enroll + portal update) happen here. The refused-row case
+  // used to be invisible (the insert's error was never read); it is logged now.
+  const { emitKernelEvent } = await import("./emit")
+  const r = await emitKernelEvent({
     event,
     brokerageId,
     entityType,
     entityId,
+    actorUserId,
     contactId,
     buyerContactId,
     sellerContactId,
     transactionId,
     listingId,
     agentUserId: actorUserId,
-    metadata,
+    metadata:    metadata ?? {},
   })
+  if (r.error) {
+    console.error(`[emitTransactionEvent] lifecycle_events row refused for ${event} on ${entityType}:${entityId}: ${r.error}`)
+  }
 }
 
 // ─── 1. EVALUATE OFFER COMPLIANCE ────────────────────────────────────────────
 /**
  * Checks whether a compliance.passed activity exists for the offer.
  * Source of truth: activities table, entity_type='offer', entity_id=offerId,
- * activity_type='buyer.offer.compliance.passed'.
+ * activity_type=OFFER_AUDIT_EVENT.COMPLIANCE_PASSED.
  *
  * Does NOT accept/reject the offer — read-only.
  */
@@ -219,7 +246,7 @@ export async function evaluateOfferCompliance(
     .select("id, created_at")
     .eq("entity_type", "offer")
     .eq("entity_id", offerId)
-    .eq("activity_type", "buyer.offer.compliance.passed")
+    .eq("activity_type", OFFER_AUDIT_EVENT.COMPLIANCE_PASSED)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -383,9 +410,22 @@ export async function createTransactionFromCompliantAcceptedOffer(
   if (!contractDate) {
     return { success: false, error: "contract_date required to create transaction" }
   }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- earnestMoney is
+  // deliberately NOT turned into a due date here (see contractTerms below).
+  void earnestMoney
 
   try {
-    const { createTransactionFromOffer } = await import("@/lib/transactions/offer-bridge")
+    const { createTransactionFromOffer, deriveContractDeadlines } = await import("@/lib/transactions/offer-bridge")
+
+    // ONE derivation, shared with the bridge (no second copy of the date math).
+    const fallbackDeadlines = deriveContractDeadlines({
+      contractDate,
+      inspectionPeriodDays:     inspectionPeriodDays     ?? null,
+      appraisalContingencyDays: appraisalContingencyDays ?? null,
+      financingContingencyDays: financingContingencyDays ?? null,
+      offerClosingDate:         closingDate ?? null,
+    })
+
     const result = await createTransactionFromOffer({
       offerId,
       brokerageId,
@@ -393,20 +433,21 @@ export async function createTransactionFromCompliantAcceptedOffer(
       // listing-agent) → 'seller' OR 'dual' (in-house buyer on our listing). No need to declare it.
       contractDate,
       compliancePassedAt,
+      // CONTRACT-ANCHORED, NOT CLOCK-ANCHORED. These were `Date.now() + days`,
+      // i.e. "N days from whenever this button was clicked" — on any deal whose
+      // contract date is not today (a backdated execution, an inbound offer
+      // processed days later) every contingency deadline silently moved. The
+      // bridge derives the same terms from contract_date + the offer's own
+      // day columns; these stay as an explicit, TZ-safe fallback in the same
+      // frame of reference. earnestMoneyDue is NOT passed: a due date invented
+      // from "there is an earnest amount" (the old `now + 3 days`) is fabricated
+      // data — the bridge derives the real one from
+      // offers.earnest_money_due_days / earnest_money_due_at or leaves it unset.
       contractTerms: {
-        closingDate,
-        inspectionDeadline: inspectionPeriodDays
-          ? new Date(Date.now() + inspectionPeriodDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        financingDeadline: financingContingencyDays
-          ? new Date(Date.now() + financingContingencyDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        appraisalDeadline: appraisalContingencyDays
-          ? new Date(Date.now() + appraisalContingencyDays * 86400000).toISOString().split("T")[0]
-          : undefined,
-        earnestMoneyDue: earnestMoney
-          ? new Date(Date.now() + 3 * 86400000).toISOString().split("T")[0]
-          : undefined,
+        closingDate:        fallbackDeadlines.closingDate        ?? undefined,
+        inspectionDeadline: fallbackDeadlines.inspectionDeadline ?? undefined,
+        financingDeadline:  fallbackDeadlines.financingDeadline  ?? undefined,
+        appraisalDeadline:  fallbackDeadlines.appraisalDeadline  ?? undefined,
       },
     })
 
@@ -433,79 +474,145 @@ export async function createTransactionFromCompliantAcceptedOffer(
   }
 }
 
-// ─── 4. SEED TRANSACTION MILESTONES ─────────────────────────────────────────
+// ─── 4. RE-SEED A TRANSACTION'S MILESTONES (the idempotent RETRY entry point) ─
 /**
- * Seeds milestones from the brokerage default template.
- * Called by offer-bridge internally, but exposed here for idempotent retry.
- * Guards against duplicate seeding: checks if milestones already exist first.
+ * THE RETRY ENTRY POINT FOR A TRANSACTION THAT ENDED UP WITH NO MILESTONES.
+ *
+ * WHAT THIS USED TO BE, AND WHY IT IS NOT THAT ANY MORE (wave 14, C1).
+ *
+ * Its docstring said "Called by offer-bridge internally, but exposed here for
+ * idempotent retry." Neither half was true: the bridge calls
+ * lib/transactions/milestone-service.ts:seedJourneyMilestones, and nothing
+ * anywhere called this. The false comment is exactly why nobody noticed.
+ *
+ * Read side by side against the live seeder, the OLD BODY was a strictly lesser
+ * second seeder, and the verdict is from CAPABILITY, not from having no caller:
+ *
+ *   · ITS SOURCE CANNOT PRODUCE A ROW. It read transaction_milestone_templates +
+ *     milestone_template_items. Nothing in this tree WRITES either table — they
+ *     are on the known-writerless list in scripts/writerless-read-sweep.ts — so
+ *     `template?.id` is null on every live run and the function returned
+ *     `{ count: 0 }` every time. That is not an extra capability to preserve; it
+ *     is a seeder that cannot seed.
+ *   · ITS ROWS CARRIED THE IDENTITY DEFECT IT DOCUMENTED. milestone_name was the
+ *     template's DISPLAY TITLE and milestone_type was whatever the template
+ *     carried (usually null), while every completion path matches on the
+ *     canonical snake_case identity — so its milestones could never complete and
+ *     sat "pending" in the client portal forever. The catalog + identity design
+ *     (milestone-catalog.ts + milestone-identity.ts) exists to make that
+ *     impossible. Porting the template path would have re-imported the class, so
+ *     it was NOT ported: the defect is fixed at the survivor, never carried over.
+ *   · ITS IDEMPOTENCY GUARD WAS COARSER AND FAILED OPEN. `.eq("transaction_id")`
+ *     with no brokerage scope, counting ALL milestones (so one stray row muted
+ *     re-seeding entirely), and `.then(r => ({ count: r.count ?? 0 }))` DROPPED
+ *     the error — supabase-js resolves a refused query, so a denied count read
+ *     as zero and the function seeded on top of whatever was already there.
+ *   · IT ACCEPTED contractTerms AND NEVER READ THEM. The deadline capability it
+ *     advertised in its own signature did not exist.
+ *
+ * So the seeding JOB has one survivor and it is named:
+ *   lib/transactions/milestone-service.ts:seedJourneyMilestones
+ * (plus its companion ensureRequiredMilestones for the deadline-critical set +
+ * the transaction_deadlines / calendar_events mirror).
+ *
+ * WHAT SURVIVES HERE IS THE CAPABILITY THE NAME PROMISED AND NOBODY BUILT: a
+ * kernel-level, idempotent RE-SEED. It is real and it was missing. The bridge
+ * inserts the transaction row FIRST and seeds after, and seedJourneyMilestones
+ * THROWS on a refused insert — so a transaction whose seeding failed is already
+ * committed, carries zero milestones, and had no way back. A transaction with no
+ * milestones is invisible to five of the nine closing detectors (inspection
+ * window/overdue, earnest money, walkthrough, CDA), which is a deal the closing
+ * lane silently has nothing to say about.
+ *
+ * This function is now a caller of the survivor, not a second seeder: no second
+ * milestone vocabulary is introduced, and the rows it produces are the same rows
+ * the bridge would have written. It is WIRED — lib/transactions/
+ * closing-orchestration.ts:runClosingOrchestration invokes it for exactly the
+ * transactions described above, and reports what it did rather than healing
+ * silently.
+ *
+ * FAILS CLOSED. The existence check destructures `error`: if we cannot READ what
+ * is already there we do not seed, because "the read was refused" and "this deal
+ * has no milestones" are the same value in supabase-js and only one of them is a
+ * reason to write.
  */
 export async function seedTransactionMilestones(
   params: SeedMilestonesInput
-): Promise<KernelTxResult<{ count: number }>> {
-  const { transactionId, brokerageId, contractDate, contractTerms } = params
+): Promise<KernelTxResult<{
+  /** Milestones on the transaction AFTER this call. */
+  count:   number
+  /** True only when this call actually created rows. */
+  seeded:  boolean
+  /**
+   * What this call DID, as a required discriminant rather than an inference off
+   * `count`: 'already_seeded' (the deal had milestones and was left alone) or
+   * 'seeded' (this call created them). A refusal never reaches here — it comes
+   * back as success:false with the message.
+   */
+  outcome: "already_seeded" | "seeded"
+}>> {
+  const { transactionId, brokerageId, dealType, contractTerms } = params
   if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
+  if (!isValidUUID(brokerageId))   return { success: false, error: "Invalid brokerage ID" }
 
   const supabase = createServiceClient()
 
-  // Idempotency guard — don't re-seed if milestones already exist
-  const { count } = await supabase
+  // Idempotency guard, tenant-scoped and error-checked. A refused read is NOT
+  // "this transaction has no milestones" — it is "we could not look", and
+  // seeding on that basis is how a deal gets a duplicate journey.
+  const { data: existing, error: existingError } = await supabase
     .from("transaction_milestones")
-    .select("id", { count: "exact", head: true })
-    .eq("transaction_id", transactionId)
-    .then(r => ({ count: r.count ?? 0 }))
-
-  if (count > 0) {
-    return { success: true, data: { count } }
-  }
-
-  // Load default brokerage template
-  const { data: template } = await supabase
-    .from("transaction_milestone_templates")
     .select("id")
+    .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
-    .eq("is_default", true)
-    .maybeSingle()
 
-  if (!template?.id) {
-    return { success: true, data: { count: 0 } }  // no template configured — not an error
+  if (existingError) {
+    return { success: false, error: `Could not read existing milestones: ${existingError.message}` }
+  }
+  if ((existing?.length ?? 0) > 0) {
+    return { success: true, data: { count: existing!.length, seeded: false, outcome: "already_seeded" } }
   }
 
-  const { data: items } = await supabase
-    .from("milestone_template_items")
-    .select("title, description, milestone_type, days_from_contract")
-    .eq("template_id", template.id)
+  // THE JOURNEY FOLLOWS THE DEAL SIDE — same rule the bridge applies, same two
+  // catalogs. 'seller' (offer-bridge vocabulary) and 'sale' (manual-transaction
+  // vocabulary) both mean the sell side; everything else, NULL included, is the
+  // buyer journey.
+  const side = dealType === "seller" || dealType === "sale" ? "sale" : "purchase"
 
-  if (!items?.length) return { success: true, data: { count: 0 } }
+  // ensureRequiredMilestones looks the dates up by their snake_case term keys —
+  // the same normalisation the bridge does before calling it, so a milestone
+  // card can never show a different date than the transaction row it came from.
+  const normalisedTerms: Record<string, string> = {}
+  if (contractTerms?.closingDate)        normalisedTerms["closing_date"]        = contractTerms.closingDate
+  if (contractTerms?.inspectionDeadline) normalisedTerms["inspection_deadline"] = contractTerms.inspectionDeadline
+  if (contractTerms?.appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = contractTerms.appraisalDeadline
+  if (contractTerms?.financingDeadline)  normalisedTerms["financing_deadline"]  = contractTerms.financingDeadline
+  if (contractTerms?.earnestMoneyDue)    normalisedTerms["earnest_money_due"]   = contractTerms.earnestMoneyDue
 
-  const baseDate = new Date(contractDate)
-  // ⚠️ TRANSPARENCY BUG (flagged for a data-model reconciliation): milestone_name is seeded from the
-  // template item's DISPLAY TITLE (e.g. "Clear to Close", "Home Inspection"), and milestone_type is
-  // whatever the template carries (often null). But several completion paths complete a milestone by
-  // its SNAKE_CASE canonical name (cda_delivered, gift_ordered) on the milestone_name column, or by
-  // milestone_type. Those match 0 rows against this data, so the milestone never completes and the
-  // client portal shows it stuck "pending". FIX: give each milestone a canonical, brokerage-independent
-  // identifier — populate milestone_template_items.milestone_type with a MILESTONE_NAMES value, seed
-  // transaction_milestones.milestone_type from it, and complete milestones by milestone_type (keep the
-  // free-text title for display only).
-  const rows = items.map(item => ({
-    transaction_id:    transactionId,
-    brokerage_id:      brokerageId,
-    title:             item.title,
-    milestone_name:    item.title,
-    description:       item.description ?? null,
-    milestone_type:    item.milestone_type ?? null,
-    target_date:       item.days_from_contract
-      ? new Date(baseDate.getTime() + item.days_from_contract * 86400000).toISOString().split("T")[0]
-      : null,
-    is_client_visible: false,
-    status:            "pending",
-    created_at:        new Date().toISOString(),
-  }))
+  try {
+    const { seedJourneyMilestones, ensureRequiredMilestones } =
+      await import("@/lib/transactions/milestone-service")
+    // Order matters and matches the bridge: the full journey first (celebratory
+    // + deadline + compliance milestones from the canonical catalog), then the
+    // deadline-critical set, which dedupes by canonical identity and therefore
+    // FILLS dates on the journey rows rather than duplicating them.
+    await seedJourneyMilestones(transactionId, brokerageId, side)
+    await ensureRequiredMilestones(transactionId, brokerageId, normalisedTerms)
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
 
-  const { error } = await supabase.from("transaction_milestones").insert(rows)
-  if (error) return { success: false, error: error.message }
+  const { data: after, error: afterError } = await supabase
+    .from("transaction_milestones")
+    .select("id")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
 
-  return { success: true, data: { count: rows.length } }
+  if (afterError) {
+    return { success: false, error: `Seeded, but the verification read failed: ${afterError.message}` }
+  }
+
+  return { success: true, data: { count: after?.length ?? 0, seeded: true, outcome: "seeded" } }
 }
 
 // ─── 5. LINK OFFER TO TRANSACTION ────────────────────────────────────────────
@@ -676,6 +783,32 @@ export async function createManualTransaction(
   }
   try {
     const supabase = await createServiceClient()
+
+    // ── THE TRANSACTION-CREATION GATE ────────────────────────────────────────
+    // The kernel's manual creator is exported from lib/kernel/index.ts, so it is
+    // one import away from being a live door even though no surface calls it
+    // today. It gets the SAME gate as the surfaces that are live — a gate that
+    // only covers the doors currently in use is a gate with a scheduled expiry.
+    //
+    // deal_type here is the kernel's own {purchase|sale|lease|dual} spelling;
+    // the checklist speaks {buyer|seller|dual}, so it is translated rather than
+    // passed through (a wrong deal_type resolves the wrong required documents).
+    const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+    const KERNEL_DEAL_TYPE: Record<string, "buyer" | "seller" | "dual"> = {
+      purchase: "buyer", sale: "seller", lease: "dual", dual: "dual",
+    }
+    const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+      brokerageId: input.brokerageId,   // caller's session tenant
+      offerId:     null,
+      contactIds:  [input.contactId ?? null],
+      dealType:    KERNEL_DEAL_TYPE[input.dealType] ?? "dual",
+      stateCode:   input.propertyState ?? null,
+      door:        "kernel createManualTransaction",
+    })
+    if (!creationGate.allowed) {
+      return { success: false, error: creationGate.reason }
+    }
+
     const { data, error } = await supabase
       .from("transactions")
       .insert({
@@ -989,6 +1122,16 @@ export async function closeTransactionCommand(params: {
 }): Promise<KernelTxResult<void>> {
   try {
     const supabase = await createServiceClient()
+
+    // IDENTITY CLASS (m343). params.agentId is a USERS id — it is passed as
+    // agentUserId/actorUserId elsewhere in this command and used to look up
+    // agents by user_id. But activities, agent_commission_profiles and
+    // commission_calculations ALL FK AGENTS, so those writes were foreign-key
+    // violations. This command already resolved the agents row further down for
+    // lifetime touchpoints and used it only there — the seventh instance in this
+    // codebase of the class being resolved correctly in one spot and ignored in
+    // the next. Resolved ONCE, at the top, for every agents-class write below.
+    const agentRecordId = await resolveUserIdToAgentRecord(params.agentId, params.brokerageId)
     const today = new Date().toISOString().slice(0, 10)
     const nowIso = new Date().toISOString()
 
@@ -1019,36 +1162,46 @@ export async function closeTransactionCommand(params: {
     const activityWrites: any[] = []
     if (txBefore?.buyer_contact_id) {
       activityWrites.push(
-        supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
-          contact_id:     txBefore.buyer_contact_id,
-          transaction_id: params.transactionId,
-          activity_type:  "transaction_closed",
-          title:          "Transaction Closed",
-          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
-          status:         "completed",
-          priority:       "high",
-          entity_type:    "transaction",
-          created_at:     nowIso,
-        })
+        (async () => {
+          const { error: closedActivityError } = await supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     txBefore.buyer_contact_id,
+            transaction_id: params.transactionId,
+            activity_type:  "transaction_closed",
+            title:          "Transaction Closed",
+            description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+            status:         "completed",
+            priority:       "high",
+            entity_type:    "transaction",
+            created_at:     nowIso,
+          })
+          if (closedActivityError) {
+            console.error("[closeTransaction] buyer transaction_closed activity REJECTED — the CRM Activity tab will not show the close:", closedActivityError.message)
+          }
+        })()
       )
     }
     if (txBefore?.seller_contact_id && txBefore.seller_contact_id !== txBefore.buyer_contact_id) {
       activityWrites.push(
-        supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
-          contact_id:     txBefore.seller_contact_id,
-          transaction_id: params.transactionId,
-          activity_type:  "transaction_closed",
-          title:          "Transaction Closed",
-          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
-          status:         "completed",
-          priority:       "high",
-          entity_type:    "transaction",
-          created_at:     nowIso,
-        })
+        (async () => {
+          const { error: closedActivityError } = await supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     txBefore.seller_contact_id,
+            transaction_id: params.transactionId,
+            activity_type:  "transaction_closed",
+            title:          "Transaction Closed",
+            description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+            status:         "completed",
+            priority:       "high",
+            entity_type:    "transaction",
+            created_at:     nowIso,
+          })
+          if (closedActivityError) {
+            console.error("[closeTransaction] seller transaction_closed activity REJECTED — the CRM Activity tab will not show the close:", closedActivityError.message)
+          }
+        })()
       )
     }
 
@@ -1079,8 +1232,9 @@ export async function closeTransactionCommand(params: {
     // the seller AND buyer portals show "Closed!" + "Welcome to your
     // lifetime portal" cards immediately.
     try {
-      const { fanOutKernelEvent } = await import("./event-fanout")
-      await fanOutKernelEvent({
+      // Row already written in the Promise.all above → skipInsert (fan-out only).
+      const { emitKernelEvent } = await import("./emit")
+      await emitKernelEvent({
         event:           KernelEvent.TRANSACTION_CLOSED,
         brokerageId:     params.brokerageId,
         entityType:      "transaction",
@@ -1091,9 +1245,10 @@ export async function closeTransactionCommand(params: {
         sellerContactId: txBefore?.seller_contact_id ?? undefined,
         agentUserId:     params.agentId,
         metadata:        { reason: params.reason ?? null, close_date: today },
+        skipInsert:      true,
       })
     } catch (e) {
-      console.error("[closeTransactionCommand] fanOutKernelEvent failed", e)
+      console.error("[closeTransactionCommand] emitKernelEvent failed", e)
     }
 
     // ── Propagate close to related entities ────────────────────────────────
@@ -1129,12 +1284,29 @@ export async function closeTransactionCommand(params: {
     if (txBefore?.buyer_contact_id)  lifetimeContactIds.push(txBefore.buyer_contact_id)
     if (txBefore?.seller_contact_id) lifetimeContactIds.push(txBefore.seller_contact_id)
     if (lifetimeContactIds.length > 0) {
-      await supabase
+      // THE ERROR IS NOW READ — the comment below already named this exact defect
+      // ("this write swallows its result, so a refusal would look exactly like a
+      // success and closed deals would stop becoming lifetime customers in
+      // silence") and the `.then(() => null, () => null)` that caused it is gone.
+      // Not failed over: the transaction really did close and unwinding it over a
+      // downstream promotion would be the larger harm.
+      const { error: lifetimePromotionError } = await supabase
         .from("contacts")
-        .update({ contact_type: "lifetime_customer", updated_at: nowIso })
+        // BOTH COLUMNS, deliberately. `contacts_lifetime_consistent` (dropped by m539
+        // along with the `lifetime` spelling it policed) said a lifetime-typed contact
+        // must agree with the lifecycle column. m539 does not re-point that CHECK onto
+        // the survivor, so the invariant is kept HERE instead, at the writer, and
+        // asserted by scripts/contact-vocabulary-guard.ts. (This write USED TO swallow
+        // its result — see the note above; it no longer does.)
+        .update({ contact_type: LIFETIME_CUSTOMER_TYPE, lifecycle_state: LIFETIME_CUSTOMER_TYPE, updated_at: nowIso })
         .in("id", lifetimeContactIds)
         .eq("brokerage_id", params.brokerageId)
-        .then(() => null, () => null)
+      if (lifetimePromotionError) {
+        console.error(
+          `[transactions] lifetime-customer promotion REFUSED for contacts ${lifetimeContactIds.join(", ")}:`,
+          lifetimePromotionError.message,
+        )
+      }
     }
 
     // 3. Commission records — recalculate + upsert transaction_commissions rows.
@@ -1197,20 +1369,23 @@ export async function closeTransactionCommand(params: {
     //    the task; we just need to plant the prompt here.
     try {
       for (const contactId of lifetimeContactIds) {
-        await supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       params.agentId,
-          contact_id:     contactId,
-          transaction_id: params.transactionId,
-          activity_type:  "closing_gift_due",
-          title:          "Send closing gift",
-          description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
-          status:         "pending",
-          priority:       "high",
-          entity_type:    "contact",
-          scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          created_at:     nowIso,
-        }).then(() => null, () => null)
+        await bestEffort(
+          supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     contactId,
+            transaction_id: params.transactionId,
+            activity_type:  "closing_gift_due",
+            title:          "Send closing gift",
+            description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
+            status:         "pending",
+            priority:       "high",
+            entity_type:    "contact",
+            scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            created_at:     nowIso,
+          }),
+          "the transaction is already CLOSED and error-checked above; a gift-reminder task is a nudge, and one missing nudge must not report a completed closing as failed",
+        )
       }
     } catch {}
 
@@ -1221,7 +1396,12 @@ export async function closeTransactionCommand(params: {
       if (reviewContactId) {
         await supabase.from("review_requests").insert({
           brokerage_id: params.brokerageId,
-          agent_id:     params.agentId,
+          // AGENTS id since m366. This was params.agentId (users-class), which
+          // was correct while the column FK'd users and became an FK violation
+          // the moment it did not — and the write is double-swallowed by the
+          // .then(null, null) below and the surrounding catch, so the post-close
+          // review request simply stopped being scheduled, silently.
+          agent_id:     agentRecordId,
           contact_id:   reviewContactId,
           status:       "scheduled",
           created_at:   nowIso,
@@ -1299,6 +1479,16 @@ export async function recalculateCommissionStateCommand(params: {
   try {
     const supabase = await createServiceClient()
 
+    // IDENTITY CLASS (m343). params.agentId is a USERS id — it is passed as
+    // agentUserId/actorUserId elsewhere in this command and used to look up
+    // agents by user_id. But activities, agent_commission_profiles and
+    // commission_calculations ALL FK AGENTS, so those writes were foreign-key
+    // violations. This command already resolved the agents row further down for
+    // lifetime touchpoints and used it only there — the seventh instance in this
+    // codebase of the class being resolved correctly in one spot and ignored in
+    // the next. Resolved ONCE, at the top, for every agents-class write below.
+    const agentRecordId = await resolveUserIdToAgentRecord(params.agentId, params.brokerageId)
+
     // Load transaction purchase_price + agent commission profile
     const [{ data: tx }, { data: profile }] = await Promise.all([
       supabase
@@ -1309,7 +1499,7 @@ export async function recalculateCommissionStateCommand(params: {
       supabase
         .from("agent_commission_profiles")
         .select("split_percent, cap_amount, transaction_fee, royalty_percent")
-        .eq("agent_id", params.agentId)
+        .eq("agent_id", agentRecordId)
         .eq("brokerage_id", params.brokerageId)
         .eq("is_active", true)
         .order("effective_date", { ascending: false })
@@ -1331,14 +1521,43 @@ export async function recalculateCommissionStateCommand(params: {
     const agentNet         = agentGross - txFee - royaltyFee
     const brokerageNet     = grossCommission - agentNet
 
-    // Upsert transaction_commissions rows
-    await supabase.from("transaction_commissions").upsert([
+    // Upsert transaction_commissions rows. THIS IS THE DEAL STAMP — the record
+    // retention keeps for seven years and the numbers the agent is paid on. The
+    // command returned { success: true } with freshly computed grossCommission /
+    // agentNet / brokerageNet whatever the write did, so a refusal handed the
+    // caller a recalculation that exists only in memory.
+    //
+    // 🐛 IDENTITY CLASS ON recipient_id — RESOLVED FROM THE READERS, NOT GUESSED.
+    // This wrote `params.agentId`, which the m343 note at the top of this command
+    // says is a USERS id. `transaction_commissions.recipient_id` has NO foreign
+    // key (live pg_constraint on the table carries only tc_transaction_id_fkey
+    // and the brokerage FK), so nothing in the database pins the class and no
+    // error was ever raised — the wrong id just sat on the seven-year deal stamp.
+    // THE READERS SETTLE IT, and they are unanimous that for
+    // recipient_type = 'agent' this is an AGENTS id:
+    //   · lib/commission/ledger-sync.ts:152 syncStampToAgentLedger matches
+    //     `agent_commissions.agent_id` (a live FK → agents(id)) against
+    //     stamp.recipient_id;
+    //   · lib/commission/ledger-sync.ts:188 syncAgentLedgerToStamp writes back
+    //     `.eq("recipient_id", ledger.agent_id)` from that same agents-class
+    //     column;
+    //   · that file's own header (line 36) states the rule: "recipient_id →
+    //     agents(id) in practice, NO FK".
+    // agents.id and users.id are DISJOINT (§3), so a users id here matched NO
+    // agent_commissions row: every STAMP → PAYABLE sync silently synced 0 rows
+    // and the two commission ledgers could never agree — the exact divergence
+    // ledger-sync.ts was written to prevent. `agentRecordId` is already resolved
+    // at the top of this command through lib/kernel/agent-identity-resolver.ts.
+    if (!agentRecordId) {
+      return { success: false, error: "No agents record resolves for this user in this brokerage — the commission stamp was NOT written rather than stamped with an id no reader can match" }
+    }
+    const { error: stampError } = await supabase.from("transaction_commissions").upsert([
       {
         transaction_id:    params.transactionId,
         brokerage_id:      params.brokerageId,
         recipient_type:    "agent",
         recipient_name:    "Agent",
-        recipient_id:      params.agentId,
+        recipient_id:      agentRecordId,
         commission_type:   "commission_split",
         rate_percentage:   splitPercent,
         calculated_amount: agentNet,
@@ -1358,12 +1577,15 @@ export async function recalculateCommissionStateCommand(params: {
         updated_at:        new Date().toISOString(),
       },
     ], { onConflict: "transaction_id,recipient_type" })
+    if (stampError) {
+      return { success: false, error: `Could not persist the recalculated commission stamp: ${stampError.message}` }
+    }
 
     // Write commission_calculations record for audit trail
     await supabase.from("commission_calculations").insert({
       transaction_id:       params.transactionId,
       brokerage_id:         params.brokerageId,
-      agent_id:             params.agentId,
+      agent_id:             agentRecordId,
       total_commission:     grossCommission,
       // commission_calculations has no gross_commission/agent_commission columns —
       // fold into the existing breakdown_json.

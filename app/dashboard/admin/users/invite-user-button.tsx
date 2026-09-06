@@ -21,18 +21,34 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Plus, CheckCircle2 } from "lucide-react"
-import { invitableRolesForTier } from "@/lib/kernel/tier-role-matrix"
+import { seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
 
 interface InviteUserButtonProps {
   callerRole: string
   brokerageId?: string | null
   /** brokerages.plan_tier of the caller's tenant — drives the invitable-role list. */
   tier?: string | null
+  /**
+   * The user_type values the DATABASE can actually store
+   * (users_user_type_check), read server-side and passed down.
+   *
+   * Without it this menu can offer a user type the column rejects — and an
+   * INSERT naming a value outside that CHECK is refused ENTIRELY (CLAUDE.md §3),
+   * so the invite fails with a constraint violation instead of a teammate.
+   * `broker_admin` is exactly that value until m530 is applied.
+   *
+   * Passed as a prop rather than imported because the generated vocabulary cache
+   * is ~1600 lines and this is a client component; only the ~15 strings cross.
+   * Omitted ⇒ the full product menu, which is the pre-existing behaviour.
+   */
+  storableUserTypes?: readonly string[] | null
 }
 
 const ROLE_LABELS: Record<string, string> = {
   agent: "Agent",
   broker: "Broker",
+  broker_admin: "Broker Admin",
+  broker_owner: "Broker Owner",
   admin: "Admin",
   tc: "Transaction Coordinator",
   isa: "ISA",
@@ -43,18 +59,23 @@ const ROLE_LABELS: Record<string, string> = {
   // flow with a lender category. Owner model, round 16.)
 }
 
-// Roles are OPEN on every tier (solo just has no broker) — SEATS are the
-// constraint: Solo 2 · Team 5 · Brokerage/Multi unlimited. The canonical
-// matrix + seat caps live in lib/kernel/tier-role-matrix.ts and the server
-// action enforces both, so these notes are honest, not just cosmetic.
+// EVERY tier seats EVERY user type — the tier's only say is HOW MANY (owner,
+// 2026-08-22: a broker on a team plan "takes up 3 of 5 seats"). So these notes
+// quote seats and never claim a role is withheld. The canonical matrix + caps
+// live in lib/kernel/tier-role-matrix.ts and the server action enforces them, so
+// these notes are honest, not just cosmetic.
 const TIER_LOCK_NOTES: Record<string, string> = {
   solo_agent:
-    "Your Solo plan includes 2 seats (no broker role). Vendors never use a seat. Upgrade to Team for 5 seats.",
+    "Your Solo plan includes 2 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Team for 5.",
   team:
-    "Your Team plan includes 5 seats. Vendors never use a seat. Upgrade to Brokerage for unlimited seats.",
+    "Your Team plan includes 5 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Brokerage for 50.",
+  brokerage:
+    "Your Brokerage plan includes 50 seats — spend them on any roles you like. Vendors never use a seat. Upgrade to Multi-Location for unlimited.",
+  multi_location:
+    "Your Multi-Location plan includes unlimited seats. Vendors never use a seat.",
 }
 
-export function InviteUserButton({ callerRole, brokerageId, tier }: InviteUserButtonProps) {
+export function InviteUserButton({ callerRole, brokerageId, tier, storableUserTypes }: InviteUserButtonProps) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [inviting, setInviting] = useState(false)
@@ -69,7 +90,7 @@ export function InviteUserButton({ callerRole, brokerageId, tier }: InviteUserBu
   })
 
   const isSuperadmin = callerRole === "superadmin"
-  const availableRoles = invitableRolesForTier(tier).map((role) => ({
+  const availableRoles = seatableUserTypes(tier, storableUserTypes).map((role) => ({
     value: role,
     label: ROLE_LABELS[role] ?? role,
   }))

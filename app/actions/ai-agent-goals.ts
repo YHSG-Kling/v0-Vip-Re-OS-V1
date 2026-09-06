@@ -6,6 +6,7 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { AGENT_GOAL_TYPES, isAgentGoalType, type AgentGoalType } from "@/lib/goals/goal-types"
 
 /**
  * AI Agent Goals System
@@ -61,6 +62,17 @@ export async function upsertAgentGoal(params: {
 }) {
   if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
+  }
+
+  // GATE THE VOCABULARY BEFORE THE WRITE. goalType was typed `string` and passed
+  // straight through, so a caller — including the shipped goals page — could send
+  // a value agent_goals_goal_type_check refuses, turning a saved goal into a
+  // 23514 nobody surfaced. Refusing here names the problem instead.
+  if (!isAgentGoalType(params.goalType)) {
+    return {
+      success: false,
+      error: `Unknown goal type "${params.goalType}". Valid types: ${AGENT_GOAL_TYPES.join(", ")}`,
+    }
   }
 
   const supabase = await createClient()
@@ -318,6 +330,9 @@ export async function syncGoalCurrentValues(params: {
   const yearEnd   = `${year}-12-31`
 
   try {
+    // params.agentId is an AGENTS id (every caller passes ctx.agentId) and all
+    // five counters below are now agents-class, review_requests included — so
+    // the reverse users lookup this count used to need is gone.
     const [
       { count: transactionCount },
       { data: commissionData },
@@ -365,12 +380,17 @@ export async function syncGoalCurrentValues(params: {
 
     const totalGCI = commissionData?.reduce((sum, r) => sum + (r.agent_commission ?? 0), 0) ?? 0
 
-    const liveValues: Record<string, number> = {
-      transactions:      transactionCount   ?? 0,
-      gci:               totalGCI,
-      listings_taken:    listingCount       ?? 0,
+    // KEYED ON THE CANONICAL VOCABULARY. Two of these five used to be spelled
+    // `transactions` and `gci`, which agent_goals_goal_type_check does not
+    // admit — so those two updates matched zero rows on every run and the
+    // corresponding goals sat frozen at their initial value forever, looking
+    // like an agent who had closed nothing all year.
+    const liveValues: Partial<Record<AgentGoalType, number>> = {
+      transactions_closed: transactionCount ?? 0,
+      gross_commission:    totalGCI,
+      listings_taken:      listingCount     ?? 0,
       referrals_generated: referralCount    ?? 0,
-      reviews_requested: reviewCount        ?? 0,
+      reviews_requested:   reviewCount      ?? 0,
     }
 
     // Batch update current_value for each goal type that has live data

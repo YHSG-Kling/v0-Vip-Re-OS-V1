@@ -1,8 +1,9 @@
 // app/api/cron/queue-drain/route.ts
 //
-// UNIFIED QUEUE DRAIN — closes four "queue with no drain" bugs from the
-// write-only-ledger burn-down. Four tables accumulated pending rows that no
-// loop ever serviced:
+// UNIFIED QUEUE DRAIN — closes five "queue with no drain" bugs. Four came from
+// the write-only-ledger burn-down; the fifth (embedding_queue) was found in the
+// orphan-export burn-down, where the drain turned out to have been WRITTEN and
+// never called. Five tables accumulated pending rows that no loop ever serviced:
 //
 //   1. email_queue            — queued by kernel reporting/financial, video
 //                               distribution, thank-you notes, source-analytics
@@ -40,6 +41,16 @@
 //                               completed with a link to the enrollment. When no
 //                               sequence resolves, the row is paused with the
 //                               reason — content is NEVER invented.
+//   5. embedding_queue        — written by app/actions/knowledge/search.ts as the
+//                               fallback when the inline embed THROWS. Drained
+//                               through lib/knowledge/embedding-service.ts
+//                               :processPendingEmbeddings, which owns the
+//                               three-attempt ladder. Until this was wired, a
+//                               help topic or knowledge article whose embedding
+//                               failed kept a NULL content_embedding forever and
+//                               was invisible to RAG — the AI answered without
+//                               it, with no sign anything was missing. See the
+//                               section header at drainEmbeddingQueue below.
 //
 // Every 5 minutes via the dispatcher; per-row error isolation; per-queue counts
 // in the response. Owner: cron_manager (CRON_MANAGER in manager-registry).
@@ -160,7 +171,11 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
       // no second suppression implementation here.
       const result = await dispatchEmail({
         brokerageId: row.brokerage_id,
-        from: process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com",
+        // No invented sender — the queue drain refuses rather than sending
+        // from a domain nobody owns (see lib/providers/outbound-sender).
+        from: (await import("@/lib/providers/outbound-sender"))
+          .formatSenderOrUndefined(await (await import("@/lib/providers/outbound-sender"))
+            .resolveOutboundSender(supabase as any, row.brokerage_id)),
         to: toEmail,
         subject: row.subject ?? "(no subject)",
         html: looksHtml ? body : body.replace(/\n/g, "<br>"),
@@ -553,6 +568,53 @@ async function drainDripCampaigns(supabase: Svc): Promise<QueueCounts> {
   return counts
 }
 
+// ─── 5. embedding_queue ───────────────────────────────────────────────────────
+//
+// THE FIFTH "QUEUE WITH NO DRAIN", found in the orphan-export burn-down and
+// admitted in the source that writes it: app/actions/knowledge/search.ts:316
+// reads, verbatim, "Embed SYNCHRONOUSLY so the article is immediately
+// retrievable by the AI (the embedding_queue has no cron drain); queue as a
+// durable fallback."
+//
+// So the fallback was not durable. `queueForEmbedding` is reached exactly when
+// the inline embed THREW — the gateway was down, the key was rotated, the text
+// was rejected — and the row it wrote then sat at status 'pending' forever. The
+// consequence is quiet and specific: that help topic or knowledge article has a
+// NULL content_embedding, so match_help_topics / match_knowledge_articles cannot
+// return it, so ragSearch answers the agent WITHOUT it and sounds just as
+// confident as if it had. A knowledge base that silently drops the articles
+// whose embedding failed is worse than one that is empty.
+//
+// The drain already existed and had never been called:
+// lib/knowledge/embedding-service.ts:168 `processPendingEmbeddings(limit)`. It
+// marks each row 'processing' with attempts+1, re-embeds through the canonical
+// per-source updater (updateHelpTopicEmbedding / updateArticleEmbedding), and
+// completes it — or, on failure, returns it to 'pending' until the third attempt
+// and then marks it 'failed'. That retry ladder is why this belongs here rather
+// than being retried inline at the write site.
+//
+// Batch of 25 per 5-minute cycle: each row costs one embed call plus a write, and
+// the ladder means a genuinely broken row leaves the queue after three cycles
+// instead of being retried forever.
+const EMBEDDING_DRAIN_LIMIT = 25
+
+async function drainEmbeddingQueue(): Promise<QueueCounts> {
+  const counts = emptyCounts()
+  const { processPendingEmbeddings } = await import("@/lib/knowledge/embedding-service")
+  const result = await processPendingEmbeddings(EMBEDDING_DRAIN_LIMIT)
+  counts.processed = result.processed + result.failed
+  counts.sent = result.processed
+  counts.failed = result.failed
+  if (result.failed > 0) {
+    // Named out loud in the cron metadata rather than buried: a non-zero failure
+    // count here means articles the AI cannot retrieve.
+    counts.errors.push(
+      `embedding_queue: ${result.failed} item(s) failed to embed — those articles stay unretrievable by RAG until they succeed`,
+    )
+  }
+  return counts
+}
+
 // ─── Route ───────────────────────────────────────────────────────────────────
 
 export async function GET(request: Request) {
@@ -587,6 +649,7 @@ export async function GET(request: Request) {
     const push = await safe("push_notification_queue", () => drainPushQueue(supabase))
     const tasks = await safe("orchestrator_tasks", () => drainOrchestratorTasks(supabase))
     const drips = await safe("drip_campaigns", () => drainDripCampaigns(supabase))
+    const embeddings = await safe("embedding_queue", () => drainEmbeddingQueue())
 
     const queues = {
       email_queue: { ...email, sent: email.sent },
@@ -594,8 +657,10 @@ export async function GET(request: Request) {
       push_notification_queue: { ...push },
       orchestrator_tasks: { ...tasks, completed: tasks.sent },
       drip_campaigns: { ...drips, enrolled: drips.sent, paused_no_sequence: drips.failed },
+      embedding_queue: { ...embeddings, embedded: embeddings.sent },
     }
-    const processed = email.processed + push.processed + tasks.processed + drips.processed
+    const processed =
+      email.processed + push.processed + tasks.processed + drips.processed + embeddings.processed
 
     await recordCronSuccessAction({
       context_id: contextId,

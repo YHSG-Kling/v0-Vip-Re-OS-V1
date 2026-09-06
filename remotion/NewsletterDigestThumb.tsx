@@ -21,7 +21,8 @@
  * because renderStill needs a registered composition to anchor on.
  */
 import React from "react"
-import { AbsoluteFill, Img } from "remotion"
+import { AbsoluteFill, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export interface NewsletterDigestThumbProps {
   agentName:     string
@@ -43,16 +44,21 @@ export interface NewsletterDigestThumbProps {
 export const NewsletterDigestThumb: React.FC<NewsletterDigestThumbProps> = ({
   agentName, agentPhotoUrl, personaHook, subject, brand,
 }) => {
+  // The photo pane is a square the full height of the card. It used to be
+  // `width: 630, height: 630` — the registered height typed out by hand, so a
+  // re-registration would have overflowed or letterboxed it in silence
+  // (test:remotion-setup §5 now refuses that literal). Read the geometry.
+  const { height } = useVideoConfig()
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <div style={{ display: "flex", height: "100%", width: "100%", alignItems: "stretch" }}>
         {/* Left — agent photo, 1:1 square */}
         <div style={{
-          width: 630, height: 630, position: "relative",
+          width: height, height, position: "relative",
           backgroundColor: brand.accentColor, flexShrink: 0,
         }}>
           {agentPhotoUrl ? (
-            <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           ) : (
             <div style={{
               width: "100%", height: "100%", display: "flex",

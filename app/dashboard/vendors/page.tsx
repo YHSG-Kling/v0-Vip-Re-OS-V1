@@ -7,25 +7,33 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { VendorDirectoryClient } from "./vendor-directory-client"
 import {
   PremiumPlacementPanel,
-  type DirectoryEntry,
   type PlacementInvoice,
 } from "./premium-placement-panel"
 import {
   VendorChargesPanel,
   type VendorChargeInvoice,
 } from "./vendor-charges-panel"
+import {
+  VendorBillsPanel,
+  type VendorBillInvoice,
+} from "./vendor-bills-panel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { canInviteVendors, findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 import { readW9StatusMap, type W9Status } from "@/lib/vendors/w9"
 import {
   searchVendors,
   getAllVendorBookings,
   getCompletedBookingsForRating,
-  getVendorCostComparison,
   getAgentAssignedVendors,
-  getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
-import { Store, FileText, Star, CheckCircle2 } from "lucide-react"
+import { Store, FileText, Star, CheckCircle2, KeyRound, Layers } from "lucide-react"
+import { VendorAccessPanel } from "./vendor-access-panel"
+import { BenchCoveragePanel } from "./bench-coverage-panel"
+import { VendorPortalInvitePanel } from "./vendor-portal-invite-panel"
+import { VendorPlanCataloguePanel } from "./vendor-plan-catalogue-panel"
+import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   PartnerCommandStrip,
   VendorPerformanceRadar,
@@ -35,15 +43,53 @@ import {
   VendorSlaPanel,
   AiVendorInsightsPanel,
 } from "@/app/dashboard/partners/components/os"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
-export default async function VendorsPage() {
+// The outer tab roster below, so `?tab=` can only land on a tab that exists.
+const VENDOR_PAGE_TABS = ["marketplace", "assigned", "preferred", "reviews", "client-access", "plans"] as const
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const first = (raw: string | string[] | undefined): string | undefined => (Array.isArray(raw) ? raw[0] : raw)
+
+/**
+ * `?vendor=<vendors.id>` — a per-vendor deep-link onto the marketplace tab. The
+ * deleted VendorDirectoryPanel recorded that "no page reads a ?vendor= query"
+ * (its tombstone in app/dashboard/partners/components/os); this is the reader.
+ * The id is uuid-checked here so the client never sees an unvalidated value;
+ * whether it names a vendor THIS brokerage can see is decided by the directory
+ * listing the client already holds (tenant-scoped by searchVendors), not by the
+ * URL.
+ */
+export default async function VendorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ vendor?: string | string[]; tab?: string | string[] }>
+}) {
+  const params = await searchParams
+  const vendorParam = first(params.vendor)
+  const initialVendorId = vendorParam && UUID_RE.test(vendorParam) ? vendorParam : null
+  const tabParam = first(params.tab)
+  // A vendor deep-link lands on the marketplace tab whatever ?tab= says — the
+  // directory it highlights lives there.
+  const initialTab: (typeof VENDOR_PAGE_TABS)[number] = initialVendorId
+    ? "marketplace"
+    : (VENDOR_PAGE_TABS as readonly string[]).includes(tabParam ?? "")
+      ? (tabParam as (typeof VENDOR_PAGE_TABS)[number])
+      : "marketplace"
+
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("id, user_type, brokerage_id")
@@ -61,8 +107,8 @@ export default async function VendorsPage() {
     assignedVendors,
     preferredVendors,
     deliverables,
-    directoryEntries,
     placementInvoices,
+    listings,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
@@ -71,16 +117,25 @@ export default async function VendorsPage() {
       .from("transactions")
       .select("id, property_address, stage")
       .eq("brokerage_id", profile.brokerage_id)
-      .in("status", ["active", "pending"])
+      .in("status", [...TRANSACTION_STATUSES_OPEN])
       .order("created_at", { ascending: false })
       .limit(50)
       .then(r => r.data || []),
     getAgentAssignedVendors(50),
-    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
+    // ONE VENDOR SYSTEM (m355): the placement flags are columns on the vendor
+    // row, so the Preferred tab reads them here instead of joining a second
+    // table. display_priority leads the sort — that is what a brokerage's
+    // vendor actually paid for, and ordering by rating alone meant a paid
+    // placement changed nothing about where the vendor appeared.
     supabase
       .from("vendors")
-      .select("id, name, phone, email, website, category, notes, rating, brokerage_id")
+      // compliance_credentials carries the certificate of insurance (m376). The
+      // directory reads it so the bench itself distinguishes insured / expiring
+      // / lapsed / never-checked — before an agent refers the vendor to a client,
+      // not the morning after the nightly sweep suspends them.
+      .select("id, name, phone, email, website, category, notes, rating, brokerage_id, preferred, display_priority, visible_in_portal, compliance_credentials")
       .eq("brokerage_id", profile.brokerage_id)
+      .order("display_priority", { ascending: false })
       .order("rating", { ascending: false, nullsFirst: false })
       .then(r => r.data || []),
     // Vendor deliverables — client_documents with doc_type = 'vendor_deliverable'
@@ -92,17 +147,9 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => r.data || []),
-    // Premium placement (monetization): curated vendor_directory rows carry the
-    // paid placement flags {preferred, display_priority}; the vendor_invoices
-    // ledger holds the placement charges. See lib/vendors/premium-placement.ts.
-    supabase
-      .from("vendor_directory")
-      .select("id, name, category, preferred, display_priority")
-      .eq("brokerage_id", profile.brokerage_id)
-      .order("display_priority", { ascending: false })
-      .order("name", { ascending: true })
-      .limit(100)
-      .then(r => (r.data || []) as DirectoryEntry[]),
+    // Premium placement charges live in the vendor_invoices ledger; the paid
+    // flags themselves are on the vendor row read above.
+    // See lib/vendors/premium-placement.ts.
     supabase
       .from("vendor_invoices")
       .select("id, invoice_number, status, total_amount, due_date, paid_at, line_items")
@@ -111,6 +158,18 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => (r.data || []) as PlacementInvoice[]),
+    // LISTING-level vendor work. vendor_bookings.listing_id has always existed
+    // and the kernel has always been able to write it, but every booking surface
+    // on the platform only ever offered a TRANSACTION — so pre-contract work on a
+    // listing (staging, photography, pre-list inspection, cleaning) had nowhere
+    // to be booked against the property it was for.
+    supabase
+      .from("listings")
+      .select("id, address, status")
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(r => r.data || []),
   ])
 
   // General tenant→vendor charges (billed_to='vendor' — migration 1104). Safe
@@ -136,6 +195,23 @@ export default async function VendorsPage() {
         } as VendorChargeInvoice
       })
     )
+
+  // VENDOR BILLS — the BROKERAGE→VENDOR payable lane (billed_to='brokerage'):
+  // invoices vendors submitted for booked work, which the brokerage owes. Produced
+  // by app/actions/multi-persona.ts:submitVendorInvoice from the vendor-bookings
+  // panel. Marking one paid (vendor-payments.ts:markInvoicePaid) is the only thing
+  // that mints the vendor_earnings row the payout lane draws on, so without this
+  // list the loop had no consumer. `error` is read deliberately — supabase-js
+  // resolves a refused query, and rendering "no bills awaiting payment" over a
+  // denied read would hide real payables.
+  const { data: vendorBillRows, error: vendorBillsErr } = await supabase
+    .from("vendor_invoices")
+    .select("id, vendor_id, invoice_number, status, total_amount, due_date, paid_at, notes")
+    .eq("brokerage_id", profile.brokerage_id)
+    .eq("billed_to", "brokerage")
+    .order("created_at", { ascending: false })
+    .limit(100)
+  const vendorBills: VendorBillInvoice[] = vendorBillsErr ? [] : ((vendorBillRows ?? []) as VendorBillInvoice[])
 
   // Round 37 — agents charge THEIR vendors: resolve the viewer's team scope and
   // (for agents) which vendors are attributed to them (migration 1106 columns —
@@ -171,6 +247,121 @@ export default async function VendorsPage() {
     createServiceClient(), profile.brokerage_id
   ).catch(() => new Map<string, W9Status>())
 
+  // CLIENT ACCESS GRANTS (vendor_contact_assignments). The read gate
+  // lib/vendor/assignment-access.ts has always enforced these rows; until now
+  // nothing on the platform could create one, so every vendor was locked out by
+  // an empty table rather than by a decision. The list action is brokerage-scoped
+  // server-side; the contact picker below is scoped again here.
+  const accessRes = await listVendorAssignmentsForBrokerageAction()
+  const accessAssignments = accessRes.ok ? accessRes.rows : []
+  const accessLoadError = accessRes.ok ? null : accessRes.error
+  const { data: grantableContacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, email")
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("last_name", { ascending: true })
+    .limit(500)
+  const contactOptions = (grantableContacts ?? []).map((c: any) => ({
+    id: c.id as string,
+    name: [c.first_name, c.last_name].filter(Boolean).join(" ") || (c.email as string) || "Unnamed contact",
+  }))
+  const vendorOptions = (preferredVendors ?? []).map((v: any) => ({
+    id: v.id as string,
+    name: (v.name as string) ?? "Unnamed vendor",
+  }))
+  const canRevokeAccess = isAdminOrBroker({ user_type: profile.user_type ?? "" })
+
+  // PLATFORM INVITATIONS — the front door for the vendor portal. vendor_invitations
+  // has had a writer (app/actions/vendor-invite.ts) and an acceptance page
+  // (/vendor-invite/[token]) since round 15, but NO surface ever called the
+  // writer: the invite could only be created by hand, so the vendor portal was
+  // reachable in principle and unreachable in practice. This reads the state the
+  // panel below acts on. `error` is read deliberately — an RLS refusal must not
+  // render as "nobody has been invited".
+  // accepted_by / accepted_at: WHO claimed the login and when. `accepted_by` is
+  // a USERS-class id — no FK in scripts/schema-fk-map.ts, and the one writer
+  // (app/actions/vendor-invite.ts acceptVendorInviteAction) stamps
+  // `user.id` from auth.getUser(): the accepting LOGIN, not a vendors.id.
+  // Written on every acceptance, read by nothing until here.
+  const { data: inviteRows, error: inviteErr } = await supabase
+    .from("vendor_invitations")
+    .select("id, vendor_id, status, email, expires_at, created_at, accepted_by, accepted_at")
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(500)
+  // Which vendors already hold a portal login. vendors has NO user_id column —
+  // the user_role_assignments row IS the link (see the superadmin vendor board).
+  const svcForLinks = createServiceClient()
+  const { data: vendorLinkRows } = await svcForLinks
+    .from("user_role_assignments")
+    .select("user_id, vendor_id")
+    .eq("brokerage_id", profile.brokerage_id)
+    .not("vendor_id", "is", null)
+  const linkedUserIds = [...new Set((vendorLinkRows ?? []).map((r: any) => r.user_id as string))]
+  const { data: linkedUsers } = linkedUserIds.length
+    ? await svcForLinks.from("users").select("id, email").in("id", linkedUserIds)
+    : { data: [] as any[] }
+  const emailByUserId = new Map<string, string>(
+    (linkedUsers ?? []).map((u: any) => [u.id as string, (u.email as string) ?? "linked account"])
+  )
+  const linkedEmailByVendor = new Map<string, string>()
+  for (const l of (vendorLinkRows ?? []) as any[]) {
+    if (l.vendor_id && !linkedEmailByVendor.has(l.vendor_id)) {
+      linkedEmailByVendor.set(l.vendor_id, emailByUserId.get(l.user_id) ?? "linked account")
+    }
+  }
+
+  // Resolve the accepting logins, TENANT-ANCHORED two ways: an id already in
+  // this brokerage's user_role_assignments link set (loaded above, scoped by
+  // brokerage_id) resolves from that map; anything else is looked up only
+  // among users of THIS brokerage. An id that matches neither is
+  // "unresolved" — it is never named across the tenant line.
+  const acceptedByIds = [...new Set(
+    ((inviteRows ?? []) as any[]).map((i) => i.accepted_by as string | null).filter((id): id is string => !!id && !emailByUserId.has(id))
+  )]
+  const acceptorLabelById = new Map<string, string>(emailByUserId)
+  let acceptorLookupRefused = false
+  if (acceptedByIds.length > 0) {
+    const { data: acceptors, error: acceptorsErr } = await svcForLinks
+      .from("users")
+      .select("id, email, first_name, last_name")
+      .in("id", acceptedByIds)
+      .eq("brokerage_id", profile.brokerage_id)
+    if (acceptorsErr) {
+      acceptorLookupRefused = true
+      console.error("[vendors] invite acceptor lookup refused:", acceptorsErr.message)
+    }
+    for (const u of (acceptors ?? []) as any[]) {
+      const label = (u.email as string | null) ?? [u.first_name, u.last_name].filter(Boolean).join(" ")
+      if (label) acceptorLabelById.set(u.id as string, label)
+    }
+  }
+  const invitations = ((inviteRows ?? []) as any[]).map((i) => {
+    const acceptedBy = (i.accepted_by as string | null) ?? null
+    const label = acceptedBy ? acceptorLabelById.get(acceptedBy) ?? null : null
+    const acceptedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" =
+      !acceptedBy ? "not_recorded" : label ? "resolved" : acceptorLookupRefused ? "lookup_refused" : "unresolved"
+    return {
+      id:                i.id as string,
+      vendor_id:         i.vendor_id as string,
+      status:            (i.status as string) ?? "pending",
+      email:             (i.email as string | null) ?? null,
+      expires_at:        (i.expires_at as string | null) ?? null,
+      created_at:        (i.created_at as string | null) ?? null,
+      accepted_at:       (i.accepted_at as string | null) ?? null,
+      accepted_by:       acceptedBy,
+      accepted_by_label: label,
+      accepted_by_state: acceptedByState,
+    }
+  })
+  const invitableVendors = (preferredVendors ?? []).map((v: any) => ({
+    id:          v.id as string,
+    name:        (v.name as string) ?? "Unnamed vendor",
+    email:       (v.email as string | null) ?? null,
+    linkedEmail: linkedEmailByVendor.get(v.id as string) ?? null,
+  }))
+  const canInviteVendorsHere = canInviteVendors(profile.user_type)
+
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
   const pendingRatingsCount = pendingRatings?.length || 0
@@ -201,8 +392,8 @@ export default async function VendorsPage() {
         <ReferralTrackingPanel brokerageId={profile.brokerage_id} />
       </div>
 
-      <Tabs defaultValue="marketplace" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+      <Tabs defaultValue={initialTab} className="space-y-6">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="marketplace" className="flex items-center gap-2">
             <Store className="h-4 w-4" />
             <span className="hidden sm:inline">Marketplace</span>
@@ -229,6 +420,27 @@ export default async function VendorsPage() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="client-access" className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4" />
+            <span className="hidden sm:inline">Client access</span>
+            {accessAssignments.filter(a => a.status === "active").length > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                {accessAssignments.filter(a => a.status === "active").length}
+              </span>
+            )}
+          </TabsTrigger>
+          {/* VENDOR PACKAGES — what this brokerage CHARGES its vendors, monthly.
+              This tab shipped as the opposite (the brokerage subscribing to a vendor's
+              plan and paying it monthly). Owner ruling: "vendor packages are for
+              brokerages to charge the vendor on a subscription to the platform.
+              vendors do bill the brokerages for jobs but not a monthly subscription."
+              m497 repointed the schema; the authoring surface lives here because the
+              SELLER authors the price sheet. What the brokerage PAYS a vendor is per
+              job and appears on the Bills tab, never here. */}
+          <TabsTrigger value="plans" className="flex items-center gap-2">
+            <Layers className="h-4 w-4" />
+            <span className="hidden sm:inline">Packages</span>
+          </TabsTrigger>
         </TabsList>
 
         {/* Tab 1: Marketplace */}
@@ -239,10 +451,12 @@ export default async function VendorsPage() {
               recentBookings={recentBookings}
               pendingRatings={pendingRatings}
               transactions={transactions}
+              listings={listings}
               serviceTypes={serviceTypes}
               brokerageId={profile.brokerage_id}
               userRole={profile.user_type ?? "agent"}
               deliverables={deliverables}
+              initialVendorId={initialVendorId}
             />
           </Suspense>
         </TabsContent>
@@ -371,14 +585,22 @@ export default async function VendorsPage() {
           </Card>
 
           {/* Premium placement — subscribers charge vendors to be featured here */}
+          {/* Every vendor on the brokerage's bench is sellable — placement is a
+              flag on the row, so there is no second list to be curated into. */}
           <PremiumPlacementPanel
-            directoryEntries={directoryEntries}
+            vendors={(preferredVendors ?? []).map((v: any) => ({
+              vendorId: v.id as string,
+              name: v.name ?? null,
+              category: v.category ?? null,
+              preferred: v.preferred ?? false,
+              display_priority: v.display_priority ?? 0,
+            }))}
             placementInvoices={placementInvoices}
             userRole={profile.user_type ?? "agent"}
           />
 
           {/* General tenant→vendor charges (beyond placement). Premium placement
-              above stays brokerage-level (brokerage-wide directory flags); agents
+              above stays brokerage-level (brokerage-wide vendor placement flags); agents
               and team leads monetize THEIR vendors through this lane instead. */}
           <VendorChargesPanel
             vendors={(preferredVendors ?? []).map((v: any) => ({
@@ -390,6 +612,17 @@ export default async function VendorsPage() {
             userRole={profile.user_type ?? "agent"}
             viewerUserId={profile.id}
             chargeableVendorIds={chargeableVendorIds}
+          />
+
+          {/* The opposite direction: what the brokerage OWES its vendors for booked
+              work (billed_to='brokerage'). Marking one paid credits the vendor's
+              available balance, which is what the vendor payout lane draws on. */}
+          <VendorBillsPanel
+            bills={vendorBills}
+            vendorNames={Object.fromEntries(
+              (preferredVendors ?? []).map((v: any) => [v.id as string, (v.name as string | null) ?? "Vendor"])
+            )}
+            userRole={profile.user_type ?? "agent"}
           />
         </TabsContent>
 
@@ -437,6 +670,36 @@ export default async function VendorsPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Tab 5: Client access grants — the write half of the vendor access model */}
+        <TabsContent value="client-access" className="space-y-4">
+          {/* Platform access: can this vendor sign in at all. Distinct from the
+              per-client grants below, which decide what a signed-in vendor sees. */}
+          <VendorPortalInvitePanel
+            vendors={invitableVendors}
+            invitations={invitations}
+            loadError={inviteErr?.message ?? null}
+            canInvite={canInviteVendorsHere}
+            canRevoke={canRevokeAccess}
+          />
+          <VendorAccessPanel
+            assignments={accessAssignments}
+            vendors={vendorOptions}
+            contacts={contactOptions}
+            loadError={accessLoadError}
+            canRevoke={canRevokeAccess}
+          />
+          {/* WHERE the bench can work, as opposed to WHAT a signed-in vendor may
+              see. m551: coverage belongs to the company, and a vendor that has
+              declared none is not bookable — the panel shows the refusals rather
+              than quietly shortening the list. */}
+          <BenchCoveragePanel />
+        </TabsContent>
+
+        {/* Tab 6: Vendor packages — the brokerage's own catalogue (money vendor → brokerage) */}
+        <TabsContent value="plans" className="space-y-4">
+          <VendorPlanCataloguePanel />
         </TabsContent>
       </Tabs>
     </div>

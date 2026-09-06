@@ -92,7 +92,7 @@ const MILESTONE_DEFS: ReadonlyArray<{
     key:   "firstOfferDrafted",
     title: "Draft your first offer",
     body:  "Open your buyer contact and start the offer wizard. The AI fills the state-specific contract, flags missing fields, and walks you through the packet.",
-    href:  "/crm/contacts",
+    href:  "/crm",
     cta:   "Open CRM",
     Icon:  FileText,
   },

@@ -24,7 +24,7 @@ import {
   type ListingMetrics,
   formatPrice,
   calculateDOM,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
 
 interface ListingStatsCardProps {
   listing: ListingData | null

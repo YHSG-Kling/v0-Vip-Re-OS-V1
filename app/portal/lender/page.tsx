@@ -1,6 +1,5 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { getLenderDashboard } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"

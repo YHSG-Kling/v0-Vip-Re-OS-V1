@@ -84,7 +84,15 @@ const APPROVAL_BADGE: Record<string, string> = {
   rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
 }
 
-/** Map postType → human-readable brief for AI generation */
+/**
+ * Map platform + postType → human-readable brief for AI generation.
+ *
+ * `platform` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, on the one
+ * dropdown in this dialog whose entire purpose is choosing where the post goes. The
+ * brief handed to the generator was identical for a 280-character X post and a
+ * long-form LinkedIn one, so the platform selection changed only WHERE the copy was
+ * published, never how it was written.
+ */
 function buildBrief(platform: string, postType: string): string {
   const typeMap: Record<string, string> = {
     listing_announcement:    "Announce this listing to potential buyers",
@@ -94,7 +102,20 @@ function buildBrief(platform: string, postType: string): string {
     just_sold:               "Celebrate a successful sale and thank everyone involved",
     custom:                  "Write a compelling post about this property",
   }
-  return typeMap[postType] ?? "Write a compelling real estate post"
+  // Shape, not tone rules: the full per-platform guideline table lives with the
+  // generator (lib/services/content-generation.service.ts buildSocialPrompt), and a
+  // second copy of it here is how two vocabularies for one idea start (§6). This
+  // names the surface so the brief and the guidelines agree about which one it is.
+  const platformMap: Record<string, string> = {
+    instagram: "for Instagram — visual-first, short hook, hashtags at the end",
+    facebook:  "for Facebook — conversational, community-minded",
+    linkedin:  "for LinkedIn — professional, insight-led, no hashtag stuffing",
+    twitter:   "for X/Twitter — one tight thought, well under 280 characters",
+    tiktok:    "for TikTok — casual and spoken, written to be read aloud",
+  }
+  const base = typeMap[postType] ?? "Write a compelling real estate post"
+  const where = platformMap[platform.toLowerCase()]
+  return where ? `${base}, ${where}` : base
 }
 
 export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, posts, accounts, canApprove, onPostsChange }: SocialPanelProps) {
@@ -131,7 +152,12 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
         return
       }
       if (pushToSellerPortal && sellerContactId) {
-        await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        // The user ticked "push to seller portal", so a silent failure here means
+        // the seller never sees a post the agent believes they were sent.
+        const shared = await shareSocialPostWithSeller(sellerContactId).catch(() => null)
+        if (!shared?.success) {
+          toast({ title: "Post created, but not shared to the seller portal", description: (shared as any)?.error ?? "Share it again from the seller's portal view.", variant: "destructive" })
+        }
       }
       const updated = await import("@/app/actions/listing-media").then(m => m.getSocialPosts(listingId))
       onPostsChange(updated.data ?? [])

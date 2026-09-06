@@ -374,11 +374,15 @@ async function proposePostcard(
   }
 
   const name = [lead.first_name, lead.last_name].filter(Boolean).join(" ").trim() || "Homeowner"
+  // direct_mail_campaigns.agent_id is agents-class — the USERS id was FK-rejected,
+  // so the postcard proposal was assembled (QR and all) and never recorded.
+  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+  const mailAgentId = await resolveUserIdToAgentRecord(args.agentUserId, args.brokerageId)
   const { data: campaign, error } = await supabase
     .from("direct_mail_campaigns")
     .insert({
       brokerage_id: args.brokerageId,
-      agent_id: args.agentUserId,
+      agent_id: mailAgentId,
       lead_id: args.leadId,
       campaign_name: `AI ISA seller nurture — ${name}`.slice(0, 120),
       target_audience: "ai_isa_seller_nurture",

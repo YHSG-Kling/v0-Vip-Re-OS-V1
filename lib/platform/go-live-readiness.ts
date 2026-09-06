@@ -45,6 +45,7 @@ const d = (key: string, label: string, optional: boolean) =>
 /** Run every domain probe (independently — one vendor down never hides the rest). */
 export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const { getStripeBalance } = await import("@/lib/providers/payment")
   const basic = (u: string, p: string) => ({ style: "basic" as const, username: u, password: p })
 
   const probes: Probe[] = [
@@ -128,18 +129,100 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
     },
 
     // ── Money ───────────────────────────────────────────────────────────────
+    // ONE Stripe client. This check and app/api/cron/health-check/route.ts each
+    // re-implemented the key lookup and the /v1/balance request; getStripeBalance
+    // in lib/providers/payment already did both and had no caller at all. It
+    // returns { success, error, httpStatus, notConfigured, livemode } — every
+    // bit this check reads. It does NOT read `available` or `pending`: no
+    // balance figure reaches any surface, which is the standing product decision
+    // recorded in lib/providers/payment/index.ts.
+    // ── THIS PROBE JUDGES THE **PLATFORM'S** STRIPE ACCOUNT, AND SAYS SO ─────
+    //
+    // OWNER RULING: "the stripe account will be per tenant and platform so no
+    // configuration should be hardcoded." This probe used to read
+    // `process.env.STRIPE_SECRET_KEY` + `process.env.STRIPE_WEBHOOK_SECRET`
+    // directly and call the result "Stripe (billing)" — one green row standing in
+    // for every Stripe path in the product, tenant money included. A go-live board
+    // that goes green on the wrong architecture is worse than one that fails, so
+    // the row is renamed to what it can actually prove and the SOURCE of the
+    // credential is reported beside the verdict: a stored platform credential
+    // beats the env var, and an operator who does not know which one answered
+    // cannot rotate either with confidence.
     async () => {
-      const r = d("stripe", "Stripe (billing)", false)
-      const key = process.env.STRIPE_SECRET_KEY
-      if (!key) return r("not_configured", "STRIPE_SECRET_KEY unset — signup checkout, dunning, and vendor billing can't run")
-      const res = await callConnector<{ livemode?: boolean }>({
-        connector: "stripe", baseUrl: "https://api.stripe.com",
-        path: "/v1/balance", method: "GET", auth: { style: "bearer", token: key },
-      })
-      if (!res.ok) return r("broken", `Stripe rejected the key (${res.status ?? "—"})`)
-      const live = (res.data as any)?.livemode
-      const whsec = process.env.STRIPE_WEBHOOK_SECRET ? "webhook secret set" : "STRIPE_WEBHOOK_SECRET unset — register https://<app>/api/webhooks/stripe in the dashboard and set it, or paid signups never activate"
-      return r(process.env.STRIPE_WEBHOOK_SECRET ? "ready" : "broken", `Key accepted · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"} · ${whsec}`)
+      const r = d("stripe", "Stripe — the PLATFORM's account (billing)", false)
+      const res = await getStripeBalance()
+      if (res.notConfigured) {
+        return r("not_configured", res.error ?? "The platform has no Stripe credential — signup checkout, dunning, AI overage and vendor marketplace billing can't run")
+      }
+      if (!res.success) {
+        // `success:false` with `notConfigured` false is EITHER a rejected key OR a
+        // credential store that could not be read. Both are "broken"; the message
+        // carries which, because they have different fixes.
+        return r("broken", res.error ?? `Stripe rejected the platform key (${res.httpStatus ?? "—"})`)
+      }
+      const live = res.livemode
+
+      // Which account signs the tenant-billing webhook, and where its secret came
+      // from. `resolvePlatformStripeAccount` prefers a platform-owned
+      // platform_credentials row and falls back to STRIPE_WEBHOOK_SECRET.
+      //
+      // THE PATH IN THIS SENTENCE WAS A 404. It said /api/webhooks/stripe;
+      // app/api/webhooks/stripe/ holds ONLY vendor/route.ts, and the tenant
+      // billing webhook is /api/billing/webhook. An operator following it
+      // registered a dead endpoint and paid signups never activated — the exact
+      // outcome this string warns about, caused by the string itself.
+      const { resolvePlatformStripeAccount } = await import("@/lib/billing/resolve-stripe-account")
+      const platform = await resolvePlatformStripeAccount("tenant_billing")
+      const source =
+        platform.status === "resolved"
+          ? platform.account.fromEnv
+            ? "key from STRIPE_SECRET_KEY (no platform_credentials row yet)"
+            : `key from platform_credentials row ${platform.account.credentialId}`
+          : "key source unresolved"
+      const hasHook = platform.status === "resolved" && !!platform.account.webhookSecret
+      const whsec = hasHook
+        ? "tenant-billing webhook secret set"
+        : "no tenant-billing webhook secret — register https://<app>/api/billing/webhook in the PLATFORM's Stripe dashboard and set STRIPE_WEBHOOK_SECRET (or config.webhook_secret on the platform credential), or paid signups never activate"
+      return r(
+        hasHook ? "ready" : "broken",
+        `Platform key accepted · ${source} · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"} · ${whsec}`,
+      )
+    },
+    // ── AND THIS ONE JUDGES THE **TENANT** HALF, WHICH NO ENV VAR CAN ───────
+    //
+    // The previous wave's four-env-var story had no row for this at all, which is
+    // how a launch board could read "Stripe: ready" while every brokerage's own
+    // money had nowhere to settle. There is nothing for an operator to SET here —
+    // each tenant connects their own Stripe in Settings → Connections — so this is
+    // reported as OPTIONAL and informational. It is on the board because the
+    // number it shows (how many tenants have connected) is the only visibility
+    // anyone has into the half of the architecture the ruling added, and because
+    // its absence is what a fail-closed refusal will look like in production.
+    async () => {
+      const r = d("stripe_tenant_accounts", "Stripe — tenants' own accounts", true)
+      const { data, error } = await svc
+        .from("platform_credentials")
+        .select("owner_type, owner_id")
+        .eq("platform", "stripe")
+        .eq("is_active", true)
+        .in("owner_type", ["brokerage", "team", "agent"])
+      // supabase-js RESOLVES a refusal — read the error first, and never let an
+      // unreadable store render as "no tenants have connected".
+      if (error) return r("broken", `Tenant Stripe credentials unreadable (${error.code ?? "no-code"}: ${error.message}) — cannot tell connected tenants from unconnected ones`)
+      const rows = (data ?? []) as Array<{ owner_type: string | null }>
+      if (rows.length === 0) {
+        return r(
+          "not_configured",
+          "No tenant has connected their own Stripe account yet. Tenant-side money (vendor package fees, vendor job bills, client payments, agent payouts) REFUSES by name until they do — lib/billing/resolve-stripe-account.ts never falls back to the platform's account. Nothing for the platform to set: each tenant connects in Settings → Connections.",
+        )
+      }
+      const byScope = rows.reduce<Record<string, number>>((acc, row) => {
+        const k = row.owner_type ?? "unknown"
+        acc[k] = (acc[k] ?? 0) + 1
+        return acc
+      }, {})
+      const breakdown = Object.entries(byScope).map(([k, n]) => `${n} ${k}`).join(" · ")
+      return r("ready", `${rows.length} tenant Stripe credential(s) connected — ${breakdown}. Each resolves through the ownership cascade (agent → team → brokerage); a tenant without one refuses rather than using the platform's account.`)
     },
 
     // ── AI voice/media vendors ──────────────────────────────────────────────
@@ -166,9 +249,16 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
     },
     async () => {
       const r = d("ai_gateway", "AI model gateway", false)
-      const any = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || process.env.AI_GATEWAY_API_KEY || process.env.XAI_API_KEY
-      if (!any) return r("not_configured", "No model key found (OPENAI/ANTHROPIC/AI_GATEWAY) — every AI manager depends on one")
-      return r("ready", "Model key present (routing table selects per feature)")
+      // ONE MODEL KEY. This used to accept OPENAI_API_KEY / ANTHROPIC_API_KEY /
+      // XAI_API_KEY as substitutes, which was true while provider SDKs still
+      // shipped. They no longer do — every text/object/image/transcription call
+      // resolves through the Vercel AI Gateway on AI_GATEWAY_API_KEY — so a
+      // deployment holding only a provider key would have reported "ready" and
+      // then thrown "AI_GATEWAY_API_KEY is not configured" on every AI feature.
+      if (!process.env.AI_GATEWAY_API_KEY) {
+        return r("not_configured", "AI_GATEWAY_API_KEY unset — every AI manager routes through the Vercel AI Gateway; a bare provider key no longer reaches a model")
+      }
+      return r("ready", "Gateway key present (routing table selects the model per feature)")
     },
 
     // ── Records / enrichment providers (PLATFORM setup — owner rule: BatchData,

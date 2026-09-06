@@ -38,9 +38,18 @@ async function getSessionAgentId(): Promise<
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
   }
+  // NOT `?? ctx.userId` (m360). This helper is the single point where agentId
+  // is manufactured for every write in this file, and all of them attribute to
+  // an agents-class column. Substituting the users id put a value there that
+  // the foreign key rejects — so the compliance/approval log, the record of
+  // what the OS decided and why, silently lost exactly the rows belonging to
+  // users who had not finished setup.
+  if (!ctx.agentId) {
+    return { ok: false, error: "No agent profile for this user yet — finish account setup." }
+  }
   return {
     ok: true,
-    agentId: ctx.agentId ?? ctx.userId,
+    agentId: ctx.agentId,
     brokerageId: ctx.brokerageId,
   }
 }
@@ -251,6 +260,13 @@ export async function formatApprovalDecisionForDisplay(
   error?: string
 }> {
   try {
+    // This was the one export in the file with no gate. It reads no tenant
+    // data, but a "use server" export is a public HTTP endpoint and every
+    // other action here is gated; an ungated sibling is the seam an audit
+    // misses.
+    const auth = await getSessionAgentId()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     if (!decision) {
       return { success: false, error: "No decision provided" }
     }

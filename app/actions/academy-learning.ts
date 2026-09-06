@@ -255,6 +255,40 @@ export async function submitModuleQuiz(
 }
 
 /** Resolve the signed-in learner's real identity for the Academy client (no client-supplied ids). */
+export interface MyLearningProgress {
+  completed: Array<{ id: string; title: string; type: string }>
+  inProgress: Array<{ id: string; title: string; type: string }>
+}
+
+/**
+ * The current learner's real progress — learning_assignments joined to their
+ * modules. Feeds the Academy "My Progress" panel, which previously rendered
+ * hardcoded empty arrays (always 0/0).
+ */
+export async function getMyLearningProgress(): Promise<MyLearningProgress> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { completed: [], inProgress: [] }
+
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("learning_assignments")
+    .select("status, module_id, learning_modules ( id, title )")
+    .eq("agent_user_id", ctx.userId)
+    .order("viewed_at", { ascending: false })
+    .limit(100)
+
+  const completed: MyLearningProgress["completed"] = []
+  const inProgress: MyLearningProgress["inProgress"] = []
+  for (const r of (data ?? []) as any[]) {
+    const mod = Array.isArray(r.learning_modules) ? r.learning_modules[0] : r.learning_modules
+    if (!mod?.id) continue
+    const row = { id: mod.id as string, title: (mod.title as string) ?? "Module", type: "module" }
+    if (r.status === "completed") completed.push(row)
+    else if (r.status === "viewed" || r.status === "assigned") inProgress.push(row)
+  }
+  return { completed, inProgress }
+}
+
 export async function getAcademyViewer(): Promise<
   { agentId: string; brokerageId: string; agentName: string } | null
 > {

@@ -351,15 +351,22 @@ export async function runAppointmentNoShowAutopilot(
       if (!claimed) { result.skipped += 1; continue } // someone else already handled it
       result.noShowsMarked += 1
 
-      // 2) Audit lifecycle_event (no fan-out side-effects — a plain audit row like crm.ts).
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id: brokerageId,
-        entity_type: "contact",
-        entity_id: contact.id,
-        event_type: KernelEvent.APPOINTMENT_NO_SHOW,
-        metadata: { calendar_event_id: r.id, appointment_title: r.title, start_at: r.start_at },
-        created_at: now.toISOString(),
-      }).then(() => void 0, () => void 0)
+      // 2) Kernel event — audit row + reactor (a no-show is a fact the staff bell and
+      //    any notification_rule keyed on it are entitled to hear; the bare insert
+      //    reached neither). Loaded at call time: emit is server-only and this module
+      //    is imported by scripts/appointment-noshow-simulator.ts under plain tsx.
+      await import("@/lib/kernel/emit")
+        .then(({ emitKernelEvent }) => emitKernelEvent({
+          brokerageId,
+          entityType: "contact",
+          entityId: contact.id,
+          contactId: contact.id,
+          event: KernelEvent.APPOINTMENT_NO_SHOW,
+          source: "cron",
+          metadata: { calendar_event_id: r.id, appointment_title: r.title, start_at: r.start_at },
+          createdAt: now.toISOString(),
+        }))
+        .then(() => void 0, () => void 0)
 
       // 3) Gated warm re-book proposal.
       const plan = rebookPlan(r, contact)

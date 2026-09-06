@@ -4,6 +4,11 @@
 // Self-employed (1099) agent tax planning — persists the agent's set-aside % + effective rate +
 // recorded quarterly payments, and computes the full tax plan from their REAL YTD income (commission
 // received) and deductible business expenses. Feeds lib/finance/tax-planning.ts (the pure engine).
+//
+// TENANT OPTION (m574): every action here is gated on brokerages.tax_assistance_enabled via
+// lib/finance/tax-assistance.ts — fail-closed, opt-in (the farm-mail/revenue-share direction). The
+// quarterly-tax-concierge cron gates on the same column, so the tools and the reminders turn on and
+// off together.
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -15,6 +20,7 @@ import {
   type TaxPlan,
   type FilingStatus,
 } from "@/lib/finance/tax-planning"
+import { resolveTaxAssistanceEnabled, TAX_ASSISTANCE_DISABLED_ERROR } from "@/lib/finance/tax-assistance"
 
 interface TaxProfileRow {
   agent_id: string
@@ -91,6 +97,11 @@ export async function getTaxPlanAction(input?: { taxYear?: number }): Promise<
   const taxYear = input?.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
 
+  // TENANT OPTION GATE (m574) — fail-closed: a brokerage that hasn't enabled tax assistance (or a
+  // read that fails) refuses before any tax data is computed.
+  const gate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
+  if (!gate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
+
   const profile = await loadOrDefaultProfile(svc, c.agentId, c.brokerageId, taxYear)
   const { ytdGrossIncome, deductibleExpenses } = await loadYtdNumbers(svc, c.agentId, taxYear)
   const paidQuarters = (profile.quarterly_payments ?? []).map((p) => p.quarter)
@@ -129,6 +140,11 @@ export async function saveTaxProfileAction(input: {
   const taxYear = input.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
 
+  // TENANT OPTION GATE (m574) — the write path refuses too, so a disabled tenant can't persist
+  // tax profiles through a stale UI.
+  const saveGate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
+  if (!saveGate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
+
   const setAside = Math.max(0, Math.min(50, Number(input.setAsidePercent)))
   const rate = input.estimatedEffectiveRate != null ? Math.max(0, Math.min(0.5, Number(input.estimatedEffectiveRate))) : undefined
 
@@ -146,7 +162,9 @@ export async function saveTaxProfileAction(input: {
     }, { onConflict: "agent_id,tax_year" })
   if (error) return { success: false, error: error.message }
 
-  revalidatePath("/dashboard/financials/planning")
+  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
+  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
+  revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }
 
@@ -159,6 +177,10 @@ export async function recordQuarterlyPaymentAction(input: {
   if (!c) return { success: false, error: "unauthenticated" }
   const taxYear = input.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
+
+  // TENANT OPTION GATE (m574) — same fail-closed refusal as the read + save paths.
+  const payGate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
+  if (!payGate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
 
   const profile = await loadOrDefaultProfile(svc, c.agentId, c.brokerageId, taxYear)
   const existing = (profile.quarterly_payments ?? []).filter((p) => p.quarter !== input.quarter)
@@ -179,6 +201,8 @@ export async function recordQuarterlyPaymentAction(input: {
     }, { onConflict: "agent_id,tax_year" })
   if (error) return { success: false, error: error.message }
 
-  revalidatePath("/dashboard/financials/planning")
+  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
+  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
+  revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }

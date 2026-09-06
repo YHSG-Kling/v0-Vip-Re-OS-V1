@@ -1,9 +1,10 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { FileCheck, Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
+import { Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { TitleCommandStrip, TitleOperationsPanel } from '../components/os'
 import {
@@ -12,6 +13,8 @@ import {
   ExternalDocStatusPanel,
   ExternalBatchActionsPanel,
 } from '../../(external-portal)/components/os'
+import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
+import { getTitleTransactionDetail } from '@/app/actions/title-portal'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,24 +23,33 @@ export default async function TitleDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get title company/vendor ID for this user (canonical linkage via user_role_assignments)
-  const { data: ra } = await supabase
-    .from('user_role_assignments')
-    .select('vendor_id')
-    .eq('user_id', user.id)
-    .not('vendor_id', 'is', null)
-    .maybeSingle()
+  // Get title company/vendor ID for this user (canonical linkage via
+  // user_role_assignments). Not in the reported list but the identical shape:
+  // narrowing to the vendor-bearing grants still leaves several rows possible,
+  // because the table is UNIQUE on (user_id, role) and not on user_id.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error('[title/dashboard] role grant read failed:', grantsResult.error)
+  }
+  const { vendorId: titleVendorId } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null }
 
-  const { data: vendor } = ra?.vendor_id
+  const { data: vendor } = titleVendorId
     ? await supabase
         .from('vendors')
         .select('id')
-        .eq('id', ra.vendor_id)
-        .eq('category', 'title')
+        .eq('id', titleVendorId)
+        .eq('category', VENDOR_CATEGORY_TITLE)
         .maybeSingle()
     : { data: null }
 
-  const titleCompanyId = vendor?.id || user.id
+  // This used to be `vendor?.id || user.id`. Those are different id spaces —
+  // every panel below passes this value as `vendor_id`, an FK to vendors(id),
+  // so an auth user id matched no rows at all. The page rendered a complete,
+  // entirely empty title dashboard and looked like a company with no work.
+  // No fallback: without a linked vendor there is nothing honest to show.
+  const titleCompanyId = vendor?.id ?? null
 
   const { data: transactions } = await supabase
     .from('transactions')
@@ -52,6 +64,79 @@ export default async function TitleDashboardPage() {
     const diff = (closeDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
     return diff >= 0 && diff <= 14
   })
+
+  // The doc-status and batch panels at the bottom of this page were mounted on
+  // hardcoded [] — they rendered forever-empty while getTitleTransactionDetail
+  // already returned this title company's documents and title-visible milestones.
+  // The loader's identity rail is title_company_users (that is the row
+  // requireTitleActor checks); the `vendors` row resolved above is the marketplace
+  // profile, not a title-portal identity, so it cannot be passed here. Each
+  // title_company_users row is scoped to one transaction.
+  const { data: titleUserRows } = await supabase
+    .from('title_company_users')
+    .select('id, transaction_id')
+    .eq('user_id', user.id)
+    .not('transaction_id', 'is', null)
+    .limit(10)
+
+  const titleDetails = await Promise.all(
+    ((titleUserRows || []) as any[]).map(async (row) => {
+      try {
+        return await getTitleTransactionDetail(row.transaction_id, row.id)
+      } catch {
+        // Throws when the title company is not assigned to that transaction (or the
+        // user has no brokerage). One unassigned deal contributes nothing instead of
+        // failing the whole dashboard.
+        return null
+      }
+    })
+  )
+
+  // Documents come back already aliased by the loader (file_name ← doc_label,
+  // file_url ← storage_url). Every row is a document that exists in storage, so
+  // 'uploaded' is the honest status — the loader does not select
+  // transaction_documents.status, and nothing models per-doc requiredness, so
+  // `required` stays false rather than inventing a checklist.
+  const titleDocuments = titleDetails.flatMap((d) =>
+    ((d?.documents || []) as any[]).map((doc) => ({
+      id: doc.id,
+      name: doc.file_name || doc.document_type,
+      type: doc.document_type,
+      status: 'uploaded' as const,
+      required: false,
+      uploadedAt: doc.created_at,
+      fileUrl: doc.file_url || undefined,
+    }))
+  )
+
+  // Batch items are the same loader's title-visible milestones. transaction_milestones
+  // has no "ready" state, so a milestone is either completed or still pending.
+  const titleBatchItems = titleDetails.flatMap((d) =>
+    ((d?.milestones || []) as any[]).map((m) => ({
+      id: m.id,
+      label: m.milestone_name,
+      type: 'milestone' as const,
+      status: (m.status === 'completed' ? 'completed' : 'pending') as 'completed' | 'pending',
+      relatedId: (d?.transaction as any)?.id,
+    }))
+  )
+
+  if (!titleCompanyId) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-bold mb-2">Title Dashboard</h1>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm text-gray-700">
+              This account is not linked to a title company yet, so there are no
+              orders or files to show. A brokerage admin links a title company to
+              your login from the vendor directory.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -130,10 +215,10 @@ export default async function TitleDashboardPage() {
           urgency: 'high',
           actionRequired: t.status === 'pending',
         }))} />
-        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={[]} />
+        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={titleDocuments} />
       </div>
 
-      <ExternalBatchActionsPanel partnerType="title" items={[]} />
+      <ExternalBatchActionsPanel partnerType="title" items={titleBatchItems} />
 
       <div className="grid grid-cols-3 gap-3">
         {[

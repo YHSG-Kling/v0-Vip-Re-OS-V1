@@ -20,6 +20,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
+// Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
+import { isDeliberativeDomain } from "@/lib/managers/deliberation"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -134,8 +136,16 @@ async function proposeLeadIntroPostcard(
   } catch { /* keep the grounded fallback copy */ }
 
   const name = [lead.first_name, lead.last_name].filter(Boolean).join(" ").trim() || "there"
+  // IDENTITY CLASS (m365). direct_mail_campaigns.agent_id FKs AGENTS and
+  // agentUserId is a users id, so the AI ISA intro postcard campaign was
+  // FK-rejected and never created — after the QR mint and the AI copy draft
+  // above had already done their work.
+  const { data: dmAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+  const dmAgentId = (dmAgentRow as { id?: string } | null)?.id ?? null
+
   const { data: campaign, error } = await supabase.from("direct_mail_campaigns").insert({
-    brokerage_id: brokerageId, agent_id: agentUserId, lead_id: leadId,
+    brokerage_id: brokerageId, agent_id: dmAgentId, lead_id: leadId,
     campaign_name: `AI ISA intro postcard — ${name}`.slice(0, 120),
     target_audience: "ai_isa_lead_intro", quantity: 1, piece_type: "postcard",
     copy_text: copyText, qr_code_id: qrCodeId, is_ai_generated: true,
@@ -482,7 +492,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to surface the recruiting proof to"
     let notified = 0
@@ -506,7 +516,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to route the coaching prompt to"
     let notified = 0
@@ -530,8 +540,20 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const leadId = signal.entityId
     if (!leadId) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, property_interest, email, email_verified").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_id, first_name, property_interest, email, email_verified").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
+    // CONVERSION FINALITY — refusal, and it is REPORTED on the bus rather than
+    // dropped. A "long-horizon nurture" touch is by definition for someone who
+    // never became a client; once they DID, the sphere touch is the wrong touch
+    // and the contact's own lifetime-nurture lane owns them
+    // (campaign_orchestrator:contact_outreach_ready and the sphere's contact
+    // handlers). Re-routing this specific copy — "still here whenever you're
+    // ready" — to an active client would be worse than not sending it.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) return `long-horizon nurture NOT proposed: ${verdict.reason}`
+    }
     const l = lead as Record<string, any>
     if (!(l.email && l.email_verified === true)) return "long-horizon nurture noted (no verified email for a light touch)"
     const firstName = (l.first_name as string | null) || "there"
@@ -634,6 +656,12 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const situation = (meta.situation ?? {}) as { kind?: string; tier?: string; target_channel?: string }
     if (!situation.kind || !situation.tier) return "no stamped situation on the primary — can't replay for shorts"
     const row = v as { brokerage_id: string; agent_id: string; listing_id: string | null; contact_id: string | null; marketing_campaign_id: string | null }
+    // commissionVideo's agentUserId is a USERS id — it resolves users→agents
+    // itself before writing. ai_video_projects.agent_id is agents-class since
+    // m366, so hand it the resolved owner; unresolvable ⇒ no shorts, said plainly.
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const primaryAgentUserId = row.agent_id ? await resolveUserIdForAgentRecord(ctx.supabase, row.agent_id) : null
+    if (!primaryAgentUserId) return `no users row behind agents.id=${row.agent_id ?? "null"} — platform shorts deferred`
     const { commissionVideo } = await import("@/lib/video/video-director")
     const made: string[] = []
     for (const channel of channels) {
@@ -641,7 +669,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         { kind: situation.kind as any, tier: situation.tier as any, targetChannel: channel, facts: {} },
         {
           brokerageId: row.brokerage_id,
-          agentUserId: row.agent_id,
+          agentUserId: primaryAgentUserId,
           listingId: row.listing_id ?? null,
           contactId: row.contact_id ?? null,
           campaignId: row.marketing_campaign_id ?? null,
@@ -680,11 +708,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     let notified = 0
     // Responsible agent for this video, when resolvable.
     const rawAgentRef = (signal.payload?.agent_id as string | undefined) ?? null
-    // notifications.user_id FKs users(id); payload refs may carry agents(id) — resolve-or-keep.
-    let agentId: string | null = rawAgentRef
-    if (rawAgentRef) {
-      const { data: aRow } = await ctx.supabase.from("agents").select("user_id").eq("id", rawAgentRef).maybeSingle()
-      if ((aRow as any)?.user_id) agentId = (aRow as any).user_id
+    // notifications.user_id FKs users(id) and this payload's agent_id is an
+    // agents id (video-coordination copies ai_video_projects.agent_id, agents-class
+    // since m366). Resolve-or-SKIP: keeping the raw ref on a failed resolve wrote an
+    // agents id into a users column, which the FK rejects into a discarded error.
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const agentId = rawAgentRef ? await resolveUserIdForAgentRecord(ctx.supabase, rawAgentRef) : null
+    if (rawAgentRef && !agentId) {
+      console.warn(`[manager-signals] no users row behind agents.id=${rawAgentRef} — owner notice skipped; managers still notified`)
     }
     if (agentId) {
       const { error } = await ctx.supabase.from("notifications").insert({
@@ -697,7 +728,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     // Brokerage managers (broker/admin) — so a failure surfaces to the people who own it.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({
         user_id: m.id, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
@@ -722,7 +753,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const leadId = signal.entityId
     if (!leadId) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, last_name, email, email_verified, property_interest, timeline, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_address_verified")
+      .select("id, first_name, last_name, email, email_verified, property_interest, timeline, lead_type, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_address_verified")
       .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
     const l = lead as Record<string, any>
@@ -750,6 +781,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         firstName: l.first_name ?? "there",
         propertyInterest: l.property_interest ?? null,
         timeline: l.timeline ?? null,
+        // TYPE AND/OR PERSONA (owner ruling) — both are read, the brief folds in
+        // whichever are actually known.
+        leadType: l.lead_type ?? null,
         motivationType: l.motivation_type ?? null,
         budgetMin: l.budget_min ?? null,
         budgetMax: l.budget_max ?? null,
@@ -967,9 +1001,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!listingId) return null
     const { requestSellerUpdateReel } = await import("@/lib/agents/seller-update-reel-producer")
     const r = await requestSellerUpdateReel(ctx.brokerageId, listingId, ctx.supabase)
-    return r.queued
-      ? "commissioned the weekly seller-update avatar reel (queued for render)"
-      : "seller-update reel already up to date for this listing this week (deduped)"
+    // EVERY NON-QUEUE USED TO READ AS A DEDUPE. This line reported "already up
+    // to date this week" for a content-contract refusal, a listing that could
+    // not be found and a listing with no seller contact alike — three different
+    // problems, two of them actionable, all rendered as "nothing to do". The
+    // producer returns a precise `reason` for each; throwing it away is the
+    // shape CLAUDE.md §4 rules out ("nobody checked" must never render as
+    // "checked and fine"), and it got worse once the producer started returning
+    // named content-prop refusals.
+    if (!r.queued) {
+      return r.reason
+        ? `seller-update reel NOT commissioned — ${r.reason}`
+        : "seller-update reel not commissioned (no reason returned)"
+    }
+    // The avatar is the product's promise, so whether it was actually requested
+    // is part of what happened — not a detail to discover in a log.
+    return r.avatarRequested
+      ? "commissioned the weekly seller-update avatar reel (queued for render, D-ID avatar track submitted)"
+      : `commissioned the weekly seller-update reel (queued for render) — shipping as the agent-photo cut: ${r.avatarReason || "no avatar reason recorded"}`
   },
   // Deal Coordinator → Listing Concierge: an offer just landed on one of our listings — run the
   // net-sheet comparison NOW (event-driven, not waiting on the */15 cron) and propose the gated
@@ -1059,8 +1108,30 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const videoUrl = (signal.payload?.video_url as string | undefined) ?? null
     if (!leadId || !videoUrl) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, brokerage_id").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_id, first_name, brokerage_id").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
+
+    // ── CONVERSION FINALITY — RE-ROUTE to the contact ─────────────────────────
+    // The reel was commissioned for this person and it FINISHED; if they became
+    // a client while it rendered, the video is still theirs. The ruling says the
+    // CONTACT gets the action, not that the action disappears — so the same
+    // gated 1:1 email is proposed against the contact instead of the lead, on
+    // the sibling handler's own rail ("campaign_orchestrator:contact_outreach_ready",
+    // below). Nothing lead-keyed is written.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        if (!verdict.contactId) return `reel follow-up NOT proposed: ${verdict.reason}`
+        const handler = SIGNAL_HANDLERS["campaign_orchestrator:contact_outreach_ready"]
+        const rerouted = await handler(
+          { ...signal, payload: { ...(signal.payload ?? {}), contact_id: verdict.contactId, video_url: videoUrl } },
+          ctx,
+        )
+        return `lead ${leadId} converted to contact ${verdict.contactId} — reel follow-up re-routed to the contact${rerouted ? `: ${rerouted}` : ""}`
+      }
+    }
+
     const firstName = (lead as any).first_name || "there"
     const subject = `A quick personal hello, ${firstName}`
 
@@ -1100,7 +1171,34 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       subject, body, channel: "email",
       rationale: `Persona intro reel finished for ${firstName} — propose the gated 1:1 email embedding it (email only; never broadcast).`,
     }, ctx.supabase)
-    return res.ok ? `proposed the gated 1:1 reel email to the lead (approval ${res.id})` : null
+    if (!res.ok) return null
+
+    // ── THE BROKERAGE'S OWN ANSWER, ASKED AT THE MOMENT THE TOUCH IS DRAFTED ──
+    //
+    // OWNER RULING (2026-08-25): "which brokerage settings are use so the ai isa
+    // will automatically send". Until this hop existed the proposal above was the
+    // END of the lead's video email: nothing in the tree could release a
+    // LEAD-recipient proposal, so the reel the first-touch email PROMISES
+    // ("being prepared and will be sent shortly") shipped only if a human
+    // happened to approve it.
+    //
+    // The gate is `ai_isa_settings` through the ONE resolver (§6), and it is
+    // asked HERE as well as on the cron so an authorised brokerage's reel goes
+    // out at completion rather than up to a cron tick later. `releaseDueLeadTouches`
+    // re-runs consent, suppression, the touch cap and the compliance gate before
+    // anything is sent, and a brokerage that requires approval (the DEFAULT, and
+    // the live column default) leaves the row exactly where it is.
+    const { resolveLeadSettingsResolution, leadAutoSendVerdict, releaseDueLeadTouches } =
+      await import("@/lib/ai-isa/lead-action-plan")
+    const resolution = await resolveLeadSettingsResolution({ brokerageId: ctx.brokerageId })
+    const gate = leadAutoSendVerdict({ resolution, channel: "email" })
+    if (gate.mode !== "auto_send") {
+      return `proposed the gated 1:1 reel email to the lead (approval ${res.id}) — awaiting a human: ${gate.reason}`
+    }
+    const released = await releaseDueLeadTouches({ brokerageId: ctx.brokerageId, leadId, supabase: ctx.supabase })
+    return released.sent > 0
+      ? `sent the 1:1 reel email to the lead — this brokerage authorised AI ISA auto-send (approval ${res.id})`
+      : `proposed the gated 1:1 reel email to the lead (approval ${res.id}) — auto-send was authorised but the send did not complete: ${released.decisions.map((d) => d.reason).join("; ").slice(0, 200)}`
   },
   // Asset Manager → Campaign Orchestrator: a CONTACT's situational reel FINISHED. The
   // Orchestrator (the manager that SENDS it) proposes ONE gated, 1:1 email embedding the reel
@@ -1117,11 +1215,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const c = contact as { first_name: string | null; contact_type: string | null }
     const firstName = c.first_name || "there"
     const subject = `A quick personal update for you, ${firstName}`
-    // Idempotency: one proposed/approved reel email per (contact, this subject).
+    // ── IDEMPOTENCY, PER VIDEO (m316) ────────────────────────────────────────
+    // This deduped on the SUBJECT, which is a CONSTANT string per contact — no
+    // kind, no video id, no date — and only on status proposed/approved, which
+    // never age out. So a contact received exactly ONE situational reel email,
+    // EVER. Every later reel was silently swallowed: a refreshed cut, the same
+    // kind a year later, and — because the subject is shared by every
+    // contact-addressed reel that routes through this handler — a DIFFERENT
+    // KIND entirely. An equity reel was blocked by a buyer-match reel proposed
+    // months earlier, and the only escape was the first one being rejected.
+    //
+    // The thing that must not duplicate is a VIDEO, not a greeting. The body
+    // always embeds the url (guaranteed above: the AI draft is post-checked and
+    // the link appended if the model dropped it), so that is the honest key.
     const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
       .eq("brokerage_id", ctx.brokerageId).eq("recipient_contact_id", contactId)
-      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
-    if (dup) return "contact reel email already proposed (gated, deduped)"
+      .ilike("body", `%${videoUrl}%`)
+      .in("status", ["proposed", "approved", "sent"]).limit(1).maybeSingle()
+    if (dup) return "this exact reel was already proposed to the contact (gated, deduped)"
 
     const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
     const agentKind = c.contact_type === "seller" ? "listing_concierge" : "shopping_agent"
@@ -1898,7 +2009,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     // Notify broker/admins so the coaching prompt reaches the people who develop agents.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     let notified = 0
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({
@@ -1936,10 +2047,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // withdraw into a client-facing play).
   "sphere_of_influence:contact_withdrawn": async (signal, ctx) => {
     if (!signal.entityId) return null
-    const { data: updated } = await ctx.supabase.from("contacts")
+    // The error is READ, not just the row. `nurture_status='withdrawn'` is the
+    // consent-recovery chain giving up and releasing the relationship — a refusal
+    // (CHECK, RLS, wrong tenant) came back indistinguishable from the zero-row
+    // case, so the reason this handler went quiet was unknowable. The `!updated`
+    // guard already fails closed; this names WHY.
+    const { data: updated, error: withdrawError } = await ctx.supabase.from("contacts")
       .update({ nurture_status: "withdrawn" })
       .eq("id", signal.entityId).eq("brokerage_id", ctx.brokerageId)
       .select("id, first_name, last_name").maybeSingle()
+    if (withdrawError) {
+      console.error(`[manager-signals] contact_withdrawn write REFUSED for ${signal.entityId}:`, withdrawError.message)
+      return null
+    }
     if (!updated) return null
     const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
     const agentUserId = await resolveResponsibleAgentUserId(ctx.supabase, {
@@ -2082,7 +2202,10 @@ async function handleCrossManagerReferral(
   // an unreachable model records 'deliberation unavailable', never canned arguments. ──
   let deliberationLine: string | null = null
   let deliberationBody = ""
-  if (domain.deliberate === true) {
+  // The registry's ONE predicate (lib/managers/deliberation.ts:isDeliberativeDomain) —
+  // runDeliberation and the team argument map read the same one, so the handler can
+  // never escalate a domain the engine would refuse, or skip one it would argue.
+  if (isDeliberativeDomain(domain.key)) {
     try {
       const { runDeliberation, summarizeDeliberation } = await import("@/lib/managers/deliberation")
       const record = await runDeliberation({

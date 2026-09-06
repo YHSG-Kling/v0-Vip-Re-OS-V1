@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   Sheet,
   SheetContent,
@@ -17,8 +18,21 @@ import { Badge } from "@/components/ui/badge"
 import { TrendingDown, Loader2, Sparkles, Mail, Megaphone } from "lucide-react"
 import { toast } from "sonner"
 import { handlePriceReduction } from "@/app/actions/listing-lifecycle"
+// THE PRICE WRITE ITSELF. See the note in handleSubmit: this sheet used to call
+// handlePriceReduction alone, which only raises the marketing follow-up TASK —
+// listings.list_price was never touched, so "Price reduced to $X" was a toast
+// over an unchanged number.
+import { updateListing } from "@/app/actions/listings"
 import { createDirectMailCampaign } from "@/app/actions/ai-direct-mail"
 import { launchPriceReductionCampaign } from "@/app/actions/price-reduction-campaign"
+// RENDER BOUNDARY (§6). The campaign name is NOT console-only: createMailCampaign
+// stores it as direct_mail_campaigns.copy_text (campaignName + targetAudience,
+// app/actions/ai-direct-mail.ts:571) and app/actions/direct-mail.ts:835 hands
+// copy_text to Lob as the `copy_text` merge variable — it PRINTS on the piece.
+// designTemplate lands on design_url, which is passed as the Lob templateId.
+// So both strings are consumer-visible and take the public word; the agent-facing
+// toasts in this sheet are left in the agent's own language.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 interface Props {
   listingId: string
@@ -37,6 +51,7 @@ export function PriceReductionSheet({
   brokerageId,
   status,
 }: Props) {
+  const router = useRouter()
   const [open, setOpen] = useState(false)
   const [newPrice, setNewPrice] = useState("")
   const [note, setNote] = useState("")
@@ -57,8 +72,46 @@ export function PriceReductionSheet({
     }
 
     startTransition(async () => {
+      // ── STEP 1: ACTUALLY REDUCE THE PRICE ──────────────────────────────────
+      //
+      // This step did not exist. The sheet called handlePriceReduction and
+      // toasted "Price reduced to $X" on it — but that action is the
+      // ORCHESTRATOR EVENT handler for `listing.price_reduction` and its whole
+      // body raises one task ("Update all marketing with new price"). It never
+      // wrote listings.list_price. So the seller's price did not move, the
+      // marketing tier was never re-assigned against the new number, and the
+      // seller portal's price history stayed empty — while the agent was told
+      // the reduction had happened and a direct-mail campaign went out
+      // advertising a price the listing did not have.
+      //
+      // updateListing is the writer for all three: the price, the
+      // listing_price_changes ledger the seller portal renders, and the tier
+      // re-assignment. The tenant, the ownership check and the act-as read-only
+      // refusal are all resolved from the SESSION inside it — this component
+      // supplies the listing id and the number, nothing else.
+      const written = (await updateListing(listingId, { list_price: price })) as {
+        success: boolean
+        error?: string
+      }
+      if (!written?.success) {
+        toast.error(written?.error ?? "The price was not changed.")
+        return
+      }
+
+      toast.success(`Price reduced to $${price.toLocaleString()}`)
+
+      // ── STEP 2: the marketing follow-up task ───────────────────────────────
+      //
+      // The payload key was `listingId`; the handler destructures `listing_id`,
+      // so the lookup ran on `undefined` and every call came back "Listing has
+      // no agent/brokerage — tasks not created". The task this sheet promises
+      // has therefore never been created for anyone. Fixed to the shape the
+      // handler and the orchestrator route both use.
+      //
+      // The price is already written by here, so a failure is reported as what
+      // it is — a missing follow-up task, not a failed reduction.
       const res = await handlePriceReduction({
-        listingId,
+        listing_id: listingId,
         newPrice: price,
         previousPrice: currentPrice,
         reducedBy: currentPrice - price,
@@ -67,23 +120,23 @@ export function PriceReductionSheet({
         brokerageId,
         note,
       })
-
       if ((res as any)?.success === false) {
-        toast.error((res as any).error ?? "Price reduction failed")
-        return
+        toast.error(
+          `Price reduced, but the marketing follow-up task was not created: ${
+            (res as any).error ?? "unknown error"
+          }`,
+        )
       }
-
-      toast.success(`Price reduced to $${price.toLocaleString()}`)
 
       if (launchMailCampaign) {
         try {
           await createDirectMailCampaign({
             agentId,
             brokerageId,
-            campaignName: `Price Reduction — ${listingAddress}`,
+            campaignName: `${priceImprovementLabel("noun")} — ${listingAddress}`,
             targetAudience: "local_buyers_investors",
             mailingType: "postcard",
-            designTemplate: `Price Reduction: $${price.toLocaleString()} — ${listingAddress}. ${note}`,
+            designTemplate: `${priceImprovementLabel("noun")}: $${price.toLocaleString()} — ${listingAddress}. ${note}`,
             trackingEnabled: true,
             appOrigin: typeof window !== "undefined" ? window.location.origin : "",
           })
@@ -106,6 +159,11 @@ export function PriceReductionSheet({
       setOpen(false)
       setNewPrice("")
       setNote("")
+      // The list price on this page (and the launch/marketing panels computed
+      // from it) is server-rendered — without this the agent closes the sheet
+      // and still sees the old number, which is the same lie the missing write
+      // was telling.
+      router.refresh()
     })
   }
 
@@ -194,7 +252,7 @@ export function PriceReductionSheet({
               <div>
                 <p className="text-sm font-medium flex items-center gap-1.5">
                   <Megaphone className="h-3.5 w-3.5 text-purple-500" />
-                  Create a &quot;Price Improved&quot; ad + promo video
+                  Create a &quot;{priceImprovementLabel("badge")}&quot; ad + promo video
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Off by default. Drafts a paid-ad creative + avatar video that land in

@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
-import { confirmTourStop, confirmTour, scheduleTourStops, finalizeTour } from '@/app/actions/tour-planner'
+import { confirmTourStop, scheduleTourStops, finalizeTour } from '@/app/actions/tour-planner'
 import { optimizeTourRoute, aiScheduleShowing } from '@/app/actions/ai-showing-management'
 import { dispatchStopScheduling } from '@/app/actions/dispatch-showing'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -218,7 +218,11 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
   const [schedulingStopId, setSchedulingStopId] = useState<string | null>(null)
   const [scheduleResults, setScheduleResults]   = useState<Record<string, any>>({})
 
-  const activeTours = tours.filter(t => ['planned', 'confirmed'].includes(t.status))
+  // 'scheduling' MUST be in this filter: "Schedule Showings" flips the tour
+  // planned → scheduling, and the Finalize button only renders for scheduling/
+  // confirmed tours. Without it a dispatched tour vanished from this tab and
+  // could never be finalized from the UI.
+  const activeTours = tours.filter(t => ['planned', 'scheduling', 'confirmed'].includes(t.status))
 
   if (activeTours.length === 0) {
     return (
@@ -342,10 +346,19 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
   function handleConfirmTour(tourId: string) {
     setConfirmingTourId(tourId)
     startTransition(async () => {
-      // confirmTour now routes to finalizeTour — sends report + per-stop
-      // calendar events. Channels default to portal; agent picks email/SMS
-      // via reportChannels in the future-state UI.
-      const res = await confirmTour({ tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes, reportChannels: ['portal','email'] })
+      // finalizeTour is the canonical entry (app/actions/tour-planner.ts:560):
+      // per-stop calendar events, the buyer-portal message, the report-sent
+      // stamps, the agent notification and the buyer-lifecycle event, in one
+      // call. The `confirmTour` wrapper that used to sit in front of it is gone
+      // (tombstone at app/actions/tour-planner.ts, section 4c) — it re-derived
+      // nothing the survivor does not derive better, and it took `contactId`
+      // from this component instead of from the tour row.
+      const res = await finalizeTour({
+        tourId,
+        reportChannels: ['portal', 'email'],
+        editedNotes: agentNotes,
+        departureTime,
+      })
       if (res.success) {
         toast({ title: 'Tour confirmed — report sent to buyer' })
         onRefresh()
@@ -365,9 +378,15 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
     startTransition(async () => {
       const res = await scheduleTourStops({ tourId, agentUserId, brokerageId })
       if (res.success) {
+        // Honest counts from the real dispatch lane: 'sent' went out through a
+        // connected provider; 'drafted' needs the agent's per-stop send button.
+        const sent = res.sent ?? 0
+        const drafted = res.drafted ?? 0
         toast({
-          title: `Scheduling started — ${res.dispatched ?? 0} listing agents contacted`,
-          description: 'Confirm each stop as listing agents reply, then finalize the tour.',
+          title: `Scheduling started — ${sent} sent, ${drafted} drafted`,
+          description: drafted > 0
+            ? 'Drafted stops need a manual send: use "Send to Listing Agent" on each stop, then confirm replies and finalize.'
+            : 'Confirm each stop as listing agents reply, then finalize the tour.',
         })
         onRefresh()
       } else {

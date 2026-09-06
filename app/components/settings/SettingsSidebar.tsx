@@ -1,19 +1,20 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth/client';
+import { isResolvedPlatformSuperadmin } from '@/lib/platform/platform-staff-roster';
 
 // personal: every tier (solo agents too); brokerage: admin/broker/superadmin only.
 const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
   { label: 'Dashboard', href: '/settings', personal: true },
   { label: 'General', href: '/settings/general', personal: true },
   { label: 'Integrations', href: '/settings/integrations', personal: true },
-  { label: 'Email & Calendar', href: '/settings/connections', personal: true },
+  { label: 'Connections', href: '/settings/connections', personal: true },
   { label: 'CRM Sync', href: '/settings/crm', personal: true },
   { label: 'Phone / SMS', href: '/settings/phone', personal: true },
   { label: 'Brand Voice', href: '/settings/brand-voice', personal: true },
+  { label: 'AI Avatar & Voice', href: '/dashboard/settings/twin-studio', personal: true },
   { label: 'Branding', href: '/settings/branding', personal: true },
   { label: 'Email Templates', href: '/settings/email-templates', personal: true },
   { label: 'Notifications', href: '/settings/notifications', personal: true },
@@ -26,7 +27,15 @@ const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
 export function SettingsSidebar() {
   const pathname = usePathname();
   const { userContext } = useAuth();
-  const isBrokerageRole = !!userContext?.roles.some((r) => ['admin', 'broker', 'superadmin'].includes(r));
+  // 'superadmin' via roles was a DEAD ARM: platform staff live in
+  // users.platform_role (CLAUDE.md §4) — no live row carries the 'superadmin'
+  // user_type, so that string can never appear in roles. The platform check
+  // reads userContext.platformRole (populated by useAuth from the same
+  // resolver the server gates use) through the roster's ONE resolved-role
+  // spelling; tenant admin/broker still pass via roles.
+  const isBrokerageRole =
+    !!userContext?.roles.some((r) => ['admin', 'broker'].includes(r)) ||
+    isResolvedPlatformSuperadmin(userContext?.platformRole);
   // Developers is principal-gated SERVER-side (isTenancyPrincipal: a solo-tier
   // agent IS their own principal) — the client can't compute tier/lead
   // membership, so it must not pre-empt the server: always show the link and

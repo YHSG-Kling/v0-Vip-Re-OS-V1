@@ -112,7 +112,7 @@ export async function sweepLicenseReadiness(
       } catch { /* best-effort — the broker notification below still fires */ }
       try {
         const { data: mgrs } = await svc.from("users").select("id")
-          .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+          .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
         for (const m of (mgrs ?? []) as Array<{ id: string }>) {
           const { data: seen } = await svc.from("notifications").select("id")
             .eq("user_id", m.id).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "license_readiness_blocker")

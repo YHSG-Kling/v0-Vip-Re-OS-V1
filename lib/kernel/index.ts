@@ -73,9 +73,7 @@ export {
   validateListingLaunchReadiness,
   launchListing,
   updateListingStage,
-  attachMediaToListing,
   generateListingDescription,
-  createTransactionShellFromAcceptedOffer,
   closeListingLifecycle,
   prefillListingFormFromRecord,
 } from "./listings"
@@ -84,7 +82,6 @@ export type {
   SellerContactInput,
   ListingUpdate,
   ListingFormPrefill,
-  MediaAttachmentInput,
   ListingStage,
   KernelResult,
 } from "./listings"
@@ -105,14 +102,13 @@ export {
   archiveContactRecord,
   loadContactWorkspace,
   generateContactFollowupDraft,
-  applyContactSuppressionState,
+
 } from "./crm"
 export type {
   ContactSourceAttribution,
   CreateContactParams,
   CRMContactResult,
   DeduplicateResult,
-  SuppressionStateParams,
   CRMResult,
 } from "./crm"
 
@@ -122,6 +118,7 @@ export {
   pullCalendarEventsFromProvider,
   listProviderAccounts,
   listSyncLogs,
+  listSyncMappings,
 } from "./calendar-sync"
 export type {
   CalendarProviderType,
@@ -148,7 +145,11 @@ export {
   handleConsentReceived,
   handleLeadReadyForAssignment,
   handleLeadAssigned,
-  handleLeadConvertedToContact,
+  // handleLeadConvertedToContact REMOVED — see the tombstone at
+  // lib/kernel/lead-acquisition-handlers.ts:615. It was a fourth conversion
+  // writer with zero call sites; this barrel line was its only non-comment
+  // reference in the tree, which is exactly how an orphan looks WIRED to a
+  // reference count. SURVIVOR: lib/kernel/crm.ts `convertLeadToContact`.
 } from "./lead-acquisition-handlers"
 
 export {
@@ -168,7 +169,40 @@ export type {
   StepCompletionRow,
 } from "./agent-onboarding"
 
-export { syncCalendarEventToProvider } from "./calendar-sync-orchestrator"
+// ─── CALENDAR SYNC ORCHESTRATOR — DELETED (orphan doctrine §1, wave 27) ──────
+//
+// TOMBSTONE. `syncCalendarEventToProvider(params)` is DELETED. SURVIVOR:
+// lib/kernel/calendar-sync.ts `pushCalendarEventToProvider`, which writes the
+// provider's id into the `calendar_sync_mappings` registry.
+//
+// It had NO caller — the only reference was the re-export in lib/kernel/index.ts,
+// already carried in scripts/orphan-export-baseline.json — and it was a SECOND
+// SPELLING of the survivor's job (§6): the survivor files the provider's event id
+// in `calendar_sync_mappings`, this filed it in `calendar_events.metadata.externalId`,
+// and neither read the other's record.
+//
+// NOTHING WAS PORTED, because the survivor lacks nothing this had — it is better
+// on all three axes that matter:
+//
+//  1. IT COULD NOT TELL A REAL EVENT ID FROM A FABRICATED ONE. When no calendar is
+//     connected, lib/providers/calendar/index.ts:82 returns
+//     `{ success: true, eventId: "mock-event-<ts>", mock: true }` so non-actor
+//     callers keep working. That contract is honest — it SETS `mock` — and
+//     lib/contact-validation.ts:73 reads it correctly as `success && !result.mock`.
+//     This function checked `created.success && created.eventId` and never read
+//     `mock`, so it wrote `mock-event-…` into the database as though a provider had
+//     accepted the event. The survivor cannot do this: its adapters THROW rather
+//     than returning a placeholder, and the mapping row is written only from an id
+//     an adapter actually returned.
+//  2. NO TENANT PREDICATE. It took a `brokerageId` and never used it — the read it
+//     performed was not scoped by it (CLAUDE.md §4).
+//  3. NO PROVIDER ADAPTER REGISTRY. The survivor dispatches through
+//     CALENDAR_SYNC_ADAPTERS (Google, and Outlook as of wave 27) and refuses when
+//     no adapter answers, instead of trusting whatever the generic provider shim
+//     hands back.
+//
+// The live table was checked before deleting: `calendar_events` holds 0 rows, so
+// no `mock-event-*` value was ever persisted and no backfill is owed.
 
 export { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
 
@@ -265,16 +299,16 @@ export type {
 } from "./onboarding"
 
 // ─── IDENTITY & WRITE CONTEXT ─────────────────────────────────────────────────
-
-export {
-  resolveWriteContext,
-  requireWriteContext,
-} from "./identity"
-export type {
-  WriteContext,
-  UnauthenticatedWriteContext,
-  WriteContextResult,
-} from "./identity"
+//
+// TOMBSTONE (§1.1) — `./identity` is DELETED. It declared a SECOND resolveWriteContext()
+// (plus requireWriteContext) with a different shape and no impersonation awareness, so
+// half the app gated on a seam that could neither hand a caller the right client nor
+// refuse a read_only grant. SURVIVOR: lib/platform/acting-context.ts:143
+// (resolveWriteContext / resolveWriteContextForTenant / resolveActingContext), also
+// re-exported from lib/identity/index.ts. The kernel does not re-export it: the seam
+// resolves a REQUEST, and `import "server-only"` at the top of this barrel dragged the
+// server graph into every module that wanted it. Import it from
+// "@/lib/platform/acting-context" directly.
 
 // ─── OUTBOUND COMMUNICATIONS ──────────────────────────────────────────────────
 
@@ -409,7 +443,9 @@ export {
   publishPodcastEpisode,
   createMarketingCampaign,
   repurposeContentAsset,
-  createQrAsset,
+  // createQrAsset REMOVED in the QR merge (wave Q) — merged-then-deleted into
+  // lib/marketing/tracked-qr.ts:mintTrackedQr (it was the sole writer of qr_codes.expires_at;
+  // that capability moved to the survivor first). See the tombstone in ./marketing.
   previewQrAsset,
 } from "./marketing"
 export type {
@@ -422,20 +458,21 @@ export type {
   CreateVideoProjectInput,
   CreatePodcastEpisodeInput,
   CreateMarketingCampaignInput,
-  CreateQrAssetInput,
 } from "./marketing"
 
 // ─── AI TOOLS OS ─────────────────────────────────────────────────────────────
-// Canonical AI Tools kernel commands — all tool executions, saves, and entity
+// Canonical AI Tools kernel commands — tool history, saves, and entity
 // attachments flow through these commands.
 // Business rules:
-//   • All runs logged to ai_tool_usage — no silent executions
 //   • Output is only persisted when user explicitly saves (saveAiToolOutput)
 //   • attachAiOutputToEntity writes to ai_assistant_notes, not saved_ai_outputs
 //   • tool_name must be a value from AiToolName union — no ad-hoc strings
+//   • THE LEDGER WRITE IS NOT HERE. `runAiTool` was a second, less complete
+//     writer of ai_tool_usage and is gone; the survivor is
+//     app/actions/ai-tools-hub.ts:164 (executeAITool). See the tombstone at
+//     lib/kernel/ai-tools.ts:199.
 export {
   loadAiToolsWorkspace,
-  runAiTool,
   saveAiToolOutput,
   attachAiOutputToEntity,
   previewAiOutput,
@@ -448,7 +485,6 @@ export type {
   AiToolUsageRecord,
   SavedAiOutput,
   LoadAiToolsWorkspaceInput,
-  RunAiToolInput,
   SaveAiToolOutputInput,
   AttachAiOutputToEntityInput,
   PreviewAiOutputInput,
@@ -502,7 +538,14 @@ export type {
 // and email delivery flow through these commands.
 // Business rules:
 //   • agent_commissions (not commissions) is the source for YTD financial data
-//   • business_expenses has no brokerage_id — always filter by agent_id only
+//   • business_expenses HAS brokerage_id (and team_id). CORRECTED 2026-08-22:
+//     this line used to read "has no brokerage_id — always filter by agent_id
+//     only", which was false and load-bearing — "filter by agent_id only" is how
+//     an export gate came to scope a whole ledger off a caller-supplied agent id.
+//     The column is NOT NULL since m516; when a writer omits it, trigger
+//     business_expenses_derive_tenant derives it from agents.brokerage_id, then
+//     teams.brokerage_id, and RAISES if neither answers. A reader scopes by the
+//     SESSION's brokerage_id and then by agent_id — never by agent_id alone.
 //   • generated_documents table does NOT exist — exportReportPdf uses Vercel Blob
 //   • generateAgentPerformanceReport is the only command that writes to DB
 //   • exportReportCsv returns CSV string — no DB write; caller drives browser download
@@ -551,7 +594,12 @@ export type {
 // expense creation, and financial reporting flow through these commands only.
 // Business rules:
 //   • agent_commissions.status transitions: calculated → approved → paid
-//   • business_expenses has NO brokerage_id — filter by agent_id only
+//   • business_expenses HAS brokerage_id (and team_id) — see the Reporting OS
+//     note above. NOT NULL since m516; trigger business_expenses_derive_tenant
+//     derives the tenant from agents.brokerage_id / teams.brokerage_id for any
+//     writer that omits it, and raises when neither can answer. createExpenseRecord
+//     in ./financial stamps ctx.brokerageId explicitly. Scope reads by the
+//     SESSION's tenant AND agent_id, never by agent_id alone.
 //   • agent_cap_tracking is source of truth for cap state
 //   • Only broker/admin/superadmin can approve/pay commissions
 //   • Every mutation emits KernelEvent via lifecycle_events
@@ -631,15 +679,17 @@ export type {
 //   • rating 1–5 only — validated in kernel, not caller
 //   • respondToReview verifies reviewId belongs to agentId before writing
 //   • createReviewRequest blocks duplicate pending per contact+platform
-//   • advanceReferralStatus enforces REFERRAL_STATUS_TRANSITIONS graph
 //   • Every mutation emits KernelEvent via lifecycle_events
+// TOMBSTONE (§1.1, BURN-C 2026-09-04) — recordReview, createReferralRequest and
+// advanceReferralStatus are gone from this barrel because they are gone from the
+// kernel: nothing called them, and each capability was merged onto its live
+// survivor first. See the tombstone in lib/kernel/reputation.ts for where each
+// went. The referral stage graph that the third one enforced now lives in
+// lib/referrals/referral-status.ts (REFERRAL_STATUS_TRANSITIONS, canAdvanceReferral).
 export {
   loadReputationWorkspace,
   createReviewRequest,
-  recordReview,
   respondToReview,
-  createReferralRequest,
-  advanceReferralStatus,
   loadReferralPipeline,
   loadReviewPerformance,
 } from "./reputation"
@@ -656,17 +706,15 @@ export type {
   LoadReviewPerformanceInput,
   LoadReferralPipelineInput,
   CreateReviewRequestInput,
-  RecordReviewInput,
   RespondToReviewInput,
-  CreateReferralInput,
-  AdvanceReferralStatusInput,
 } from "./reputation"
 
 // ─── VENDOR / PARTNER OS ─────────────────────────────────────────────────────
 // Canonical Vendor kernel commands — all record creation, assignment, status
 // transitions, and deliverable attachment flow through these commands.
 // Business rules:
-//   • vendors (marketplace) and vendor_directory (curated) are SEPARATE tables
+//   • vendors is the ONE vendor table — marketplace bench AND curation/placement
+//     flags (m355 merged the formerly separate vendor_directory into it)
 //   • vendor_bookings.listing_id = listing-level assignments
 //   • vendor_assignments + vendor_jobs = transaction-level assignments
 //   • Status transitions enforced: booked→confirmed→completed | any→cancelled|no_show

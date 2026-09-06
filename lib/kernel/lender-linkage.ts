@@ -17,14 +17,32 @@
 // appraisal, rate-lock, conditions) live on transaction_lenders — the alive
 // capability layer, keyed by transaction_id and preserved untouched.
 
-/** The vendor category that IS a lender. vendors.category is free-text; this is
- *  the canonical spelling the bench (financing-pit-stop, vendor-orchestration) uses. */
-export const LENDER_VENDOR_CATEGORY = "Lender"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
+
+/** The vendor category that IS a lender. vendors.category carries a live CHECK
+ *  (Contractor|Inspector|Lender|Other|Stager|Title Company) — it is NOT free text,
+ *  whatever this comment used to say. One spelling, from one module. */
+export const LENDER_VENDOR_CATEGORY = VENDOR_CATEGORY_LENDER
 
 export function isLenderVendorCategory(category: string | null | undefined): boolean {
   const c = (category ?? "").trim().toLowerCase()
   return c === "lender" || c.includes("lender") || c.includes("mortgage") || c.includes("loan officer")
 }
+
+/**
+ * The lender bench, spelled for a POSTGRES filter.
+ *
+ * `isLenderVendorCategory` is a substring predicate — correct in memory, useless
+ * in a query: PostgREST `.in()` is exact and case-sensitive, and a filter that
+ * cannot match is a permission (or a picker) that silently never fires
+ * (scripts/role-vocabulary-guard.ts). These are the vendors.category CHECK values
+ * that ARE a lender, both of which `isLenderVendorCategory` accepts — the two
+ * must agree, and the vendor-category guard proves both against the live CHECK.
+ *
+ * Use this wherever the QUESTION is "which vendors are the brokerage's lenders";
+ * use isLenderVendorCategory when you already hold the row.
+ */
+export const LENDER_BENCH_CATEGORIES = ["lender", "refinance_lender"] as const
 
 /** A safe .in() list — never empty (an empty PostgREST .in() can error), so
  *  callers pass this sentinel for "no rows". */
@@ -75,6 +93,32 @@ export async function lenderVendorForUser(
     }
   }
   return null
+}
+
+/**
+ * The USER ids attached to a lender vendor — the reverse of lenderVendorForUser.
+ *
+ * A vendor is a COMPANY; anything addressed to a person (a notification, an
+ * inbox row) needs `users.id`, and `notifications.user_id` FKs `users` — handing
+ * it a `vendors.id` is a 23503, which loses the whole INSERT (CLAUDE.md §3).
+ * user_role_assignments is the one link between the two, so this is where the
+ * hop lives instead of being re-derived at each caller.
+ *
+ * Returns [] both when the vendor has no linked user AND when the read is
+ * refused; the caller decides whether "nobody to notify" is acceptable — for a
+ * best-effort notification it is, for a gate it never is (use the gates in
+ * lib/kernel/portal-auth.ts for that).
+ */
+export async function lenderVendorUserIds(client: any, vendorId: string): Promise<string[]> {
+  if (!vendorId) return []
+  const { data, error } = await client
+    .from("user_role_assignments")
+    .select("user_id")
+    .eq("vendor_id", vendorId)
+  if (error) return []
+  return ((data ?? []) as Array<{ user_id: string | null }>)
+    .map((r) => r.user_id)
+    .filter((x): x is string => !!x)
 }
 
 /** All transaction ids a given lender vendor is assigned to (dashboard/brief scoping). */

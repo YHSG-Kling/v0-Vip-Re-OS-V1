@@ -17,8 +17,21 @@
 // resolver, and voiceover pipeline.
 
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import { geometryFor } from "@/lib/remotion/composition-geometry"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const DEAL_ROOM_REEL_ENTITY = "deal_room_reel"
+
+/**
+ * The composition this reel rides, named ONCE (§6).
+ *
+ * It was written out twice — the caption plan's timeline and the queued render's
+ * composition_id — and only the render's copy was load-bearing, so the caption
+ * half could have come to describe a different video with nothing to notice.
+ */
+const DEAL_ROOM_COMPOSITION = "PartnersMeetingReel"
 
 export interface DealRoomFacts {
   address: string
@@ -78,19 +91,28 @@ export function clearedContingencies(t: { financing_contingency_removed_at?: str
   return out
 }
 
-export interface DealRoomRunResult { transactions: number; queued: number; proposed: number; errors: number }
+export interface DealRoomRunResult {
+  transactions: number
+  queued: number
+  proposed: number
+  errors: number
+  /** Deals with nothing to say this week (no close date, nothing cleared, no activity, no deadline) — deliberately not padded into a video. */
+  quiet: number
+  /** Deals whose props the CONTENT CONTRACT refused before any row was staged (named in a warn). */
+  refused: number
+}
 
 /** Weekly queue pass (rides the client-pulse cron): one Deal Room video per
  *  active under-contract transaction per ISO week. */
 export async function queueDealRoomReels(svc: any, now: Date = new Date()): Promise<DealRoomRunResult> {
-  const r: DealRoomRunResult = { transactions: 0, queued: 0, proposed: 0, errors: 0 }
+  const r: DealRoomRunResult = { transactions: 0, queued: 0, proposed: 0, errors: 0, quiet: 0, refused: 0 }
   const since7 = new Date(now.getTime() - 7 * 86_400_000).toISOString()
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(2000)
   for (const b of ((brokerages ?? []) as any[])) {
     try {
       const { data: deals } = await svc.from("transactions")
         .select("id, property_address, deal_name, stage, status, estimated_close_date, contact_id, buyer_contact_id, agent_id, financing_contingency_removed_at, appraisal_contingency_removed_at")
-        .eq("brokerage_id", b.id).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
+        .eq("brokerage_id", b.id).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(200)
       for (const t of ((deals ?? []) as any[])) {
         r.transactions += 1
         const contactId = t.contact_id ?? t.buyer_contact_id
@@ -125,7 +147,8 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           activityCount7d: (acts as number | null) ?? 0,
         }
         // A totally quiet, dateless deal renders nothing — never a padded video.
-        if (facts.daysToClose == null && facts.clearedThisWeek.length === 0 && facts.activityCount7d === 0 && !facts.nextDeadline) continue
+        // COUNTED (§2: a skip that is not counted reads as a clean tick).
+        if (facts.daysToClose == null && facts.clearedThisWeek.length === 0 && facts.activityCount7d === 0 && !facts.nextDeadline) { r.quiet += 1; continue }
 
         const [{ resolveReelBrand }, { resolveVideoIdentity }] = await Promise.all([
           import("@/lib/video/reel-brand"), import("@/lib/video/video-identity"),
@@ -139,6 +162,19 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
           brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, logoUrl: brand.logoUrl, showEhoMark: true },
         }) as unknown as Record<string, unknown>
+        // THE CONTENT GATE, before any spend (voiceover, QR) and before the
+        // insert. Every push in buildDealRoomReelProps is gated on a fact, so
+        // the quiet-deal skip above and `cards: []` coincide TODAY — but that is
+        // a coincidence of two hand-written conditions, not a contract, and the
+        // render backstop will cancel a `cards: []` row a minute after this
+        // function counts it as `queued`. Asked of the payload itself, by name.
+        const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+        const missing = missingContentProps(DEAL_ROOM_COMPOSITION, props)
+        if (missing.length > 0) {
+          console.warn(`[deal-room-reel] transaction ${t.id} skipped — ${describeMissingContent(DEAL_ROOM_COMPOSITION, missing)}`)
+          r.refused += 1
+          continue
+        }
         const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
         const vo = await prepareReelVoiceover({
           brokerageId: b.id, narration: (props as any).narration, voiceId: identity.voiceId,
@@ -146,10 +182,34 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
         })
         if (vo) {
           props.voiceover_url = vo.url
-          // WORD-SYNCED CAPTIONS (client-facing per the finish spec).
+          // WORD-SYNCED CAPTIONS (client-facing per the finish spec), TIMED
+          // AGAINST THE COMPOSITION'S OWN GEOMETRY.
+          //
+          // WAS `900, 30` — PartnersMeetingReel's frame count and fps typed out
+          // by hand. Both were correct on the day they were written, which is
+          // exactly the §2 waypoint pin: durationInFrames is a legal thing to
+          // change in lib/remotion/composition-geometry.ts (and every guard
+          // permits it), and the captions would then have stopped dead at
+          // second 30 of a longer video with nothing anywhere going red. The
+          // numbers now come from the registry, so they move when it moves.
           const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
-          const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
-          if (plan.cues.length > 0) props.captionsCues = plan.cues
+          const geo = geometryFor(DEAL_ROOM_COMPOSITION)
+          if (!geo) {
+            // REFUSE, do not guess. A composition that is not in the registry
+            // has no known timeline, and cueing against a remembered 900/30
+            // would place captions on a video whose real length nobody knows.
+            console.error(
+              `[deal-room-reel] ${DEAL_ROOM_COMPOSITION} is not in the composition registry — `
+              + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
+            )
+          } else {
+            const plan = buildCaptionPlan(
+              vo.alignment ?? (props as any).narration,
+              geo.duration_frames, geo.fps,
+              { tailPaddingFrames: 45 },
+            )
+            if (plan.cues.length > 0) props.captionsCues = plan.cues
+          }
         }
         // Finish-spec: the Deal Room is CLIENT-FACING → tracked outro QR.
         try {
@@ -159,14 +219,24 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
             if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to reach your team" }
           }
         } catch { /* QR is additive */ }
-        props.thumbnail_props = {
+        // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+        // producer omitted it, so a Deal Room card printed the just-listed
+        // composition's sample sentence as its summary line and as the hero
+        // image's alt text. Cut verbatim from this update's own narration —
+        // the same sentences the client hears. No cap: buildDealRoomReelProps
+        // speaks no money (closing dates, cleared contingencies and an action
+        // count), so there is no §5 line to stop before.
+        const card = companionCard(VIDEO_COVER_THUMB, {
           kind: "presentation", title: address, subtitle: "Your deal this week", eyebrow: "DEAL ROOM",
           agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
           brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-        }
+          seoHint: seoHintFromNarration((props as { narration?: unknown }).narration as string | null),
+        })
+        if (card.card) props.thumbnail_props = card.card
+        else console.warn(`[deal-room-reel] no companion share card for transaction ${t.id} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
         const { recordRenderQueued } = await import("@/lib/remotion/registry")
         const q = await recordRenderQueued({
-          brokerageId: b.id, compositionId: "PartnersMeetingReel", agentUserId,
+          brokerageId: b.id, compositionId: DEAL_ROOM_COMPOSITION, agentUserId,
           entityType: DEAL_ROOM_REEL_ENTITY, entityId: t.id,
           inputProps: props, scopeType: "brokerage", scopeId: b.id, requestedVia: "cron",
         })

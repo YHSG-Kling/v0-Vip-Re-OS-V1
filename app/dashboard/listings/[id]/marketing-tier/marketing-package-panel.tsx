@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -13,8 +13,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Package, CheckCircle2, Loader2, AlertCircle, Sparkles } from "lucide-react"
-import { activateMarketingPackage } from "@/app/actions/marketing-package-automation"
+import { Package, CheckCircle2, Loader2, AlertCircle, Sparkles, Globe, RefreshCw } from "lucide-react"
+import {
+  activateMarketingPackage,
+  bookMarketingService,
+  completeMarketingService,
+  getMarketingPackageServices,
+  getSyndicationStatus,
+  getVendorRecommendations,
+  sendServiceReminderToVendor,
+  syncListingToPlatforms,
+} from "@/app/actions/marketing-package-automation"
 import {
   MARKETING_PACKAGE_TYPES,
   buildPackagePreview,
@@ -48,11 +57,221 @@ const formatCurrency = (amount: number | null) => {
 const prettyService = (s: string) =>
   s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
 
+interface BookedService {
+  id: string
+  service_type: string | null
+  status: string | null
+  scheduled_date: string | null
+  completed_at: string | null
+  estimated_cost: number | null
+  actual_cost: number | null
+  vendor: { company_name: string | null } | null
+}
+
+/**
+ * One row of the ranked bench behind a Book button. Every field comes from
+ * getVendorRecommendations, which ranks on the SAME published rules the
+ * automation books with — so this list is the order it would actually pick in,
+ * not a second opinion.
+ */
+interface VendorCandidate {
+  id: string
+  name: string | null
+  rating: number | null
+  preferred: boolean | null
+  estimated_turnaround_days: number | null
+  score: number
+  measured: string[]
+  unmeasured: string[]
+  autoBookable: boolean
+  autoBookBlockedReason: string | null
+}
+
+interface SyndicationRow {
+  id: string
+  platform_name: string | null
+  platform_category: string | null
+  syndication_status: string | null
+  listing_url: string | null
+  last_synced_at: string | null
+}
+
 export function MarketingPackagePanel({ transactionId, activePackage }: MarketingPackagePanelProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [selected, setSelected] = useState<MarketingPackageType | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Booked vendor services for the active package. The activation copy promises
+  // "book them individually afterward" — this is the surface that lets you.
+  const [services, setServices] = useState<BookedService[]>([])
+  const [servicesLoading, setServicesLoading] = useState(false)
+  const [bookingService, setBookingService] = useState<string | null>(null)
+  const [bookError, setBookError] = useState<string | null>(null)
+
+  // "Remind vendor" — one in flight at a time; verdict shown through bookError /
+  // syncMessage-style inline text rather than a silent no-op.
+  const [remindingId, setRemindingId] = useState<string | null>(null)
+  const [remindMessage, setRemindMessage] = useState<string | null>(null)
+
+  const handleRemindVendor = (serviceId: string) => {
+    setRemindingId(serviceId)
+    setRemindMessage(null)
+    void (async () => {
+      try {
+        const res = await sendServiceReminderToVendor({ serviceId })
+        setRemindMessage(res.success ? "Reminder emailed to the vendor." : (res.error ?? "Reminder failed"))
+      } catch {
+        setRemindMessage("Reminder failed")
+      } finally {
+        setRemindingId(null)
+      }
+    })()
+  }
+
+  // "Mark done" — closes the booked service and records what the vendor actually
+  // billed. Nothing used to close a service at all, so completed_at stayed NULL
+  // (the reminder button below never retired) and actual_cost — the per-listing
+  // marketing SPEND — was written by nobody. The invoice box is optional: a
+  // completion with no figure to hand still closes the row and leaves the money
+  // column NULL rather than recording a guess.
+  const [completingId, setCompletingId] = useState<string | null>(null)
+  const [servicePaid, setServicePaid] = useState<Record<string, string>>({})
+
+  const handleCompleteService = (serviceId: string) => {
+    const typed = (servicePaid[serviceId] ?? "").trim()
+    const paid = typed === "" ? undefined : Number(typed)
+    if (paid !== undefined && (!Number.isFinite(paid) || paid < 0)) {
+      setRemindMessage("Enter the invoiced amount as a non-negative number, or leave it blank.")
+      return
+    }
+    setCompletingId(serviceId)
+    setRemindMessage(null)
+    void (async () => {
+      try {
+        const res = await completeMarketingService({ serviceId, actualCost: paid })
+        if (!res.success) {
+          setRemindMessage(res.error ?? "Could not mark the service complete")
+          return
+        }
+        setRemindMessage(
+          paid === undefined
+            ? "Service marked complete."
+            : `Service marked complete — ${formatCurrency(paid)} recorded as the actual cost.`,
+        )
+        await loadServices()
+      } catch {
+        setRemindMessage("Could not mark the service complete")
+      } finally {
+        setCompletingId(null)
+      }
+    })()
+  }
+
+  // The ranked bench behind a Book button, per service type. An agent used to
+  // click Book and receive whoever the automation chose, with no sight of who
+  // else was considered or why. Keyed by service type so opening one does not
+  // discard another.
+  const [candidates, setCandidates] = useState<Record<string, VendorCandidate[]>>({})
+  const [candidatesLoading, setCandidatesLoading] = useState<string | null>(null)
+  const [openCandidates, setOpenCandidates] = useState<string | null>(null)
+
+  // Portal syndication tracking, initialised by activation. Nothing showed it.
+  const [syndication, setSyndication] = useState<SyndicationRow[]>([])
+  const [syndicationLoading, setSyndicationLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+
+  const packageId = activePackage?.id ?? null
+
+  const loadServices = useCallback(async () => {
+    if (!packageId) { setServices([]); return }
+    setServicesLoading(true)
+    try {
+      const rows = await getMarketingPackageServices(packageId)
+      setServices((rows ?? []) as unknown as BookedService[])
+    } finally {
+      setServicesLoading(false)
+    }
+  }, [packageId])
+
+  const loadSyndication = useCallback(async () => {
+    if (!transactionId) { setSyndication([]); return }
+    setSyndicationLoading(true)
+    try {
+      const rows = await getSyndicationStatus(transactionId)
+      setSyndication((rows ?? []) as unknown as SyndicationRow[])
+    } finally {
+      setSyndicationLoading(false)
+    }
+  }, [transactionId])
+
+  useEffect(() => { void loadServices() }, [loadServices])
+  useEffect(() => { void loadSyndication() }, [loadSyndication])
+
+  const bookedTypes = new Set(services.map((s) => s.service_type).filter(Boolean) as string[])
+  const unbookedServices = (activePackage?.included_services ?? []).filter((s) => !bookedTypes.has(s))
+
+  /**
+   * Load (or collapse) the bench for one service. The result is cached per
+   * service type: the ranking is deterministic and the bench does not change
+   * between two clicks, so re-fetching would only add latency.
+   */
+  const toggleCandidates = (serviceType: string) => {
+    if (openCandidates === serviceType) { setOpenCandidates(null); return }
+    setOpenCandidates(serviceType)
+    if (candidates[serviceType] || !transactionId) return
+    setCandidatesLoading(serviceType)
+    void (async () => {
+      try {
+        const rows = await getVendorRecommendations(serviceType, transactionId)
+        setCandidates((prev) => ({ ...prev, [serviceType]: (rows ?? []) as unknown as VendorCandidate[] }))
+      } finally {
+        setCandidatesLoading(null)
+      }
+    })()
+  }
+
+  const handleBook = (serviceType: string) => {
+    if (!packageId || !transactionId) return
+    setBookError(null)
+    setBookingService(serviceType)
+    startTransition(async () => {
+      const result = await bookMarketingService({
+        packageId,
+        serviceType,
+        transactionId,
+      })
+      setBookingService(null)
+      if (!result.success) {
+        // Surface the refusal — "No available vendors for this service" is the
+        // answer an agent needs, not a silently unchanged list.
+        setBookError(result.error ?? `Could not book ${serviceType}`)
+        return
+      }
+      await loadServices()
+    })
+  }
+
+  const handleSync = () => {
+    if (!transactionId) return
+    setSyncMessage(null)
+    setSyncing(true)
+    startTransition(async () => {
+      const result = await syncListingToPlatforms(transactionId)
+      setSyncing(false)
+      if (!result.success) {
+        setSyncMessage(result.error ?? "Syndication sync failed")
+        return
+      }
+      setSyncMessage(
+        typeof result.synced === "number"
+          ? `Synced ${result.synced} platform${result.synced === 1 ? "" : "s"}`
+          : (result.message ?? "No pending syndications")
+      )
+      await loadSyndication()
+    })
+  }
 
   const preview = selected ? buildPackagePreview(selected) : null
 
@@ -69,6 +288,9 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
       })
       if (result.success) {
         setSelected(null)
+        // Activation seeds syndication tracking rows — pull them straight away
+        // instead of leaving the section empty until the next navigation.
+        await loadSyndication()
         router.refresh()
       } else {
         setError(result.error ?? "Failed to activate package")
@@ -133,6 +355,257 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                 Activated {new Date(activePackage.activated_at).toLocaleDateString()}
               </p>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Vendor services for the active package */}
+      {activePackage && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Vendor Services</CardTitle>
+            <CardDescription>
+              Book each included service to the best-matching approved vendor in your brokerage.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {servicesLoading ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading services…
+              </p>
+            ) : (
+              <>
+                {services.length > 0 && (
+                  <div className="space-y-2">
+                    {services.map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{prettyService(s.service_type ?? "Service")}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {s.vendor?.company_name ?? "Vendor pending"}
+                            {s.scheduled_date
+                              ? ` · ${new Date(s.scheduled_date).toLocaleDateString()}`
+                              : " · unscheduled"}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {/* What was actually paid wins over the quote when it exists —
+                              actual_cost is now written at completion. */}
+                          {s.actual_cost !== null && s.actual_cost !== undefined ? (
+                            <Badge variant="outline">{formatCurrency(s.actual_cost)} paid</Badge>
+                          ) : s.estimated_cost !== null ? (
+                            <Badge variant="outline">{formatCurrency(s.estimated_cost)}</Badge>
+                          ) : null}
+                          <Badge variant="secondary">{s.status ?? "scheduled"}</Badge>
+                          {/* Close-out — records completed_at and the invoiced amount. */}
+                          {s.vendor && !s.completed_at && (
+                            <>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                aria-label="Amount the vendor invoiced for this service"
+                                placeholder="Invoiced $"
+                                className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
+                                value={servicePaid[s.id] ?? ""}
+                                onChange={(e) =>
+                                  setServicePaid((prev) => ({ ...prev, [s.id]: e.target.value }))
+                                }
+                              />
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={completingId === s.id}
+                                onClick={() => handleCompleteService(s.id)}
+                              >
+                                {completingId === s.id
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : "Mark done"}
+                              </Button>
+                            </>
+                          )}
+                          {/* Vendor nudge — sendServiceReminderToVendor delegates to the
+                              canonical reminder (real email + delivery ledger). Only for a
+                              booked, scheduled, not-yet-completed service. */}
+                          {s.vendor && s.scheduled_date && !s.completed_at && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              disabled={remindingId === s.id}
+                              onClick={() => handleRemindVendor(s.id)}
+                            >
+                              {remindingId === s.id
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : "Remind vendor"}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {remindMessage && (
+                      <p className="text-xs text-muted-foreground">{remindMessage}</p>
+                    )}
+                  </div>
+                )}
+
+                {unbookedServices.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">Not booked yet</p>
+                    <div className="space-y-2">
+                      {unbookedServices.map((s) => (
+                        <div key={s} className="rounded-lg border p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isPending && bookingService === s}
+                              onClick={() => handleBook(s)}
+                            >
+                              {isPending && bookingService === s && (
+                                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              )}
+                              Book {prettyService(s)}
+                            </Button>
+                            {/* Booking used to be the only affordance here, so the
+                                choice of vendor was invisible until after it was
+                                made. This shows the same ranking the automation
+                                books with, BEFORE the click. */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleCandidates(s)}
+                            >
+                              {openCandidates === s ? "Hide" : "Who would be booked?"}
+                            </Button>
+                          </div>
+
+                          {openCandidates === s && (
+                            <div className="mt-2 space-y-1.5 border-t pt-2">
+                              {candidatesLoading === s ? (
+                                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Reading the bench…
+                                </p>
+                              ) : (candidates[s] ?? []).length === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  No approved vendor on this brokerage&apos;s bench handles{" "}
+                                  {prettyService(s).toLowerCase()}. Booking it will say the same.
+                                </p>
+                              ) : (
+                                <>
+                                  {(candidates[s] ?? []).map((v, i) => (
+                                    <div key={v.id} className="flex flex-wrap items-baseline justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-medium">
+                                          {i + 1}. {v.name ?? "Unnamed vendor"}
+                                          {v.preferred === true && (
+                                            <Badge variant="secondary" className="ml-2">Preferred</Badge>
+                                          )}
+                                          {i === 0 && v.autoBookable && (
+                                            <Badge variant="outline" className="ml-2">Would be booked</Badge>
+                                          )}
+                                        </p>
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {v.rating !== null ? `Rated ${v.rating.toFixed(1)}` : "Unrated"}
+                                          {v.estimated_turnaround_days !== null
+                                            ? ` · ~${v.estimated_turnaround_days}d turnaround`
+                                            : " · turnaround unknown"}
+                                        </p>
+                                        {/* The honest half: what the ranking could
+                                            NOT weigh on this row. A blank column
+                                            scores nothing and says so, rather than
+                                            defaulting to a flattering number. */}
+                                        {v.unmeasured.length > 0 && (
+                                          <p className="text-[11px] text-muted-foreground">
+                                            Not counted (no value on record):{" "}
+                                            {v.unmeasured.map((u) => u.replace(/_/g, " ")).join(", ")}
+                                          </p>
+                                        )}
+                                        {v.autoBookBlockedReason && (
+                                          <p className="text-[11px] text-muted-foreground">
+                                            {v.autoBookBlockedReason}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Ranked on rating, your preferred flag, your display order and
+                                    turnaround — the same rules the automation books with.
+                                  </p>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : services.length > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Every service in this package is booked.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No services booked yet.
+                  </p>
+                )}
+
+                {bookError && <p className="text-sm text-destructive">{bookError}</p>}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Portal syndication tracking */}
+      {transactionId && (syndication.length > 0 || syndicationLoading) && (
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-4 pb-2">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Globe className="h-5 w-5" />
+                Portal Syndication
+              </CardTitle>
+              <CardDescription>Where this listing is published, and what is still pending.</CardDescription>
+            </div>
+            <Button size="sm" variant="outline" className="shrink-0" disabled={syncing} onClick={handleSync}>
+              <RefreshCw className={`mr-2 h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+              Sync Pending
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {syndicationLoading ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading syndication status…
+              </p>
+            ) : (
+              syndication.map((row) => (
+                <div
+                  key={row.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{row.platform_name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {row.platform_category?.replace(/_/g, " ") ?? "portal"}
+                      {row.last_synced_at
+                        ? ` · last synced ${new Date(row.last_synced_at).toLocaleDateString()}`
+                        : ""}
+                    </p>
+                  </div>
+                  <Badge variant={row.syndication_status === "active" ? "default" : "secondary"}>
+                    {row.syndication_status ?? "pending"}
+                  </Badge>
+                </div>
+              ))
+            )}
+            {syncMessage && <p className="text-sm text-muted-foreground">{syncMessage}</p>}
           </CardContent>
         </Card>
       )}

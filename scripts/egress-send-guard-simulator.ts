@@ -11,9 +11,11 @@
  * This is a baseline ratchet (like schema-drift): the CURRENT direct callers are frozen + classified;
  * the surface can only shrink. KNOWN-GAP entries are honest TODOs to route through the gate.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -52,23 +54,37 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
 }
 
 // ── Walk lib/ + app/ for every file that touches the low-level senders ──
-function walk(dir: string, out: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name.startsWith(".")) continue
-    const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(name)) out.push(p)
-  }
-}
-const files: string[] = []
-walk(join(root, "lib"), files)
-walk(join(root, "app"), files)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so the root-level runtime files — `proxy.ts`, the edge middleware
+// that runs on EVERY request — were outside the corpus of an EGRESS guard.
+// `rootRuntimeFiles()` from the same survivor supplies them.
+const files = [...walkTs(join(root, "lib")), ...walkTs(join(root, "app")), ...rootRuntimeFiles(root)]
 
 const importers: string[] = []
 for (const abs of files) {
-  const src = readFileSync(abs, "utf8")
+  // BLANK COMMENTS FIRST. This scan used to read the file RAW, and a file was
+  // accused of touching the low-level senders because the word `sendSMS`
+  // appeared IN A COMMENT — app/actions/dispatch-showing.ts:243 says "the one
+  // the actual send path (sendSMS) reads", while the code calls dispatchViaSms.
+  // That is the CLAUDE.md section 2 defect: a guard that cannot tell code from
+  // prose either accuses live code or, in the other direction, is satisfied by
+  // a mention. blankComments preserves offsets, so nothing downstream shifts.
+  const src = blankComments(readFileSync(abs, "utf8"))
   if (src.includes(MESSAGING) && SENDERS.test(src)) importers.push(relative(root, abs).replace(/\\/g, "/"))
+}
+
+// ── POSITIVE CONTROL ─────────────────────────────────────────────────────────
+// A broken scanner and a clean tree both report zero. Prove the finder still
+// fires on a REAL sender call, and stays quiet on the same text commented out.
+{
+  const live = `import { x } from "${MESSAGING}"\nawait sendSMS(to, body)\n`
+  const prose = `import { x } from "${MESSAGING}"\n// await sendSMS(to, body)\n`
+  const sees = (t: string) => { const b = blankComments(t); return b.includes(MESSAGING) && SENDERS.test(b) }
+  if (!sees(live)) { console.error("  ✗ POSITIVE CONTROL FAILED — the finder no longer recognises a real sendSMS call"); process.exit(1) }
+  if (sees(prose)) { console.error("  ✗ CONTROL FAILED — a commented-out sendSMS is still being counted as code"); process.exit(1) }
+  console.log("  ✓ positive control · a real sendSMS call is still caught, a commented one is not")
 }
 
 console.log("\n[1 · every file touching the low-level senders is on the reviewed allowlist]")
@@ -131,7 +147,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/twilio-tenancy.ts":           "Twilio SUBACCOUNT administration (creates per-tenant subaccounts; admin API, not a message)",
   "lib/voice/twilio-voice.ts":              "Twilio number VoiceUrl binding for the AI reception lane (admin API config write, not a message)",
   "app/actions/superadmin/platform-reception.ts": "PLATFORM line VoiceUrl binding (master-account admin API config write, not a message)",
-  "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the TCPA chokepoint (enforceTCPACompliance) + vendor budget gate run INSIDE this module BEFORE the Twilio request (same governance as the Vapi lane it replaces)",
+  "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the ONE pre-dial gate stack (lib/voice/outbound-call-gates.ts: autonomy → suppression incl. contact_suppression_list → TCPA chokepoint → de-conflict → vendor budget) runs to completion BEFORE the Twilio request; a refusal short-circuits and never dials",
   "app/api/voice/relay/plan/route.ts":      "live-call transfer redirect (call-control REST on an ALREADY-GATED in-progress call; secret-gated endpoint, not a message)",
   "lib/voice/a2p-registration.ts":          "A2P 10DLC carrier registration (TrustHub/Messaging admin APIs — compliance filings, not messages)",
   "app/api/voice/twilio/intelligence/route.ts": "Conversational Intelligence transcript/operator READS (GET-only merge onto the call ledger, not a message)",
@@ -140,6 +156,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "app/api/voice/twilio/whisper/route.ts":  "warm-bridge caller redirect (call-control on the SAME already-gated live call; token-gated endpoints we author ourselves)",
   "lib/platform/provider-posture.ts":       "provider fleet posture sweeps (round 24) — READ-ONLY GETs: Twilio subaccount status/number lists/usage records + SendGrid domain-auth/suppressions; superadmin 'providers'-gated + audited; never a message",
   "lib/voice/number-provisioning.ts":       "shared number search/purchase/webhook-bind pipeline (round 26) — Twilio ADMIN API only (AvailablePhoneNumbers search, IncomingPhoneNumbers purchase, VoiceUrl/SmsUrl binding); one implementation for the tenant action and the staff fleet console (providers+write gated, audited, type-the-number release confirm); never a message",
+  "lib/voice/call-recording.ts":            "call RECORDING control on an already-connected call — POST /Calls/<sid>/Recordings.json, which starts a Recording resource against a live call and sends nothing to anyone. Reached only from the inbound answer path, where `<Gather>` cannot carry a record attribute and `<Record>` would replace the conversation instead of capturing it; the outbound lane arms recording at dial time behind twilio-outbound.ts's gate stack instead. Recording is per-brokerage opt-in and the spoken disclosure is flipped in the same breath (lib/communication/call-disclosures.ts), so the callee is told before it starts. A failure returns honestly — the call is simply NOT recorded — rather than being reported as success.",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

@@ -21,7 +21,7 @@
  */
 import { validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES, platformStaffCan } from "../lib/platform/platform-staff-roster"
 import { roleDashboardRoute, ROLE_DASHBOARD_ROUTES } from "../lib/kernel/role-routes"
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 let passed = 0, failed = 0
@@ -79,13 +79,72 @@ async function main() {
   check("revoke breaks every gate condition (user_type contact + platform_role null + inactive)",
     /user_type: "contact", platform_role: null, status: "inactive"/.test(actionSrc))
 
-  for (const f of ["lib/kernel/users.ts", "lib/kernel/onboarding.ts", "app/dashboard/components/root-os/root-role-resolver.tsx"]) {
-    const src = readFileSync(join(process.cwd(), f), "utf8")
-    check(`${f} imports the canonical route map (role-routes)`,
-      /from ['"](@\/lib\/kernel\/role-routes|\.\/role-routes)['"]/.test(src))
-    // No file may hardcode the route strings any more.
-    check(`${f} has no hardcoded dashboard route literals`,
-      !/["']\/dashboard\/brokerage["']/.test(src) && !/["']\/dashboard\/coordinator["']/.test(src))
+  // THE TWO ROUTE MAPS MUST AGREE.
+  //
+  // This block used to iterate a hand-typed list of three files, one of which
+  // (root-os/root-role-resolver.tsx) has since been deleted as dead code — and a
+  // hardcoded readFileSync of a deleted path throws ENOENT, so removing dead code
+  // would have broken the guard. Same brittleness the legacy-table guard had: the
+  // right assertion over the wrong input.
+  //
+  // A first rewrite scanned lib/ for ANY dashboard route literal, which was too
+  // broad — it flagged CTA hrefs in a briefing module, where linking to a page is
+  // not the same thing as declaring where a role lands. Breadth is not rigour.
+  //
+  // The invariant that actually matters is CONSISTENCY between the two maps that
+  // legitimately both exist:
+  //   · ROLE_DASHBOARD_ROUTES (lib/kernel/role-routes) — role → landing route
+  //   · ROUTE_ROLE_REQUIREMENTS (lib/kernel/helpers)   — route prefix → allowed roles
+  // They are inverses of each other over an overlapping domain. If they drift, a
+  // role lands on a page its own role is refused — a redirect loop at login, for
+  // that role only, which is exactly the kind of break nobody sees until a
+  // customer with that role signs in.
+  {
+    const helpersSrc = readFileSync(join(process.cwd(), "lib/kernel/helpers.ts"), "utf8")
+    const block = helpersSrc.slice(
+      helpersSrc.indexOf("ROUTE_ROLE_REQUIREMENTS"),
+      helpersSrc.indexOf("}", helpersSrc.indexOf("ROUTE_ROLE_REQUIREMENTS")),
+    )
+    // Capture the RAW array body, not just its string literals: one entry is
+    // `[...STAFF_ROLES]`, and a literals-only parse turns that into an empty
+    // array — which then reports every role landing under /dashboard as locked
+    // out. That was a parser bug reporting seven false findings, and a guard that
+    // cries wolf gets switched off.
+    const requirements = new Map<string, { roles: string[]; raw: string }>()
+    for (const m of block.matchAll(/"([^"]+)":\s*\[([^\]]*)\]/g)) {
+      requirements.set(m[1], {
+        roles: Array.from(m[2].matchAll(/"([^"]+)"/g)).map((x) => x[1]),
+        raw: m[2],
+      })
+    }
+
+    // CANARY — a parse that silently yields nothing would pass every check below.
+    check(`the route→roles map parsed (${requirements.size} prefixes)`, requirements.size >= 8)
+
+    const mismatched: string[] = []
+    for (const [role, route] of Object.entries(ROLE_DASHBOARD_ROUTES)) {
+      // Longest matching prefix wins, the way a real prefix guard resolves.
+      const prefix = [...requirements.keys()]
+        .filter((p) => route === p || route.startsWith(p + "/"))
+        .sort((a, b) => b.length - a.length)[0]
+      if (!prefix) continue                       // route not access-gated at all
+      const entry = requirements.get(prefix)!
+      // A spread means the allow-list is computed elsewhere; this static check
+      // cannot resolve it and must not guess.
+      if (entry.raw.includes("...")) continue
+      if (!entry.roles.includes(role)) {
+        mismatched.push(`${role} lands on ${route} but ${prefix} allows only [${entry.roles.join(", ")}]`)
+      }
+    }
+    check(`every role can reach the dashboard it lands on (${mismatched.length})`,
+      mismatched.length === 0)
+    if (mismatched.length) mismatched.slice(0, 5).forEach((m) => console.log(`      ${m}`))
+
+    for (const f of ["lib/kernel/users.ts", "lib/kernel/onboarding.ts"]) {
+      const src = readFileSync(join(process.cwd(), f), "utf8")
+      check(`${f} imports the canonical route map (role-routes)`,
+        /from ['"](@\/lib\/kernel\/role-routes|\.\/role-routes)['"]/.test(src))
+    }
   }
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&

@@ -232,16 +232,58 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
     }
 
     // ── 9. Write smart_assistant_suggestions row ─────────────────────────────
-    await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            params.agentUserId,
-      title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
-      description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
-      context_type:        "inbox_reply",
-      action_type:         "accept_or_edit_draft",
-      action_payload_json: JSON.stringify({ draftId: draft.id, conversationId: params.conversationId }),
-      priority:            confidenceScore >= 80 ? "high" : "medium",
-      status:              "pending",
-    })
+    // smart_assistant_suggestions.agent_id is agents-class. Writing the USERS id was
+    // FK-rejected, so the draft was saved but the "AI Reply Ready" nudge that tells
+    // the agent it exists never reached the assistant panel.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const suggestionAgentId = await resolveUserIdToAgentRecord(params.agentUserId, params.brokerageId)
+
+    // TENANT: the RECIPIENT AGENT'S `users.brokerage_id`, resolved through the
+    // user this suggestion is addressed to — NOT `params.brokerageId`.
+    // `getContactCopilotSuggestions` (app/actions/contact-details.ts) reads
+    // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` with both
+    // halves from ONE `getAgentContext()`, whose `brokerageId` is that session
+    // user's `users.brokerage_id`. The two agree on every live row today, and the
+    // point of resolving rather than assuming is that when they ever disagree the
+    // READER decides which is right — and the reader reads `users`.
+    const { resolveRecipientBrokerageId } = await import("@/lib/notifications/recipient-tenant")
+    const suggestionTenant = await resolveRecipientBrokerageId(supabase, params.agentUserId)
+
+    // NO AGENT ROW, NO SUGGESTION. Both readers of this table filter `agent_id`;
+    // an unattributed suggestion reaches nobody however it is stamped, and
+    // `smart_assistant_suggestions.agent_id` is agents-class, so a null here is
+    // not "the desk's" — it is nobody's.
+    if (!suggestionAgentId) {
+      console.error(
+        `[ai-reply-coach] suggestion skipped — users.id ${params.agentUserId} has no agents row in brokerage ` +
+        `${params.brokerageId}; the draft was saved but no nudge was written`,
+      )
+    } else if (!suggestionTenant.ok) {
+      console.error(`[ai-reply-coach] suggestion skipped — recipient tenant unresolved: ${suggestionTenant.reason}`)
+    } else if (!suggestionTenant.brokerageId) {
+      console.error(
+        `[ai-reply-coach] suggestion skipped — users.id ${params.agentUserId} has no users.brokerage_id; ` +
+        "an untenanted suggestion is filtered out of the surface that owns it",
+      )
+    } else {
+      const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+        agent_id:            suggestionAgentId,
+        brokerage_id:        suggestionTenant.brokerageId,
+        title:               `AI Reply Ready — ${contact.first_name} ${contact.last_name}`,
+        description:         `${resolvedTone} draft prepared for ${params.channel} reply (confidence: ${confidenceScore}%)`,
+        context_type:        "inbox_reply",
+        action_type:         "accept_or_edit_draft",
+        action_payload_json: JSON.stringify({ draftId: draft.id, conversationId: params.conversationId }),
+        priority:            confidenceScore >= 80 ? "high" : "medium",
+        status:              "pending",
+      })
+      // supabase-js RESOLVES a refused insert; undestructured, the "AI Reply
+      // Ready" nudge could fail on every call and this action still reported the
+      // draft as delivered.
+      if (suggestionError) {
+        console.error("[ai-reply-coach] smart_assistant_suggestions insert refused:", suggestionError.message)
+      }
+    }
 
     // ── 10. Kernel event — non-blocking ─────────────────────────────────────
     await processKernelEvent({

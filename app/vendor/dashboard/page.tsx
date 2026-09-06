@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { readRoleGrants, selectVendorGrant } from '@/lib/auth/role-grants'
 import { getAllVendorBookings } from '@/app/actions/vendor-marketplace'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Briefcase, DollarSign, Star, Clock, CheckCircle2 } from 'lucide-react'
+import { Briefcase, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
 import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
@@ -15,6 +16,8 @@ import {
   ExternalNextActionsPanel,
   ExternalBillingEarningsPanel,
 } from '../../(external-portal)/components/os'
+import { getVendorJobs } from '@/app/actions/vendor-portal'
+import { getVendorEarningsSummary } from '@/app/actions/vendor-payments'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,15 +26,30 @@ export default async function VendorDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get vendor ID for this user (canonical linkage: user_role_assignments.vendor_id)
-  const { data: ra } = await supabase
-    .from('user_role_assignments')
-    .select('vendor_id')
-    .eq('user_id', user.id)
-    .not('vendor_id', 'is', null)
-    .maybeSingle()
+  // Get vendor ID for this user (canonical linkage: user_role_assignments.vendor_id).
+  //
+  // Read every grant and choose. The table is UNIQUE on (user_id, role), not on
+  // user_id, so `.maybeSingle()` over the vendor-bearing grants is an ERROR the
+  // moment there are two — and supabase-js resolves it, so this page fell through
+  // to the `|| user.id` branch and spent the rest of the render asking vendor
+  // tables for an id from the USERS space. The brokerage anchor further down now
+  // comes off this SAME grant instead of repeating the broken read.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error('[vendor/dashboard] role grant read failed:', grantsResult.error)
+  }
+  const { grant: vendorGrant, ambiguous } = grantsResult.ok
+    ? selectVendorGrant(grantsResult.grants)
+    : { grant: null, ambiguous: false }
+  if (ambiguous) {
+    console.error('[vendor/dashboard] user', user.id, 'is linked to more than one vendor')
+  }
 
-  const vendorId = (ra?.vendor_id as string | null) || user.id
+  // NOTE (pre-existing, deliberately unchanged here): `|| user.id` substitutes a
+  // users.id where every panel below expects a vendors.id. Different id spaces —
+  // it buys an empty result with an ambiguous id attached. Left alone so this
+  // change is only about the read; it is called out rather than absorbed.
+  const vendorId = (vendorGrant?.vendor_id as string | null) || user.id
 
   let bookings: any[] = []
   try {
@@ -43,18 +61,89 @@ export default async function VendorDashboardPage() {
   const completed = bookings.filter((b: any) => b.status === 'completed')
   const pending = bookings.filter((b: any) => b.status === 'pending')
 
-  // Today's AI brief — open jobs, due-soon deliverables, overdue
-  const { data: vendorRow } = await supabase
-    .from('user_role_assignments')
-    .select('brokerage_id')
-    .eq('user_id', user.id)
-    .not('vendor_id', 'is', null)
-    .maybeSingle()
+  // The next-actions and earnings panels below were mounted on hardcoded [] while
+  // both loaders already existed and are gated on the SAME vendorId resolved above
+  // (user_role_assignments.vendor_id).
+  let vendorJobs: any[] = []
+  try {
+    vendorJobs = await getVendorJobs(vendorId)
+  } catch {
+    // getVendorJobs throws on a query error and returns [] when the auth gate fails.
+    vendorJobs = []
+  }
 
+  // An open job IS the vendor's next action; 'update_status' is the only action type
+  // the panel defines that a job maps onto without inventing a document or milestone.
+  const vendorNextActions = vendorJobs
+    .filter((j: any) => !['completed', 'cancelled'].includes(j.status))
+    .map((j: any) => {
+      const assignment = Array.isArray(j.vendor_assignments) ? j.vendor_assignments[0] : j.vendor_assignments
+      const txn = Array.isArray(assignment?.transactions) ? assignment.transactions[0] : assignment?.transactions
+      const scheduled = assignment?.scheduled_date ?? null
+      return {
+        id: j.id,
+        type: 'update_status' as const,
+        title: j.job_title,
+        description: txn?.property_address ?? undefined,
+        dueDate: scheduled ?? undefined,
+        // Derived from the real scheduled date only — on or past the scheduled day
+        // is urgent, everything else is medium. No priority column exists.
+        priority: (scheduled && new Date(scheduled) <= new Date() ? 'high' : 'medium') as 'high' | 'medium',
+      }
+    })
+
+  // getVendorEarningsSummary returns this vendor's invoices plus the vendor_earnings
+  // roll-ups behind the Earnings panel. It already returns all-zero on an auth miss.
+  let earningsSummary: Awaited<ReturnType<typeof getVendorEarningsSummary>> | null = null
+  try {
+    earningsSummary = await getVendorEarningsSummary(vendorId)
+  } catch {
+    earningsSummary = null
+  }
+
+  // vendor_invoices.status vocabulary is draft/submitted/viewed/paid/overdue/cancelled/
+  // disputed; the panel's is pending/approved/paid/processing. Map rather than pass a
+  // status it does not render, and drop cancelled invoices instead of showing them as
+  // pending money.
+  const vendorEarnings = (earningsSummary?.invoices ?? [])
+    .filter((i) => i.status !== 'cancelled')
+    .map((i) => ({
+      id: i.id,
+      description: i.invoiceNumber ? `Invoice ${i.invoiceNumber}` : 'Invoice',
+      amount: i.total ?? 0,
+      status: (i.status === 'paid'
+        ? 'paid'
+        : i.status === 'submitted' || i.status === 'viewed'
+          ? 'processing'
+          : 'pending') as 'paid' | 'processing' | 'pending',
+      paidDate: i.paidAt ?? undefined,
+    }))
+
+  const paidInvoices = (earningsSummary?.invoices ?? []).filter((i) => i.paidAt)
+  const paidSince = (since: Date) =>
+    paidInvoices
+      .filter((i) => new Date(i.paidAt as string) >= since)
+      .reduce((sum, i) => sum + (i.total ?? 0), 0)
+  const now = new Date()
+  const vendorTotals = {
+    paid: earningsSummary?.paidOutAmount ?? 0,
+    // Everything earned but not yet paid out — vendor_earnings moves pending → available
+    // → paid_out, so both pre-payout states are "pending" to the vendor.
+    pending: (earningsSummary?.pendingAmount ?? 0) + (earningsSummary?.availableAmount ?? 0),
+    // The summary exposes no period breakdown, so MTD/YTD are summed from the paid
+    // invoices it does return rather than left at a false zero.
+    mtd: paidSince(new Date(now.getFullYear(), now.getMonth(), 1)),
+    ytd: paidSince(new Date(now.getFullYear(), 0, 1)),
+  }
+
+  // Today's AI brief — open jobs, due-soon deliverables, overdue. The tenant comes
+  // off the grant already resolved at the top of this page rather than a second
+  // copy of the same broken read, so the brief can never be scoped to a different
+  // brokerage than the jobs above it.
   const vendorBrief = await generateUserTypeBrief({
     userType: 'vendor',
     userId: user.id,
-    brokerageId: vendorRow?.brokerage_id ?? null,
+    brokerageId: vendorGrant?.brokerage_id ?? null,
   })
 
   return (
@@ -68,6 +157,9 @@ export default async function VendorDashboardPage() {
         <div className="flex items-center gap-2">
           <Link href="/vendor/invoices">
             <Button size="sm" variant="outline">Invoices</Button>
+          </Link>
+          <Link href="/vendor/reviews">
+            <Button size="sm" variant="outline">Reviews</Button>
           </Link>
           <Link href="/vendor/jobs">
             <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">View Jobs</Button>
@@ -159,7 +251,7 @@ export default async function VendorDashboardPage() {
         <ExternalNextActionsPanel
           partnerType="vendor"
           partnerId={vendorId}
-          actions={[]}
+          actions={vendorNextActions}
           onCompleteAction={async (actionId: string, context: { partnerId: string; partnerType: string }) => {
             const res = await fetch("/api/external-portal/actions/complete", {
               method: "POST",
@@ -174,8 +266,8 @@ export default async function VendorDashboardPage() {
       <ExternalBillingEarningsPanel
         partnerType="vendor"
         partnerId={vendorId}
-        earnings={[]}
-        totals={{ pending: 0, paid: 0, mtd: 0, ytd: 0 }}
+        earnings={vendorEarnings}
+        totals={vendorTotals}
       />
     </div>
   )

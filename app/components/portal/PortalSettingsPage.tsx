@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle } from "lucide-react"
 import Link from "next/link"
-import { updateContactProfile } from "@/app/actions/portal-settings"
+import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
 
 interface Contact {
   id: string
@@ -39,7 +39,59 @@ interface PortalSettingsPageProps {
 }
 
 export default function PortalSettingsPage({ contact, contactId }: PortalSettingsPageProps) {
+  // Both privacy controls below used to render with no onClick at all. These
+  // are CCPA/CPRA and GDPR obligations with a statutory clock, so a control
+  // that silently does nothing is worse than no control — the client believes
+  // they have exercised a right.
+  const [dsarPending, setDsarPending] = useState<"export" | "delete" | null>(null)
+  const [dsarResult, setDsarResult] = useState<{ type: "export" | "delete"; dueDate?: string } | null>(null)
+  const [dsarError, setDsarError] = useState<string | null>(null)
+
+  async function fileRequest(requestType: "export" | "delete") {
+    if (requestType === "delete" && !confirm(
+      "This files a formal request to delete your account and personal data. Your brokerage must action it, and they will contact you to confirm. Continue?",
+    )) return
+    setDsarPending(requestType)
+    setDsarError(null)
+    try {
+      const res = await fileDataSubjectRequestFromPortal({ contactId, requestType })
+      if (!res.success) {
+        setDsarError(res.error ?? "We could not file that request. Please contact your agent.")
+        return
+      }
+      setDsarResult({ type: requestType, dueDate: res.dueDate })
+    } finally {
+      setDsarPending(null)
+    }
+  }
+
   const router = useRouter()
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [photoMsg, setPhotoMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // The 2MB limit is enforced HERE as well as advertised below the button.
+  // Without it the file goes to storage, Supabase rejects it, and the client
+  // sees a raw provider error for a rule we already told them about.
+  const MAX_AVATAR_BYTES = 2 * 1024 * 1024
+
+  const handlePhotoUpload = async (file: File) => {
+    setPhotoMsg(null)
+    if (file.size > MAX_AVATAR_BYTES) {
+      setPhotoMsg({ ok: false, text: "That image is over 2MB. Pick a smaller one." })
+      return
+    }
+    setUploadingPhoto(true)
+    const res = await uploadProfilePhoto(contact.id, file)
+    setUploadingPhoto(false)
+    // Returns { success, url, error } and never throws — read it.
+    if (res.success) {
+      setPhotoMsg({ ok: true, text: "Photo updated." })
+      router.refresh()
+    } else {
+      setPhotoMsg({ ok: false, text: res.error ?? "That photo could not be uploaded." })
+    }
+  }
+
   const [isSaving, setIsSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -208,12 +260,36 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                 <AvatarImage src={contact.avatar_url || "/placeholder.svg"} alt={displayName} />
                 <AvatarFallback className="bg-primary text-primary-foreground text-2xl">{initials}</AvatarFallback>
               </Avatar>
+              {/* Had no onClick, no file input, nothing. uploadProfilePhoto was
+                  complete — storage upload, signed URL for the private bucket,
+                  contact row update — with ZERO callers, and this file already
+                  imported two of its siblings from the same module. */}
               <div className="space-y-2">
-                <Button variant="outline" size="sm">
-                  <Camera className="h-4 w-4 mr-2" />
-                  Upload Photo
-                </Button>
+                <label htmlFor="portal-avatar-input">
+                  <Button variant="outline" size="sm" asChild>
+                    <span className="cursor-pointer">
+                      <Camera className="h-4 w-4 mr-2" />
+                      {uploadingPhoto ? "Uploading…" : "Upload Photo"}
+                    </span>
+                  </Button>
+                </label>
+                <input
+                  id="portal-avatar-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/gif,image/webp"
+                  className="hidden"
+                  disabled={uploadingPhoto}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) handlePhotoUpload(f)
+                  }}
+                />
                 <p className="text-xs text-muted-foreground">JPG, PNG or GIF. Max size 2MB.</p>
+                {photoMsg && (
+                  <p className={`text-xs ${photoMsg.ok ? "text-emerald-600" : "text-destructive"}`}>
+                    {photoMsg.text}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -487,8 +563,17 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Get a copy of all your data including documents, messages, and activity
                   </p>
                 </div>
-                <Button variant="outline" size="sm">
-                  Request Data Export
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileRequest("export")}
+                  disabled={dsarPending !== null || dsarResult?.type === "export"}
+                >
+                  {dsarPending === "export"
+                    ? "Filing request..."
+                    : dsarResult?.type === "export"
+                      ? "Request filed"
+                      : "Request Data Export"}
                 </Button>
               </div>
 
@@ -501,9 +586,31 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Permanently delete your account and all associated data
                   </p>
                 </div>
-                <Button variant="destructive" size="sm">
-                  Delete Account
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => fileRequest("delete")}
+                  disabled={dsarPending !== null || dsarResult?.type === "delete"}
+                >
+                  {dsarPending === "delete"
+                    ? "Filing request..."
+                    : dsarResult?.type === "delete"
+                      ? "Request filed"
+                      : "Delete Account"}
                 </Button>
+
+                {/* Say what actually happens. Deletion is a governed, audited
+                    act with a human in the loop — the button files a request,
+                    it does not erase anything on the spot, and pretending
+                    otherwise would be the same lie in the other direction. */}
+                {dsarResult && (
+                  <p className="text-sm text-green-700">
+                    Your {dsarResult.type === "delete" ? "deletion" : "data export"} request has been
+                    filed{dsarResult.dueDate ? ` and is due by ${new Date(dsarResult.dueDate).toLocaleDateString()}` : ""}.
+                    Your brokerage has been notified and will contact you.
+                  </p>
+                )}
+                {dsarError && <p className="text-sm text-destructive">{dsarError}</p>}
               </div>
             </CardContent>
           </Card>

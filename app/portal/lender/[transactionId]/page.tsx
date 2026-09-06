@@ -12,7 +12,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Upload,
   Calendar,
   User,
   Phone,
@@ -39,6 +38,31 @@ const MILESTONE_STATUS_CONFIG: Record<string, { icon: any; color: string }> = {
   in_progress: { icon: Clock, color: "text-blue-600" },
   pending: { icon: Clock, color: "text-muted-foreground" },
   overdue: { icon: AlertCircle, color: "text-red-600" },
+  // A milestone the transaction has no row for yet. Distinct from "pending",
+  // which means the row exists and is waiting.
+  not_started: { icon: Clock, color: "text-muted-foreground" },
+}
+
+/**
+ * The five lender-visible milestones, each either its real row or a NOT-STARTED
+ * placeholder.
+ *
+ * This card used to render `milestones` — the rows that happen to exist — so a
+ * lender saw a partial list and could not tell an outstanding step from one
+ * nobody had recorded. `LENDER_VISIBLE_MILESTONES` (app/actions/lender-portal.ts:4)
+ * is the same list the server action filters the query by
+ * (app/actions/lender-portal-actions.ts:73), so the entitlement and the display
+ * are now driven by ONE vocabulary rather than two — and a milestone added to
+ * that list shows up here as an outstanding step instead of silently not
+ * existing.
+ */
+function mergeLenderMilestones(rows: any[]) {
+  const byName = new Map<string, any>()
+  for (const r of rows) if (r?.milestone_name && !byName.has(r.milestone_name)) byName.set(r.milestone_name, r)
+  return LENDER_VISIBLE_MILESTONES.map((name) => {
+    const row = byName.get(name)
+    return row ?? { id: `not-started:${name}`, milestone_name: name, status: "not_started", target_date: null }
+  })
 }
 
 function formatCurrency(amount: number | null | undefined): string {
@@ -235,11 +259,11 @@ export default async function LenderTransactionDetailPage({
               <CardDescription>Key milestones for this loan</CardDescription>
             </CardHeader>
             <CardContent>
-              {milestones.length === 0 ? (
+              {mergeLenderMilestones(milestones).length === 0 ? (
                 <p className="text-muted-foreground text-center py-4">No milestones set yet</p>
               ) : (
                 <div className="space-y-3">
-                  {milestones.map((milestone: any) => {
+                  {mergeLenderMilestones(milestones).map((milestone: any) => {
                     const statusCfg = MILESTONE_STATUS_CONFIG[milestone.status] || MILESTONE_STATUS_CONFIG.pending
                     const StatusIcon = statusCfg.icon
 
@@ -264,7 +288,7 @@ export default async function LenderTransactionDetailPage({
                         <Badge
                           variant={milestone.status === "completed" ? "default" : "secondary"}
                         >
-                          {milestone.status}
+                          {String(milestone.status).replace(/_/g, " ")}
                         </Badge>
                       </div>
                     )

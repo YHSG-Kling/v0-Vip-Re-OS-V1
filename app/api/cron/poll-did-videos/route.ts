@@ -14,6 +14,8 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server"
+import { classifyDidError } from "@/lib/did/contract"
+import { didRequest } from "@/lib/did/gateway"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   createCronRunContextAction,
@@ -27,6 +29,57 @@ import { emitEventFromCron } from "@/lib/orchestrator/internal"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 const DID_API_BASE = "https://api.d-id.com"
+
+/**
+ * CLOSE OUT the render ledger row for one D-ID job.
+ *
+ * `video_render_log` is the per-attempt cost/SLA/debug ledger
+ * (scripts/992-create-video-render-log.sql). Its `status` carries DEFAULT
+ * 'submitted' and its `error_message` had no writer at all, so the render-attempt
+ * list an agent sees (app/components/content-studio/LinkToVideoGenerator.tsx:614,
+ * fed by app/actions/link-to-video.ts:586) showed every attempt — successes and
+ * hard failures alike — as a permanent "submitted" with no reason attached. The
+ * project row already learned the outcome at each of the four terminal points
+ * below; the ledger never did.
+ *
+ * Keyed on project_id AND provider_job_id so a re-render's ledger line is not
+ * overwritten by the outcome of the previous attempt: the submit route
+ * (app/api/did/generate-video/route.ts) now stamps the talk id on the row it
+ * inserts. Rows written before that stamp existed carry a NULL job id and are
+ * left alone rather than being back-filled with a guess.
+ *
+ * Best-effort: the project's own status is the source of truth for the agent, and
+ * a refused audit write must never turn a delivered video into a failure. But the
+ * refusal IS read and logged (CLAUDE.md §3) — a silently swallowed one is how
+ * this ledger came to look empty.
+ */
+async function recordRenderOutcome(
+  supabase: ReturnType<typeof createServiceClient>,
+  projectId: string,
+  providerJobId: string | null | undefined,
+  outcome: { status: string; errorMessage?: string | null; renderDurationSeconds?: number | null },
+): Promise<void> {
+  if (!providerJobId) return
+  // Every column NAMED, no spread. A `{ ...patch }` update object is opaque to
+  // every static scanner in this repo, and an opaque write does not merely hide
+  // these three columns — it suppresses the honest finding still outstanding on
+  // this table (`cost_usd`, which has no provider price source and therefore
+  // still has no writer). Hiding a real gap is worse than leaving it visible.
+  const { error } = await supabase
+    .from("video_render_log")
+    .update({
+      status: outcome.status,
+      error_message: outcome.errorMessage ?? null,
+      render_duration_seconds: outcome.renderDurationSeconds ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("project_id", projectId)
+    .eq("provider_job_id", providerJobId)
+  if (error) {
+    console.error(`[poll-did-videos] render log outcome not recorded for ${projectId}: ${error.message}`)
+  }
+}
+
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -84,6 +137,18 @@ export async function GET(request: NextRequest) {
       results.processed++
 
       try {
+        // ai_video_projects.agent_id is agents-class since m366. Every notify /
+        // event hand-off below writes a USERS id (notifications.user_id,
+        // lifecycle_events.actor_user_id, the payload's agent_user_id), so the
+        // owner is resolved once per row. Null = the agents row is gone; those
+        // hand-offs are then skipped with a line naming the row, never sent with
+        // the agents id standing in for a users id.
+        const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+        const agentUserId = video.agent_id ? await resolveAgentRecordToUserId(video.agent_id) : null
+        if (video.agent_id && !agentUserId) {
+          console.error(`[poll-did-videos] no users row behind agents.id=${video.agent_id} (project ${video.id}) — owner notifications skipped`)
+        }
+
         // Engine by job: clips (V3 Pro), expressives (V4 — owner rule for
         // personalized avatar video), else the classic talks (V2 photo).
         const pmeta = video.provider_metadata as any
@@ -92,16 +157,71 @@ export async function GET(request: NextRequest) {
         const mode = pmeta?.mode === "clip" ? "clips"
           : pmeta?.mode === "expressive" || String(video.provider_job_id ?? "").startsWith("exp") ? "expressives"
           : "talks"
-        const statusRes = await fetch(`${DID_API_BASE}/${mode}/${video.provider_job_id}`, {
-          headers: { Authorization: auth, Accept: "application/json" },
-        })
+        // Through Connection OS — see lib/did/gateway.ts.
+        const statusRes = await didRequest<any>(
+          `/${mode}/${video.provider_job_id}`, { withExternalKey: false },
+        )
 
         if (!statusRes.ok) {
-          // Skip on transient API error — try again next cron tick
+          // A 404 is TERMINAL, not transient: D-ID no longer has this job (it
+          // expired, or the id was never valid), so no number of ticks will
+          // ever resolve it. `continue` on every non-ok status meant such a row
+          // sat at 'generating' forever, re-fetched on every tick, invisible to
+          // the agent waiting on the video. Same defect the avatar poll cron
+          // carried (m316) — fixing one and not its sibling is how a defect
+          // class survives being found.
+          if (statusRes.status === 404) {
+            await supabase
+              .from("ai_video_projects")
+              .update({
+                status: "failed",
+                provider_status: "not_found",
+                error_message: `D-ID no longer has job ${video.provider_job_id} (404 on /${mode}) — it expired or was never created`,
+                retry_count: (video.retry_count ?? 0) + 1,
+              })
+              .eq("id", video.id)
+            if (agentUserId) {
+              await supabase.from("notifications").insert({
+                user_id: agentUserId,
+                brokerage_id: video.brokerage_id,
+                type: "video_failed",
+                title: "Video Generation Failed",
+                body: "Your video could not be retrieved from the provider. Please try generating it again.",
+                entity_type: "video_project",
+                entity_id: video.id,
+                priority: "high",
+                is_read: false,
+              })
+            }
+            await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+              status: "failed",
+              errorMessage: `D-ID no longer has job ${video.provider_job_id} (404 on /${mode}) — it expired or was never created`,
+            })
+            results.failed++
+            continue
+          }
+          // Everything else goes through the ONE classifier. A 402 (out of
+          // credits) or 451 (moderation) never succeeds on a later tick;
+          // retrying them forever hides the answer from the agent waiting.
+          const errBody = statusRes.data ?? { description: statusRes.error }
+          const failure = classifyDidError(statusRes.status, errBody)
+          if (failure.retryable) continue
+          await supabase.from("ai_video_projects").update({
+            status: "failed",
+            provider_status: failure.kind,
+            error_message: failure.userMessage,
+            retry_count: (video.retry_count ?? 0) + 1,
+          }).eq("id", video.id)
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "failed",
+            errorMessage: failure.userMessage,
+          })
+          console.error(`[poll-did-videos] terminal for ${video.id}: ${failure.operatorMessage}`)
+          results.failed++
           continue
         }
 
-        const data = await statusRes.json()
+        const data = statusRes.data ?? {}
         const didStatus: string = data.status
 
         if (didStatus === "done") {
@@ -110,64 +230,63 @@ export async function GET(request: NextRequest) {
           const duration: number | null =
             typeof data.duration === "number" ? Math.round(data.duration) : null
 
-          // ─── Persist video to Supabase Storage ─────────────────────────────
-          // D-ID result URLs are signed and expire in ~24–48h. Download immediately
-          // and store in our own bucket so emails, newsletters, and portals can
-          // embed a durable URL that never expires.
+          // ─── Persist video + thumbnail to OUR bucket, immediately ──────────
+          // D-ID result URLs are signed and expire in ~24–48h. Download the bytes
+          // the moment the render completes and host them ourselves so an email,
+          // newsletter, portal card or listing page embeds a URL that is still
+          // alive next month.
+          //
+          // ONE MEDIA HOST. hostRenderedMedia is the same host every other
+          // finished byte rides (render coordinator, render endpoint, stills,
+          // thumbnails, voiceovers, the lib/did re-upload).
+          //
+          // THE COMMENT THAT STOOD HERE WAS FALSE. It said "Supabase storage
+          // first, Vercel Blob as the fallback, so a bucket copy exists even
+          // when storage is down." @vercel/blob was RETIRED on the owner's
+          // ruling that all file storage lives in Supabase buckets
+          // (lib/remotion/media-host.ts header, scripts/vercel-blob-retired-guard.ts):
+          // there is no second host and hostRenderedMedia THROWS when the bucket
+          // refuses. A stale comment at the exact spot a reader checks whether a
+          // failure is survivable is worse than none, because it says the
+          // failure is already handled.
+          //
+          // WHAT ACTUALLY HAPPENS WHEN THE RE-HOST FAILS is decided below, at
+          // finalVideoUrl — see the block there.
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
           let persistedVideoUrl: string | null = null
           let persistedThumbnailUrl: string | null = null
+          const agentFolder = video.agent_id ?? "shared"
 
           if (didResultUrl) {
             try {
-              const agentFolder = video.agent_id ?? "shared"
-              const videoPath = `agent-videos/${agentFolder}/${video.id}.mp4`
-
               const videoFetch = await fetch(didResultUrl)
               if (videoFetch.ok) {
-                const videoBuffer = await videoFetch.arrayBuffer()
-                const { error: uploadErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(videoPath, videoBuffer, {
-                    contentType: "video/mp4",
-                    upsert: true,
-                  })
-                if (!uploadErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(videoPath)
-                  persistedVideoUrl = publicUrl
-                } else {
-                  console.error("[poll-did-videos] Storage upload failed:", uploadErr)
-                }
+                const videoBuffer = Buffer.from(await videoFetch.arrayBuffer())
+                persistedVideoUrl = await hostRenderedMedia(
+                  supabase, `agent-videos/${agentFolder}/${video.id}.mp4`, videoBuffer, "video/mp4",
+                )
+              } else {
+                console.error(`[poll-did-videos] D-ID result download failed: HTTP ${videoFetch.status}`)
               }
             } catch (storageErr: any) {
-              // Non-fatal — fall back to D-ID URL if storage fails
-              console.error("[poll-did-videos] Video persist failed:", storageErr.message)
+              // Non-fatal — the D-ID URL is still recorded below, but say so:
+              // a delivered link that points at it has a 24–48h life.
+              console.error("[poll-did-videos] Video persist failed:", storageErr?.message ?? storageErr)
             }
           }
 
           if (didThumbnailUrl) {
             try {
-              const agentFolder = video.agent_id ?? "shared"
-              const thumbPath = `agent-videos/${agentFolder}/${video.id}-thumb.jpg`
-
               const thumbFetch = await fetch(didThumbnailUrl)
               if (thumbFetch.ok) {
-                const thumbBuffer = await thumbFetch.arrayBuffer()
-                const { error: thumbErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(thumbPath, thumbBuffer, {
-                    contentType: "image/jpeg",
-                    upsert: true,
-                  })
-                if (!thumbErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(thumbPath)
-                  persistedThumbnailUrl = publicUrl
-                }
+                const thumbBuffer = Buffer.from(await thumbFetch.arrayBuffer())
+                persistedThumbnailUrl = await hostRenderedMedia(
+                  supabase, `agent-videos/${agentFolder}/${video.id}-thumb.jpg`, thumbBuffer, "image/jpeg",
+                )
               }
-            } catch { /* thumbnail is non-critical */ }
+            } catch (thumbErr: any) {
+              console.error("[poll-did-videos] Thumbnail persist failed:", thumbErr?.message ?? thumbErr)
+            }
           }
 
           // ─── Pixel-level visual brand overlay (sprint C — now live) ─────────
@@ -295,22 +414,31 @@ export async function GET(request: NextRequest) {
                 // — the clean D-ID render stays available for MLS export.
                 const agentFolder = video.agent_id ?? "shared"
                 const brandedPath = `agent-videos/${agentFolder}/${video.id}.branded.mp4`
-                const { error: brandedUploadErr } = await supabase.storage
-                  .from("listing-media")
-                  .upload(brandedPath, result.outputBuffer, {
-                    contentType: "video/mp4",
-                    upsert: true,
-                  })
-                if (!brandedUploadErr) {
-                  const { data: { publicUrl } } = supabase.storage
-                    .from("listing-media")
-                    .getPublicUrl(brandedPath)
-                  brandedVideoUrl = publicUrl
+                // ONE HOST, ONE ISSUER. This was a bare
+                // `.storage.from("listing-media").upload(...)` followed by a
+                // bare `.getPublicUrl(...)` — the only bucket write in this file
+                // that skipped both the size/mime gate and
+                // lib/storage/document-buckets.ts#issueBucketObjectUrl, while
+                // the two persist calls a hundred lines above ride
+                // hostRenderedMedia. `listing-media` is public-media so the URL
+                // it minted was class-correct today; the point is that nothing
+                // was CHECKING that, and a reclassification of the bucket would
+                // have moved every other call site and silently missed this one.
+                // The bucket is named explicitly so the destination is exactly
+                // what it was before this change.
+                try {
+                  brandedVideoUrl = await hostRenderedMedia(
+                    supabase, brandedPath, result.outputBuffer, "video/mp4", "listing-media",
+                  )
                   // Compliance truth: only the BRAND band satisfies the visual
                   // overlay requirement (b-roll-only composites don't).
                   visualOverlayApplied = brandOverlayApplied
-                } else {
-                  console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr)
+                } catch (brandedUploadErr: any) {
+                  // hostRenderedMedia THROWS on a storage refusal (the Vercel
+                  // Blob fallback that used to swallow it is retired), so this
+                  // catch is what keeps the branded overlay best-effort: the
+                  // clean re-hosted cut below is still delivered.
+                  console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr?.message ?? brandedUploadErr)
                 }
               }
             } catch (overlayErr: any) {
@@ -320,9 +448,89 @@ export async function GET(request: NextRequest) {
             }
           }
 
-          // Use the branded URL when overlay succeeded → persisted URL → D-ID URL
-          const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
-          const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
+          // ─── THE DELIVERY URL IS OURS, OR THERE IS NO DELIVERY YET ────────
+          //
+          // This used to read:
+          //
+          //     const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl ?? didResultUrl
+          //     const finalThumbnailUrl = persistedThumbnailUrl ?? didThumbnailUrl
+          //
+          // …so when the re-host above failed, the row was still marked
+          // `completed` with D-ID's own URL in video_url. That is not a
+          // degraded copy of the right answer, it is the wrong answer that
+          // LOOKS like the right one: D-ID result URLs are signed and expire in
+          // ~24-48h (this file says so twenty lines up), and by then the string
+          // has been fanned out by the `done` branch below into an agent
+          // notification, the video.generated orchestrator event (email drafts,
+          // SMS drafts, social drafts, campaign assets), the listing page, the
+          // avatar→Remotion handoff and — via lead_capture_forms.landing_content
+          // — a PUBLIC lead-magnet landing page. Every one of those keeps a copy
+          // of a link that is dead by the weekend, and nothing reports a
+          // problem, because the row says completed.
+          //
+          // Owner ruling: "the storage of files, images, videos, etc. are to be
+          // stored on supabase buckets." A vendor URL in video_url is not that.
+          //
+          // FAIL CLOSED instead (CLAUDE.md §4 — "nobody checked" must never
+          // render as "checked and fine"): if we could not host the bytes, the
+          // render is NOT complete. The row stays `generating`, retry_count is
+          // bumped, and the next tick — three minutes away, inside D-ID's own
+          // 24-48h window — tries the download again. Nothing fans out, so
+          // nothing carries the expiring URL. didResultUrl is still recorded in
+          // provider_metadata (below) so an operator can fetch it by hand.
+          //
+          // BOUNDED, because a permanently broken bucket must not spin forever:
+          // after MAX_PERSIST_ATTEMPTS ticks the row fails loudly with a reason
+          // that names storage rather than the provider, which is the true
+          // cause. A thumbnail is COSMETIC and is deliberately not part of this
+          // gate — a missing poster frame does not justify withholding a video —
+          // but it is left NULL rather than pointed at D-ID.
+          const MAX_PERSIST_ATTEMPTS = 5
+          if (didResultUrl && !persistedVideoUrl) {
+            const attempts = (video.retry_count ?? 0) + 1
+            const giveUp = attempts >= MAX_PERSIST_ATTEMPTS
+            const reason =
+              `the D-ID render finished but its bytes could not be stored in our bucket ` +
+              `(attempt ${attempts}/${MAX_PERSIST_ATTEMPTS})`
+            const { error: holdErr } = await supabase
+              .from("ai_video_projects")
+              .update({
+                status: giveUp ? "failed" : "generating",
+                provider_status: "done",
+                retry_count: attempts,
+                error_message: giveUp
+                  ? "The video rendered, but it could not be saved to storage. Please try generating it again."
+                  : reason,
+                provider_metadata: {
+                  ...((video as any).provider_metadata ?? {}),
+                  did_result_url:       didResultUrl,
+                  did_thumbnail_url:    didThumbnailUrl,
+                  persisted_to_storage: false,
+                },
+              })
+              .eq("id", video.id)
+            // supabase-js RESOLVES refusals (CLAUDE.md §3) — read the error.
+            if (holdErr) {
+              console.error(`[poll-did-videos] could not record the persist failure for ${video.id}: ${holdErr.message}`)
+            }
+            console.error(`[poll-did-videos] ${video.id}: ${reason}${giveUp ? " — giving up" : " — will retry next tick"}`)
+            if (giveUp) {
+              await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+                status: "failed",
+                errorMessage: reason,
+              })
+              results.failed++
+            } else {
+              results.still_processing++
+            }
+            continue
+          }
+
+          // Use the branded URL when the overlay succeeded, else the clean
+          // re-hosted one. BOTH are objects in our own buckets; there is no
+          // third arm, by design.
+          const finalVideoUrl = brandedVideoUrl ?? persistedVideoUrl
+          const finalThumbnailUrl = persistedThumbnailUrl
 
           await supabase
             .from("ai_video_projects")
@@ -398,16 +606,16 @@ export async function GET(request: NextRequest) {
             console.error("[poll-did-videos] avatar→remotion handoff failed:", (e as Error).message)
           }
 
-          await supabase
-            .from("video_render_log")
-            .update({ render_duration_seconds: duration ?? null })
-            .eq("project_id", video.id)
-            .eq("provider", "did")
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "completed",
+            errorMessage: null,
+            renderDurationSeconds: duration ?? null,
+          })
 
           // Notify agent — schema: user_id, brokerage_id, type, title, body, entity_type, entity_id
-          if (video.agent_id) {
+          if (agentUserId) {
             await supabase.from("notifications").insert({
-              user_id: video.agent_id,
+              user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_ready",
               title: "Video Ready",
@@ -426,40 +634,52 @@ export async function GET(request: NextRequest) {
             entityId: video.id,
           }).catch((err) => console.error("[poll-did-videos] Kernel event failed:", err))
 
-          // Emit orchestrator event so handleVideoGenerated can auto-draft social posts /
-          // personal contact emails based on video_type
-          if (video.brokerage_id) {
-            await emitEventFromCron({
-              brokerage_id: video.brokerage_id,
-              user_id:      video.agent_id ?? undefined,
-              event_type:   "video.generated",
-              source:       "system",
-              dedupe_key:   `video.generated:${video.id}`,
-              payload: {
-                video_id:              video.id,
-                video_type:            video.video_type,
-                video_url:             persistedVideoUrl ?? didResultUrl ?? null,
-                thumbnail_url:         didThumbnailUrl ?? null,
-                listing_id:            (video as any).listing_id ?? null,
-                contact_id:            (video as any).contact_id ?? null,
-                marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
-                agent_user_id:         video.agent_id ?? null,
-              },
-            }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
-          }
-
-          // ─── Inter-manager bus: Asset Manager announces the finished render ──
-          // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,
-          // always) + Ads Manager (promote, promotable kinds only). Deduped per
-          // ai_video_project so re-polling never re-signals; coexists idempotently with
-          // the polling crons (listing-promo-social-publish) as a safety net.
+          // ─── Terminal announcements: fan-out + inter-manager bus ────────────
+          // DEFER BOTH when a composite is pending: if this D-ID job is just the AVATAR
+          // TRACK for a Remotion composition (target_composition_id), the FINAL deliverable
+          // is the branded composite (bookends + QR) that render-composition produces, and
+          // it announces on ITS completion. Announcing here would deliver the un-branded cut.
           //
-          // DEFER when a composite is pending: if this D-ID job is just the AVATAR TRACK for a
-          // Remotion composition (target_composition_id), the FINAL deliverable is the branded
-          // composite (bookends + QR) that render-composition produces — it publishes the handoff on
-          // ITS completion. Announcing the raw avatar here would deliver the un-branded cut.
-          const hasPendingComposite = !!(video.provider_metadata as any)?.target_composition_id
+          // The coordination publish already deferred; the video.generated fan-out did NOT,
+          // so every hybrid avatar→Remotion video was drafted into email, SMS, social and
+          // campaign assets pointing at the raw avatar clip minutes before the branded
+          // composite existed. Both now defer together, on the same condition.
+          //
+          // ONE SPELLING OF THE QUESTION (§6). This was an inline
+          // `!!meta.target_composition_id` here and nowhere else, so the email
+          // backfill and lib/video/playable-video — which face the exact same
+          // window — had no way to ask it. It is now the shared predicate that
+          // lib/video/avatar-render-orchestrator owns beside the key it reads.
+          const { declaresAvatarComposition } = await import("@/lib/video/avatar-render-orchestrator")
+          const hasPendingComposite = declaresAvatarComposition(video.provider_metadata)
           if (!hasPendingComposite) {
+            // Emit orchestrator event so handleVideoGenerated fans the finished video out
+            // to email + SMS drafts, the listing page, social drafts and campaign assets.
+            // NO URL is passed: the handler resolves the playable URL from the row through
+            // lib/video/playable-video, so the drafts carry the BRANDED, bucket-hosted cut
+            // rather than whatever snapshot was true at emit time.
+            if (video.brokerage_id) {
+              await emitEventFromCron({
+                brokerage_id: video.brokerage_id,
+                user_id:      agentUserId ?? undefined,
+                event_type:   "video.generated",
+                source:       "system",
+                dedupe_key:   `video.generated:${video.id}`,
+                payload: {
+                  video_id:              video.id,
+                  video_type:            video.video_type,
+                  listing_id:            (video as any).listing_id ?? null,
+                  contact_id:            (video as any).contact_id ?? null,
+                  marketing_campaign_id: (video as any).marketing_campaign_id ?? null,
+                  agent_user_id:         agentUserId ?? null,
+                },
+              }).catch((err) => console.error("[poll-did-videos] Orchestrator event failed:", err))
+            }
+
+            // Fast coordinated path — Asset Manager → Campaign Orchestrator (distribute,
+            // always) + Ads Manager (promote, promotable kinds only). Deduped per
+            // ai_video_project so re-polling never re-signals; coexists idempotently with
+            // the polling crons (listing-promo-social-publish) as a safety net.
             try {
               const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
               await publishVideoCoordinationSignals(video.id, supabase)
@@ -470,7 +690,8 @@ export async function GET(request: NextRequest) {
 
           results.completed++
         } else if (didStatus === "error" || didStatus === "rejected") {
-          const errorMsg: string = data.error?.description ?? data.error ?? "D-ID render failed"
+          // Structured {kind, description} → something the agent can act on.
+          const errorMsg: string = classifyDidError(null, data.error ?? data).userMessage
           const retryCount = video.retry_count ?? 0
 
           await supabase
@@ -483,9 +704,14 @@ export async function GET(request: NextRequest) {
             })
             .eq("id", video.id)
 
-          if (video.agent_id) {
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "failed",
+            errorMessage: errorMsg,
+          })
+
+          if (agentUserId) {
             await supabase.from("notifications").insert({
-              user_id: video.agent_id,
+              user_id: agentUserId,
               brokerage_id: video.brokerage_id,
               type: "video_failed",
               title: "Video Generation Failed",

@@ -18,6 +18,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -30,6 +31,7 @@ import {
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { generateEmail } from "@/app/actions/ai-content-generation"
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 // Previously most actions in this file trusted caller-supplied
 // brokerageId / createdBy / actorUserId / agentId. canAccessFeature
@@ -42,12 +44,15 @@ async function requireCaller(): Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
+  // supabase-js RESOLVES a refused read — destructure `error` or a blocked
+  // lookup is indistinguishable from "user has no brokerage".
+  const { data: u, error: userError } = await supabase
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  if (userError) return { ok: false, error: `Could not resolve your brokerage: ${userError.message}` }
+  if (!u?.brokerage_id) return { ok: false, error: "No brokerage associated with your account." }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
 }
 
@@ -61,13 +66,94 @@ export interface CreateEmailCampaignParams {
   content?: string
   sendDate?: string
   createdBy: string
+  /**
+   * THE UMBRELLA THIS EMAIL BELONGS TO — marketing_campaigns.id.
+   *
+   * `email_campaigns.marketing_campaign_id` was read in two places and written
+   * in none. lib/orchestrator/internal.ts:835 fans a finished video (and
+   * :1060 a finished image) into every asset sharing the umbrella, so a
+   * rendered video could never be embedded into the campaign email it was made
+   * for; lib/marketing/campaign-measurer.ts rolls child-asset engagement up to
+   * the parent campaign, so the ROI board scored every umbrella at zero email
+   * engagement. Same defect and same fix as qr_codes.marketing_campaign_id
+   * (lib/marketing/tracked-qr.ts:122) — an FK with no writer.
+   *
+   * Optional: an email campaign that belongs to no umbrella is normal, and NULL
+   * says exactly that.
+   */
+  marketingCampaignId?: string
+  /**
+   * THE AUDIENCE — contact_segments.segment_id.
+   *
+   * `email_campaigns.audience_segment_id` is read by
+   * lib/marketing/email-campaign-sender.ts:56 and drives PATH B of the sender:
+   * recipients resolved from active segment memberships. Nothing ever wrote the
+   * column, so Path B was unreachable — every campaign fell through to the
+   * broadcast path and went to the whole subscriber list, no matter what
+   * audience the agent had in mind. A segmented send was a feature the schema
+   * described and the product could not perform.
+   *
+   * Optional: no segment means the broadcast path, which is what already
+   * happened for every campaign ever created here.
+   */
+  audienceSegmentId?: string
+}
+
+/**
+ * The segments this brokerage actually has, derived from the membership ledger.
+ *
+ * There is NO segment catalogue table in this schema — `contact_segments`
+ * .segment_id carries no FK and nothing names a segment (the contact page's
+ * badge list records the same finding and shows an id prefix for the same
+ * reason). So the honest list of segments is the DISTINCT set of ids that have
+ * live members in the caller's own tenant, with that member count beside them:
+ * derived from real rows, inventing no catalogue and no label.
+ *
+ * ACTIVE MEMBERSHIPS ONLY — `removed_at IS NULL` — the same filter the sender
+ * applies, so a segment whose members have all been removed does not appear as
+ * a choice that would send to nobody.
+ */
+export async function listAudienceSegments() {
+  try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false as const, error: auth.error, segments: [] }
+
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("contact_segments")
+      .select("segment_id")
+      .eq("brokerage_id", auth.brokerageId)
+      .is("removed_at", null)
+      .limit(10_000)
+    // A refused read must not render as "this brokerage has no segments" — that
+    // reads as a clean empty picker and the agent silently broadcasts instead.
+    if (error) return { success: false as const, error: error.message, segments: [] }
+
+    const counts = new Map<string, number>()
+    for (const row of (data ?? []) as Array<{ segment_id: string | null }>) {
+      if (!row.segment_id) continue
+      counts.set(row.segment_id, (counts.get(row.segment_id) ?? 0) + 1)
+    }
+    const segments = [...counts.entries()]
+      .map(([segmentId, memberCount]) => ({ segmentId, memberCount }))
+      .sort((a, b) => b.memberCount - a.memberCount)
+    return { success: true as const, segments }
+  } catch (error) {
+    return handleError(error, "listAudienceSegments")
+  }
 }
 
 export interface UpdateEmailCampaignParams {
   campaignName?: string
   subjectLine?: string
   content?: string
+  /** email_campaigns.preview_text — the inbox preheader. */
+  previewText?: string
   sendDate?: string
+  /** Subset of the live email_campaigns_status_check vocabulary
+   *  (draft|scheduled|sending|sent|paused|cancelled|failed). The send-state
+   *  literals are owned by lib/marketing/email-campaign-sender and are
+   *  deliberately NOT settable here. */
   status?: "draft" | "scheduled" | "sent" | "cancelled"
   approvalStatus?: "pending" | "approved" | "rejected"
 }
@@ -76,7 +162,7 @@ export interface AiComposeEmailParams {
   brokerageId: string
   agentId?: string
   topic: string
-  audience?: "buyers" | "sellers" | "investors" | "lifetime_customers" | "all"
+  audience?: "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT | "all"
   tone?: "professional" | "friendly" | "urgent" | "informational"
   campaignId?: string
 }
@@ -95,11 +181,62 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
 
     const supabase = await createClient()
 
+    // THE UMBRELLA MUST BE ONE OF OURS. An FK proves a marketing_campaigns row
+    // exists; it never proves the row belongs to the caller's brokerage, and
+    // attaching this tenant's email to another tenant's campaign would feed
+    // their ROI rollup and their video fan-out. Same gate, same wording as
+    // app/actions/marketing-studio.ts:1098 where this pattern already stands.
+    let marketingCampaignId: string | null = null
+    if (params.marketingCampaignId) {
+      if (!isValidUUID(params.marketingCampaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
+      const { data: umbrella, error: umbrellaError } = await supabase
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("id", params.marketingCampaignId)
+        .eq("brokerage_id", auth.brokerageId)
+        .maybeSingle()
+      if (umbrellaError) {
+        return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+      }
+      if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+      marketingCampaignId = umbrella.id as string
+    }
+
+    // THE SEGMENT MUST HAVE MEMBERS IN THIS TENANT. contact_segments.segment_id
+    // has no FK and no catalogue, so "does this segment exist" can only be
+    // answered by "does anyone in MY brokerage belong to it" — which is also
+    // exactly the question the sender will ask when it resolves recipients. A
+    // campaign pointed at a segment with no local members would claim an
+    // audience and send to nobody.
+    let audienceSegmentId: string | null = null
+    if (params.audienceSegmentId) {
+      if (!isValidUUID(params.audienceSegmentId)) {
+        return { success: false, error: "Invalid segment ID" }
+      }
+      const { data: member, error: segmentError } = await supabase
+        .from("contact_segments")
+        .select("id")
+        .eq("segment_id", params.audienceSegmentId)
+        .eq("brokerage_id", auth.brokerageId)
+        .is("removed_at", null)
+        .limit(1)
+        .maybeSingle()
+      if (segmentError) {
+        return { success: false, error: `Could not verify that segment: ${segmentError.message}` }
+      }
+      if (!member) return { success: false, error: "That segment has no active members on your brokerage." }
+      audienceSegmentId = params.audienceSegmentId
+    }
+
     const { data: campaign, error } = await supabase
       .from("email_campaigns")
       .insert({
         brokerage_id: auth.brokerageId,  // from session, not params
         agent_id: params.agentId ?? null,
+        marketing_campaign_id: marketingCampaignId,
+        audience_segment_id: audienceSegmentId,
         campaign_name: params.campaignName,
         subject_line: params.subjectLine,
         content: params.content ?? "",
@@ -208,12 +345,13 @@ export async function updateEmailCampaign(
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -221,11 +359,16 @@ export async function updateEmailCampaign(
     if (existing.status === "sent") {
       return { success: false, error: "Cannot update a sent campaign" }
     }
+    // The sender owns the row once it is in flight — don't race it.
+    if (existing.status === "sending") {
+      return { success: false, error: "Campaign is currently sending" }
+    }
 
     const payload: Record<string, unknown> = {}
     if (updates.campaignName !== undefined) payload.campaign_name = updates.campaignName
     if (updates.subjectLine !== undefined) payload.subject_line = updates.subjectLine
     if (updates.content !== undefined) payload.content = updates.content
+    if (updates.previewText !== undefined) payload.preview_text = updates.previewText
     if (updates.sendDate !== undefined) payload.send_date = updates.sendDate
     if (updates.status !== undefined) payload.status = updates.status
     if (updates.approvalStatus !== undefined) payload.approval_status = updates.approvalStatus
@@ -239,6 +382,7 @@ export async function updateEmailCampaign(
       .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Update was refused — campaign not found in your brokerage" }
 
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
@@ -261,12 +405,13 @@ export async function deleteEmailCampaign(campaignId: string) {
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -367,12 +512,13 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
 
     const supabase = await createClient()
 
-    const { data: campaign } = await supabase
+    const { data: campaign, error: campaignError } = await supabase
       .from("email_campaigns")
       .select("id, status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (campaignError) throw campaignError
     if (!campaign) return { success: false, error: "Campaign not found" }
     if (campaign.brokerage_id !== brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -400,6 +546,29 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
 }
 
 // ─── SCHEDULE ─────────────────────────────────────────────────────────────────
+//
+// WHY scheduleEmailCampaign AND deleteEmailCampaign HAVE NO CALLERS (read this
+// before "cleaning them up", and before wiring them to anything).
+//
+// Their only caller used to be app/newsletters/newsletters-client.tsx, which
+// passed a `newsletter_campaigns` id into actions that query `email_campaigns`.
+// Different table, different id space — so the list's Schedule and Delete
+// buttons answered "Campaign not found" on every click, exactly as its Send
+// button did before it was repointed. All three now call the newsletter lane
+// (scheduleExistingNewsletter / deleteNewsletterCampaign / sendNewsletter).
+//
+// That leaves these two correct but unwired, and they must NOT be deleted:
+//   · They are not duplicates of the newsletter actions. `email_campaigns` is a
+//     separate, live table with its own drain — the send-email-campaigns cron
+//     every 15 min — which consumes exactly the status='scheduled' + send_date
+//     that scheduleEmailCampaign writes.
+//   · They are the same shape of orphan as sendEmailCampaign: the manual
+//     counterpart to a live autonomous lane, waiting on an email-campaign
+//     management surface that has not been built yet.
+//
+// The work to finish is that surface. Do not satisfy the orphan count by
+// pointing these at newsletters again — that is the defect this comment exists
+// to stop from coming back.
 
 export async function scheduleEmailCampaign(
   campaignId: string,
@@ -419,12 +588,13 @@ export async function scheduleEmailCampaign(
 
     const supabase = await createClient()
 
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("email_campaigns")
       .select("status, content, subject_line, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
+    if (existingError) throw existingError
     if (!existing) return { success: false, error: "Campaign not found" }
     if (existing.brokerage_id !== auth.brokerageId) {
       return { success: false, error: "Forbidden" }
@@ -475,6 +645,11 @@ export async function getEmailCampaignStats(_brokerageId?: string) {
         .eq("status", "subscribed"),
     ])
 
+    // Both legs are reads that can be REFUSED; `|| []` on data alone reports a
+    // blocked query as "you have zero campaigns / zero subscribers".
+    if (campaignsResult.error) throw campaignsResult.error
+    if (subscribersResult.error) throw subscribersResult.error
+
     const campaigns = campaignsResult.data || []
     const activeCampaigns = campaigns.filter((c) => c.status === "scheduled").length
     const sentCampaigns = campaigns.filter((c) => c.status === "sent")
@@ -520,12 +695,17 @@ export async function prepareListingEmailCampaign(params: {
       return { success: false, error: access.reason ?? "Email campaigns feature not available" }
     }
 
-    const { data: transaction } = await supabase
+    // NOTE: this used to embed `listing_photos(*)` off `transactions`. There is
+    // no FK from transactions to that table, so PostgREST rejected the whole
+    // select and this action threw before it ever sent. Photos are read
+    // separately below, from the listing they actually hang off.
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
-      .select("*, listings(*), listing_photos(*)")
+      .select("*, listings(*)")
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
+    if (transactionError) throw transactionError
     if (!transaction || !transaction.listings) {
       return { success: false, error: "Transaction not found" }
     }
@@ -533,13 +713,27 @@ export async function prepareListingEmailCampaign(params: {
     const listing = transaction.listings
 
     // MEDIA PAIRING (owner rule: nothing ships bare) — a listing email
-    // without the listing's photo is a text blast. Hero (is_hero first,
-    // else primary/first) rides at the top of the template body.
-    const photoRows = (Array.isArray(transaction.listing_photos) ? transaction.listing_photos : []) as Array<{ photo_url: string | null; is_hero: boolean | null }>
+    // without the listing's photo is a text blast. Hero (is_primary first,
+    // else primary_photo_url, else the first photo by MLS order) rides at the
+    // top of the template body.
+    //
+    // media_type is pinned to 'photo': listing_media also holds video,
+    // floorplan, virtual_tour and document rows, and emailing a PDF's URL as an
+    // <img src> ships a broken image to every recipient.
+    const { data: photoRowsRaw, error: photoError } = await supabase
+      .from("listing_media")
+      .select("file_url, is_primary")
+      .eq("listing_id", listing.id)
+      .eq("media_type", "photo")
+      .order("sort_order", { ascending: true })
+    if (photoError) {
+      console.error("[email-campaigns] listing photo read failed:", photoError.message)
+    }
+    const photoRows = (photoRowsRaw ?? []) as Array<{ file_url: string | null; is_primary: boolean | null }>
     const heroUrl =
-      photoRows.find((p) => p.is_hero && p.photo_url)?.photo_url ??
+      photoRows.find((p) => p.is_primary && p.file_url)?.file_url ??
       (listing as any).primary_photo_url ??
-      photoRows.find((p) => p.photo_url)?.photo_url ?? null
+      photoRows.find((p) => p.file_url)?.file_url ?? null
     const heroHtml = heroUrl
       ? `<img src="${heroUrl}" alt="${String(listing.address ?? "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
       : ""
@@ -592,7 +786,7 @@ export async function prepareListingEmailCampaign(params: {
       price_drop: "offer",
       sold: "closing",
     }
-    const { data: template } = await supabase
+    const { data: template, error: templateError } = await supabase
       .from("email_templates")
       .insert({
         brokerage_id: brokerageId,
@@ -612,24 +806,51 @@ export async function prepareListingEmailCampaign(params: {
       .select()
       .single()
 
+    if (templateError) throw templateError
     if (template) {
-      await supabase.from("email_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
+      const { error: linkError } = await supabase
+        .from("email_campaigns")
+        .update({ template_id: template.id })
+        .eq("id", campaign.id)
+      if (linkError) throw linkError
     }
 
+    // A refused email_sends insert used to vanish: the campaign reported N
+    // recipients while the queue the sender drains stayed empty.
+    //
+    // brokerage_id is stamped explicitly from `brokerageId` above — resolved
+    // from the listing/transaction this session was allowed to READ (both
+    // tables' SELECT policies are strictly tenant-scoped with no NULL escape),
+    // so it is session-authorized, not inherited from params.transactionId.
+    // Migration 052 installs a BEFORE INSERT trigger that would denormalize it
+    // off email_campaigns, but it only fires when the column is NULL and runs
+    // with the caller's rights; an email_sends row names a real contact and the
+    // campaign that targeted them — recipient-targeting data — and the SELECT
+    // policy's `brokerage_id IS NULL` branch publishes an unstamped row to every
+    // signed-in user of every other brokerage. That guarantee should not rest on
+    // a trigger.
     const uniqueRecipients = [...new Set(recipients.filter(Boolean))]
+    let queued = 0
     for (const contactId of uniqueRecipients) {
-      await supabase.from("email_sends").insert({
+      const { error: queueError } = await supabase.from("email_sends").insert({
+        brokerage_id: brokerageId,
         campaign_id: campaign.id,
         contact_id: contactId,
         status: "queued",
       })
+      if (queueError) {
+        console.error("[prepareListingEmailCampaign] could not queue recipient:", queueError.message)
+        continue
+      }
+      queued++
     }
 
     revalidatePath("/dashboard/listings")
     return {
       success: true,
       campaign_id: campaign.id,
-      recipients: uniqueRecipients.length,
+      recipients: queued,
+      recipientsRequested: uniqueRecipients.length,
       subject: emailContent.data?.subject,
     }
   } catch (error) {
@@ -638,6 +859,26 @@ export async function prepareListingEmailCampaign(params: {
   }
 }
 
+/**
+ * `transactionId` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and it is
+ * the only thing that knows WHO IS ALREADY ON THIS DEAL.
+ *
+ * Every branch below builds a marketing blast about one listing, and none of them
+ * excluded that listing's own parties. So the seller of the home received the
+ * "coming soon" and "price drop" campaigns about their own house, and the buyer under
+ * contract received the launch blast for the property they are in escrow on. Those
+ * are not cold prospects; they are clients mid-transaction, and a price-drop email is
+ * the worst possible way for either of them to hear it.
+ *
+ * The deal's parties are resolved once and removed from whatever each branch returns.
+ * The transaction read is TENANT-SCOPED on the listing's own brokerage (§4) — the
+ * caller hands in a transaction id, and an id from another brokerage must resolve to
+ * nothing rather than to that brokerage's contacts.
+ *
+ * The interest-signal reads below (open_house / price_drop) carry the same tenant
+ * predicate: `buyer_behavior_log` has `brokerage_id` (scripts/schema-snapshot.ts)
+ * and a listing/mls key alone would leak another tenant's viewers into the blast.
+ */
 async function getListingCampaignRecipients(
   transactionId: string,
   campaignType: string,
@@ -645,38 +886,96 @@ async function getListingCampaignRecipients(
 ): Promise<string[]> {
   const supabase = await createClient()
 
+  const excluded = new Set<string>()
+  if (transactionId) {
+    const { data: deal, error: dealError } = await supabase
+      .from("transactions")
+      .select("contact_id, buyer_contact_id, seller_contact_id")
+      .eq("id", transactionId)
+      .eq("brokerage_id", listing.brokerage_id)
+      .maybeSingle()
+    // supabase-js RESOLVES refusals (§3): a swallowed error here would silently put
+    // the deal's own parties back on the blast list.
+    if (dealError) throw dealError
+    for (const id of [deal?.contact_id, deal?.buyer_contact_id, deal?.seller_contact_id]) {
+      if (id) excluded.add(id as string)
+    }
+  }
+  const withoutDealParties = (ids: (string | null | undefined)[]) =>
+    ids.filter((id): id is string => !!id && !excluded.has(id))
+
   if (campaignType === "coming_soon" || campaignType === "launch") {
-    const { data: contacts } = await supabase
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select("id")
       .eq("brokerage_id", listing.brokerage_id)
       .eq("status", "active")
       .gte("budget_max", (listing.price || 0) * 0.9)
       .lte("budget_min", (listing.price || 0) * 1.1)
-    return contacts?.map((c) => c.id) || []
+    if (contactsError) throw contactsError
+    return withoutDealParties((contacts ?? []).map((c) => c.id))
   }
 
-  if (campaignType === "open_house") {
-    const { data: interested } = await supabase
-      .from("property_interactions")
+  // ── TOMBSTONE (§1.1, 2026-09-01): the open_house and price_drop audiences read
+  // `property_interactions` here. That table has ZERO writers anywhere in the tree
+  // (its only trigger is BEFORE INSERT, which never fires because nothing inserts),
+  // so both audiences were structurally empty forever. SURVIVOR:
+  // `buyer_behavior_log` — the live twin, written by the preference learner and the
+  // portal/CRM telemetry — which both reads below now query.
+  //
+  // The six other readers were repointed in wave 23 and the table was DROPPED
+  // (m598, applied 2026-09-01) — buyer_behavior_log is the only home now.
+  if (campaignType === "open_house" || campaignType === "price_drop") {
+    const isOpenHouse = campaignType === "open_house"
+
+    // Signal families come from the vocabulary owner (§6):
+    //   price_drop  → VIEW only — "previous viewers" who should hear the new price;
+    //   open_house  → VIEW ∪ SAVE — anyone who showed interest gets the invite.
+    const signalTypes = isOpenHouse ? [...VIEW_SIGNALS, ...SAVE_SIGNALS] : [...VIEW_SIGNALS]
+
+    // Recency floor: a price-drop nudge is only relevant to people whose interest is
+    // CURRENT (30d — a viewer from last quarter has moved on, and "the price dropped
+    // on a house you looked at in June" reads as surveillance). An open-house invite
+    // tolerates a longer memory (90d — an event invitation to a past saver is a
+    // welcome re-engagement, not a claim about their current search).
+    const sinceDays = isOpenHouse ? 90 : 30
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
+
+    // DUAL KEY: buyer_behavior_log rows carry listing_id for our own inventory and
+    // mls_number for external/IDX properties — a buyer who viewed this listing
+    // through an IDX surface has mls_number stamped and listing_id null. The .or()
+    // is built CONDITIONALLY: mls_number is IDX free text, and PostgREST .or()
+    // grammar is string-parsed, so an unvalidated value is a filter-injection
+    // surface (precedent: app/api/track/identify/route.ts:47-52). Only a value
+    // matching the strict key shape may enter the grammar.
+    const orKeys = [`listing_id.eq.${listing.id}`]
+    const mls = typeof listing.mls_number === "string" ? listing.mls_number.trim() : ""
+    if (mls && /^[A-Za-z0-9-]{1,32}$/.test(mls)) {
+      orKeys.push(`mls_number.eq.${mls}`)
+    }
+
+    const { data: signals, error: signalsError } = await supabase
+      .from("buyer_behavior_log")
       .select("contact_id")
-      .eq("listing_id", listing.id)
-      .in("interaction_type", ["view", "save"])
-    return interested?.map((i) => i.contact_id).filter((id) => id) || []
+      .eq("brokerage_id", listing.brokerage_id)
+      .in("signal_type", signalTypes)
+      .gte("created_at", since)
+      .or(orKeys.join(","))
+    if (signalsError) throw signalsError
+
+    // A buyer who viewed five times is ONE recipient: dedupe locally before the
+    // deal-party filter so the returned array carries no repeats.
+    const unique = new Set<string>()
+    for (const s of signals ?? []) {
+      if (s.contact_id) unique.add(s.contact_id as string)
+    }
+    return withoutDealParties([...unique])
   }
 
-  if (campaignType === "price_drop") {
-    const { data: viewers } = await supabase
-      .from("property_interactions")
-      .select("contact_id")
-      .eq("listing_id", listing.id)
-      .eq("interaction_type", "view")
-    return viewers?.map((v) => v.contact_id).filter((id) => id) || []
-  }
-
-  const { data: allContacts } = await supabase.from("contacts").select("id")
+  const { data: allContacts, error: allContactsError } = await supabase.from("contacts").select("id")
     .eq("brokerage_id", listing.brokerage_id).eq("status", "active").limit(100)
-  return allContacts?.map((c) => c.id) || []
+  if (allContactsError) throw allContactsError
+  return withoutDealParties((allContacts ?? []).map((c) => c.id))
 }
 
 function determineListingSegment(campaignType: string): string {

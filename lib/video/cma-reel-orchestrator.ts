@@ -16,6 +16,7 @@ import {
   buildCmaReelInputProps,
   type CmaSubject, type CmaComp, type CmaPricePoint, type CmaBrand, type AffordabilityAssumptions,
 } from "@/lib/charts/cma-reel-data"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 
 export const CMA_REEL_COMPOSITION_ID = "CMAReel"
 
@@ -63,6 +64,39 @@ export async function enqueueCmaReelRender(
   })
   const voiceoverUrl = params.voiceoverUrl ?? null
 
+  // THE CONTENT GATE, on the payload that will actually be staged — the same
+  // question the render backstop (render-composition/route.ts) asks before it
+  // cancels. The estimatedPrice guard above is a spend guard for the subject
+  // bar; it never looked at `comparables`, so `comparables: []` built
+  // `comps: []` (and `daysOnMarket: {values: [], labels: []}` when no comp
+  // reports one), the row was inserted, this function returned ok + a renderId,
+  // and the backstop cancelled it a minute later with nobody told. Refusing
+  // HERE, by name, is what turns that invisible cancellation into a reason the
+  // caller (section-render → `skipped`, the API) can show a manager.
+  const missing = missingContentProps(CMA_REEL_COMPOSITION_ID, inputProps)
+  if (missing.length > 0) {
+    return { ok: false, error: describeMissingContent(CMA_REEL_COMPOSITION_ID, missing) }
+  }
+
+  // ── NO COMPANION SHARE CARD IS STAGED HERE, AND THAT IS THE RULING ─────────
+  // CMAReel declares thumbnail_composition_id='VideoCoverThumb' (m177), so
+  // render-composition would render a still beside this video and publish it as
+  // thumbnail_url — the og:image and the player poster on /v/[slug]. Since
+  // 2026-09-03 that pass asks the content contract first and SKIPS a card it
+  // cannot complete, so this reel ships with no share image rather than with the
+  // composition's Studio fixture. Two reasons it stays that way:
+  //
+  //   1. §5. A CMA's only honest card would carry the subject home's valuation,
+  //      and this builder already refuses to show a customer that number
+  //      (lib/charts/cma-reel-data.ts prices the customer cut off the MARKET
+  //      MEDIAN, never the subject). A public og:image naming an address and a
+  //      value is the same disclosure through a different door.
+  //   2. There is nothing gated to cut a hint from. VideoCoverThumb REQUIRES
+  //      seoHint — the sentence an AI search engine quotes — and this producer
+  //      holds charts, not narration: no script passes through here, so any hint
+  //      would be a sentence THIS function wrote about a seller's home that no
+  //      compliance gate ever saw. An absent card is the honest outcome; an
+  //      invented one is the defect the contract exists to refuse.
   const supabase = client ?? createServiceClient()
   const { data, error } = await supabase
     .from("remotion_composition_renders")

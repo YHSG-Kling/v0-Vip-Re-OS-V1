@@ -3,6 +3,7 @@ import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { listMarketingCampaignsAction } from "@/app/actions/marketing-campaigns-admin"
 import { MarketingCampaignsClient } from "./marketing-campaigns-client"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -34,7 +35,7 @@ export default async function MarketingCampaignsPage() {
     .eq("id", user.id)
     .maybeSingle()
   const t = (row?.user_type as string | undefined) ?? ""
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(t)) {
+  if (!isAdminOrBroker({ user_type: t })) {
     redirect("/dashboard")
   }
 

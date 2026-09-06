@@ -7,7 +7,15 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// TOMBSTONE (dead-import tranche): `callConnector` was imported here and never
+// called — and this file's own header (line 4) is the reason it must not be:
+// "No escape paths for direct provider calls". Survivor:
+// lib/providers/dispatch.ts:1246 / :1296, reached through `dispatchVideo`
+// (imported above, used at :816), which is where the ElevenLabs and D-ID
+// requests actually go out. Removing the import removes the escape hatch the
+// header forbids.
+import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -25,7 +33,7 @@ export interface CreateVideoProjectInput {
 
 export interface CreateVideoProjectOutput {
   projectId: string
-  status: "setup" | "scripting" | "generating" | "ready" | "published"
+  status: CanonicalVideoStatus
   createdAt: string
 }
 
@@ -43,6 +51,8 @@ export interface GenerateVideoScriptOutput {
   estimatedDuration: number
   aiConfidence: number
   scenes: Array<{ duration: number; description: string }>
+  /** Advisory compliance notes from the kernel gate — not a hard block. */
+  complianceWarnings?: string[]
 }
 
 export interface UpdateVideoGenerationSettingsInput {
@@ -85,7 +95,7 @@ export interface LoadVideoGenerationStateOutput {
   status: string
   scriptText?: string
   settings?: Record<string, unknown>
-  heygenStatus?: string
+  providerStatus?: string
   videoUrl?: string
   createdAt: string
   updatedAt: string
@@ -117,6 +127,12 @@ export interface DistributeVideoProjectOutput {
     url?: string
     error?: string
   }>
+  /**
+   * Set when the posts were queued but the project's own status could not be
+   * persisted (e.g. an RLS refusal). The distribution still happened — this
+   * says the bookkeeping did not, instead of hiding it.
+   */
+  statusUpdateError?: string
 }
 
 export interface RepurposeVideoOutputInput {
@@ -176,7 +192,7 @@ export async function createVideoProject(
         source_type: input.sourceType,
         source_id: input.sourceId,
       },
-      status: "setup",
+      status: "draft",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
@@ -216,6 +232,20 @@ export async function generateVideoScript(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
+  // Compliance gate — this is the script that actually gets rendered and
+  // published, so it is the one that most needs the brokerage's brand voice
+  // and the Fair Housing rules. It had neither.
+  //
+  // The actor is the signed-in caller; the tenant is the project's own
+  // brokerage (already verified against the caller by
+  // generateVideoScriptAction's assertProjectInCallerBrokerage). Those are
+  // distinct id spaces and are resolved separately, never substituted.
+  const { data: { user } } = await supabase.auth.getUser()
+  const brokerageId = project.brokerage_id as string | null
+  const actor = user && brokerageId ? { userId: user.id, brokerageId } : null
+
+  const complianceBlocks = actor ? await buildComplianceSystemBlocks(actor.brokerageId) : []
+
   // Generate script using AI (using openai provider function)
   const scriptText = await generateScriptViaAI({
     title: project.title,
@@ -223,7 +253,14 @@ export async function generateVideoScript(
     strategy: input.contentStrategy,
     tone: input.tone,
     durationSeconds: input.duration,
+    complianceBlocks,
+    brokerageId,
+    userId: user?.id ?? null,
   })
+
+  const complianceWarnings = actor
+    ? await postcheckScript(actor, scriptText, "buyer")
+    : undefined
 
   const scenes = parseSceneBreakpoints(scriptText, input.duration)
   const wordCount = scriptText.split(/\s+/).length
@@ -249,6 +286,7 @@ export async function generateVideoScript(
     estimatedDuration: input.duration,
     aiConfidence: 0.92,
     scenes,
+    complianceWarnings,
   }
 }
 
@@ -319,6 +357,54 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
+  // ── THE FAIR HOUSING HOLD ──────────────────────────────────────────────────
+  //
+  // OWNER RULING (the refinement): "after the script is run then hold up the
+  // video creation if still have a big red flag needed for a human."
+  //
+  // The third door to a render, after createVideoProject and
+  // /api/did/generate-video. Same gate, same vocabulary, same release: only a
+  // person clearing the script or the project in Marketing Approvals lifts it.
+  // ADVISORY PASSES — evaluateVideoRenderHold holds on red_flag and unknown only.
+  //
+  // BEFORE the slot claim below, so a held project is never left wedged at
+  // status='generating' with no provider job for the poller to chase.
+  {
+    const { data: authData, error: authError } = await supabase.auth.getUser()
+    const actorUserId = authData?.user?.id
+    // No session id means we cannot even say who is asking. That used to be
+    // written as `userId: actorUserId ?? ""` with a note that the gate's own
+    // catch would turn the bad shape into a hold — it would not have: an empty
+    // string is a perfectly well-formed actor to evaluateVideoRenderHold, which
+    // never inspects userId, so the gate ran, and only the ESCALATION refused
+    // it (proveActorTenancy: "actor is incomplete"). The hold stood, but every
+    // such hold filed no reviewer. Fail closed LITERALLY instead: refuse the
+    // render before the gate, and say why. supabase-js RESOLVES an auth
+    // failure, so `authError` is read rather than collapsed into "no user".
+    if (authError) {
+      throw new Error(`Cannot submit video: the session could not be read (${authError.message}) — refusing to render for an unidentified actor.`)
+    }
+    if (!actorUserId) {
+      throw new Error("Cannot submit video: no signed-in user on this session — a render must be attributable to the person who asked for it.")
+    }
+    const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
+      await import("@/lib/video/video-render-hold")
+    const hold = await evaluateVideoRenderHold({
+      supabase,
+      actor: { userId: actorUserId, brokerageId },
+      script: input.scriptText ?? "",
+      projectId: input.projectId,
+      title: "Held video script (render blocked)",
+    })
+    if (hold.hold) {
+      const stamped = await stampProjectComplianceHold(supabase, input.projectId, hold)
+      if (!stamped.ok) {
+        console.error("[kernel/video] compliance hold could not be stamped:", stamped.error)
+      }
+      throw new Error(holdErrorMessage(hold))
+    }
+  }
+
   // Atomically claim the project slot. provider_status is the canonical column;
   // Canonical provider_* columns only (heygen_* columns DROPPED live, l39-s01
   // cron and the dashboard UI still consume it).
@@ -330,8 +416,9 @@ export async function submitVideoGenerationJob(
       updated_at:      new Date().toISOString(),
     })
     .eq("id", input.projectId)
+    // One guard, not two: 'submitting' was a status NOTHING ever wrote (it was
+    // only ever a provider_status), and it collapses into 'generating' anyway.
     .neq("status", "generating")
-    .neq("status", "submitting")
     .select("id")
   if (preMarkError) {
     throw new Error(`Cannot submit video: failed to reserve project slot — ${preMarkError.message}`)
@@ -356,7 +443,7 @@ export async function submitVideoGenerationJob(
     await supabase
       .from("ai_video_projects")
       .update({
-        status:          "setup",
+        status:          "draft",
         provider_status: null,
         updated_at:      new Date().toISOString(),
       })
@@ -418,7 +505,7 @@ export async function loadVideoGenerationState(
     status: project.status,
     scriptText: project.script_content,
     settings: project.provider_metadata,
-    heygenStatus: project.provider_status,
+    providerStatus: project.provider_status,
     videoUrl: project.video_url,
     createdAt: project.created_at,
     updatedAt: project.updated_at,
@@ -478,13 +565,24 @@ export async function distributeVideoProject(
 
   for (const channel of input.channels) {
     try {
-      // Get social account for channel
-      const { data: account } = await supabase
+      // Get social account for channel. Destructure the error: a refused read
+      // resolves with data null, which reported "No account connected" for an
+      // account that is connected — a lie the agent cannot act on.
+      const { data: account, error: accountError } = await supabase
         .from("social_media_accounts")
         .select("*")
         .eq("platform", channel)
         .eq("agent_id", project.agent_id)
         .maybeSingle()
+
+      if (accountError) {
+        distributions.push({
+          channel,
+          status: "failed",
+          error: `Could not read connected account: ${accountError.message}`,
+        })
+        continue
+      }
 
       if (!account) {
         distributions.push({
@@ -533,18 +631,31 @@ export async function distributeVideoProject(
     }
   }
 
-  // Mark the project distributed (posts now carry their own publish lifecycle).
-  await supabase
+  // Mark the project published (the posts now carry their own publish
+  // lifecycle). 'published' is POST-terminal and still counts as a FINISHED
+  // video — the old 'distributed' token did not, so succeeding at distribution
+  // removed the video from every gallery and picker that reads the finished set.
+  // This was also a bare await: an RLS refusal here resolves, so the project
+  // stayed in its old status while the caller was told distribution succeeded.
+  const { error: statusError } = await supabase
     .from("ai_video_projects")
     .update({
-      status: "distributed",
+      status: "published",
       updated_at: new Date().toISOString(),
     })
     .eq("id", input.projectId)
 
+  if (statusError) {
+    console.error(
+      `[VideoKernel] project ${input.projectId} distributed but status not persisted:`,
+      statusError.message,
+    )
+  }
+
   return {
     projectId: input.projectId,
     distributions,
+    statusUpdateError: statusError?.message,
   }
 }
 
@@ -586,13 +697,32 @@ export async function loadVideoPerformance(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
+  // A project with no rendered video has no posts carrying it. Say zero
+  // honestly rather than sending `contains("media_urls", [null])` to PostgREST.
+  if (!project.video_url) {
+    return {
+      projectId: input.projectId,
+      views: 0,
+      engagement: 0,
+      comments: 0,
+      shares: 0,
+      generatedAt: new Date().toISOString(),
+    }
+  }
+
   // Aggregate analytics from social posts. social_posts stores media as a
   // media_urls array and metrics in engagement_data (there is no media_url /
-  // engagement_metrics column).
-  const { data: posts } = await supabase
+  // engagement_metrics column). Destructure the error: a refused read resolves
+  // with data null, and every total below would then report a truthful-looking
+  // zero for numbers nobody was allowed to see.
+  const { data: posts, error: postsError } = await supabase
     .from("social_posts")
     .select("engagement_data")
     .contains("media_urls", [project.video_url])
+
+  if (postsError) {
+    throw new Error(`Failed to load video performance: ${postsError.message}`)
+  }
 
   let totalViews = 0
   let totalEngagement = 0
@@ -627,12 +757,26 @@ async function generateScriptViaAI(params: {
   strategy: string
   tone: string
   durationSeconds: number
+  /** Brand voice + ThemFirst + Fair Housing, prepended to the prompt. */
+  complianceBlocks?: string[]
+  /** Tenant + actor for the AI cost ledger. The tenant is the PROJECT's own
+   *  brokerage (already verified against the caller by
+   *  generateVideoScriptAction's assertProjectInCallerBrokerage); the actor is
+   *  the signed-in user. Distinct id spaces, resolved separately (§4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<string> {
   const durationLabel = params.durationSeconds >= 60
     ? `${Math.floor(params.durationSeconds / 60)}-minute`
     : `${params.durationSeconds}-second`
 
-  const prompt = `You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
+  // generateTextRouted takes a single prompt, so the guidelines lead it rather
+  // than riding in a separate system message.
+  const guidelines = params.complianceBlocks?.length
+    ? `${params.complianceBlocks.join("\n\n")}\n\n`
+    : ""
+
+  const prompt = `${guidelines}You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
 
 Title: "${params.title}"${params.description ? `\nContext: ${params.description}` : ""}
 Strategy: ${params.strategy}
@@ -648,6 +792,8 @@ Focus on viewer benefits — what the home means for their life — not feature 
 Keep narration natural and conversational.`
 
   const { text } = await generateTextRouted({
+    brokerageId: params.brokerageId ?? null,
+    userId: params.userId ?? null,
     prompt,
     feature: "video_script_generation",
     maxTokens: 1200,
@@ -681,7 +827,7 @@ function parseSceneBreakpoints(
  * D-ID + ElevenLabs, never HeyGen; getPlatformVideoProvider always resolves
  * "did"). Returns the provider's job id; the caller persists provider_job_id.
  *
- * Previously this function was named submitToHeyGen() which falsely implied
+ * Previously this function was named submitAvatarVideoRender() which falsely implied
  * a HeyGen-only path even though it has gone through dispatchVideo since the
  * D-ID-first refactor. Renamed for clarity.
  */
@@ -771,10 +917,12 @@ export async function proposeGatedVideoDistribution(
     .from("social_posts")
     .insert({
       brokerage_id:          input.brokerageId,
-      // NOTE: ai_video_projects.agent_id FKs users.id, but social_posts.agent_id FKs
-      // agents.id — they are different id-spaces. Leave null on the gated draft (the
-      // agent + connected social account are bound at approval/publish time, mirroring
-      // the gated marketing-bench pattern) rather than cross-wire mismatched ids.
+      // NOTE: both ai_video_projects.agent_id and social_posts.agent_id FK agents.id
+      // (verified against pg_constraint: ai_video_projects_agent_id_fkey REFERENCES
+      // agents(id) since m366 — the older comment here claimed users.id and was
+      // wrong). Still left null on the gated draft: the agent and the connected
+      // social account are bound at approval/publish time, mirroring the gated
+      // marketing-bench pattern.
       agent_id:              null,
       listing_id:            (project as any).listing_id ?? null,
       marketing_campaign_id: (project as any).marketing_campaign_id ?? null,

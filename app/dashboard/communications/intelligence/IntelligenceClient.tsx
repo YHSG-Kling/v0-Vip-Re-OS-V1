@@ -4,6 +4,7 @@ import { useState } from "react"
 import KPIBar from "./components/KPIBar"
 import HealthTab from "./components/HealthTab"
 import ComplianceTab from "./components/ComplianceTab"
+import type { ReviewContact } from "./components/FairHousingReviewCard"
 import CoachingTab from "./components/CoachingTab"
 import VoiceTab from "./components/VoiceTab"
 
@@ -38,16 +39,20 @@ interface AgentInsight {
   conversation_count: number
 }
 
+/** Mirrors VoiceTab's own VoiceInsight — see the note there for why the three
+ *  conversation_insights voice columns are gone and what replaced them. This tab
+ *  now reads the dialled-call ledger (voice_calls + call_analyses); the id IS
+ *  the voice_calls row, so there is no separate conversation id to carry. */
 interface VoiceInsight {
   id: string
-  conversation_id: string
   contact_name: string
   agent_name: string
-  voice_quality_score: number | null
-  interruption_count: number | null
-  silence_duration_seconds: number | null
+  /** call_analyses.coaching_score, 0-100. */
+  coaching_score: number | null
+  /** voice_calls.outcome, falling back to voice_calls.status. */
   call_completion_status: string | null
   overall_sentiment: string | null
+  voice_call_id: string | null
   recording_url: string | null
   transcript: string | null
   updated_at: string
@@ -60,7 +65,11 @@ interface IntelligenceClientProps {
     fairHousingPending: number
     escalationsLast7Days: number
   }
-  chartData: { date: string; text_score: number; voice_score: number }[]
+  // null = no readings that day on that series — the chart gaps instead of
+  // drawing a fabricated zero. voice_score is avg call_analyses.coaching_score
+  // (0-100, the dialled-call ledger); text_score is avg
+  // conversation_insights.health_score scaled to 0-100.
+  chartData: { date: string; text_score: number | null; voice_score: number | null }[]
   healthInsights: {
     id: string
     contact_name: string
@@ -79,6 +88,8 @@ interface IntelligenceClientProps {
   topicFrequency: { topic: string; count: number }[]
   voiceInsights: VoiceInsight[]
   userId: string
+  /** Contact picker for the Fair-Housing Review card (Risk & Compliance tab). */
+  reviewContacts: ReviewContact[]
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -98,6 +109,7 @@ export default function IntelligenceClient({
   topicFrequency,
   voiceInsights,
   userId,
+  reviewContacts,
 }: IntelligenceClientProps) {
   const [activeTab, setActiveTab] = useState<Tab>("health")
 
@@ -144,7 +156,7 @@ export default function IntelligenceClient({
           <HealthTab chartData={chartData} insights={healthInsights} />
         )}
         {activeTab === "compliance" && (
-          <ComplianceTab flags={auditFlags} reviewerId={userId} />
+          <ComplianceTab flags={auditFlags} reviewerId={userId} reviewContacts={reviewContacts} />
         )}
         {activeTab === "coaching" && (
           <CoachingTab

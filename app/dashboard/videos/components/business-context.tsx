@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,9 +10,7 @@ import { Label } from "@/components/ui/label"
 import {
   Home,
   TrendingUp,
-  Users,
   User,
-  Share2,
   Building2,
   MessageCircle,
   MapPin,
@@ -20,7 +18,6 @@ import {
   Sparkles,
   Loader2,
   CheckCircle2,
-  Play,
   BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -285,7 +282,7 @@ export function VideoContextPicker({
           .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, listing_photos:photos")
           .eq("brokerage_id", brokerageId)
           .or(`address.ilike.%${value}%,city.ilike.%${value}%`)
-          .in("status", ["active", "pending", "under_contract"])
+          .in("status", ["active", "pending"])
           .order("created_at", { ascending: false })
           .limit(8)
 
@@ -295,7 +292,7 @@ export function VideoContextPicker({
           .from("contacts")
           .select("id, first_name, last_name, email, phone, contact_type, address")
           .eq("brokerage_id", brokerageId)
-          .eq("contact_type", "homeowner")
+          .eq("contact_type", "seller")  // contacts.contact_type has no "homeowner"
           .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,address.ilike.%${value}%`)
           .order("created_at", { ascending: false })
           .limit(8)

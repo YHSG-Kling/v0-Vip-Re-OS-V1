@@ -3,7 +3,13 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
+// agents.id → users.id, the one crossing helper; notifications.user_id is a
+// users FK and contacts.agent_id is an agents FK.
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import type { AlertProperty } from "./alert-matcher"
+// RENDER BOUNDARY (§6) — this email goes to the BUYER, so the chip speaks the
+// public word while `is_price_reduction` (the column) stays as it is.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface DeliverResult {
   sent: number
@@ -32,9 +38,32 @@ export async function deliverAlertResults(
 
   if (!contact) return { sent: 0, channelsUsed: [], errors: ["contact_not_found"] }
 
+  // RESOLVE THE AGENT ONCE, ABOVE THE CHANNEL BRANCHES.
+  //
+  // Two rows below are addressed to the contact's agent — the in-app
+  // `notifications` row (which needs the agent's users.id, a DISJOINT space from
+  // `contacts.agent_id`) and the `smart_assistant_suggestions` row (which needs
+  // that same agent's TENANT). This used to be resolved inside the in_app branch
+  // only, so the suggestion had no way to reach it and was written untenanted.
+  // Resolved once per action, not once per row, and not per channel.
+  const alertRecipient = await resolveAgentRecipient(supabase, contact.agent_id ?? null)
+
   const n = properties.length
-  const portalUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/portal/alerts/${alert.id}`
-  const agentScheduleUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/crm/contacts/${alert.contact_id}/tours`
+  // BOTH OF THESE LINKS WERE BROKEN FOR THE BUYER.
+  //
+  // portalUrl pointed at /portal/alerts/<id>, which has never existed — every
+  // portal route is [contactId]-scoped, because that is how portal access is
+  // gated. It is the primary CTA of the alert email AND the entire body of the
+  // alert SMS, so every buyer who tapped an alert we sent them got a 404.
+  //
+  // The second was worse: it sent the BUYER to /crm/contacts/<id>/tours, an
+  // agent-only CRM route. Now points at the buyer's own showings surface.
+  const base = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  const portalUrl = `${base}/portal/${alert.contact_id}/alerts/${alert.id}`
+  const agentScheduleUrl = `${base}/portal/${alert.contact_id}/showings`
+  // Was `${portalUrl}/settings` — i.e. /portal/<id>/alerts/<id>/settings, a third
+  // route that does not exist. The buyer's real settings page is contact-scoped.
+  const settingsUrl = `${base}/portal/${alert.contact_id}/settings`
 
   // ── Email ─────────────────────────────────────────────────────────────────
   if (channels.includes("email") && contact.email) {
@@ -56,16 +85,30 @@ export async function deliverAlertResults(
           properties,
           portalUrl,
           agentScheduleUrl,
+          settingsUrl,
           n,
         })
 
-        const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
-        const fromName  = (sgCred.config as any)?.from_name  ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
+        // This site already read the tenant credential — the ONE of five that
+        // did — but still ended in a hardcoded address. The shared resolver
+        // walks the same cascade and returns null instead of inventing one.
+        const { resolveOutboundSender } = await import("@/lib/providers/outbound-sender")
+        const resolvedSender = await resolveOutboundSender(supabase as any, brokerageId)
+        if (!resolvedSender) throw new Error("no_verified_sender")
+        const fromEmail = resolvedSender.email
+        const fromName  = resolvedSender.name ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
 
         await dispatchEmail({
           brokerageId,
           agentId:      contact.agent_id ?? undefined,
-          leadId:       alert.contact_id,
+          // contactId, NOT leadId — same defect and same fix as the tombstone at
+          // app/actions/communications.ts:69-76. `alert.contact_id` is a
+          // contacts.id (loaded from `contacts` above); dispatchEmail picks its
+          // compliance lookup with `params.contactId ? "contacts" : "leads"`, so
+          // passing it as leadId sent it looking for a contacts.id in LEADS,
+          // found nothing, and evaluateOutboundCompliance was silently skipped
+          // for every alert email. That file was fixed; this one was missed.
+          contactId:    alert.contact_id,
           systemSource: "property_alert",
           from:         `${fromName} <${fromEmail}>`,
           to:           contact.email,
@@ -108,10 +151,26 @@ export async function deliverAlertResults(
   }
 
   // ── In-app notification ───────────────────────────────────────────────────
+  //
+  // `contacts.agent_id` is `REFERENCES agents(id)` (measured on the live schema,
+  // not inferred from the name), and `notifications.user_id` is
+  // `REFERENCES users(id)` — DISJOINT. Writing the agents id straight in made
+  // Postgres refuse the row 23503, and the insert destructured nothing, so the
+  // in-app channel reported `channelsUsed.push("in_app")` and `sent++` for a
+  // notification that never existed. The id is RESOLVED across the boundary, and
+  // the channel is only claimed when the row actually lands.
+  //
+  // Found by this wave's own guard (C7) rather than by the census: it was already
+  // brokerage-stamped, so the tenant scan had nothing to say about it.
   if (channels.includes("in_app")) {
-    try {
-      await supabase.from("notifications").insert({
-        user_id:     contact.agent_id ?? null,
+    if (!alertRecipient.ok) {
+      errors.push(`in_app: ${alertRecipient.reason}`)
+    } else if (!alertRecipient.userId) {
+      errors.push("in_app: the contact's agent has no user account — nothing was delivered")
+    } else {
+      try {
+        const { error: alertNotifyError } = await supabase.from("notifications").insert({
+        user_id:     alertRecipient.userId,
         brokerage_id: brokerageId,
         type:        "property_alert",
         title:       `${n} new ${n === 1 ? "property" : "properties"} match ${contact.first_name}'s search`,
@@ -121,17 +180,43 @@ export async function deliverAlertResults(
         priority:    n >= 5 ? "high" : "medium",
         channel:     "in_app",
       })
-      channelsUsed.push("in_app")
-      sent++
-    } catch (err: any) {
-      errors.push(`in_app: ${err?.message}`)
+        // supabase-js RESOLVES a refused insert, so the surrounding try/catch never
+        // saw the FK rejection — the channel was reported delivered either way.
+        if (alertNotifyError) {
+          errors.push(`in_app: ${alertNotifyError.message}`)
+        } else {
+          channelsUsed.push("in_app")
+          sent++
+        }
+      } catch (err: any) {
+        errors.push(`in_app: ${err?.message}`)
+      }
     }
   }
 
   // ── Smart assistant suggestion for agent ──────────────────────────────────
-  try {
-    await supabase.from("smart_assistant_suggestions").insert({
-      agent_id:            contact.agent_id ?? null,
+  //
+  // TENANT: the agent's `users.brokerage_id`, not this function's `brokerageId`
+  // argument and not `agents.brokerage_id`. `getContactCopilotSuggestions`
+  // (app/actions/contact-details.ts) reads this table
+  // `.eq("agent_id", ctx.agentId).eq("brokerage_id", ctx.brokerageId)` where BOTH
+  // come from one `getAgentContext()` — and that context's `brokerageId` IS the
+  // session user's `users.brokerage_id`. Any other brokerage leaves the row as
+  // invisible as NULL did, which is wave 23's badge-count lesson on this table.
+  //
+  // NO AGENT, NO ROW. Both readers of this table AND the agent's suggestion queue
+  // filter on `agent_id`, so a suggestion with no agent reaches nobody; writing
+  // one untenanted as well would just be an invisible row. Named instead.
+  if (!alertRecipient.ok) {
+    errors.push(`suggestion: ${alertRecipient.reason}`)
+  } else if (!contact.agent_id) {
+    errors.push("suggestion: this contact has no agent — a suggestion nobody can read was not written")
+  } else if (!alertRecipient.brokerageId) {
+    errors.push("suggestion: the contact's agent has no users.brokerage_id — nothing to stamp, so nothing was written")
+  } else {
+    const { error: suggestionError } = await supabase.from("smart_assistant_suggestions").insert({
+      agent_id:            contact.agent_id,
+      brokerage_id:        alertRecipient.brokerageId,
       title:               `${n} new ${n === 1 ? "property" : "properties"} match ${contact.first_name} ${contact.last_name}'s alert`,
       description:         `Properties delivered via: ${channelsUsed.join(", ")}. Review and add top matches to tour plan.`,
       context_type:        "property_alert",
@@ -140,7 +225,11 @@ export async function deliverAlertResults(
       priority:            n >= 3 ? "high" : "medium",
       status:              "pending",
     })
-  } catch (_) { /* non-fatal */ }
+    // supabase-js RESOLVES a refused insert, so the try/catch that used to wrap
+    // this saw nothing at all — the suggestion was "non-fatal" in the sense that
+    // its failure was unobservable.
+    if (suggestionError) errors.push(`suggestion: ${suggestionError.message}`)
+  }
 
   // Update delivered_at on results
   await supabase
@@ -157,16 +246,17 @@ function buildEmailHtml(params: {
   properties: Array<AlertProperty & { matchScore: number; matchReasons: string[] }>
   portalUrl: string
   agentScheduleUrl: string
+  settingsUrl: string
   n: number
 }): string {
-  const { contactFirstName, properties, portalUrl, agentScheduleUrl, n } = params
+  const { contactFirstName, properties, portalUrl, agentScheduleUrl, settingsUrl, n } = params
   const cards = properties.map(p => `
     <tr>
       <td style="padding:16px;border-bottom:1px solid #e5e7eb;">
         ${p.primary_photo_url ? `<img src="${p.primary_photo_url}" width="100%" style="max-height:180px;object-fit:cover;border-radius:6px;margin-bottom:8px;" alt="Property photo" />` : ""}
         <p style="margin:0 0 4px;font-weight:600;font-size:15px;color:#111827;">${p.property_address}${p.city ? `, ${p.city}` : ""}</p>
         <p style="margin:0 0 8px;font-size:14px;color:#374151;">${p.list_price ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(p.list_price) : "Price TBD"}${p.bedrooms ? ` · ${p.bedrooms} bd` : ""}${p.bathrooms ? ` · ${p.bathrooms} ba` : ""}${p.sqft ? ` · ${p.sqft.toLocaleString()} sqft` : ""}</p>
-        ${p.is_price_reduction ? `<span style="display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">Price Reduced</span>` : `<span style="display:inline-block;background:#f0fdf4;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">New Listing</span>`}
+        ${p.is_price_reduction ? `<span style="display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">${priceImprovementLabel("badge")}</span>` : `<span style="display:inline-block;background:#f0fdf4;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">New Listing</span>`}
         <p style="margin:4px 0 8px;font-size:12px;color:#6b7280;">${p.matchReasons.slice(0, 3).join(" · ")}</p>
         ${p.listing_url ? `<a href="${p.listing_url}" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;">View Details &rarr;</a>` : ""}
       </td>
@@ -184,7 +274,7 @@ function buildEmailHtml(params: {
     <tr><td style="padding:24px;text-align:center;border-top:1px solid #e5e7eb;">
       <a href="${portalUrl}" style="display:inline-block;background:#2563eb;color:#fff;padding:12px 24px;border-radius:6px;font-weight:600;text-decoration:none;margin-right:8px;">View All Matches</a>
       <a href="${agentScheduleUrl}" style="display:inline-block;border:1px solid #d1d5db;color:#374151;padding:12px 24px;border-radius:6px;font-weight:600;text-decoration:none;">Schedule a Showing</a>
-      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;"><a href="${portalUrl}/settings" style="color:#6b7280;">Adjust your alerts</a></p>
+      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;"><a href="${settingsUrl}" style="color:#6b7280;">Adjust your alerts</a></p>
     </td></tr>
   </table>
   </td></tr></table></body></html>`

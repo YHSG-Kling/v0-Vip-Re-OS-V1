@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Bell, AlertTriangle, CheckCircle, Clock, ExternalLink } from 'lucide-react'
+import { Bell, AlertTriangle, CheckCircle, Clock } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface SystemAlertsPanelProps {

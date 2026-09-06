@@ -18,8 +18,8 @@
  *      Housing state-specific (Florida etc.) + Them-First. ONE redraft
  *      on violation.
  *   4. ElevenLabs TTS in the agent's cloned voice → Supabase Blob URL.
- *   5. Insert podcast_episodes row (agents.id for agent_id per the FK
- *      convention on this table; status='completed', is_ai_generated=true,
+ *   5. Insert podcast_episodes row (agent_id is the host's agents.id, resolved
+ *      once at the top of the run — status='completed', is_ai_generated=true,
  *      approval_status='pending_review' — the agent reviews before
  *      distribute-podcast-episodes cron syndicates).
  *   6. Update podcast_auto_runs ledger: status='rendered', linked
@@ -30,8 +30,13 @@
  * cheap no-op.
  */
 import "server-only"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media`: a published
+// episode MP3 is fetched unauthenticated by every podcast client and RSS
+// aggregator, so it is public-media rather than document-class.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
@@ -68,36 +73,63 @@ interface FactPack {
 export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
   const svc = createServiceClient()
 
-  // 1. Idempotency ledger.
+  // 0. Identity, once, before anything is written. podcast_auto_runs.agent_id,
+  //    podcast_episodes.agent_id and agent_voice_profiles.agent_id are all
+  //    agents(id) and all NOT NULL, so the host's users.id has to become an
+  //    agents.id here or the run has nowhere to land. Server-only resolver:
+  //    this is unattended cron code that already imports "server-only", and it
+  //    memoises across the week's hosts.
+  //    A host with no agents row in this brokerage is a real misconfiguration —
+  //    nobody is watching this run, so it is logged, not swallowed.
+  const hostAgentRecordId = await resolveUserIdToAgentRecord(input.hostUserId, input.brokerageId)
+  if (!hostAgentRecordId) {
+    console.error(
+      `[auto-podcast] no agent profile for host users.id=${input.hostUserId} in brokerage=${input.brokerageId}` +
+      ` — skipping ${input.isoWeek}; podcast_show_settings points at a user with no agents row`,
+    )
+    return { ok: false, status: "failed", reason: "host has no agent profile in this brokerage" }
+  }
+
+  // 1. Idempotency ledger. The insert IS the ledger, and the database is its
+  //    reader: uq_podcast_auto_runs_brokerage_week is a PARTIAL unique on
+  //    (brokerage_id, iso_week) WHERE status <> 'failed' (m588, verified live).
+  //    So 23505 below means a COMPLETED, QUEUED or SKIPPED run already holds
+  //    this week — while a week whose only row is status='failed' does NOT
+  //    conflict, and this insert succeeds, which is the retry working. Before
+  //    m588 the unique was plain and a failed row blocked the week forever,
+  //    every retry being told "already_run": a failure masquerading as
+  //    idempotency.
+  //    The stale failed row is deliberately LEFT AS HISTORY — the settings
+  //    card renders its error_message, and every "latest run" read orders by
+  //    created_at DESC, so the retry's row wins the top slot with the failure
+  //    visible beneath it. 'skipped' keeps the slot on purpose: a skip is a
+  //    decision about this week (host has no voice id), and retrying it each
+  //    tick would burn model spend on the same refusal.
   const ledgerIns = await svc.from("podcast_auto_runs").insert({
-    brokerage_id: input.brokerageId,
-    agent_id:     input.hostUserId,
+    brokerage_id:  input.brokerageId,
+    agent_id:      hostAgentRecordId,
     iso_week:     input.isoWeek,
     status:       "queued",
   }).select("id").maybeSingle()
   if (ledgerIns.error) {
     if ((ledgerIns.error as { code?: string }).code === "23505") {
-      return { ok: true, status: "already_run", reason: "duplicate (brokerage, iso_week)" }
+      return { ok: true, status: "already_run", reason: "a non-failed run already holds (brokerage, iso_week)" }
     }
     return { ok: false, status: "failed", reason: `ledger insert: ${ledgerIns.error.message}` }
   }
   const ledgerId = ledgerIns.data!.id as string
 
   try {
-    // 2. Voice profile gate.
+    // 2. Voice profile gate — same agents.id resolved above.
     const { data: profile } = await svc.from("agent_voice_profiles")
       .select("elevenlabs_voice_id")
-      .eq("agent_id", input.hostUserId)
+      .eq("agent_id", hostAgentRecordId)
       .maybeSingle()
     const voiceId = (profile as { elevenlabs_voice_id?: string } | null)?.elevenlabs_voice_id ?? null
     if (!voiceId) {
       await svc.from("podcast_auto_runs").update({ status: "skipped", error_message: "host has no elevenlabs_voice_id" }).eq("id", ledgerId)
       return { ok: true, status: "skipped", reason: "host voice profile not configured" }
     }
-
-    // podcast_episodes.agent_id FKs to users.id (verified on the live schema —
-    // despite the column name, the FK targets users, not agents). So we pass
-    // input.hostUserId directly; no agents.id resolution needed for this table.
 
     // 3. Pull value-first topics from the content intelligence bank. The
     //    podcast LEADS with these (audience-driven Reddit threads, market
@@ -124,13 +156,15 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       isoWeek: input.isoWeek,
     })
 
-    // 5. ElevenLabs TTS → Supabase blob.
+    // 5. ElevenLabs TTS → Supabase `media`.
     const tts = await synthesizeSpeech({ text: script, voiceId })
     if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
-    const audioBlob = await put(
-      `podcast/episodes/${ledgerId}.mp3`,
+    const audioUrl = await hostRenderedMedia(
+      svc,
+      `${input.brokerageId}/podcast/episodes/${ledgerId}.mp3`,
       tts.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
+      "audio/mpeg",
+      "media",
     )
 
     // Estimated duration — ~155 words/minute spoken in the agent's voice.
@@ -143,11 +177,11 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
     const { data: episode, error: epErr } = await svc.from("podcast_episodes")
       .insert({
         brokerage_id:      input.brokerageId,
-        agent_id:          input.hostUserId, // users.id per the FK on this table
+        agent_id:          hostAgentRecordId,
         title:             `${facts.brokerage_name} Weekly — ${input.isoWeek}`,
         description:       `Auto-generated weekly market commentary. Reviewed by the host before publication.`,
         script,
-        audio_url:         audioBlob.url,
+        audio_url:         audioUrl,
         duration_seconds:  durationSeconds,
         status:            "completed",
         is_ai_generated:   true,
@@ -311,6 +345,8 @@ STYLE:
 Return ONLY the spoken script — no scene directions, no headers, no
 segment labels read aloud.${fix}`
     const { text } = await generateTextRouted({
+      brokerageId: args.brokerageId,
+      userId: args.hostUserId,
       feature:     "podcast_weekly_auto_script",
       prompt,
       maxTokens:   1800,

@@ -18,6 +18,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -209,8 +210,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
 }
 
 async function refreshGoogle(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string; expires_in?: number }>({
@@ -227,25 +228,54 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
   return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
 }
 
+// ── THE MICROSOFT REFRESH SCOPE, AND WHY IT IS TWO STRINGS AND NOT ONE ────────────────────
+// Microsoft NARROWS a refreshed access token to the scopes REQUESTED at the token endpoint —
+// unlike Google, whose refresh (refreshGoogle above) sends no `scope` at all and therefore
+// returns the full consented set. This function requested Mail.Send + Mail.ReadWrite only, so
+// every refreshed Microsoft token silently LOST Calendars.ReadWrite even though the consent
+// granted it (app/api/integrations/oauth/[provider]/route.ts:62-68 requests offline_access,
+// User.Read, Calendars.ReadWrite, Mail.Send, Mail.ReadWrite).
+//
+// The consequence was invisible because the FIRST token — the one minted by the OAuth callback
+// — does carry calendar scope: an Outlook calendar write worked for about an hour after
+// connecting and returned 403 from then on, for the whole life of the connection. Two live
+// callers were affected: lib/providers/calendar/personal-calendar.ts (Graph /me/events for
+// per-agent bookings) and, as of w27, lib/providers/calendar/outlook-calendar-sync-adapter.ts.
+//
+// FIXED BY WIDENING, WITH A FALLBACK RATHER THAN A BET. Asking for a scope that was never
+// consented makes Microsoft refuse the ENTIRE token request (AADSTS65001), which would turn a
+// degraded calendar into a dead MAILBOX for any connection made before Calendars.ReadWrite
+// joined the consent list. So the wide request is tried first and the historical mail-only
+// request is the fallback: a modern connection gains calendar scope, a legacy one behaves
+// exactly as it did before, and neither can be broken by this change.
+const MS_REFRESH_SCOPES_WITH_CALENDAR =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Calendars.ReadWrite"
+const MS_REFRESH_SCOPES_MAIL_ONLY =
+  "offline_access https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite"
+
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   if (!clientId || !clientSecret) return null
 
-  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
-    connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
-    path: "/common/oauth2/v2.0/token", method: "POST",
-    auth: { style: "none" }, bodyType: "form",
-    body: {
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: "https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/Mail.ReadWrite offline_access",
-    },
-  })
-  if (!res.ok || !res.data?.access_token) return null
-  return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  const attempt = async (scope: string) => {
+    const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+      connector: "microsoft-oauth", baseUrl: "https://login.microsoftonline.com",
+      path: "/common/oauth2/v2.0/token", method: "POST",
+      auth: { style: "none" }, bodyType: "form",
+      body: {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope,
+      },
+    })
+    // callConnector resolves refusals rather than throwing, so the result is read, not assumed.
+    if (!res.ok || !res.data?.access_token) return null
+    return { accessToken: res.data.access_token, expiresInSec: res.data.expires_in ?? 3600 }
+  }
+
+  return (await attempt(MS_REFRESH_SCOPES_WITH_CALENDAR)) ?? (await attempt(MS_REFRESH_SCOPES_MAIL_ONLY))
 }
 
 // ─── Gmail send (RFC 5322 + base64url) ───────────────────────────────────────

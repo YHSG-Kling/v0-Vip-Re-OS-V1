@@ -120,7 +120,12 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "APPOINTMENT_SET",
     label: "Appointment Set",
     description: "Listing presentation appointment scheduled",
-    allowedFrom: ["AGENT_CONSULTATION"],
+    // "LEAD" merged in on the 2026-09-06 chronology measurement: the engine's
+    // bookAppointment walks LEAD → APPOINTMENT_SET directly (a seller who books
+    // from the intake form has had no consultation stage), and the kernel write
+    // does not check this list, so the table forbade an edge the process took
+    // every day. Same §6 rule as the pre-listing block below.
+    allowedFrom: ["AGENT_CONSULTATION", "LEAD"],
     readinessChecks: [],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
@@ -197,11 +202,44 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
+  // ── THE PRE-LISTING CHRONOLOGY, ONE SPELLING (§6) ─────────────────────────
+  //
+  // Owner, 2026-09-06: "coming soon prep doesn't jump to active mls listing.
+  // research this and get the business process chronological correct order."
+  //
+  // MEASURED before this edit: this table and the execution engine
+  // (app/actions/seller-listing/execution-engine.ts) declared TWO different
+  // orders for the same weeks of a listing's life. The table said
+  //   prep → repairs → coming-soon ACTIVE → media capture → media approved
+  //   → MLS ready → open-house marketing → MLS active
+  // while the engine — the code that actually moves listings — walks
+  //   signed → repairs → prep ⇄ (media capture → media approved) → coming-soon
+  //   ACTIVE → MLS ready → MLS active (activateMLS, behind the compliance gate).
+  // The kernel write (lib/kernel/lifecycle.ts::transitionLifecycle) does not
+  // check allowedFrom, so every engine hop the table forbade succeeded silently,
+  // and the validator / conformance checker / compliance loop — which DO read
+  // this table — judged the live process against an order nobody ran.
+  //
+  // The engine's order is the business-correct one and is the SURVIVOR: the
+  // listing is prepared (repairs, professional media) BEFORE it is announced as
+  // coming soon — an MLS "Coming Soon" status carries the photos, and showings
+  // are not permitted in it — then it goes live on its confirmed MLS date. So
+  // COMING_SOON_PREP is the pre-listing hub (repairs and media loop through
+  // it), COMING_SOON_ACTIVE is the public announcement, MLS_READY is the go-live
+  // checkpoint, and MLS_ACTIVE is the live listing. Coming-soon prep never
+  // jumps to MLS_ACTIVE: that stage is entered only from MLS_READY (activateMLS,
+  // the gated door) or OPEN_HOUSE_MARKETING, and test:listing-compliance-loop
+  // proves the loop's window ends at COMING_SOON_PREP.
+  //
+  // MLS_DATE_CONFIRMED stays between the signed agreement and prep: the
+  // compliance loop records the MLS start date there and enters prep through
+  // the gate. Predecessors below are the UNION of the two orders where the
+  // engine already walks the edge; nothing the table allowed is removed.
   {
     stage: "COMING_SOON_PREP",
     label: "Coming Soon Prep",
     description: "Preparing for coming soon marketing",
-    allowedFrom: ["MLS_DATE_CONFIRMED"],
+    allowedFrom: ["MLS_DATE_CONFIRMED", "REPAIRS_IN_PROGRESS", "MEDIA_APPROVED"],
     readinessChecks: [],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
@@ -210,7 +248,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "REPAIRS_IN_PROGRESS",
     label: "Repairs In Progress",
     description: "Pre-listing repairs being completed",
-    allowedFrom: ["COMING_SOON_PREP"],
+    allowedFrom: ["LISTING_AGREEMENT_SIGNED", "MLS_DATE_CONFIRMED", "COMING_SOON_PREP"],
     readinessChecks: [],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
@@ -219,7 +257,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "COMING_SOON_ACTIVE",
     label: "Coming Soon Active",
     description: "Coming soon marketing active",
-    allowedFrom: ["REPAIRS_IN_PROGRESS"],
+    allowedFrom: ["COMING_SOON_PREP", "REPAIRS_IN_PROGRESS"],
     readinessChecks: ["repairs_completed"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["marketing_execution"],
@@ -229,7 +267,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "MEDIA_CAPTURE",
     label: "Media Capture",
     description: "Professional photos/video being captured",
-    allowedFrom: ["COMING_SOON_ACTIVE"],
+    allowedFrom: ["COMING_SOON_PREP", "COMING_SOON_ACTIVE"],
     readinessChecks: [],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
@@ -247,7 +285,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "MLS_READY",
     label: "MLS Ready",
     description: "Ready to go live on MLS",
-    allowedFrom: ["MEDIA_APPROVED"],
+    allowedFrom: ["MEDIA_APPROVED", "COMING_SOON_ACTIVE"],
     readinessChecks: ["mls_data_complete", "media_approved"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["flyers_packets", "listing_marketing"],
@@ -267,8 +305,29 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "MLS_ACTIVE",
     label: "MLS Active",
     description: "Live on MLS",
-    allowedFrom: ["OPEN_HOUSE_MARKETING"],
-    readinessChecks: ["mls_data_complete"],
+    allowedFrom: ["MLS_READY", "OPEN_HOUSE_MARKETING"],
+    // `documents_verified` added on the owner's 2026-09-04 ruling: "same
+    // compliance gate when a listing becomes an active listing."
+    //
+    // MLS_ACTIVE is a PUBLICLY-LIVE stage — lib/listings/listing-status-sync.ts
+    // maps it to listings.status 'active' — and it declared only
+    // mls_data_complete, so the generic stage-advance path
+    // (lib/application/listing-lifecycle.ts::requireListingStageAdvance, reached
+    // from the stage pipeline, the AI chat tool and updateListingStage) could
+    // walk a listing live with no document, signature or initial check at all.
+    // That was the bypass sitting beside the gate now enforced at activateMLS
+    // and launchListing, and a gate with an open door next to it is not a gate.
+    //
+    // documents_verified now means presence AND execution — see
+    // lib/listing-lifecycle/readiness-checker.ts::checkDocumentsVerified, which
+    // runs the same findUnexecutedDocuments the two gates run.
+    //
+    // Obligation 1 (a compliance-passed, fully-executed listing agreement) is
+    // not restated here because the stage graph already enforces it by
+    // construction: every route through allowedFrom to MLS_ACTIVE passes through
+    // LISTING_AGREEMENT_SIGNED, which is asserted in test:lifecycle-lib-defects
+    // (d1.owner-ruling-holds-by-construction).
+    readinessChecks: ["mls_data_complete", "documents_verified"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
@@ -314,7 +373,10 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     stage: "UNDER_CONTRACT",
     label: "Under Contract",
     description: "Contract executed, pending contingencies",
-    allowedFrom: ["NEGOTIATION"],
+    // "OFFERS_RECEIVED" merged in on the 2026-09-06 chronology measurement: an
+    // offer accepted as written has no negotiation round, and the engine's
+    // acceptOffer walks OFFERS_RECEIVED → UNDER_CONTRACT directly.
+    allowedFrom: ["NEGOTIATION", "OFFERS_RECEIVED"],
     readinessChecks: ["contract_signed"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["transactions_system"],
@@ -408,10 +470,56 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
 ]
 
 /**
+ * THE ROLE VOCABULARY GAP, as a shared table.
+ *
+ * Every stage above declares `requiredRoles` from the four-value RequiredRole
+ * vocabulary. The live database disagrees: `users_user_type_check` admits
+ * fourteen values (admin, agent, broker, broker_owner, compliance_officer,
+ * contact, isa, lender, superadmin, support, system, tc, team_lead, vendor).
+ * Two of them are unambiguous supersets of an engine role and are translated;
+ * the rest get `null` — a named refusal rather than authority nobody granted.
+ *
+ * This lives beside the stage table because it is the same governance decision,
+ * and because a service that hand-rolls its own copy is a second vocabulary
+ * that can drift from the stages it gates.
+ */
+export const USER_TYPE_TO_LIFECYCLE_ROLE: Record<string, RequiredRole> = {
+  agent:        "agent",
+  team_lead:    "team_lead",
+  broker:       "broker",
+  broker_owner: "broker",
+  admin:        "admin",
+  superadmin:   "admin",
+}
+
+/** Map a live `users.user_type` onto the stage engine's RequiredRole, or null. */
+export function normalizeLifecycleRole(rawUserType: string | null | undefined): RequiredRole | null {
+  const key = (rawUserType ?? "").trim().toLowerCase()
+  if (!key) return null
+  return USER_TYPE_TO_LIFECYCLE_ROLE[key] ?? null
+}
+
+/**
  * Get stage definition by stage name
  */
 export function getStageDefinition(stage: ListingStage): StageDefinition | undefined {
   return LISTING_LIFECYCLE_STAGES.find((s) => s.stage === stage)
+}
+
+/**
+ * Does this stage declare that it is entered from ANY active stage?
+ *
+ * DERIVED, never hand-listed: a stage with an EMPTY `allowedFrom` that is not
+ * the first entry in LISTING_LIFECYCLE_STAGES is an exit stage the table
+ * documents as reachable from anywhere (see LISTING_CANCELLED: "can originate
+ * from any active stage — enforced at engine layer"). The first entry with an
+ * empty allowedFrom is the lifecycle's ENTRY point (LEAD), which is a different
+ * thing. Adding or reordering a stage updates this answer automatically.
+ */
+export function entersFromAnyStage(stage: ListingStage): boolean {
+  const def = getStageDefinition(stage)
+  if (!def) return false
+  return def.allowedFrom.length === 0 && getStageIndex(stage) > 0
 }
 
 /**

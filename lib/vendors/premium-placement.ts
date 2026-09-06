@@ -1,14 +1,29 @@
 // lib/vendors/premium-placement.ts
 //
-// PREMIUM PLACEMENT — the monetization connector between the two existing halves:
-//   • vendor_directory.{preferred, display_priority, visible_in_portal} — the
-//     placement flags surfaced on the Vendors page "Preferred" tab / contact portal.
+// PREMIUM PLACEMENT — the monetization connector between two existing halves:
+//   • vendors.{preferred, display_priority, visible_in_portal} — the placement
+//     flags surfaced on the Vendors page "Preferred" tab / contact portal.
 //   • vendor_invoices — the existing billing ledger (migration 1000).
 //
 // A brokerage (the subscriber) charges a vendor for featured placement in its
-// curated directory: offer → invoice (status 'submitted', awaiting payment) →
-// mark paid → directory row flipped preferred + display_priority → nightly
-// expiry sweep un-features rows whose paid term lapsed.
+// directory: offer → invoice (status 'submitted', awaiting payment) → mark paid
+// → vendor row flipped preferred + display_priority → nightly expiry sweep
+// un-features rows whose paid term lapsed.
+//
+// ONE VENDOR SYSTEM (m355). There used to be two tables here: `vendors` (the
+// operational bench) and `vendor_directory` (the curated, sellable listing).
+// This module was the bridge between them, and the bridge was the drift: it had
+// to mint a second row per vendor and keep the two reconciled, and the invoice
+// it wrote anchored on the DIRECTORY id while every other vendor_invoices writer
+// anchored on the BENCH id. m355 folded the six curation columns onto `vendors`
+// and dropped vendor_directory. There is one row per vendor and one id.
+//
+// GLOBAL VENDORS CANNOT BE SOLD PLACEMENT. vendors.brokerage_id is nullable;
+// a global row is visible to every tenant, so a placement flag on it would be
+// one tenant's purchase changing what every other tenant's clients see. The
+// brokerage_id equality filters below exclude them, and m355's
+// vendors_global_not_curated CHECK makes it unrepresentable at the storage layer
+// as well.
 //
 // HONESTY NOTE (v1): payment collection itself is manual — the brokerage
 // collects by check / ACH / an externally-sent Stripe invoice. markPlacementPaid
@@ -16,20 +31,27 @@
 // simulates or fakes a Stripe payment success. Stripe-native collection can be
 // layered on later via vendor_invoices.stripe_invoice_id.
 //
-// Ledger vocabulary (verified against scripts/1000-vendor-invoices-earnings-
-// stripe-connect.sql and the writers in app/actions/vendor-payments.ts):
+// Ledger vocabulary (verified live):
 //   status CHECK IN ('draft','submitted','viewed','paid','overdue','cancelled','disputed')
 //   — there is NO 'pending' literal; 'submitted' (issued, awaiting payment) is
 //   the awaiting-payment state, mirroring submitVendorInvoice(). Amount columns
 //   are NUMERIC(10,2) DOLLARS (existing writers store dollars); the line item
 //   keeps the exact price_cents as given.
+//   billed_to CHECK IN ('brokerage','contact','vendor') — a placement charge
+//   bills the VENDOR, and saying so is load-bearing, not cosmetic. See the note
+//   at the insert.
 //
 // No new tables. Every query is anchored on brokerage_id (tenant anchor).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  assertVendorChargeableForPlatformUse,
+  type PlatformUsePayee,
+  type PlatformUseRefusalCode,
+} from "@/lib/vendors/vendor-platform-identity"
 
 // Priority a paid placement pins the row at (floats to the top of the
-// idx_vendor_directory_visible ordering; manual curation default is 0).
+// idx_vendors_portal ordering; manual curation default is 0).
 const PLACEMENT_DISPLAY_PRIORITY = 10
 
 const PLACEMENT_DUE_DAYS = 14
@@ -39,7 +61,8 @@ export interface PremiumPlacementLineItem {
   description: string
   months: number
   price_cents: number
-  directory_id: string
+  /** A vendors.id. Was `directory_id` before m355 collapsed the two tables. */
+  vendor_id: string
   /** Set when the invoice is marked paid: paid_at + months (ISO timestamp). */
   placement_until?: string
 }
@@ -64,7 +87,7 @@ function findPlacementItem(
       li &&
       typeof li === "object" &&
       li.type === "premium_placement" &&
-      typeof li.directory_id === "string"
+      typeof li.vendor_id === "string"
   )
   return (item as PremiumPlacementLineItem) ?? null
 }
@@ -75,20 +98,36 @@ function findPlacementItem(
 
 export async function offerPremiumPlacement(input: {
   brokerageId: string
-  vendorDirectoryId: string
+  /** A vendors.id. Was vendorDirectoryId before m355 collapsed the two tables. */
+  vendorId: string
   months: number
   priceCents: number
   notes?: string
 }): Promise<
   | { invoiceId: string; invoiceNumber: string; error: null }
-  | { invoiceId: null; invoiceNumber: null; error: string }
+  | {
+      invoiceId: null
+      invoiceNumber: null
+      error: string
+      /**
+       * Present ONLY when the platform-use gate is what refused. Absent on the
+       * ordinary validation failures above (missing ids, bad months, bad price),
+       * because those are the caller's input being wrong, not a verdict about the
+       * vendor — and flattening the two would invite a caller to retry a typo.
+       */
+      refusalCode?: PlatformUseRefusalCode
+      /** A LABEL, never a tenant id. The answer may cross the tenant line; the data may not. */
+      alreadyPaying?: PlatformUsePayee | null
+      /** True only for `undeterminable` — a read failed, so the question is still open. */
+      retryable?: boolean
+    }
 > {
-  const { brokerageId, vendorDirectoryId, notes } = input
+  const { brokerageId, vendorId, notes } = input
   const months = Math.floor(input.months)
   const priceCents = Math.round(input.priceCents)
 
-  if (!brokerageId || !vendorDirectoryId) {
-    return { invoiceId: null, invoiceNumber: null, error: "Missing brokerage or directory entry" }
+  if (!brokerageId || !vendorId) {
+    return { invoiceId: null, invoiceNumber: null, error: "Missing brokerage or vendor" }
   }
   if (!Number.isFinite(months) || months < 1 || months > 60) {
     return { invoiceId: null, invoiceNumber: null, error: "Months must be between 1 and 60" }
@@ -99,19 +138,58 @@ export async function offerPremiumPlacement(input: {
 
   const supabase = createServiceClient()
 
-  // Tenant anchor: the directory row must belong to the caller's brokerage.
-  const { data: dirRow, error: dirError } = await supabase
-    .from("vendor_directory")
+  // Tenant anchor: the vendor must belong to the caller's brokerage. The
+  // equality (rather than `is null or eq`) also excludes GLOBAL vendors, which
+  // is deliberate — see the header. A global vendor genuinely cannot be sold
+  // placement, and refusing here with an honest error beats writing an invoice
+  // for a flag that could never legally be set.
+  const { data: vendorRow, error: vendorError } = await supabase
+    .from("vendors")
     .select("id, name, brokerage_id")
-    .eq("id", vendorDirectoryId)
+    .eq("id", vendorId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
-  if (dirError) {
-    return { invoiceId: null, invoiceNumber: null, error: dirError.message }
+  if (vendorError) {
+    return { invoiceId: null, invoiceNumber: null, error: vendorError.message }
   }
-  if (!dirRow) {
-    return { invoiceId: null, invoiceNumber: null, error: "Directory entry not found in your brokerage" }
+  if (!vendorRow) {
+    return { invoiceId: null, invoiceNumber: null, error: "Vendor not found in your brokerage" }
+  }
+
+  // NO DOUBLE CHARGE FOR PLATFORM USE. Featured placement in a brokerage's
+  // directory IS platform use — it is the same thing a vendor already on the
+  // platform is paying for. The owner ruling forbids a second brokerage, team or
+  // agent charging them for it again; what that tenant gets instead is contact
+  // access, which is free. The gate resolves the vendor's PLATFORM identity and
+  // fails closed: if we cannot tell whether they already pay, no invoice is
+  // written, because an unwanted charge is harder to undo than a missing one.
+  const platformUse = await assertVendorChargeableForPlatformUse(supabase, {
+    vendorId,
+    brokerageId,
+  })
+  if (!platformUse.chargeable) {
+    // THE CODE TRAVELS WITH THE SENTENCE, and the distinction is operational, not
+    // cosmetic. `undeterminable` means a READ was refused or errored — the vendor
+    // may well be chargeable and the caller should try again. The other two are
+    // permanent answers: this vendor already pays for platform use, so under the
+    // owner's ruling nobody may charge them for it a second time. Returning only
+    // `reason` collapsed those into one string, so a retryable outage and a
+    // settled "no" were indistinguishable to every caller — and the natural
+    // response to a settled "no" (retry) is exactly wrong for it.
+    //
+    // `alreadyPaying` is deliberately a LABEL, never a tenant id: the answer may
+    // cross the tenant line, the data may not.
+    const refusalCode: PlatformUseRefusalCode = platformUse.refusalCode
+    const alreadyPaying: PlatformUsePayee | null = platformUse.alreadyPaying
+    return {
+      invoiceId: null,
+      invoiceNumber: null,
+      error: platformUse.reason,
+      refusalCode,
+      alreadyPaying,
+      retryable: refusalCode === "undeterminable",
+    }
   }
 
   const amount = parseFloat((priceCents / 100).toFixed(2)) // ledger stores dollars
@@ -122,21 +200,34 @@ export async function offerPremiumPlacement(input: {
 
   const lineItem: PremiumPlacementLineItem = {
     type: "premium_placement",
-    description: `Premium placement — ${dirRow.name ?? "vendor"} (${months} month${months === 1 ? "" : "s"})`,
+    description: `Premium placement — ${vendorRow.name ?? "vendor"} (${months} month${months === 1 ? "" : "s"})`,
     months,
     price_cents: priceCents,
-    directory_id: vendorDirectoryId,
+    vendor_id: vendorId,
   }
 
-  // vendor_id has no FK (migration 1000); for a placement charge the billed
-  // party IS the directory row, so its id is the vendor anchor. billed_to's
-  // CHECK vocabulary ('brokerage'|'contact') has no vendor recipient — the
-  // charge direction lives in the line item type, so the column default stands.
+  // IDENTITY. vendor_id is a vendors.id, matching every other vendor_invoices
+  // writer. It used to be a vendor_directory.id, and that single line was why
+  //   · the vendor charged for placement could not see the invoice in their own
+  //     portal (that page filters on a vendors.id),
+  //   · placement revenue silently dropped out of the superadmin console's
+  //     per-tenant billed totals (the join never matched),
+  //   · readVendorStripeConnect resolved nothing and the Stripe line item said
+  //     the literal "Vendor".
+  // m355 remapped the historical rows and added the FK that makes it impossible.
+  //
+  // billed_to: 'vendor' is load-bearing, not decoration. markInvoicePaid mints a
+  // vendor_earnings row — a PAYOUT CLAIM against the brokerage — for any invoice
+  // whose billed_to is NOT 'vendor'. Money here flows vendor → brokerage, the
+  // exact opposite. Leaving the column at its 'brokerage' default meant every
+  // placement invoice marked paid would have credited the vendor with money they
+  // owed us. 'vendor' is in the live CHECK; nothing is widened.
   const { data: invoice, error: invError } = await supabase
     .from("vendor_invoices")
     .insert({
       brokerage_id: brokerageId,
-      vendor_id: vendorDirectoryId,
+      vendor_id: vendorId,
+      billed_to: "vendor",
       invoice_number: invoiceNumber,
       invoice_date: new Date().toISOString().slice(0, 10),
       due_date: dueDate,
@@ -201,18 +292,18 @@ export async function markPlacementPaid(input: {
     return { invoiceId: null, placementUntil: null, error: "Invoice was cancelled" }
   }
 
-  // Tenant anchor on the flip target too — the directory row referenced by the
-  // line item must still exist in this brokerage.
-  const { data: dirRow, error: dirError } = await supabase
-    .from("vendor_directory")
+  // Tenant anchor on the flip target too — the vendor referenced by the line
+  // item must still exist in this brokerage.
+  const { data: vendorRow, error: vendorError } = await supabase
+    .from("vendors")
     .select("id, brokerage_id")
-    .eq("id", placementItem.directory_id)
+    .eq("id", placementItem.vendor_id)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
-  if (dirError) return { invoiceId: null, placementUntil: null, error: dirError.message }
-  if (!dirRow) {
-    return { invoiceId: null, placementUntil: null, error: "Directory entry for this placement no longer exists in your brokerage" }
+  if (vendorError) return { invoiceId: null, placementUntil: null, error: vendorError.message }
+  if (!vendorRow) {
+    return { invoiceId: null, placementUntil: null, error: "The vendor for this placement no longer exists in your brokerage" }
   }
 
   const paidAt = new Date()
@@ -223,12 +314,23 @@ export async function markPlacementPaid(input: {
   // This is the tenant's assertion of collection (check / ACH / external
   // Stripe invoice) — no payment is simulated here.
   const updatedItems = (invoice.line_items as any[]).map((li: any) =>
-    li === placementItem || (li?.type === "premium_placement" && li?.directory_id === placementItem.directory_id)
+    li === placementItem || (li?.type === "premium_placement" && li?.vendor_id === placementItem.vendor_id)
       ? { ...li, placement_until: placementUntil.toISOString() }
       : li
   )
 
-  const { error: payError } = await supabase
+  // `.select("id")` IS THE PROOF, and it was missing. A supabase-js UPDATE that
+  // matches NOTHING resolves with `error` null and no rows — byte-identical to
+  // one that worked (CLAUDE.md §3). Three real ways this matched nothing:
+  //   · a concurrent request already flipped it to 'paid', so .neq("status","paid")
+  //     excluded it,
+  //   · the invoice moved tenant between the read above and this write,
+  //   · the row was cancelled in between.
+  // In every one of them this function then went on to FEATURE THE VENDOR and
+  // return success — placement granted with no payment transition recorded, i.e.
+  // the ledger says nobody was ever charged. Counting the returned rows is what
+  // turns "the statement executed" into "the payment was recorded".
+  const { data: paidRows, error: payError } = await supabase
     .from("vendor_invoices")
     .update({
       status: "paid",
@@ -239,19 +341,29 @@ export async function markPlacementPaid(input: {
     .eq("id", invoiceId)
     .eq("brokerage_id", brokerageId)
     .neq("status", "paid") // cheap double-mark guard
+    .select("id")
 
   if (payError) return { invoiceId: null, placementUntil: null, error: payError.message }
+  if (!paidRows || paidRows.length === 0) {
+    return {
+      invoiceId: null,
+      placementUntil: null,
+      error:
+        "Nothing was marked paid — that invoice is no longer a payable placement invoice of your " +
+        "brokerage (it may have just been paid, cancelled, or moved). The vendor was NOT featured.",
+    }
+  }
 
   // THEN flip the placement flags — the paid ledger row is the source of truth
   // the expiry sweep reads, so it must land first.
   const { error: flipError } = await supabase
-    .from("vendor_directory")
+    .from("vendors")
     .update({
       preferred: true,
       display_priority: PLACEMENT_DISPLAY_PRIORITY,
       visible_in_portal: true,
     })
-    .eq("id", placementItem.directory_id)
+    .eq("id", placementItem.vendor_id)
     .eq("brokerage_id", brokerageId)
 
   if (flipError) {
@@ -279,17 +391,17 @@ export async function expirePlacements(input: {
 
   const supabase = createServiceClient()
 
-  const { data: preferredRows, error: dirError } = await supabase
-    .from("vendor_directory")
+  const { data: preferredRows, error: benchError } = await supabase
+    .from("vendors")
     .select("id")
     .eq("brokerage_id", brokerageId)
     .eq("preferred", true)
 
-  if (dirError) return { expired: 0, error: dirError.message }
+  if (benchError) return { expired: 0, error: benchError.message }
   if (!preferredRows || preferredRows.length === 0) return { expired: 0, error: null }
 
   // All PAID placement invoices for this brokerage, newest payment first —
-  // the LATEST paid invoice per directory row decides the current term
+  // the LATEST paid invoice per vendor decides the current term
   // (a renewal supersedes the original invoice's window).
   const { data: paidInvoices, error: invError } = await supabase
     .from("vendor_invoices")
@@ -303,13 +415,13 @@ export async function expirePlacements(input: {
 
   if (invError) return { expired: 0, error: invError.message }
 
-  // directory_id → latest paid placement term (first hit wins: sorted desc).
-  const latestTermByDirectory = new Map<string, string | undefined>()
+  // vendor_id → latest paid placement term (first hit wins: sorted desc).
+  const latestTermByVendor = new Map<string, string | undefined>()
   for (const inv of paidInvoices ?? []) {
     const item = findPlacementItem(inv.line_items)
     if (!item) continue
-    if (!latestTermByDirectory.has(item.directory_id)) {
-      latestTermByDirectory.set(item.directory_id, item.placement_until)
+    if (!latestTermByVendor.has(item.vendor_id)) {
+      latestTermByVendor.set(item.vendor_id, item.placement_until)
     }
   }
 
@@ -319,19 +431,26 @@ export async function expirePlacements(input: {
   for (const row of preferredRows) {
     // Rows with NO placement billing history are manually curated preferred
     // vendors — the sweep never touches those.
-    if (!latestTermByDirectory.has(row.id)) continue
-    const until = latestTermByDirectory.get(row.id)
+    if (!latestTermByVendor.has(row.id)) continue
+    const until = latestTermByVendor.get(row.id)
     // Term not recorded (paid before this feature landed) → can't judge lapse.
     if (!until) continue
     if (new Date(until).getTime() >= now) continue
 
-    const { error: resetError } = await supabase
-      .from("vendor_directory")
+    // COUNT WHAT ACTUALLY MOVED. Same rule as the two writes above: a zero-row
+    // UPDATE resolves with no error, so `expired++` on the bare statement counted
+    // un-featurings that never happened (the row deleted or moved tenant between
+    // the read above and here) and the nightly sweep reported clean-up it had not
+    // done. The number the cron logs is now the number of rows that changed.
+    const { data: reset, error: resetError } = await supabase
+      .from("vendors")
       .update({ preferred: false, display_priority: 0 })
       .eq("id", row.id)
       .eq("brokerage_id", brokerageId)
+      .select("id")
 
     if (resetError) return { expired, error: resetError.message }
+    if (!reset || reset.length === 0) continue
     expired++
   }
 

@@ -45,7 +45,7 @@ import { raiseReferralDeduped, type SlaReferralSweepResult } from "@/lib/manager
 /** Days of scrape activity the ROI funnel grades. */
 export const TERRITORY_ROI_WINDOW_DAYS = 30
 /** Row cap per bounded read — a hit cap is reported, never silently truncated. */
-export const TERRITORY_ROI_ROW_CAP = 5000
+const TERRITORY_ROI_ROW_CAP = 5000
 /** Both sides (the outlier market AND the pooled rest) need at least this many
  *  promoted leads before the cost divergence is worth arguing. */
 export const TERRITORY_ROI_MIN_PROMOTED = 5

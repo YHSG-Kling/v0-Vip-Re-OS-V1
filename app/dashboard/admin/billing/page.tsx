@@ -2,12 +2,27 @@
 // Billing & Tiering admin workspace
 
 import { redirect } from "next/navigation"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
 import { createServiceClient } from "@/lib/supabase/service"
 import { BillingDashboard } from "@/app/components/features/admin/billing-dashboard"
-import { SubscriptionTierCard } from "@/app/components/features/admin/subscription-tier-card"
+import {
+  SubscriptionTierCard,
+  type SubscriptionCardStatus,
+} from "@/app/components/features/admin/subscription-tier-card"
+import { toPlanTier } from "@/lib/billing/plan-tier"
+import { TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import { OverageCalculator } from "@/app/components/features/admin/overage-calculator"
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
 import { ManageBillingButton } from "./manage-billing-button"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { SubscriptionAgreementCard } from "./subscription-agreement-card"
+import { RevenueSummaryCard } from "./revenue-summary-card"
+import { ReferralEarningsCard } from "./referral-earnings-card"
+import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription-agreement"
+import { getReferralEarningsAction } from "@/app/actions/admin/referral-earnings"
+import type { ReferralEarningRow } from "@/lib/platform/referral-payouts"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -49,8 +64,10 @@ export default async function BillingAdminPage({
     .eq("id", user.id)
     .maybeSingle()
 
-  const isSuper = userProfile?.user_type === "superadmin" || (userProfile as any)?.platform_role === "superadmin"
-  const isTenantBillingAdmin = ["broker", "broker_admin", "admin"].includes(userProfile?.user_type ?? "")
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuper = isPlatformSuperadminIdentity(userProfile?.user_type, (userProfile as any)?.platform_role)
+  const isTenantBillingAdmin = isBrokerageFinanceAdmin({ user_type: userProfile?.user_type ?? "" })
   if (!userProfile || (!isSuper && !isTenantBillingAdmin)) {
     redirect("/dashboard")
   }
@@ -59,6 +76,71 @@ export default async function BillingAdminPage({
   const brokerageId = isSuper
     ? (params.brokerageId || (userProfile as any).brokerage_id || user.id)
     : (userProfile as any).brokerage_id
+
+  // LANE 1 (m481): the platform-authored subscription agreement, signed in-app
+  // by the tenant's own admins. This page is where a blocked tenant lands at
+  // login AND where an activating tenant manages their subscription — the
+  // natural seam to surface the contract. Shown only to the tenant's own admins
+  // (signing binds THEIR brokerage; a superadmin inspecting another tenant via
+  // ?brokerageId= must not be offered someone else's signature line). The
+  // agreement is surfaced, not enforced: no blocking gate is added here — see
+  // the m481 follow-up note (a hard gate would strand live tenants).
+  let agreementView = null
+  if (isTenantBillingAdmin && (userProfile as any).brokerage_id) {
+    const agreementRes = await getSubscriptionAgreementAction()
+    if (agreementRes.ok) agreementView = agreementRes.view
+  }
+
+  // REFERRAL EARNINGS — the RECIPIENT half of subscriber-referral payouts
+  // (owner ruling: "posted and received by the recipient"). Payouts POSTED to
+  // THIS tenant (referral_payouts.recipient_brokerage_id, m573) render here —
+  // the tenant's own money page — with a "confirm received" acknowledgment.
+  // SESSION tenant only (§4): the action resolves the brokerage from the
+  // session profile, never from ?brokerageId=, so a superadmin inspecting
+  // another tenant sees their OWN earnings or nothing, never someone else's
+  // acknowledgment buttons. Pre-m573 the ledger is absent and this renders
+  // nothing (the action reports `unavailable`, the card returns null on empty).
+  let referralEarnings: ReferralEarningRow[] = []
+  if (isTenantBillingAdmin && (userProfile as any).brokerage_id) {
+    const earningsRes = await getReferralEarningsAction()
+    if (earningsRes.ok) referralEarnings = earningsRes.rows
+  }
+
+  // ── THE PLAN CARD WAS TELLING EVERY TENANT THE SAME THING, AND IT WAS FALSE ──
+  //
+  // This card was rendered `tierName="starter" status="active"` — two literals.
+  //   · 'starter' is the RETIRED tier vocabulary (scripts/1023-align-plan-tier-
+  //     vocabulary.sql mapped starter → solo_agent); brokerages.plan_tier is
+  //     CHECK-constrained to solo_agent | team | brokerage | multi_location, so
+  //     no tenant has ever been on it.
+  //   · 'active' is worse, because THIS PAGE IS THE PAYWALL DESTINATION
+  //     (lib/kernel/onboarding.ts routes a blocked tenant here). A past-due or
+  //     lapsed tenant was sent to a page that told them their subscription was
+  //     ACTIVE — and the card renders its "Cancel Subscription" button on
+  //     exactly that value, so it also offered to cancel a subscription that in
+  //     the live database does not exist.
+  //
+  // Both now come from the row. `subscriptions` is read for the real status and
+  // `brokerages.plan_tier` names the plan; with no subscription row (the live
+  // state for both tenants) the card says so instead of asserting "ACTIVE".
+  const [{ data: planRow }, { data: subRow }] = await Promise.all([
+    supabase.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle(),
+    supabase
+      .from("subscriptions")
+      .select("status")
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  const planTierName = toPlanTier((planRow as { plan_tier?: string | null } | null)?.plan_tier)
+  const planDisplayName = TIER_LABELS[planTierName]
+  const storedStatus = (subRow as { status?: string | null } | null)?.status ?? null
+  const cardStatus: SubscriptionCardStatus =
+    storedStatus === "active" || storedStatus === "trialing" || storedStatus === "past_due" ||
+    storedStatus === "cancelled" || storedStatus === "paused"
+      ? storedStatus
+      : "none"
 
   return (
     <div className="min-h-screen bg-background">
@@ -71,7 +153,25 @@ export default async function BillingAdminPage({
               Manage subscriptions, feature entitlements, and usage for brokerages
             </p>
           </div>
-          <ManageBillingButton />
+          {/* THE PAYWALL DEAD-ENDED HERE. lib/kernel/onboarding.ts routes a
+              blocked tenant to this page, and the only money action on it was
+              "Manage billing" — the Stripe billing PORTAL, which
+              lib/billing/stripe-portal.ts refuses outright without an existing
+              stripe_customer_id ("No billing account yet — subscribe to a plan
+              first"). Nothing on this page let anyone subscribe, so a lapsed
+              tenant was routed to a page whose single button told them to do
+              something the page did not offer. The checkout is not missing —
+              it lives on /settings/billing (CurrentPlanCard → UpgradeModal →
+              app/actions/billing.ts startSubscriptionCheckout) — so this links
+              to it rather than growing a second one (§1). */}
+          <div className="flex items-center gap-2">
+            {cardStatus !== "active" && (
+              <Button asChild size="sm">
+                <Link href="/settings/billing">Choose a plan</Link>
+              </Button>
+            )}
+            <ManageBillingButton />
+          </div>
         </div>
 
         {/* Brokerage Selector */}
@@ -92,11 +192,13 @@ export default async function BillingAdminPage({
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column - Subscription & Features */}
           <div className="lg:col-span-2 space-y-6">
+            {agreementView && <SubscriptionAgreementCard initialView={agreementView} />}
+            {referralEarnings.length > 0 && <ReferralEarningsCard initialRows={referralEarnings} />}
             <BillingDashboard brokerageId={brokerageId} />
             <SubscriptionTierCard
               brokerageId={brokerageId}
-              tierName="starter"
-              status="active"
+              tierName={planDisplayName}
+              status={cardStatus}
             />
             <FeatureEntitlementList brokerageId={brokerageId} />
           </div>
@@ -104,6 +206,11 @@ export default async function BillingAdminPage({
           {/* Right Column - Usage & Overage */}
           <div className="space-y-6">
             <OverageCalculator brokerageId={brokerageId} projectionDays={30} />
+            {/* PLATFORM-WIDE revenue: superadmin only. A tenant billing admin
+                lands on this same page (it is where a blocked tenant is routed
+                at login), so the card is not rendered for them at all — and the
+                action behind it enforces the same gate server-side. */}
+            {isSuper && <RevenueSummaryCard />}
           </div>
         </div>
       </div>

@@ -46,13 +46,12 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAgentOrCommerceAdmin } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Same override set as requireContactOwnership (tool-call route) and the
  *  approvals routes: these roles decide brokerage-wide; agents self-scope. */
-const DECISION_OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export interface VoiceAcceptOfferInput {
   brokerageId: string
   /** users.id of the speaking staff user (agent_assistant_sessions.user_id). */
@@ -101,13 +100,36 @@ async function resolveActor(svc: Svc, input: VoiceAcceptOfferInput): Promise<{
     .eq("id", input.actorUserId)
     .maybeSingle()
   if (!userRow) return { error: "Acting user not found" }
-  const userType = String((userRow as { user_type?: string | null }).user_type ?? "agent")
+  // §4 FAIL CLOSED, not `?? "agent"`. An unresolvable role must never be graded
+  // as a producing agent's — the same defaulting lib/identity/get-agent-context.ts
+  // dropped this wave. Measured live: zero users rows carry a NULL user_type, so
+  // this locks nobody out and only changes what happens when the answer is
+  // genuinely unknown. The predicate below refuses the empty string.
+  const userType = String((userRow as { user_type?: string | null }).user_type ?? "")
 
   // Authority — same shape as tool-registry authority "agent": the acting
   // agent plus the override roles. Enforced here too (not only at the route
   // gate) because the run_team_command free-text lane reaches this backend
   // without a per-tool registry check.
-  if (userType !== "agent" && !DECISION_OVERRIDE_ROLES.has(userType)) {
+  // ONE SPELLING (§6, wave 27). This was the second hand-written copy of
+  // "agent, or someone who administers them"; the other was
+  // app/actions/negotiation-strategy.ts:requireAgentOrAdmin. Both were merged
+  // onto derived predicates in lib/auth/resolve-user-role.ts rather than
+  // restating a roster.
+  //
+  // THIS SITE TAKES THE COMMERCE TIER, AND THE DIFFERENCE IS DELIBERATE. Its
+  // sibling asks isAgentOrTenantAdmin — "agent, or someone who administers
+  // them" — which the owner's 2026-09-04 ruling widened by seating
+  // `compliance_officer` as tenant staff admin. ACCEPTING AN OFFER IS NOT AN
+  // OPERATIONAL SURFACE: it binds a client to a purchase contract, and the
+  // accept_offer registry row is flagged is_nar_regulated. Riding that widening
+  // would have handed a supervisory seat the power to accept a purchase offer
+  // BY VOICE as a side effect of a ruling about who administers staff.
+  // isAgentOrCommerceAdmin is the same roster minus exactly that role — the
+  // subtraction TENANT_COMMERCE_ADMIN_USER_TYPES already makes for the four
+  // gates that obligate the brokerage to pay. Every role that could decide a
+  // deal here yesterday still can.
+  if (!isAgentOrCommerceAdmin({ user_type: userType })) {
     return { error: "Deal decisions aren't available for your role — ask the assigned agent or your broker." }
   }
 

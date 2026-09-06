@@ -3,11 +3,15 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
-import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { CreateAgentRecordButton } from "./create-agent-record-button"
+import { seatCheck, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
+import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -35,6 +39,13 @@ export default async function AdminUsersPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Auth gate — use user_type (canonical), check maybeSingle to avoid throwing
   const { data: profile } = await supabase
     .from("users")
@@ -43,7 +54,7 @@ export default async function AdminUsersPage() {
     .maybeSingle()
 
   const callerType = profile?.user_type ?? "agent"
-  if (!["admin", "broker", "superadmin"].includes(callerType)) {
+  if (!isAdminOrBroker({ user_type: callerType })) {
     redirect("/dashboard")
   }
 
@@ -132,16 +143,44 @@ export default async function AdminUsersPage() {
     return false
   }
 
+  /** Specifically the AGENTS-row gap — the one an admin can now repair in place.
+   *  A missing transaction_coordinators row is a different record with a
+   *  different writer and must not get this button. */
+  function isAgentRecordMissing(u: { id: string; user_type: string | null }) {
+    return REQUIRES_AGENTS_ROW.has(u.user_type ?? "") && !agentUserIds.has(u.id)
+  }
+
   const incompleteCount = userList.filter(u => isDomainRecordMissing(u)).length
 
   // SEAT METER — the same math the invite gate enforces (Solo 2 · Team 5 ·
   // Brokerage/Multi unlimited; a seat = active SEAT_ROLES user, partners and
   // suspended users never count).
-  const seatCount = userList.filter(
-    (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended"
-  ).length
-  // ONE resolution with the invite gate: staff-set per-tenant override wins over the tier default.
-  const { limit: seatLimit, overridden: seatOverridden } = effectiveSeatLimit(planTier, parseSeatOverride(tenant?.billing_metadata))
+  // ONE resolver with Settings and the setup meter. Counting only user_type
+  // under-counts: a user may hold a seat role by user_role_assignments without
+  // their primary type being one, and a user with several roles is still ONE seat.
+  const { seatCount } = await resolveSeatUsage(service, profile.brokerage_id)
+  // ONE resolution with the invite gate: the PLAN CATALOGUE
+  // (subscription_tiers.max_agents) is the number, with the staff-set per-tenant
+  // override on top of it. Reading the same catalogue the gate reads is what
+  // keeps this meter from showing a limit the gate does not enforce.
+  const catalogSeats = await resolveCatalogSeatLimits(service)
+  // ── "IS THIS TENANT AT ITS LIMIT?" IS ASKED ONCE, NOT SPELLED TWICE ────────
+  //
+  // This line resolved only the LIMIT and then re-derived the verdict inline, as
+  // `seatLimit !== null && seatCount >= seatLimit`, to decide whether to paint
+  // the meter red. That inline predicate was a THIRD spelling of a rule this
+  // repo already holds twice (CLAUDE.md §6) — the invite gate enforces it
+  // through seatDecision, and tier-role-matrix exposes exactly this projection
+  // of it as `seatCheck`. Three copies of one rule is three places a grace seat
+  // or a changed clamp has to be remembered, and the meter is the copy nobody
+  // would think to update: it would keep telling a tenant they had room after
+  // the gate had started refusing.
+  //
+  // seatCheck answers limit + at-capacity + "is this a staff override" in ONE
+  // call, and it is computed BY seatDecision, so the number on this page and the
+  // number the gate enforces cannot drift apart.
+  const seats = seatCheck(planTier, seatCount, parseSeatOverride(tenant?.billing_metadata), catalogSeats.limits)
+  const { limit: seatLimit, overridden: seatOverridden } = seats
 
   return (
     <div className="p-6 space-y-6">
@@ -154,7 +193,7 @@ export default async function AdminUsersPage() {
           </h1>
           <p className="text-muted-foreground text-sm mt-0.5">
             {userList.length} user{userList.length !== 1 ? "s" : ""}
-            <span className={`ml-2 font-medium ${seatLimit !== null && seatCount >= seatLimit ? "text-red-600" : "text-slate-700"}`}>
+            <span className={`ml-2 font-medium ${seats.allowed ? "text-slate-700" : "text-red-600"}`}>
               — {seatLimit === null
                 ? `${seatCount} seats in use (unlimited on ${tierLabel(planTier)})`
                 : `${seatCount} of ${seatLimit} seats used${seatOverridden ? " (custom limit)" : ""}`}
@@ -170,6 +209,11 @@ export default async function AdminUsersPage() {
           callerRole={callerType}
           brokerageId={profile?.brokerage_id}
           tier={planTier}
+          // What the COLUMN can store, so the menu never offers a user type the
+          // CHECK would refuse (an INSERT naming one is refused entirely —
+          // CLAUDE.md §3). Read here, on the server, so the ~1600-line generated
+          // vocabulary cache stays out of the client bundle.
+          storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
         />
       </div>
 
@@ -182,7 +226,9 @@ export default async function AdminUsersPage() {
               {incompleteCount} account{incompleteCount !== 1 ? "s are" : " is"} missing required domain records.
             </p>
             <p className="text-xs text-amber-700 mt-0.5">
-              Edit each flagged user and save to trigger automatic repair, or they will be repaired on first login.
+              Use <strong>Create agent record</strong> on a flagged row to provision the missing
+              agents row now — an account without one cannot own contacts, deals or commissions.
+              Accounts missing a transaction-coordinator record are repaired on that user&apos;s first login.
             </p>
           </div>
         </div>
@@ -236,6 +282,16 @@ export default async function AdminUsersPage() {
                       <CheckCircle2 className="w-4 h-4 text-green-500" />
                     ) : (
                       <AlertTriangle className="w-4 h-4 text-amber-500" />
+                    )}
+                    {isAgentRecordMissing(u) && (
+                      <CreateAgentRecordButton
+                        userId={u.id}
+                        userName={
+                          [u.first_name, u.last_name].filter(Boolean).join(" ") ||
+                          u.email ||
+                          "this user"
+                        }
+                      />
                     )}
                     <EditUserButton userId={u.id} />
                   </div>

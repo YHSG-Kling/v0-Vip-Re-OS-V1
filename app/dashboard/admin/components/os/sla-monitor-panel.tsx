@@ -7,9 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"
 import { createTask } from "@/app/actions/tasks"
-import { updateComplianceCheck } from "@/app/actions/transaction-compliance"
 import {
-  Clock,
   ChevronRight,
   AlertTriangle,
   CheckCircle2,

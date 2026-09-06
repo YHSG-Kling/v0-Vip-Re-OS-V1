@@ -1,10 +1,30 @@
 "use server"
 
 /**
- * ⚠️ SCHEMA-DRIFT WARNING
+ * AI CHAT — conversations + messages (the inbox model).
  *
- * This file writes "AI chat" data into the WRONG tables. The platform has
- * two distinct conversation models:
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE OLD SCHEMA-DRIFT WARNING THAT USED TO HEAD THIS FILE WAS STALE, AND IT
+ * WAS THE DANGEROUS KIND OF STALE. It claimed this file wrote model #2's column
+ * names into model #1's tables, that "every write fails silently at runtime",
+ * and that the file "has no functional callers" — an invitation to delete it.
+ *
+ * Re-verified against the live database: public.messages carries sender_type,
+ * sender_id, body, them_first_analysis, compliance_flagged, compliance_issues,
+ * metadata and type. Every column this file writes EXISTS. A later migration
+ * closed the drift and nobody updated the warning.
+ *
+ * ONE REAL DEFECT SURVIVED, and it was not the one the warning described:
+ * messages.compliance_issues is character varying[] (udt _varchar), while
+ * checkMessageCompliance returns an array of OBJECTS. Writing the objects
+ * straight in fails with 42804 — verified live. The structured detail now goes
+ * to metadata (jsonb, where it belongs) and the column gets the human-readable
+ * labels it is typed for.
+ *
+ * The two conversation models are still real and still distinct:
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * The platform has two distinct conversation models:
  *
  *   1. messages + conversations  — email/SMS inbox conversations with
  *      external contacts (see app/actions/ai-communication-hub.ts).
@@ -21,29 +41,22 @@
  *      chat_messages cols: id, session_id, role, content, metadata,
  *      created_at
  *
- * This file targets model #1 (conversations/messages) but uses model
- * #2's column names (session_id, sender_type, message_content,
- * them_first_analysis, etc.) — every write fails silently at runtime.
+ * This file deliberately targets model #1 — an agent talking WITH a contact,
+ * which is an inbox conversation. Model #2 (chat_sessions/chat_messages) is the
+ * widget/visitor rail and is not what these functions are for. Both are real;
+ * neither replaces the other.
  *
- * Additionally it reads from tables that may not exist:
- *   - ai_suggestions, lead_conversation_history, chat_templates,
- *     agent_chat_preferences, message_access_control,
- *     prohibited_phrases. Whether each exists vs. is also drift needs
- *     case-by-case verification.
+ * Every table read here was verified to exist: ai_suggestions, chat_templates,
+ * agent_chat_preferences, message_access_control, prohibited_phrases.
  *
- * RESOLUTION (future work, not in this commit):
- *   - createChatSession / sendChatMessage / generateAiResponse should
- *     write to chat_sessions + chat_messages, not conversations +
- *     messages.
- *   - getChatSession / getAgentChatSessions / endChatSession likewise.
- *   - Column names need renaming: sender_type → role, message_content
- *     → content, session_type / session_status / etc. stay but live on
- *     chat_sessions.
- *
- * In the meantime: this file has no functional callers from any client
- * UI we've audited so far (the actual AI chat surfaces use other
- * action files). The audit value here is documenting the drift so the
- * next developer doesn't ship features on top of it.
+ * TABLE FACTS THAT BIT, all confirmed against the live database:
+ *   · agent_chat_preferences has UNIQUE (agent_id). An upsert with no conflict
+ *     target defaults to the primary key, a fresh uuid is generated, and the
+ *     SECOND save raises 23505 — an agent could set preferences exactly once.
+ *   · message_access_control has UNIQUE (conversation_id, user_id) and the same
+ *     upsert bug, plus NO foreign key to users — so a PostgREST `users(...)`
+ *     embed cannot resolve and the read throws.
+ *   · messages.compliance_issues is character varying[], not jsonb.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -51,22 +64,83 @@ import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity"
+import { scanForProhibitedPhrases } from "@/lib/application/compliance-monitoring"
+import {
+  resolveReplyStyle,
+  isReplyModel,
+  isReplyTone,
+  DEFAULT_REPLY_MODEL,
+  DEFAULT_REPLY_TONE,
+  type ReplyModel,
+  type ReplyTone,
+} from "@/lib/ai/reply-style"
+
+/**
+ * Flatten structured compliance issues to the varchar[] the column holds.
+ * PURE — the structured form is kept alongside in metadata, so nothing is lost.
+ */
+function complianceIssueLabels(issues: unknown): string[] {
+  if (!Array.isArray(issues)) return []
+  return issues.map((i: any) =>
+    typeof i === "string"
+      ? i
+      : [i?.type, i?.phrase].filter(Boolean).join(": ") || JSON.stringify(i),
+  )
+}
 
 // =====================================================
 // CHAT SESSION MANAGEMENT
 // =====================================================
 
+/**
+ * Resolve the caller to the agents.id that conversations.agent_id demands.
+ *
+ * conversations.agent_id is NOT NULL and FKs agents(id) (verified live:
+ * conversations_agent_id_fkey). A users.id here is REJECTED by the foreign key,
+ * and `?? userId` — the substitution this repo keeps finding — would turn a
+ * loud rejection into a wrong-row write. getAgentContext only looks the agents
+ * row up when user_type is literally 'agent', so a broker or admin who DOES
+ * have an agents row would otherwise be told they have no agent profile; the
+ * canonical resolver covers that case.
+ */
+async function callerAgentIdentity(): Promise<
+  | { ok: true; agentId: string; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Not signed in" }
+  if (!ctx.brokerageId) return { ok: false, error: "No brokerage is attached to this account" }
+
+  let agentId = ctx.agentId
+  if (!agentId) {
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    agentId = await resolveUserIdToAgentRecord(ctx.userId, ctx.brokerageId)
+  }
+  if (!agentId) {
+    return {
+      ok: false,
+      error: "No agent profile is linked to this account yet — finish account setup to use AI chat.",
+    }
+  }
+  return { ok: true, agentId, brokerageId: ctx.brokerageId, userId: ctx.userId }
+}
+
 export async function createChatSession(data: {
-  agentId: string
+  /**
+   * OPTIONAL and ADVISORY. The session is always opened for the agents.id the
+   * SESSION resolves to; a mismatching value is refused rather than honoured,
+   * so a browser cannot open a conversation under someone else's agent row.
+   */
+  agentId?: string
   leadId?: string
   sessionType: "lead_qualification" | "client_support" | "transaction_help" | "market_insights"
 }) {
-  console.log("[v0] createChatSession called with agentId:", data.agentId)
-  
-  // Validate UUID format
-  if (!isValidUUID(data.agentId)) {
-    console.log("[v0] Invalid UUID format for agentId, cannot create session")
-    throw new Error("Invalid agent ID format")
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
+  if (data.agentId && data.agentId !== identity.agentId) {
+    throw new Error("That agent id is not this account's")
   }
 
   const supabase = await createClient()
@@ -79,28 +153,47 @@ export async function createChatSession(data: {
   // Get lead context if provided
   let contextData: any = {}
   if (data.leadId && isValidUUID(data.leadId)) {
-    const { data: lead } = await supabase
+    // The same unresolvable embed getChatSession carried: lead_intelligence and
+    // lead_behavioral_data are keyed on lead_id and have NO foreign key to
+    // contacts, so PostgREST refused the whole request (PGRST200) and `lead`
+    // came back null — which the `?.` chain below then read as "no context",
+    // silently. Every session created here started with an EMPTY context_data
+    // even when the contact was rich. Fixing one sibling and not the other is
+    // how a defect class survives being found, so both are corrected together.
+    const { data: lead, error: leadError } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      `)
+      .select("*")
       .eq("id", data.leadId)
-      .single()
+      .maybeSingle()
+
+    if (leadError) {
+      console.error("[v0] Chat session contact load failed:", leadError)
+    }
 
     contextData = {
       lead: lead,
       temperature: lead?.lead_temperature,
       lastContact: lead?.last_contact_date,
-      interests: lead?.lead_intelligence?.[0]?.identified_interests,
+      // `interests` used to come from the embed that could never resolve.
+      // contacts has no route to lead_intelligence — there is no contact->lead
+      // column at all — so this is omitted rather than reported as empty.
     }
   }
 
   const { data: session, error } = await supabase
     .from("conversations")
     .insert({
-      agent_id: data.agentId,
+      agent_id: identity.agentId,
+      // THE TENANT ANCHOR WAS MISSING. getChatSession/getAgentChatSessions read
+      // back through `.eq("brokerage_id", …)`, so a session created without one
+      // inserted fine and then could never be re-opened — the row existed and
+      // the screen said "not found". conversations.brokerage_id FKs brokerages.
+      brokerage_id: identity.brokerageId,
+      // NOT a lead id despite the name: the field is validated above via
+      // requirePermission("view","contact", …) and resolved with
+      // .from("contacts").eq("id", …). conversations.contact_id FKs contacts(id),
+      // so this is CORRECT. Left named leadId because it is a public server-action
+      // parameter; documented here so an id-class sweep does not "fix" it into a bug.
       contact_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null,
       type: data.sessionType,
       context_data: contextData,
@@ -113,17 +206,24 @@ export async function createChatSession(data: {
     throw error
   }
 
-  console.log("[v0] Chat session created successfully:", session.id)
-
   // Create welcome message
-  await supabase.from("messages").insert({
+  const { error: welcomeError } = await supabase.from("messages").insert({
     conversation_id: session.id,
+    brokerage_id: identity.brokerageId,
+    agent_id: identity.agentId,
+    contact_id: session.contact_id,
     sender_type: "ai_assistant",
     body: data.leadId
       ? `I'm ready to help you engage with this lead using them-first communication. I have their profile loaded and can suggest personalized approaches.`
       : `I'm here to assist you. What would you like help with today?`,
     type: "system",
   })
+  if (welcomeError) {
+    // Not fatal — the session is real and usable. Said out loud because a
+    // swallowed insert here is indistinguishable from a chat that simply
+    // opened without a greeting.
+    console.error("[v0] Chat session welcome message failed:", welcomeError)
+  }
 
   revalidatePath("/dashboard/chat")
   return session
@@ -131,20 +231,59 @@ export async function createChatSession(data: {
 
 export async function sendChatMessage(data: {
   sessionId: string
-  senderId: string
+  /**
+   * WHO IS TALKING — stated, not guessed.
+   *
+   * This used to be inferred as `senderId !== "agent"`. messages.sender_id is a
+   * uuid column, so every real caller passes a uuid, so the comparison was true
+   * every time: EVERY message the agent typed was stored as sender_type
+   * "client", ran the lead-temperature analyser over the agent's own words, and
+   * wrote that verdict onto the conversation's lead_temperature. The channel
+   * restrictions for a "cold lead" then keyed off a temperature derived from the
+   * agent's typing. There is no way to recover the answer from an id, so the
+   * caller says it.
+   */
+  senderType: "agent" | "client"
   messageContent: string
   requestAiResponse?: boolean
+  /**
+   * A reply the caller ALREADY STREAMED through /api/chat/stream (which by
+   * design persists no messages — see that route's header and the owner's
+   * 2026-09-01 "both stay" ruling). When present with requestAiResponse, the
+   * assistant row is persisted from THIS text instead of generateAiResponse
+   * running a second, different generation — the streamed tokens the agent
+   * watched and the stored transcript stay the same words, and the AI spend
+   * is not doubled. This action remains the ONE persistence door either way;
+   * the tenant/ownership gate above and every compliance analysis on the
+   * agent's own message run unchanged.
+   */
+  precomposedAiReply?: string
 }) {
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
   const supabase = await createClient()
 
+  // The conversation must belong to this tenant before anything is written to
+  // it — a raw session id is otherwise enough to post into another brokerage's
+  // thread and to spend that brokerage's AI budget answering it.
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("id, contact_id, brokerage_id")
+    .eq("id", data.sessionId)
+    .eq("brokerage_id", identity.brokerageId)
+    .maybeSingle()
+  if (conversationError) throw conversationError
+  if (!conversation) throw new Error("That conversation was not found")
+
   let temperatureAnalysis = null
-  const isClientMessage = data.senderId !== "agent" // Adjust this logic based on your sender identification
+  const isClientMessage = data.senderType === "client"
 
   if (isClientMessage) {
     temperatureAnalysis = await analyzeLeadTemperatureFromMessage(data.messageContent, data.sessionId)
 
     // Update session with new temperature
-    await supabase
+    const { error: temperatureError } = await supabase
       .from("conversations")
       .update({
         lead_temperature: temperatureAnalysis.temperature,
@@ -156,6 +295,7 @@ export async function sendChatMessage(data: {
         },
       })
       .eq("id", data.sessionId)
+    if (temperatureError) console.error("[v0] Chat temperature update failed:", temperatureError)
   }
 
   // Analyze them-first quality
@@ -168,19 +308,34 @@ export async function sendChatMessage(data: {
     .from("messages")
     .insert({
       conversation_id: data.sessionId,
+      brokerage_id: identity.brokerageId,
+      contact_id: conversation.contact_id,
+      agent_id: identity.agentId,
       sender_type: isClientMessage ? "client" : "agent",
-      sender_id: data.senderId,
+      // messages.sender_id is uuid with NO foreign key, so nothing in the
+      // database pins its id class — this file is the only writer, so it sets
+      // the convention explicitly: sender_id mirrors whichever FK'd column the
+      // sender_type names (agents.id for "agent", contacts.id for "client").
+      // Never a users.id, which would be a third class in one column.
+      sender_id: isClientMessage ? (conversation.contact_id ?? null) : identity.agentId,
       body: data.messageContent,
       them_first_analysis: themFirstAnalysis,
       compliance_flagged: !complianceCheck.passed,
-      compliance_issues: complianceCheck.issues,
-      metadata: temperatureAnalysis
-        ? {
-            temperature: temperatureAnalysis.temperature,
-            sentiment_score: temperatureAnalysis.score,
-            sentiment: temperatureAnalysis.sentiment,
-          }
-        : null,
+      // compliance_issues is character varying[] — writing the structured
+      // issue objects straight in fails with 42804 (verified live). The column
+      // gets the human-readable labels it is typed for; the full detail is
+      // preserved in metadata, which IS jsonb.
+      compliance_issues: complianceIssueLabels(complianceCheck.issues),
+      metadata: {
+        ...(temperatureAnalysis
+          ? {
+              temperature: temperatureAnalysis.temperature,
+              sentiment_score: temperatureAnalysis.score,
+              sentiment: temperatureAnalysis.sentiment,
+            }
+          : {}),
+        ...(complianceCheck.issues?.length ? { compliance_issues: complianceCheck.issues } : {}),
+      },
     })
     .select("*, message_content:body, message_type:type")
     .single()
@@ -188,41 +343,82 @@ export async function sendChatMessage(data: {
   if (error) throw error
 
   // Update session activity
-  await supabase
+  const { error: activityError } = await supabase
     .from("conversations")
     .update({
       last_message_at: new Date().toISOString(),
       them_first_score: themFirstAnalysis.score,
     })
     .eq("id", data.sessionId)
+  if (activityError) console.error("[v0] Chat session activity update failed:", activityError)
 
-  // Generate AI response if requested
+  // Generate AI response if requested — or persist the one the caller already
+  // streamed. The precomposed branch deliberately produces NO suggestions:
+  // /api/chat/stream has already written its own ai_suggestions row for the
+  // same text, and a second one here would be the double-write this parameter
+  // exists to prevent.
+  let assistantMessage: Record<string, unknown> | null = null
   if (data.requestAiResponse) {
-    const aiResponse = await generateAiResponse(data.sessionId, data.messageContent)
+    const precomposed = data.precomposedAiReply?.trim()
+    const aiResponse = precomposed
+      ? {
+          message: precomposed,
+          type: "suggestion",
+          metadata: { source: "agent_chat_stream", streamed: true },
+          suggestions: [] as unknown[],
+        }
+      : await generateAiResponse(data.sessionId, data.messageContent, {
+          brokerageId: identity.brokerageId,
+          userId: identity.userId,
+        })
 
-    await supabase.from("messages").insert({
-      conversation_id: data.sessionId,
-      sender_type: "ai_assistant",
-      body: aiResponse.message,
-      type: aiResponse.type,
-      metadata: aiResponse.metadata,
-    })
+    const { data: aiRow, error: aiInsertError } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: data.sessionId,
+        brokerage_id: identity.brokerageId,
+        contact_id: conversation.contact_id,
+        agent_id: identity.agentId,
+        sender_type: "ai_assistant",
+        body: aiResponse.message,
+        type: aiResponse.type,
+        metadata: aiResponse.metadata,
+      })
+      .select("*, message_content:body, message_type:type")
+      .single()
+
+    // The reply IS the product here. A failed insert used to be invisible: the
+    // caller got the agent's own message back and the assistant's answer was
+    // simply never stored, which reads as "the AI didn't respond".
+    if (aiInsertError) throw aiInsertError
+    assistantMessage = aiRow as Record<string, unknown>
 
     // Generate suggestions
-    if (aiResponse.suggestions) {
+    if (Array.isArray(aiResponse.suggestions) && aiResponse.suggestions.length > 0) {
       const suggestions = aiResponse.suggestions.map((sug: any) => ({
         session_id: data.sessionId,
-        suggestion_type: sug.type,
-        suggestion_content: sug.content,
-        confidence_score: sug.confidence,
+        // getChatSession reads suggestions back through
+        // `.eq("brokerage_id", …)` (ai_suggestions HAS a brokerage_id and a
+        // real FK to brokerages) — unstamped rows were written and then never
+        // shown again. agent_id likewise FKs agents(id).
+        brokerage_id: identity.brokerageId,
+        agent_id: identity.agentId,
+        suggestion_type: typeof sug?.type === "string" ? sug.type : "response_template",
+        // suggestion_content is TEXT. The prompt asks the model for an object
+        // ({"template": "…"}), and posting an object into a text column is a
+        // 22P02 that took the whole batch insert down.
+        suggestion_content:
+          typeof sug?.content === "string" ? sug.content : JSON.stringify(sug?.content ?? {}),
+        confidence_score: typeof sug?.confidence === "number" ? sug.confidence : null,
       }))
 
-      await supabase.from("ai_suggestions").insert(suggestions)
+      const { error: suggestionError } = await supabase.from("ai_suggestions").insert(suggestions)
+      if (suggestionError) console.error("[v0] AI suggestion insert failed:", suggestionError)
     }
   }
 
   revalidatePath("/dashboard/chat")
-  return message
+  return { message, assistantMessage }
 }
 
 // =====================================================
@@ -296,21 +492,53 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
 
   const issues: any[] = []
 
-  // Check prohibited phrases
-  const { data: prohibitedPhrases } = await supabase.from("prohibited_phrases").select("*").eq("is_active", true)
+  // THE SECOND HALF OF THE SAME GATE. This lane ran its own copy of the phrase
+  // scan and inherited both of its defects verbatim:
+  //
+  //   1. It graded on `severity === "blocking"` (see `passed` below) while the
+  //      column stores {info, warning, critical} — so a stored 'critical' row
+  //      landed in `issues` and was invisible to the filter, and the caller wrote
+  //      `compliance_flagged: false` on a message carrying a Fair Housing
+  //      violation. scanForProhibitedPhrases normalises that at the boundary.
+  //   2. `prohibited_phrases` held ZERO rows until m450, and this read swallowed
+  //      its error, so "catalogue unreadable" and "nothing prohibited found" were
+  //      the same outcome. They are not.
+  //
+  // Unlike scanContentComplianceService this lane does not BLOCK a send — it
+  // flags for review — so failing closed here means FLAGGING, not throwing. An
+  // unreadable or empty catalogue produces an issue of its own, which makes
+  // `passed` false and puts the message in front of a human. Silence would put
+  // it through unread.
+  const { data: prohibitedPhrases, error: phrasesError } = await supabase
+    .from("prohibited_phrases")
+    .select("*")
+    // Same ordering the content lane restored, for the same reason: the deleted
+    // seeder's getProhibitedPhrases ordered by category and nothing replacing it
+    // did. No brokerage_id filter — m454's RLS unions federal + this tenant's own
+    // words, and filtering here would hide the whole Fair Housing catalogue.
+    .eq("is_active", true)
+    .order("category", { ascending: true })
+    .order("phrase", { ascending: true })
 
-  prohibitedPhrases?.forEach((phrase) => {
-    const regex = new RegExp(phrase.phrase_pattern || phrase.phrase, "gi")
-    if (regex.test(message)) {
+  if (phrasesError || !prohibitedPhrases || prohibitedPhrases.length === 0) {
+    issues.push({
+      type: "compliance_scan_unavailable",
+      phrase: phrasesError ? "phrase catalogue unreadable" : "phrase catalogue is empty",
+      category: "fair_housing",
+      severity: "blocking",
+      alternative: "Flagged for human review: the prohibited-phrase scan could not run on this message.",
+    })
+  } else {
+    for (const hit of scanForProhibitedPhrases(prohibitedPhrases, message)) {
       issues.push({
-        type: "prohibited_phrase",
-        phrase: phrase.phrase,
-        category: phrase.category,
-        severity: phrase.severity,
-        alternative: phrase.suggested_alternative,
+        type: hit.type,
+        phrase: hit.found,
+        category: hit.category,
+        severity: hit.severity,
+        alternative: hit.suggestedAlternative,
       })
     }
-  })
+  }
 
   // Check for cold lead channel restrictions
   if (session?.contacts?.lead_temperature === "cold") {
@@ -349,21 +577,38 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
 // AI RESPONSE GENERATION
 // =====================================================
 
-async function generateAiResponse(sessionId: string, userMessage: string): Promise<any> {
+/** The AI cost ledger's tenant + actor, resolved from the SESSION by the
+ *  caller and threaded rather than re-derived, so its provenance stays
+ *  visible at the model call (CLAUDE.md §4). */
+type SpendActor = { brokerageId: string | null; userId: string | null }
+
+async function generateAiResponse(sessionId: string, userMessage: string, spendActor: SpendActor): Promise<any> {
   const supabase = await createClient()
 
-  // Get session context
-  const { data: session } = await supabase
+  // Get session context.
+  //
+  // THIS IS WHERE THE BAD EMBED COST THE MOST. lead_intelligence and
+  // lead_behavioral_data are keyed on lead_id and have NO foreign key to
+  // contacts, so PostgREST refused the entire request (PGRST200). The error was
+  // never destructured, `session` came back null, and `leadContext` below fell
+  // to its "No lead selected" branch — EVERY TIME. The AI answered every message
+  // knowing nothing about the contact, while the contact row sat one valid join
+  // away. conversations.contact_id -> contacts is a real foreign key and always
+  // was; it was the two unresolvable siblings that took the whole query down.
+  const { data: session, error: sessionError } = await supabase
     .from("conversations")
     .select(`
       *,
-      contacts (*,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      )
+      contacts (*)
     `)
     .eq("id", sessionId)
-    .single()
+    .maybeSingle()
+
+  if (sessionError) {
+    // Silence here is what let the defect live. A context the AI cannot load is
+    // worth saying out loud, because the reply it writes without it looks fine.
+    console.error("[v0] AI response context load failed:", sessionError)
+  }
 
   // Get conversation history
   const { data: messages } = await supabase
@@ -379,13 +624,60 @@ async function generateAiResponse(sessionId: string, userMessage: string): Promi
 Lead Information:
 - Name: ${session.contacts.first_name} ${session.contacts.last_name}
 - Temperature: ${session.contacts.lead_temperature}
-- Interests: ${session.contacts.lead_intelligence?.[0]?.identified_interests?.join(", ") || "Not identified"}
+- Interests: ${session.contacts.notes?.trim() || "Not identified"}
 - Last Contact: ${session.contacts.last_contact_date || "Never"}
 - Source: ${session.contacts.lead_source}
 `
     : "No lead selected"
 
   const conversationHistory = messages?.map((m) => `${m.sender_type}: ${m.body}`).join("\n") || ""
+
+  // THE PREFERENCE HAS TO REACH THE GENERATOR OR IT IS DECORATION.
+  // agent_chat_preferences.preferred_model and .tone have existed for a long
+  // time and nothing read them: the prompt below hardcoded gpt-4o-mini and
+  // never mentioned tone, so an agent could set a style and see no difference.
+  // The session row already carries agent_id, so no extra identity plumbing.
+  const { data: prefRow } = session?.agent_id
+    ? await supabase
+        .from("agent_chat_preferences")
+        .select("preferred_model, tone")
+        .eq("agent_id", session.agent_id)
+        .maybeSingle()
+    : { data: null }
+  const style = resolveReplyStyle(prefRow)
+
+  // THE BRAIN CORPUS REACHES THE ANSWER.
+  //
+  // knowledge_articles + help_topics_kb are embedded on save and searchable,
+  // and until now the only thing that read them at answer time was the
+  // inbound-email ISA. An agent asking this assistant a question got a generic
+  // real-estate answer while the brokerage's own written policy sat one vector
+  // search away. buildRAGContext is the retrieval built for prompts — and it is
+  // the RIGHT one HERE specifically because its scope comes from the caller's
+  // cookie session, which exists in a server action (the brand-voice rail
+  // deliberately avoids it for exactly the opposite reason: webhooks and cron
+  // have no cookie to scope from).
+  //
+  // Best-effort: a knowledge-base outage degrades the answer, it does not
+  // withhold it. Empty string when nothing clears the similarity threshold, so
+  // an unembedded corpus adds nothing to the prompt rather than adding noise.
+  let knowledgeContext = ""
+  try {
+    const { buildRAGContext } = await import("@/app/actions/knowledge/search")
+    knowledgeContext = await buildRAGContext(userMessage, { maxResults: 4, maxTokens: 1500 })
+  } catch (kbError) {
+    console.error("[v0] Knowledge retrieval failed for AI response:", kbError)
+  }
+
+  const knowledgeBlock = knowledgeContext
+    ? `
+BROKERAGE KNOWLEDGE — these are this brokerage's OWN documented answers. Prefer
+them over general real-estate knowledge, and say so when you rely on one. If
+they do not cover the question, say that rather than inventing a policy.
+
+${knowledgeContext}
+`
+    : ""
 
   // Create AI prompt with them-first philosophy
   const prompt = `You are an AI assistant helping a real estate agent communicate with leads and clients using a "them-first" communication philosophy.
@@ -399,6 +691,8 @@ CRITICAL RULES:
 6. Check for Fair Housing violations - never suggest discriminatory language
 7. Keep responses concise, actionable, and compliant
 
+AGENT'S CHOSEN VOICE: ${style.toneDirective}
+${knowledgeBlock}
 ${leadContext}
 
 Conversation History:
@@ -433,7 +727,9 @@ Format as JSON:
 
   try {
     const result = await generateText({
-      model: "openai/gpt-4o-mini",
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
+      model: style.model,
       prompt: prompt,
     })
 
@@ -616,25 +912,71 @@ export async function acceptAiSuggestion(suggestionId: string) {
   return { success: true }
 }
 
+/**
+ * One chat session with its contact, its messages, and the AI suggestions
+ * raised against it.
+ *
+ * THIS COULD NEVER RETURN. Three of the five embeds named a relationship
+ * PostgREST cannot resolve, so the request failed as PGRST200 and the `throw`
+ * below fired every single time — for any session id, always.
+ *
+ *   ai_suggestions   — embedded under conversations with NO foreign key to it.
+ *                      The DATA link is real (ai_suggestions.session_id), it
+ *                      just isn't declared, and PostgREST embeds on declared
+ *                      relationships only. Fetched explicitly below instead.
+ *   lead_intelligence
+ *   lead_behavioral_data
+ *                    — embedded under `contacts`, but both are keyed on
+ *                      lead_id, not contact_id. Wrong on two counts: no FK, and
+ *                      the wrong id space entirely (contacts and leads are
+ *                      distinct id spaces here). There is no contact->lead
+ *                      column on contacts, so a conversation's contact cannot
+ *                      reach lead intelligence at all. Dropped rather than
+ *                      pointed at a join that does not exist.
+ *
+ * The two embeds that remain are backed by real foreign keys —
+ * conversations.contact_id -> contacts and messages.conversation_id ->
+ * conversations.
+ *
+ * It also had NO auth gate and no tenant scope: a raw session id read any
+ * brokerage's conversation, contact and message history. It has no callers
+ * today, so nothing exploited it — but wiring it up in that state is how a
+ * cross-tenant read ships.
+ */
 export async function getChatSession(sessionId: string) {
+  if (!isValidUUID(sessionId)) return null
+
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return null
+
   const supabase = await createClient()
 
   const { data: session, error } = await supabase
     .from("conversations")
     .select(`
       *,
-      contacts (*,
-        lead_intelligence (*),
-        lead_behavioral_data (*)
-      ),
-      messages (*, message_content:body, message_type:type),
-      ai_suggestions (*)
+      contacts (*),
+      messages (*, message_content:body, message_type:type)
     `)
     .eq("id", sessionId)
-    .single()
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
 
   if (error) throw error
-  return session
+  if (!session) return null
+
+  // The link PostgREST could not see. Scoped by the same tenant anchor, so a
+  // suggestion from another brokerage cannot ride in on a shared session id.
+  const { data: suggestions, error: suggestionError } = await supabase
+    .from("ai_suggestions")
+    .select("*")
+    .eq("session_id", sessionId)
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+
+  if (suggestionError) throw suggestionError
+
+  return { ...session, ai_suggestions: suggestions ?? [] }
 }
 
 export async function getAgentChatSessions(agentId: string) {
@@ -644,6 +986,12 @@ export async function getAgentChatSessions(agentId: string) {
     console.log("[v0] Invalid UUID format for agent_id, returning empty sessions")
     return [] // Return empty array instead of object
   }
+
+  // agentId arrives from the browser. Anchoring the read to the caller's own
+  // brokerage means a borrowed agents.id lists nothing rather than another
+  // tenant's conversation history.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) return []
 
   const { data, error } = await supabase
     .from("conversations")
@@ -663,6 +1011,7 @@ export async function getAgentChatSessions(agentId: string) {
     `,
     )
     .eq("agent_id", agentId)
+    .eq("brokerage_id", identity.brokerageId)
     .eq("status", "active")
     .order("last_message_at", { ascending: false })
 
@@ -675,17 +1024,63 @@ export async function getAgentChatSessions(agentId: string) {
 }
 
 export async function endChatSession(sessionId: string) {
+  // Same tenant anchor getChatSession applies. Without it a raw session id
+  // closes any brokerage's conversation, and the update reports success either
+  // way because a zero-row update is not an error.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
+
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("conversations")
     .update({
       status: "completed",
       ended_at: new Date().toISOString(),
     })
     .eq("id", sessionId)
+    .eq("brokerage_id", identity.brokerageId)
+    .select("id, contact_id, agent_id, type")
 
   if (error) throw error
+  if (!data || data.length === 0) throw new Error("That conversation was not found")
+
+  // ── CONVERSATION ANALYTICS (lane E2 2026-08-28: logConversationMetadata WIRED) ──
+  // conversation_logs + conversation_audit_flags feed the Communication
+  // Intelligence dashboard (app/dashboard/communications/intelligence), whose
+  // ComplianceTab reviews flags via reviewAuditFlag — but NOTHING
+  // in the tree wrote either table: the reviewers were reviewing rows that
+  // could never exist. Ending a chat session is the one moment a conversation
+  // is complete, so the sentiment/topic/compliance log is written here.
+  // Best-effort by design: analytics must never fail the close the user asked
+  // for — a refusal is logged inside logConversationMetadata, not swallowed.
+  const closed = data[0] as { id: string; contact_id: string | null; agent_id: string | null; type: string | null }
+  if (closed.contact_id) {
+    try {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("body, direction, created_at")
+        .eq("conversation_id", closed.id)
+        .order("created_at", { ascending: true })
+        .limit(200)
+      if (msgs && msgs.length > 0) {
+        const { logConversationMetadata } = await import("@/app/actions/conversation-analytics")
+        await logConversationMetadata({
+          contactId: closed.contact_id,
+          agentId: closed.agent_id ?? undefined,
+          conversationHistory: msgs.map((m) => ({
+            role: m.direction === "outbound" ? "assistant" : "user",
+            content: m.body ?? "",
+            timestamp: m.created_at,
+          })),
+          channel: closed.type ?? "ai_assistant",
+          conversationType: "general_inquiry",
+        })
+      }
+    } catch (analyticsErr) {
+      console.error("[ai-chat] conversation analytics log failed (session close unaffected):", analyticsErr)
+    }
+  }
 
   revalidatePath("/dashboard/chat")
   return { success: true }
@@ -761,13 +1156,18 @@ export async function applyChatTemplate(templateId: string, sessionId: string) {
   // Get session context for personalization
   const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()
 
-  // Personalize template
-  let personalizedContent = template.template_content
+  // THE COLUMN IS template_body, NOT template_content.
+  // chat_templates carries template_name + template_body (verified live); the
+  // old read of `template.template_content` was undefined, so every "apply
+  // template" produced an empty message — and `undefined.replace(...)` threw
+  // outright the moment the conversation had a contact on it. Personalisation
+  // is global (replaceAll) because a body may use {first_name} more than once.
+  let personalizedContent: string = template.template_body ?? ""
   if (session?.contacts) {
     personalizedContent = personalizedContent
-      .replace("{first_name}", session.contacts.first_name || "")
-      .replace("{last_name}", session.contacts.last_name || "")
-      .replace("{city}", session.contacts.city || "")
+      .replaceAll("{first_name}", session.contacts.first_name || "")
+      .replaceAll("{last_name}", session.contacts.last_name || "")
+      .replaceAll("{city}", session.contacts.city || "")
   }
 
   return {
@@ -780,44 +1180,135 @@ export async function applyChatTemplate(templateId: string, sessionId: string) {
 // AGENT PREFERENCES
 // =====================================================
 
-export async function updateAgentChatPreferences(agentId: string, preferences: any) {
+export interface AgentChatPreferences {
+  preferred_model: ReplyModel
+  tone: ReplyTone
+  /** Free-form extras. The jsonb column, not loose top-level keys. */
+  preferences: Record<string, unknown>
+}
+
+/**
+ * Save an agent's AI reply style.
+ *
+ * TWO THINGS WERE WRONG HERE.
+ *
+ * (1) `upsert` with no conflict target defaults to the PRIMARY KEY. No id is
+ *     supplied, so a fresh uuid is generated every call, ON CONFLICT (id) never
+ *     fires, and the SECOND save hits UNIQUE (agent_id). Confirmed live:
+ *     23505 on the second insert, and `on conflict (agent_id)` updating in
+ *     place. An agent could set their preferences exactly once.
+ *
+ * (2) the old signature took `preferences: any` and SPREAD it across the row,
+ *     so any key the caller invented became a column that does not exist —
+ *     including the very keys the reader below used to hand back as defaults.
+ */
+export async function updateAgentChatPreferences(
+  agentId: string,
+  input: Partial<AgentChatPreferences>,
+) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("agent_chat_preferences").upsert({
+  if (!isValidUUID(agentId)) throw new Error("Invalid agent id")
+
+  // agent_chat_preferences.agent_id is FK to agents.id — resolve the brokerage
+  // from the agent row rather than trusting a caller-supplied anchor.
+  const { data: agent, error: agentError } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (agentError) throw agentError
+  if (!agent) throw new Error("No agent record found for that id")
+
+  // Only values the drafting path can honour are stored. A tone or model the
+  // generator does not recognise would silently degrade every reply.
+  const row: Record<string, unknown> = {
     agent_id: agentId,
-    ...preferences,
+    brokerage_id: agent.brokerage_id,
     updated_at: new Date().toISOString(),
-  })
+  }
+  if (input.preferred_model !== undefined) {
+    if (!isReplyModel(input.preferred_model)) throw new Error("Unsupported reply model")
+    row.preferred_model = input.preferred_model
+  }
+  if (input.tone !== undefined) {
+    if (!isReplyTone(input.tone)) throw new Error("Unsupported reply tone")
+    row.tone = input.tone
+  }
+  if (input.preferences !== undefined) row.preferences = input.preferences
+
+  const { error } = await supabase
+    .from("agent_chat_preferences")
+    .upsert(row, { onConflict: "agent_id" })
 
   if (error) throw error
 
-  revalidatePath("/dashboard/settings")
+  revalidatePath("/dashboard/settings/assistant")
   return { success: true }
 }
 
-export async function getAgentChatPreferences(agentId: string) {
+/**
+ * Read an agent's AI reply style.
+ *
+ * The fallback used to return six keys — auto_suggest_responses,
+ * them_first_coaching, compliance_alerts, lead_insights_enabled,
+ * preferred_tone, custom_prompts — NONE of which are columns on this table. So
+ * this function returned one shape when no row existed and a completely
+ * different shape the moment the agent saved, and no consumer could be written
+ * against both. The defaults now describe the real row.
+ */
+export async function getAgentChatPreferences(agentId: string): Promise<AgentChatPreferences> {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("agent_chat_preferences").select("*").eq("agent_id", agentId).single()
+  if (!isValidUUID(agentId)) {
+    return { preferred_model: DEFAULT_REPLY_MODEL, tone: DEFAULT_REPLY_TONE, preferences: {} }
+  }
 
-  if (error && error.code !== "PGRST116") throw error
+  const { data, error } = await supabase
+    .from("agent_chat_preferences")
+    .select("preferred_model, tone, preferences")
+    .eq("agent_id", agentId)
+    .maybeSingle()
 
-  // Return default preferences if none exist
-  return (
-    data || {
-      auto_suggest_responses: true,
-      them_first_coaching: true,
-      compliance_alerts: true,
-      lead_insights_enabled: true,
-      preferred_tone: "professional",
-      custom_prompts: {},
-    }
-  )
+  if (error) throw error
+
+  const style = resolveReplyStyle(data)
+  return {
+    preferred_model: style.model,
+    tone: style.tone,
+    preferences: (data?.preferences as Record<string, unknown> | null) ?? {},
+  }
 }
 
 // =====================================================
 // MESSAGE ACCESS CONTROL
 // =====================================================
+
+/**
+ * message_access_control has NO foreign keys at all (verified live — its only
+ * constraints are the primary key and UNIQUE (conversation_id, user_id)). So
+ * nothing in the database stops a grant naming another tenant's conversation or
+ * another tenant's user. Every entry point here checks the conversation belongs
+ * to the caller's brokerage first.
+ */
+async function conversationInCallerTenant(
+  conversationId: string,
+): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) return { ok: false, error: identity.error }
+  if (!isValidUUID(conversationId)) return { ok: false, error: "Invalid conversation id" }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("id", conversationId)
+    .eq("brokerage_id", identity.brokerageId)
+    .maybeSingle()
+  if (error) return { ok: false, error: error.message }
+  if (!data) return { ok: false, error: "That conversation was not found" }
+  return { ok: true, brokerageId: identity.brokerageId, userId: identity.userId }
+}
 
 export async function grantMessageAccess(data: {
   conversationId: string
@@ -825,21 +1316,44 @@ export async function grantMessageAccess(data: {
   userType: "agent" | "client" | "admin" | "broker"
   canRead?: boolean
   canWrite?: boolean
-  grantedBy: string
   expiresAt?: string
 }) {
+  // `grantedBy` used to be a CALLER-SUPPLIED parameter. An audit column whose
+  // value the client picks records whatever the client says, which is the one
+  // thing an audit column must not do. It is the session's user now, and the
+  // parameter is gone so no call site can pass a different answer.
+  const scope = await conversationInCallerTenant(data.conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
 
-  const { error } = await supabase.from("message_access_control").upsert({
-    conversation_id: data.conversationId,
-    user_id: data.userId,
-    user_type: data.userType,
-    can_read: data.canRead ?? true,
-    can_write: data.canWrite ?? true,
-    granted_by: data.grantedBy,
-    expires_at: data.expiresAt,
-    granted_at: new Date().toISOString(),
-  })
+  // Named for what the query actually tests — a USER row inside this brokerage —
+  // so the refusal below names the same thing it checked.
+  const { data: granteeUser, error: granteeError } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", data.userId)
+    .eq("brokerage_id", scope.brokerageId)
+    .maybeSingle()
+  if (granteeError) throw granteeError
+  if (!granteeUser) throw new Error("That user is not in this brokerage")
+
+  // UNIQUE (conversation_id, user_id) — without naming it, upsert falls back to
+  // the primary key, a new uuid is generated, and re-granting access to the
+  // same person raises 23505 instead of updating their permissions.
+  const { error } = await supabase.from("message_access_control").upsert(
+    {
+      conversation_id: data.conversationId,
+      user_id: data.userId,
+      user_type: data.userType,
+      can_read: data.canRead ?? true,
+      can_write: data.canWrite ?? true,
+      granted_by: scope.userId,
+      expires_at: data.expiresAt,
+      granted_at: new Date().toISOString(),
+    },
+    { onConflict: "conversation_id,user_id" },
+  )
 
   if (error) throw error
 
@@ -848,6 +1362,9 @@ export async function grantMessageAccess(data: {
 }
 
 export async function revokeMessageAccess(conversationId: string, userId: string) {
+  const scope = await conversationInCallerTenant(conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -863,42 +1380,50 @@ export async function revokeMessageAccess(conversationId: string, userId: string
 }
 
 export async function getMessageAccessList(conversationId: string) {
+  const scope = await conversationInCallerTenant(conversationId)
+  if (!scope.ok) throw new Error(scope.error)
+
   const supabase = await createClient()
 
+  // NO FOREIGN KEY from message_access_control.user_id to users, so PostgREST
+  // cannot resolve a `users(...)` embed — the previous version of this read
+  // threw on every call. Two queries instead of a join we are not entitled to.
   const { data, error } = await supabase
     .from("message_access_control")
-    .select(`
-      *,
-      users (first_name, last_name, email)
-    `)
+    .select("*")
     .eq("conversation_id", conversationId)
 
   if (error) throw error
-  return data
+  const rows = data ?? []
+  if (rows.length === 0) return []
+
+  const { data: users, error: usersError } = await supabase
+    .from("users")
+    .select("id, first_name, last_name, email")
+    .in("id", rows.map((r) => r.user_id))
+
+  if (usersError) throw usersError
+  const byId = new Map((users ?? []).map((u) => [u.id, u]))
+
+  return rows.map((r) => ({ ...r, users: byId.get(r.user_id) ?? null }))
 }
 
 // =====================================================
 // ADDITIONAL EXPORTS
 // =====================================================
 
-export async function getChatSessions(userId: string) {
-  return getAgentChatSessions(userId)
-}
+// getChatSessions(userId) was a three-line alias for getAgentChatSessions, and
+// it encoded an identity-space bug in its own signature: it took a users.id and
+// handed it to a filter on agent_id. Those are different id spaces, so any
+// caller passing a real user id got a silent empty list. Zero callers. Deleted
+// — getAgentChatSessions(agentId) is the replacement, and it wants agents.id.
 
 export async function checkThemFirstCompliance(message: string) {
   return analyzeThemFirstLanguage(message)
 }
 
-export type ChatSession = {
-  id: string
-  agent_id: string
-  lead_id?: string
-  session_type: string
-  session_status: string
-  them_first_score: number
-  last_activity_at: string
-  context_data?: any
-  contacts?: any
-  messages?: any[]
-  ai_suggestions?: any[]
-}
+// TOMBSTONE (§1.3, 2026-08-27): `ChatSession` deleted — an any-riddled restatement
+// of the ai_chat_sessions row that nothing (including this file) ever referenced.
+// The session shape's one honest spelling is the explicit selects in
+// getChatSession/getAgentChatSessions above, held against the live schema by
+// scripts/schema-snapshot.ts (ai_chat_sessions).

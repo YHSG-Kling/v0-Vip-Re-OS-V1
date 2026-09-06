@@ -101,6 +101,18 @@ export function MarketingApprovalsClient({ initialRows }: Props) {
                         {r.video_provider}
                       </Badge>
                     )}
+                    {/* THE HOLD. This row is not an ordinary draft awaiting a
+                        taste check — a hard Fair Housing finding (or a script
+                        nobody could check) is holding a video, and approving
+                        here is what releases the render. Say so on the card. */}
+                    {r.is_compliance_hold && (
+                      <Badge
+                        className="bg-red-600 text-white"
+                        title="A Fair Housing red flag — or an unrunnable compliance check — is HOLDING this video. Approving releases the render; rejecting kills it."
+                      >
+                        compliance hold
+                      </Badge>
+                    )}
                     <Badge className={meta.tone}>
                       <Icon className="h-3 w-3 mr-1" />
                       {meta.label}
@@ -109,6 +121,25 @@ export function MarketingApprovalsClient({ initialRows }: Props) {
                 </div>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
+                {/* WHY A PERSON WAS SUMMONED — rendered OPEN, not behind a
+                    disclosure triangle. The reviewer is being asked to clear a
+                    Fair Housing escalation; the finding is the one thing on the
+                    card they must not have to go looking for. */}
+                {r.compliance_notes && r.compliance_notes.length > 0 && (
+                  <div className="rounded-md border border-red-300 bg-red-50 p-2 dark:border-red-900 dark:bg-red-950/40">
+                    <p className="text-xs font-semibold text-red-800 dark:text-red-300">
+                      Why this is held
+                    </p>
+                    <ul className="mt-1 list-disc pl-4 text-xs text-red-900 dark:text-red-200">
+                      {r.compliance_notes.map((n, i) => (
+                        <li key={i} className="whitespace-pre-wrap">{n}</li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-[11px] text-red-700 dark:text-red-300">
+                      Approve releases the video for rendering. Reject stops it permanently.
+                    </p>
+                  </div>
+                )}
                 {r.summary && <p className="text-sm text-muted-foreground">{r.summary}</p>}
                 {r.body_preview && (
                   <details className="rounded-md border bg-muted/30 p-2">

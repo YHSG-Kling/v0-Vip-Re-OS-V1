@@ -82,43 +82,32 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
         return
       }
 
-      // Enrich with lead source data if available
-      const enrichedContacts: ConvertedContact[] = await Promise.all(
-        (conversions || []).map(async (c: any) => {
-          // The lead→contact link lives on leads.contact_id (stamped at conversion);
-          // contacts has no source_lead_id column.
-          const { data: leadData } = await supabase
-            .from("leads")
-            .select("id, first_name, last_name, source")
-            .eq("contact_id", c.id)
-            .maybeSingle()
-          const sourceLead = leadData
-
-          const qualification = c.ai_isa_qualifications?.[0]
-
-          return {
-            id: c.id,
-            contact_id: c.id,
-            lead_id: (sourceLead as any)?.id ?? null,
-            first_name: c.first_name || "",
-            last_name: c.last_name || "",
-            email: c.email,
-            phone: c.phone,
-            lifecycle_state: c.lifecycle_state,
-            qualification_reason: qualification?.qualification_signals?.summary || qualification?.qualification_result || "Qualified via ISA",
-            urgency_level: qualification?.qualification_signals?.urgency || "medium",
-            next_action:
-              qualification?.qualification_result === "appointment_set" ? "Confirm appointment"
-              : qualification?.qualification_result === "needs_follow_up" ? "Follow up"
-              : "Initial outreach",
-            source_lead_name: sourceLead
-              ? `${sourceLead.first_name || ""} ${sourceLead.last_name || ""}`.trim() || sourceLead.source
-              : null,
-            converted_at: c.created_at,
-            ai_summary: qualification?.qualification_signals?.summary || null,
-          }
-        })
-      )
+      // Agents work CONTACTS — the leads table is the broker/AI-ISA desk and RLS
+      // denies agent reads, so the old per-row leads lookup always returned null
+      // here (an N+1 that could only ever leak if policy loosened). The contact
+      // row + its ISA qualification carry everything this panel shows.
+      const enrichedContacts: ConvertedContact[] = (conversions || []).map((c: any) => {
+        const qualification = c.ai_isa_qualifications?.[0]
+        return {
+          id: c.id,
+          contact_id: c.id,
+          lead_id: null,
+          first_name: c.first_name || "",
+          last_name: c.last_name || "",
+          email: c.email,
+          phone: c.phone,
+          lifecycle_state: c.lifecycle_state,
+          qualification_reason: qualification?.qualification_signals?.summary || qualification?.qualification_result || "Qualified via ISA",
+          urgency_level: qualification?.qualification_signals?.urgency || "medium",
+          next_action:
+            qualification?.qualification_result === "appointment_set" ? "Confirm appointment"
+            : qualification?.qualification_result === "needs_follow_up" ? "Follow up"
+            : "Initial outreach",
+          source_lead_name: null,
+          converted_at: c.created_at,
+          ai_summary: qualification?.qualification_signals?.summary || null,
+        }
+      })
 
       setContacts(enrichedContacts)
       setLoading(false)

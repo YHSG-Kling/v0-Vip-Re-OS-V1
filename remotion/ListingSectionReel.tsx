@@ -13,7 +13,8 @@
  * it falls back to the agent's photo. 1920×1080.
  */
 import React from "react"
-import { AbsoluteFill, Audio, useVideoConfig } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, useVideoConfig } from "remotion"
 import { ListingPresentationSlide, type SlideKind } from "./ListingPresentationSlide"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 

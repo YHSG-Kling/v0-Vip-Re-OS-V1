@@ -1,27 +1,35 @@
 "use client"
 
 import { useEffect, useState, useCallback, useTransition, useRef } from "react"
+import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type ContactStatus } from "@/lib/contact-promotion/qualification"
+// The ONE outbound suppression predicate (CLAUDE.md §6). Imported from the pure
+// leaf, NOT from @/lib/kernel/communication-compliance — that module's first
+// import is createServiceClient, and this is a "use client" file.
+import { isEligibleForOutbound, getSuppressionReasons } from "@/lib/kernel/compliance/outbound-predicates"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
-import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
+import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"
 import {
   getContactCreditAccounts,
   getContactVideoEngagement,
   getContactTransactions,
   getContactActivity,
+  // Wave 4 slice 2 — orphaned export of the module this page already uses.
+  // The smart_assistant_suggestions queue for this contact had no reader
+  // anywhere, so the suggestions the OS writes were never shown to anyone.
+  getContactCopilotSuggestions,
 } from "@/app/actions/contact-details"
-import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@/app/actions/contact-intelligence"
+import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
 import { ContactHeaderCard } from "@/app/crm/components/contact-header-card"
-import { getActiveAutoPilotPlans, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
+import { detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
-import { getUnifiedLeadProfiles, getSocialIntelligence } from "@/app/actions/lead-intelligence"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { getUnifiedLeadProfiles, getSocialIntelligence, createUnifiedLeadProfile } from "@/app/actions/lead-intelligence"
 import { listCampaignSequences, enrollContactInSequence } from "@/app/actions/campaign-sequences"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
@@ -29,9 +37,15 @@ import { generateCopilotPlan } from "@/app/actions/workflows"
 import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
-import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
+import { scoreLeadWithAI, getLeadInsights, bulkScoreLeads } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
-import { sendSMS, scheduleAppointment } from "@/app/actions/communications"
+import { sendSMS, logCall } from "@/app/actions/communications"
+import { RecentMessagesCard } from "@/app/crm/components/recent-messages-card"
+// The reader app/actions/contacts.ts:64-67 ruled had to be built for
+// /api/contacts/analytics — the only computation of by_type / by_persona /
+// by_status / by_timeline / conversion_rate in the product.
+import { ContactsAnalyticsStrip } from "@/app/crm/components/contacts-analytics-strip"
+import { scheduleAppointment } from "@/app/actions/ai-isa/schedule-appointment"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
@@ -42,7 +56,6 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -76,7 +89,6 @@ import {
   Home,
   Globe,
   FileText,
-  UserCircle,
   LayoutDashboard,
   Network,
   Send,
@@ -89,12 +101,17 @@ import {
   Activity,
   DollarSign,
   CheckSquare,
+  Trash2,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react"
 import Link from "next/link"
 import { format, formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
+
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 // Import all 10 Contact OS components
 import {
@@ -107,6 +124,7 @@ import {
   SmartNoteComposer,
   BuyerMatchPanel,
   QualificationSummaryCard,
+  ConversionForecastPanel,
   type IsaHandoffBriefShape,
 } from "./components/os"
 
@@ -135,6 +153,21 @@ interface Contact {
   sms_opt_out?: boolean | null
   phone_opt_out?: boolean | null
   direct_mail_opt_out?: boolean | null
+  // The remaining arms of the kernel suppression predicate
+  // (lib/kernel/compliance/outbound-predicates.ts). NOT in the getContacts list
+  // projection — they arrive only on the DETAIL row, which getContactById loads
+  // with select("*"). Present here because the portal-invite button feeds
+  // `selectedContact` (the detail row) to isEligibleForOutbound; a list row would
+  // read these as undefined and the predicate would fail open.
+  //
+  // phone_opt_out and direct_mail_opt_out are declared ABOVE, next to the other
+  // channel toggles — the toggle at onChannelToggle writes them, and as of
+  // 2026-09-01 the predicate reads them too (it did not before, so a contact this
+  // very page had switched off for phone or mail was still eligible for outbound
+  // by the predicate's own reckoning).
+  call_stop_flag?: boolean | null
+  opt_out_channels?: string[] | null
+  tcpa_consent?: boolean | null
   source?: string | null
   source_family?: string | null
 }
@@ -202,6 +235,7 @@ export default function CRMPage() {
     searchParams.get("contact") ?? searchParams.get("contactId")
   )
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
+  const [archivingContact, setArchivingContact] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
 
   // Brief-driven action: when the morning brief deep-links here with
@@ -217,7 +251,14 @@ export default function CRMPage() {
 
   // Contact OS data
   const [churnRisk, setChurnRisk] = useState<any>(null)
-  const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
+  // TOMBSTONE (2026-09-01) — `autopilotPlans` state + its getActiveAutoPilotPlans
+  // load were deleted here: set on every contact select, read NOWHERE in this
+  // page. This CRM's AI-engagement display moved to contacts.ai_autopilot_level
+  // (single source of truth) — see the note below beginning "legacy
+  // handleEnableAutopilot / handleToggleAutopilot were removed". The
+  // ai_autopilot_plans read surface survives on the buyer overview,
+  // app/crm/contacts/[contactId]/buyer-overview-client.tsx, which loads plans via
+  // getActiveAutoPilotPlans and matches p.contact_id / p.lead_id.
   const [copilotPlan, setCopilotPlan] = useState<any>(null)
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [conversationIntelligence, setConversationIntelligence] = useState<any>(null)
@@ -240,8 +281,47 @@ export default function CRMPage() {
   const [contactVideos, setContactVideos] = useState<any[]>([])
   const [contactTransactions, setContactTransactions] = useState<any[]>([])
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
+  const [copilotSuggestions, setCopilotSuggestions] = useState<any[]>([])
+  // Which suggestion ids have been rated this session (id → 1 | -1), so the
+  // thumbs render as a recorded verdict instead of re-submittable buttons.
+  const [ratedSuggestions, setRatedSuggestions] = useState<Record<string, 1 | -1>>({})
+
+  /**
+   * Thumbs on a copilot suggestion → POST /api/intelligence/feedback.
+   *
+   * That route is the ONE writer of agent-side ratings into ai_feedback_log
+   * (read back by lib/intelligence/feedback-aggregator, the AI-quality page and
+   * the weekly-ai-metrics cron) and it also stamps the rating onto the
+   * smart_assistant_suggestions row itself. The learning loop had readers and a
+   * writer but no PRODUCER: nothing in the tree ever addressed the route, so
+   * every aggregate it feeds could only read zero (opposite-missing census 6b —
+   * this button is the missing caller, built rather than deleted per §1.2).
+   */
+  const rateCopilotSuggestion = useCallback(async (sug: any, rating: 1 | -1) => {
+    try {
+      const res = await fetch("/api/intelligence/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSystem: (sug.source_system as string | null) ?? "smart_assistant",
+          sourceRecordId: sug.id,
+          sourceRecordType: "smart_assistant_suggestions",
+          rating,
+          aiOutputSnapshot: [sug.title, sug.description].filter(Boolean).join(" — "),
+        }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "Failed to record feedback")
+      setRatedSuggestions((prev) => ({ ...prev, [sug.id]: rating }))
+      toast.success(rating === 1 ? "Marked helpful — the assistant learns from this" : "Marked not helpful — the assistant learns from this")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to record feedback")
+    }
+  }, [])
   const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
   const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
+  const [unifiedProfileLoaded, setUnifiedProfileLoaded] = useState(false)
+  const [buildingProfile, setBuildingProfile] = useState(false)
   const [socialSignals, setSocialSignals] = useState<any[]>([])
   const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
@@ -261,6 +341,28 @@ export default function CRMPage() {
   const [autoWorkflowId, setAutoWorkflowId] = useState("")
   const [autoSending, setAutoSending] = useState(false)
 
+  // Log Call dialog (lane E2 2026-08-28: logCall WIRED — the manual phone-call
+  // log an agent files after hanging up; "answered" also feeds the behavioural
+  // call_answered scoring event inside the action)
+  const [callDialogOpen, setCallDialogOpen] = useState(false)
+  const [callDirection, setCallDirection] = useState<"inbound" | "outbound">("outbound")
+  const [callOutcome, setCallOutcome] = useState<"answered" | "voicemail" | "no_answer" | "busy">("answered")
+  const [callMinutes, setCallMinutes] = useState("")
+  const [callNotes, setCallNotes] = useState("")
+  const [callSaving, setCallSaving] = useState(false)
+
+  // Stored score insights for the selected contact (lane E2 2026-08-28:
+  // getLeadInsights WIRED — reads lead_score_history instead of forcing a
+  // fresh AI call)
+  const [scoreInsights, setScoreInsights] = useState<any | null>(null)
+  const [scoreInsightsLoading, setScoreInsightsLoading] = useState(false)
+
+  // Bulk scoring sweep (lane E2 2026-08-28: bulkScoreLeads WIRED)
+  const [bulkScoring, setBulkScoring] = useState(false)
+
+  // Stored score insights belong to ONE contact — drop them on switch.
+  useEffect(() => { setScoreInsights(null) }, [selectedContactId])
+
   // Suggested follow-up actions for the selected contact
   const [suggestedActions, setSuggestedActions] = useState<any[]>([])
 
@@ -274,14 +376,25 @@ export default function CRMPage() {
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
   const [offerWizardOpen, setOfferWizardOpen] = useState(false)
 
-  // Portal invite status for selected contact
-  const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
-  // Richer portal invite data for the Portal tab
+  // TOMBSTONE — `const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)`.
+  // Set in three places (the fetch below, the reset, the optimistic "invited"
+  // after a send) and read nowhere. It was a strict subset of
+  // `portalInviteData.status`, which IS read — the sidebar banner, the
+  // Send-Portal-Invite gate and the Portal tab. Merged onto that survivor; what
+  // the survivor was missing is `readError`, so a refused read is its own state
+  // instead of rendering as "not invited" (and offering a second invite).
+  //
+  // `status` speaks the live portal_contact_invites vocabulary only —
+  // accepted | expired | pending | revoked | sent (scripts/check-vocabularies.ts).
+  // null = no invite row. The old sentinels "not_invited" / "invited" were
+  // spellings no row can carry (§6): issuePortalInvite writes "pending".
   const [portalInviteData, setPortalInviteData] = useState<{
     status: string | null
     accepted_at: string | null
     invited_at: string | null
     lastAccessed: string | null
+    /** Non-null when the invite read was REFUSED — status is then unknown, not absent. */
+    readError: string | null
   } | null>(null)
 
   // Journey & Team tab — lazy loaded on first tab activation
@@ -382,33 +495,34 @@ export default function CRMPage() {
       setBuyerInsights(null)
       setFatigueData(null)
       try {
-        // Core data loads — contact + churn + autopilot + followup + conv intel + tab data in parallel
+        // Core data loads — contact + churn + followup + conv intel + tab data in parallel
         const [
           contactResult,
           churnResult,
-          autopilotResult,
           followUpResult,
           convIntelResult,
           creditResult,
           videosResult,
           transactionsResult,
           activityResult,
+          copilotSuggestionsResult,
         ] = await Promise.all([
           getContactById(contactId),
           detectClientChurn(contactId).catch(() => null),
-          getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
           aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
           getConversationIntelligence(contactId).catch(() => null),
           getContactCreditAccounts(contactId).catch(() => ({ accounts: [] })),
           getContactVideoEngagement(contactId).catch(() => ({ videos: [] })),
           getContactTransactions(contactId).catch(() => ({ transactions: [] })),
           getContactActivity(contactId).catch(() => ({ activity: [] })),
+          getContactCopilotSuggestions(contactId).catch(() => ({ suggestions: [] })),
         ])
 
         setCreditAccounts(creditResult?.accounts ?? [])
         setContactVideos(videosResult?.videos ?? [])
         setContactTransactions(transactionsResult?.transactions ?? [])
         setContactActivityTimeline(activityResult?.activity ?? [])
+        setCopilotSuggestions((copilotSuggestionsResult as any)?.suggestions ?? [])
 
         // Intelligence loads independently — non-blocking
         getContactIntelligence(contactId)
@@ -419,9 +533,11 @@ export default function CRMPage() {
           .catch(() => setContactIntelligence(null))
 
         // Unified lead profile + social intelligence signals — non-blocking
+        setUnifiedProfileLoaded(false)
         getUnifiedLeadProfiles({ contact_id: contactId })
           .then((res) => setUnifiedLeadProfile(res.profiles?.[0] ?? null))
           .catch(() => setUnifiedLeadProfile(null))
+          .finally(() => setUnifiedProfileLoaded(true))
         getSocialIntelligence()
           .then((res) => setSocialSignals(res.signals ?? []))
           .catch(() => setSocialSignals([]))
@@ -467,7 +583,6 @@ export default function CRMPage() {
           .catch(() => {/* non-blocking */})
 
         setChurnRisk(churnResult)
-        setAutopilotPlans(Array.isArray(autopilotResult) ? autopilotResult : [])
         setSuggestedActions(followUpResult?.suggestions || [])
         setConversationIntelligence(Array.isArray(convIntelResult) && convIntelResult.length > 0 ? convIntelResult[0] : null)
       } catch (err) {
@@ -520,7 +635,6 @@ export default function CRMPage() {
   // Fetch portal invite status when a contact is selected — non-blocking
   useEffect(() => {
     if (!selectedContactId) {
-      setPortalInviteStatus(null)
       setPortalInviteData(null)
       setJourneyTeamData(null)
       setJourneyTeamLoaded(false)
@@ -529,7 +643,11 @@ export default function CRMPage() {
       return
     }
     const supabase = createClient()
-    // Fetch invite + last access in parallel
+    // Fetch invite + last access in parallel. Both READ their error (§3):
+    // supabase-js resolves a refusal with `data: null`, byte-identical to "no
+    // invite yet", and this used to swallow it — a refused read rendered as
+    // "not invited" and offered a fresh invite to a contact who may already
+    // hold one. A refusal now lands in `readError` and is shown as unknown.
     Promise.all([
       supabase
         .from("portal_contact_invites")
@@ -547,15 +665,20 @@ export default function CRMPage() {
         .maybeSingle(),
     ])
       .then(([inviteRes, accessRes]) => {
-        setPortalInviteStatus(inviteRes.data?.status ?? null)
         setPortalInviteData({
-          status:       inviteRes.data?.status ?? null,
+          status:       inviteRes.error ? null : (inviteRes.data?.status ?? null),
           accepted_at:  inviteRes.data?.accepted_at ?? null,
           invited_at:   inviteRes.data?.invited_at ?? null,
-          lastAccessed: accessRes.data?.accessed_at ?? null,
+          lastAccessed: accessRes.error ? null : (accessRes.data?.accessed_at ?? null),
+          readError:    inviteRes.error?.message ?? null,
         })
       })
-      .catch(() => {/* non-blocking */})
+      .catch((err: unknown) => {
+        setPortalInviteData({
+          status: null, accepted_at: null, invited_at: null, lastAccessed: null,
+          readError: err instanceof Error ? err.message : "Portal status could not be read",
+        })
+      })
   }, [selectedContactId])
 
   // Load conversations for the selected contact so RelationshipRadar and
@@ -586,15 +709,38 @@ export default function CRMPage() {
     activitiesGenRef.current += 1
     const gen = activitiesGenRef.current
     const supabase = createClient()
-    supabase
-      .from("activities")
-      .select("id, activity_type, title, description, notes, created_at, contact_id")
-      .eq("contact_id", selectedContactId)
-      .order("created_at", { ascending: false })
-      .limit(20)
-      .then(({ data }: { data: any[] | null }) => {
+    // Notes live in contact_notes (the store of record), everything else in
+    // activities. Read both and merge, or saved notes vanish from this pane.
+    Promise.all([
+      supabase
+        .from("activities")
+        .select("id, activity_type, title, description, notes, created_at, contact_id")
+        .eq("contact_id", selectedContactId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("contact_notes")
+        .select("id, body, created_at, contact_id")
+        .eq("contact_id", selectedContactId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+    ])
+      .then(([acts, notes]: [{ data: any[] | null }, { data: any[] | null }]) => {
         if (gen !== activitiesGenRef.current) return  // stale
-        setContactActivities(data || [])
+        const noteRows = (notes.data ?? []).map((n: any) => ({
+          id: n.id,
+          activity_type: "note",
+          title: "Note",
+          description: n.body,
+          notes: n.body,
+          created_at: n.created_at,
+          contact_id: n.contact_id,
+        }))
+        setContactActivities(
+          [...(acts.data ?? []), ...noteRows]
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .slice(0, 20)
+        )
       })
       .catch(() => {
         if (gen !== activitiesGenRef.current) return
@@ -643,9 +789,18 @@ export default function CRMPage() {
               .eq("transaction_id", txId)
               .limit(5)
           : Promise.resolve({ data: [] }),
+        // ORPHAN DOCTRINE §1.2 (2026-09-04) — `notes` and `agent_id` joined this
+        // select. Both are written by the intent writer that makes the
+        // introduction (app/actions/intent-writers.ts:149) and were read by
+        // NOBODY: `notes` is the agent's own sentence about WHY this vendor was
+        // put in front of this client ("handles the crawlspace work, quoted
+        // Tuesday"), and `agent_id` is who introduced them. On a shared client
+        // the second agent saw a vendor's name and category and no account of
+        // how they got there, which is how a client gets introduced to the same
+        // trade twice.
         supabase
           .from("contact_vendors")
-          .select("id, role, status, vendors(id, name, category, phone, email)")
+          .select("id, role, status, notes, agent_id, introduced_at, vendors(id, name, category, phone, email)")
           .eq("contact_id", contactId)
           .limit(10),
         txId
@@ -782,7 +937,10 @@ export default function CRMPage() {
     city: "",
     state: "",
     zip_code: "",
-    contact_type: "buyer" as "buyer" | "seller" | "both" | "investor",
+    // `investor` removed from this writer's options 2026-08-31 (owner: "investor
+    // is a persona and not a contact type") — an investor is filed as a Buyer;
+    // the persona lives on contact_persona (m589).
+    contact_type: "buyer" as "buyer" | "seller" | "both",
     status: "new",
   })
   const [addFormError, setAddFormError] = useState<string | null>(null)
@@ -920,14 +1078,47 @@ export default function CRMPage() {
     router.push("/crm", { scroll: false })
   }
 
+  /**
+   * Build (or refresh) this contact's unified intelligence profile.
+   *
+   * unified_lead_profile has been read by this drawer since it was written and
+   * had NO writer anywhere in the product, so the Lead Profile card could never
+   * render. The action resolves the subject from the contacts table inside the
+   * caller's brokerage (the lawful basis: a contact the brokerage already
+   * holds), suppresses an outreach recommendation for a DNC/fully-opted-out
+   * contact, and writes an intelligence_signals_log provenance row per run.
+   */
+  const handleBuildLeadProfile = async () => {
+    if (!selectedContactId) return
+    setBuildingProfile(true)
+    const result = await createUnifiedLeadProfile({ contactId: selectedContactId }).catch(
+      (e: unknown) => ({ success: false as const, error: String(e) })
+    )
+    if (result.success && "profile" in result && result.profile) {
+      setUnifiedLeadProfile(result.profile)
+      toast.success("Lead intelligence profile built")
+    } else {
+      // Read the server's verdict — never close on an assumed success.
+      toast.error(("error" in result && result.error) || "Could not build the profile")
+    }
+    setBuildingProfile(false)
+  }
+
   const handleAnalyzeCall = async (activity: any) => {
     if (!selectedContactId || !user) return
+    if (!agentId) { toast.error("Finishing your account setup — call analysis needs your agent profile."); return }
     setAnalyzingCallId(activity.id)
     try {
+      // NOT `?? user.id` (m349). This file's own resolution site says it, in
+      // capitals: "contacts.agent_id = agents.id (FK) — NEVER users.id". Every
+      // write this action makes — call_analyses, tasks.assigned_to_agent_id,
+      // activities — FKs agents, so the users id was rejected by all three
+      // while the UI still displayed the analysis it returned. The rule was
+      // written down 600 lines above and broken here.
       const result = await analyzeCallTranscript({
         transcript: activity.description || activity.notes || activity.title || "Call activity",
         contactId: selectedContactId,
-        agentId: agentId ?? user.id,
+        agentId,
         callType: activity.direction === "inbound" ? "inbound" : "outbound",
       })
       if (result.success && result.analysis) {
@@ -944,10 +1135,11 @@ export default function CRMPage() {
     if (!user) return
     const analysis = callAnalyses[activity.id]
     if (!analysis?.id) return
+    if (!agentId) { toast.error("Finishing your account setup — this needs your agent profile."); return }
     const result = await generateCallSummaryEmail({
       analysisId: analysis.id,
       recipientType: "client",
-      agentId: agentId ?? user.id,
+      agentId,
     })
     if ((result as any).success) {
       toast.success("Summary email drafted")
@@ -995,6 +1187,20 @@ export default function CRMPage() {
       ct === "contact" ||
       ct === "lead" ||
       ct === "both"
+
+    // Prefilled deep-link into the listing wizard for this contact. Hoisted out
+    // of the JSX: inlined, the <Link href={…}> opening tag ran past 400 chars,
+    // which pushed the wrapper out of the wired-surface guard's lookbehind
+    // window and made a correctly-wired button read as inert.
+    const createListingHref =
+      `/dashboard/listings?action=new&` +
+      new URLSearchParams({
+        contactId: selectedContactId,
+        firstName: selectedContact.first_name ?? "",
+        lastName:  selectedContact.last_name ?? "",
+        email:     selectedContact.email ?? "",
+        phone:     selectedContact.phone ?? "",
+      }).toString()
 
     const daysSinceContact = selectedContact.last_contacted_at
       ? Math.floor(
@@ -1088,6 +1294,12 @@ export default function CRMPage() {
                   await supabase.from("contacts").update({ [col]: optOut }).eq("id", selectedContactId)
                   if (selectedContactId) loadContactDetail(selectedContactId)
                 }}
+                // Mark dormant / Reactivate landed — refresh the detail (status
+                // badge) and the list (its status chip) so both stay honest.
+                onStatusChanged={() => {
+                  if (selectedContactId) loadContactDetail(selectedContactId)
+                  loadContacts()
+                }}
               />
             </div>
 
@@ -1102,27 +1314,34 @@ export default function CRMPage() {
                      - Quick deep-links that open dialogs or other routes
                 ── */}
               <aside className="w-64 shrink-0 border-r bg-muted/20 flex flex-col overflow-y-auto px-4 py-4 gap-4">
-                {/* Portal invite status — small banner at top */}
-                {portalInviteData?.status && (
+                {/* Portal invite status — small banner at top. Three states kept
+                    distinct: a live status, no invite row, and a REFUSED read.
+                    Previously it rendered only when a row existed, so "never
+                    invited" and "could not tell" both showed nothing. */}
+                {portalInviteData && (
                   <div className="rounded-md border bg-background px-3 py-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Portal</p>
-                    <p className="text-xs font-medium capitalize text-foreground">
-                      {portalInviteData.status === "not_invited" ? "Not invited yet" : portalInviteData.status}
-                    </p>
+                    {portalInviteData.readError ? (
+                      <p className="text-xs font-medium text-amber-600" title={portalInviteData.readError}>
+                        Status unknown — could not read
+                      </p>
+                    ) : portalInviteData.status ? (
+                      <p className={cn("text-xs font-medium capitalize",
+                        portalInviteData.status === "accepted" ? "text-green-600"
+                        : portalInviteData.status === "pending" || portalInviteData.status === "sent" ? "text-blue-600"
+                        : "text-foreground")}>
+                        {portalInviteData.status}
+                      </p>
+                    ) : (
+                      <p className="text-xs font-medium text-muted-foreground">Not invited yet</p>
+                    )}
                   </div>
                 )}
 
                 {/* Quick Actions */}
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Quick Actions</p>
-                  <Link href={
-                    `/dashboard/listings?action=new` +
-                    `&contactId=${encodeURIComponent(selectedContactId ?? "")}` +
-                    `&firstName=${encodeURIComponent(selectedContact?.first_name ?? "")}` +
-                    `&lastName=${encodeURIComponent(selectedContact?.last_name ?? "")}` +
-                    `&email=${encodeURIComponent(selectedContact?.email ?? "")}` +
-                    `&phone=${encodeURIComponent(selectedContact?.phone ?? "")}`
-                  }>
+                  <Link href={createListingHref}>
                     <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
                       <Home className="h-3.5 w-3.5" />
                       Create Listing
@@ -1160,7 +1379,7 @@ export default function CRMPage() {
                     onClick={async () => {
                       if (!selectedContactId || !user) return
                       // Agent-triggered scoring: mode='override' lets AI overwrite the lead_score baseline
-                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id, mode: "override" })
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? "", mode: "override" })
                       if (result.success && (result as any).scores) {
                         const overall = (result as any).scores.overallScore ?? 0
                         setLeadScores(prev => ({
@@ -1172,26 +1391,101 @@ export default function CRMPage() {
                         }))
                         toast.success(`AI Score: ${overall}/100`)
                       } else {
-                        toast.error("Scoring failed")
+                        // Surface the reason. A bare "Scoring failed" is why this
+                        // button's PGRST204 refusal went undiagnosed for so long.
+                        toast.error((result as any)?.error ?? "Scoring failed")
                       }
                     }}
                   >
                     <Star className="h-3.5 w-3.5" />
                     Run AI Score
                   </Button>
-                  {(!portalInviteData?.status || portalInviteData.status === "not_invited") && brokerageId && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    disabled={scoreInsightsLoading}
+                    onClick={async () => {
+                      if (!selectedContactId) return
+                      setScoreInsightsLoading(true)
+                      const res = await getLeadInsights(selectedContactId)
+                      setScoreInsightsLoading(false)
+                      if ((res as any).success) setScoreInsights(res)
+                      else toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Could not load score insights")
+                    }}
+                  >
+                    {scoreInsightsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
+                    Score Insights
+                  </Button>
+                  {scoreInsights?.currentScore && (
+                    <div className="rounded-md border bg-background px-3 py-2 space-y-0.5">
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Stored Score</p>
+                      <p className="text-xs text-foreground">
+                        Overall {scoreInsights.currentScore.overall} · Engagement {scoreInsights.currentScore.engagement} · Intent {scoreInsights.currentScore.intent}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground capitalize">
+                        Readiness: {scoreInsights.currentScore.readiness} · {scoreInsights.history?.length ?? 0} prior score{(scoreInsights.history?.length ?? 0) === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setCallDirection("outbound"); setCallOutcome("answered"); setCallMinutes(""); setCallNotes(""); setCallDialogOpen(true) }}
+                  >
+                    <Phone className="h-3.5 w-3.5" />
+                    Log Call
+                  </Button>
+                  {/* Offered only when we KNOW there is no live invite (no row,
+                      or an expired one — issuePortalInvite renews an expired row
+                      in place). A refused read hides it: fail closed (§4). */}
+                  {portalInviteData && !portalInviteData.readError
+                    && (!portalInviteData.status || portalInviteData.status === "expired")
+                    && brokerageId && (
                     <Button
                       size="sm"
                       variant="outline"
                       className="w-full gap-1.5 text-xs justify-start"
                       onClick={async () => {
                         if (!selectedContactId || !brokerageId || !user) return
-                        // Suppression check — do not send magic link to opted-out or DNC contacts
-                        if (
-                          selectedContact?.dnc_status ||
-                          selectedContact?.email_opt_out
-                        ) {
-                          toast.error("Cannot send portal invite: contact has opted out or is on the Do Not Contact list")
+                        // Suppression check — ONE predicate, the kernel's.
+                        //
+                        // This used to be a hand-rolled two-arm copy
+                        // (`dnc_status || email_opt_out`) of the kernel rule, which
+                        // has six arms. It let four kinds of suppressed contact
+                        // through: a contact who had texted STOP (call_stop_flag),
+                        // one who had opted out of SMS, one with a per-channel
+                        // entry in opt_out_channels, and one in a restricted state
+                        // with no TCPA consent — every one of them got a portal
+                        // magic link. The copy existed only because
+                        // lib/kernel/communication-compliance.ts imports
+                        // createServiceClient and cannot be pulled into a
+                        // "use client" bundle; the predicate now lives in the pure
+                        // leaf below, which imports nothing but a type.
+                        //
+                        // FAIL CLOSED (§4): the fields feeding the predicate come
+                        // from getContactById, which is `select("*")` — the whole
+                        // row. Never re-point this at a narrow list projection
+                        // (getContacts selects no call_stop_flag / opt_out_channels
+                        // / tcpa_consent): an unselected column is indistinguishable
+                        // from `false` and the check would silently fail OPEN again.
+                        //
+                        // NO CHANNEL ARGUMENT, DELIBERATELY. The predicate takes an
+                        // optional channel and narrows to it; omitting it is the
+                        // WIDER refusal — any recorded opt-out on any channel blocks.
+                        // A portal invite is not one message: it is a magic link that
+                        // opens a standing account we will then message through. A
+                        // contact who has switched off every channel we have has not
+                        // asked for that, so the strict union is the right question
+                        // and passing "email" here would quietly relax it.
+                        if (!selectedContact || !isEligibleForOutbound(selectedContact)) {
+                          const reasons = selectedContact ? getSuppressionReasons(selectedContact) : []
+                          toast.error(
+                            reasons.length > 0
+                              ? `Cannot send portal invite — ${reasons.join("; ")}`
+                              : "Cannot send portal invite: contact not loaded"
+                          )
                           return
                         }
                         const result = await createPortalInviteForContact({
@@ -1201,8 +1495,16 @@ export default function CRMPage() {
                           sendMagicLink: true,
                         })
                         if (result.success) {
-                          setPortalInviteStatus("invited")
-                          setPortalInviteData(prev => ({ ...prev, status: "invited", invited_at: new Date().toISOString() } as any))
+                          // "pending" is what issuePortalInvite actually wrote
+                          // (lib/portal/portal-invite-core.ts:180/189) — not the
+                          // former "invited", which no row can carry.
+                          setPortalInviteData(prev => ({
+                            status: "pending",
+                            accepted_at: prev?.accepted_at ?? null,
+                            invited_at: new Date().toISOString(),
+                            lastAccessed: prev?.lastAccessed ?? null,
+                            readError: null,
+                          }))
                           toast.success("Portal invite sent")
                         } else {
                           toast.error(result.error ?? "Invite failed")
@@ -1244,6 +1546,41 @@ export default function CRMPage() {
                     <Workflow className="h-3.5 w-3.5" />
                     Enroll in Workflow
                   </Button>
+
+                  {/* Archive — the CRM had NO contact-removal control at all. The
+                      action soft-deletes (deleted_at) and writes a CONTACT_ARCHIVED
+                      lifecycle event; history, activities, conversations and tasks
+                      are preserved. The server decides who may archive (an agent
+                      only their own contacts, leadership any in the brokerage), so a
+                      refusal is reported honestly rather than assumed. */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start text-destructive hover:text-destructive"
+                    disabled={archivingContact}
+                    onClick={async () => {
+                      if (!selectedContactId) return
+                      const name = `${selectedContact?.first_name ?? ""} ${selectedContact?.last_name ?? ""}`.trim() || "this contact"
+                      if (!window.confirm(`Archive ${name}? They will be removed from your lists. History is kept.`)) return
+                      setArchivingContact(true)
+                      try {
+                        const res = await archiveContact(selectedContactId)
+                        if (!res.success) {
+                          toast.error(res.error ?? "Could not archive this contact")
+                          return
+                        }
+                        toast.success(`${name} archived`)
+                        setSelectedContactId(null)
+                        setSelectedContact(null)
+                        await loadContacts()
+                      } finally {
+                        setArchivingContact(false)
+                      }
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {archivingContact ? "Archiving…" : "Archive Contact"}
+                  </Button>
                 </div>
 
                 {/* SMS Dialog */}
@@ -1280,6 +1617,77 @@ export default function CRMPage() {
                   </DialogContent>
                 </Dialog>
 
+                {/* Log Call Dialog — writes the call to the contact record via
+                    logCall (session-gated in the action; "answered" also lands
+                    the behavioural call_answered scoring event) */}
+                <Dialog open={callDialogOpen} onOpenChange={setCallDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Log Call</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">Direction</Label>
+                          <select
+                            value={callDirection}
+                            onChange={(e) => setCallDirection(e.target.value as "inbound" | "outbound")}
+                            className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                          >
+                            <option value="outbound">Outbound</option>
+                            <option value="inbound">Inbound</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-xs">Outcome</Label>
+                          <select
+                            value={callOutcome}
+                            onChange={(e) => setCallOutcome(e.target.value as "answered" | "voicemail" | "no_answer" | "busy")}
+                            className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                          >
+                            <option value="answered">Answered</option>
+                            <option value="voicemail">Voicemail</option>
+                            <option value="no_answer">No answer</option>
+                            <option value="busy">Busy</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Duration (minutes, optional)</Label>
+                        <Input type="number" min="0" value={callMinutes} onChange={e => setCallMinutes(e.target.value)} placeholder="5" className="mt-1" />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Notes (optional)</Label>
+                        <Input value={callNotes} onChange={e => setCallNotes(e.target.value)} placeholder="Talked pricing; wants comps by Friday" className="mt-1" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setCallDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={callSaving}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setCallSaving(true)
+                          const minutes = Number.parseFloat(callMinutes)
+                          const result = await logCall({
+                            contactId: selectedContactId,
+                            direction: callDirection,
+                            outcome: callOutcome,
+                            duration: Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : undefined,
+                            notes: callNotes.trim() || undefined,
+                          })
+                          setCallSaving(false)
+                          if ((result as any).success) { toast.success("Call logged"); setCallDialogOpen(false) }
+                          else toast.error((result as any)?.error ?? "Could not log the call")
+                        }}
+                      >
+                        {callSaving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Save Call
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
                 {/* Schedule Appointment Dialog */}
                 <Dialog open={apptDialogOpen} onOpenChange={setApptDialogOpen}>
                   <DialogContent>
@@ -1311,13 +1719,27 @@ export default function CRMPage() {
                           setApptSending(true)
                           const startIso = new Date(`${apptDate}T${apptTime}`).toISOString()
                           const endIso = new Date(new Date(`${apptDate}T${apptTime}`).getTime() + 60 * 60 * 1000).toISOString()
+                          // Repointed off the GHL calendar path onto the native
+                          // scheduler. Two functions were named scheduleAppointment:
+                          // this one posted to GHL (and, unconfigured, took a mock
+                          // branch that returned success with a fabricated event id,
+                          // so this button toasted "Appointment scheduled" with no
+                          // calendar event anywhere), while ai-isa/schedule-appointment
+                          // writes a real calendar_events row, gates on role, resolves
+                          // agent + brokerage from the session, and can create a real
+                          // Zoom meeting with an honest fallback when Zoom is not
+                          // connected. The native one survives; the GHL one is gone.
                           const result = await scheduleAppointment({
                             contactId: selectedContactId,
-                            calendarId: "default",
-                            title: apptTitle,
-                            startTime: startIso,
-                            endTime: endIso,
-                            meetingType: "in_person",
+                            startAt: startIso,
+                            endAt: endIso,
+                            // Required by the native scheduler — the appointment is
+                            // stored against a real zone rather than a server guess.
+                            timezoneName: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                            // The native shape has no `title`; the agent's wording is
+                            // kept as the note rather than dropped on the floor.
+                            notes: apptTitle,
+                            meetingMode: "in_person",
                           })
                           setApptSending(false)
                           if (result.success) { toast.success("Appointment scheduled"); setApptDialogOpen(false) }
@@ -1617,6 +2039,12 @@ export default function CRMPage() {
                       onCreateOffer={() => setOfferWizardOpen(true)}
                     />
 
+                    {/* CONVERSION FORECAST. aiPredictConversion writes
+                        contacts.ai_conversion_probability and
+                        ai_predicted_close_date — both real columns, no other
+                        writer, and until now no reader and no caller either. */}
+                    <ConversionForecastPanel contactId={selectedContactId} />
+
                     {/* Value delivered + Timeline context — combined into a single grid */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                       <ValueDeliveredPanel
@@ -1780,6 +2208,16 @@ export default function CRMPage() {
                                         <span className="text-sm font-medium">{vendor?.name}</span>
                                       </div>
                                       {vendor?.category && <p className="text-xs text-muted-foreground capitalize">{vendor.category}</p>}
+                                      {/* §1.2 — the introduction note and who made
+                                          it. Rendered only when recorded; nothing
+                                          is inferred when the columns are null. */}
+                                      {v.notes && <p className="text-xs text-muted-foreground">{v.notes}</p>}
+                                      {(v.introduced_at || v.agent_id) && (
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {v.introduced_at ? `Introduced ${new Date(v.introduced_at).toLocaleDateString()}` : "Introduced"}
+                                          {v.agent_id ? (v.agent_id === agentId ? " by you" : " by a teammate") : ""}
+                                        </p>
+                                      )}
                                     </div>
                                     <div className="flex gap-1.5 shrink-0">
                                       {vendor?.phone && (
@@ -1889,6 +2327,68 @@ export default function CRMPage() {
                       </Card>
                     )}
 
+                    {/* Copilot suggestions for THIS contact
+                        (smart_assistant_suggestions, status='pending', scoped to
+                        this agent + brokerage inside the action). Nothing read
+                        this queue before, so every suggestion the OS wrote for a
+                        contact sat unseen. */}
+                    {copilotSuggestions.length > 0 && (
+                      <Card className="border-indigo-200">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <Brain className="h-4 w-4 text-indigo-600" />
+                            Suggestions for this contact
+                            <Badge variant="outline" className="text-xs">{copilotSuggestions.length}</Badge>
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-2">
+                          {copilotSuggestions.map((sug: any) => (
+                            <div key={sug.id} className="rounded-lg border p-2.5">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium">
+                                    {sug.title ?? sug.suggestion_type ?? "Suggestion"}
+                                  </p>
+                                  {sug.description && (
+                                    <p className="text-xs text-muted-foreground mt-0.5">
+                                      {sug.description}
+                                    </p>
+                                  )}
+                                </div>
+                                {/* Feedback loop: POSTs /api/intelligence/feedback (ai_feedback_log
+                                    + the suggestion row's own rating) — see rateCopilotSuggestion. */}
+                                {ratedSuggestions[sug.id] ? (
+                                  <span className="shrink-0 text-xs text-muted-foreground flex items-center gap-1">
+                                    {ratedSuggestions[sug.id] === 1
+                                      ? <ThumbsUp className="h-3.5 w-3.5 text-green-600" />
+                                      : <ThumbsDown className="h-3.5 w-3.5 text-red-500" />}
+                                    Recorded
+                                  </span>
+                                ) : (
+                                  <div className="shrink-0 flex items-center gap-1">
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6"
+                                      aria-label="This suggestion was helpful"
+                                      onClick={() => rateCopilotSuggestion(sug, 1)}
+                                    >
+                                      <ThumbsUp className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6"
+                                      aria-label="This suggestion was not helpful"
+                                      onClick={() => rateCopilotSuggestion(sug, -1)}
+                                    >
+                                      <ThumbsDown className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    )}
+
                     {/* AI Copilot Plan */}
                     <Card className="border-indigo-200">
                       <CardHeader className="pb-2">
@@ -1955,10 +2455,19 @@ export default function CRMPage() {
                                     const startDate = new Date(); const endDate = new Date(); endDate.setDate(endDate.getDate() + 7)
                                     await supabase.from("marketing_campaigns").insert({
                                       campaign_name: result.plan?.plan_name ?? `7-Day Follow-Up — ${selectedContact?.first_name ?? "Contact"}`,
-                                      campaign_type: "nurture", status: "live", brokerage_id: brokerageId,
+                                      campaign_type: "omni", status: "live", brokerage_id: brokerageId,
                                       agent_user_id: user?.id ?? null, created_by: user?.id ?? null, visibility_scope: "agent",
                                       scheduled_start_at: startDate.toISOString(), scheduled_end_at: endDate.toISOString(),
                                       launched_at: startDate.toISOString(), target_audience: { contact_id: selectedContactId },
+                                      // The audience is THIS ONE CONTACT, and it has to be said in the
+                                      // column the resolver reads. `target_audience` above is a jsonb
+                                      // note nothing resolves; audience_contact_ids is what
+                                      // lib/marketing/audience-resolver.ts:47 pins the list to. Without
+                                      // it, all six criteria columns stay empty, an empty criterion
+                                      // means "no filter" there, and this per-contact follow-up — which
+                                      // is inserted `status: "live"` — resolved to EVERY contact in the
+                                      // brokerage for touchpoint attribution and launch deliverability.
+                                      audience_contact_ids: [selectedContactId],
                                     }).select().maybeSingle()
                                   }
                                   toast.success("7-day plan created — check Campaigns tab")
@@ -2047,6 +2556,10 @@ export default function CRMPage() {
                       onSaveNote={handleSaveNote}
                       saving={noteSaving}
                     />
+
+                    {/* The actual SMS/email history. Reads through the gated,
+                        brokerage-scoped getRecentCommunications server action. */}
+                    <RecentMessagesCard contactId={selectedContactId} />
 
                     {/* Activity feed — updates optimistically after note save */}
                     {contactActivities.length > 0 && (
@@ -2143,11 +2656,14 @@ export default function CRMPage() {
                           <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
                             <p className="font-medium text-muted-foreground">Portal Status</p>
                             <p className={cn("font-semibold capitalize",
+                              portalInviteData?.readError ? "text-amber-600" :
                               portalInviteData?.status === "accepted" ? "text-green-600" :
-                              portalInviteData?.status === "invited"  ? "text-blue-600"  :
+                              portalInviteData?.status === "pending" || portalInviteData?.status === "sent" ? "text-blue-600" :
                               "text-muted-foreground"
-                            )}>
-                              {portalInviteData?.status ?? "Not yet invited"}
+                            )} title={portalInviteData?.readError ?? undefined}>
+                              {portalInviteData?.readError
+                                ? "Unknown — could not read"
+                                : portalInviteData?.status ?? "Not yet invited"}
                             </p>
                           </div>
                           <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
@@ -2431,10 +2947,19 @@ export default function CRMPage() {
                             </div>
                           )}
                           <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs">
-                            {unifiedLeadProfile.urgency_level && (
+                            {/* unified_lead_profile has NO urgency_level column (verified
+                                live) — this branch read undefined and never rendered.
+                                intent_strength and estimated_timeline are the real ones. */}
+                            {unifiedLeadProfile.intent_strength && (
                               <div className="flex justify-between gap-2">
-                                <span className="text-muted-foreground">Timeline urgency</span>
-                                <span className="font-medium capitalize">{unifiedLeadProfile.urgency_level}</span>
+                                <span className="text-muted-foreground">Intent strength</span>
+                                <span className="font-medium capitalize">{unifiedLeadProfile.intent_strength}</span>
+                              </div>
+                            )}
+                            {unifiedLeadProfile.estimated_timeline && (
+                              <div className="flex justify-between gap-2">
+                                <span className="text-muted-foreground">Timeline</span>
+                                <span className="font-medium">{unifiedLeadProfile.estimated_timeline}</span>
                               </div>
                             )}
                             {unifiedLeadProfile.motivation_signals && (
@@ -2450,10 +2975,17 @@ export default function CRMPage() {
                                 </div>
                               </div>
                             )}
-                            {unifiedLeadProfile.enrichment_source && (
-                              <div className="flex justify-between gap-2">
-                                <span className="text-muted-foreground">Enrichment source</span>
-                                <Badge variant="outline" className="text-xs">{unifiedLeadProfile.enrichment_source}</Badge>
+                            {/* The column is enrichment_sourceS (text[]). The singular
+                                spelling read undefined and never rendered. */}
+                            {Array.isArray(unifiedLeadProfile.enrichment_sources) &&
+                              unifiedLeadProfile.enrichment_sources.length > 0 && (
+                              <div className="col-span-2 flex justify-between gap-2">
+                                <span className="text-muted-foreground">Enrichment sources</span>
+                                <span className="flex flex-wrap gap-1 justify-end">
+                                  {unifiedLeadProfile.enrichment_sources.map((src: string) => (
+                                    <Badge key={src} variant="outline" className="text-xs">{src}</Badge>
+                                  ))}
+                                </span>
                               </div>
                             )}
                             {unifiedLeadProfile.ready_for_outreach != null && (
@@ -2480,11 +3012,50 @@ export default function CRMPage() {
                               </div>
                             </div>
                           )}
+                          <div className="pt-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={handleBuildLeadProfile}
+                              disabled={buildingProfile}
+                            >
+                              {buildingProfile ? "Re-analyzing…" : "Re-analyze profile"}
+                            </Button>
+                            {unifiedLeadProfile.last_analyzed_at && (
+                              <span className="ml-2 text-[11px] text-muted-foreground">
+                                Last analyzed {new Date(unifiedLeadProfile.last_analyzed_at).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
                         </CardContent>
                       </Card>
                     )}
 
-                    {!contactIntelligence && !unifiedLeadProfile && (
+                    {/* No profile yet. This card used to say "Loading intelligence…"
+                        forever: unified_lead_profile had no writer anywhere in the
+                        product, so the read above always came back empty and the
+                        spinner text was permanent. It is an explicit action now. */}
+                    {unifiedProfileLoaded && !unifiedLeadProfile && (
+                      <Card>
+                        <CardContent className="p-6 space-y-3 text-center">
+                          <p className="text-sm text-muted-foreground">
+                            No intelligence profile has been built for this contact yet.
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Analyzes the behavioural and property signals this brokerage
+                            already holds for this contact. The run is recorded in the
+                            intelligence signal ledger, and an outreach recommendation is
+                            suppressed for a contact on DNC or opted out of every channel.
+                          </p>
+                          <Button size="sm" onClick={handleBuildLeadProfile} disabled={buildingProfile}>
+                            {buildingProfile ? "Building…" : "Build intelligence profile"}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    )}
+
+                    {!contactIntelligence && !unifiedLeadProfile && !unifiedProfileLoaded && (
                       <Card>
                         <CardContent className="p-6 text-sm text-muted-foreground text-center">
                           Loading intelligence…
@@ -2657,7 +3228,10 @@ export default function CRMPage() {
           const t = (c.contact_type ?? "").toLowerCase()
           const p = (c.contact_persona ?? "").toLowerCase()
           if (typeFilter === "lifetime_customer") {
-            return t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE
+            // WAS `t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE` — a tautology
+            // (the constant IS that string), so the second clause tested nothing. The intent was
+            // to match the legacy spellings too; isLifetimeCustomerType does that for real.
+            return isLifetimeCustomerType(t)
           }
           return t.includes(typeFilter) || p.includes(typeFilter)
         })
@@ -2689,6 +3263,28 @@ export default function CRMPage() {
           </Button>
           <Button
             size="sm"
+            variant="outline"
+            disabled={bulkScoring || !agentId}
+            onClick={async () => {
+              if (!agentId) return
+              setBulkScoring(true)
+              // Scores the caller's own active pipeline (new/nurturing/qualified),
+              // capped at 50 inside the action.
+              const res = await bulkScoreLeads({ agentId })
+              setBulkScoring(false)
+              if ((res as any).success) {
+                toast.success(`Scored ${(res as any).totalScored} lead${(res as any).totalScored === 1 ? "" : "s"}`)
+                loadContacts()
+              } else {
+                toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Bulk scoring failed")
+              }
+            }}
+          >
+            {bulkScoring ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Star className="h-4 w-4 mr-2" />}
+            Score Pipeline
+          </Button>
+          <Button
+            size="sm"
             className="bg-blue-600 hover:bg-blue-700 text-white"
             onClick={handleOpenAddDialog}
           >
@@ -2697,6 +3293,13 @@ export default function CRMPage() {
           </Button>
         </div>
       </div>
+
+      {/* Book at a glance — /api/contacts/analytics. Sits above the search box
+          because it answers a different question from the list: the list is what
+          you filtered to, this is the shape of the whole book you may see. The
+          endpoint scopes itself from the SESSION (§4), so nothing on this page
+          is passed to it. */}
+      <ContactsAnalyticsStrip />
 
       {/* Search */}
       <div className="relative">
@@ -2797,8 +3400,18 @@ export default function CRMPage() {
                         if (!user?.id) return
                         setDraftingFor(insight.contactId)
                         try {
-                          const body = await draftSmartEmail(insight.contactId, insight.reason)
-                          if (!body) return
+                          const result = await draftSmartEmail(insight.contactId, insight.reason)
+                          // A BARE `return` USED TO BE THE WHOLE ERROR HANDLING
+                          // (wave 27). draftSmartEmail answered "" for a refused
+                          // seat, an unreadable contact and an empty model reply
+                          // alike, and this button silently did nothing for all
+                          // three — the agent pressed it and got no draft, no
+                          // toast, and no reason.
+                          if (!result.ok) {
+                            toast.error(result.reason)
+                            return
+                          }
+                          const body = result.body
                           const supabase = createClient()
                           // Resolve brokerage_id from user metadata or users table
                           const { data: userData } = await supabase
@@ -3252,7 +3865,6 @@ export default function CRMPage() {
                     <SelectItem value="buyer">Buyer</SelectItem>
                     <SelectItem value="seller">Seller</SelectItem>
                     <SelectItem value="both">Buyer &amp; Seller</SelectItem>
-                    <SelectItem value="investor">Investor</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -3267,11 +3879,27 @@ export default function CRMPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="new">New</SelectItem>
-                    <SelectItem value="contacted">Contacted</SelectItem>
-                    <SelectItem value="qualified">Qualified</SelectItem>
-                    <SelectItem value="nurture">Nurture</SelectItem>
-                    <SelectItem value="active">Active</SelectItem>
+                    {/* OWNER RULING: "invitation from a lead converting to a
+                        contact makes sense for status qualified but any other new
+                        contacts coming in from forms, lead magnets, other real
+                        estate sites, etc. haven't been qualified yet."
+                        This is the MANUAL ADD door — "any other new contact" — so
+                        `Qualified` is REMOVED from the create form. Qualification is
+                        earned, not typed in: the one writer is
+                        lib/portal/portal-invite-core.ts:77
+                        (stampQualifiedIfLeadConverted), which fires only when
+                        `leads.contact_id` shows a lead actually converted into the
+                        contact. An agent can still qualify a contact LATER through
+                        the edit path (app/actions/contacts.ts:330 updateContact,
+                        which accepts `status`); what is gone is claiming it at the
+                        moment the person is first typed in.
+                        The options render FROM the vocabulary
+                        (lib/contact-promotion/qualification.ts) rather than
+                        inline strings, so the dropdown cannot drift from the
+                        m587 CHECK. */}
+                    {PRE_QUALIFICATION_CONTACT_STATUSES.map((s) => (
+                      <SelectItem key={s} value={s}>{CONTACT_STATUS_LABELS[s as ContactStatus]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

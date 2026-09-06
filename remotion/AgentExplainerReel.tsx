@@ -36,14 +36,9 @@
  * before the render queued.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -117,10 +112,11 @@ const AvatarPIP: React.FC<{
     return (
       <div style={ringStyle}>
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          trimBefore={startFrame}
+          trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }}
         />
       </div>
     )
@@ -128,7 +124,7 @@ const AvatarPIP: React.FC<{
   if (agentPhotoUrl) {
     return (
       <div style={ringStyle}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -150,8 +146,8 @@ const BulletPanel: React.FC<{
   accentColor:  string
 }> = ({ index, text, accentColor }) => {
   const frame = useCurrentFrame()
-  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" })
-  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateRight: "clamp" })
+  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <div style={{
       position: "absolute", top: 0, right: 0, bottom: 0,
@@ -192,22 +188,22 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1]),
+            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {eyebrow}
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1,
-            maxWidth: 840, opacity: interpolate(frame, [12, 36], [0, 1]),
+            maxWidth: 840, opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {title}
           </div>

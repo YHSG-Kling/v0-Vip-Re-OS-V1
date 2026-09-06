@@ -5,6 +5,9 @@ import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
 import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
 import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-sheet"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
+import { buildSellerDecisionRoom, type DecisionOffer } from "@/lib/kernel/seller-decision-room"
+import { resolveBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export default async function OffersPage({
   params,
@@ -25,12 +28,29 @@ export default async function OffersPage({
       .single(),
     supabase
       .from("users")
-      .select("brokerage_id, user_type, platform_role")
+      .select("brokerage_id, user_type")
       .eq("id", user.id)
       .single(),
   ])
 
   if (!listing) redirect("/dashboard/listings")
+
+  // WHO MAY OVERRIDE A FAILING SELLER-DECISION GATE — resolved here, on the
+  // server, because the answer is users.user_type OR a role GRANT pinned to this
+  // caller's own brokerage, and the grant half needs I/O the client cannot do.
+  // Overriding suppresses a failing check on the CMA and the net sheet, so m472
+  // puts it in the BROKERAGE-WIDE MONEY tier (team_lead held out) rather than the
+  // operational admin tier — hence the finance resolver, not the admin one.
+  //
+  // FAILS CLOSED: resolveBrokerageFinanceAdmin reports a REFUSED grant read as a
+  // refusal rather than as "not an admin", and a refusal must not hand out the
+  // override button. It only hides a control; the authoritative gate is
+  // evaluateSellerDecisionReadiness, which re-resolves this server-side.
+  const financeAdmin = await resolveBrokerageFinanceAdmin(supabase, user.id, {
+    user_type: agentRow?.user_type ?? null,
+    brokerage_id: agentRow?.brokerage_id ?? null,
+  })
+  const canOverrideDecisionGate = financeAdmin.ok && financeAdmin.isFinanceAdmin
 
   // tenant anchor (scope burn-down): offers are fetched only AFTER the listing
   // (the validated parent) resolves, and are pinned to its brokerage.
@@ -53,16 +73,32 @@ export default async function OffersPage({
     .eq("brokerage_id", listing.brokerage_id)
     .order("submitted_at", { ascending: false })
 
-  // Resolve buyer agent names — separate query since offers.agent_id has no declared FK to users
+  // Resolve buyer agent names.
+  // IDENTITY CLASS: `offers.agent_id` is an **agents.id** (createOffer writes it
+  // through resolveAgentId), and identity lives on **users**, reached via
+  // agents.user_id. This query used to look the agents ids up in `users` by id
+  // — two disjoint uuid spaces — so it matched nothing and EVERY offer rendered
+  // its buyer agent as "Unknown". Resolve agents → users, then map back to the
+  // agents.id the offer rows actually carry.
   const agentIds = [...new Set((offers ?? []).map((o) => o.agent_id).filter(Boolean))] as string[]
   let agentNameMap: Record<string, string> = {}
   if (agentIds.length > 0) {
-    const { data: agentUsers } = await supabase
-      .from("users")
-      .select("id, first_name, last_name")
+    const { data: agentRows } = await supabase
+      .from("agents")
+      .select("id, user_id")
       .in("id", agentIds)
-    if (agentUsers) {
-      agentNameMap = Object.fromEntries(agentUsers.map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unknown"]))
+    const userIds = [...new Set((agentRows ?? []).map((a: any) => a.user_id).filter(Boolean))] as string[]
+    if (userIds.length > 0) {
+      const { data: agentUsers } = await supabase
+        .from("users")
+        .select("id, first_name, last_name")
+        .in("id", userIds)
+      const nameByUserId = Object.fromEntries(
+        (agentUsers ?? []).map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unknown"])
+      )
+      agentNameMap = Object.fromEntries(
+        (agentRows ?? []).map((a: any) => [a.id, nameByUserId[a.user_id] ?? "Unknown"])
+      )
     }
   }
 
@@ -89,10 +125,29 @@ export default async function OffersPage({
     financingType: o.financing_type ?? null,
     buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
   }))
+  // Agreed commission terms. Scoped to the validated listing's brokerage.
+  const { data: agreement } = await supabase
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, fully_executed_at")
+    .eq("listing_id", listingId)
+    .eq("brokerage_id", listing.brokerage_id)
+    .order("fully_executed_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  // The seller pays BOTH sides, so a listing-side-only rate understates the
+  // commission and overstates the net — on the screen where they pick an offer.
+  const agreed = resolveAgreedCommission({
+    agreement,
+    listingCommissionRatePercent: (listing as any).commission_rate ?? null,
+    referencePrice: listing.list_price != null ? Number(listing.list_price) : null,
+  })
+
   const netSheetCosts = defaultSellerCosts({
     listPrice: listing.list_price != null ? Number(listing.list_price) : null,
-    commissionRateDecimal: (listing as any).commission_rate != null ? Number((listing as any).commission_rate) / 100 : 0.06,
+    commissionRateDecimal: agreed.rate,
     hoaDuesMonthly: (listing as any).hoa_dues != null ? Number((listing as any).hoa_dues) : null,
+    transactionFee: (agreement as any)?.seller_transaction_fee ?? null,
   })
   // KEEP-ONE (round 36): the net sheet's closing-cost line derives from the
   // seller closing-cost model when the listing's state is known — the flat
@@ -105,17 +160,58 @@ export default async function OffersPage({
   )
   if (closingCostSection) netSheetCosts.otherProratedFees = closingCostSection.midpoint
 
+  // Deterministic seller recommendation, computed from the SAME cost lines the net
+  // sheet uses (including the state-derived closing-cost midpoint above). This is the
+  // auditable counterpart to the matrix's LLM-written summary: "which offer should I
+  // take" is advice with legal weight, so the recommendation itself is rule-based and
+  // reproducible. Rendered inside the existing matrix card — not a fourth card.
+  const asDays = (d: string | null | undefined): number | null => {
+    if (!d) return null
+    const ms = new Date(d).getTime() - Date.now()
+    return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 86_400_000)) : null
+  }
+  const toList = (c: unknown): string[] =>
+    Array.isArray(c) ? c.map(String) : typeof c === "string" && c.trim() ? [c] : []
+
+  const decisionOffers: DecisionOffer[] = activeOffers.map((o, i) => ({
+    offerId: o.id,
+    buyerName: o.buyer_agent?.full_name ?? `Offer ${String.fromCharCode(65 + i)}`,
+    offerPrice: Number(o.offer_price ?? 0),
+    financingType: o.financing_type ?? null,
+    downPaymentPercent: o.down_payment_percent != null ? Number(o.down_payment_percent) : null,
+    contingencies: toList(o.contingencies),
+    emd: o.earnest_money != null ? Number(o.earnest_money) : null,
+    buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
+    closeDateDays: asDays(o.closing_date as string | null),
+  }))
+  const decision = decisionOffers.length >= 2
+    ? buildSellerDecisionRoom(decisionOffers, netSheetCosts)
+    : null
+
   return (
     <>
       {/* Multi-offer matrix card — renders only when 2+ active offers exist.
           Server component; runs in parallel with the existing client tree below. */}
-      <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} />
+      <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} decision={decision} />
 
       {/* Interactive net sheet — side-by-side net proceeds the agent adjusts live with
           the seller (commission/payoff/taxes/HOA/other). Surfaces which offer NETS the
           seller most, not just the highest price. Renders whenever there's an open offer. */}
       {netSheetOffers.length > 0 && (
         <div className="mb-4">
+          {/* Commission provenance — same discipline as the CMA net sheet: never
+              present a default as the agreed rate. */}
+          <div
+            className={`flex items-center gap-2 text-xs rounded px-3 py-2 border mb-2 ${
+              agreed.isEstimate
+                ? "text-amber-800 bg-amber-50 border-amber-200"
+                : "text-blue-700 bg-blue-50 border-blue-200"
+            }`}
+          >
+            {agreed.isEstimate ? "⚠ Commission is an estimate — " : "Commission per listing agreement — "}
+            {agreed.label}
+            {!agreed.isFlatFee && ` (${(agreed.rate * 100).toFixed(2)}% total)`}
+          </div>
           <InteractiveNetSheet
             listingAddress={listing.address}
             offers={netSheetOffers}
@@ -130,7 +226,16 @@ export default async function OffersPage({
         initialOffers={offersWithAgentNames}
         currentUserId={user.id}
         brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
-        userRole={agentRow?.user_type ?? agentRow?.platform_role ?? "agent"}
+        // TENANT vocabulary only. This used to fall back to `platform_role`, which
+        // put a PLATFORM value into a slot every consumer reads as a `user_type`
+        // — the two columns do not hold the same vocabulary (marketing is a
+        // platform_role and not a storable user_type at all), and mixing them is
+        // what the one-vocabulary ruling forbids. Dropping the fallback is a
+        // no-op for real rows: the live superadmin carries user_type 'admin'
+        // WITH platform_role 'superadmin', so the tenant roster already admits
+        // them through the first term.
+        userRole={agentRow?.user_type ?? "agent"}
+        canOverrideDecisionGate={canOverrideDecisionGate}
       />
     </>
   )

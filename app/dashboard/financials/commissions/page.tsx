@@ -1,12 +1,13 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle, Landmark } from 'lucide-react'
+import { DollarSign, ArrowLeft, Clock, CheckCircle2, AlertCircle, Landmark } from 'lucide-react'
 import Link from 'next/link'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
+import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
 import { DepositReceivedButton } from '@/app/components/features/financial/DepositReceivedButton'
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
@@ -22,21 +23,32 @@ export default async function CommissionsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  let context: any = null
-  try { context = await getAgentContext() } catch { redirect('/login') }
+  // Heal an incomplete account IN PLACE — don't bounce off the Commissions page.
+  const context = await ensureAgentContextInPlace()
+  if (!context.isAuthenticated) redirect('/login')
   const { agentId, brokerageId, role } = context
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest notice.
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your commissions.
+      </div>
+    )
+  }
   const isBrokerAdmin = role === 'broker' || role === 'broker_admin' || role === 'admin' || role === 'superadmin'
 
   const currentYear = new Date().getFullYear()
 
-  const [commissions, transactions] = await Promise.all([
-    supabase
-      .from('commissions')
-      .select('id, gross_commission, agent_commission, status, created_at, transaction_id, deposit_received_at')
-      .eq('agent_id', agentId)
-      .gte('created_at', `${currentYear}-01-01`)
-      .order('created_at', { ascending: false })
-      .limit(100),
+  // KEEP-ONE (§1, lane E6 2026-08-28): the ledger read goes through
+  // app/actions/agents.ts:getAgentCommissions — the survivor the dashboard-data
+  // lane recorded for the `commissions` type (lib/dashboard/data-survivors.ts)
+  // and the reader hardened FOR this screen. It re-derives the caller from the
+  // session (requireAgentLedgerAccess), pins the tenant, and reports a refused
+  // read as a refusal — the inline read this replaces dropped the error, so a
+  // permission failure rendered as "No commission records for the year".
+  const { getAgentCommissions } = await import('@/app/actions/agents')
+  const [commissionsResult, transactions] = await Promise.all([
+    getAgentCommissions(agentId, currentYear, { limit: 100 }),
     supabase
       .from('transactions')
       .select('id, property_address, purchase_price, status, close_date')
@@ -46,13 +58,43 @@ export default async function CommissionsPage() {
       .order('close_date', { ascending: false })
       .limit(50),
   ])
+  const commissionsError = commissionsResult.ok ? null : commissionsResult.error
 
-  const commissionsData = commissions.data || []
+  // Normalize the agent's take-home once: prefer the waterfall's post-fee
+  // net_to_agent, fall back to the generated pre-fee split. Every total and row
+  // below reads agent_commission, so this is the single place it's resolved.
+  const commissionsData = (commissionsResult.commissions || []).map((c: any) => ({
+    ...c,
+    agent_commission: c.net_to_agent ?? c.agent_commission ?? 0,
+  }))
   const totalGross = commissionsData.reduce((sum: number, c: any) => sum + (c.gross_commission || 0), 0)
   const totalAgent = commissionsData.reduce((sum: number, c: any) => sum + (c.agent_commission || 0), 0)
   const pendingCount = commissionsData.filter((c: any) => c.status === 'pending').length
   const paidCount = commissionsData.filter((c: any) => c.status === 'paid').length
   const totalPending = commissionsData.filter((c: any) => c.status === 'pending').reduce((sum: number, c: any) => sum + (c.agent_commission || 0), 0)
+
+  // Summary + records for the Commission Intelligence panel (it expects a
+  // `summary` object and camelCase records — previously omitted, which crashed
+  // the page on `summary.pending`).
+  const sumBy = (status: string) =>
+    commissionsData.filter((c: any) => c.status === status).reduce((s: number, c: any) => s + (c.agent_commission || 0), 0)
+  const commissionSummary = {
+    pending: pendingCount,
+    approved: commissionsData.filter((c: any) => c.status === 'approved').length,
+    paid: paidCount,
+    held: commissionsData.filter((c: any) => c.status === 'held').length,
+    totalPending,
+    totalApproved: sumBy('approved'),
+    totalPaid: sumBy('paid'),
+  }
+  const commissionRecords = commissionsData.map((c: any) => ({
+    id: c.id,
+    transactionId: c.transaction_id ?? '',
+    grossCommission: c.gross_commission ?? 0,
+    agentNet: c.agent_commission ?? 0,
+    status: c.status ?? 'pending',
+    createdAt: c.created_at,
+  }))
 
   // Build action stack for commissions view
   const commissionActions: FinancialAction[] = []
@@ -103,6 +145,15 @@ export default async function CommissionsPage() {
         <ExportCSVButton agentId={agentId} type="commissions" />
       </div>
 
+      {/* A refused read is NOT an empty ledger — say so rather than render
+          "you earned nothing this year" over a permission failure. */}
+      {commissionsError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your commission records could not be read: {commissionsError}. The figures below are not
+          complete.
+        </div>
+      )}
+
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card>
@@ -132,7 +183,8 @@ export default async function CommissionsPage() {
       </div>
 
       {/* Commission Intelligence Panel */}
-      {(() => { const Panel = CommissionIntelligencePanel as any; return <Panel commissions={commissionsData} agentId={agentId} /> })()}
+      <CommissionIntelligencePanel commissions={commissionRecords} summary={commissionSummary} />
+
 
       {/* Commission Records Table */}
       <Card>
@@ -179,6 +231,16 @@ export default async function CommissionsPage() {
                               <CheckCircle2 className="w-3 h-3 mr-1" />
                               Paid
                             </>
+                          ) : c.status === 'approved' ? (
+                            <>
+                              <CheckCircle2 className="w-3 h-3 mr-1" />
+                              Approved — ready to pay
+                            </>
+                          ) : c.status === 'disputed' ? (
+                            <>
+                              <AlertCircle className="w-3 h-3 mr-1" />
+                              Disputed
+                            </>
                           ) : c.deposit_received_at ? (
                             <>
                               <Landmark className="w-3 h-3 mr-1" />
@@ -194,11 +256,20 @@ export default async function CommissionsPage() {
                       </td>
                       {isBrokerAdmin && (
                         <td className="py-3 px-2 text-center">
-                          {/* Close froze the amount → record the deposit → disburse (Mark as Paid). */}
+                          {/* Close froze the amount → record the deposit → BROKER APPROVES →
+                              disburse. The approval step was missing here, and the kernel
+                              refuses pending → paid outright, so "Mark as Paid" was rendered
+                              on exactly the rows it could never pay. */}
                           {c.status === 'pending' && !c.deposit_received_at && c.transaction_id && (
                             <DepositReceivedButton transactionId={c.transaction_id} />
                           )}
                           {c.status === 'pending' && c.deposit_received_at && (
+                            <ApproveCommissionButton
+                              commissionId={c.id}
+                              brokerageId={brokerageId ?? ''}
+                            />
+                          )}
+                          {c.status === 'approved' && (
                             <PayoutButton
                               commissionId={c.id}
                               brokerageId={brokerageId ?? ''}

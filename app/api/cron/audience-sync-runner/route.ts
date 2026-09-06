@@ -23,6 +23,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { isAudienceUploadEligible, AUDIENCE_CONSENT_COLUMNS } from "@/lib/ads/audience-eligibility"
+import { describeConsentChange } from "@/lib/audiences/audience-sync"
 import { createHash } from "node:crypto"
 
 export const dynamic = "force-dynamic"
@@ -38,7 +39,29 @@ interface PendingRow {
   audience_id:  string
   contact_id:   string | null
   lead_id:      string | null
+  /** Consent basis recorded at add-time (lib/audiences/audience-sync.ts
+   *  stageMembership). Read on the removal path so a suppression names WHAT
+   *  lapsed — m164:53 "so removal recovers it". */
+  consent_snapshot: unknown
+  sync_status:  string
+  synced_at:    string | null
 }
+
+const MEMBER_COLS = "id, brokerage_id, audience_id, contact_id, lead_id, consent_snapshot, sync_status, synced_at"
+
+// ── synced_at ages the re-sync selection (wave 26 columns) ──────────────────
+// synced_at was stamped on every successful push (below) and never read: a
+// row, once 'synced', was never selected again. So (a) a contact whose email
+// or phone changed after the push was matched on Meta by identifiers they no
+// longer use, and (b) — the compliance half — a contact who REVOKED consent
+// after the push stayed in the Custom Audience indefinitely, because the
+// eligibility gate only ever ran on 'pending' rows. Rows synced more than
+// RESYNC_AFTER_DAYS ago (or synced with no timestamp — pre-column rows) are
+// now swept back through the same gate: eligible ones are re-uploaded (Meta's
+// /users endpoint upserts, so this is idempotent) and get a fresh synced_at;
+// ineligible ones are REMOVED with the basis change recorded.
+const RESYNC_AFTER_DAYS = 30
+const RESYNC_BATCH = 1000
 
 function hash(input: string): string {
   return createHash("sha256").update(input.toLowerCase().trim()).digest("hex")
@@ -76,15 +99,46 @@ export async function GET(req: NextRequest) {
   // that may have leaked in before m165 marked them 'removed'.
   // Meta Custom Audiences require consent; only contacts (with
   // tcpa_consent verified at conversion) qualify.
-  const { data: pendingRows } = await svc.from("audience_members")
-    .select("id, brokerage_id, audience_id, contact_id, lead_id")
+  const { data: pendingRows, error: pendingErr } = await svc.from("audience_members")
+    .select(MEMBER_COLS)
     .eq("sync_status", "pending")
     .not("contact_id", "is", null)
     .order("added_at", { ascending: true })
     .limit(5000)
-  const pending = (pendingRows ?? []) as PendingRow[]
+  if (pendingErr) {
+    // §3 — a refused read is not an empty queue.
+    return NextResponse.json({ ran_at: new Date().toISOString(), error: `audience_members read refused: ${pendingErr.message}` }, { status: 500 })
+  }
+
+  // Aged re-sync selection (see RESYNC_AFTER_DAYS above).
+  const resyncBefore = new Date(Date.now() - RESYNC_AFTER_DAYS * 86_400_000).toISOString()
+  const { data: agedRows, error: agedErr } = await svc.from("audience_members")
+    .select(MEMBER_COLS)
+    .eq("sync_status", "synced")
+    .not("contact_id", "is", null)
+    .or(`synced_at.is.null,synced_at.lt.${resyncBefore}`)
+    .order("synced_at", { ascending: true, nullsFirst: true })
+    .limit(RESYNC_BATCH)
+  if (agedErr) {
+    // The pending drain must still run; the aging half reports its refusal
+    // in the payload rather than pretending nothing had aged.
+    console.error("[audience-sync-runner] aged re-sync read refused:", agedErr.message)
+  }
+
+  const seen = new Set<string>()
+  const pending: PendingRow[] = []
+  for (const r of [...((pendingRows ?? []) as PendingRow[]), ...((agedRows ?? []) as PendingRow[])]) {
+    if (seen.has(r.id)) continue
+    seen.add(r.id); pending.push(r)
+  }
+  const pendingSelected = (pendingRows ?? []).length
+  const resyncSelected  = (agedRows ?? []).length
   if (pending.length === 0) {
-    return NextResponse.json({ ran_at: new Date().toISOString(), drained: 0 })
+    return NextResponse.json({
+      ran_at: new Date().toISOString(), drained: 0,
+      pending_selected: 0, resync_selected: 0,
+      resync_read_error: agedErr?.message ?? null,
+    })
   }
 
   // Bucket by (brokerage, audience) → batch FB call.
@@ -97,7 +151,12 @@ export async function GET(req: NextRequest) {
 
   let totalSynced = 0
   let totalFailed = 0
-  const audienceRuns: Array<{ audience_id: string; attempted: number; synced: number; rejected: number; error?: string }> = []
+  let totalRemoved = 0
+  // Every removal, with the consent basis recovered from the snapshot. Capped
+  // in the payload so one big lapse cannot bloat the response; the full list
+  // goes to the log.
+  const removals: Array<{ member_id: string; audience_id: string; previously: string; snapshot_at: string | null; basis: string[] }> = []
+  const audienceRuns: Array<{ audience_id: string; attempted: number; synced: number; rejected: number; removed: number; error?: string }> = []
 
   for (const [key, rows] of buckets.entries()) {
     const [, audienceId] = key.split("|")
@@ -115,7 +174,7 @@ export async function GET(req: NextRequest) {
         .update({ sync_status: "failed" })
         .in("id", rows.map((r) => r.id))
       totalFailed += rows.length
-      audienceRuns.push({ audience_id: audienceId, attempted: rows.length, synced: 0, rejected: rows.length, error: "external_audience_id missing" })
+      audienceRuns.push({ audience_id: audienceId, attempted: rows.length, synced: 0, rejected: rows.length, removed: 0, error: "external_audience_id missing" })
       continue
     }
 
@@ -151,7 +210,22 @@ export async function GET(req: NextRequest) {
       const src = r.contact_id ? contactById.get(r.contact_id) : (r.lead_id ? leadById.get(r.lead_id) : null)
       if (!src) continue
       // PII-share gate: never upload a withdrawn / fully-opted-out contact's identifiers to Meta.
-      if (r.contact_id && !isAudienceUploadEligible(src)) { suppressedRowIds.push(r.id); continue }
+      if (r.contact_id && !isAudienceUploadEligible(src)) {
+        suppressedRowIds.push(r.id)
+        // THE REMOVAL RECOVERS THE SNAPSHOT (m164:53). Name what lapsed
+        // between add-time and now, so the audit says "tcpa_consent
+        // true→false on a row synced 2026-06-01", not just "removed".
+        const change = describeConsentChange(r.consent_snapshot, src as Record<string, unknown>)
+        removals.push({
+          member_id: r.id, audience_id: audienceId,
+          previously: r.sync_status, snapshot_at: change.snapshotAt, basis: change.basis,
+        })
+        console.warn("[audience-sync-runner] member removed — consent basis lapsed", {
+          member_id: r.id, audience_id: audienceId, previously: r.sync_status,
+          synced_at: r.synced_at, snapshot_at: change.snapshotAt, basis: change.basis,
+        })
+        continue
+      }
       const email = src.email ? hash(src.email) : ""
       const phone = src.phone ? hash(normalizePhone(src.phone)) : ""
       const fn    = src.first_name ? hash(src.first_name) : ""
@@ -165,16 +239,39 @@ export async function GET(req: NextRequest) {
     }
 
     // CCPA do-not-share: drop opted-out / withdrawn contacts from the audience (never uploaded).
+    // removed_at is stamped so the revive path (audience-sync.ts stageMembership)
+    // can say when they left when they come back.
     if (suppressedRowIds.length > 0) {
-      await svc.from("audience_members").update({ sync_status: "removed" }).in("id", suppressedRowIds)
+      const { data: removedRows, error: removeErr } = await svc.from("audience_members")
+        .update({ sync_status: "removed", removed_at: new Date().toISOString() })
+        .in("id", suppressedRowIds)
+        .select("id")
+      if (removeErr) {
+        console.error("[audience-sync-runner] removal update refused:", removeErr.message, { ids: suppressedRowIds })
+      } else {
+        // §3: a matched-nothing update resolves too — count what came back.
+        totalRemoved += (removedRows ?? []).length
+        if ((removedRows ?? []).length !== suppressedRowIds.length) {
+          console.error("[audience-sync-runner] removal matched fewer rows than selected", {
+            selected: suppressedRowIds.length, removed: (removedRows ?? []).length,
+          })
+        }
+      }
     }
 
     if (data.length === 0) {
-      await svc.from("audience_members")
-        .update({ sync_status: "failed" })
-        .in("id", rows.map((r) => r.id).filter((id) => !suppressedRowIds.includes(id)))
-      totalFailed += rows.length - suppressedRowIds.length
-      audienceRuns.push({ audience_id: audienceId, attempted: rows.length, synced: 0, rejected: rows.length, error: "no_identifiable_pii" })
+      // Nothing left to upload for this audience. A sweep that only found
+      // lapsed members is a COMPLETED removal pass, not a failure — only
+      // rows that were neither uploaded nor removed are failed.
+      const remaining = rows.map((r) => r.id).filter((id) => !suppressedRowIds.includes(id))
+      if (remaining.length > 0) {
+        await svc.from("audience_members").update({ sync_status: "failed" }).in("id", remaining)
+        totalFailed += remaining.length
+      }
+      audienceRuns.push({
+        audience_id: audienceId, attempted: rows.length, synced: 0, rejected: remaining.length,
+        removed: suppressedRowIds.length, error: remaining.length > 0 ? "no_identifiable_pii" : undefined,
+      })
       continue
     }
 
@@ -227,14 +324,21 @@ export async function GET(req: NextRequest) {
       completed_at:       new Date().toISOString(),
     })
 
-    audienceRuns.push({ audience_id: audienceId, attempted: data.length, synced, rejected, error: err ?? undefined })
+    audienceRuns.push({ audience_id: audienceId, attempted: data.length, synced, rejected, removed: suppressedRowIds.length, error: err ?? undefined })
   }
 
   return NextResponse.json({
-    ran_at:        new Date().toISOString(),
-    drained:       pending.length,
-    total_synced:  totalSynced,
-    total_failed:  totalFailed,
-    audience_runs: audienceRuns,
+    ran_at:           new Date().toISOString(),
+    drained:          pending.length,
+    pending_selected: pendingSelected,
+    resync_selected:  resyncSelected,
+    resync_after_days: RESYNC_AFTER_DAYS,
+    resync_read_error: agedErr?.message ?? null,
+    total_synced:     totalSynced,
+    total_failed:     totalFailed,
+    total_removed:    totalRemoved,
+    removals:         removals.slice(0, 50),
+    removals_truncated: Math.max(0, removals.length - 50),
+    audience_runs:    audienceRuns,
   })
 }

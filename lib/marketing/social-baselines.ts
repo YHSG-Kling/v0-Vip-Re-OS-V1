@@ -96,26 +96,30 @@ export async function listSocialBaselines(brokerageId: string): Promise<SocialBa
   return ((data ?? []) as RawBaselineRow[]).map(rowToBaseline)
 }
 
-/**
- * Targeted lookup for a specific (platform, post_type) — the canonical
- * shape W40 will use right before staging an ad. Returns null when no
- * baseline exists (caller treats as "no floor — use default targets").
- */
-export async function getSocialBaseline(args: {
-  brokerageId: string
-  platform:    string
-  postType:    string
-}): Promise<SocialBaseline | null> {
-  const svc = createServiceClient()
-  const { data } = await svc
-    .from("social_post_baselines_28d")
-    .select("brokerage_id, platform, post_type, posts_measured, total_impressions, total_engagements, total_clicks, engagement_rate, click_through_rate, last_measured_at, window_start")
-    .eq("brokerage_id", args.brokerageId)
-    .eq("platform", args.platform)
-    .eq("post_type", args.postType)
-    .maybeSingle()
-  return data ? rowToBaseline(data as RawBaselineRow) : null
-}
+// `getSocialBaseline({ brokerageId, platform, postType })` — DELETED
+// (orphan burn-down, category C).
+//
+// SURVIVOR: `listSocialBaselines()` directly above, which returns every
+// (platform, post_type) cell for the brokerage in one round trip. The deleted
+// function selected the SAME eleven columns from the SAME view through the SAME
+// `rowToBaseline` mapper and differed only by two extra `.eq()` predicates — a
+// strict subset, and the caller that finally arrived (lib/kernel/ads.ts:
+// loadAdsWorkspace) needs the whole grid anyway to compare more than one
+// platform.
+//
+// It was also the weaker of the two in the way that matters here: it
+// destructured `{ data }` alone. supabase-js RESOLVES a refusal rather than
+// throwing, so an RLS denial or a dropped view came back as `data: null` and
+// this returned `null` — indistinguishable from "this brokerage has no organic
+// baseline for that post type". The paid-vs-organic panel would then have shown
+// "no floor to compare against" for a read that had actually FAILED. The
+// survivor destructures `{ data, error }` and logs the message.
+//
+// Its stated purpose — "the shape W40 will use right before staging an ad" —
+// could not have been served by it in any case: `post_type` is a dimension of
+// ORGANIC posts (new_listing, market_update, open_house_announcement). An ad has
+// no post_type, so the floor for a paid campaign is the platform's whole organic
+// volume, which is what loadAdsWorkspace now sums out of listSocialBaselines.
 
 /**
  * Convenience: given a candidate paid CTR / engagement rate for a new

@@ -58,10 +58,17 @@ if (pendingCount >= 3) {
 
 **Check Logic:**
 ```typescript
-const conflict = await detectConflictingOffers(supabase, contactId, listingId)
-if (conflict.hasConflict) {
+// `detectConflictingOffers` (lib/buyer-offer/lifecycle-event-map.ts) was deleted
+// in wave 7. Its survivor is app/actions/buyer-offer/handle-multi-offer.ts:
+// checkDuplicateOffer, which absorbed both of its capabilities and adds the
+// tenant scope + session gate the deleted version had no notion of.
+// `excludeOfferId` (3rd arg, optional) leaves the offer being amended out of
+// the scan — an offer never conflicts with itself.
+const dup = await checkDuplicateOffer(contactId, listingId)
+if (dup.has_duplicate) {
   return { success: false, error: "Pending offer already exists for this listing" }
 }
+// dup.conflicting_offer_ids lists EVERY live offer, not just the first.
 ```
 
 ### 5. Under Contract Freeze

@@ -98,6 +98,7 @@ export function AgentPLTable({ rows, monthYear }: Props) {
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground flex items-center justify-end gap-1">
                   <Brain className="h-3 w-3 text-purple-500" />AI Cost
                 </th>
+                <th className="text-right px-4 py-2 font-medium text-muted-foreground">Marketing</th>
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">Net Margin</th>
                 <th className="text-right px-4 py-2 font-medium text-muted-foreground">
                   <TrendingUp className="inline h-3 w-3 text-emerald-500 mr-1" />
@@ -122,6 +123,12 @@ export function AgentPLTable({ rows, monthYear }: Props) {
                     <td className="px-4 py-2.5 text-right">{fmt(r.brokerage_gross)}</td>
                     <td className="px-4 py-2.5 text-right text-purple-700 text-xs">
                       {r.ai_cost_cents > 0 ? fmtCents(r.ai_cost_cents) : <span className="text-muted-foreground">—</span>}
+                    </td>
+                    {/* marketing_spend_cents is booked 0 by the rollup until
+                        campaign attribution lands — an honest dash, never a
+                        confident $0 that reads as "measured and free". */}
+                    <td className="px-4 py-2.5 text-right text-xs">
+                      {r.marketing_spend_cents > 0 ? fmtCents(r.marketing_spend_cents) : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className={`px-4 py-2.5 text-right font-semibold ${marginNegative ? "text-red-600" : "text-emerald-700"}`}>
                       {marginNegative && <AlertTriangle className="inline h-3 w-3 mr-1" />}

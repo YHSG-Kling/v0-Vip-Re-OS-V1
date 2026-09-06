@@ -51,24 +51,41 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
     }
   }
 
-  // Map EventInput to the actual lifecycle_events schema columns
+  // Map EventInput to the actual lifecycle_events schema columns.
+  //
+  // entity_id / entity_type are NOT NULL on the live table (verified 2026-09-03 on
+  // hrvaqgvukzxfskkcrwbt). The old derivation fell back to entity_id NULL /
+  // entity_type 'system' for any payload without contact_id/listing_id/video_id —
+  // so ESIGN_PACKET_SIGNED (payload.documentId), MILESTONE_OVERDUE with no listing,
+  // and every webhook event of that shape were REFUSED (23502) and this function
+  // threw. The fallback is now the brokerage itself (the same rule
+  // app/actions/orchestrator.ts emitEvent already applies), and callers may name
+  // the entity explicitly.
+  const pl = (eventInput.payload ?? {}) as Record<string, any>
+  const derivedEntityId: string | null =
+    pl.contact_id ?? pl.listing_id ?? pl.video_id ?? pl.transaction_id ?? pl.offer_id ?? pl.documentId ?? pl.agreementId ?? null
+  const derivedEntityType: string =
+    pl.contact_id ? "contact"
+    : pl.listing_id ? "listing"
+    : pl.video_id ? "video"
+    : pl.transaction_id ? "transaction"
+    : pl.offer_id ? "offer"
+    : pl.documentId ? "document"
+    : pl.agreementId ? "buyer_broker_agreement"
+    : "brokerage"
+  const entityId   = eventInput.entity_id   ?? derivedEntityId   ?? eventInput.brokerage_id
+  const entityType = eventInput.entity_type ?? (derivedEntityId ? derivedEntityType : "brokerage")
+
   const row = {
     brokerage_id:  eventInput.brokerage_id,
-    actor_user_id: eventInput.user_id ?? null,   // lifecycle_events uses actor_user_id
+    actor_user_id: eventInput.user_id ?? null,   // lifecycle_events uses actor_user_id (FK users)
     event_type:    eventInput.event_type,
-    metadata:      eventInput.payload,            // lifecycle_events uses metadata not payload
+    metadata:      pl,                            // lifecycle_events uses metadata not payload
     source:        eventInput.source,
     dedupe_key:    eventInput.dedupe_key ?? null,
     processed:     false,
-    // entity_id / entity_type may be derived from payload if available
-    entity_id:   (eventInput.payload as any)?.contact_id
-                  ?? (eventInput.payload as any)?.listing_id
-                  ?? (eventInput.payload as any)?.video_id
-                  ?? null,
-    entity_type: (eventInput.payload as any)?.contact_id   ? "contact"
-                : (eventInput.payload as any)?.listing_id  ? "listing"
-                : (eventInput.payload as any)?.video_id    ? "video"
-                : "system",
+    entity_id:     entityId,
+    entity_type:   entityType,
   }
 
   // Insert event
@@ -79,16 +96,51 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
     throw error
   }
 
+  // The row's `payload` column is NOT NULL DEFAULT '{}' and this helper writes
+  // `metadata`, so the persisted row comes back with payload {} — handing THAT to
+  // the dispatcher gave every orchestrator handler an empty payload. Dispatch the
+  // event as it was given, with the persisted id/timestamps.
+  const dispatched = { ...(event as Event), payload: pl }
+
   // Fire the registered dispatcher asynchronously (registered by app/ layer).
   // If no dispatcher is registered, event is persisted and processed later.
   const dispatcher = getDispatcher()
   if (dispatcher) {
-    dispatcher(event as Event).catch((err) => {
+    dispatcher(dispatched).catch((err) => {
       console.error("[v0] Orchestration error:", err)
     })
   }
 
-  return event as Event
+  // ONE VOCABULARY (2026-09-03): the orchestrator above routes DOTTED event types
+  // ("listing.signed"); a KernelEvent value ("esign_packet_signed",
+  // "buyer_broker_agreement_signed", "milestone_overdue") never matched its
+  // switch, so the row landed and the reactor (staff bell / sequences / portal
+  // template) never heard it. The row is already written → skipInsert.
+  // emitKernelEvent gates on the enum itself, so dotted events are a no-op here.
+  // Loaded at call time: it is `server-only` and this module is reachable from
+  // simulators under plain tsx.
+  try {
+    const { emitKernelEvent, isKernelEventValue } = await import("@/lib/kernel/emit")
+    if (isKernelEventValue(eventInput.event_type)) {
+      await emitKernelEvent({
+        event:            eventInput.event_type,
+        brokerageId:      eventInput.brokerage_id,
+        entityType,
+        entityId,
+        lifecycleEventId: (event as Event).id,
+        contactId:        typeof pl.contact_id === "string" ? pl.contact_id : undefined,
+        transactionId:    typeof pl.transaction_id === "string" ? pl.transaction_id : undefined,
+        listingId:        typeof pl.listing_id === "string" ? pl.listing_id : undefined,
+        agentUserId:      eventInput.user_id,
+        metadata:         pl,
+        skipInsert:       true,
+      })
+    }
+  } catch (err) {
+    console.error("[v0] kernel fan-out failed (row persisted):", err)
+  }
+
+  return dispatched
 }
 
 // =====================================================

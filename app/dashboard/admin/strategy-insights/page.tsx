@@ -4,6 +4,8 @@ import { TrendingUp, Target, Trophy } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { generateStrategyInsights } from "@/lib/strategy-learning/strategy-insights"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -22,10 +24,17 @@ export default async function StrategyInsightsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return <div className="p-6 text-red-600">Brokerage not configured</div>
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(profile.user_type ?? "")) {
+  if (!isAdminOrBroker({ user_type: profile.user_type ?? "" })) {
     return <div className="p-6 text-red-600">Forbidden</div>
   }
 
@@ -99,6 +108,36 @@ export default async function StrategyInsightsPage() {
               </table>
             </CardContent>
           </Card>
+
+          {/* WHY, IN THE AGENTS' OWN WORDS — strategy_outcomes.notes. Every closer has
+              always stamped a note on the outcome it files and nothing read the column,
+              so this board could say an offer strategy lost and never say why. The
+              auto-close template is filtered out (it repeats the outcome column), and
+              these notes are deliberately NOT fed into the recommender's prompt: they are
+              free text about live deals and can name a client. */}
+          {insights.notesRecorded > 0 && (
+            <Card>
+              <CardHeader><CardTitle className="text-base">What agents recorded on these outcomes</CardTitle></CardHeader>
+              <CardContent>
+                {insights.recentNotes.length > 0 ? (
+                  <ul className="space-y-2">
+                    {insights.recentNotes.map((n, i) => (
+                      <li key={i} className="text-sm text-foreground border-l-2 border-slate-200 pl-3">{n}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    All {insights.notesRecorded} recorded notes are the closer&apos;s automatic
+                    stamp — no one has written an explanation on an outcome in this window.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground mt-3">
+                  {insights.notesRecorded} of {insights.sampleSize} outcomes carry a note. Shown here
+                  only — these are not sent to the recommender.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="bg-slate-50/60">
             <CardHeader><CardTitle className="text-base">What the recommender sees</CardTitle></CardHeader>

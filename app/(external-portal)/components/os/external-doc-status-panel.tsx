@@ -56,18 +56,58 @@ export function ExternalDocStatusPanel({
     ? documents.filter(doc => (doc as any).transactionId === transactionId)
     : documents
 
+  // ── THE ROUTE HAD NO CALLER AND THE BUTTON HAD NO HANDLER (wave H5) ───────
+  // GET /api/external-portal/documents/download is fully built and hardened —
+  // its header records a live-verified IDOR that was closed by making the
+  // SESSION the authorization subject, and it writes a document_downloads audit
+  // row on every hand-off. Nothing in the tree addressed it, and the Download
+  // button here only rendered when an `onDownload` prop was supplied, which
+  // NEITHER mount does (app/title/dashboard/page.tsx:218,
+  // app/lender/dashboard/page.tsx:184). Two halves of one capability, each
+  // waiting on the other.
+  //
+  // The default path is implemented HERE rather than threaded as a prop from
+  // those pages: both are server components, so an async prop would have to
+  // become a server action, and the route already IS the server half. The
+  // `onDownload` prop is kept and still wins where a mount supplies one.
+  //
+  // NO partnerId / partnerType IS SENT. The route deliberately removed both
+  // query parameters — they named the access SUBJECT without proving the caller
+  // was it — so sending them back would reintroduce the exact shape that was
+  // repaired. The caller's session is the subject; docId is the only input.
+  const downloadViaPortalRoute = async (
+    docId: string,
+  ): Promise<{ success: boolean; error?: string; fileUrl?: string }> => {
+    try {
+      const res = await fetch(`/api/external-portal/documents/download?docId=${encodeURIComponent(docId)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok || !body?.success) {
+        // The route answers 401 / 404 / 503 with distinct meanings and never
+        // leaks whether the document exists; its message is passed through as
+        // written rather than flattened into "failed".
+        return { success: false, error: body?.error ?? `Download refused (${res.status})` }
+      }
+      return { success: true, fileUrl: body?.document?.fileUrl as string | undefined }
+    } catch (error) {
+      console.error("[external-portal] download request failed:", error)
+      return { success: false, error: "The download request could not be sent." }
+    }
+  }
+
   const handleDownload = async (doc: DocumentStatus) => {
-    if (!onDownload) return
-    
     setDownloading(doc.id)
     try {
-      // Pass partnerId context to backend for access control
-      const result = await onDownload(doc.id, {
-        partnerId,
-        partnerType,
-      })
+      // Pass partnerId context to a caller-supplied handler (legacy prop path);
+      // otherwise go straight to the session-authorized portal route.
+      const result = onDownload
+        ? await onDownload(doc.id, { partnerId, partnerType })
+        : await downloadViaPortalRoute(doc.id)
       if (result.success) {
-        toast.success("Document downloaded")
+        const fileUrl = (result as { fileUrl?: string }).fileUrl
+        if (fileUrl) window.open(fileUrl, "_blank", "noopener,noreferrer")
+        // "Downloaded" is only claimed when a URL actually came back; a success
+        // with no file is reported as what it is.
+        toast.success(fileUrl ? "Document opened" : "Document released, but no file URL was returned")
       } else {
         toast.error(result.error || "Failed to download document")
       }
@@ -202,21 +242,22 @@ export function ExternalDocStatusPanel({
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
-                          {onDownload && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDownload(doc)
-                              }}
-                              disabled={downloading === doc.id}
-                              title="Download document"
-                            >
-                              <Download className="h-4 w-4" />
-                            </Button>
-                          )}
+                          {/* Always rendered now: the panel has its own
+                              session-authorized download path, so the control
+                              is no longer gated on a prop nothing passes. */}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void handleDownload(doc)
+                            }}
+                            disabled={downloading === doc.id}
+                            title="Download document"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
                         </>
                       )}
                     </div>

@@ -86,8 +86,15 @@ export async function triggerSignalRescrape(params: {
       })
       if (r.data) {
         // Flip mailing_address_verified per Lob's deliverability verdict.
-        await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
-        out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        // The error is READ. The task below reports ok:true and the Lob call was
+        // PAID FOR — a refused flag means the money was spent and the verdict that
+        // gates direct-mail spend never landed on the row.
+        const { error: addrFlagError } = await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
+        if (addrFlagError) {
+          out.tasks.push({ name: "lob_address_verify", ok: false, error: `verified but NOT persisted: ${addrFlagError.message}`, cost: r.cost })
+        } else {
+          out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        }
       } else {
         out.tasks.push({ name: "lob_address_verify", ok: false, error: "Lob not configured" })
       }
@@ -100,7 +107,9 @@ export async function triggerSignalRescrape(params: {
       const apiKey = process.env.RENTCAST_API_KEY
       if (apiKey) {
         const { callRentcastGet } = await import("@/lib/external/rentcast-typed")
-        const avm = await callRentcastGet("/avm/value", { address: addr } as any, apiKey)
+        // No cast: `{ address }` IS the /avm/value query contract (rentcast-typed.ts) — the
+        // `as any` that sat here defeated the exact drift-detection the façade exists for.
+        const avm = await callRentcastGet("/avm/value", { address: addr }, apiKey)
         out.tasks.push({ name: "rentcast_avm_refresh", ok: avm.ok, cost: 0.01 })
         out.totalCost += 0.01
       } else {

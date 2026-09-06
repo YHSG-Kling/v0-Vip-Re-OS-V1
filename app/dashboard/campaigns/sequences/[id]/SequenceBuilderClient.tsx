@@ -62,7 +62,6 @@ import {
   Trash2,
   Lock,
   Wand2,
-  ChevronRight,
   FlaskConical,
   GitBranch,
   BarChart2,
@@ -73,7 +72,7 @@ import {
   updateSequenceStep,
   deleteSequenceStep,
   reorderSequenceSteps,
-  updateCampaignSequence,
+  cancelEnrollment,
 } from "@/app/actions/campaign-sequences"
 import type {
   CampaignSequence,
@@ -82,6 +81,9 @@ import type {
 } from "@/lib/campaigns/sequence-constants"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
+import { StepTypeSelect, StepTypeDescription } from "@/app/components/campaigns/step-type-select"
+import { StepFieldsEditor } from "@/app/components/campaigns/step-fields-editor"
+import { toast } from "sonner"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -98,6 +100,15 @@ interface StepExecution {
   status: string
   channel: string
   sent_at: string | null
+  /** m302 one-ledger columns — the timing/provider/output facts ported off the
+   *  dropped workflow_step_runs duplicate, rendered by the analytics tab. */
+  enrollment_id: string | null
+  provider_key: string | null
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  step_output: unknown
+  output_variable_name: string | null
 }
 
 interface Props {
@@ -115,14 +126,22 @@ interface Props {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CHANNELS = [
-  { value: "email",       label: "Email",       icon: Mail,           flagKey: null },
-  { value: "sms",         label: "SMS",          icon: MessageSquare,  flagKey: null },
-  { value: "voice",       label: "Voice",        icon: Phone,          flagKey: null },
-  { value: "in_app",      label: "In-App",       icon: Layers,         flagKey: null },
-  { value: "video",       label: "Video",        icon: Video,          flagKey: "video_campaigns" },
-  { value: "direct_mail", label: "Direct Mail",  icon: Send,           flagKey: "direct_mail_campaigns" },
-]
+// The step list lives in lib/workflow/step-palette.ts, rendered here through
+// <StepTypeSelect>. It used to be a local CHANNELS array of seven — and the
+// workflow builder kept its own array of eight — while both edit the SAME
+// campaign_sequence_steps rows. Between them they reached 12 of the 23 the
+// executor dispatches, so a step built in one builder was invisible in the
+// other, and eleven registered adapters had no UI at all.
+//
+// The array also once contained "voice", which that column's CHECK rejects
+// outright: the real channels are 'voice_drop' (a ringless voicemail) and
+// 'ai_call' (a live AI call), separate adapters with separate consent
+// implications. Both are TCPA-gated in the executor (TCPA_CHANNELS = sms |
+// voice_drop | ai_call), so an unconsented or DNC contact is skipped at run
+// time and the picker needs no gate of its own.
+//
+// scripts/step-palette-consolidation-simulator.ts holds palette == CHECK ==
+// adapter registry, so none of the three can drift from the others again.
 
 const PERSONALIZATION_TOKENS = [
   "{{first_name}}",
@@ -169,6 +188,8 @@ export default function SequenceBuilderClient({
 
   const [tab,          setTab]          = useState<"builder" | "analytics">(defaultTab)
   const [steps,        setSteps]        = useState<SequenceStep[]>(initialSteps)
+  /** Enrollment ids currently being cancelled — see the Active Enrollments section. */
+  const [cancellingEnrollmentId, setCancellingEnrollmentId] = useState<string | null>(null)
   const [selectedStep, setSelectedStep] = useState<SequenceStep | null>(null)
   const [busy,         setBusy]         = useState(false)
 
@@ -208,31 +229,40 @@ export default function SequenceBuilderClient({
       channel:      "email",
       delay_days:   nextNumber === 1 ? 0 : 3,
       delay_hours:  0,
+      body:         "",
     })
     setBusy(false)
-    if (result.step) {
-      setSteps(prev => [...prev, result.step!])
-      handleSelectStep(result.step!)
+    // Never swallow the failure. This used to be `if (result.step)` with no
+    // else, so a rejected INSERT looked exactly like a working button.
+    if (result.error || !result.step) {
+      toast.error(result.error ?? "Could not add the step.")
+      return
     }
+    setSteps(prev => [...prev, result.step!])
+    handleSelectStep(result.step!)
   }, [steps, sequence.id, canEdit, handleSelectStep])
 
   // ── Save step ──────────────────────────────────────────────────────────────
   const handleSaveStep = useCallback(async () => {
     if (!selectedStep || !canEdit) return
     setBusy(true)
-    await updateSequenceStep(selectedStep.id, sequence.id, {
-      step_name:         draft.step_name ?? selectedStep.step_name,
-      channel:           draft.channel   ?? selectedStep.channel,
-      delay_days:        draft.delay_days  ?? 0,
-      delay_hours:       draft.delay_hours ?? 0,
-      subject:           draft.subject   ?? null,
-      body:              draft.body      ?? null,
-      send_time:         draft.send_time ?? null,
-      condition_field:   draft.condition_field   ?? null,
-      condition_operator:draft.condition_operator ?? null,
-      condition_value:   draft.condition_value   ?? null,
+    // The whole draft goes through. updateSequenceStep takes the step palette as
+    // its allow-list, so every per-channel field the editor collected is saved
+    // and nothing outside the palette can reach a column. Naming the fields here
+    // by hand is how a gift occasion or an e-sign recipient got dropped.
+    const { id: _id, ...draftFields } = draft as Record<string, unknown>
+    const res = await updateSequenceStep(selectedStep.id, sequence.id, {
+      ...draftFields,
+      step_name:   draft.step_name ?? selectedStep.step_name,
+      channel:     draft.channel   ?? selectedStep.channel,
+      delay_days:  draft.delay_days  ?? 0,
+      delay_hours: draft.delay_hours ?? 0,
+      subject:     draft.subject   ?? null,
+      body:        draft.body      ?? null,
+      send_time:   draft.send_time ?? null,
     })
     setBusy(false)
+    if (res.error) toast.error(res.error)
     setSteps(prev => prev.map(s =>
       s.id === selectedStep.id ? { ...s, ...draft } as SequenceStep : s
     ))
@@ -312,10 +342,11 @@ export default function SequenceBuilderClient({
         delay_days:  s.delay_days ?? 0,
         delay_hours: s.delay_hours ?? 0,
         subject:     s.subject ?? undefined,
-        body:        s.body ?? undefined,
+        body:        s.body ?? "",
         send_time:   s.send_time ?? undefined,
       })
       if (result.step) created.push(result.step)
+      else if (result.error) toast.error(`Step ${i + 1}: ${result.error}`)
     }
     setSteps(prev => [...prev, ...created])
     setAiLoading(false)
@@ -383,18 +414,52 @@ export default function SequenceBuilderClient({
     const piData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }))
 
     const stepRows = steps.map(s => {
-      const sent      = executions.filter(e => e.step_id === s.id && e.status === "sent").length
+      const stepExecs = executions.filter(e => e.step_id === s.id)
+      const sent      = stepExecs.filter(e => e.status === "sent").length
       const openRate  = sent > 0 ? Math.round((s.open_count / sent) * 100) : 0
       const clickRate = sent > 0 ? Math.round((s.click_count / sent) * 100) : 0
       const replyRate = sent > 0 ? Math.round((s.reply_count / sent) * 100) : 0
-      return { ...s, sentForStep: sent, openRate, clickRate, replyRate }
+      // Dispatch latency, from the m302 ledger: duration_ms where recorded,
+      // else derived from the started_at → finished_at pair the executor stamps.
+      const durations = stepExecs
+        .map(e => e.duration_ms ?? (e.started_at && e.finished_at
+          ? new Date(e.finished_at).getTime() - new Date(e.started_at).getTime()
+          : null))
+        .filter((d): d is number => typeof d === "number" && d >= 0)
+      const avgDurationMs = durations.length > 0
+        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+        : null
+      // The provider that actually carried this step's sends (gate keys like
+      // compliance_gate/deconflict_gate identify refusals, not carriers).
+      const providerCounts: Record<string, number> = {}
+      for (const e of stepExecs) {
+        if (e.provider_key) providerCounts[e.provider_key] = (providerCounts[e.provider_key] ?? 0) + 1
+      }
+      const topProvider = Object.entries(providerCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+      return { ...s, sentForStep: sent, openRate, clickRate, replyRate, avgDurationMs, topProvider }
     })
+
+    // Recent NAMED step outputs — what an output-producing step (e.g. an AI
+    // asset step) actually produced, per enrollment. Written on every dispatch
+    // since m302; unreadable anywhere until this list.
+    const recentOutputs = executions
+      .filter(e => e.output_variable_name && e.step_output != null)
+      .slice(0, 8)
+      .map(e => ({
+        key: `${e.enrollment_id ?? "?"}-${e.step_id}-${e.finished_at ?? e.sent_at ?? ""}`,
+        enrollmentId: e.enrollment_id,
+        variable: e.output_variable_name as string,
+        preview: typeof e.step_output === "string"
+          ? e.step_output.slice(0, 160)
+          : JSON.stringify(e.step_output).slice(0, 160),
+        at: e.finished_at ?? e.sent_at,
+      }))
 
     // A/B analytics
     const variantA = enrollments.filter(e => e.ab_variant === "A")
     const variantB = enrollments.filter(e => e.ab_variant === "B")
 
-    return { funnelData, piData, stepRows, variantA, variantB, totalReplied }
+    return { funnelData, piData, stepRows, recentOutputs, variantA, variantB, totalReplied }
   }, [steps, enrollments, executions, sequence])
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -586,7 +651,7 @@ export default function SequenceBuilderClient({
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    {["Step #", "Name", "Channel", "Sent", "Open Rate", "Click Rate", "Reply Rate"].map(h => (
+                    {["Step #", "Name", "Channel", "Provider", "Sent", "Open Rate", "Click Rate", "Reply Rate", "Avg Dispatch"].map(h => (
                       <th key={h} className="text-left px-4 py-2 text-xs font-medium text-muted-foreground">{h}</th>
                     ))}
                   </tr>
@@ -594,7 +659,7 @@ export default function SequenceBuilderClient({
                 <tbody className="divide-y divide-border">
                   {analyticsData.stepRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-8 text-muted-foreground text-xs">
+                      <td colSpan={9} className="text-center py-8 text-muted-foreground text-xs">
                         No steps yet.
                       </td>
                     </tr>
@@ -609,10 +674,16 @@ export default function SequenceBuilderClient({
                             <Icon className="h-3.5 w-3.5" /> {s.channel}
                           </span>
                         </td>
+                        <td className="px-4 py-2.5 text-muted-foreground font-mono text-xs">{s.topProvider ?? "—"}</td>
                         <td className="px-4 py-2.5 text-foreground">{s.sentForStep}</td>
                         <td className="px-4 py-2.5 text-foreground">{s.openRate}%</td>
                         <td className="px-4 py-2.5 text-foreground">{s.clickRate}%</td>
                         <td className="px-4 py-2.5 text-foreground">{s.replyRate}%</td>
+                        <td className="px-4 py-2.5 text-muted-foreground">
+                          {s.avgDurationMs != null
+                            ? s.avgDurationMs < 1000 ? `${s.avgDurationMs}ms` : `${(s.avgDurationMs / 1000).toFixed(1)}s`
+                            : "—"}
+                        </td>
                       </tr>
                     )
                   })}
@@ -620,6 +691,29 @@ export default function SequenceBuilderClient({
               </table>
             </div>
           </section>
+
+          {/* Recent step outputs — the m302 ledger's step_output under its
+              output_variable_name, per enrollment. What an output-producing
+              step actually produced, visible for the first time. */}
+          {analyticsData.recentOutputs.length > 0 && (
+            <section>
+              <h2 className="text-sm font-semibold text-foreground mb-4">Recent Step Outputs</h2>
+              <div className="rounded-lg border border-border divide-y divide-border">
+                {analyticsData.recentOutputs.map(o => (
+                  <div key={o.key} className="px-4 py-2.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-medium text-foreground">{o.variable}</span>
+                      <span className="text-muted-foreground">
+                        {o.enrollmentId ? `enrollment ${o.enrollmentId.slice(0, 8)}` : ""}
+                        {o.at ? ` · ${new Date(o.at).toLocaleString()}` : ""}
+                      </span>
+                    </div>
+                    <p className="text-muted-foreground mt-0.5 break-all">{o.preview}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* A/B Test results */}
           {sequence.is_ab_test && (
@@ -659,6 +753,67 @@ export default function SequenceBuilderClient({
               </p>
             </section>
           )}
+
+          {/*
+            ACTIVE ENROLLMENTS — the door onto `cancelEnrollment`, which had no caller.
+            Enrolling a contact starts an automated outbound programme against them;
+            without this there was no way to STOP one from the product, only from SQL.
+            The action re-verifies the enrollment's brokerage server-side and proves the
+            update with `.select("id")`, so this button cannot report a cancellation
+            that did not happen.
+          */}
+          <section>
+            <h2 className="text-sm font-semibold text-foreground mb-4">Active Enrollments</h2>
+            <div className="rounded-lg border border-border bg-card divide-y">
+              {enrollments.filter((e) => e.status === "active").length === 0 ? (
+                <p className="p-4 text-xs text-muted-foreground">No one is currently enrolled in this sequence.</p>
+              ) : (
+                enrollments
+                  .filter((e) => e.status === "active")
+                  .map((e) => (
+                    <div key={e.id} className="flex items-center justify-between gap-3 p-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {[e.contact?.first_name, e.contact?.last_name].filter(Boolean).join(" ") ||
+                            e.contact?.email ||
+                            (e.lead_id ? "Lead" : "Contact")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Step {e.current_step}
+                          {e.next_step_at ? ` · next ${new Date(e.next_step_at).toLocaleDateString()}` : ""}
+                          {e.enrolled_at ? ` · enrolled ${new Date(e.enrolled_at).toLocaleDateString()}` : ""}
+                        </p>
+                      </div>
+                      {canEdit && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={cancellingEnrollmentId === e.id}
+                          onClick={async () => {
+                            setCancellingEnrollmentId(e.id)
+                            try {
+                              const res = await cancelEnrollment(e.id, sequence.id)
+                              if (!res.success) {
+                                toast.error(res.error ?? "The enrollment was not cancelled")
+                                return
+                              }
+                              toast.success("Enrollment cancelled — no further steps will send")
+                              router.refresh()
+                            } catch (err: any) {
+                              toast.error(err?.message ?? "The enrollment was not cancelled")
+                            } finally {
+                              setCancellingEnrollmentId(null)
+                            }
+                          }}
+                        >
+                          {cancellingEnrollmentId === e.id ? "Cancelling…" : "Cancel"}
+                        </Button>
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+          </section>
 
           {/* Enrollment status pie */}
           <section>
@@ -943,36 +1098,16 @@ function StepEditor({
         />
       </div>
 
-      {/* Channel */}
+      {/* Step type — the shared palette, grouped by what the step DOES */}
       <div className="flex flex-col gap-1.5">
-        <Label>Channel</Label>
-        <Select
+        <Label>Step type</Label>
+        <StepTypeSelect
           value={draft.channel ?? step.channel}
-          onValueChange={v => setDraft(p => ({ ...p, channel: v }))}
+          onChange={v => setDraft(p => ({ ...p, channel: v }))}
+          featureFlags={featureFlags}
           disabled={!canEdit}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CHANNELS.map(ch => {
-              const locked = ch.flagKey && !featureFlags[ch.flagKey]
-              return (
-                <SelectItem
-                  key={ch.value}
-                  value={ch.value}
-                  disabled={!!locked}
-                >
-                  <span className="flex items-center gap-2">
-                    <ch.icon className="h-3.5 w-3.5" />
-                    {ch.label}
-                    {locked && <span className="text-[10px] text-muted-foreground ml-1">(Superadmin activation required)</span>}
-                  </span>
-                </SelectItem>
-              )
-            })}
-          </SelectContent>
-        </Select>
+        />
+        <StepTypeDescription channel={draft.channel ?? step.channel} />
       </div>
 
       {/* Delay */}
@@ -1042,6 +1177,21 @@ function StepEditor({
           </div>
         </div>
       )}
+
+      {/* Everything this step type needs, rendered from the shared palette.
+          subject and body are omitted because this builder renders richer
+          controls for them below (personalization tokens + the AI assist bar);
+          the required-field warning still counts them. Before this, the panel
+          showed subject and body and nothing else — so a Send Gift step had
+          nowhere to set the occasion and an Ad Campaign step no budget, and
+          both failed later in a cron rather than here. */}
+      <StepFieldsEditor
+        channel={draft.channel ?? step.channel}
+        values={{ ...step, ...draft } as unknown as Record<string, unknown>}
+        onChange={(name, value) => setDraft(p => ({ ...p, [name]: value }))}
+        disabled={!canEdit}
+        omit={["subject", "body"]}
+      />
 
       {/* Subject (email) */}
       {(draft.channel ?? step.channel) === "email" && (

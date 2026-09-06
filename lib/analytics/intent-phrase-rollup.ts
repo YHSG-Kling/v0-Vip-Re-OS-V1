@@ -27,6 +27,17 @@ export async function rollupIntentPhrases(opts?: {
   limit?:     number
   /** Min total appearances before a phrase makes the cut (filter long-tail noise). */
   minSupport?: number
+  /**
+   * TENANT ANCHOR. When set, only that brokerage's raw rows are rolled up.
+   *
+   * Added when this was wired to its first caller (the admin Scrape
+   * Diagnostics page). This runs on the SERVICE client, which bypasses RLS, so
+   * without a predicate here every caller gets a PLATFORM-WIDE aggregate —
+   * fine for platform staff, wrong for a brokerage admin. The caller decides:
+   * pass the brokerage for a tenant view, omit it only from a platform-staff
+   * surface.
+   */
+  brokerageId?: string | null
 }): Promise<{ stats: IntentPhraseStat[]; error: string | null }> {
   const svc = createServiceClient()
   const sinceDays = Math.max(1, Math.min(365, opts?.sinceDays ?? 60))
@@ -37,11 +48,12 @@ export async function rollupIntentPhrases(opts?: {
   // Pull recent raw rows with their intent.matched phrases + a promotion flag (lead_id is set when
   // the row was promoted to a lead). Then aggregate in-memory — the dataset is bounded by the
   // scraping cron's per-day cap, easily fits in a single round-trip.
-  const { data: rows, error } = await svc
+  let rawQuery = svc
     .from("raw_scraped_leads")
     .select("id, lead_id, brokerage_id, created_at, normalized_preview")
     .gte("created_at", sinceIso)
-    .limit(20_000)
+  if (opts?.brokerageId) rawQuery = rawQuery.eq("brokerage_id", opts.brokerageId)
+  const { data: rows, error } = await rawQuery.limit(20_000)
   if (error) return { stats: [], error: error.message }
 
   // Which of those lead_ids became a contact? contact-creator stamps `notes` with

@@ -16,9 +16,8 @@ import {
   CalendarPlus,
   Sparkles,
   Loader2,
-  RefreshCw,
 } from "lucide-react"
-import { inviteFarmContacts, createOpenHouseEvent } from "@/app/actions/seller-open-house"
+import { inviteFarmContacts, createOpenHouseEvent, updateRsvp } from "@/app/actions/seller-open-house"
 import {
   getOpenHouseEvents,
   sendOpenHouseInvitations,
@@ -83,10 +82,86 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
   // Pick the upcoming event for invitations (existing farm invite section)
   const upcomingEvent = dataEvents.find((e: any) => e.status === "scheduled") ?? dataEvents[0]
 
-  // RSVP tallies
-  const rsvpYes = invitations.filter((i: any) => i.rsvp_response === "yes").length
-  const rsvpMaybe = invitations.filter((i: any) => i.rsvp_response === "maybe").length
-  const noResponse = invitations.filter((i: any) => !i.rsvp_response).length
+  // ── RSVP TRACKER ──────────────────────────────────────────────────────────
+  //
+  // This tracker only ever showed "0 Yes / 0 Maybe / N no response", and it
+  // always would have. open_house_invitations.rsvp_response has exactly one
+  // authorised writer — updateRsvp — and updateRsvp had no caller anywhere, so
+  // nothing in the product could move an invitation off "no response". The number
+  // then flowed on into the Analytics tab's RSVP Rate and into the launch
+  // checklist's RSVP count, so a permanently-zero field was being reported as a
+  // measurement. Invitations go out by email and SMS; the replies come back to the
+  // agent by phone and text, and this is where they get recorded.
+  //
+  // (open-house-automation.handleRSVP writes the same column from an invitationId
+  // with no session auth and no brokerage scoping, and is itself unreachable —
+  // updateRsvp is the session-authorised, event-ownership-checked one, so it is the
+  // one wired here.)
+  const [rsvpOverrides, setRsvpOverrides] = useState<Record<string, "yes" | "maybe" | "no">>({})
+  const [savingRsvp, setSavingRsvp] = useState<string | null>(null)
+  const [inviteeNames, setInviteeNames] = useState<Record<string, string>>({})
+
+  /** One row per invited contact — an invite sent on two channels is one person. */
+  const invitees: Array<{ contactId: string; eventId: string; response: "yes" | "maybe" | "no" | null }> =
+    Object.values(
+      (invitations ?? []).reduce((acc: Record<string, any>, i: any) => {
+        if (!i.contact_id) return acc
+        const stored = (i.rsvp_response as "yes" | "maybe" | "no" | null) ?? null
+        const prev = acc[i.contact_id]
+        acc[i.contact_id] = {
+          contactId: i.contact_id,
+          eventId: i.event_id,
+          response: prev?.response ?? stored,
+        }
+        return acc
+      }, {})
+    )
+
+  useEffect(() => {
+    const ids = invitees.map((i) => i.contactId)
+    if (ids.length === 0) return
+    const supabase = createClient()
+    void (async () => {
+      const { data, error } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email")
+        .in("id", ids)
+      // An empty result is not proof of anything — only fill names we actually
+      // got, and say so in the console when the lookup itself failed rather
+      // than leaving every invitee silently unnamed.
+      if (error) {
+        console.error("[open-house] invitee name lookup failed:", error.message)
+        return
+      }
+      if (!data) return
+      const map: Record<string, string> = {}
+      for (const c of data as any[]) {
+        map[c.id] = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.email || "Invited contact"
+      }
+      setInviteeNames(map)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invitations])
+
+  function responseOf(i: { contactId: string; response: "yes" | "maybe" | "no" | null }) {
+    return rsvpOverrides[i.contactId] ?? i.response
+  }
+
+  async function handleRsvp(contactId: string, eventId: string, response: "yes" | "maybe" | "no") {
+    setSavingRsvp(contactId)
+    const res = await updateRsvp({ eventId, contactId, listingId, rsvpResponse: response })
+    setSavingRsvp(null)
+    if (!res.success) {
+      toast({ title: "RSVP not recorded", description: res.error ?? "No reason given.", variant: "destructive" })
+      return
+    }
+    setRsvpOverrides((prev) => ({ ...prev, [contactId]: response }))
+  }
+
+  // Tallies read through the local overrides so the counts move with the clicks.
+  const rsvpYes = invitees.filter((i) => responseOf(i) === "yes").length
+  const rsvpMaybe = invitees.filter((i) => responseOf(i) === "maybe").length
+  const noResponse = invitees.filter((i) => !responseOf(i)).length
 
   const comingSoonPosts = socialPosts.filter((p: any) => p.post_type === "coming_soon")
   const openHousePosts = socialPosts.filter((p: any) => p.post_type !== "coming_soon")
@@ -98,6 +173,13 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         propertyId: listingId,
         agentId: listing.agent_id,
       })
+      // The result WAS captured — and then rendered without asking whether it
+      // was a result at all. A { success:false, error } object went into the
+      // panel as though it were timing advice.
+      if (!result?.success) {
+        toast({ title: "Could not optimize timing", description: (result as any)?.error ?? "No timing advice was produced.", variant: "destructive" })
+        return
+      }
       setTimingResult(result)
     } catch {
       toast({ title: "Failed to optimize timing", variant: "destructive" })
@@ -170,13 +252,21 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         contactIds: farmContacts.map((c: any) => c.id),
       })
 
+      // Report the DELIVERED count, not the size of the list we walked. The old
+      // copy said "Invitations sent to N contacts" using farmContacts.length —
+      // the number of people considered — for a code path that sent nothing at
+      // all. Now that every send passes the consent gate, a refused contact is
+      // a normal outcome and the agent needs to see it.
       if (res.success) {
+        const refused = (res.attempted ?? 0) - (res.delivered ?? 0)
         toast({
           title: "Invitations sent",
-          description: `Invitations sent to ${farmContacts.length} contacts in ${listing.zip}.`,
+          description:
+            `${res.delivered} of ${res.attempted} contacts in ${listing.zip} were invited.` +
+            (refused > 0 ? ` ${refused} could not be contacted — check the contact timeline for the reason.` : ""),
         })
       } else {
-        toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })
+        toast({ title: "No invitations were delivered", description: res.error, variant: "destructive" })
       }
     } catch {
       toast({ title: "Failed to send invitations", variant: "destructive" })
@@ -201,8 +291,8 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
       })
       if (res.success) {
         toast({
-          title: `Invitations sent`,
-          description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} queued via ${channel}.`,
+          title: `Invitations staged`,
+          description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} staged for ${channel}. Nothing has been delivered yet — an invitation sender still has to pick these up.`,
         })
       } else {
         toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })
@@ -429,23 +519,56 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
           </div>
 
           {/* RSVP Tracker */}
-          {invitations.length > 0 && (
-            <div className="flex items-center gap-4 rounded-md border border-border bg-muted/30 px-4 py-3">
-              <div className="flex items-center gap-1.5 text-sm">
-                <CheckCircle className="h-4 w-4 text-green-600" />
-                <span className="font-medium">{rsvpYes}</span>
-                <span className="text-muted-foreground">Yes</span>
+          {invitees.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-4 rounded-md border border-border bg-muted/30 px-4 py-3">
+                <div className="flex items-center gap-1.5 text-sm">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <span className="font-medium">{rsvpYes}</span>
+                  <span className="text-muted-foreground">Yes</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm">
+                  <Clock className="h-4 w-4 text-yellow-600" />
+                  <span className="font-medium">{rsvpMaybe}</span>
+                  <span className="text-muted-foreground">Maybe</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm">
+                  <span className="font-medium">{noResponse}</span>
+                  <span className="text-muted-foreground">No response</span>
+                </div>
+                <span className="text-xs text-muted-foreground ml-auto">{invitees.length} invited</span>
               </div>
-              <div className="flex items-center gap-1.5 text-sm">
-                <Clock className="h-4 w-4 text-yellow-600" />
-                <span className="font-medium">{rsvpMaybe}</span>
-                <span className="text-muted-foreground">Maybe</span>
+
+              {/* Record a reply the invitee gave by phone or text. */}
+              <div className="rounded-md border border-border divide-y divide-border">
+                {invitees.map((inv) => {
+                  const current = responseOf(inv)
+                  return (
+                    <div key={inv.contactId} className="flex items-center justify-between gap-2 px-3 py-2">
+                      <span className="text-sm truncate">
+                        {inviteeNames[inv.contactId] ?? "Invited contact"}
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {savingRsvp === inv.contactId && (
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground mr-1" />
+                        )}
+                        {(["yes", "maybe", "no"] as const).map((r) => (
+                          <Button
+                            key={r}
+                            size="sm"
+                            variant={current === r ? "default" : "outline"}
+                            className="h-6 px-2 text-[11px] capitalize"
+                            disabled={savingRsvp === inv.contactId}
+                            onClick={() => handleRsvp(inv.contactId, inv.eventId, r)}
+                          >
+                            {r}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
-              <div className="flex items-center gap-1.5 text-sm">
-                <span className="font-medium">{noResponse}</span>
-                <span className="text-muted-foreground">No response</span>
-              </div>
-              <span className="text-xs text-muted-foreground ml-auto">{invitations.length} total invited</span>
             </div>
           )}
         </CardContent>

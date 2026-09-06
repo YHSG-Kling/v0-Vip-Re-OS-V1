@@ -7,13 +7,12 @@
 // performance analytics.
 //
 // Rules:
-//   - NO direct DB writes happen outside this file for reputation data.
 //   - Every mutation emits a KernelEvent via lifecycle_events.
 //   - rating must be 1–5; validated here, not in the caller.
 //   - respondToReview: reviewId must belong to the acting agentId.
 //   - createReviewRequest: no duplicate pending request per contact+platform.
-//   - createReferralRequest: referral_name required; status forced to 'new'.
-//   - advanceReferralStatus: status transitions enforced (see REFERRAL_STATUS_TRANSITIONS).
+//   - Referral creation and stage advancement live on the wired rail,
+//     app/actions/referrals/referral-actions.ts — see the tombstone below.
 //   - All functions are pure async — no global state, no module-level DB calls.
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -22,30 +21,64 @@ import { processKernelEvent } from "./notification-engine"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const VALID_RATINGS = [1, 2, 3, 4, 5] as const
-type Rating = typeof VALID_RATINGS[number]
+// TOMBSTONE (§1.1, BURN-C 2026-09-04) — VALID_RATINGS / Rating went with
+// recordReview, their only user. The 1–5 rating check now runs on the live
+// writer, app/actions/multi-persona.ts:submitClientFeedback.
 
-const REVIEW_PLATFORMS = [
+// THE REVIEW PLATFORM VOCABULARY IS THE CONSTRAINT'S, NOT THE DESIGNER'S.
+//
+// Verified live against pg_constraint:
+//   agent_reviews_platform_check → google | zillow | realtor_com | internal |
+//                                  facebook | yelp
+//
+// This list used to read google|zillow|realtor_com|yelp|facebook|trulia|other.
+// `trulia` and `other` are in NO constraint — probed against the live database,
+// both are refused with SQLSTATE 23514. recordReview typed them as valid, so a
+// caller could pick a platform the column cannot store; and `internal`, the
+// value every in-app review actually carries (multi-persona.ts and
+// portal-lifetime.ts both write it), was missing, so the ONE platform this
+// system produces itself was untypeable.
+export const REVIEW_PLATFORMS = [
   "google",
   "zillow",
   "realtor_com",
-  "yelp",
+  "internal",
   "facebook",
-  "trulia",
-  "other",
+  "yelp",
 ] as const
-type ReviewPlatform = typeof REVIEW_PLATFORMS[number]
+export type ReviewPlatform = typeof REVIEW_PLATFORMS[number]
 
-// Referral status transition graph — only these transitions are valid
-const REFERRAL_STATUS_TRANSITIONS: Record<string, string[]> = {
-  new:        ["identified", "lost"],
-  identified: ["asked", "lost"],
-  asked:      ["received", "lost"],
-  received:   ["converting", "lost"],
-  converting: ["converted", "lost"],
-  converted:  [],
-  lost:       ["identified"], // allow re-open
-}
+// Referral status transition graph — only these transitions are valid.
+//
+// SAME RULE, SAME DEFECT CLASS. referrals.status is CHECK-constrained:
+//   referrals_status_check → received | contacted | qualified | assigned |
+//                            under_contract | closed | lost
+// (see lib/referrals/referral-status.ts, which is the one vocabulary this graph
+// is now expressed in). The previous graph was built from
+// new|identified|asked|received|converting|converted|lost — FIVE of those seven
+// states are storable nowhere. Only `received` and `lost` were real, so from the
+// only status a referral can be created in, the single transition this function
+// would permit was `converting`, which the database then refused with 23514
+// (probed live). Every other stage change was rejected by the graph before it
+// ever reached the column. The pipeline was unadvanceable in both directions.
+
+
+// ── TOMBSTONE (orphan doctrine §1.1) — BURN-C, 2026-09-04 ────────────────────
+// recordReview, createReferralRequest and advanceReferralStatus stood here. Their
+// only caller was app/actions/reputation-kernel.ts, whose three thin wrappers had
+// no caller of their own, so the whole chain was unreachable. Each capability was
+// MERGED ONTO ITS LIVE SURVIVOR FIRST — see the tombstone in
+// app/actions/reputation-kernel.ts for the per-function detail:
+//   recordReview            → lib/reputation/review-landed.ts:onReviewLanded, called by
+//                             app/actions/multi-persona.ts:submitClientFeedback and
+//                             app/actions/portal-lifetime.ts:submitClientTestimonial
+//   createReferralRequest   → app/actions/referrals/referral-actions.ts:createReferral
+//   advanceReferralStatus   → app/actions/referrals/referral-actions.ts:updateReferralStatus
+// The private REFERRAL_STATUS_TRANSITIONS graph and REFERRAL_TERMINAL_WON that
+// served advanceReferralStatus moved to lib/referrals/referral-status.ts, beside
+// the status vocabulary they are written in (§6). createReviewRequest,
+// respondToReview and the three loaders below are still reached through
+// app/actions/reputation-kernel.ts and stay.
 
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
@@ -139,38 +172,10 @@ export interface CreateReviewRequestInput extends ReputationActorContext {
   reviewUrl?:   string
 }
 
-export interface RecordReviewInput extends ReputationActorContext {
-  contactId?:    string
-  transactionId?: string
-  rating:        Rating
-  reviewText:    string
-  platform:      ReviewPlatform
-  sourceUrl?:    string
-  isPublished?:  boolean
-}
-
 export interface RespondToReviewInput extends ReputationActorContext {
   reviewId:     string
   responseText: string
   publishNow?:  boolean
-}
-
-export interface CreateReferralInput extends ReputationActorContext {
-  referralName:        string
-  referredBy?:         string
-  sourceContactName?:  string
-  valueEstimate?:      number
-  commissionPotential?: number
-  notes?:              string
-  referralSource?:     string
-  referredContactId?:  string
-  referredLeadId?:     string
-  partnerId?:          string
-}
-
-export interface AdvanceReferralStatusInput extends ReputationActorContext {
-  referralId: string
-  newStatus:  string
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -184,7 +189,10 @@ async function emitLifecycleEvent(params: {
   event:       KernelEvent
   metadata?:   Record<string, unknown>
 }) {
-  const { data } = await params.supabase
+  // The error was not destructured: a refused audit insert resolved with
+  // data === null, the `if (data?.id)` below quietly skipped, and every caller
+  // reported a clean success with no lifecycle row and no notification fan-out.
+  const { data, error } = await params.supabase
     .from("lifecycle_events")
     .insert({
       brokerage_id: params.brokerageId,
@@ -198,6 +206,14 @@ async function emitLifecycleEvent(params: {
     .select("id")
     .single()
 
+  if (error) {
+    console.error(
+      `[kernel/reputation] lifecycle_events insert refused for ${params.event} on ${params.entityType}:${params.entityId}:`,
+      error.message,
+    )
+    return { emitted: false as const, error: error.message }
+  }
+
   if (data?.id) {
     processKernelEvent({
       event:             params.event,
@@ -207,6 +223,8 @@ async function emitLifecycleEvent(params: {
       lifecycleEventId:  data.id,
     }).catch(() => { /* non-blocking */ })
   }
+
+  return { emitted: true as const }
 }
 
 function computePerformance(reviews: ReviewRow[]): ReputationPerformance {
@@ -265,7 +283,43 @@ export async function loadReputationWorkspace(
   try {
     const supabase = createServiceClient()
 
+    // IDENTITY CLASS (m339, INVERTED by m366). input.agentId is an AGENTS id.
+    // review_requests.agent_id used to FK users, so m339 resolved agents→users
+    // here to stop the insert being a foreign-key violation. m366 re-pointed the
+    // column at agents(id) — which turned that very resolve into the violation it
+    // was written to prevent, in the same table, with the same symptom: no review
+    // request could be created and the workspace read looked like "no requests
+    // yet". All three tables here are agents-class now; no hop, no sentinel.
+
     const [reviewsRes, requestsRes, referralsRes] = await Promise.all([
+      // ── `source_url` IS READ HERE AND WRITTEN BY NOBODY, AND THAT IS THE
+      //    HONEST STATE (verdict, 2026-09-04) ────────────────────────────────
+      //
+      // It surfaced as a NEW 1b entry in test:opposite-missing this wave without
+      // any line of code touching it — the writer did not disappear, the CENSUS
+      // GOT SHARPER. `agent_reviews` had been on that guard's "opaque write
+      // object" exclusion list, so its columns were invisible to the 1b sweep;
+      // BURN-C's merge left this table with parseable writes only, and the
+      // pre-existing pair became visible. §2: a count that moves is the finding,
+      // and this one moved because a blind spot shrank.
+      //
+      // NO CAPABILITY WAS LOST IN THAT MERGE — checked rather than assumed: the
+      // deleted `recordReview` did not write `source_url` either. Nothing ever
+      // has.
+      //
+      // THE MISSING HALF IS A FEATURE, NOT A WIRE. `source_url` is where a review
+      // lives on the platform it came FROM, so a card can link out to the real
+      // Google or Zillow review. Every review this OS holds is FIRST-PARTY — the
+      // two writers are app/actions/multi-persona.ts:submitClientFeedback and
+      // app/actions/portal-lifetime.ts:submitClientTestimonial, both collecting
+      // the review through our own portal, where there is no external URL to
+      // record. The writer would be an external-review IMPORTER (Google Business
+      // Profile / Zillow), which does not exist in this tree.
+      //
+      // So the read stays: it is correct, it renders null today, and removing it
+      // would mean re-adding it the day the importer lands. Recorded here with
+      // its reason instead of deleted to move a number (§1), and carried on the
+      // ratchet rather than silently baselined.
       supabase
         .from("agent_reviews")
         .select("id, rating, review_text, platform, source_url, is_published, response_text, response_at, created_at, contact_id, transaction_id")
@@ -288,6 +342,20 @@ export async function loadReputationWorkspace(
         .order("created_at", { ascending: false })
         .limit(200),
     ])
+
+    // `data ?? []` on a refused read produces an empty list indistinguishable
+    // from a genuinely empty workspace — "you have no reviews" when the truth is
+    // "we could not look". All three are checked; any refusal fails the load so
+    // the surface can say so.
+    const readFailures = [
+      reviewsRes.error   ? `reviews: ${reviewsRes.error.message}`   : null,
+      requestsRes.error  ? `review requests: ${requestsRes.error.message}`  : null,
+      referralsRes.error ? `referrals: ${referralsRes.error.message}` : null,
+    ].filter((m): m is string => Boolean(m))
+
+    if (readFailures.length > 0) {
+      return { success: false, error: `Reputation workspace could not be loaded — ${readFailures.join("; ")}` }
+    }
 
     const reviews  = (reviewsRes.data  ?? []) as ReviewRow[]
     const requests = (requestsRes.data ?? []) as ReviewRequestRow[]
@@ -320,9 +388,17 @@ export async function createReviewRequest(
   try {
     const supabase = createServiceClient()
 
+    // IDENTITY CLASS (m339, INVERTED by m366). input.agentId is an AGENTS id.
+    // review_requests.agent_id used to FK users, so m339 resolved agents→users
+    // here to stop the insert being a foreign-key violation. m366 re-pointed the
+    // column at agents(id) — which turned that very resolve into the violation it
+    // was written to prevent, in the same table, with the same symptom: no review
+    // request could be created and the workspace read looked like "no requests
+    // yet". All three tables here are agents-class now; no hop, no sentinel.
+
     // Guard: no duplicate pending request for same contact + platform
     if (input.contactId) {
-      const { data: existing } = await supabase
+      const { data: existing, error: dupErr } = await supabase
         .from("review_requests")
         .select("id")
         .eq("agent_id",     input.agentId)
@@ -331,6 +407,12 @@ export async function createReviewRequest(
         .eq("platform",     input.platform)
         .eq("status",       "pending")
         .maybeSingle()
+
+      // A refused duplicate check resolved to null and this guard waved the
+      // insert through — the one thing the guard exists to stop.
+      if (dupErr) {
+        return { success: false, error: `Could not check for an existing review request: ${dupErr.message}` }
+      }
 
       if (existing) {
         return { success: false, error: `A pending ${input.platform} review request already exists for this contact.` }
@@ -372,58 +454,6 @@ export async function createReviewRequest(
   }
 }
 
-// Command 3: recordReview
-// Records an inbound review (received on any platform) into agent_reviews.
-// rating must be 1–5. reviewText required.
-export async function recordReview(
-  input: RecordReviewInput,
-): Promise<KernelReputationResult<{ reviewId: string }>> {
-  if (!VALID_RATINGS.includes(input.rating)) {
-    return { success: false, error: "rating must be 1, 2, 3, 4, or 5." }
-  }
-  if (!input.reviewText?.trim()) {
-    return { success: false, error: "reviewText is required." }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    const { data, error } = await supabase
-      .from("agent_reviews")
-      .insert({
-        agent_id:       input.agentId,
-        brokerage_id:   input.brokerageId,
-        contact_id:     input.contactId     ?? null,
-        transaction_id: input.transactionId ?? null,
-        rating:         input.rating,
-        review_text:    input.reviewText.trim(),
-        platform:       input.platform,
-        source_url:     input.sourceUrl  ?? null,
-        is_published:   input.isPublished ?? true,
-        created_at:     new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? "Failed to record review." }
-    }
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "agent_review",
-      entityId:    data.id,
-      event:       KernelEvent.REVIEW_RECEIVED,
-      metadata:    { platform: input.platform, rating: input.rating },
-    })
-
-    return { success: true, data: { reviewId: data.id } }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
 
 // Command 4: respondToReview
 // Writes response_text + response_at to agent_reviews.
@@ -439,8 +469,11 @@ export async function respondToReview(
   try {
     const supabase = createServiceClient()
 
-    // Verify ownership
-    const { data: review } = await supabase
+    // Verify ownership.
+    // A REFUSED READ IS NOT AN ABSENT ROW. Without the error destructure this
+    // returned "not owned by this agent" for a permission or transport failure,
+    // which sends the agent looking for the wrong problem.
+    const { data: review, error: ownershipErr } = await supabase
       .from("agent_reviews")
       .select("id, agent_id")
       .eq("id",         input.reviewId)
@@ -448,18 +481,29 @@ export async function respondToReview(
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
+    if (ownershipErr) {
+      return { success: false, error: `Could not verify this review: ${ownershipErr.message}` }
+    }
     if (!review) {
       return { success: false, error: "Review not found or not owned by this agent." }
     }
 
+    // is_published is only ever RAISED here, never lowered.
+    // It used to be written unconditionally as `input.publishNow ?? false`, so
+    // responding to an already-published review with publishNow omitted took it
+    // OFF the public profile (app/p/[agentSlug] and multi-persona.ts:
+    // getAgentReviews both filter is_published = true). Answering a review is
+    // not a request to retract it.
+    const updatePayload: Record<string, unknown> = {
+      response_text: input.responseText.trim(),
+      response_at:   new Date().toISOString(),
+      updated_at:    new Date().toISOString(),
+    }
+    if (input.publishNow) updatePayload.is_published = true
+
     const { error } = await supabase
       .from("agent_reviews")
-      .update({
-        response_text: input.responseText.trim(),
-        response_at:   new Date().toISOString(),
-        is_published:  input.publishNow ?? false,
-        updated_at:    new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq("id",           input.reviewId)
       .eq("agent_id",     input.agentId)
       .eq("brokerage_id", input.brokerageId)
@@ -484,129 +528,7 @@ export async function respondToReview(
   }
 }
 
-// Command 5: createReferralRequest
-// Creates a new referral record in the referrals table.
-// referral_name required. status forced to 'new'.
-export async function createReferralRequest(
-  input: CreateReferralInput,
-): Promise<KernelReputationResult<{ referralId: string }>> {
-  if (!input.referralName?.trim()) {
-    return { success: false, error: "referralName is required." }
-  }
 
-  try {
-    const supabase = createServiceClient()
-
-    const { data, error } = await supabase
-      .from("referrals")
-      .insert({
-        agent_id:             input.agentId,
-        brokerage_id:         input.brokerageId,
-        referral_name:        input.referralName.trim(),
-        status:               "new",
-        referred_by:          input.referredBy          ?? null,
-        source_contact_name:  input.sourceContactName   ?? null,
-        value_estimate:       input.valueEstimate        ?? null,
-        commission_potential: input.commissionPotential  ?? null,
-        notes:                input.notes                ?? null,
-        referral_source:      input.referralSource       ?? null,
-        referred_contact_id:  input.referredContactId   ?? null,
-        referred_lead_id:     input.referredLeadId      ?? null,
-        partner_id:           input.partnerId            ?? null,
-        gift_sent:            false,
-        thank_you_sent:       false,
-        created_at:           new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (error || !data) {
-      return { success: false, error: error?.message ?? "Failed to create referral." }
-    }
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "referral",
-      entityId:    data.id,
-      event:       KernelEvent.REFERRAL_CREATED,
-      metadata:    { referralName: input.referralName },
-    })
-
-    return { success: true, data: { referralId: data.id } }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
-
-// Command 6: advanceReferralStatus
-// Advances a referral through the status pipeline.
-// Only valid transitions (per REFERRAL_STATUS_TRANSITIONS) are accepted.
-export async function advanceReferralStatus(
-  input: AdvanceReferralStatusInput,
-): Promise<KernelReputationResult> {
-  try {
-    const supabase = createServiceClient()
-
-    const { data: referral } = await supabase
-      .from("referrals")
-      .select("id, status, agent_id")
-      .eq("id",           input.referralId)
-      .eq("agent_id",     input.agentId)
-      .eq("brokerage_id", input.brokerageId)
-      .maybeSingle()
-
-    if (!referral) {
-      return { success: false, error: "Referral not found or not owned by this agent." }
-    }
-
-    const allowed = REFERRAL_STATUS_TRANSITIONS[referral.status] ?? []
-    if (!allowed.includes(input.newStatus)) {
-      return {
-        success: false,
-        error: `Cannot transition referral from '${referral.status}' to '${input.newStatus}'. Allowed: [${allowed.join(", ")}]`,
-      }
-    }
-
-    const updatePayload: Record<string, unknown> = {
-      status:     input.newStatus,
-      updated_at: new Date().toISOString(),
-    }
-    if (input.newStatus === "converted") {
-      updatePayload.converted_at = new Date().toISOString()
-    }
-
-    const { error } = await supabase
-      .from("referrals")
-      .update(updatePayload)
-      .eq("id",           input.referralId)
-      .eq("agent_id",     input.agentId)
-      .eq("brokerage_id", input.brokerageId)
-
-    if (error) {
-      return { success: false, error: error.message }
-    }
-
-    const kernelEvent = input.newStatus === "converted"
-      ? KernelEvent.REFERRAL_CONVERTED
-      : KernelEvent.REFERRAL_ADVANCED
-
-    await emitLifecycleEvent({
-      supabase,
-      brokerageId: input.brokerageId,
-      agentId:     input.agentId,
-      entityType:  "referral",
-      entityId:    input.referralId,
-      event:       kernelEvent,
-      metadata:    { from: referral.status, to: input.newStatus },
-    })
-
-    return { success: true }
-  } catch (err) {
-    return { success: false, error: String(err) }
-  }
-}
 
 // Command 7: loadReferralPipeline
 // Reads referrals grouped by status. Returns counts per status.

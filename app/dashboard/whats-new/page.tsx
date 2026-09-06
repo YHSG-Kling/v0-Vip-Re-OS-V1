@@ -12,7 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { AlertTriangle, CheckCircle2, Megaphone, Sparkles, Activity } from "lucide-react"
 import { getTenantPlatformStatusAction } from "@/app/actions/whats-new"
-import { changelogEntries } from "@/lib/platform/changelog"
+import { changelogEntries, latestChangelogDate } from "@/lib/platform/changelog"
 
 export const dynamic = "force-dynamic"
 
@@ -51,6 +51,7 @@ export default async function WhatsNewPage() {
 
   const status = res.ok ? res.status : null
   const entries = changelogEntries()
+  const latestDate = latestChangelogDate()
 
   const overallCopy: Record<string, { label: string; className: string }> = {
     operational: { label: "All systems operational", className: "text-emerald-700" },
@@ -169,10 +170,26 @@ export default async function WhatsNewPage() {
 
       {/* Product changelog — ships with the release */}
       <div className="space-y-4">
-        <h2 className="text-lg font-semibold flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-primary" />
-          Release notes
-        </h2>
+        <div className="flex items-baseline justify-between gap-3 flex-wrap">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Release notes
+          </h2>
+          {/*
+            "Last updated" comes from latestChangelogDate() (lib/platform/changelog.ts:89),
+            which was written for this page and had never been called. It reads the
+            newest entry off the SAME defensively re-sorted list this page renders,
+            so the date in the header can never disagree with the first card below
+            it — which is the whole reason not to write {entries[0].date} here.
+            Null only when the changelog is empty, and then the empty state below
+            is what speaks.
+          */}
+          {latestDate && (
+            <span className="text-xs text-muted-foreground">
+              Last updated {fmtDate(latestDate)}
+            </span>
+          )}
+        </div>
         {entries.length === 0 ? (
           <div className="rounded-lg border p-10 text-center text-sm text-muted-foreground">
             No release notes published yet.

@@ -30,6 +30,7 @@
 // lib/connections/accounting-scopes.ts idiom) so the simulator can stub it.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { TENANT_COMMERCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -37,9 +38,12 @@ type ServiceClient = ReturnType<typeof createServiceClient>
 
 export type VendorActorScope = "brokerage" | "team" | "agent"
 
-/** Roles that may INVITE a vendor to the platform — mirrors the
- *  INVITE_ALLOWED_ROLES gate in app/actions/vendor-invite.ts (round 15 opened
- *  invites to every tier; round 37 adds attribution, not new gates). */
+/** Roles that may INVITE a vendor to the platform. THE source of truth, not a
+ *  mirror of one: app/actions/vendor-invite.ts used to carry a parallel
+ *  INVITE_ALLOWED_ROLES set and now gates through `canInviteVendors` below, so
+ *  this list cannot drift out of step with the action — there is nothing left to
+ *  drift from. (Round 15 opened invites to every tier; round 37 added
+ *  attribution, not new gates.) */
 export const VENDOR_INVITE_ROLES: ReadonlySet<string> = new Set([
   "broker", "broker_admin", "admin", "superadmin", "team_lead", "agent",
 ])
@@ -47,8 +51,22 @@ export const VENDOR_INVITE_ROLES: ReadonlySet<string> = new Set([
 /** Roles that may charge ANY vendor in the brokerage (the round-36½ admin
  *  lane). Agents are deliberately absent — they go through the
  *  their-vendor attribution gate instead. */
+// DERIVED from the ONE tenant-admin roster, not retyped beside it. The
+// admin-class roles come from lib/auth/resolve-user-role.ts and change only
+// there. `superadmin` is added EXPLICITLY and only here: it is a PLATFORM
+// identity, deliberately absent from the tenant roster, and this lane admits it
+// on purpose — scripts/vendor-scope-charging-simulator.ts asserts it.
+//
+// THE PARENT IT SPREADS IS TENANT_COMMERCE_ADMIN_USER_TYPES, NOT THE FULL
+// TENANT ROSTER, and the difference is one role. The owner's 2026-09-04 ruling
+// added `compliance_officer` to the tenant admin roster; this lane CHARGES —
+// it puts money on a vendor's account against the brokerage's ledger — and a
+// widening of the ADMIN roster must not become a widening of who may spend.
+// The commerce tier keeps `team_lead`, so nothing this lane already admitted is
+// revoked; only the new role is held out, at the tier that names why.
 export const VENDOR_CHARGE_ADMIN_ROLES: ReadonlySet<string> = new Set([
-  "broker", "broker_owner", "broker_admin", "admin", "superadmin", "team_lead",
+  ...TENANT_COMMERCE_ADMIN_USER_TYPES,
+  "superadmin",
 ])
 
 export function canInviteVendors(userType: string | null | undefined): boolean {
@@ -145,6 +163,10 @@ export function canManageVendorCharge(args: {
   callerUserId: string
   attribution: VendorChargeAttribution | null
 }): boolean {
+  // VENDOR_CHARGE_ADMIN_ROLES, not the bare tenant-admin predicate: this lane
+  // deliberately admits platform staff too, and that Set is DERIVED from the one
+  // tenant roster plus an explicit `superadmin` (see its declaration above), so
+  // there is still a single definition of who the five admin-class roles are.
   if (VENDOR_CHARGE_ADMIN_ROLES.has(args.userType)) return true
   if (args.userType !== "agent") return false
   return !!args.attribution && args.attribution.user_id === args.callerUserId
@@ -153,7 +175,7 @@ export function canManageVendorCharge(args: {
 // ─── Premium placement — documented scope verdict ────────────────────────────
 
 /** Premium placement stays BROKERAGE-level. This is a verdict, not a gap:
- *  markPlacementPaid flips vendor_directory.{preferred, display_priority,
+ *  markPlacementPaid flips vendors.{preferred, display_priority,
  *  visible_in_portal} — brokerage-wide flags every member of the brokerage
  *  (and the contact portal) sees. There is no team- or agent-scoped directory
  *  row to feature, so a "team placement" would fake a scope the directory
@@ -161,7 +183,7 @@ export function canManageVendorCharge(args: {
  *  charge lane (issueVendorCharge) instead. */
 export const PREMIUM_PLACEMENT_SCOPE = "brokerage" as const
 export const PREMIUM_PLACEMENT_SCOPE_VERDICT =
-  "Premium placement remains brokerage-level: it flips brokerage-wide vendor_directory flags (preferred / display_priority / visible_in_portal) that the whole brokerage and the contact portal read — there is no team- or agent-scoped directory surface to feature into. Agents and teams charge their vendors through the general vendor-charge lane instead."
+  "Premium placement remains brokerage-level: it flips brokerage-wide vendor placement flags (preferred / display_priority / visible_in_portal) that the whole brokerage and the contact portal read — there is no team- or agent-scoped directory surface to feature into. Agents and teams charge their vendors through the general vendor-charge lane instead."
 
 // ─── Live: resolve the caller's vendor actor scope ───────────────────────────
 

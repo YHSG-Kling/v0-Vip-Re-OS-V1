@@ -49,6 +49,7 @@ import {
   Image,
   Play,
   Pause,
+  Pencil,
   CheckCircle,
   Clock,
   AlertCircle,
@@ -79,9 +80,18 @@ import {
   syncAudience,
   approveAudience,
   deleteAudience,
+  getAudienceSyncHistory,
+  previewAudienceReach,
 } from "@/lib/ads/facebook-audience-sync"
+import type { AudienceResolutionPreview } from "@/lib/kernel/ads"
+import { updateAdCampaignAction } from "./ads-campaign-actions"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
-import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
+import { templateAudienceUse, type AudienceTemplate } from "@/lib/ads/fb-audience-templates"
+import {
+  EXCLUDED_AUDIENCE_IDS_KEY,
+  INCLUDED_AUDIENCE_IDS_KEY,
+  resolveExclusionSlot,
+} from "@/lib/ads/audience-exclusion"
 import { CtvLane, type CtvEligibleVideo, type CtvCampaignRow } from "./ctv-lane"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -138,6 +148,14 @@ interface Audience {
   consent_basis: string | null
   last_synced_at: string | null
   created_at: string
+  /**
+   * THE SUPPRESSION-USE AUDIT (migration m538). Optional because the columns do
+   * not exist until the integrator applies it — `loadAdsWorkspace` selects `*`,
+   * so they simply arrive undefined until then and this surface says nothing
+   * rather than saying something false.
+   */
+  used_as_suppression_at?: string | null
+  used_as_suppression_by_campaign_id?: string | null
   audience_sync_runs?: Array<{
     id: string
     run_status: string
@@ -160,6 +178,20 @@ interface AdsDashboardClientProps {
   /** Streaming-TV lane (Vibe.co): honest connector posture + TV-eligible creative. */
   vibeConnected?: boolean
   ctvEligibleVideos?: CtvEligibleVideo[]
+  /**
+   * Paid-vs-organic CTR per platform, from loadAdsWorkspace. The organic side
+   * comes from the brokerage's own trailing-28d social results — this is the
+   * floor paid spend has to beat. `hasBaseline: false` means the brokerage has
+   * no measured organic activity on that platform, which is a real answer and
+   * is rendered as such rather than as a zero.
+   */
+  organicLift?: Array<{
+    platform: string
+    hasBaseline: boolean
+    organicCtr: number | null
+    paidCtr: number
+    liftRatio: number | null
+  }>
 }
 
 // ─── AUDIENCE-TEMPLATE CATEGORY STYLING ─────────────────────────────────────
@@ -170,10 +202,42 @@ const TEMPLATE_CATEGORY_META: Record<
 > = {
   remarketing: { label: "Remarketing", badge: "bg-blue-100 text-blue-700" },
   lookalike: { label: "Lookalike", badge: "bg-purple-100 text-purple-700" },
-  exclusion: { label: "Exclusion", badge: "bg-red-100 text-red-700" },
+  // `exclusion` WAS A MEMBER HERE. It is gone with the category union member it
+  // rendered — SURVIVOR: `templateAudienceUse(template)`
+  // (lib/ads/fb-audience-templates.ts), derived from the source rule, which is
+  // what every gate reads. The red Exclusion badge below is now driven by that
+  // instead, so the shelf can no longer disagree with the rule the way
+  // `exclude_lifetime_customers` did.
   geo: { label: "Geo", badge: "bg-amber-100 text-amber-700" },
   lifecycle: { label: "Lifecycle / Sphere", badge: "bg-green-100 text-green-700" },
+  // The owner's persona basis ("audience should be segmented on persona"). This
+  // Record is EXHAUSTIVE over the category union on purpose — the lookup below is
+  // unguarded (`TEMPLATE_CATEGORY_META[template.category].badge`), so a category
+  // added to the union without an entry here is a runtime crash on the audience
+  // shelf, not a missing badge. Keeping it exhaustive makes that a compile error.
+  persona: { label: "Persona", badge: "bg-teal-100 text-teal-700" },
 }
+
+/**
+ * The source rules the MANUAL create-audience dialog can build — a subset of
+ * `SourceRule["type"]`, so the compiler refuses a picker option that is not a
+ * real rule type. Every member here has a narrowing in
+ * lib/ads/audience-source-rules.ts and a required-input control in the dialog.
+ *
+ * `website_visitors` and `engagement` are deliberately ABSENT: they are built on
+ * the ad platform from its own pixel, this product holds no per-contact web-visit
+ * record, and offering them here meant an operator could create an audience whose
+ * name promised site visitors and whose contents were the entire consented CRM.
+ */
+type ManualSourceRuleType = Extract<
+  SourceRule["type"],
+  | "contact_list"
+  | "investor_contacts"
+  | "lifetime_customers"
+  | "high_engagement_contacts"
+  | "active_buyers"
+  | "exclusion_active_pipeline"
+>
 
 // ─── STATUS CONFIG ────────────────────────────────────────────────────────────
 
@@ -256,6 +320,7 @@ export function AdsDashboardClient({
   audienceTemplates = [],
   vibeConnected = false,
   ctvEligibleVideos = [],
+  organicLift = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -278,8 +343,16 @@ export function AdsDashboardClient({
     }
   }, [searchParams])
 
-  // Campaign state
-  const [campaigns, setCampaigns] = useState(initialCampaigns)
+  // Campaign state — the SERVER PROP IS THE STATE. This was
+  // `useState(initialCampaigns)` with no setter call anywhere and no effect
+  // re-syncing the prop, so `useState` kept the mount-time array forever: every
+  // mutation below calls router.refresh(), the server tree re-rendered with a
+  // fresh `campaigns` prop, and this component ignored it. Approving, pausing
+  // or launching a campaign left the list, the tab counts and the filter counts
+  // showing pre-mutation data until a hard reload. Nothing here mutates the
+  // list locally, so rendering the prop directly is the whole fix and it makes
+  // router.refresh() do what it promises.
+  const campaigns = initialCampaigns
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
   const [isGeneratingCreatives, setIsGeneratingCreatives] = useState(false)
   const [selectedCampaignForCreatives, setSelectedCampaignForCreatives] = useState<string | null>(null)
@@ -301,6 +374,17 @@ export function AdsDashboardClient({
     interests: ["real estate", "home buying"],
     incomePercentile: "any" as "top_25" | "top_50" | "any",
     homeownerStatus: "any" as "renter" | "owner" | "any",
+    // ── THE TWO AUDIENCE SLOTS ────────────────────────────────────────────────
+    // `custom_audience_ids` was written as `[]` by this handler for its whole
+    // life and read by NOTHING (CLAUDE.md §1). Both halves are wired now: this
+    // picker writes them, and lib/ads/launch-assembler.ts resolves them into the
+    // Meta payload at launch.
+    includedAudienceIds: [] as string[],
+    // The exclusion slot the owner ruled must exist ("capability is vital to this
+    // os to have not exclude"). Every id an operator puts here is gated server
+    // side before the campaign is written — a protected-characteristic persona
+    // audience is REFUSED, and the refusal is shown in the toast below.
+    excludedAudienceIds: [] as string[],
     listingAddress: "",
     listingPrice: "",
   })
@@ -311,20 +395,50 @@ export function AdsDashboardClient({
   const [newAudience, setNewAudience] = useState({
     audienceName: "",
     audienceType: "custom" as AudienceType,
-    sourceRuleType: "contact_list" as "website_visitors" | "contact_list" | "engagement",
+    sourceRuleType: "contact_list" as ManualSourceRuleType,
     daysLookback: 30,
+    minEngagementScore: 70,
     contactTags: "",
     consentBasis: "",
   })
   // When the agent launches the Create Audience dialog from a prebuilt
   // template, we stash the template's full SourceRule + audienceType here so
   // it flows straight to createAudience (the dialog's own source picker only
-  // covers the 3 generic source types).
+  // covers the generic source types).
   const [templateOverride, setTemplateOverride] = useState<{
     sourceRule: SourceRule
     audienceType: AudienceType
   } | null>(null)
   const [isSyncing, setIsSyncing] = useState<string | null>(null)
+  // Edit-before-launch (see handleSaveCampaignEdits).
+  const [editingCampaign, setEditingCampaign] = useState<AdCampaign | null>(null)
+  const [editCampaignForm, setEditCampaignForm] = useState({
+    campaignName: "",
+    dailyBudget: "",
+    lifetimeBudget: "",
+    startDate: "",
+    endDate: "",
+  })
+  // Per-audience sync ledger (see loadSyncHistory).
+  const [openSyncHistoryId, setOpenSyncHistoryId] = useState<string | null>(null)
+  const [syncHistory, setSyncHistory] = useState<Array<{
+    id: string
+    run_status: string
+    records_synced: number | null
+    records_rejected: number | null
+    error_message: string | null
+    completed_at: string | null
+  }> | null>(null)
+  const [syncHistoryError, setSyncHistoryError] = useState<string | null>(null)
+
+  // ── RESOLVED REACH, per audience (see handlePreviewReach) ────────────────────
+  // The delivered set, shown against the promised one, BEFORE a sync leaves. This
+  // is the thing whose absence let an audience named "Investors" upload the whole
+  // consented contact book: the card could show a name, a status and an after-the
+  // -fact "N records synced", and nothing anywhere compared N to the total.
+  const [reachByAudience, setReachByAudience] = useState<
+    Record<string, { loading: boolean; error?: string; resolution?: AudienceResolutionPreview }>
+  >({})
 
   // Prediction state
   const [predictionDialogOpen, setPredictionDialogOpen] = useState(false)
@@ -355,6 +469,19 @@ export function AdsDashboardClient({
     return performanceData.filter((p) => p.ad_campaign_id === campaignId)
   }
 
+  // ── MAY THIS AUDIENCE BE USED AS AN EXCLUSION? ────────────────────────────
+  // THE SAME PURE GATE THE SERVER RUNS (lib/ads/audience-exclusion.ts), asked
+  // here so the operator is told WHY before they save rather than after. This is
+  // an EXPLANATION, never the enforcement: the server refuses again at the define
+  // door and again at launch, and a client that skipped this call changes
+  // nothing about whether the exclusion is allowed (CLAUDE.md §4).
+  const exclusionVerdictFor = (a: Audience) =>
+    resolveExclusionSlot(
+      [a.id],
+      [{ id: a.id, audience_name: a.audience_name, source_rule: a.source_rule }],
+      newCampaign.campaignName || "this campaign",
+    )
+
   // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
   const handleCreateCampaign = async () => {
@@ -365,7 +492,11 @@ export function AdsDashboardClient({
       age_max: newCampaign.ageMax,
       locations: newCampaign.locations.filter((l) => l.city || l.state),
       interests: newCampaign.interests,
-      custom_audience_ids: [],
+      [INCLUDED_AUDIENCE_IDS_KEY]: newCampaign.includedAudienceIds,
+      // DECLARED IN THE PRODUCT, so the gate can see it. An operator who instead
+      // exports an audience and pastes it into Meta's own Exclude box is doing
+      // something this system cannot check — that is the gap this field closes.
+      [EXCLUDED_AUDIENCE_IDS_KEY]: newCampaign.excludedAudienceIds,
       lookalike_source_audience_id: null,
       income_percentile: newCampaign.incomePercentile,
       homeowner_status: newCampaign.homeownerStatus,
@@ -385,6 +516,11 @@ export function AdsDashboardClient({
     })
 
     if (result.success) {
+      // THE AUDIT REFUSAL IS SHOWN, NOT SWALLOWED. The campaign was created and
+      // its exclusion list WAS gated; what failed is the m538 stamp that records
+      // the suppression on the audience. "Not yet auditable" is a different
+      // sentence from "not checked", and the operator gets the true one.
+      if (result.suppressionAuditWarning) toast.warning(result.suppressionAuditWarning)
       setIsCreateCampaignOpen(false)
       setWizardStep(1)
       setNewCampaign({
@@ -401,6 +537,8 @@ export function AdsDashboardClient({
         interests: ["real estate", "home buying"],
         incomePercentile: "any",
         homeownerStatus: "any",
+        includedAudienceIds: [],
+        excludedAudienceIds: [],
         listingAddress: "",
         listingPrice: "",
       })
@@ -469,6 +607,56 @@ export function AdsDashboardClient({
     setIsLoading(false)
   }
 
+  // ── EDIT A CAMPAIGN THAT HAS NOT LAUNCHED ───────────────────────────────────
+  // Name, budget and flight dates were write-once: a campaign created with the
+  // wrong daily budget could only be approved, launched, or abandoned. The
+  // kernel command behind this refuses `live` and `launching` campaigns, so a
+  // campaign that is already spending can never have its budget rewritten
+  // underneath it — which is why the control is only drawn before launch.
+  const handleSaveCampaignEdits = async () => {
+    if (!editingCampaign) return
+    setIsLoading(true)
+    const daily = editCampaignForm.dailyBudget.trim()
+    const lifetime = editCampaignForm.lifetimeBudget.trim()
+    const result = await updateAdCampaignAction(editingCampaign.id, {
+      campaignName: editCampaignForm.campaignName,
+      ...(daily !== "" ? { dailyBudget: Number(daily) } : {}),
+      ...(lifetime !== "" ? { lifetimeBudget: Number(lifetime) } : {}),
+      ...(editCampaignForm.startDate ? { startDate: editCampaignForm.startDate } : {}),
+      ...(editCampaignForm.endDate ? { endDate: editCampaignForm.endDate } : {}),
+    })
+    setIsLoading(false)
+    if (result.success) {
+      setEditingCampaign(null)
+      router.refresh()
+      toast.success("Campaign updated")
+    } else {
+      toast.error(result.error || "Update failed")
+    }
+  }
+
+  // ── THE SYNC LEDGER, NOT JUST THE LAST GOOD RUN ─────────────────────────────
+  // Business rule 2 of the ads kernel is "audience sync failures must be
+  // VISIBLE". The card above shows only the most recent run and only when it
+  // completed, so a failed upload — the case that matters — rendered as nothing
+  // at all. This reads every run for one audience, including error_message,
+  // which the workspace embed does not carry.
+  const loadSyncHistory = async (audienceId: string) => {
+    if (openSyncHistoryId === audienceId) {
+      setOpenSyncHistoryId(null)
+      return
+    }
+    setOpenSyncHistoryId(audienceId)
+    setSyncHistory(null)
+    setSyncHistoryError(null)
+    const res = await getAudienceSyncHistory(userId, { brokerageId, agentId: userId, audienceId })
+    if (!res.success) {
+      setSyncHistoryError(res.error || "Could not load sync history")
+      return
+    }
+    setSyncHistory(res.runs ?? [])
+  }
+
   const handleApproveCampaign = async (campaignId: string) => {
     setIsLoading(true)
     const result = await updateCampaignStatus(userId, campaignId, brokerageId, "approved")
@@ -491,15 +679,29 @@ export function AdsDashboardClient({
 
     // A template-sourced audience carries its own SourceRule + type; a
     // manually-built one is assembled from the dialog's generic source picker.
+    //
+    // ONLY THE FILTERS THE CHOSEN RULE ACTUALLY USES ARE SENT. This used to post
+    // `days_lookback` AND `contact_tags: []` on every rule regardless — an empty
+    // tag array on a `contact_list` rule, which the old populate code read as
+    // "no tag filter" and turned into the whole consented contact book. An
+    // unused filter is not harmless when the reader treats absence as "all".
+    const manualFilters: SourceRule["filters"] = {}
+    if (newAudience.sourceRuleType === "contact_list") {
+      manualFilters.contact_tags = newAudience.contactTags
+        .split(",")
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0)
+    }
+    if (newAudience.sourceRuleType === "active_buyers") {
+      manualFilters.days_lookback = newAudience.daysLookback
+    }
+    if (newAudience.sourceRuleType === "high_engagement_contacts") {
+      manualFilters.min_engagement_score = newAudience.minEngagementScore
+    }
+
     const sourceRule: SourceRule = templateOverride
       ? templateOverride.sourceRule
-      : {
-          type: newAudience.sourceRuleType,
-          filters: {
-            days_lookback: newAudience.daysLookback,
-            contact_tags: newAudience.contactTags ? newAudience.contactTags.split(",").map((t) => t.trim()) : [],
-          },
-        }
+      : { type: newAudience.sourceRuleType, filters: manualFilters }
 
     const result = await createAudience(userId, {
       brokerageId,
@@ -518,6 +720,7 @@ export function AdsDashboardClient({
         audienceType: "custom",
         sourceRuleType: "contact_list",
         daysLookback: 30,
+        minEngagementScore: 70,
         contactTags: "",
         consentBasis: "",
       })
@@ -555,6 +758,20 @@ export function AdsDashboardClient({
     setIsSyncing(null)
   }
 
+  // Resolve WHO this audience actually contains — without uploading anything.
+  // Runs the same kernel resolution the sync runs, so what it reports is what
+  // would leave; a preview that resolved differently would be worse than none.
+  const handlePreviewReach = async (audienceId: string) => {
+    setReachByAudience((prev) => ({ ...prev, [audienceId]: { loading: true } }))
+    const result = await previewAudienceReach(userId, { brokerageId, agentId: userId, audienceId })
+    setReachByAudience((prev) => ({
+      ...prev,
+      [audienceId]: result.success
+        ? { loading: false, resolution: result.resolution }
+        : { loading: false, error: result.error || "Could not resolve this audience" },
+    }))
+  }
+
   const handleApproveAudience = async (audienceId: string) => {
     setIsLoading(true)
     const result = await approveAudience(userId, audienceId, brokerageId)
@@ -562,6 +779,33 @@ export function AdsDashboardClient({
       router.refresh()
     } else {
       toast.error(result.error || "Operation failed")
+    }
+    setIsLoading(false)
+  }
+
+  // THE ONLY WAY TO RETIRE AN AUDIENCE. deleteAudience
+  // (lib/ads/facebook-audience-sync.ts:294) was imported by this file and called
+  // by nothing, so a mis-built audience — including one whose reach check just
+  // showed it resolves to EVERY consented contact in the brokerage — could be
+  // approved and synced but never withdrawn from the board. The action itself
+  // refuses to remove an audience attached to a live or launching campaign and
+  // soft-deletes (status → 'deleted') rather than dropping the row, so the sync
+  // history stays auditable; the confirm below exists because an operator who
+  // clicks this on the wrong row loses the definition from the list.
+  const handleDeleteAudience = async (audienceId: string, audienceName: string) => {
+    if (!window.confirm(`Retire the audience "${audienceName}"? It stops appearing on this board; its sync history is kept.`)) {
+      return
+    }
+    setIsLoading(true)
+    const result = await deleteAudience(userId, audienceId, brokerageId)
+    if (result.success) {
+      // Drop it locally too — `audiences` is component state seeded from the
+      // server prop, so a refresh alone would leave the row on screen until the
+      // server round-trip lands.
+      setAudiences((prev) => prev.filter((a) => a.id !== audienceId))
+      router.refresh()
+    } else {
+      toast.error(result.error || "Could not retire this audience")
     }
     setIsLoading(false)
   }
@@ -830,6 +1074,30 @@ export function AdsDashboardClient({
                                   Launch Campaign
                                 </Button>
                               )}
+                              {/* Not live and not launching — the two states the
+                                  kernel refuses to edit. Anything else is still
+                                  a plan, and a plan can be corrected. */}
+                              {campaign.status !== "live" && campaign.status !== "launching" && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setEditingCampaign(campaign)
+                                    setEditCampaignForm({
+                                      campaignName: campaign.campaign_name,
+                                      dailyBudget: campaign.daily_budget != null ? String(campaign.daily_budget) : "",
+                                      lifetimeBudget:
+                                        campaign.lifetime_budget != null ? String(campaign.lifetime_budget) : "",
+                                      startDate: campaign.start_date ?? "",
+                                      endDate: campaign.end_date ?? "",
+                                    })
+                                  }}
+                                  disabled={isLoading}
+                                >
+                                  <Pencil className="h-4 w-4 mr-1" />
+                                  Edit
+                                </Button>
+                              )}
                             </div>
                           </div>
                         </CardHeader>
@@ -984,12 +1252,21 @@ export function AdsDashboardClient({
                   <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                     {audienceTemplates.map((template) => {
                       const categoryMeta = TEMPLATE_CATEGORY_META[template.category]
+                      // DERIVED FROM THE RULE, not from a shelf label (§6).
+                      const subtracts = templateAudienceUse(template) === "exclusion"
                       return (
                         <Card key={template.id} className="flex flex-col bg-muted/30">
                           <CardContent className="flex flex-1 flex-col p-4">
                             <div className="mb-2 flex items-start justify-between gap-2">
                               <span className="text-sm font-medium leading-tight">{template.name}</span>
-                              <Badge className={`${categoryMeta.badge} shrink-0`}>{categoryMeta.label}</Badge>
+                              <Badge
+                                className={`${subtracts ? "bg-red-100 text-red-700" : categoryMeta.badge} shrink-0`}
+                                title={subtracts
+                                  ? "This audience's source rule declares that it SUBTRACTS people. Put it in a campaign's Exclude list."
+                                  : undefined}
+                              >
+                                {subtracts ? "Exclusion" : categoryMeta.label}
+                              </Badge>
                             </div>
                             <p className="mb-3 text-xs text-muted-foreground line-clamp-3">
                               {template.description}
@@ -1090,6 +1367,85 @@ export function AdsDashboardClient({
                                 Consent basis: {audience.consent_basis}
                               </p>
                             )}
+
+                            {/* ── HAS THIS AUDIENCE BEEN USED TO SUPPRESS? ──────
+                                The reader for m538. Before this, an audience used
+                                as a suppression list left no trace on itself: the
+                                fact lived inside one campaign's targeting_config
+                                jsonb and vanished with that campaign. Withholding
+                                a housing ad is the regulated operation, so the
+                                record has to outlive the campaign that did it. */}
+                            {audience.used_as_suppression_at && (
+                              <p className="text-xs text-red-700 mt-1">
+                                Used as an EXCLUSION (suppression list) on{" "}
+                                {new Date(audience.used_as_suppression_at).toLocaleDateString()}
+                                {audience.used_as_suppression_by_campaign_id
+                                  ? ""
+                                  : " — by a campaign that has since been deleted"}
+                              </p>
+                            )}
+
+                            {/* ── WHO THIS AUDIENCE ACTUALLY CONTAINS ──────────
+                                The count AND its denominator (CLAUDE.md §2), plus
+                                the rule that produced it. When the two numbers are
+                                equal the audience is not a slice whatever its name
+                                says, and that is stated in those words rather than
+                                left for the operator to notice. */}
+                            {(() => {
+                              const reach = reachByAudience[audience.id]
+                              if (!reach) return null
+                              if (reach.loading) {
+                                return (
+                                  <p className="text-xs text-muted-foreground mt-2">
+                                    Resolving who this audience contains…
+                                  </p>
+                                )
+                              }
+                              if (reach.error) {
+                                return (
+                                  <p className="text-xs text-destructive mt-2">{reach.error}</p>
+                                )
+                              }
+                              const r = reach.resolution
+                              if (!r) return null
+                              if (r.refusal) {
+                                return (
+                                  <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2">
+                                    <p className="text-xs font-medium text-destructive">
+                                      This audience will NOT sync
+                                    </p>
+                                    <p className="text-xs text-destructive/90 mt-0.5">{r.refusal}</p>
+                                  </div>
+                                )
+                              }
+                              const everybody =
+                                r.resolvedCount !== null &&
+                                r.totalConsented !== null &&
+                                r.totalConsented > 0 &&
+                                r.resolvedCount === r.totalConsented
+                              return (
+                                <div
+                                  className={`mt-2 rounded-md border p-2 ${
+                                    everybody ? "border-amber-400 bg-amber-50" : "bg-muted/40"
+                                  }`}
+                                >
+                                  <p className="text-xs font-medium">
+                                    {r.uploadsContacts
+                                      ? `Resolves to ${r.resolvedCount} of ${r.totalConsented} consented contacts`
+                                      : "Uploads no contacts — platform-seeded audience"}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    Rule{r.ruleType ? ` (${r.ruleType})` : ""}: {r.ruleLabel}
+                                  </p>
+                                  {everybody && (
+                                    <p className="text-xs text-amber-800 mt-1">
+                                      That is EVERY consented contact in the brokerage — this audience is
+                                      not a slice. Check the rule before syncing.
+                                    </p>
+                                  )}
+                                </div>
+                              )
+                            })()}
                           </div>
                           <div className="flex items-center gap-2">
                             {audience.status === "pending_review" && (
@@ -1118,8 +1474,93 @@ export function AdsDashboardClient({
                                 Sync Now
                               </Button>
                             )}
+                            {/* BEFORE the sync leaves, not after. This is an
+                                egress path with no undo, so the operator gets the
+                                delivered count and the rule that produced it while
+                                the decision is still reversible. */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handlePreviewReach(audience.id)}
+                              disabled={reachByAudience[audience.id]?.loading}
+                              title="Resolve who this audience actually contains — uploads nothing"
+                            >
+                              <Users className="h-4 w-4 mr-1" />
+                              Check reach
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => loadSyncHistory(audience.id)}
+                              title="Every sync run for this audience, including failures"
+                            >
+                              <Clock className="h-4 w-4 mr-1" />
+                              Sync history
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => handleDeleteAudience(audience.id, audience.audience_name)}
+                              disabled={isLoading}
+                              title="Retire this audience — refused while it is attached to a live campaign"
+                            >
+                              <X className="h-4 w-4 mr-1" />
+                              Retire
+                            </Button>
                           </div>
                         </div>
+
+                        {openSyncHistoryId === audience.id && (
+                          <div className="mt-3 rounded-md border bg-muted/40 p-3">
+                            {syncHistoryError && (
+                              <p className="text-sm text-destructive">{syncHistoryError}</p>
+                            )}
+                            {!syncHistoryError && syncHistory === null && (
+                              <p className="text-sm text-muted-foreground">Loading sync runs…</p>
+                            )}
+                            {!syncHistoryError && syncHistory?.length === 0 && (
+                              <p className="text-sm text-muted-foreground">
+                                This audience has never been synced.
+                              </p>
+                            )}
+                            {!syncHistoryError && syncHistory && syncHistory.length > 0 && (
+                              <ul className="space-y-2">
+                                {syncHistory.map((run) => (
+                                  <li key={run.id} className="text-sm">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <Badge
+                                        className={
+                                          run.run_status === "completed"
+                                            ? "bg-green-100 text-green-700"
+                                            : run.run_status === "failed"
+                                              ? "bg-red-100 text-red-700"
+                                              : "bg-gray-100 text-gray-700"
+                                        }
+                                      >
+                                        {run.run_status}
+                                      </Badge>
+                                      <span className="text-muted-foreground">
+                                        {run.completed_at
+                                          ? new Date(run.completed_at).toLocaleString()
+                                          : "not finished"}
+                                      </span>
+                                      <span className="text-muted-foreground">
+                                        {run.records_synced ?? 0} synced
+                                        {run.records_rejected ? ` · ${run.records_rejected} rejected` : ""}
+                                      </span>
+                                    </div>
+                                    {/* The reason a sync failed is the whole point of
+                                        keeping the ledger — it is shown, not swallowed. */}
+                                    {run.error_message && (
+                                      <p className="text-xs text-destructive mt-0.5">{run.error_message}</p>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   )
@@ -1132,6 +1573,65 @@ export function AdsDashboardClient({
           {/* PERFORMANCE TAB */}
           {/* ═══════════════════════════════════════════════════════════════════ */}
           <TabsContent value="performance" className="space-y-4">
+            {/* ── Paid vs. organic floor ────────────────────────────────────
+                A campaign CTR on its own says nothing about whether the spend
+                was worth it. This row is the brokerage's OWN trailing-28d
+                organic click-through on the same platform — the result it gets
+                for free — so "0.9% CTR" can be read as beating or trailing it.
+                Rendered only where there is paid data to compare; a platform
+                with no measured organic history says so instead of showing a
+                lift computed against zero. */}
+            {organicLift.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Paid vs. Organic</CardTitle>
+                  <CardDescription>
+                    Your paid click-through against your own organic click-through on the same
+                    platform over the last 28 days
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {organicLift.map((lift) => (
+                      <div key={lift.platform} className="rounded-lg border p-3">
+                        <Badge
+                          className={PLATFORM_COLORS[lift.platform] || "bg-gray-100 text-gray-700"}
+                        >
+                          {lift.platform}
+                        </Badge>
+                        <div className="mt-2 flex items-baseline gap-2">
+                          <span className="text-2xl font-semibold">
+                            {(lift.paidCtr * 100).toFixed(2)}%
+                          </span>
+                          <span className="text-xs text-muted-foreground">paid CTR</span>
+                        </div>
+                        {!lift.hasBaseline ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            No organic posts measured on {lift.platform} in the last 28 days — no
+                            floor to compare against yet.
+                          </p>
+                        ) : lift.liftRatio === null ? (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Organic posts were measured but recorded no clicks, so there is no rate
+                            to divide by.
+                          </p>
+                        ) : (
+                          <p
+                            className={`mt-1 text-xs font-medium ${
+                              lift.liftRatio >= 1 ? "text-green-600" : "text-amber-600"
+                            }`}
+                          >
+                            {lift.liftRatio.toFixed(2)}x organic (
+                            {((lift.organicCtr || 0) * 100).toFixed(2)}%)
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle>Campaign Performance</CardTitle>
@@ -1392,6 +1892,103 @@ export function AdsDashboardClient({
                     </SelectContent>
                   </Select>
                 </div>
+                {/* ── AUDIENCES: WHO THIS CAMPAIGN REACHES, AND WHO IT SUBTRACTS ──
+                    The exclusion half is the owner's ruling made real ("capability
+                    is vital to this os to have not exclude"): an exclusion the
+                    operator intends is DECLARED here, where the fair-housing gate
+                    can see and refuse it, instead of being performed in Meta's own
+                    Exclude box where nothing in this product could. A
+                    protected-characteristic persona audience placed here is
+                    refused server-side and the reason is shown. */}
+                <div className="rounded-md border p-3 space-y-3">
+                  <div>
+                    <Label className="text-sm">Audiences to target</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Your synced custom audiences. Leave empty to target the location only.
+                    </p>
+                    {audiences.length === 0 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        No audiences yet — build one on the Audiences tab.
+                      </p>
+                    ) : (
+                      <div className="mt-2 space-y-1">
+                        {audiences.map((a) => (
+                          <label key={`inc-${a.id}`} className="flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={newCampaign.includedAudienceIds.includes(a.id)}
+                              disabled={newCampaign.excludedAudienceIds.includes(a.id)}
+                              onChange={(e) =>
+                                setNewCampaign({
+                                  ...newCampaign,
+                                  includedAudienceIds: e.target.checked
+                                    ? [...newCampaign.includedAudienceIds, a.id]
+                                    : newCampaign.includedAudienceIds.filter((x) => x !== a.id),
+                                })
+                              }
+                            />
+                            <span>{a.audience_name}</span>
+                            <span className="text-muted-foreground">
+                              ({a.source_rule?.type?.replace(/_/g, " ") ?? "no rule"})
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <Label className="text-sm">Audiences to exclude</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      People in these audiences will not be shown this ad. Fair housing: an
+                      audience built on a protected characteristic (senior, probate, divorce,
+                      military) may be TARGETED so the wording fits their situation, and may
+                      NOT be excluded — that is refused when you save.
+                    </p>
+                    {audiences.length === 0 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        No audiences yet — build one on the Audiences tab.
+                      </p>
+                    ) : (
+                      <div className="mt-2 space-y-1">
+                        {audiences.map((a) => {
+                          const verdict = exclusionVerdictFor(a)
+                          return (
+                            <div key={`exc-${a.id}`}>
+                              <label className="flex items-center gap-2 text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={newCampaign.excludedAudienceIds.includes(a.id)}
+                                  disabled={
+                                    newCampaign.includedAudienceIds.includes(a.id) || !verdict.ok
+                                  }
+                                  onChange={(e) =>
+                                    setNewCampaign({
+                                      ...newCampaign,
+                                      excludedAudienceIds: e.target.checked
+                                        ? [...newCampaign.excludedAudienceIds, a.id]
+                                        : newCampaign.excludedAudienceIds.filter((x) => x !== a.id),
+                                    })
+                                  }
+                                />
+                                <span className={verdict.ok ? "" : "text-muted-foreground line-through"}>
+                                  {a.audience_name}
+                                </span>
+                                <span className="text-muted-foreground">
+                                  ({a.source_rule?.type?.replace(/_/g, " ") ?? "no rule"})
+                                </span>
+                              </label>
+                              {!verdict.ok && (
+                                <p className="ml-6 text-[11px] text-red-700">
+                                  Cannot be used as an exclusion — {verdict.refusal.replace(/^\[audience-exclusion\] REFUSED: /, "")}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div>
                   <Label>Location (City, State)</Label>
                   <div className="flex gap-2">
@@ -1529,28 +2126,47 @@ export function AdsDashboardClient({
                 </div>
               ) : (
                 <>
+                  {/* ── THE PICKER NOW OFFERS ONLY RULES THAT RESOLVE ──────────
+                      It used to offer three: "Contact List", "Website Visitors"
+                      and "Engaged Contacts". The last two were NAMES ONLY — no
+                      branch in syncAudience narrowed for them, so either one
+                      uploaded every consented contact in the brokerage to
+                      Meta/Google under a name promising site visitors. They are
+                      built on the ad platform from its own pixel and cannot be
+                      reproduced from this CRM, so they are gone from here and the
+                      note below says where they live instead. Everything offered
+                      now has a real narrowing in lib/ads/audience-source-rules.ts,
+                      and each one's required input is rendered beneath it. */}
                   <div>
                     <Label>Source</Label>
                     <Select
                       value={newAudience.sourceRuleType}
                       onValueChange={(v) =>
-                        setNewAudience({ ...newAudience, sourceRuleType: v as "website_visitors" | "contact_list" | "engagement" })
+                        setNewAudience({ ...newAudience, sourceRuleType: v as ManualSourceRuleType })
                       }
                     >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="contact_list">Contact List (CRM)</SelectItem>
-                        <SelectItem value="website_visitors">Website Visitors</SelectItem>
-                        <SelectItem value="engagement">Engaged Contacts</SelectItem>
+                        <SelectItem value="contact_list">Contact List — by tag</SelectItem>
+                        <SelectItem value="investor_contacts">Investors</SelectItem>
+                        <SelectItem value="lifetime_customers">Past clients (lifetime)</SelectItem>
+                        <SelectItem value="high_engagement_contacts">High-engagement contacts</SelectItem>
+                        <SelectItem value="active_buyers">Active buyers</SelectItem>
+                        <SelectItem value="exclusion_active_pipeline">Active pipeline (use as EXCLUSION)</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Website-visitor and page-engagement audiences are built in Meta or Google Ads from
+                      their own pixel — this product holds no per-contact web-visit record, so it cannot
+                      reproduce them here.
+                    </p>
                   </div>
 
-                  {newAudience.sourceRuleType === "website_visitors" && (
+                  {newAudience.sourceRuleType === "active_buyers" && (
                     <div>
-                      <Label>Days Lookback</Label>
+                      <Label>Days Lookback (required — “active” is a recency claim)</Label>
                       <Input
                         type="number"
                         value={newAudience.daysLookback}
@@ -1561,14 +2177,37 @@ export function AdsDashboardClient({
                     </div>
                   )}
 
+                  {newAudience.sourceRuleType === "high_engagement_contacts" && (
+                    <div>
+                      <Label>Minimum engagement score (required, above 0)</Label>
+                      <Input
+                        type="number"
+                        value={newAudience.minEngagementScore}
+                        onChange={(e) =>
+                          setNewAudience({ ...newAudience, minEngagementScore: parseInt(e.target.value) || 0 })
+                        }
+                        min={1}
+                        max={100}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        engagement_score defaults to 0, so a threshold of 0 would match every contact
+                        while still calling itself “high engagement”.
+                      </p>
+                    </div>
+                  )}
+
                   {newAudience.sourceRuleType === "contact_list" && (
                     <div>
-                      <Label>Contact Tags (comma-separated, optional)</Label>
+                      <Label>Contact Tags (comma-separated, REQUIRED)</Label>
                       <Input
                         value={newAudience.contactTags}
                         onChange={(e) => setNewAudience({ ...newAudience, contactTags: e.target.value })}
                         placeholder="buyer, hot-lead"
                       />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        An empty tag list is not “every tag” — it is no basis at all, and it would upload
+                        every consented contact in the brokerage.
+                      </p>
                     </div>
                   )}
                 </>
@@ -1659,6 +2298,87 @@ export function AdsDashboardClient({
                 showPredictButton={!!currentPrediction}
               />
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* ── EDIT CAMPAIGN (pre-launch only) ───────────────────────────────── */}
+        <Dialog open={!!editingCampaign} onOpenChange={(open) => !open && setEditingCampaign(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit campaign</DialogTitle>
+              <DialogDescription>
+                Name, budget and flight dates. A campaign that is live or launching cannot be edited —
+                its spend is already committed.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>Campaign name</Label>
+                <Input
+                  value={editCampaignForm.campaignName}
+                  onChange={(e) =>
+                    setEditCampaignForm((prev) => ({ ...prev, campaignName: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Daily budget ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editCampaignForm.dailyBudget}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, dailyBudget: e.target.value }))
+                    }
+                    placeholder="Leave blank to keep as is"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Lifetime budget ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editCampaignForm.lifetimeBudget}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, lifetimeBudget: e.target.value }))
+                    }
+                    placeholder="Leave blank to keep as is"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Start date</Label>
+                  <Input
+                    type="date"
+                    value={editCampaignForm.startDate}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, startDate: e.target.value }))
+                    }
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>End date</Label>
+                  <Input
+                    type="date"
+                    value={editCampaignForm.endDate}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, endDate: e.target.value }))
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditingCampaign(null)} disabled={isLoading}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveCampaignEdits} disabled={isLoading}>
+                {isLoading && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                Save changes
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

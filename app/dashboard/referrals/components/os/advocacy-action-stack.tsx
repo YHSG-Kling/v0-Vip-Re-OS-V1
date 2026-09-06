@@ -16,23 +16,46 @@ import Link from "next/link"
 
 interface AdvocacyActionStackProps {
   agentId: string
+  /**
+   * A real contacts.id. This defaulted to "" and the composition never passed
+   * anything, so both dialogs below opened against an empty id: every action
+   * inside them fails isValidUUID("") upstream and returns without a word, so
+   * the agent watched a dialog do nothing twice. Both controls are now disabled,
+   * and say why, until a contact is actually selected.
+   */
   defaultContactId?: string
   defaultContactName?: string
   onOpenCreate: () => void
   onOpenPipeline: () => void
+  /**
+   * Was destructured and never used while the button beneath it hard-linked to
+   * /dashboard/reputation. Now it drives the button when supplied; the link is
+   * the fallback so the control never loses its destination.
+   */
   onOpenReputationFull?: () => void
+  /**
+   * "Request Review" was `<Link href="#review-section">` and no element with
+   * that id existed anywhere in the repo, so the button scrolled nowhere. The
+   * composition passes a handler that reveals the real ReviewRequestPanel.
+   */
+  onRequestReview?: () => void
 }
 
 export function AdvocacyActionStack({
   agentId,
   defaultContactId = "",
-  defaultContactName = "Client",
+  defaultContactName = "",
   onOpenCreate,
   onOpenPipeline,
   onOpenReputationFull,
+  onRequestReview,
 }: AdvocacyActionStackProps) {
   const [referralDraftOpen, setReferralDraftOpen] = useState(false)
   const [thankYouOpen, setThankYouOpen] = useState(false)
+
+  const hasContact = defaultContactId.trim().length > 0
+  const contactName = defaultContactName.trim() || "this client"
+  const noContactHint = "Select a client above first — these both act on one person."
 
   return (
     <>
@@ -50,27 +73,32 @@ export function AdvocacyActionStack({
               variant="outline"
               className="h-auto py-4 flex flex-col items-center gap-2"
               onClick={() => setReferralDraftOpen(true)}
+              disabled={!hasContact}
+              title={hasContact ? `Draft a referral ask for ${contactName}` : noContactHint}
             >
               <Heart className="h-5 w-5 text-rose-500" />
               <span className="text-sm">Ask for Referral</span>
             </Button>
 
             {/* Request Review */}
-            <Link href="#review-section" className="block">
-              <Button
-                variant="outline"
-                className="w-full h-auto py-4 flex flex-col items-center gap-2"
-              >
-                <Star className="h-5 w-5 text-amber-500" />
-                <span className="text-sm">Request Review</span>
-              </Button>
-            </Link>
+            <Button
+              variant="outline"
+              className="w-full h-auto py-4 flex flex-col items-center gap-2"
+              onClick={onRequestReview}
+              disabled={!onRequestReview}
+              title={onRequestReview ? "Jump to review requests" : "Review requests are not on this screen"}
+            >
+              <Star className="h-5 w-5 text-amber-500" />
+              <span className="text-sm">Request Review</span>
+            </Button>
 
             {/* Send Thank You */}
             <Button
               variant="outline"
               className="h-auto py-4 flex flex-col items-center gap-2"
               onClick={() => setThankYouOpen(true)}
+              disabled={!hasContact}
+              title={hasContact ? `Send appreciation to ${contactName}` : noContactHint}
             >
               <Gift className="h-5 w-5 text-violet-500" />
               <span className="text-sm">Send Thank You</span>
@@ -97,48 +125,68 @@ export function AdvocacyActionStack({
             </Button>
 
             {/* Full Reputation */}
-            <Link href="/dashboard/reputation" className="block">
+            {onOpenReputationFull ? (
               <Button
                 variant="outline"
                 className="w-full h-auto py-4 flex flex-col items-center gap-2"
+                onClick={onOpenReputationFull}
               >
                 <Award className="h-5 w-5 text-amber-500" />
                 <span className="text-sm">Full Reputation</span>
               </Button>
-            </Link>
+            ) : (
+              <Link href="/dashboard/reputation" className="block">
+                <Button
+                  variant="outline"
+                  className="w-full h-auto py-4 flex flex-col items-center gap-2"
+                >
+                  <Award className="h-5 w-5 text-amber-500" />
+                  <span className="text-sm">Full Reputation</span>
+                </Button>
+              </Link>
+            )}
           </div>
+
+          {!hasContact && (
+            <p className="mt-3 text-xs text-muted-foreground">{noContactHint}</p>
+          )}
         </CardContent>
       </Card>
 
-      {/* Referral Drafting Dialog */}
-      <Dialog open={referralDraftOpen} onOpenChange={setReferralDraftOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Draft Referral Ask</DialogTitle>
-          </DialogHeader>
-          <ReferralAiDraftingPanel
-            agentId={agentId}
-            contactId={defaultContactId}
-            contactName={defaultContactName}
-            onDraftComplete={() => setReferralDraftOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
+      {/* Referral Drafting Dialog — only mounted with a real contact, because the
+          AI actions inside it look the id up in `contacts`. */}
+      {hasContact && (
+        <Dialog open={referralDraftOpen} onOpenChange={setReferralDraftOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Draft Referral Ask</DialogTitle>
+            </DialogHeader>
+            <ReferralAiDraftingPanel
+              agentId={agentId}
+              contactId={defaultContactId}
+              contactName={contactName}
+              onDraftComplete={() => setReferralDraftOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
 
       {/* Thank You Dialog */}
-      <Dialog open={thankYouOpen} onOpenChange={setThankYouOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Send Appreciation</DialogTitle>
-          </DialogHeader>
-          <GratitudeGiftingPanel
-            agentId={agentId}
-            contactId={defaultContactId}
-            contactName={defaultContactName}
-            onComplete={() => setThankYouOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
+      {hasContact && (
+        <Dialog open={thankYouOpen} onOpenChange={setThankYouOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Send Appreciation</DialogTitle>
+            </DialogHeader>
+            <GratitudeGiftingPanel
+              agentId={agentId}
+              contactId={defaultContactId}
+              contactName={contactName}
+              onComplete={() => setThankYouOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   )
 }

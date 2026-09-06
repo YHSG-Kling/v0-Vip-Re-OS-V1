@@ -1,10 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -35,151 +33,102 @@ async function requireCaller(): Promise<
 }
 
 /**
- * AI-powered lead scoring with behavioral analysis
+ * ─── TOMBSTONE ─────────────────────────────────────────────────────────────
+ * `aiCalculateLeadScore` LIVED HERE AND IS GONE. Its survivor is
+ * app/actions/ai-lead-scoring.ts:121 — `scoreLeadWithAI`.
+ *
+ * It was a SECOND Layer-2 AI scorer with no caller anywhere in the tree, and
+ * `lib/lead-scoring/LAYERING.md` rule 4 names exactly one ("Do not create a
+ * fifth top-level scorer"). Two waves recorded the verdict — merge onto
+ * scoreLeadWithAI, then delete — and both stopped short because that file sat
+ * outside their lane. NOTHING WAS LOST: every item this copy had and the
+ * survivor did not was moved there FIRST, and the survivor's header lists them
+ * against this name:
+ *
+ *   · requireCaller() + the `brokerage_id` predicate on the contact read and on
+ *     the write. The survivor had no gate at all, so this merge closed a hole
+ *     rather than merely relocating a feature.
+ *   · generateObject + a zod schema in place of a regex over free text.
+ *   · the `activities` and `email_tracking` behavioural reads.
+ *   · timelineScore, financialReadinessScore, buyerPersona, predictedTimeline,
+ *     riskOfLoss and the positive/negative/neutral factor split, persisted to
+ *     `contacts.ai_insights` and into `lead_score_history.factors`.
+ *
+ * ONE READ WAS DELIBERATELY NOT CARRIED, and that is a fix, not a loss. This
+ * copy also read `lead_property_searches` with `.eq("lead_id", contactId)` — a
+ * CONTACT id in a LEAD column. Wave 18 ruled on exactly that shape: the table is
+ * keyed on the pre-conversion lead id, has no contacts column, and its writer was
+ * removed for filing a contacts id there (app/actions/ai-predictions.ts:355
+ * records the same finding). The query could only ever return nothing, so
+ * carrying it forward would have moved a permanently-empty read onto the survivor
+ * and let the prompt report "0 property searches" as if it were an observation
+ * about the person. Property-search interest is not collected on contacts today;
+ * when it is, the survivor is where it goes.
+ * ───────────────────────────────────────────────────────────────────────────
  */
-export async function aiCalculateLeadScore(params: {
-  contactId: string
-  agentId: string
-}): Promise<{ success: boolean; score?: number; factors?: any; recommendations?: string[]; error?: string }> {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid IDs provided" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get contact data — scope to caller's brokerage to prevent burning AI $$$
-    // on cross-tenant probing.
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("*")
-      .eq("id", params.contactId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-
-    if (!contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    const { data: interactions } = await supabase
-      .from("activities")
-      .select("id, activity_type, title, description, notes, outcome, channel, status, created_at, contact_id, agent_id")
-      .eq("contact_id", params.contactId)
-      .order("created_at", { ascending: false })
-      .limit(50)
-
-    // Get property views/searches
-    const { data: propertyActivity } = await supabase
-      .from("lead_property_searches")
-      .select("*")
-      .eq("lead_id", params.contactId)
-      .limit(50)
-
-    // Get email engagement
-    const { data: emailActivity } = await supabase
-      .from("email_tracking")
-      .select("*")
-      .eq("contact_id", params.contactId)
-      .limit(50)
-
-    // AI analysis
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
-        overallScore: z.number().min(0).max(100),
-        engagementScore: z.number().min(0).max(100),
-        intentScore: z.number().min(0).max(100),
-        timelineScore: z.number().min(0).max(100),
-        financialReadinessScore: z.number().min(0).max(100),
-        factors: z.object({
-          positive: z.array(z.string()),
-          negative: z.array(z.string()),
-          neutral: z.array(z.string()),
-        }),
-        buyerPersona: z.enum(["first_time_buyer", "move_up_buyer", "investor", "downsizer", "relocating", "unknown"]),
-        predictedTimeline: z.enum(["immediate", "1_3_months", "3_6_months", "6_12_months", "12_plus_months"]),
-        recommendations: z.array(z.string()),
-        nextBestAction: z.string(),
-        riskOfLoss: z.enum(["low", "medium", "high"]),
-      }),
-      prompt: `Analyze this real estate lead and provide a comprehensive score:
-
-CONTACT INFO:
-- Name: ${contact.first_name} ${contact.last_name}
-- Type: ${contact.contact_type}
-- Persona: ${contact.contact_persona}
-- Timeline: ${contact.timeline}
-- Status: ${contact.status}
-- Source: ${contact.source}
-- Created: ${contact.created_at}
-- Last Contact: ${contact.last_contact_date}
-
-INTERACTIONS (${interactions?.length || 0} total):
-${JSON.stringify(interactions?.slice(0, 10), null, 2)}
-
-PROPERTY ACTIVITY (${propertyActivity?.length || 0} searches):
-${JSON.stringify(propertyActivity?.slice(0, 10), null, 2)}
-
-EMAIL ENGAGEMENT (${emailActivity?.length || 0} emails):
-${JSON.stringify(emailActivity?.slice(0, 10), null, 2)}
-
-Provide scores 0-100 for each category, identify positive/negative factors, and recommend next actions.`,
-    })
-
-    // AI-derived nurturing scores. Per lib/lead-scoring/LAYERING.md:
-    //   - DO NOT write lead_score from this background analysis (Layer 1
-    //     multi-factor owns the baseline). Write AI-nuanced columns + the
-    //     ai_insights metadata blob only.
-    //   - If you need to refresh lead_score, call the canonical orchestrator
-    //     `calculateLeadScore` from `lib/services/lead-management.service`.
-    const aiScoreUpdate = {
-      engagement_score: analysis.engagementScore,
-      intent_score: analysis.intentScore,
-      ai_insights: {
-        lastScored: new Date().toISOString(),
-        aiOverallScore: analysis.overallScore,  // surfaced for agent reference, not the canonical lead_score
-        engagementScore: analysis.engagementScore,
-        intentScore: analysis.intentScore,
-        timelineScore: analysis.timelineScore,
-        financialReadinessScore: analysis.financialReadinessScore,
-        buyerPersona: analysis.buyerPersona,
-        predictedTimeline: analysis.predictedTimeline,
-        riskOfLoss: analysis.riskOfLoss,
-        nextBestAction: analysis.nextBestAction,
-      },
-    }
-    await supabase
-      .from("contacts")
-      .update(aiScoreUpdate)
-      .eq("id", params.contactId)
-      // tenant anchor (scope burn-down): write stays inside the caller's brokerage
-      .eq("brokerage_id", auth.brokerageId)
-
-    revalidatePath("/dashboard/crm")
-    return {
-      success: true,
-      score: analysis.overallScore,
-      factors: analysis.factors,
-      recommendations: analysis.recommendations,
-    }
-  } catch (error) {
-    console.error("[v0] AI lead scoring error:", error)
-    return handleError(error, "aiCalculateLeadScore")
-  }
-}
 
 /**
- * Generate personalized drip campaign for a lead
+ * Draft a multi-touch nurture SEQUENCE, modelled on one contact.
+ *
+ * REPOINTED (orphan burn-down, Lane A). This used to write its touchpoints into
+ * `drip_campaigns.metadata` at status "paused", and that output was
+ * UNDELIVERABLE BY CONSTRUCTION — not "not wired yet", but impossible:
+ *
+ *   · The only consumer of drip_campaigns is the queue-drain cron
+ *     (app/api/cron/queue-drain/route.ts:drainDripCampaigns). It selects
+ *     `.eq("status", "active")`, so a "paused" row is never read at all — its own
+ *     comment calls these rows "drafts, untouched here".
+ *   · Even for an active row it refuses to send drip metadata: "A drip row
+ *     carries no message content of its own, so the ONLY honest service is
+ *     handing the contact to the canonical nurture engine … Message content is
+ *     never invented here." It enrols the contact into a compliance-gated
+ *     `campaign_sequences` row whose STEPS carry the real copy.
+ *
+ * So the model wrote a full campaign, the platform paid for it, and no cron,
+ * screen or send path could ever reach a word of it.
+ *
+ * It now drafts into the canonical nurture engine instead: a `campaign_sequences`
+ * row plus its `campaign_sequence_steps`, created through the existing owners of
+ * those tables (`createCampaignSequence` / `saveSequenceSteps`) rather than a
+ * second set of inserts. That means the steps are executed by the
+ * campaign-sequence-steps cron, the compliance gate applies, and the Sequence
+ * Builder can edit what the model produced.
+ *
+ * IT IS CREATED INACTIVE. `createCampaignSequence` sets `is_active: false`, and
+ * that is left alone: nothing model-authored should start messaging real people
+ * before a human has read it. Launching stays with `launchCampaignSequence`.
+ *
+ * THE CONTACT IS AN ARCHETYPE, NOT A RECIPIENT. A sequence is a template many
+ * people are enrolled into, so the contact here shapes the draft and is not
+ * enrolled by this action. Enrolment stays with `enrollContactInSequence`.
  */
+
+/** campaign_sequences.sequence_type CHECK: drip|nurture|re_engagement|transaction|post_close. */
+const SEQUENCE_TYPE_FOR_CAMPAIGN: Record<string, string> = {
+  buyer_nurture: "nurture",
+  seller_nurture: "nurture",
+  investor: "nurture",
+  relocation: "nurture",
+  sphere: "drip",
+  lifetime_customer: "post_close",
+}
+
+/** campaign_sequence_steps.channel CHECK ∩ VALID_STEP_TYPES. The model is asked
+ *  for the five channels an agent thinks in; these are their storable names. */
+const STEP_CHANNEL_FOR_TOUCHPOINT: Record<string, string> = {
+  email: "email",
+  sms: "sms",
+  call: "ai_call",
+  direct_mail: "direct_mail",
+  social: "social_post",
+}
+
 export async function aiGenerateDripCampaign(params: {
   contactId: string
   agentId: string
   campaignType: "buyer_nurture" | "seller_nurture" | "lifetime_customer" | "sphere" | "investor" | "relocation"
   duration: "30_days" | "60_days" | "90_days" | "6_months" | "12_months"
-}): Promise<{ success: boolean; campaign?: any; error?: string }> {
+}): Promise<{ success: boolean; campaign?: any; sequenceId?: string; stepCount?: number; error?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -216,6 +165,27 @@ export async function aiGenerateDripCampaign(params: {
       "6_months": 180,
       "12_months": 365,
     }[params.duration]
+
+    // ── THEM-FIRST EMPATHY GUIDANCE (2026-08-27, lane CB, §1.2) ─────────────
+    // The authored empathy library (lib/them-first/empathy-library.ts) sat
+    // behind one uncalled HTTP route since it shipped; this is its first real
+    // consumer. When the contact's persona has authored content, the drip
+    // prompt carries the owner's Them-First arc (pain → empathy → trust →
+    // value → solution) so the campaign leads with the prospect's likely pain,
+    // not the agent's pitch. No match = no block — the model is never handed a
+    // wrong persona's script.
+    const { empathyGuidanceForCrmPersona } = await import("@/lib/them-first")
+    const empathy = empathyGuidanceForCrmPersona(contact.contact_persona, contact.contact_type)
+    const empathyBlock = empathy
+      ? `\nTHEM-FIRST EMPATHY PLAYBOOK (authored for the "${empathy.libraryPersonaId}" persona — follow this arc, do not invent statistics beyond it):\n` +
+        empathy.painPoints
+          .map(
+            (p, i) =>
+              `${i + 1}. Likely pain: ${p.pain}\n   Empathy: ${p.empathy}\n   Trust: ${p.trust}\n   Value: ${p.value}\n   Solution: ${p.solution}`,
+          )
+          .join("\n") +
+        `\nEvery touchpoint must be them-first: name the likely pain before any offer, and echo this playbook's tone.\n`
+      : ""
 
     // AI generates campaign
     const { object: campaign } = await generateObject({
@@ -255,37 +225,94 @@ DURATION: ${durationDays} days
 Create a mix of email, SMS, and call touchpoints. Space them appropriately (not too frequent).
 Each touchpoint should be personalized, provide value, and move the relationship forward.
 Include market updates, educational content, and soft check-ins.
-Make content warm and personal, not salesy.`,
+Make content warm and personal, not salesy.
+${empathyBlock}`,
     })
 
-    // Save campaign — repointed from the brokerage-level template table
-    // `campaign_sequences` (wrong target, none of these columns exist there) to the
-    // per-contact `drip_campaigns` table. Homeless fields go in metadata (jsonb);
-    // status "draft" → "paused" (drip_campaigns CHECK); campaign_type → drip_type.
-    const { data: savedCampaign, error } = await supabase
-      .from("drip_campaigns")
-      .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        brokerage_id: auth.brokerageId,
-        drip_type: params.campaignType,
-        status: "paused",
-        metadata: {
-          ai_generated: true,
-          campaign_name: campaign.campaignName,
-          description: campaign.description,
-          duration_days: durationDays,
-          touchpoints: campaign.touchpoints,
-          total_touchpoints: campaign.totalTouchpoints,
-        },
-      })
-      .select()
-      .single()
+    // ── Land it where the executor can reach it ─────────────────────────────
+    // Steps whose channel is not storable are DROPPED rather than coerced: a
+    // "social" touchpoint silently saved as an email is a message going out on
+    // the wrong channel to a real person.
+    const steps = campaign.touchpoints
+      .map((t) => ({ t, channel: STEP_CHANNEL_FOR_TOUCHPOINT[t.channel] }))
+      .filter((x): x is { t: (typeof campaign.touchpoints)[number]; channel: string } => !!x.channel)
+      .sort((a, b) => (a.t.dayOffset ?? 0) - (b.t.dayOffset ?? 0))
 
-    if (error) throw error
+    if (steps.length === 0) {
+      return {
+        success: false,
+        error: "The generated campaign had no touchpoint on a channel this platform can send.",
+      }
+    }
+
+    const { createCampaignSequence, saveSequenceSteps } = await import("@/app/actions/campaign-sequences")
+
+    const created = await createCampaignSequence({
+      brokerageId: auth.brokerageId,
+      name: campaign.campaignName,
+      description: `${campaign.description}\n\nDrafted by AI over ${durationDays} days, modelled on ${contact.first_name ?? "a"} ${contact.last_name ?? "contact"}. ${campaign.personalizationNotes ?? ""}`.trim(),
+      sequence_type: SEQUENCE_TYPE_FOR_CAMPAIGN[params.campaignType] ?? "nurture",
+      // 'manual' is in the trigger_event CHECK and is the honest value: a human
+      // decides who enters a draft sequence.
+      trigger_event: "manual",
+    })
+
+    if (!created.sequence) {
+      return { success: false, error: created.error ?? "Could not create the sequence." }
+    }
+
+    const sequenceId = (created.sequence as { id: string }).id
+
+    // delay_days is a DELAY BETWEEN STEPS, not the absolute day offset the model
+    // returns. Writing the offset straight through would compound: touchpoints on
+    // days 1, 7 and 14 would fire on days 1, 8 and 22.
+    let previousOffset = 0
+    const builderSteps = steps.map((x, i) => {
+      const offset = Math.max(0, Math.round(x.t.dayOffset ?? 0))
+      const delay = Math.max(0, offset - previousOffset)
+      previousOffset = offset
+      return {
+        step_number: i + 1,
+        step_name: x.t.purpose?.slice(0, 120) || `${x.channel} touch ${i + 1}`,
+        step_type: x.channel as never,
+        delay_days: delay,
+        delay_hours: 0,
+        subject: x.channel === "email" ? (x.t.subject ?? null) : null,
+        body: [x.t.content, x.t.callToAction].filter(Boolean).join("\n\n"),
+        is_active: true,
+      }
+    })
+
+    const savedSteps = await saveSequenceSteps(sequenceId, builderSteps)
+    if (!savedSteps.success) {
+      // The sequence row exists and is INACTIVE, so a partial save cannot message
+      // anyone. Say what happened rather than reporting a campaign that has no
+      // steps behind it.
+      return {
+        success: false,
+        sequenceId,
+        error: `The sequence "${campaign.campaignName}" was created but its steps were not saved: ${savedSteps.error}`,
+      }
+    }
+
+    const droppedCount = campaign.touchpoints.length - steps.length
 
     revalidatePath("/dashboard/campaigns")
-    return { success: true, campaign: savedCampaign }
+    revalidatePath("/dashboard/campaigns/sequences")
+    return {
+      success: true,
+      sequenceId,
+      stepCount: builderSteps.length,
+      campaign: {
+        id: sequenceId,
+        name: campaign.campaignName,
+        description: campaign.description,
+        durationDays,
+        stepCount: builderSteps.length,
+        droppedTouchpoints: droppedCount,
+        isActive: false,
+      },
+    }
   } catch (error) {
     console.error("[v0] AI drip campaign error:", error)
     return handleError(error, "aiGenerateDripCampaign")
@@ -412,7 +439,11 @@ export async function aiBatchReengagement(params: {
       .eq("agent_id", params.agentId)
       .eq("brokerage_id", auth.brokerageId)
       .lt("last_contacted_at", inactiveDate)
-      .in("status", ["contacted", "qualified", "nurturing"])
+      // 'nurturing' → 'nurture' (§6, 2026-08-31): spelling drift — no writer has
+      // ever stored 'nurturing' on contacts.status, so that member matched
+      // nothing and nurture-status contacts were invisible to this re-engagement
+      // scan. Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      .in("status", ["contacted", "qualified", "nurture"])
       .limit(maxLeads)
 
     if (!coldLeads?.length) {
@@ -456,11 +487,27 @@ Include a mix of email and SMS templates.`,
 }
 
 /**
- * Predict lead conversion probability
+ * Predict lead conversion probability.
+ *
+ * NOT A DUPLICATE OF `app/actions/ai-predictions.ts:predictLeadConversion`,
+ * which is deliberately unwired and stays that way — checked before this was
+ * given a surface. That one writes `predictive_lead_scores`, a table whose
+ * RLS (`is_lead_visible_role()`) admits broker/admin only, so an AGENT-facing
+ * card fed from it is empty by construction; its own docblock says so. This one
+ * writes two columns on `contacts` — `ai_conversion_probability` (numeric) and
+ * `ai_predicted_close_date` (date), both verified live — which the contact's own
+ * agent can read. They are the ONLY conversion-probability values anything
+ * agent-facing can reach, and nothing else in the tree writes them.
  */
 export async function aiPredictConversion(params: {
   contactId: string
-}): Promise<{ success: boolean; prediction?: any; error?: string }> {
+}): Promise<{
+  success: boolean
+  prediction?: any
+  persisted?: boolean
+  predictedCloseDate?: string | null
+  error?: string
+}> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -517,17 +564,39 @@ ${JSON.stringify(propertyViews?.slice(0, 20), null, 2)}
 Analyze engagement patterns, timeline, and behavior to predict conversion likelihood.`,
     })
 
-    // Update contact with prediction — scoped to caller's brokerage
-    await supabase
+    // Update contact with prediction — scoped to caller's brokerage.
+    //
+    // `ai_predicted_close_date` is a DATE column. The model returns a free string
+    // and an unparseable one is a 22007 that rejects the WHOLE update, taking the
+    // probability down with it — so the date is only sent when it is actually a
+    // date, and the probability lands either way.
+    //
+    // The refusal is read. supabase-js resolves a rejected update, so this
+    // `await` used to report a stored prediction whether or not one was stored,
+    // and the caller had no way to tell. `persisted` carries the truth.
+    const predictedCloseDate =
+      typeof prediction.predictedCloseDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}/.test(prediction.predictedCloseDate.trim())
+        ? prediction.predictedCloseDate.trim().slice(0, 10)
+        : null
+
+    const { data: updated, error: updateError } = await supabase
       .from("contacts")
       .update({
         ai_conversion_probability: prediction.conversionProbability,
-        ai_predicted_close_date: prediction.predictedCloseDate,
+        ...(predictedCloseDate ? { ai_predicted_close_date: predictedCloseDate } : {}),
       })
       .eq("id", params.contactId)
       .eq("brokerage_id", auth.brokerageId)
+      .select("id")
 
-    return { success: true, prediction }
+    if (updateError) {
+      console.error("[aiPredictConversion] contact update refused:", updateError.message)
+    }
+    // A zero-row update is a refusal wearing the shape of success.
+    const persisted = !updateError && !!updated && updated.length > 0
+
+    return { success: true, prediction, persisted, predictedCloseDate }
   } catch (error) {
     console.error("[v0] AI conversion prediction error:", error)
     return handleError(error, "aiPredictConversion")

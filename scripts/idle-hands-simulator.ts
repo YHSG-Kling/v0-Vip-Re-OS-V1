@@ -111,10 +111,15 @@ async function main() {
       dispatches.every((d) => d.bypassPolicy === false && d.eventType === "just_sold"))
 
     // Data Steward: enrichment queued for the missing phone.
-    const { data: eq } = await svc.from("contact_enrichment_queue").select("id, status, source")
-      .eq("contact_id", (gap as any).id).eq("source", "idle_hands").maybeSingle()
-    if (eq) cleanup.push({ table: "contact_enrichment_queue", id: (eq as any).id })
-    check("Data Steward: self-healing enrichment queued (source=idle_hands)", r1.enrichmentsQueued >= 1 && (eq as any)?.status === "pending")
+    // §1.1 (2026-09-04) — re-pointed off `contact_enrichment_queue` (no drain
+    // exists for it) onto the SURVIVOR `lead_enrichment_queue`, written through
+    // lib/enrichment/contact-enrichment-core.ts :: queueContactEnrichment.
+    // Provenance moved from `source` to `trigger_type`.
+    const { data: eq } = await svc.from("lead_enrichment_queue").select("id, status, trigger_type")
+      .eq("contact_id", (gap as any).id).eq("trigger_type", "idle_hands").maybeSingle()
+    if (eq) cleanup.push({ table: "lead_enrichment_queue", id: (eq as any).id })
+    check("Data Steward: self-healing enrichment queued on the DRAINED queue (trigger_type=idle_hands)",
+      r1.enrichmentsQueued >= 1 && (eq as any)?.status === "pending")
 
     // AI ISA: re-engage PRE-DRAFTED — proposed, NOT approved (auto-draft, not auto-send).
     const { data: pd } = await svc.from("agent_client_messages").select("id, status, approved_by, rationale")

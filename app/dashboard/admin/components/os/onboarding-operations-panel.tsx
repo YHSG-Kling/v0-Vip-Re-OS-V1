@@ -62,7 +62,7 @@ export function OnboardingOperationsPanel({ brokerageId }: OnboardingOperationsP
           updated_at
         `)
         .eq("brokerage_id", brokerageId)
-        .in("status", ["pending", "in_progress"])
+        .in("status", ["in_progress"])
         .order("updated_at", { ascending: false })
         .limit(5)
 

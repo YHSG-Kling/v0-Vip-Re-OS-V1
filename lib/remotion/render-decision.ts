@@ -34,11 +34,19 @@ export function outputExtension(durationFrames: number): "png" | "mp4" {
   return isStillComposition(durationFrames) ? "png" : "mp4"
 }
 
+/** THE ONE SPELLING of the pickable render_status (§6). The two SQL claims —
+ *  app/api/internal/remotion/render-composition/route.ts (`queued → rendering`)
+ *  and app/api/cron/composition-render-queue/route.ts (oldest queued first) —
+ *  filter on this token; `isPickableStatus` is the same rule as a predicate for
+ *  code that already holds a row. A status vocabulary change lands HERE and
+ *  reaches both claims and the simulator together. */
+export const PICKABLE_RENDER_STATUS = "queued" as const
+
 /** Statuses the queue picker is allowed to claim. A render is pickable
  *  only while 'queued'; 'rendering' rows are in-flight, terminal rows
  *  (succeeded/failed/cancelled) are done. */
 export function isPickableStatus(status: string): boolean {
-  return status === "queued"
+  return status === PICKABLE_RENDER_STATUS
 }
 
 /** Bookends + music only ever apply to moving renders. A still has no
@@ -100,11 +108,23 @@ export function needsThumbnailPass(composition: RemotionCompositionRow): boolean
   return !!composition.thumbnail_composition_id
 }
 
-/** Thumbnail props are carried under input_props.thumbnail_props so a
- *  caller (W40 ad creator, Asset Manager) can brand the card; absent →
- *  undefined → the thumbnail composition's registry defaultProps. The
- *  video's own props are NOT reused — the cover card has a different
- *  shape (kind / title / subtitle / eyebrow / seoHint). */
+/** Thumbnail props are carried under input_props.thumbnail_props — the ONE key
+ *  every producer stages the companion card on. The video's own props are NOT
+ *  reused: the cover card has a different shape (kind / title / subtitle /
+ *  eyebrow / seoHint).
+ *
+ *  ABSENT NO LONGER MEANS "USE THE DEFAULTS" (2026-09-03). This comment used to
+ *  read "absent → undefined → the thumbnail composition's registry
+ *  defaultProps", and that was the defect, not the design: Remotion merges `{}`
+ *  over defaultProps, so a producer that staged nothing did not get a blank
+ *  card, it got VideoCoverThumb's Studio fixture — "Just Listed — 123 Main
+ *  Street", "$625K · 3 bd · 2 ba · Brickell, FL", "Your Agent" — published as
+ *  the og:image and player poster of a real client's video. `undefined` is now
+ *  the signal that the card is REFUSED: the companion pass in
+ *  app/api/internal/remotion/render-composition asks missingContentProps about
+ *  the thumbnail composition and skips the still rather than rendering the
+ *  sample, and the producers stage a real card (gated by
+ *  lib/geo/video-landing.ts companionCard) so there is one to render. */
 export function resolveThumbnailProps(
   inputProps: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | undefined {

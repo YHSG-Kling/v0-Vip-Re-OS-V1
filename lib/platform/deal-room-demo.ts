@@ -61,6 +61,7 @@
 // which is what the production pipeline's request-scoped client needs.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -70,14 +71,23 @@ type Svc = ReturnType<typeof createServiceClient>
 export const DEAL_ROOM_TAG = "deal-room-demo"
 /** Provenance label for staged analysis rows (call_analyses.analyzed_by). */
 export const DEAL_ROOM_PROVENANCE = "deal_room_demo"
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: DEAL_ROOM_PROSPECT, DEAL_ROOM_TRANSCRIPT_HEADER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** The header line every synthetic transcript opens with — provenance in the artifact itself. */
-export const DEAL_ROOM_TRANSCRIPT_HEADER =
+const DEAL_ROOM_TRANSCRIPT_HEADER =
   "[deal-room-demo] SYNTHETIC TRANSCRIPT — staged showcase meeting on the sanctioned demo tenant; no real client, no real call."
 
 /**
  * Deterministic fixed ids — the demo-tenant.ts demoUuid idiom (same
  * dde00000-0000-4000-a000- prefix) but with entity blocks ≥ 9001, a range the
  * round-21 seeder (blocks 1–7) can never occupy. The id itself is a marker.
+ * CENSUS NOTE: internal-live (builds DEAL_ROOM_IDS just below); exported for
+ * scripts/deal-room-demo-simulator.ts:57-59 (determinism + the <9001 refusal).
  */
 export function dealRoomUuid(entity: number, n: number): string {
   if (entity < 9001) throw new Error("deal-room ids live in entity blocks ≥ 9001 (round-21 owns 1–7)")
@@ -171,7 +181,7 @@ export interface DealRoomStoryPlan {
 
 /** The scraped prospect — fictional idiom matching the round-21 dataset
  *  (RFC-2606 reserved domain, 555 phone, obviously-fictional surname). */
-export const DEAL_ROOM_PROSPECT = {
+const DEAL_ROOM_PROSPECT = {
   firstName: "Jordan",
   lastName: "Demoprospect",
   email: "jordan.demoprospect@demo-showcase.example.com",
@@ -299,7 +309,7 @@ export function buildDealRoomStoryPlan(input: DealRoomStoryPlanInput): DealRoomS
     started_at: iso(1 * DAY),
     duration_seconds: 26 * 60,
     transcription: transcript,
-    vapi_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
+    vendor_call_id: `zoom:${DEAL_ROOM_TAG}-showcase-meeting`,
   }
 
   const callAnalysis = {
@@ -798,7 +808,10 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
         throw new Error(`Engine 2 did not convert (stage=${l?.lead_stage}, contact=${l?.contact_id ?? "none"})`)
       }
       ids.contactId = l.contact_id
-      await svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId)
+      await bestEffort(
+        svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId),
+        "showcase-only tag so the demo cleanup can find its own rows; every assertion in this beat reads the REAL kernel rows (lead_stage, contact_id, assignment_log), never the tag",
+      )
       const { count: logCount } = await svc.from("assignment_log").select("id", { count: "exact", head: true }).eq("lead_id", ids.leadId!)
       steps.push({
         beat: "2 · AI-ISA qualification → conversion + policy assignment", rail: "real", ok: true,

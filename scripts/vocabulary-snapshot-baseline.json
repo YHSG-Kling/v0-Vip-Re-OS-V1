@@ -1,0 +1,8 @@
+[
+  "ad_campaigns.platform (m271-ad-campaigns-vibe-ctv-platform.sql: snapshot missing [], extra [facebook, google, instagram, linkedin, tiktok, vibe_ctv])",
+  "ai_isa_activities.activity_type (063-rpcs-and-rls-fixes.sql: snapshot missing [], extra [seller_intent_prioritized, social, voicedrop])",
+  "managed_agents.agent_kind (m215-recruiting-manager-agent-kind.sql: snapshot missing [], extra [compliance_officer, cron_manager, finance_manager])",
+  "marketing_agent_actions.action_type (m190-manager-handoff-actions.sql: snapshot missing [], extra [reallocate_lead_sources, regenerate_faq])",
+  "social_posts.platform (m176-scope-ladder-consolidation.sql: snapshot missing [], extra [all, facebook, google_business, instagram, linkedin, pinterest, tiktok, twitter, youtube])",
+  "users.platform_role (036-normalize-user-types.sql: snapshot missing [], extra [admin, marketing, support])"
+]

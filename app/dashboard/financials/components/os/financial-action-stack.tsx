@@ -16,6 +16,7 @@ import {
   Wallet,
 } from "lucide-react"
 import Link from "next/link"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 export interface FinancialAction {
   id: string
@@ -82,12 +83,14 @@ export function FinancialActionStack({
     review: "text-violet-600 bg-violet-100",
   }
 
-  // Sort by priority and overdue status
+  // Sort by overdue status, then priority. TOMBSTONE (§1.1, 2026-09-03): the
+  // local `priorityOrder {urgent:0 … low:3}` that stood here was one of five
+  // hand copies of the same map — survivor lib/kernel/priority-rank.ts:45,
+  // comparator `byPriorityDesc` imported above.
   const sortedActions = [...actions].sort((a, b) => {
-    const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 }
     if (a.isOverdue && !b.isOverdue) return -1
     if (!a.isOverdue && b.isOverdue) return 1
-    return priorityOrder[a.priority] - priorityOrder[b.priority]
+    return byPriorityDesc(a, b)
   })
 
   const visibleActions = sortedActions.slice(0, maxVisible)

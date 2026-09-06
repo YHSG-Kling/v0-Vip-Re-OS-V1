@@ -9,7 +9,22 @@ import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/
 // Now: session is required, brokerage is resolved from session, and write
 // actions require broker / admin / superadmin role.
 
-const ADMIN_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin"]
+// TRUE ADMIN GATE (operational: license tooling) — repointed to the ONE tenant
+// roster below. 'superadmin'/'super_admin' were dead — tested against
+// users.user_type, where 0 live rows store either spelling.
+//
+// THE isSuperadmin FLAG IS NO LONGER DEAD. It was a 65th hand-rolled re-spelling
+// of a platform-staff comparison (["superadmin","super_admin"].includes(user_type)),
+// and CLAUDE.md §4 is explicit: platform staff live in `platform_role`, NOT
+// user_type='superadmin', which no live row has. The platform's only superadmin is
+// (user_type='admin', platform_role='superadmin') — so this flag was FALSE for
+// every account that has ever existed, and the four cross-tenant scope widenings
+// below (lines 86/224/307/377/471) refused the one account they were written for.
+// Merged onto the survivor: lib/platform/platform-staff-roster.ts:187
+// ::isPlatformSuperadminIdentity, which reads BOTH identity columns and refuses a
+// service account outright.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireAdminInBrokerage(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; isSuperadmin: boolean }
@@ -20,17 +35,17 @@ async function requireAdminInBrokerage(): Promise<
   if (!user) return { ok: false, error: "Unauthorized" }
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.includes(u.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: u.user_type })) return { ok: false, error: "Forbidden" }
   return {
     ok: true,
     userId: user.id,
     brokerageId: u.brokerage_id,
     userType: u.user_type ?? "",
-    isSuperadmin: ["superadmin", "super_admin"].includes(u.user_type ?? ""),
+    isSuperadmin: isPlatformSuperadminIdentity(u.user_type, (u as { platform_role?: string | null }).platform_role),
   }
 }
 
@@ -100,7 +115,7 @@ export async function getBrokerageAgentLicenseStatuses(
           id,
           license_number,
           license_state,
-          expiry_date,
+          expiration_date,
           verification_status
         )
       )
@@ -153,7 +168,15 @@ export async function getBrokerageAgentLicenseStatuses(
     // license_expiry + agent_licenses live on the AGENT (agent_licenses FK is agent_id), not users.
     const license = Array.isArray(agentRow?.agent_licenses) ? agentRow.agent_licenses[0] : agentRow?.agent_licenses
 
-    const expiryRaw = license?.expiry_date ?? agentRow?.license_expiry ?? null
+    // `agent_licenses.expiry_date` DOES NOT EXIST — the live column is
+    // `expiration_date` (it is what app/actions/onboarding/license.ts writes on
+    // intake). Naming the wrong column made PostgREST reject this ENTIRE users
+    // query, so the admin licence-tracking view rendered zero agents — not zero
+    // licences, zero AGENTS — with `error` set but the screen showing a blank
+    // roster. Renamed rather than aliased: this is the only reader of the raw
+    // column, and it lives here, while every consumer outside this file reads
+    // the camelCase `expiryDate` below, which is unchanged.
+    const expiryRaw = license?.expiration_date ?? agentRow?.license_expiry ?? null
     const daysUntilExpiry = expiryRaw
       ? Math.ceil((new Date(expiryRaw).getTime() - now) / 86_400_000)
       : null
@@ -341,6 +364,18 @@ export async function logCeCompletion(input: CECompletionInput): Promise<{
   return { success: true, completionId: completion.id }
 }
 
+/**
+ * THE ONE READER of the CE ledger, and it used to leave the audit note behind.
+ * `logCeCompletion` above writes `notes` — the broker's own record of WHY a credit
+ * was entered by hand rather than reported by an accredited provider (a paper
+ * certificate, a make-up course, a reciprocity credit). Nothing anywhere selected
+ * it, and the log dialog never offered a field to fill it, so the column was
+ * written NULL forever and could not have been shown if it had not been. On a
+ * license-compliance ledger that is the same defect class as the DSAR audit trail
+ * (MAINTENANCE_DOMAINS.dsar_audit_record_has_a_reader): the fact is recorded and
+ * unshowable. Selected, returned and rendered now — as is `certificate_url`,
+ * which WAS selected but which the row never displayed.
+ */
 export async function listCeCompletions(agentId: string): Promise<Array<{
   id: string
   courseName: string
@@ -349,6 +384,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
   hours: number
   completedOn: string
   certificateUrl: string | null
+  notes: string | null
 }>> {
   const auth = await requireAdminInBrokerage()
   if (!auth.ok) return []
@@ -366,7 +402,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
 
   const { data } = await service
     .from("agent_ce_completions")
-    .select("id, course_name, provider, category, hours, completed_on, certificate_url")
+    .select("id, course_name, provider, category, hours, completed_on, certificate_url, notes")
     .eq("agent_id", agentId)
     .order("completed_on", { ascending: false })
 
@@ -378,6 +414,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
     hours: Number(c.hours ?? 0),
     completedOn: c.completed_on,
     certificateUrl: c.certificate_url,
+    notes: c.notes ?? null,
   }))
 }
 

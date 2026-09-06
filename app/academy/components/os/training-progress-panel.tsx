@@ -60,8 +60,11 @@ export function TrainingProgressPanel({
                       <p className="text-xs text-muted-foreground">{content.category || content.type}</p>
                     </div>
                   </div>
-                  <Button size="sm" variant="outline">
-                    Resume
+                  {/* content.id is a learning_modules.id (getMyLearningProgress
+                      maps learning_assignments → learning_modules), so the
+                      module reader at /academy/module/[id] is where Resume goes. */}
+                  <Button asChild size="sm" variant="outline">
+                    <Link href={`/academy/module/${content.id}`}>Resume</Link>
                   </Button>
                 </div>
               ))}

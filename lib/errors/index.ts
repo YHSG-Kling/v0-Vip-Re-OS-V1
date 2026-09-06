@@ -2,8 +2,65 @@
 // SHARED ERROR HANDLING
 // Central error handling module for consistent error management
 // ============================================
+//
+// WHAT IS ADOPTED HERE, AND THE DISPOSITION OF WHAT IS NOT (audited, not assumed)
+//
+// handleError is the workhorse; AppError and its subclasses, logError,
+// createErrorResponse / createSuccessResponse and handleAction are all in use.
+//
+// Five exports had no callers and sat on the category-C burn-down list:
+// asyncErrorBoundary, retryAsync, throwIfInvalidUUID, throwIfEmpty,
+// throwIfNotInArray. A prior wave audited them and left them alone. Resolved in
+// the orphan burn-down (lane O) — one build, four deletions:
+//
+//   · retryAsync — KEPT and WIRED. It is an IN-PROCESS retry (sleep +
+//     exponential backoff on a single call). lib/errors/auto-retry.ts looks
+//     like its twin and is NOT: that one is a durable, DB-backed retry ledger
+//     for automation errors, and its own header explains why — Vercel
+//     serverless cannot sleep across a long delay, so it stores next_retry_at
+//     for the retry-errors cron. Different problem, different lifetime, and
+//     nothing in between covered a provider blip inside one request. Its
+//     adoption site is lib/agentic-os/connector-gateway.ts `callConnector`, the
+//     single egress choke point, which classified 429 / 5xx / timeout as error
+//     types and then never retried any of them. Deliberately scoped to GET —
+//     see the tombstone-adjacent note there: replaying a POST is replaying a
+//     charge or a text message.
+//   · throwIfInvalidUUID, throwIfEmpty, throwIfNotInArray — DELETED. These are
+//     a THROW-style validation idiom, and this codebase settled on the opposite
+//     convention: a refusal is RETURNED as `{ success: false, error }` from the
+//     kernel command or server action that detected it. The evidence is in the
+//     history of throwIfInvalidUUID itself — a prior keep-one merge deleted
+//     lib/validations `requireValidUUID` in its favour, and the survivor STILL
+//     never gained a caller. What was unused was never the particular copy; it
+//     was the throw. Survivors, all live:
+//       – UUID → `isValidUUID` (lib/validations/index.ts:42, 116 call sites),
+//         used as `if (!isValidUUID(x)) return { success:false, error:… }`.
+//       – required string → the inline `!value?.trim()` refusal, e.g.
+//         lib/kernel/listings.ts `createListingRecord` ("Address is required").
+//       – membership → the `VALID_*.includes(...)` guards, e.g.
+//         lib/kernel/financial.ts:1112, lib/kernel/reputation.ts:458,
+//         app/actions/blog-cadence-policy.ts:86.
+//     Each survivor names the field it rejected, which is what the deleted
+//     throwers did too — nothing was lost, only the control-flow style.
+//   · asyncErrorBoundary — DELETED. SURVIVOR: `handleAction` below in this
+//     file. Their catch blocks are the same two lines (logError, then
+//     createErrorResponse); handleAction additionally wraps the success path in
+//     createSuccessResponse, so it is the more complete of the two, and it
+//     takes the thunk rather than re-wrapping an existing function — which is
+//     the shape that fits a server action. Stated plainly: handleAction is
+//     itself thinly adopted, so this is a keep-one between two forms of the
+//     same idea rather than a busy survivor absorbing a dead one. Keeping both
+//     would leave two answers to one question and no reason to pick either.
+//
+// The standing rule that produced the prior wave's caution still holds and is
+// why the deletions above each name a survivor rather than citing the count:
+// the orphan number is never by itself a reason to remove code.
 
 import { ERROR_MESSAGES } from "../constants"
+// The UUID_REGEX import that used to sit here went out with throwIfInvalidUUID
+// (orphan burn-down, lane O). The canonical pattern still lives in
+// lib/validations, which owns UUID checking (isValidUUID, 116 call sites) —
+// nothing in this file needs it any more.
 
 // ============================================
 // CUSTOM ERROR CLASSES
@@ -40,21 +97,30 @@ export class ValidationError extends AppError {
   }
 }
 
-export class AuthenticationError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.NOT_AUTHENTICATED) {
-    super(message, "AUTHENTICATION_ERROR", 401)
-    this.name = "AuthenticationError"
-    Object.setPrototypeOf(this, AuthenticationError.prototype)
-  }
-}
-
-export class AuthorizationError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.UNAUTHORIZED) {
-    super(message, "AUTHORIZATION_ERROR", 403)
-    this.name = "AuthorizationError"
-    Object.setPrototypeOf(this, AuthorizationError.prototype)
-  }
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): SIX unadopted AppError subclasses
+// deleted — AuthenticationError, AuthorizationError, ConflictError,
+// IntegrationError, RateLimitError, DemoModeError. Exported since the v0
+// scaffold, constructed by NOBODY, ever. The same audit that removed the
+// throwIf* helpers (header above) already named why: this codebase RETURNS
+// refusals rather than throwing them, and each category these classes covered
+// has a live return-style home —
+//   · auth/authz     the gate-first pattern (§4): session checks `return
+//                    { success:false, error:"Unauthorized" }` at the action
+//                    boundary (e.g. app/actions/dotloop-integration.ts) —
+//                    never a thrown 401/403;
+//   · conflict       already-exists refusals are returned with the field named
+//                    by the kernel command that detected them;
+//   · integration    provider failures are CLASSIFIED, not thrown generic:
+//                    lib/did/contract.ts classifyDidError and the
+//                    connector-gateway's error typing carry
+//                    retryable/terminal, which a bare 502 class cannot;
+//   · rate limit     the gateway + retryAsync (below) handle 429 as a
+//                    retryable classification, not an exception type;
+//   · demo mode      no live demo-mode write path constructs a refusal.
+// SURVIVORS: AppError, ValidationError, NotFoundError, DatabaseError — the
+// four with real constructors in the tree. (The D-ID strings
+// "AuthorizationError"/"RateLimitError" in lib/did/contract.ts are the
+// PROVIDER's error-kind vocabulary, not references to these classes.)
 
 export class NotFoundError extends AppError {
   constructor(resource: string = "Resource") {
@@ -64,13 +130,6 @@ export class NotFoundError extends AppError {
   }
 }
 
-export class ConflictError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.ALREADY_EXISTS) {
-    super(message, "CONFLICT_ERROR", 409)
-    this.name = "ConflictError"
-    Object.setPrototypeOf(this, ConflictError.prototype)
-  }
-}
 
 export class DatabaseError extends AppError {
   constructor(message: string = ERROR_MESSAGES.DATABASE_ERROR, details?: any) {
@@ -80,29 +139,8 @@ export class DatabaseError extends AppError {
   }
 }
 
-export class IntegrationError extends AppError {
-  constructor(service: string, message: string = ERROR_MESSAGES.INTEGRATION_ERROR, details?: any) {
-    super(`${service}: ${message}`, "INTEGRATION_ERROR", 502, details)
-    this.name = "IntegrationError"
-    Object.setPrototypeOf(this, IntegrationError.prototype)
-  }
-}
 
-export class RateLimitError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.RATE_LIMIT_EXCEEDED) {
-    super(message, "RATE_LIMIT_ERROR", 429)
-    this.name = "RateLimitError"
-    Object.setPrototypeOf(this, RateLimitError.prototype)
-  }
-}
 
-export class DemoModeError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.DEMO_MODE_RESTRICTION) {
-    super(message, "DEMO_MODE_ERROR", 403)
-    this.name = "DemoModeError"
-    Object.setPrototypeOf(this, DemoModeError.prototype)
-  }
-}
 
 // ============================================
 // ERROR LOGGING UTILITY
@@ -213,56 +251,23 @@ export async function handleAction<T>(
 }
 
 // ============================================
-// VALIDATION ERROR HELPERS
+// VALIDATION ERROR HELPERS — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-export function throwIfInvalidUUID(value: string | null | undefined, fieldName = "ID"): string {
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-  if (!value || !UUID_REGEX.test(value)) {
-    throw new ValidationError(`Invalid ${fieldName} format. Expected UUID.`, { value, fieldName })
-  }
-
-  return value
-}
-
-export function throwIfEmpty(value: string | null | undefined, fieldName: string): string {
-  if (!value || value.trim().length === 0) {
-    throw new ValidationError(`${fieldName} is required.`, { fieldName })
-  }
-
-  return value
-}
-
-export function throwIfNotInArray<T>(value: T, allowedValues: readonly T[], fieldName: string): T {
-  if (!allowedValues.includes(value)) {
-    throw new ValidationError(`Invalid ${fieldName}. Must be one of: ${allowedValues.join(", ")}`, {
-      value,
-      allowedValues,
-      fieldName,
-    })
-  }
-
-  return value
-}
+//
+// `throwIfInvalidUUID`, `throwIfEmpty` and `throwIfNotInArray` all died here.
+// See the header for the survivors; the short version is that this codebase
+// RETURNS refusals (`{ success: false, error }`) rather than throwing them, so
+// the throw idiom — not any one of these three — is what had no adopter.
+// `ValidationError` above is untouched and still the right class to raise when
+// a genuine exception is warranted. Do not reintroduce a thrower here.
 
 // ============================================
-// ASYNC ERROR BOUNDARY
+// ASYNC ERROR BOUNDARY — REMOVED (orphan burn-down, lane O)
 // ============================================
-
-export function asyncErrorBoundary<T extends (...args: any[]) => Promise<any>>(
-  fn: T,
-  context: string
-): (...args: Parameters<T>) => Promise<ReturnType<T> | ErrorResponse> {
-  return async (...args: Parameters<T>) => {
-    try {
-      return await fn(...args)
-    } catch (error) {
-      logError(error as Error, { context })
-      return createErrorResponse(error as Error)
-    }
-  }
-}
+//
+// `asyncErrorBoundary(fn, context)` died here. SURVIVOR: `handleAction` above —
+// same catch (logError → createErrorResponse), plus the success envelope, and
+// it takes the thunk instead of re-wrapping an existing function.
 
 // ============================================
 // RETRY LOGIC

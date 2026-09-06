@@ -25,31 +25,53 @@
  *   archived   → eligible for purge (handled by separate cron, not this commit)
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   stripeCancelAtPeriodEnd, stripeResume, stripeSwapPrice, stripeExtendTrial, stripePauseCollection,
-  computeTrialExtension, isStripeConfigured,
+  computeTrialExtension, 
 } from "@/lib/billing/stripe-subscription-ops"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
-async function requireSuperadmin(): Promise<
-  | { ok: true; userId: string; email: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase
-    .from("users")
-    .select("user_type, email")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (data?.user_type !== "superadmin") return { ok: false, error: "Forbidden" }
-  return { ok: true, userId: user.id, email: data.email ?? user.email ?? "" }
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GATE THIS FILE USED TO CARRY, AND WHY IT ADMITTED NOBODY
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every action here called a LOCAL requireSuperadmin() whose whole test was
+// `users.user_type !== 'superadmin'`. Measured live: no row in public.users has
+// user_type = 'superadmin'. The one platform superadmin account is
+// platform_role = 'superadmin' with user_type = 'admin' — because 'admin' is
+// also a TENANT user_type, the roster is deliberately carried on platform_role
+// (lib/platform/platform-staff-roster.ts). So this gate returned "Forbidden" to
+// EVERY caller, and /dashboard/superadmin/brokerages rendered
+// "Failed: Forbidden" for the superadmin too. The subtree gate above it
+// (requirePlatformStaff) let staff in; this one then refused them the data.
+//
+// lib/auth/platform-guard.ts:requireSuperadmin reads BOTH identity columns, which
+// is the whole reason it exists. Importing it is the fix; the local copy is gone
+// so it cannot drift again.
+//
+// READS vs WRITES. The owner's ruling is "platform needs to see all tenants and
+// their users" — a READ grant for the platform staff roster, not for the
+// superadmin alone. The two read-only actions below (listBrokeragesAction,
+// getBrokerageDetailAction) therefore gate on the platform 'tenants' capability,
+// which is exactly what the two PAGES that call them already gate on
+// (requirePlatformCapability("tenants") in brokerages/page.tsx and
+// brokerages/[id]/page.tsx) — before this change a platform admin/support/
+// marketing operator could open those pages and was then handed "Forbidden" by
+// the action, which is a gate disagreeing with itself. Every MUTATION in this
+// file (tier change, suspend, cancel, refund, trial, pause) stays superadmin-only.
+
+/** Read-only tenant oversight: the platform 'tenants' capability, which the
+ *  capability map grants to all four staff roles. Same gate as the pages. */
+async function requireTenantRead(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  return { ok: true }
 }
 
 async function writeAuditLog(params: {
@@ -110,7 +132,7 @@ export async function listBrokeragesAction(filter?: {
   | { ok: true; rows: BrokerageListRow[]; totals: { count: number; total_mrr_cents: number; total_ai_cents: number } }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
+  const auth = await requireTenantRead()   // read-only: the whole staff roster
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
@@ -181,35 +203,128 @@ export async function listBrokeragesAction(filter?: {
 // ── DETAIL ───────────────────────────────────────────────────────────────────
 
 export async function getBrokerageDetailAction(brokerageId: string): Promise<
-  | { ok: true; brokerage: any; users: any[]; subscriptions: any[]; auditEntries: any[] }
+  | {
+      ok: true
+      brokerage: any
+      users: any[]
+      subscriptions: any[]
+      auditEntries: any[]
+      accessSessions: any[]
+      /** The tenant's AI entitlement row (ai_subscription_tier) — tier, active flag and
+       *  the date the entitlement began. Null when the tenant has never had one. */
+      aiEntitlement: {
+        tierName: string | null
+        isActive: boolean
+        subscribedAt: string | null
+        cancelledAt: string | null
+      } | null
+    }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
+  const auth = await requireTenantRead()   // read-only: the whole staff roster
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }] = await Promise.all([
+  // ── WHO WALKED THIS ACCOUNT (wave H5) ───────────────────────────────────
+  // lib/platform/impersonation.ts:155 stamps actor_email, reason, ip_address
+  // and user_agent on every grant, and NOTHING read any of them: the only
+  // reads of platform_impersonation_sessions are the two active-session
+  // lookups that resolve the current context. So the forensic half of the
+  // grant record was write-only, and CLAUDE.md §5 ("impersonation is a
+  // support-investigation tool: a grant walks the account and never exceeds
+  // it") had no surface on which a grant could be reviewed after the fact.
+  // The superadmin_audit_log copy is NOT a substitute: that insert is wrapped
+  // in a swallowing try/catch (app/actions/superadmin/impersonation.ts:20-28)
+  // while the session insert is error-checked, so the session row is the more
+  // reliable record of the two.
+  // ── HOW LONG THIS TENANT HAS HAD AI (w26 lane C8) ───────────────────────
+  // ai_subscription_tier.subscribed_at is stamped by changeBrokerageTierAction below
+  // and was read by NOTHING in the product: the entitlement row gated admin AI
+  // operations (lib/security/authorization.ts) while the tenure it records reached no
+  // pixel. AI is platform-covered with per-tier overage (§5), so "on the Growth tier
+  // since March" is a billing-relevant fact about this account, and an operator asking
+  // why an overage looks the way it does had no way to see it.
+  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }, { data: sessions }, aiTierRes] = await Promise.all([
     svc.from("brokerages").select("*").eq("id", brokerageId).maybeSingle(),
     svc.from("users").select("id, email, first_name, last_name, user_type, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(50),
     svc.from("subscriptions").select("id, tier_id, status, current_period_start, current_period_end, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(10),
     svc.from("superadmin_audit_log").select("id, action, actor_email, details, created_at").eq("target_type", "brokerage").eq("target_id", brokerageId).order("created_at", { ascending: false }).limit(30),
+    svc.from("platform_impersonation_sessions")
+      .select("id, actor_user_id, actor_email, target_user_id, mode, reason, ip_address, user_agent, started_at, expires_at, ended_at")
+      .eq("target_brokerage_id", brokerageId)
+      .order("started_at", { ascending: false })
+      .limit(30),
+    svc.from("ai_subscription_tier")
+      .select("tier_name, is_active, subscribed_at, cancelled_at")
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle(),
   ])
   if (error || !brokerage) return { ok: false, error: error?.message ?? "Not found" }
 
-  return { ok: true, brokerage, users: users ?? [], subscriptions: subs ?? [], auditEntries: audit ?? [] }
+  // §3 — a refused read resolves as data:null, which is byte-identical to "this tenant
+  // has no AI entitlement". The two are different answers on a billing surface, so a
+  // refusal is logged rather than rendered as "never subscribed"; the card below says
+  // which it is by distinguishing a null row from a null date.
+  if (aiTierRes.error) {
+    console.error("[brokerage-management] ai_subscription_tier read refused:", aiTierRes.error.message)
+  }
+  const aiTierRow = aiTierRes.data as
+    | { tier_name: string | null; is_active: boolean | null; subscribed_at: string | null; cancelled_at: string | null }
+    | null
+
+  return {
+    ok: true,
+    brokerage,
+    users: users ?? [],
+    subscriptions: subs ?? [],
+    auditEntries: audit ?? [],
+    accessSessions: sessions ?? [],
+    aiEntitlement: aiTierRow
+      ? {
+          tierName: aiTierRow.tier_name ?? null,
+          isActive: aiTierRow.is_active === true,
+          // NEVER INFERRED. A row whose subscribed_at is null (written before the
+          // stamp existed) reports null and the card says the date is not on record —
+          // it is not back-filled from created_at, which is a different fact.
+          subscribedAt: aiTierRow.subscribed_at ?? null,
+          cancelledAt: aiTierRow.cancelled_at ?? null,
+        }
+      : null,
+  }
 }
 
 // ── TIER CHANGE ──────────────────────────────────────────────────────────────
 
+/**
+ * MERGED IN (orphan doctrine §1.1, BURN-C 2026-09-04) from the duplicate
+ * app/actions/billing.ts:manualTierOverride, now deleted: the MANDATORY
+ * SUBSTANTIVE REASON.
+ *
+ * Lane G4 measured this pair against the live database on 2026-08-28 and found
+ * this action strictly fuller on every axis but one — the duplicate REFUSED a
+ * price change with no reason, this one took `reason?` and wrote `null`. That
+ * one field is the whole audit record for changing what a customer is charged,
+ * and it was the reason the duplicate could not simply be deleted.
+ *
+ * It also made this file disagree with itself: suspendBrokerageAction and
+ * cancelBrokerageAction below both demand 5+ chars, and repricing a tenant is
+ * not the lighter act of the three. The bar is the duplicate's own 10 — the
+ * stricter of the two, since collapsing onto the survivor must not relax a
+ * money gate.
+ */
 export async function changeBrokerageTierAction(params: {
   brokerageId: string
   newTier:     CanonicalTier
-  reason?:     string
-}): Promise<{ ok: boolean; error?: string; previousTier?: string }> {
+  reason:      string
+}): Promise<{ ok: boolean; error?: string; previousTier?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!["solo_agent","team","brokerage","multi_location"].includes(params.newTier)) {
     return { ok: false, error: "Invalid tier" }
+  }
+  const tierChangeReason = (params.reason ?? "").trim()
+  if (tierChangeReason.length < 10) {
+    return { ok: false, error: "A substantive reason (10+ chars) is required — this is the audit record for a price change" }
   }
   const svc = createServiceClient()
 
@@ -232,12 +347,25 @@ export async function changeBrokerageTierAction(params: {
   // Keep subscriptions.tier_id in lockstep with plan_tier (fixes the drift where tier change wrote only
   // brokerages.plan_tier), and reprice the Stripe subscription to the new tier's price when configured.
   let stripeApplied = false
+  let stripeError: string | undefined
   const { data: tierRow } = await svc.from("subscription_tiers").select("id, stripe_price_id").eq("tier_name", params.newTier).maybeSingle()
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).maybeSingle()
   if (tierRow && sub) {
-    await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    // subscriptions.tier_id is what the entitlement gates read. A refused write
+    // here left the tenant on the OLD tier while brokerages.plan_tier (checked
+    // above) said the new one — the exact drift this line was added to close,
+    // reintroduced silently.
+    const { error: tierSyncError } = await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    if (tierSyncError) {
+      return { ok: false, error: `Brokerage plan_tier changed but the subscription tier did not: ${tierSyncError.message}` }
+    }
+    // NOTE: stripeSwapPrice SKIPS when the tier has no stripe_price_id — which,
+    // measured live, is all four tiers. So a tier change currently moves what the
+    // tenant CAN DO without moving what they are CHARGED, and that fact is now
+    // returned to the operator rather than only written to the audit row.
     const r = await stripeSwapPrice((sub as any).stripe_subscription_id, (tierRow as any).stripe_price_id)
     stripeApplied = r.applied
+    stripeError = r.error
   }
 
   // AI ENTITLEMENT ROW (burn-down round 6): lib/security/authorization.ts gates
@@ -251,17 +379,28 @@ export async function changeBrokerageTierAction(params: {
       .order("created_at", { ascending: true }).limit(1).maybeSingle()
     if (adminUser) {
       const { data: existingTier } = await svc
-        .from("ai_subscription_tier").select("id").eq("brokerage_id", params.brokerageId).maybeSingle()
+        .from("ai_subscription_tier").select("id, subscribed_at").eq("brokerage_id", params.brokerageId).maybeSingle()
+      const nowIso = new Date().toISOString()
       const tierRowPayload = {
         brokerage_id: params.brokerageId,
         tier_name: params.newTier,
         is_active: true,
         admin_user_id: (adminUser as any).id,
-        subscribed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       }
-      if (existingTier) await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
-      else await svc.from("ai_subscription_tier").insert(tierRowPayload)
+      if (existingTier) {
+        // subscribed_at IS TENURE, NOT "LAST TOUCHED" (w26 lane C8, §5 — AI is
+        // platform-covered with per-tier overage, so this is a money surface).
+        // Stamping `now` on every tier change made the column mean "the most recent
+        // upgrade", which is what `updated_at` already means (§6, two spellings of one
+        // idea). The row's own age was destroyed by each edit, so no surface could ever
+        // have told a tenant how long they had been on AI. It is now set ONCE, on the
+        // insert that creates the entitlement, and carried forward untouched — and a row
+        // that never recorded one keeps its NULL rather than being back-dated to today.
+        await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
+      } else {
+        await svc.from("ai_subscription_tier").insert({ ...tierRowPayload, subscribed_at: nowIso })
+      }
     }
   } catch { /* entitlement sync is best-effort — the audit log below is the record */ }
 
@@ -271,12 +410,44 @@ export async function changeBrokerageTierAction(params: {
     action:      "brokerage.tier_changed",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied },
+    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
+
+  // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
+  // lib/kernel/events.ts:407 SUBSCRIPTION_UPGRADED and :408 SUBSCRIPTION_DOWNGRADED
+  // were declared in the enum and emitted by NOBODY — two lifecycle states with a
+  // reader (lib/kernel/emit.ts:59 emitKernelEvent → lifecycle_events + the reactor's
+  // notification / marketing-trigger / sequence fan-out) and no writer at all, while
+  // events.ts:9 states the rule this file was breaking: "every lifecycle state
+  // transition maps to exactly one KernelEvent". A tier change is that transition, and
+  // until now only superadmin_audit_log ever heard about it — a ledger no reactor reads.
+  //
+  // DIRECTION IS DERIVED, NOT TYPED. CANONICAL_TIERS is ordered smallest → largest, so
+  // the rank comparison stays correct if a tier is ever inserted; a hardcoded pair list
+  // would be a waypoint assertion (CLAUDE.md §2) that silently mis-labels the new tier.
+  // Best-effort, exactly as the SUBSCRIPTION_CREATED emit at
+  // app/actions/auth/signup-brokerage.ts:465 — a fan-out failure must not undo a tier
+  // change that already landed in brokerages, subscriptions and Stripe.
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const { CANONICAL_TIERS, toPlanTier } = await import("@/lib/billing/plan-tier")
+    const rank = (t: string) => (CANONICAL_TIERS as readonly string[]).indexOf(toPlanTier(t))
+    const goingUp = rank(params.newTier) > rank(previousTier)
+    await emitKernelEvent({
+      event:      goingUp ? KernelEvent.SUBSCRIPTION_UPGRADED : KernelEvent.SUBSCRIPTION_DOWNGRADED,
+      brokerageId: params.brokerageId,
+      entityType: "brokerage",
+      entityId:   params.brokerageId,
+      metadata:   { previous_tier: previousTier, new_tier: params.newTier, reason: tierChangeReason, changed_by: auth.userId, stripe_applied: stripeApplied },
+    })
+  } catch (err) {
+    console.warn("[changeBrokerageTierAction] tier lifecycle event emit failed:", (err as any)?.message)
+  }
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true, previousTier }
+  return { ok: true, previousTier, stripeApplied, stripeError }
 }
 
 // ── SUSPEND / REACTIVATE / CANCEL ────────────────────────────────────────────
@@ -316,7 +487,7 @@ export async function suspendBrokerageAction(params: {
   return { ok: true }
 }
 
-export async function reactivateBrokerageAction(brokerageId: string): Promise<{ ok: boolean; error?: string }> {
+export async function reactivateBrokerageAction(brokerageId: string): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
@@ -334,9 +505,18 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
   // Resume Stripe billing (undo any pending cancel / pause) + un-cancel the local subscription.
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
   let stripeApplied = false
+  let stripeError: string | undefined
   if (sub) {
-    await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
-    stripeApplied = (await stripeResume((sub as any).stripe_subscription_id)).applied
+    // Un-cancelling the local row is what re-opens the paywall. Reported as
+    // success regardless, a refusal left the brokerage un-suspended but its
+    // subscription still 'cancelled' — access restored on one surface only.
+    const { error: resumeError } = await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    if (resumeError) {
+      return { ok: false, error: `Brokerage reactivated but the subscription could not be un-cancelled: ${resumeError.message}` }
+    }
+    const r = await stripeResume((sub as any).stripe_subscription_id)
+    stripeApplied = r.applied
+    stripeError = r.error
   }
 
   await writeAuditLog({
@@ -345,25 +525,32 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
     action:      "brokerage.reactivated",
     targetType:  "brokerage",
     targetId:    brokerageId,
-    details:     { stripe_applied: stripeApplied },
+    details:     { stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true }
+  // Returned, not only audited — a reactivation that did not resume BILLING is a
+  // tenant given the product back for free. See the note in cancelBrokerageAction.
+  return { ok: true, stripeApplied, stripeError }
 }
 
 export async function cancelBrokerageAction(params: {
   brokerageId: string
   reason:      string
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.reason || params.reason.trim().length < 5) {
     return { ok: false, error: "Cancellation reason required (5+ chars)" }
   }
   const svc = createServiceClient()
-  const { error } = await svc
+  // A .update() matching NOTHING resolves with error null — a non-existent (or
+  // already-archived-away) brokerageId cancelled nothing and still reported ok,
+  // then went on to audit "brokerage.cancelled" for a tenant that was never
+  // touched. `.select()` makes the affected row observable.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  const { data: cancelledBrokerages, error } = await svc
     .from("brokerages")
     .update({
       status:       "cancelled",
@@ -371,19 +558,61 @@ export async function cancelBrokerageAction(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", params.brokerageId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!(cancelledBrokerages ?? []).length) {
+    return { ok: false, error: "No such brokerage — nothing was cancelled" }
+  }
 
   // Cancel through to Stripe (at period end) so billing actually stops — not just the local row.
   const { data: subs } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"])
   let stripeApplied = false
+  // WHETHER STRIPE WAS TOLD IS RETURNED, NOT ONLY AUDITED. This action flipped
+  // the local rows to 'cancelled' and returned a bare { ok: true } whichever way
+  // the Stripe call went, so an operator cancelling a tenant saw plain success
+  // while the customer's card kept being charged — the local write is only the
+  // INTENT (lib/billing/stripe-subscription-ops.ts header). extendTrialAction
+  // and pauseSubscriptionAction below already surfaced this; the three that did
+  // not were tier-change, reactivate and — most expensively — cancel.
+  let stripeError: string | undefined
   for (const s of (subs ?? []) as any[]) {
     const r = await stripeCancelAtPeriodEnd(s.stripe_subscription_id)
     if (r.applied) stripeApplied = true
+    if (r.error) stripeError = r.error
   }
-  await svc.from("subscriptions")
+  // THE PAYWALL WRITE. This is the line the silent-write guard's header is
+  // about: a cancelled tenant whose subscription row keeps its old status is a
+  // tenant the paywall still lets in. It reported ok whatever happened.
+  //
+  // 🐛 THE PREDICATE IS THE AUTHORIZATION, SO THE ROW COUNT IS THE OUTCOME.
+  // `.eq(brokerage_id).in(status, [...])` matching NOTHING resolves with
+  // `error: null` — byte-identical to a paywall write that landed. Reading the
+  // error alone therefore could not tell "no open subscription to cancel" from
+  // "the open subscription was NOT closed and the tenant still has paid access",
+  // which is exactly the failure the comment above is about.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  // ZERO ROWS IS NOT UNIFORMLY A FAILURE HERE (the caller's call, per §3): a
+  // tenant with no open subscription is already where cancel wants them. What is
+  // NOT acceptable is `subs` above finding open rows with the SAME predicate and
+  // this write then matching none of them — that is the silent fail-open. The two
+  // reads share one predicate, so comparing the counts separates the cases.
+  const openSubCount = ((subs ?? []) as any[]).length
+  const { data: cancelledSubs, error: cancelError } = await svc.from("subscriptions")
     .update({ status: "cancelled", cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("brokerage_id", params.brokerageId)
     .in("status", ["active", "trialing", "past_due", "paused"])
+    .select("id")
+  if (cancelError) {
+    return { ok: false, error: `Brokerage marked cancelled but the subscription row was NOT — the tenant may still have paid access: ${cancelError.message}`, stripeApplied, stripeError }
+  }
+  if (openSubCount > 0 && (cancelledSubs ?? []).length === 0) {
+    return {
+      ok: false,
+      error: `Brokerage marked cancelled but ${openSubCount} open subscription row(s) were NOT closed — the tenant may still have paid access`,
+      stripeApplied,
+      stripeError,
+    }
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -391,12 +620,12 @@ export async function cancelBrokerageAction(params: {
     action:      "brokerage.cancelled",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied },
+    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true }
+  return { ok: true, stripeApplied, stripeError }
 }
 
 // ── SUBSCRIPTION PRIMITIVES: EXTEND TRIAL (COMP) / PAUSE ─────────────────────
@@ -416,7 +645,14 @@ export async function extendTrialAction(params: { brokerageId: string; days: num
   const currentEnd = (sub as any)?.trial_end ?? (brk as any)?.trial_ends_at ?? null
   const ext = computeTrialExtension(currentEnd, days, now)
 
-  if (sub) await svc.from("subscriptions").update({ trial_end: ext.iso, status: "trialing", updated_at: now.toISOString() }).eq("id", (sub as any).id)
+  // A comped trial extension that does not land is free time the operator
+  // believes they granted; the action returned the new trial end either way.
+  if (sub) {
+    const { error: trialError } = await svc.from("subscriptions").update({ trial_end: ext.iso, status: "trialing", updated_at: now.toISOString() }).eq("id", (sub as any).id)
+    if (trialError) {
+      return { ok: false, error: `Could not extend the trial on the subscription: ${trialError.message}` }
+    }
+  }
   await svc.from("brokerages").update({ trial_ends_at: ext.iso, updated_at: now.toISOString() }).eq("id", params.brokerageId)
   const stripeApplied = (await stripeExtendTrial((sub as any)?.stripe_subscription_id, ext.unix)).applied
 
@@ -435,7 +671,24 @@ export async function pauseSubscriptionAction(params: { brokerageId: string; pau
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", params.brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
   if (!sub) return { ok: false, error: "No subscription to pause" }
 
-  await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+  // paused/active is an ACCESS state, not just a billing one. Reported ok
+  // regardless, a refusal left the tenant on whichever side they were already on.
+  //
+  // 🐛 AND SO DID A ZERO-ROW MATCH. The row was read a line above and written
+  // here by id; between the two an RLS refusal or a deleted row makes the write
+  // match nothing, which resolves with `error: null` and is byte-identical to a
+  // pause that took. ZERO ROWS IS A FAILURE AT THIS SITE (the caller's call, per
+  // §3): the id came from a read that just succeeded, so nothing legitimate
+  // makes it match nothing, and the operator must not be told a tenant's access
+  // was flipped when it was not.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  const { data: pausedRows, error: pauseError } = await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id).select("id")
+  if (pauseError) {
+    return { ok: false, error: `Could not ${params.pause ? "pause" : "resume"} the subscription: ${pauseError.message}` }
+  }
+  if (!(pausedRows ?? []).length) {
+    return { ok: false, error: `The subscription was NOT ${params.pause ? "paused" : "resumed"} — the row matched nothing on write; the tenant's access is unchanged` }
+  }
   const stripeApplied = (await stripePauseCollection((sub as any).stripe_subscription_id, params.pause)).applied
 
   await writeAuditLog({ actorUserId: auth.userId, actorEmail: auth.email, action: params.pause ? "subscription.paused" : "subscription.resumed", targetType: "brokerage", targetId: params.brokerageId, details: { reason: params.reason ?? null, stripe_applied: stripeApplied } })
@@ -447,15 +700,20 @@ export async function pauseSubscriptionAction(params: { brokerageId: string; pau
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────
 
 export async function listSuperadminAuditLogAction(limit = 100): Promise<
-  | { ok: true; rows: Array<{ id: string; actor_email: string | null; action: string; target_type: string; target_id: string | null; details: Record<string, unknown>; created_at: string }> }
+  | { ok: true; rows: Array<{ id: string; actor_email: string | null; actor_user_id: string | null; ip_address: string | null; user_agent: string | null; action: string; target_type: string; target_id: string | null; details: Record<string, unknown>; created_at: string }> }
   | { ok: false; error: string }
 > {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  // actor_user_id / ip_address / user_agent are stamped by many of this ledger's
+  // writers (agentic-tokens, a2p-verify, …) and were read by NOBODY — the
+  // forensic half of a chain-of-custody record (which seat, from where, with
+  // what client) was write-only. This is the ledger's one reader, so the
+  // columns surface here.
   const { data, error } = await svc
     .from("superadmin_audit_log")
-    .select("id, actor_email, action, target_type, target_id, details, created_at")
+    .select("id, actor_email, actor_user_id, ip_address, user_agent, action, target_type, target_id, details, created_at")
     .order("created_at", { ascending: false })
     .limit(limit)
   if (error) return { ok: false, error: error.message }

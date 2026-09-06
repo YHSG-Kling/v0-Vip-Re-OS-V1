@@ -1,27 +1,36 @@
 "use server"
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { isValidUUID } from "@/lib/validations"
 import {
   launchAIISACampaignService,
   queueAIISACallService,
-  handleVapiCallCompleteService,
-  getAIISACampaignsService,
-  getAIISACallsService,
   retryFailedCallsService,
-  updateCampaignStatusService,
+  type LaunchAIISACampaignResult,
 } from "@/lib/application"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+// TOMBSTONE: `evaluateOutbound` from "@/lib/kernel/compliance" was imported here
+// and never called. The compliance gate this file actually uses is the local
+// runAiIsaComplianceCheck (line ~49), which wraps evaluateKernelOutbound from
+// "@/lib/kernel/adapters/compliance" — imported on the next line and live at
+// three call sites. The direct import was the older spelling left behind, and
+// its presence is what made two doc comments in this file claim a gate named
+// `evaluateOutbound` runs here. The export survives with 83 referents across
+// app/ and lib/ (e.g. lib/kernel/adapters/compliance.ts:126, which is how this
+// file reaches it); only this file's unused binding is removed.
 import { KernelEvent } from "@/lib/kernel/events"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+// The touch cap lives beside the governor that enforces it, so the writer and
+// the reader can never disagree about the bounds or the default (§6).
+import { clampMaxTouches } from "@/lib/ai-isa/isa-outreach-logger"
 
 /**
  * AI Inside Sales Agent (ISA) System
- * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
+ * Autonomous outbound calling for lead qualification and appointment booking.
+ * The dialer is TWILIO + ElevenLabs. There is no Vapi in this product.
  */
 
 // Auth gate — every dashboard-facing function in this file reads/mutates
@@ -54,7 +63,12 @@ async function runAiIsaComplianceCheck(params: {
   messageType: "email" | "sms" | "phone"
   content: string
   contactId: string
-  contactType?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // 'investor' left this union with m593 — it is a PERSONA now (owner ruling),
+  // and a caller describing an investor passes contactType 'buyer' with the
+  // situation on contact_persona. 'lender' predates the live CHECK and is kept
+  // only because this is an INPUT shape; the compliance contact object below
+  // narrows to what the gate admits.
+  contactType?: "buyer" | "seller" | "both" | "vendor" | "lender"
   status?: string
   dncStatus?: boolean
   tcpaConsent?: boolean
@@ -82,87 +96,163 @@ async function runAiIsaComplianceCheck(params: {
     },
   })
 }
-// Launch AI ISA campaign
-export async function launchAIISACampaign(params: {
-  campaignType: string
-  campaignName?: string
-  contactSegment: any
-  loginId: string
-}) {
-  const { loginId } = params
+// LEDGER of the legacy loginId-shaped ISA quartet (deleted lane E2, partially
+// RESTORED by owner ruling lane F1, both 2026-08-28):
+//   · launchAIISACampaign → RESTORED below as a CAMPAIGN-TYPE LAUNCHER. Owner
+//     ruling: it "wasn't intended for a dial batch but an actual choice of
+//     drip/ghost/nurture campaigns" — campaigns are a different business
+//     process from dialing. It resolves the type's contact segment and enrolls
+//     into the sequence cadence; it does NOT dial. Dialing stays the
+//     HUMAN-GATED batch lane
+//     (lib/ai-isa/voice-dial-batch.ts:proposeIsaDialBatch/approveIsaDialBatch,
+//     wired at app/dashboard/admin/voice-dial-batches).
+//   · queueAIISACall → RESTORED below: the public door for queueing a call
+//     into a campaign; its engine is
+//     lib/application/ai-isa.ts:queueAIISACallService (also the engine of
+//     `retryFailedCalls`). The immediate single-dial route remains
+//     app/api/voice/initiate-call.
+//   · getAIISACampaigns → still deleted; survivor `listISACampaigns` (below;
+//     wired at app/dashboard/isa/page.tsx and communications/outreach).
+//   · getAIISACalls → still deleted; survivors are the voice ISA console's own
+//     tenant-scoped reads (app/dashboard/voice/isa/page.tsx,
+//     contact-history-sheet.tsx).
 
-  if (!isValidUUID(loginId)) {
-    return { success: false, error: "Invalid login ID" }
+/**
+ * Launch an AI ISA campaign — the "Launch campaign" door on the ISA console.
+ * The caller picks the campaign TYPE (or names an existing campaign, whose
+ * stored type wins); the service resolves the matching contact segment and
+ * enrolls it into the type's cadence (drip / nurture / re_engagement
+ * sequences). Identity is SESSION-derived (§4) and crossed users.id →
+ * agents.id inside the service (§3). Never dials.
+ */
+export async function launchAIISACampaign(params: {
+  campaignType: CampaignType
+  campaignName?: string
+  /** Launch an existing campaign of the caller's brokerage. */
+  campaignId?: string
+}): Promise<LaunchAIISACampaignResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (params.campaignId && !isValidUUID(params.campaignId)) {
+    return { success: false, error: "Invalid campaign ID" }
   }
 
   try {
-    return await launchAIISACampaignService(params)
+    return await launchAIISACampaignService({
+      campaignType: params.campaignType,
+      campaignName: params.campaignName,
+      campaignId:   params.campaignId,
+      userId:       caller.userId,
+      brokerageId:  caller.brokerageId,
+    })
   } catch (error: any) {
     console.error("[AI ISA] Campaign launch failed:", error)
     return { success: false, error: error.message }
   }
 }
 
-// Queue individual AI ISA call
-export async function queueAIISACall(campaignId: string, contactId: string, loginId: string) {
+/**
+ * Queue an AI ISA call for one contact INTO a campaign — the campaign-paced
+ * call lane (buildCallContext TCPA gate + placeOutboundAiCall's budget and
+ * autonomy gates run inside the engine). Distinct from the immediate
+ * single-dial route (app/api/voice/initiate-call). Identity comes from the
+ * SESSION (§4): the old signature took a caller-supplied loginId.
+ */
+export async function queueAIISACall(params: {
+  contactId: string
+  /** Omit to queue into the brokerage's most recent ACTIVE campaign. */
+  campaignId?: string
+}): Promise<{ success: boolean; call_id?: string | null; voice_call_id?: string | null; error?: string }> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+  if (params.campaignId && !isValidUUID(params.campaignId)) {
+    return { success: false, error: "Invalid campaign ID" }
+  }
+
+  const service = createServiceClient()
+
+  // The contact must be the caller's tenant's — this queues paid outbound at them.
+  const { data: contact } = await service
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
+
+  // Resolve the campaign: a named one must belong to the tenant; otherwise the
+  // most recent ACTIVE campaign is the pace-setter (same default the
+  // stale-lead processor uses).
+  let campaignId = params.campaignId ?? null
+  if (campaignId) {
+    const { data: campaign } = await service
+      .from("ai_isa_campaigns")
+      .select("brokerage_id")
+      .eq("id", campaignId)
+      .maybeSingle()
+    if (!campaign) return { success: false, error: "Campaign not found" }
+    if (campaign.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
+  } else {
+    const { data: defaultCampaign } = await service
+      .from("ai_isa_campaigns")
+      .select("id")
+      .eq("brokerage_id", caller.brokerageId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!defaultCampaign?.id) {
+      return { success: false, error: "No active AI ISA campaign — launch one first, or name a campaign." }
+    }
+    campaignId = defaultCampaign.id as string
+  }
+
   try {
-    return await queueAIISACallService(campaignId, contactId, loginId)
+    return await queueAIISACallService(campaignId, params.contactId, caller.userId)
   } catch (error: any) {
     console.error("[AI ISA] Call queueing failed:", error)
     return { success: false, error: error.message }
   }
 }
 
-// Handle Vapi call completion webhook
-export async function handleVapiCallComplete(payload: any) {
-  try {
-    return await handleVapiCallCompleteService(payload)
-  } catch (error: any) {
-    console.error("[AI ISA] Webhook handling failed:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Get AI ISA campaign stats
-export async function getAIISACampaigns(loginId: string) {
-  if (!isValidUUID(loginId)) {
-    return []
-  }
-
-  return await getAIISACampaignsService(loginId)
-}
-
-// Get AI ISA call history
-export async function getAIISACalls(campaignId?: string, loginId?: string) {
-  if (loginId && !isValidUUID(loginId)) {
-    return []
-  }
-
-  return await getAIISACallsService(campaignId, loginId)
-}
-
-// Retry failed calls
-export async function retryFailedCalls(loginId: string) {
-  if (!isValidUUID(loginId)) {
-    return { success: false, error: "Invalid login ID" }
-  }
+/**
+ * Retry failed AI ISA calls — re-dials calls whose OUTCOME was
+ * no_answer/busy/failed/canceled and that are at least 4 hours old.
+ *
+ * WIRED (lane E2 2026-08-28) to the voice ISA console
+ * (app/dashboard/voice/isa). Identity comes from the SESSION (§4) — the old
+ * signature took a caller-supplied loginId, which both violated tenancy and
+ * never matched: voice_calls.agent_id is an agents.id, and the loginId passed
+ * around this file is a users.id (disjoint spaces, §3).
+ */
+export async function retryFailedCalls() {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
 
   try {
-    return await retryFailedCallsService(loginId)
+    return await retryFailedCallsService(caller.userId)
   } catch (error: any) {
     console.error("[AI ISA] Retry failed calls error:", error)
     return { success: false, error: error.message }
   }
 }
 
-// Pause/resume campaign
-export async function updateCampaignStatus(campaignId: string, status: "active" | "paused" | "completed") {
-  if (!isValidUUID(campaignId)) {
-    return { success: false, error: "Invalid campaign ID" }
-  }
-
-  return await updateCampaignStatusService(campaignId, status)
-}
+// TOMBSTONE: `updateCampaignStatus(campaignId, status)` stood here, and its
+// engine `lib/application/ai-isa.ts:updateCampaignStatusService`. Deleted lane
+// G5 2026-08-28 AFTER its one distinct capability was merged onto the gated
+// lane. SURVIVORS: the active↔paused flip is
+// app/actions/ai-isa.ts:toggleCampaignStatus (below, wired at three surfaces);
+// the TERMINAL "completed" transition — the only thing toggle could not do — is
+// app/actions/ai-isa.ts:completeISACampaign (below), wired at
+// app/dashboard/isa/campaigns/components/CampaignCard.tsx.
+// WHY IT COULD NOT SURVIVE AS-IS: it was an ungated door. It ran no
+// requireCaller, pinned no brokerage, and its service updated
+// ai_isa_campaigns by `id` alone — so any session that reached it could
+// complete ANY brokerage's campaign (the §4 body-supplied-tenant shape). It
+// also had zero callers; the `updateCampaignStatus` imported at
+// app/dashboard/campaigns/ads/ads-dashboard-client.tsx:75 is the unrelated ADS
+// function from lib/ads/ad-creator.ts:625, a different business process.
 
 // ─── NEW: ISA Campaigns page actions ─────────────────────────────────────────
 
@@ -180,6 +270,16 @@ export interface ISACampaignRow {
   conversions: number
   created_at: string
   updated_at: string
+  // The editable settings (listISACampaigns selects "*", so these were always
+  // on the wire — the type just did not admit them). The edit drawer seeds
+  // from the COLUMNS and falls back to the target_segment keys; see
+  // updateISACampaign for why both spellings exist.
+  max_touches?: number | null
+  touch_interval_days?: number | null
+  score_threshold?: number | null
+  lead_type_filter?: string | null
+  motivation_type_filter?: string | null
+  target_segment?: Record<string, unknown> | null
 }
 
 export interface ISACampaignStats {
@@ -230,9 +330,16 @@ export async function createISACampaign(params: {
   campaignType: CampaignType
   channels: string[]
   targetSegment?: Record<string, unknown>
+  /** The per-entity touch cap this campaign enforces. See MAX_TOUCHES below. */
+  maxTouches?: number
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+
+  // Validate against the canonical outreach-channel taxonomy — an ISA campaign is
+  // 1:1 outreach, so unknown/broadcast keys are dropped. Email is always included.
+  const { sanitizeOutreachChannels } = await import("@/lib/campaigns/channels")
+  const cleanChannels = sanitizeOutreachChannels(["email", ...(params.channels ?? [])])
 
   const service = createServiceClient()
   const { data, error } = await service
@@ -241,9 +348,28 @@ export async function createISACampaign(params: {
       brokerage_id:   auth.brokerageId,
       name:           params.name,
       campaign_type:  params.campaignType.toLowerCase() as CampaignType,
-      channels:       params.channels,
+      channels:       cleanChannels,
       target_segment: params.targetSegment ?? {},
+      // ── MAX_TOUCHES: TWO SPELLINGS OF ONE CAP, AND THE GOVERNOR READ THE
+      // ── OTHER ONE (§6).
+      // The create drawer has had a "Max Touches" slider since it was built
+      // (app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx) and
+      // sent the broker's choice into `target_segment.max_touches` — a jsonb
+      // blob nothing reads. The touch GOVERNOR
+      // (lib/ai-isa/isa-outreach-logger.ts:175, checkMaxTouches) selects the
+      // `max_touches` COLUMN, which no writer in the tree had ever named, so it
+      // always found the DDL default of 5 and fell back to its own literal 5.
+      // A broker who dragged that slider to 2 to protect a cold list, or to 9
+      // for a nurture sequence, changed nothing at all.
+      // The COLUMN is the survivor — it is what the governor enforces. Clamped
+      // to a sane range so a caller-supplied 0 (silently suppressing the whole
+      // campaign) or 500 (a harassment cap) cannot be stored.
+      max_touches:    clampMaxTouches(params.maxTouches),
       status:         "draft",
+      // is_active mirrors status — merged from the deleted legacy launcher
+      // (lane E2 2026-08-28), which was this column's only writer while the
+      // voice ISA page and the stale-lead processor both FILTER on it.
+      is_active:      false,
       leads_targeted: 0,
       touches_sent:   0,
       conversions:    0,
@@ -255,15 +381,16 @@ export async function createISACampaign(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await service.from("lifecycle_events").insert({
-    event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
-    entity_type:   "campaign",
-    entity_id:     data.id,
-    brokerage_id:  auth.brokerageId,
-    actor_user_id: auth.userId,
-    metadata: { campaignType: params.campaignType, channels: params.channels },
-    created_at:    new Date().toISOString(),
+  // Audit row + reactor (integrator, 2026-09-03 — was a bare insert nothing downstream heard).
+  const { error: emitErr } = await emitKernelEvent({
+    event:       KernelEvent.LEAD_IMPORT_COMPLETED,
+    entityType:  "campaign",
+    entityId:    data.id,
+    brokerageId: auth.brokerageId,
+    actorUserId: auth.userId,
+    metadata: { campaignType: params.campaignType, channels: cleanChannels },
   })
+  if (emitErr) console.error(`[createISACampaign] event emit refused for campaign ${data.id}: ${emitErr}`)
 
   return { success: true, campaignId: data.id }
 }
@@ -281,21 +408,285 @@ export async function toggleCampaignStatus(
   const service = createServiceClient()
 
   // Verify campaign belongs to caller's brokerage before mutating
-  const { data: existing } = await service
+  const { data: existing, error: readError } = await service
     .from("ai_isa_campaigns")
     .select("brokerage_id")
     .eq("id", campaignId)
     .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
   if (!existing) return { success: false, error: "Campaign not found" }
   if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
-  const { error } = await service
+  // COUNTED (§3, 2026-09-03): an UPDATE the tenant predicate refuses resolves
+  // with error null and zero rows — byte-identical to one that worked — so the
+  // toggle reported success while the campaign stayed as it was. Same shape
+  // completeISACampaign and updateISACampaign already carry.
+  const { data: toggled, error } = await service
     .from("ai_isa_campaigns")
-    .update({ status: newStatus, updated_at: new Date().toISOString() })
+    // is_active mirrors status (see createISACampaign) — the readers that
+    // filter .eq("is_active", true) must agree with the status vocabulary.
+    .update({ status: newStatus, is_active: newStatus === "active", updated_at: new Date().toISOString() })
     .eq("id", campaignId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!toggled || toggled.length === 0) return { success: false, error: "Campaign not found" }
   return { success: true }
+}
+
+/**
+ * Retire a campaign — the TERMINAL transition, merged onto this gated lane from
+ * the deleted `updateCampaignStatus` (tombstone at line ~233).
+ *
+ * `completed` is a live value of the ai_isa_campaigns.status CHECK
+ * (scripts/check-vocabularies.ts:199) and FOUR surfaces already read it —
+ * CampaignCard.tsx:112/166/177 greys the badge and disables Launch + Pause,
+ * OutreachClient.tsx:88/288 does the same — but nothing reachable could WRITE
+ * it, so the terminal state was decorative. This is the missing writer.
+ *
+ * Same rails as toggleCampaignStatus: session-derived brokerage (§4), a
+ * brokerage pin verified BEFORE the mutation and repeated in the predicate,
+ * and `is_active` mirrored false so the readers that filter
+ * .eq("is_active", true) agree with the status vocabulary. One-way: a
+ * completed campaign is not re-opened here, which is why both toggles disable
+ * on it.
+ */
+export async function completeISACampaign(
+  campaignId: string
+): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(campaignId)) return { success: false, error: "Invalid campaign ID" }
+  const service = createServiceClient()
+
+  const { data: existing, error: readError } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id, status")
+    .eq("id", campaignId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Campaign not found" }
+  if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  if (existing.status === "completed") return { success: true }
+
+  // §3: a supabase-js UPDATE that matches NOTHING also resolves with a null
+  // error, so the tenant predicate refusing would read as success. Select the
+  // update and count what came back.
+  const { data: updated, error } = await service
+    .from("ai_isa_campaigns")
+    .update({ status: "completed", is_active: false, updated_at: new Date().toISOString() })
+    .eq("id", campaignId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) return { success: false, error: "Campaign not found" }
+
+  // §6 — reuse the one existing "campaign ended" spelling rather than mint a
+  // twelfth. lib/kernel/lifecycle.ts:84 already maps it. Audit row + reactor
+  // (integrator, 2026-09-03 — was a bare insert).
+  const { error: emitErr } = await emitKernelEvent({
+    event:       KernelEvent.MARKETING_CAMPAIGN_ENDED,
+    entityType:  "campaign",
+    entityId:    campaignId,
+    brokerageId: auth.brokerageId,
+    actorUserId: auth.userId,
+    metadata:    { previousStatus: existing.status },
+  })
+  if (emitErr) console.error(`[completeISACampaign] event emit refused for campaign ${campaignId}: ${emitErr}`)
+
+  return { success: true }
+}
+
+/**
+ * Edit a campaign's SETTINGS after creation — the door the CampaignCard's
+ * channel icons used to router.push toward (`/dashboard/isa/campaigns/[id]`, a
+ * route that never existed) and that the card's tombstone named as missing.
+ * Wired at app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx in
+ * edit mode (campaign prop), opened from CampaignCard's Edit control.
+ *
+ * What this does NOT own, and refuses explicitly rather than dropping:
+ *   · status / is_active — the active↔paused flip is toggleCampaignStatus and
+ *     the terminal transition is completeISACampaign (both above). A patch that
+ *     names either is an error, not a silently-ignored key: a field that is
+ *     "accepted" and discarded renders as "checked and fine" (§4).
+ *   · campaign_type — the segment resolver's dispatch key
+ *     (lib/application/ai-isa.ts:184-200); fixed at creation.
+ *   · brokerage_id / id — tenant-control fields, refused (precedent:
+ *     ai-cma.ts strips them; refusing is stricter and says why).
+ *   · leads_targeted / touches_sent / conversions — engine counters.
+ *   · superadmin_locks / video_enabled / direct_mail_enabled — platform-staff
+ *     activation gates, not broker settings.
+ *
+ * Rules the patch is held to:
+ *   · completed is one-way (see completeISACampaign) — no edits.
+ *   · channels cannot change while ACTIVE: consent screening runs ONCE at
+ *     launch (lib/application/ai-isa.ts:216-227) against the launched channel
+ *     set, so widening it mid-flight would send on a rail nobody screened for.
+ *     Pause first. Channels pass through sanitizeOutreachChannels with email
+ *     always included, exactly as createISACampaign does.
+ *   · max_touches is clamped by clampMaxTouches — the governor
+ *     (lib/ai-isa/isa-outreach-logger.ts:checkMaxTouches) reads the column
+ *     live, so this takes effect on the next touch.
+ *   · target_segment is DEEP-MERGED, never replaced — the launcher reads
+ *     target_segment.score_threshold (lib/application/ai-isa.ts:209) and a
+ *     replace would silently drop every key the caller did not resend.
+ *
+ * TWO SPELLINGS (§6, deliberate and flagged): score_threshold and
+ * touch_interval_days exist BOTH as columns and as target_segment jsonb keys.
+ * The create drawer writes only the jsonb keys; the launcher READS the jsonb
+ * score_threshold; the voice ISA panel READS the touch_interval_days COLUMN
+ * (app/dashboard/voice/isa/isa-campaigns-panel.tsx:152), which had no writer.
+ * Until the merge onto one spelling lands, this action writes the COLUMNS and
+ * keeps the jsonb keys in agreement through the merge — whichever spelling a
+ * reader picks, it sees the same number.
+ */
+export async function updateISACampaign(params: {
+  campaignId: string
+  patch: {
+    name?: string
+    channels?: string[]
+    maxTouches?: number
+    touchIntervalDays?: number
+    scoreThreshold?: number
+    leadTypeFilter?: string | null
+    motivationTypeFilter?: string | null
+    /** Deep-merged onto the stored target_segment, never replaced. */
+    targetSegment?: Record<string, unknown>
+  }
+}): Promise<{ success: boolean; campaign?: ISACampaignRow; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(params.campaignId)) return { success: false, error: "Invalid campaign ID" }
+  const patch = (params.patch ?? {}) as Record<string, unknown>
+
+  // Immutables named in the patch are refused, not dropped. Both spellings of
+  // each (camelCase caller shape and snake_case column) are checked so a
+  // caller passing the row back cannot slip one through.
+  const IMMUTABLE: Array<[key: string, why: string]> = [
+    ["status",       "status is owned by toggleCampaignStatus (active↔paused) and completeISACampaign (terminal)"],
+    ["isActive",     "is_active mirrors status and is owned by toggleCampaignStatus / completeISACampaign"],
+    ["is_active",    "is_active mirrors status and is owned by toggleCampaignStatus / completeISACampaign"],
+    ["campaignType", "campaign_type is fixed at creation — it is the segment resolver's dispatch key"],
+    ["campaign_type","campaign_type is fixed at creation — it is the segment resolver's dispatch key"],
+    ["brokerageId",  "brokerage_id comes from the session, never from the patch"],
+    ["brokerage_id", "brokerage_id comes from the session, never from the patch"],
+    ["id",           "id is the row being edited, not a field of it"],
+  ]
+  for (const [key, why] of IMMUTABLE) {
+    if (key in patch) return { success: false, error: `Cannot edit ${key}: ${why}` }
+  }
+
+  const service = createServiceClient()
+  const { data: existing, error: readError } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id, status, target_segment, channels")
+    .eq("id", params.campaignId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Campaign not found" }
+  if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  if (existing.status === "completed") {
+    return { success: false, error: "A completed campaign cannot be edited" }
+  }
+  if (params.patch.channels !== undefined && existing.status === "active") {
+    return { success: false, error: "Pause the campaign before changing its channels — consent screening ran against the launched set" }
+  }
+  if (
+    (params.patch.leadTypeFilter !== undefined || params.patch.motivationTypeFilter !== undefined) &&
+    existing.status !== "draft"
+  ) {
+    return { success: false, error: "Lead and motivation filters can only be changed while the campaign is a draft" }
+  }
+
+  const updates: Record<string, unknown> = {}
+
+  if (params.patch.name !== undefined) {
+    const name = String(params.patch.name).trim()
+    if (!name) return { success: false, error: "Name is required" }
+    updates.name = name
+  }
+  if (params.patch.channels !== undefined) {
+    const { sanitizeOutreachChannels } = await import("@/lib/campaigns/channels")
+    updates.channels = sanitizeOutreachChannels(["email", ...(params.patch.channels ?? [])])
+  }
+  if (params.patch.maxTouches !== undefined) {
+    updates.max_touches = clampMaxTouches(params.patch.maxTouches)
+  }
+  if (params.patch.leadTypeFilter !== undefined) {
+    updates.lead_type_filter = params.patch.leadTypeFilter
+  }
+  if (params.patch.motivationTypeFilter !== undefined) {
+    updates.motivation_type_filter = params.patch.motivationTypeFilter
+  }
+
+  // The column is authoritative for the two double-spelled settings. Accept the
+  // value from either spelling in the patch, then write BOTH so they agree.
+  const seg = (params.patch.targetSegment ?? {}) as Record<string, unknown>
+  const scoreThreshold = params.patch.scoreThreshold ?? (typeof seg.score_threshold === "number" ? seg.score_threshold : undefined)
+  if (scoreThreshold !== undefined) {
+    if (!Number.isFinite(scoreThreshold) || scoreThreshold < 0 || scoreThreshold > 100) {
+      return { success: false, error: "Score threshold must be between 0 and 100" }
+    }
+    updates.score_threshold = Math.round(scoreThreshold)
+  }
+  const touchIntervalDays = params.patch.touchIntervalDays ?? (typeof seg.touch_interval_days === "number" ? seg.touch_interval_days : undefined)
+  if (touchIntervalDays !== undefined) {
+    if (!Number.isFinite(touchIntervalDays) || touchIntervalDays < 1) {
+      return { success: false, error: "Touch interval must be at least 1 day" }
+    }
+    updates.touch_interval_days = Math.round(touchIntervalDays)
+  }
+
+  if (params.patch.targetSegment !== undefined || scoreThreshold !== undefined || touchIntervalDays !== undefined) {
+    const merged: Record<string, unknown> = {
+      ...((existing.target_segment as Record<string, unknown> | null) ?? {}),
+      ...seg,
+    }
+    if (updates.score_threshold !== undefined)     merged.score_threshold     = updates.score_threshold
+    if (updates.touch_interval_days !== undefined) merged.touch_interval_days = updates.touch_interval_days
+    updates.target_segment = merged
+  }
+
+  // Nothing to write — say so honestly rather than bumping updated_at.
+  if (Object.keys(updates).length === 0) {
+    const { data: unchanged, error: rereadError } = await service
+      .from("ai_isa_campaigns")
+      .select("*")
+      .eq("id", params.campaignId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (rereadError) return { success: false, error: rereadError.message }
+    if (!unchanged) return { success: false, error: "Campaign not found" }
+    return { success: true, campaign: unchanged as ISACampaignRow }
+  }
+  updates.updated_at = new Date().toISOString()
+
+  // §3: an UPDATE that matches nothing resolves with a null error. Select the
+  // update and count what came back; the brokerage predicate is repeated so
+  // the tenant pin verified above also holds at write time.
+  const { data: updated, error } = await service
+    .from("ai_isa_campaigns")
+    .update(updates)
+    .eq("id", params.campaignId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("*")
+  if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) return { success: false, error: "Campaign not found" }
+
+  // NO lifecycle_events row — deliberately. completeISACampaign reuses
+  // KernelEvent.MARKETING_CAMPAIGN_ENDED because "campaign ended" already had a
+  // spelling; lib/kernel/events.ts (read-only to this lane) has NO
+  // campaign-settings-updated spelling — CAMPAIGN_ROI_UPDATED means something
+  // else and MARKETING_CAMPAIGN_* stops at PAUSED/ENDED — and minting a
+  // free-form string would be a second vocabulary (§6). When a spelling exists,
+  // emit it through lib/kernel/emit.ts:emitKernelEvent (the survivor for
+  // lifecycle_events writes), NOT a direct insert like the sibling actions in
+  // this file still do; note emitKernelEvent carries no actor_user_id, so the
+  // actor would ride in metadata.
+
+  return { success: true, campaign: updated[0] as ISACampaignRow }
 }
 
 /** Send a single test touch for a campaign */
@@ -660,7 +1051,27 @@ export async function getGhostRecoveryQueue(_brokerageId?: string): Promise<{
   return { success: true, ghosts }
 }
 
-/** Manual ghost recovery trigger — evaluateOutbound first, then dispatchEmail */
+/**
+ * Manual ghost recovery trigger — runAiIsaComplianceCheck first, then dispatchEmail.
+ *
+ * The gate's verdict WAS COMPUTED AND THROWN AWAY. `const compliance = await
+ * runAiIsaComplianceCheck({…})` ran under a comment reading "Compliance gate —
+ * hard stop", and the next statement checked the lifecycle state and dispatched
+ * the email — `compliance` was never read. Both sibling call sites in this file
+ * refuse on it (line ~332 and line ~799, identically:
+ * `if (!compliance.allowed) return { success: false, error: … }`); this one, the
+ * only manually-triggered send of the three, did not. Every ghost-recovery email
+ * went out with the DNC / TCPA / consent verdict already in hand and discarded.
+ *
+ * "Nobody checked" must never render as "checked and fine" (CLAUDE.md §4) — and
+ * this was worse: it checked, and then ignored the answer.
+ *
+ * The doc comment also named `evaluateOutbound`, and the note at the dispatch
+ * below named `evaluateOutboundCompliance`. Neither function exists in this
+ * file: the gate here is `runAiIsaComplianceCheck`, which wraps
+ * evaluateKernelOutbound. Two wrong names for the live gate is how a reader
+ * concludes the gate is somewhere else and stops looking (CLAUDE.md §6).
+ */
 export async function triggerGhostRecovery(params: {
   contactId: string
   campaignId: string
@@ -696,6 +1107,16 @@ export async function triggerGhostRecovery(params: {
     isaReengageAllowed: true,
   })
 
+  // THE HARD STOP THE COMMENT ABOVE ALWAYS CLAIMED. Same refusal shape as the
+  // two sibling send paths in this file, deliberately — a third spelling of
+  // "compliance said no" would be a third thing to keep in agreement.
+  // THE HARD STOP THE COMMENT ABOVE ALWAYS CLAIMED. Same refusal shape as the
+  // two sibling send paths in this file, deliberately — a third spelling of
+  // "compliance said no" would be a third thing to keep in agreement.
+  if (!compliance.allowed) {
+    return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
+  }
+
   // Hard stop: blocked lifecycle states
   if (["REPRESENTATION", "ACTIVE_TRANSACTION"].includes(contact.lifecycle_state ?? "")) {
     return { success: false, error: `Contact in blocked lifecycle state: ${contact.lifecycle_state}` }
@@ -712,7 +1133,10 @@ export async function triggerGhostRecovery(params: {
     html:           ghostBodyHtml,
     channelPurpose: "campaign",
     systemSource:   "ghost_recovery",
-    leadId:         params.contactId,
+    // contactId, NOT leadId — the recipient was read out of `contacts`. This is
+    // a "campaign" send, the case where express consent matters most, and the
+    // id-space slip was skipping runAiIsaComplianceCheck for all of them.
+    contactId:      params.contactId,
   })
 
   if (!dispatchResult.success) return { success: false, error: dispatchResult.error }
@@ -815,7 +1239,8 @@ export async function retryGhostContact(params: {
       html:           retryBodyHtml,
       channelPurpose: "campaign",
       systemSource:   "ghost_recovery",
-      leadId:         params.contactId,
+      // contactId, NOT leadId — see the note on the first ghost-recovery send.
+      contactId:      params.contactId,
     })
     if (!result.success) return { success: false, error: result.error }
   }

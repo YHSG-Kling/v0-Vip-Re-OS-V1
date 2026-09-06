@@ -105,10 +105,12 @@ export function OffersClient({
       setWinStratLoading(prev => ({ ...prev, [offer.id]: false }))
       return
     }
+    // No person is passed: the winning-offer prediction is about the PROPERTY,
+    // and the identity argument this used to carry gated nothing (owner ruling —
+    // see predictWinningOffer's header).
     const result = await predictWinningOffer({
       propertyMlsId: mlsNumber,
       listPrice:     offer.offer_price,   // buyer's offer price as reference; IDX provides actual list price
-      leadId:        contactId,
     })
     setWinStrategy(prev => ({ ...prev, [offer.id]: result }))
     setWinStratLoading(prev => ({ ...prev, [offer.id]: false }))

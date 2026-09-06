@@ -6,9 +6,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { User } from "lucide-react"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { getSocialAccounts } from "@/app/actions/social-publishing"
-import { VideoSettingsCard, SocialAccountsCard } from "./profile-settings-client"
+import { getMyProfile, getMyAgentIdentity } from "@/app/actions/user-profile"
+import { AgentIdentityCard } from "./agent-identity-card"
+import { VideoSettingsCard, SocialAccountsCard, PersonalWebsiteCard } from "./profile-settings-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
-export const metadata = { title: "My Profile | Settings" }
+export const metadata = { title: "My Profile" }
 
 export default async function AgentProfilePage() {
   const supabase = await createClient()
@@ -17,6 +20,13 @@ export default async function AgentProfilePage() {
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
   const { data: profile } = await service
     .from("users")
@@ -26,45 +36,51 @@ export default async function AgentProfilePage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  const [agentSettings, socialAccounts] = await Promise.all([
+  const [agentSettings, socialAccounts, myProfile, identityRes] = await Promise.all([
     getAgentSettings(user.id),
     getSocialAccounts(user.id, profile.user_type ?? profile.role ?? "agent"),
+    getMyProfile(),
+    getMyAgentIdentity(),
   ])
 
+  const resolvedRole = (profile.user_type ?? profile.role ?? "") as string
+  const isAgent = ["agent", "team_lead", "isa"].includes(resolvedRole)
+
   return (
-    <main className="max-w-2xl mx-auto px-4 py-8 space-y-6">
+    <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
       <div>
         <h1 className="text-xl font-semibold">My Profile</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your personal settings, video configuration, and connected social accounts.
+          Your professional identity — what clients see on presentations, email, and your site.
         </p>
       </div>
 
-      {/* Identity summary — read-only, edit via admin */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <User className="h-4 w-4" />
-            Account Info
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 text-sm">
-          <div>
-            <p className="text-xs text-muted-foreground">Name</p>
-            <p className="font-medium">
-              {[profile.first_name, profile.last_name].filter(Boolean).join(" ") || "—"}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">Email</p>
-            <p className="font-medium">{profile.email ?? "—"}</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">Role</p>
-            <p className="font-medium capitalize">{profile.role ?? profile.user_type ?? "—"}</p>
-          </div>
-        </CardContent>
-      </Card>
+      {/* WHO YOU ARE — walkthrough [44]: this card used to be read-only ("edit via
+          admin"), which is why Profile read as just another Settings page. An agent's
+          name, license, phone and bio are their professional identity; they own them. */}
+      {identityRes.success ? (
+        <AgentIdentityCard
+          identity={identityRes.identity}
+          email={profile.email ?? null}
+          role={resolvedRole || null}
+          isAgent={isAgent}
+        />
+      ) : (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <User className="h-4 w-4" />
+              Who you are
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            Couldn&apos;t load your profile: {identityRes.error}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Personal real-estate website (canonical embed origin + blog byline) */}
+      <PersonalWebsiteCard initialUrl={myProfile.profile?.personal_website_url ?? null} />
 
       {/* Personal email signature */}
       <AgentSignaturePanel currentSignature={profile.email_signature ?? null} />

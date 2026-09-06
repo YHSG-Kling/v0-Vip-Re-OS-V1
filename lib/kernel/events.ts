@@ -34,6 +34,17 @@ export enum KernelEvent {
   LISTING_STAGE_CHANGED                     = 'listing_stage_changed',
   LISTING_CANCELLED                         = 'listing_cancelled',
   LISTING_EXPIRED                           = 'listing_expired',
+  // A listing is RETAINED, never deleted (owner's ruling: "listing shouldn't be
+  // deleted because of rules of needing to keep real estate records"). These two
+  // record the only thing that now happens to it — leaving and re-entering the
+  // working surface — so the record can say WHO took it off the board and when.
+  // An archive with no audit trail is worse than a delete for a retention
+  // record. Survivor of `deleteListing`: lib/kernel/listing-archive.ts.
+  // `lifecycle_events.event_type` carries NO CHECK constraint (verified live on
+  // hrvaqgvukzxfskkcrwbt, 2026-08-23 — only `lifecycle_events_source_check`
+  // exists), so these two values need no migration.
+  LISTING_ARCHIVED                          = 'listing_archived',
+  LISTING_UNARCHIVED                        = 'listing_unarchived',
   COMING_SOON_SENT                          = 'coming_soon_sent',
   OPEN_HOUSE_MARKETING_STARTED              = 'open_house_marketing_started',
   OPEN_HOUSE_ATTENDEE_CAPTURED              = 'open_house_attendee_captured',
@@ -106,6 +117,14 @@ export enum KernelEvent {
   // ── Compliance ────────────────────────────────────────────────────────────
   COMPLIANCE_VIOLATION      = 'compliance_violation',
   AUTHORITY_BLOCKED         = 'authority_blocked',
+  // The Wire-Fraud Sentinel's verdict on a wire-instructions document. Emitted
+  // ONLY by /api/cron/wire-fraud-sentinel, and only on a warn/block verdict —
+  // the escalation itself (CRITICAL agent notification + Deal-Coordinator bus
+  // signal) is done by runWireFraudSentinel; this row is the audit trail AND the
+  // cron's cross-run idempotency key (dedupe_key `wire_fraud:<documentId>`),
+  // which is why it is queried back with no time bound rather than relying on
+  // emitKernelEvent's short dedupe window.
+  WIRE_FRAUD_RISK_DETECTED  = 'wire_fraud_risk_detected',
 
   // ── Lead Acquisition (Track A — Lead-first) ───────────────────────────────
   LEAD_CAPTURED                  = 'lead_captured',
@@ -521,7 +540,17 @@ export enum KernelEvent {
   CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
   CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
   CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
-  CONTACT_LEAD_CONVERTED             = 'contact_lead_converted',
+  // TOMBSTONE — CONTACT_LEAD_CONVERTED ('contact_lead_converted') lived here.
+  // SURVIVOR: LEAD_CONVERTED_TO_CONTACT at lib/kernel/events.ts:147.
+  // It was a SECOND NAME FOR ONE FACT: the manual lane
+  // (lib/kernel/crm.ts convertLeadToContact) emitted this one, the automatic
+  // lane (lib/kernel/lead-acquisition-handlers.ts:538) emitted the survivor.
+  // Because processKernelEvent matches notification_rules.trigger_event on the
+  // event STRING, a conversion rule could only ever cover whichever half of the
+  // traffic happened to use the name it was written against. Retired rather than
+  // aliased: keeping both spellings reachable is what let them drift apart.
+  // Safe to delete outright — measured live before removal: 0 notification_rules
+  // and 0 lifecycle_events rows carried the string.
   CONTACT_AGENT_ASSIGNED             = 'contact_agent_assigned',
   CONTACT_AGENT_NOTIFIED             = 'contact_agent_notified',
   CONTACT_FOLLOWUP_DRAFT_GENERATED   = 'contact_followup_draft_generated',

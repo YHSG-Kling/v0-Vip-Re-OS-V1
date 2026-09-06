@@ -5,6 +5,7 @@
 // admin/broker/superadmin can access any agent within their brokerage.
 
 import { createClient } from "@/lib/supabase/server"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ async function assertCanAccessAgent(params: {
     if (agent.user_id !== params.userId) {
       throw new Error("Forbidden: cannot access other agents' onboarding")
     }
-  } else if (!["admin", "broker", "superadmin"].includes(userType)) {
+  } else if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
   return { brokerageId }
@@ -283,6 +284,10 @@ export async function completeAISessionStep(params: {
   const { completionPercentage, nextCurrentDay } = computeProgress({ steps, completions })
 
   const isComplete = completionPercentage === 100
+  // The PRIOR value, read before the update below — this is what makes the
+  // award a one-time transition rather than a per-call top-up (see the award
+  // block at the end of this function).
+  const wasAlreadyComplete = onboarding.certification_achieved === true
 
   const { error: updateError } = await supabase
     .from("agent_onboarding")
@@ -299,6 +304,46 @@ export async function completeAISessionStep(params: {
 
   if (updateError) {
     throw new Error(`Failed to update onboarding progress: ${updateError.message}`)
+  }
+
+  // ── GAMIFICATION AWARD ON COMPLETION ──────────────────────────────────────
+  // Merged onto this survivor from the deleted legacy twin
+  // (app/actions/ai-agent-onboarding.ts:completeAISessionStep, tombstone at
+  // that file). The legacy copy awarded POINT_VALUES.ONBOARDING_COMPLETED
+  // atomically when its session hit 100%; this canonical copy reached 100% and
+  // awarded NOTHING, which left `ONBOARDING_COMPLETED: 100`
+  // (lib/gamification/award-points.ts:56) a constant with no writer anywhere in
+  // the tree — an agent could finish the whole programme and the leaderboard
+  // would not move.
+  //
+  // NOT ported from the legacy copy: the `agents.is_active = true` +
+  // onboarding_status='completed' auto-activation. Activation is DELIBERATELY
+  // the exam-gated admin act (app/actions/ai-agent-onboarding.ts:certifyAgent,
+  // and lib/onboarding/certification-engine.ts which owns
+  // agents.onboarding_status). Flipping an agent live on mere step completion
+  // would walk straight around the exam gate.
+  //
+  // ONE-TIME. award_agent_points ADDS; it is not idempotent on
+  // referenceType/referenceId. Every step completion after the last one still
+  // computes 100%, so awarding on `isComplete` alone would top the agent up on
+  // every re-save. `wasAlreadyComplete` is the prior certification_achieved,
+  // so the award fires only on the false→true edge.
+  if (isComplete && !wasAlreadyComplete) {
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    const awarded = await awardAgentPoints(supabase, {
+      agentId: params.agentId,
+      points: POINT_VALUES.ONBOARDING_COMPLETED,
+      reason: "ONBOARDING_COMPLETED",
+      referenceType: "agent_onboarding",
+      referenceId: onboarding.id,
+    })
+    if (!awarded.ok) {
+      // The step completion itself already landed and must stand; a refused
+      // award is logged, never swallowed silently (§3).
+      console.error(
+        `[completeAISessionStep] onboarding completion points not awarded for agent ${params.agentId}: ${awarded.error}`,
+      )
+    }
   }
 }
 
@@ -318,7 +363,7 @@ export async function createOnboardingStepForBrokerage(params: {
 }): Promise<{ id: string }> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to create onboarding steps")
   }
 
@@ -367,7 +412,7 @@ export async function updateOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to update onboarding steps")
   }
 
@@ -403,7 +448,7 @@ export async function deleteOnboardingStepForBrokerage(params: {
 }): Promise<void> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to delete onboarding steps")
   }
 
@@ -438,7 +483,7 @@ export async function listOnboardingSteps(params: {
 }): Promise<OnboardingStepRow[]> {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  if (!["admin", "broker", "superadmin"].includes(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     throw new Error("Forbidden: insufficient permissions to list onboarding steps")
   }
 
@@ -521,7 +566,15 @@ export async function submitQuizAttempt(params: {
   agentId: string
   quizId: string
   answers: Record<string, unknown>
-}): Promise<{ score: number; passed: boolean }> {
+}): Promise<{
+  score: number
+  passed: boolean
+  correctCount: number
+  totalQuestions: number
+  attemptNumber: number
+  passingScore: number
+  message: string
+}> {
   const { brokerageId } = await assertCanAccessAgent({
     userId: params.userId,
     agentId: params.agentId,
@@ -554,14 +607,35 @@ export async function submitQuizAttempt(params: {
     : 0
   const passed = score >= quiz.passing_score
 
-  // Count existing attempts for attempt_number
-  const { count: prevAttempts } = await supabase
+  // THE STORED LEDGER IS THE SURVIVOR (§1.1 merge-then-tombstone, w26 lane C8).
+  //
+  // TOMBSTONE: the `count: "exact", head: true` re-derivation that stood here is GONE.
+  // SURVIVOR: `agent_quiz_attempts.attempt_number` — this file's own column at :637
+  // below, written on every attempt and, until now, read by nothing. Two spellings of
+  // "which attempt is this" (§6) that could disagree: a COUNT answers "how many rows
+  // survive", the ledger answers "how far the sequence got". They diverge the moment a
+  // row is deleted or a retention sweep trims history — the count then reissues an
+  // attempt_number the agent has already been shown, and the ledger silently holds two
+  // rows claiming to be attempt 3. Reading MAX and adding one cannot reissue.
+  const { data: lastAttempt, error: attemptReadError } = await supabase
     .from("agent_quiz_attempts")
-    .select("id", { count: "exact", head: true })
+    .select("attempt_number")
     .eq("agent_id", params.agentId)
     .eq("quiz_id", params.quizId)
+    .order("attempt_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  const attemptNumber = (prevAttempts ?? 0) + 1
+  // supabase-js RESOLVES a failed query, so a bare `{ data }` turns "permission denied"
+  // into null — which would both stamp attempt_number 1 on every retry (violating the
+  // attempt ledger) and report "attempt 1" back to the agent forever. attemptNumber is
+  // user-visible, so this must throw.
+  if (attemptReadError) {
+    throw new Error(`Failed to read prior quiz attempts: ${attemptReadError.message}`)
+  }
+
+  const priorAttemptNumber = Number((lastAttempt as { attempt_number: number | null } | null)?.attempt_number ?? 0)
+  const attemptNumber = (Number.isFinite(priorAttemptNumber) ? priorAttemptNumber : 0) + 1
 
   // Insert attempt record
   const { error: insertError } = await supabase
@@ -592,5 +666,15 @@ export async function submitQuizAttempt(params: {
     }
   }
 
-  return { score, passed }
+  return {
+    score,
+    passed,
+    correctCount,
+    totalQuestions: questions.length,
+    attemptNumber,
+    passingScore: quiz.passing_score,
+    message: passed
+      ? `Congratulations! You passed with ${score}%`
+      : `Score: ${score}%. Need ${quiz.passing_score}% to pass. Review and try again.`,
+  }
 }

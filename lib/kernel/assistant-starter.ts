@@ -68,7 +68,7 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
       })
       if (intro?.videoUrl) {
         const { data: admins } = await svc.from("users").select("id")
-          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
+          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
         for (const u of ((admins ?? []) as any[])) {
           await svc.from("notifications").insert({
             user_id: u.id, brokerage_id: brokerageId, type: "assistant_intro",

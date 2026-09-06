@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -52,11 +51,26 @@ export async function generateMarketReport(params: {
   const supabase = await createClient()
 
   try {
-    // Get market data from database
+    // Get market data from database.
+    //
+    // `county` is NOT a column on market_data — the table geolocates by zip_code, city, state
+    // and the curated `market_area` label, and NO table in the schema has a `county` column at
+    // all. PostgREST rejects the ENTIRE request when an .or() string names an unknown column,
+    // so this read returned null for every caller (county supplied or not) and every "market
+    // report" below has been generated from an empty market_data set.
+    // The county term is DROPPED rather than repointed: `market_area` is a free-text area label
+    // written by market_data_sources ("Austin Metro"), not a county, so ilike-matching a county
+    // name against it would be a guess. Restoring county filtering needs a real
+    // market_data.county column first. params.county still reaches the model below, in the
+    // prompt's "Market Area" line.
+    //
+    // NB: this comment sits ABOVE the statement on purpose — a comment BETWEEN chained calls
+    // ends the contiguous method chain that schema-drift-guard attributes filters by, which
+    // would hide this very .or() from the check that found it.
     const { data: marketData } = await supabase
       .from("market_data")
       .select("*")
-      .or(`zip_code.eq.${params.zipCode},city.ilike.%${params.city}%,county.ilike.%${params.county}%`)
+      .or(`zip_code.eq.${params.zipCode},city.ilike.%${params.city}%`)
       .order("data_date", { ascending: false })
       .limit(100)
 
@@ -148,25 +162,53 @@ Provide actionable market intelligence including:
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `predictPropertyPrice` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `app/actions/ai-listing-intake.ts:aiSuggestListPrice` (declared at
+ * app/actions/ai-listing-intake.ts:412). It answers the same question — "what
+ * should this property be priced at" — and unlike this one it has a real surface:
+ * ListingIntelligenceCard on the listing lifecycle page
+ * (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx).
+ * This function had no caller anywhere in the tree.
+ *
+ * MERGED ONTO THE SURVIVOR BEFORE THIS DELETE, in this order:
+ *   1. COMPARABLE-SALES RETRIEVAL — the only thing this function did that the
+ *      survivor could not. It read the caller's own brokerage's SOLD listings in
+ *      the same zip within an adjacent-bedroom band and priced against them. The
+ *      survivor took `comparables` as an optional parameter that its one caller
+ *      never supplied, so every list-price recommendation the product has ever
+ *      shown was generated from the string "No comps provided". That read now
+ *      lives in aiSuggestListPrice, with the refusal surfaced instead of being
+ *      read as "no comps exist".
+ *   2. `confidenceLevel`, `marketPositioning`, `comparablesSummary` and
+ *      `marketTiming` — output fields the survivor's schema lacked.
+ *
+ * Nothing was dropped: `estimatedPrice` / `priceRangeLow` / `priceRangeHigh` /
+ * `pricePerSqft` / `valueFactors` / `listingRecommendation` are the survivor's
+ * `suggestedListPrice` / `priceRangeLow` / `priceRangeHigh` / `pricePerSqFt` /
+ * `adjustments` / (`suggestedListPrice` + `reasoning` + `daysOnMarketEstimate`).
+ * ───────────────────────────────────────────────────────────────────────────── */
+
 /**
- * AI-powered price prediction for a specific property
+ * Get real-time market alerts for an agent's focus areas.
+ *
+ * The `requireCaller()` gate below is NEW and is the whole point of this note.
+ * Three of the four exports in this file (generateMarketReport,
+ * predictPropertyPrice) call it as their first act; this one did not — and it
+ * is a `"use server"` export, so it was an anonymously reachable endpoint that
+ * ran a `generateObject` model call on every hit. Unauthenticated, unmetered,
+ * unbounded AI spend: a loop against this URL bills the platform until someone
+ * notices the invoice. The gate it needed already existed one screen up.
+ *
+ * The agent read is now tenant-anchored too. `params.agentId` was previously
+ * only UUID-shape-checked and then used to read another row's
+ * `specializations`; it is now required to be an agent of the caller's own
+ * brokerage.
  */
-export async function predictPropertyPrice(params: {
+export async function getMarketAlerts(params: {
   agentId: string
-  propertyData: {
-    address: string
-    city: string
-    state: string
-    zipCode: string
-    bedrooms: number
-    bathrooms: number
-    sqft: number
-    lotSize?: number
-    yearBuilt?: number
-    propertyType: string
-    features?: string[]
-    condition?: string
-  }
+  alertTypes?: ("price_change" | "new_listing" | "market_shift" | "opportunity")[]
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
@@ -178,91 +220,22 @@ export async function predictPropertyPrice(params: {
   const supabase = await createClient()
 
   try {
-    // Get comparable sales
-    const { data: comps } = await supabase
-      .from("listings")
-      .select("*")
-      // tenant anchor (scope burn-down): comps from the caller's own brokerage inventory
-      .eq("brokerage_id", auth.brokerageId)
-      .eq("zip", params.propertyData.zipCode)
-      .eq("status", "sold")
-      .gte("bedrooms", params.propertyData.bedrooms - 1)
-      .lte("bedrooms", params.propertyData.bedrooms + 1)
-      .order("go_live_date", { ascending: false })
-      .limit(20)
-
-    const { object: prediction } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        estimatedPrice: z.number(),
-        priceRangeLow: z.number(),
-        priceRangeHigh: z.number(),
-        confidenceLevel: z.enum(["high", "medium", "low"]),
-        pricePerSqft: z.number(),
-        marketPositioning: z.enum(["below_market", "at_market", "above_market"]),
-        comparablesSummary: z.string(),
-        valueFactors: z.array(z.object({
-          factor: z.string(),
-          impact: z.enum(["positive", "negative", "neutral"]),
-          adjustment: z.number(),
-          explanation: z.string()
-        })),
-        listingRecommendation: z.object({
-          suggestedListPrice: z.number(),
-          strategy: z.string(),
-          expectedDaysOnMarket: z.number()
-        }),
-        marketTiming: z.object({
-          recommendation: z.enum(["list_now", "wait", "price_aggressively"]),
-          reasoning: z.string()
-        })
-      }),
-      prompt: `Predict the market value for this property:
-
-Property Details:
-${JSON.stringify(params.propertyData, null, 2)}
-
-Comparable Sales:
-${JSON.stringify(comps || [], null, 2)}
-
-Provide:
-1. Estimated market value with confidence range
-2. Price per square foot analysis
-3. Value adjustment factors (location, condition, features)
-4. Optimal listing price recommendation
-5. Market timing advice`
-    })
-
-    return {
-      success: true,
-      prediction
-    }
-  } catch (error) {
-    console.error("[v0] Predict property price error:", error)
-    return handleError(error, "predictPropertyPrice")
-  }
-}
-
-/**
- * Get real-time market alerts for an agent's focus areas
- */
-export async function getMarketAlerts(params: {
-  agentId: string
-  alertTypes?: ("price_change" | "new_listing" | "market_shift" | "opportunity")[]
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get agent's focus areas
-    const { data: agentProfile } = await supabase
+    // Get agent's focus areas — tenant anchor: the named agent must be in the
+    // caller's brokerage. Destructure the error: a refused read must not look
+    // like "this agent has no specializations" and then still spend on a model.
+    const { data: agentProfile, error: agentErr } = await supabase
       .from("agents")
       .select("specializations")
       .eq("id", params.agentId)
-      .single()
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+
+    if (agentErr) {
+      return { success: false, error: "Could not load that agent." }
+    }
+    if (!agentProfile) {
+      return { success: false, error: "Agent not found in your brokerage" }
+    }
 
     // Get recent market changes
     const { data: recentChanges } = await supabase

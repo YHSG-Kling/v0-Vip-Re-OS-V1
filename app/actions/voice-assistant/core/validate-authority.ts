@@ -7,7 +7,10 @@
  */
 
 import { createClient } from '@/lib/supabase/server'
-import { VOICE_AUTHORITY_MATRIX } from '../helpers/authority-matrix'
+// The matrix's OWN key/role types ride along so this gate cannot respell them
+// inline (`keyof typeof …` here was a second spelling of VoiceCommandType, §6).
+import { VOICE_AUTHORITY_MATRIX, type VoiceCommandType, type AllowedRole } from '../helpers/authority-matrix'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface AuthorityValidationResult {
   allowed: boolean
@@ -35,7 +38,7 @@ export async function validateAuthority(request: ValidateAuthorityRequest): Prom
 
   try {
     // Check role-based authority
-    const commandRoles = VOICE_AUTHORITY_MATRIX[command as keyof typeof VOICE_AUTHORITY_MATRIX]
+    const commandRoles = VOICE_AUTHORITY_MATRIX[command as VoiceCommandType]
 
     if (!commandRoles) {
       // Command not in matrix - deny by default
@@ -46,7 +49,7 @@ export async function validateAuthority(request: ValidateAuthorityRequest): Prom
       }
     }
 
-    if (!(commandRoles as readonly string[]).includes(user_role)) {
+    if (!(commandRoles as readonly AllowedRole[]).includes(user_role as AllowedRole)) {
       return {
         allowed: false,
         denial_reason: `You do not have permission to ${command.replace(/_/g, ' ')}`,
@@ -126,7 +129,7 @@ async function validateListingAccess(
   }
 
   // Admin/broker can access all listings in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
+  if (isAdminOrBroker({ user_type: user.user_type ?? user.role ?? '' })) {
     return true
   }
 
@@ -172,7 +175,7 @@ async function validateContactAccess(
   }
 
   // Admin/broker/team_leader can access all contacts in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
+  if (isAdminOrBroker({ user_type: user.user_type ?? user.role ?? '' })) {
     return true
   }
 

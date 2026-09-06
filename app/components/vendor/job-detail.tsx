@@ -23,12 +23,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { FileText, MessageSquare, DollarSign, Clock, CheckCircle2, Upload } from "lucide-react"
+import { FileText, MessageSquare, DollarSign, CheckCircle2, Upload } from "lucide-react"
+import { checkUpload, uploadCeilingBytes } from "@/lib/storage/file-limits"
 import {
   updateVendorJobStatus,
   addVendorJobNote,
   updateVendorJobCost,
   sendVendorMessageToAgent,
+  uploadVendorJobDocument,
 } from "@/app/actions/vendor-portal"
 
 interface VendorJobDetailProps {
@@ -36,14 +38,69 @@ interface VendorJobDetailProps {
   vendorId: string
 }
 
+/**
+ * `transaction_documents.doc_type` is free text on the live schema (no CHECK),
+ * so this list is the vendor-facing vocabulary rather than a DB constraint.
+ * Keep it aligned with the labels the TC/agent document surfaces already read
+ * (`inspection_report` is the value `transaction-inspections.ts` writes).
+ */
+const VENDOR_DOC_TYPES: Array<{ value: string; label: string }> = [
+  { value: "invoice",           label: "Invoice" },
+  { value: "inspection_report", label: "Inspection / Service Report" },
+  { value: "job_photo",         label: "Job Photo" },
+  { value: "completion_report", label: "Completion Report" },
+  { value: "estimate",          label: "Estimate / Quote" },
+  { value: "permit",            label: "Permit" },
+  { value: "warranty",          label: "Warranty" },
+  { value: "other",             label: "Other" },
+]
+
+/**
+ * The Server Action boundary carries JSON, not binary — a `File`/`Buffer` is not
+ * serializable across it — so the bytes travel as a `data:` URL, which
+ * `uploadVendorJobDocument` already decodes.
+ *
+ * Size: the reasoning that produced the 5 MB constant here was right in shape
+ * and wrong in its inputs — it read next.config.ts's `serverActions.bodySizeLimit:
+ * '8mb'` as the ceiling. Vercel caps a function request body at 4.5 MB IN FRONT
+ * of the framework, so the true budget is 4.5 MB of base64 = ~3.4 MB of file,
+ * and the action's own 25 MB cap it mentions has been deleted for the same
+ * reason. The number now comes from lib/storage/file-limits.ts, which folds the
+ * transport and the destination bucket together; BROWSER_UPLOAD_MAX_BYTES is its
+ * survivor, derived rather than hand-kept, so the copy below the dropzone and
+ * the check in the loop can never disagree.
+ */
+const BROWSER_UPLOAD_MAX_BYTES = uploadCeilingBytes({
+  bucket: "transaction-documents",
+  transport: "server_action_base64",
+})
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`))
+    reader.onload = () => resolve(String(reader.result ?? ""))
+    reader.readAsDataURL(file)
+  })
+}
+
 export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
   const [status, setStatus] = useState(job.status)
   const [vendorNotes, setVendorNotes] = useState(job.vendor_notes || "")
   const [costActual, setCostActual] = useState(job.cost_actual?.toString() || "")
+  const [costEstimate, setCostEstimate] = useState(job.cost_estimate?.toString() || "")
   const [message, setMessage] = useState("")
   const [loading, setLoading] = useState(false)
   const [saveStatus, setSaveStatus] = useState("")
   const [showMarkComplete, setShowMarkComplete] = useState(false)
+  const [docType, setDocType] = useState("invoice")
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState("")
+  const [uploadedDocs, setUploadedDocs] = useState<string[]>([])
+
+  // `uploadVendorJobDocument` verifies the job links to THIS transaction, so the
+  // id has to come from the job row the server already scoped to this vendor.
+  const transactionId: string | undefined = job?.vendor_assignments?.transaction_id
 
   const handleStatusChange = async (newStatus: string) => {
     setLoading(true)
@@ -81,22 +138,96 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
     setLoading(false)
   }
 
-  const handleCostChange = async () => {
-    if (!costActual.trim()) return
+  /**
+   * Save the money on this job. `field` says WHICH figure the vendor just typed:
+   * the quote (before the work) or the final bill (after it). Before this, the
+   * estimate had no writer at all and the "Estimated Cost" panel below could only
+   * ever read "N/A".
+   */
+  const handleCostChange = async (field: "estimate" | "actual") => {
+    const raw = field === "estimate" ? costEstimate : costActual
+    if (!raw.trim()) return
+    const amount = parseFloat(raw)
+    if (!Number.isFinite(amount) || amount < 0) {
+      setSaveStatus("Enter a non-negative amount")
+      return
+    }
     setLoading(true)
     setSaveStatus("")
     try {
       await updateVendorJobCost({
         jobId: job.id,
         vendorId,
-        costActual: parseFloat(costActual),
+        ...(field === "estimate" ? { costEstimate: amount } : { costActual: amount }),
       })
-      setSaveStatus("Cost updated")
+      setSaveStatus(field === "estimate" ? "Quote saved" : "Cost updated")
       setTimeout(() => setSaveStatus(""), 2000)
     } catch (error) {
-      setSaveStatus("Failed to update cost")
+      setSaveStatus(field === "estimate" ? "Failed to save the quote" : "Failed to update cost")
     }
     setLoading(false)
+  }
+
+  const handleFilesSelected = async (files: File[]) => {
+    if (files.length === 0) return
+
+    setUploadError("")
+
+    if (!transactionId) {
+      setUploadError("This job is not linked to a transaction yet, so documents cannot be filed against it.")
+      return
+    }
+
+    setUploading(true)
+    const succeeded: string[] = []
+    const failures: string[] = []
+
+    // Sequential, not Promise.all — each call carries a whole file body and the
+    // action stores the object before inserting the row; firing them together
+    // would race the 8MB action body budget.
+    for (const file of files) {
+      if (file.size === 0) {
+        failures.push(`${file.name} is empty`)
+        continue
+      }
+      // COURTESY ONLY — attachVendorJobDocument holds the real gate.
+      const gate = checkUpload({
+        bucket: "transaction-documents",
+        transport: "server_action_base64",
+        bytes: file.size,
+        contentType: file.type,
+      })
+      if (!gate.ok) {
+        failures.push(`${file.name}: ${gate.reason}`)
+        continue
+      }
+      try {
+        const dataUrl = await readFileAsDataUrl(file)
+        // Throws (it does not return {success:false}) on any gate/storage/insert
+        // failure, so a rejection here means nothing was filed — never report
+        // this file as uploaded.
+        await uploadVendorJobDocument({
+          jobId: job.id,
+          transactionId,
+          vendorId,
+          documentType: docType,
+          fileName: file.name,
+          fileData: dataUrl,
+        })
+        succeeded.push(file.name)
+      } catch (error) {
+        failures.push(`${file.name} — ${error instanceof Error ? error.message : "upload failed"}`)
+      }
+    }
+
+    if (succeeded.length > 0) {
+      setUploadedDocs((prev) => [...prev, ...succeeded])
+      setSaveStatus(`Uploaded ${succeeded.length} document${succeeded.length === 1 ? "" : "s"}`)
+      setTimeout(() => setSaveStatus(""), 2500)
+    }
+    if (failures.length > 0) setUploadError(failures.join("; "))
+
+    setUploading(false)
   }
 
   const handleSendMessage = async () => {
@@ -196,10 +327,29 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label className="text-muted-foreground text-sm">Estimated Cost</Label>
-              <p className="text-2xl font-bold">
-                ${job.cost_estimate?.toLocaleString() || "N/A"}
-              </p>
+              <Label htmlFor="cost_estimate" className="text-sm">
+                Estimated Cost (your quote)
+              </Label>
+              <div className="flex gap-2 mt-1">
+                <Input
+                  id="cost_estimate"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Enter your quote"
+                  value={costEstimate}
+                  onChange={(e) => setCostEstimate(e.target.value)}
+                  disabled={loading}
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => handleCostChange("estimate")}
+                  disabled={loading || !costEstimate.trim()}
+                  size="sm"
+                >
+                  Save
+                </Button>
+              </div>
             </div>
             <div>
               <Label htmlFor="cost_actual" className="text-sm">
@@ -209,6 +359,8 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
                 <Input
                   id="cost_actual"
                   type="number"
+                  min="0"
+                  step="0.01"
                   placeholder="Enter actual cost"
                   value={costActual}
                   onChange={(e) => setCostActual(e.target.value)}
@@ -216,7 +368,7 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
                 />
                 <Button
                   variant="outline"
-                  onClick={handleCostChange}
+                  onClick={() => handleCostChange("actual")}
                   disabled={loading || !costActual.trim()}
                   size="sm"
                 >
@@ -269,28 +421,74 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
           </CardTitle>
           <CardDescription>Job photos, invoices, and completion reports</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="border-2 border-dashed rounded-lg p-8 text-center hover:bg-muted/50 transition-colors cursor-pointer">
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="doc-type" className="text-sm">
+              Document type
+            </Label>
+            <Select value={docType} onValueChange={setDocType} disabled={uploading}>
+              <SelectTrigger id="doc-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VENDOR_DOC_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="border-2 border-dashed rounded-lg p-8 text-center hover:bg-muted/50 transition-colors">
             <Upload className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
             <p className="text-sm font-medium">Upload documents</p>
-            <p className="text-xs text-muted-foreground">Drag and drop or click to select</p>
+            <p className="text-xs text-muted-foreground">
+              Filed against this transaction. Up to{" "}
+              {Math.floor(BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024))}MB per file.
+            </p>
             <input
               type="file"
               multiple
               className="sr-only"
               id="doc-upload"
-              disabled={loading}
+              disabled={uploading || !transactionId}
+              onChange={(e) => {
+                // Snapshot before clearing — `files` is live and resetting
+                // `value` empties it. Reset so re-picking the same file still
+                // fires `change`.
+                const picked = Array.from(e.target.files ?? [])
+                e.target.value = ""
+                void handleFilesSelected(picked)
+              }}
             />
             <Button
               variant="outline"
               size="sm"
               className="mt-4"
-              disabled={loading}
+              disabled={uploading || !transactionId}
               onClick={() => document.getElementById("doc-upload")?.click()}
             >
-              Choose Files
+              {uploading ? "Uploading…" : "Choose Files"}
             </Button>
+            {!transactionId && (
+              <p className="text-xs text-amber-600 mt-3">
+                This job is not linked to a transaction yet, so documents cannot be filed against it.
+              </p>
+            )}
           </div>
+
+          {uploadedDocs.length > 0 && (
+            <ul className="text-sm space-y-1">
+              {uploadedDocs.map((name, i) => (
+                <li key={`${name}-${i}`} className="flex items-center gap-2 text-green-700">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  <span className="truncate">{name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {uploadError && <p className="text-sm text-red-600">{uploadError}</p>}
         </CardContent>
       </Card>
 

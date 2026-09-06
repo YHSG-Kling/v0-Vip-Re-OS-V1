@@ -19,6 +19,23 @@
 //   3. WALKTHROUGH PREMIERE — a photo-rich listing entering its marketing
 //      window gets the Ken Burns PhotoWalkthroughReel as its day-one asset,
 //      idempotent per listing. Every listing premieres with a video.
+//
+// ── THE PRINT PLAYS ASK THE CONTENT CONTRACT FIRST ──────────────────────────
+// runListingFlyers and runDoorHangers do NOT go through the Director (they are
+// stills, queued straight onto remotion_composition_renders), so they were
+// outside the ONE place that refuses an unrenderable piece before it costs
+// anything. They staged `price: ""` for a listing with no list_price,
+// `highlights: []` for one with no public_remarks, and `agentPhone: ""` for an
+// agent with no phone on their users row — every one of which `isSupplied`
+// reads as NOT SUPPLIED, so render-composition's backstop CANCELLED the render.
+// The runner still counted it (`out.flyers += 1`), and because the idempotency
+// probe matched ANY render row for the listing with no status filter, that
+// cancelled row then blocked the listing from EVER getting a flyer again — the
+// day the agent added their phone number changed nothing. Three parts, all
+// below: ask missingContentProps BEFORE recordRenderQueued and count the skip by
+// name; exclude 'cancelled' from both probes so a fixed listing can retry; and
+// increment the success counters only for a row that actually landed.
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 
 export interface RateMoment {
   moment: boolean
@@ -142,8 +159,8 @@ export async function runWalkthroughPremieres(svc: any): Promise<Pick<VideoPlays
  *  gets the 8.5x11 print flyer (still render, tracked scan-to-tour QR),
  *  idempotent per listing; the finished PNG is handed to THE AGENT. Closes
  *  the print family (the QR system anticipated `listing_flyer` for years). */
-export async function runListingFlyers(svc: any): Promise<{ flyers: number; delivered: number; errors: number }> {
-  const out = { flyers: 0, delivered: 0, errors: 0 }
+export async function runListingFlyers(svc: any): Promise<{ flyers: number; skipped: number; delivered: number; errors: number }> {
+  const out = { flyers: 0, skipped: 0, delivered: 0, errors: 0 }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: listings } = await svc.from("listings")
     .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage")
@@ -154,9 +171,14 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; deli
     const hero = l.primary_photo_url ?? photos[0]
     if (!hero) continue
     try {
+      // A CANCELLED row is not a flyer — it is the record of one that could not
+      // be rendered. Counting it as "already produced" is what turned a
+      // one-tick content gap into a permanent one, so it is excluded here.
       const { data: existing } = await svc.from("remotion_composition_renders").select("id")
         .eq("brokerage_id", l.brokerage_id).eq("composition_id", "ListingFlyer")
-        .eq("entity_type", "listing_flyer").eq("entity_id", l.id).limit(1).maybeSingle()
+        .eq("entity_type", "listing_flyer").eq("entity_id", l.id)
+        .neq("render_status", "cancelled")
+        .limit(1).maybeSingle()
       if (existing) continue
 
       const { data: agent } = await svc.from("agents").select("user_id, photo_url, profile_image_url").eq("id", l.agent_id).maybeSingle()
@@ -165,35 +187,78 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; deli
       const { data: u } = await svc.from("users").select("first_name, last_name, phone").eq("id", agentUserId).maybeSingle()
       const agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || "Your Agent" : "Your Agent"
 
+      const stage = String(l.lifecycle_stage ?? "").toUpperCase()
+      const statusLine = stage.startsWith("OPEN_HOUSE") ? "OPEN HOUSE" : stage === "COMING_SOON_ACTIVE" ? "COMING SOON" : "JUST LISTED"
+      const highlights = String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 4)
+      const price = l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : ""
+
+      // THE CONTENT GATE RUNS BEFORE THE QR IS MINTED. Every prop ListingFlyer
+      // REQUIRES is already known at this point — none of them comes from the
+      // brand row or the QR — so the refusal costs nothing: no qr_codes slug is
+      // minted for a piece that cannot exist, which is the same defect the
+      // buyer-match reel carried one lane over.
+      const claims: Record<string, unknown> = {
+        address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+        price, beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
+        sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "", propertyType: l.property_type ?? "",
+        highlights, agentName, agentPhone: (u as any)?.phone ?? "", statusLine,
+      }
+      const missingEarly = missingContentProps("ListingFlyer", claims)
+      if (missingEarly.length > 0) {
+        out.skipped += 1
+        console.warn(`[video-plays] listing ${l.id} flyer skipped — ${describeMissingContent("ListingFlyer", missingEarly)}`)
+        continue
+      }
+
       const [{ resolveReelBrand }, { mintVideoQr }] = await Promise.all([
         import("@/lib/video/reel-brand"), import("@/lib/video/video-qr"),
       ])
       const brand = await resolveReelBrand(svc, l.brokerage_id)
       const qr = await mintVideoQr({ brokerageId: l.brokerage_id, agentUserId, kind: "just_listed", listingId: l.id }, svc)
 
-      const stage = String(l.lifecycle_stage ?? "").toUpperCase()
-      const statusLine = stage.startsWith("OPEN_HOUSE") ? "OPEN HOUSE" : stage === "COMING_SOON_ACTIVE" ? "COMING SOON" : "JUST LISTED"
-      const highlights = String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 4)
-      const price = l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : ""
+      const inputProps: Record<string, unknown> = {
+        address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+        price, beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
+        sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "", propertyType: l.property_type ?? "",
+        highlights, heroImageUrl: hero, photoUrls: photos.slice(1, 4),
+        agentName, agentPhone: (u as any)?.phone ?? "",
+        agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
+        qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan to tour",
+        statusLine,
+        brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+      }
+
+      // THE AUTHORITATIVE GATE, on the payload that will actually be staged —
+      // the same question the render backstop asks. The early check above is a
+      // spend guard; this one is the contract. A flyer with no price, no
+      // highlights or no agent phone is not a flyer with a gap: the contract
+      // reads "" and [] as unsupplied, so Remotion would merge the Studio sample
+      // data over them and render-composition cancels the render. Skipping by
+      // NAME (and counting it) is what turns an invisible cancellation into
+      // something an agent can act on.
+      const missing = missingContentProps("ListingFlyer", inputProps)
+      if (missing.length > 0) {
+        out.skipped += 1
+        console.warn(`[video-plays] listing ${l.id} flyer skipped — ${describeMissingContent("ListingFlyer", missing)}`)
+        continue
+      }
 
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
       const rq = await recordRenderQueued({
         brokerageId: l.brokerage_id, compositionId: "ListingFlyer", agentUserId,
         entityType: "listing_flyer", entityId: l.id,
-        inputProps: {
-          address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
-          price, beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
-          sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "", propertyType: l.property_type ?? "",
-          highlights, heroImageUrl: hero, photoUrls: photos.slice(1, 4),
-          agentName, agentPhone: (u as any)?.phone ?? "",
-          agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
-          qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan to tour",
-          statusLine,
-          brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
-        },
+        inputProps,
         scopeType: "brokerage", scopeId: l.brokerage_id, requestedVia: "cron",
       })
+      // Only a row that actually landed is a flyer. A refused insert used to
+      // fall through both counters and report as a clean tick (§3 — supabase-js
+      // resolves refusals; recordRenderQueued hands the message back on `.error`
+      // and nobody read it).
       if (rq.ok) out.flyers += 1
+      else {
+        out.errors += 1
+        console.warn(`[video-plays] listing ${l.id} flyer queue refused: ${rq.error ?? "unknown"}`)
+      }
     } catch { out.errors += 1 }
   }
 
@@ -227,8 +292,12 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; deli
  *  a scan-to-value QR (4.25x11 @ 300 DPI print still, dashed knob die-cut
  *  guide). Idempotent per listing (entity_type door_hanger). A print STILL,
  *  not a Director video — it queues the render directly like the flyer. */
-export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; hangersDelivered: number; hangerErrors: number }> {
-  const out = { doorHangers: 0, hangersDelivered: 0, hangerErrors: 0 }
+export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; hangersSkipped: number; hangersDelivered: number; hangerErrors: number }> {
+  // `hangersSkipped`, not `skipped` — the video-plays cron merges this bag over
+  // the flyer bag into one summary object, so an unprefixed key would silently
+  // overwrite the flyer count. The rest of this shape is already prefixed for
+  // the same reason.
+  const out = { doorHangers: 0, hangersSkipped: 0, hangersDelivered: 0, hangerErrors: 0 }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: listings } = await svc.from("listings")
     .select("id, brokerage_id, agent_id, address, city, state, photos, primary_photo_url, lifecycle_stage, updated_at")
@@ -239,9 +308,12 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
     const hero = l.primary_photo_url ?? photos[0]
     if (!hero) continue
     try {
+      // Cancelled ≠ produced — see the flyer probe above.
       const { data: existing } = await svc.from("remotion_composition_renders").select("id")
         .eq("brokerage_id", l.brokerage_id).eq("composition_id", "DoorHanger")
-        .eq("entity_type", "door_hanger").eq("entity_id", l.id).limit(1).maybeSingle()
+        .eq("entity_type", "door_hanger").eq("entity_id", l.id)
+        .neq("render_status", "cancelled")
+        .limit(1).maybeSingle()
       if (existing) continue
 
       const { data: agent } = await svc.from("agents").select("user_id, photo_url, profile_image_url").eq("id", l.agent_id).maybeSingle()
@@ -250,15 +322,31 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
       const { data: u } = await svc.from("users").select("first_name, last_name, phone").eq("id", agentUserId).maybeSingle()
       const agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || "Your Agent" : "Your Agent"
 
+      // The neighbor hook is AI-written per listing (the copy rail bakes in
+      // the Fair-Housing rules) — the deterministic line is only the fallback,
+      // and it is never empty, so the content gate can run against it BEFORE
+      // the QR is minted and before a model is paid to write a hook for a piece
+      // that cannot be printed.
+      let hook = "Curious what YOUR home is worth in today's market?"
+
+      const claims: Record<string, unknown> = {
+        headline: "JUST SOLD",
+        address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+        hook, agentName, agentPhone: (u as any)?.phone ?? "",
+      }
+      const missingEarly = missingContentProps("DoorHanger", claims)
+      if (missingEarly.length > 0) {
+        out.hangersSkipped += 1
+        console.warn(`[video-plays] listing ${l.id} door hanger skipped — ${describeMissingContent("DoorHanger", missingEarly)}`)
+        continue
+      }
+
       const [{ resolveReelBrand }, { mintVideoQr }] = await Promise.all([
         import("@/lib/video/reel-brand"), import("@/lib/video/video-qr"),
       ])
       const brand = await resolveReelBrand(svc, l.brokerage_id)
       const qr = await mintVideoQr({ brokerageId: l.brokerage_id, agentUserId, kind: "just_sold", listingId: l.id }, svc)
 
-      // The neighbor hook is AI-written per listing (the copy rail bakes in
-      // the Fair-Housing rules) — the deterministic line is only the fallback.
-      let hook = "Curious what YOUR home is worth in today's market?"
       try {
         const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
         const draft = await generatePersonaCopy(
@@ -268,23 +356,38 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
         hook = (draft.body || hook).slice(0, 110)
       } catch { /* fallback hook stands */ }
 
+      const inputProps: Record<string, unknown> = {
+        headline: "JUST SOLD",
+        address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+        heroImageUrl: hero,
+        hook,
+        agentName, agentPhone: (u as any)?.phone ?? "",
+        agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
+        qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan for your home's value",
+        brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+      }
+
+      // DoorHanger requires agentPhone — a door-knock piece whose only route
+      // back to the agent is blank is exactly what the contract refuses.
+      const missing = missingContentProps("DoorHanger", inputProps)
+      if (missing.length > 0) {
+        out.hangersSkipped += 1
+        console.warn(`[video-plays] listing ${l.id} door hanger skipped — ${describeMissingContent("DoorHanger", missing)}`)
+        continue
+      }
+
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
       const rq = await recordRenderQueued({
         brokerageId: l.brokerage_id, compositionId: "DoorHanger", agentUserId,
         entityType: "door_hanger", entityId: l.id,
-        inputProps: {
-          headline: "JUST SOLD",
-          address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
-          heroImageUrl: hero,
-          hook,
-          agentName, agentPhone: (u as any)?.phone ?? "",
-          agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
-          qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan for your home's value",
-          brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
-        },
+        inputProps,
         scopeType: "brokerage", scopeId: l.brokerage_id, requestedVia: "cron",
       })
       if (rq.ok) out.doorHangers += 1
+      else {
+        out.hangerErrors += 1
+        console.warn(`[video-plays] listing ${l.id} door hanger queue refused: ${rq.error ?? "unknown"}`)
+      }
     } catch { out.hangerErrors += 1 }
   }
 

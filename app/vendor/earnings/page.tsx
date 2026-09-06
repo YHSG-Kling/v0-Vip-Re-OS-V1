@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getVendorEarningsSummary } from "@/app/actions/vendor-payments"
+import { getVendorEarningsSummary, completeStripeConnectOnboarding } from "@/app/actions/vendor-payments"
 import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DollarSign, ArrowLeft, TrendingUp, CreditCard, Clock, CheckCircle2 } from "lucide-react"
 import Link from "next/link"
@@ -33,7 +33,12 @@ function statusBadge(status: string) {
   return map[status] ?? "bg-gray-100 text-gray-600"
 }
 
-export default async function VendorEarningsPage() {
+export default async function VendorEarningsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ stripe?: string }>
+}) {
+  const sp = await searchParams
   const supabase = await createClient()
   const {
     data: { user },
@@ -41,16 +46,40 @@ export default async function VendorEarningsPage() {
   if (!user) redirect("/login")
 
   const svc = createServiceClient()
-  const { data: profile } = await svc
-    .from("vendor_marketplace_profiles")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
 
-  if (!profile) {
+  // ID SPACE — this page used to resolve the vendor from
+  // `vendor_marketplace_profiles.user_id` and pass that row's id as `vendorId`.
+  // That is the WRONG id space and it made this whole page inert: every money
+  // table it reads (vendor_earnings, vendor_invoices, vendor_payouts) FKs to
+  // `vendors.id`, `requireVendorActor()` matches `user_role_assignments.vendor_id`
+  // (also `vendors.id`), and the Connection Center writes the vendor's
+  // platform_credentials row under owner_id = `vendors.id`. A marketplace-profile
+  // id matches none of them, so earnings/invoices/payouts always read empty, the
+  // Stripe Connect banner never resolved the real account, and payout + onboarding
+  // both failed their actor gate. `vendors` has no user_id — the canonical linkage
+  // is `user_role_assignments.vendor_id`, which is what every other /vendor page
+  // (dashboard, invoices, documents, connections, portfolio, reviews) already uses.
+  //
+  // The error was already checked here; what was still wrong is that the read
+  // could only ever succeed for a user with exactly ONE vendor-bearing grant.
+  // user_role_assignments is UNIQUE on (user_id, role), so a vendor who also holds
+  // a second vendor-bearing grant makes `.maybeSingle()` a guaranteed error — and
+  // this page then shows the outage banner to someone whose account is fine.
+  const grantsResult = await readRoleGrants(supabase, user.id)
+  if (!grantsResult.ok) {
+    console.error("[vendor/earnings] role grant read failed:", grantsResult.error)
+  }
+  const { vendorId: resolvedVendorId, ambiguous } = grantsResult.ok
+    ? selectVendorId(grantsResult.grants)
+    : { vendorId: null, ambiguous: false }
+
+  // supabase-js resolves a REFUSED read, so `data` alone reads "denied" as
+  // "no vendor". Surface the failure instead of telling a real vendor they have
+  // no profile.
+  if (!grantsResult.ok) {
     return (
       <div className="p-6 text-center text-muted-foreground">
-        <p>Vendor profile not found.</p>
+        <p>Could not load your vendor account. Please refresh, or contact support if this persists.</p>
         <Link href="/vendor/dashboard">
           <Button variant="link">Back to Dashboard</Button>
         </Link>
@@ -58,8 +87,44 @@ export default async function VendorEarningsPage() {
     )
   }
 
-  const stripeConnect = await readVendorStripeConnect(svc, profile.id)
-  const summary = await getVendorEarningsSummary(profile.id)
+  const vendorId = resolvedVendorId
+
+  if (!vendorId) {
+    return (
+      <div className="p-6 text-center text-muted-foreground">
+        <p>
+          {ambiguous
+            ? "Your account is linked to more than one vendor — ask the brokerage to correct it."
+            : "Vendor profile not found."}
+        </p>
+        <Link href="/vendor/dashboard">
+          <Button variant="link">Back to Dashboard</Button>
+        </Link>
+      </div>
+    )
+  }
+
+  // Returning from Stripe's hosted onboarding. Webhooks are eventually consistent
+  // and Connect events must be separately enabled on the endpoint, so reconcile
+  // synchronously here before rendering the Connect banner — otherwise a vendor who
+  // just finished onboarding still sees "Connect Stripe to receive payouts".
+  // completeStripeConnectOnboarding() re-reads the account from Stripe and passes
+  // the computed boolean through, so this also DEMOTES a restricted account.
+  let stripeNotice: { tone: "ok" | "warn"; text: string } | null = null
+  if (sp.stripe === "complete") {
+    const res = await completeStripeConnectOnboarding(vendorId)
+    stripeNotice = res.success
+      ? { tone: "ok", text: "Stripe payouts are now connected." }
+      : { tone: "warn", text: res.error ?? "Stripe onboarding is not complete yet." }
+  } else if (sp.stripe === "refresh") {
+    stripeNotice = {
+      tone: "warn",
+      text: "Your Stripe onboarding link expired before it was finished. Start it again below.",
+    }
+  }
+
+  const stripeConnect = await readVendorStripeConnect(svc, vendorId)
+  const summary = await getVendorEarningsSummary(vendorId)
 
   return (
     <div className="p-6 space-y-6 max-w-4xl mx-auto">
@@ -79,9 +144,22 @@ export default async function VendorEarningsPage() {
         </div>
       </div>
 
+      {/* Stripe return-from-onboarding reconciliation notice */}
+      {stripeNotice && (
+        <div
+          className={
+            stripeNotice.tone === "ok"
+              ? "rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800"
+              : "rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          }
+        >
+          {stripeNotice.text}
+        </div>
+      )}
+
       {/* Stripe Connect status */}
       <VendorStripeConnect
-        vendorId={profile.id}
+        vendorId={vendorId}
         stripeAccountId={stripeConnect.accountId}
         onboardingComplete={stripeConnect.onboardingComplete}
       />
@@ -121,7 +199,7 @@ export default async function VendorEarningsPage() {
       {/* Payout CTA */}
       {summary.availableAmount > 0 && (
         <VendorPayoutButton
-          vendorId={profile.id}
+          vendorId={vendorId}
           availableAmount={summary.availableAmount}
           stripeReady={stripeConnect.onboardingComplete}
         />
@@ -196,7 +274,17 @@ export default async function VendorEarningsPage() {
                     <span className="text-xs text-muted-foreground">
                       {new Date(p.initiatedAt).toLocaleDateString()}
                       {p.completedAt && ` → ${new Date(p.completedAt).toLocaleDateString()}`}
+                      {p.cashAppReference && ` · ref ${p.cashAppReference}`}
+                      {/* What the transfer settled. Written at payout creation and
+                          previously unreadable by the payee — a lump sum with no
+                          count of the jobs behind it cannot be reconciled. */}
+                      {p.coveredEarningsCount > 0 &&
+                        ` · covers ${p.coveredEarningsCount} earning${p.coveredEarningsCount === 1 ? "" : "s"}`}
                     </span>
+                    {/* The brokerage's own note on this payout. */}
+                    {p.note && (
+                      <span className="text-xs text-muted-foreground italic">{p.note}</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="font-semibold">{fmt(p.amount)}</span>

@@ -1,10 +1,15 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================================================
 // AI SHOWING MANAGEMENT SYSTEM
@@ -15,14 +20,77 @@ import { handleError } from "@/lib/errors"
 // TOUR MANAGEMENT
 // ============================================================================
 
-export async function getTours(agentId: string) {
+/**
+ * MERGE from the dashboard-data lane (wave 13): the tenant anchor.
+ *
+ * `hooks/use-dashboard-data.ts` names this as the survivor for the `tours` type,
+ * and the endpoint it replaces applied a brokerage filter that this did not —
+ * the agent id came from the caller and nothing else narrowed the read.
+ *
+ * FOUND WHILE MERGING, and worth more than the merge: the RLS policy on `tours`
+ * is `tours_agent_own: (agent_id = auth.uid())`. `tours.agent_id` is a FOREIGN
+ * KEY TO `agents` (verified against the live schema) and `auth.uid()` is a
+ * `users.id` — DISJOINT id spaces, so that policy can never match a single row.
+ * Only `tours_broker_admin` grants anything, which means an ordinary agent
+ * cannot read their OWN tours at all. That is a database-side fix and is
+ * recorded in docs/wave13-outcome.md rather than papered over here; the app-side
+ * anchor below is correct either way and does not depend on it.
+ */
+/**
+ * ABSORBED from the retired /api/dashboard/data `tours` branch: the tenant
+ * filter and the session gate landed in wave 15; wave 16 finished the pair by
+ * resolving the AGENT from the session too.
+ *
+ * The tenant filter alone bounded the id to one brokerage but did not stop a
+ * colleague reading it: any agent could pass any other agent's id and get their
+ * tour book back. The id is now the caller's own agents.id unless the caller
+ * administers the brokerage, in which case it may only NARROW inside the tenant
+ * the filter above already pinned.
+ */
+export async function getTours(
+  agentId?: string,
+  /**
+   * tour_date window (YYYY-MM-DD, inclusive) — MERGED from the calendar
+   * shell's inline tours read when that duplicate was rewired onto this
+   * survivor (lane E6 2026-08-28,
+   * app/dashboard/calendar/components/os/calendar-shell.tsx). Narrowing only;
+   * the session-derived tenant + agent scope below still applies first.
+   */
+  range?: { from?: string; to?: string },
+) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tours: [] }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet.", tours: [] }
+
+    if (agentId && !isValidUUID(agentId)) {
+      return { success: false, error: "Invalid agent ID", tours: [] }
+    }
+
+    // agents.id, from the session. Never a users.id, never a caller's claim.
+    let agentFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      agentFilter = agentId
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found", tours: [] }
+      agentFilter = ctx.agentId
+    }
+
     const supabase = await createClient()
-    const { data, error } = await supabase
+    // The contacts embed rode in from the calendar shell's read (its agenda
+    // rows show who the tour is with). tours→contacts is a single FK
+    // (contact_id), so the bare embed is unambiguous.
+    let query = supabase
       .from("tours")
-      .select("*, showings(*)")
-      .eq("agent_id", agentId)
+      .select("*, showings(*), contacts(first_name, last_name)")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("tour_date", { ascending: false })
+
+    if (agentFilter) query = query.eq("agent_id", agentFilter)
+    if (range?.from) query = query.gte("tour_date", range.from)
+    if (range?.to) query = query.lte("tour_date", range.to)
+
+    const { data, error } = await query
 
     if (error) throw error
     return { success: true, tours: data || [] }
@@ -31,27 +99,30 @@ export async function getTours(agentId: string) {
   }
 }
 
-export async function createTour(params: { agentId: string; tourDate: string; notes?: string }) {
-  try {
-    const supabase = await createClient()
-    const { data, error } = await supabase
-      .from("tours")
-      .insert({
-        agent_id: params.agentId,
-        tour_date: params.tourDate,
-        notes: params.notes || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
-        status: "planned",
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    revalidatePath("/dashboard")
-    return { success: true, tour: data }
-  } catch (error) {
-    return handleError(error, "createTour")
-  }
-}
+// TOMBSTONE (wave 26, merge-then-delete under CLAUDE.md §1): `createTour` was
+// REMOVED as a duplicate. SURVIVOR: app/actions/tour-planner.ts:249
+// createTourPlan, which is already the wired creator — the tour surface
+// (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:13)
+// imports the tour-planner family, and lib/workflow/adapters/schedule-tour.ts:50
+// is the workflow-side creator on the same table.
+//
+// This wrapper was not merely thinner, it was UNSAFE, and wiring it (which is
+// what the wave-26 orphan worklist proposed) would have been a product
+// regression on three counts:
+//   · it took `agentId` as a PARAMETER on a "use server" export — every export
+//     of such a file is a public HTTP endpoint, and §4 is explicit that the
+//     tenant/actor comes from the SESSION, never a parameter;
+//   · it wrote NO brokerage_id, though tours.brokerage_id exists and every
+//     reader filters on it — the row would have been untenanted; and
+//   · it bypassed the FINANCIAL-VERIFICATION GATE. createTourPlan refuses to
+//     create a tour for a buyer with no verified buyer_financial_profiles row
+//     (tour-planner.ts:288-300, "Previously this gate was UI-only"), and that
+//     refusal is the product ruling, not a nicety.
+// The survivor additionally resolves the caller's agents.id from agents.user_id
+// (the disjoint-id-space rule, §3 — the exact bug scripts/doc-kernel-simulator.ts
+// records as "the createTour bug class"), verifies contact ownership, and
+// creates the tour_stops. Nothing this held is missing there: `notes` is already
+// a CreateTourParams field. Do not reintroduce a second tours writer here.
 
 export async function updateTour(tourId: string, updates: any) {
   try {
@@ -71,69 +142,92 @@ export async function updateTour(tourId: string, updates: any) {
   }
 }
 
+/**
+ * REWIRED to the canonical Tour Day Optimizer kernel (lib/kernel/tour-optimizer.ts)
+ * — the SAME optimizer the cron sweep (app/api/cron/tour-optimizer) and the voice
+ * lane (lib/kernel/voice-delegation.ts) already run.
+ *
+ * The previous body was a parallel implementation: it asked an LLM to guess a
+ * stop order from the address strings and then FABRICATED the drive time as
+ * `stops.length * 8` minutes. The kernel does the honest version of both jobs —
+ * nearest-neighbor sequencing over real geocoded coordinates (free Nominatim,
+ * cached), per-leg drive ESTIMATES derived only from real coordinates (30mph
+ * straight-line, labeled as an estimate, NULL when a stop can't be geocoded),
+ * recomputed per-stop suggested times, tours.total_drive_time_minutes, and a
+ * showing_routes audit row with an optimization score. Nothing was merged
+ * forward from the old body: every line of it was the less-honest duplicate of
+ * a kernel line.
+ *
+ * Auth: the old body ran on the RLS client with no explicit gate. The kernel
+ * needs the service client (it writes showing_routes), so the gate is now
+ * explicit — session-resolved caller, tour pinned to the caller's brokerage.
+ */
 export async function optimizeTourRoute(tourId: string) {
   try {
-    const supabase = await createClient()
+    if (!isValidUUID(tourId)) return { success: false, error: "Invalid tour ID" }
 
-    // Load tour_stops — addresses are stored directly on the stop row
-    const { data: tour, error: tourError } = await supabase
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
+    const svc = createServiceClient()
+    const { data: tour, error: tourError } = await svc
       .from("tours")
-      .select("id, tour_date")
+      .select("id, brokerage_id")
       .eq("id", tourId)
-      .single()
-
-    if (tourError || !tour) throw tourError ?? new Error("Tour not found")
-
-    const { data: stops, error: stopsError } = await supabase
-      .from("tour_stops")
-      .select("id, order_index, property_address, city, state")
-      .eq("tour_id", tourId)
-      .order("order_index", { ascending: true })
-
-    if (stopsError || !stops?.length) throw stopsError ?? new Error("No stops found")
-
-    const addressList = stops.map((s, i) =>
-      `${i + 1}. ${s.property_address}${s.city ? ", " + s.city : ""}${s.state ? " " + s.state : ""}`
-    ).join("\n")
-
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `You are a route planner. Given these ${stops.length} properties, suggest the most efficient driving order.
-Return ONLY a comma-separated list of the original 1-based position numbers in the optimized order. Nothing else.
-
-Properties:
-${addressList}`,
-    })
-
-    const order = text.match(/\d+/g)?.map(Number)
-    const uniqueOrder = [...new Set(order)].filter(n => n >= 1 && n <= stops.length)
-
-    let estimatedDriveMins: number | undefined
-    let summary = "Route optimized — stops reordered for minimum drive time."
-
-    if (uniqueOrder.length === stops.length) {
-      // Write new order_index values
-      for (let i = 0; i < uniqueOrder.length; i++) {
-        const originalStop = stops[uniqueOrder[i] - 1]
-        await supabase
-          .from("tour_stops")
-          .update({ order_index: i })
-          .eq("id", originalStop.id)
-      }
-      estimatedDriveMins = stops.length * 8 // rough ~8 min avg drive between stops
-      summary = `Stops reordered for efficient routing. Estimated ~${estimatedDriveMins} min total drive time.`
+      .maybeSingle()
+    if (tourError) return { success: false, error: tourError.message }
+    if (!tour || tour.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Tour not found" }
     }
 
-    return { success: true, tourId, summary, estimatedDriveMins }
+    const { optimizeTourRoute: runKernelOptimizer } = await import("@/lib/kernel/tour-optimizer")
+    const result = await runKernelOptimizer(tourId, svc)
+
+    if (!result.ok) {
+      return {
+        success: false,
+        error:
+          result.reason === "no_stops"
+            ? "This tour has no stops to optimize."
+            : `Route optimization refused: ${result.reason ?? "unknown"}`,
+      }
+    }
+
+    if (result.reason === "already_optimized") {
+      return {
+        success: true,
+        tourId,
+        summary: "Route already optimized — the stop order and drive estimates are unchanged.",
+        estimatedDriveMins: undefined,
+      }
+    }
+
+    // Honest wording: the total is a straight-line ESTIMATE, and stops the
+    // geocoder could not place keep their entered order with no invented drive.
+    const summary =
+      result.stopsSequenced === result.stopsTotal
+        ? `Stops reordered by drive time (${result.stopsSequenced}/${result.stopsTotal} geocoded). ~${result.totalDriveMinutes} min total drive (est., straight-line — not traffic-aware).`
+        : `${result.stopsSequenced}/${result.stopsTotal} stops geocoded and reordered by drive time; the rest kept their entered order (no address match — no invented drive times). ~${result.totalDriveMinutes} min total drive (est.).`
+
+    return { success: true, tourId, summary, estimatedDriveMins: result.totalDriveMinutes }
   } catch (error) {
     return handleError(error, "optimizeTourRoute")
   }
 }
 
-// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
-export async function aiOptimizeTourRoute(...args: Parameters<typeof optimizeTourRoute>) {
-  return optimizeTourRoute(...args)
-}
+// aiOptimizeTourRoute was REMOVED here. It was a pure alias —
+// `return optimizeTourRoute(...args)`, nothing else — kept "for backward
+// compatibility" with a caller that no longer exists anywhere in the tree.
+//
+// Survivor: optimizeTourRoute directly above, which is what everything actually
+// calls (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx,
+// tour-plan-tab.tsx, and the app/actions/index.ts barrel).
+//
+// Compared both bodies before deleting, per the rule: the alias forwarded every
+// argument and the whole return value and added nothing — no auth, no
+// validation, no reshaping. There was genuinely nothing to merge. It was also a
+// second public HTTP endpoint onto a paid model call, for no benefit.
 
 interface ShowingRequest {
   propertyId: string
@@ -182,6 +276,8 @@ export async function aiScheduleShowing(params: ShowingRequest) {
   // Rebuild params with resolved values so the rest of the function uses consistent fields
   params = { ...params, requestedDate: resolvedDate, requestedTime: resolvedTime }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -216,6 +312,8 @@ export async function aiScheduleShowing(params: ShowingRequest) {
 
     // AI Analysis for optimal scheduling
     const { text: aiAnalysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are a real estate showing scheduling assistant. Analyze and recommend.
 
@@ -244,12 +342,26 @@ Return JSON only:
       aiRecommendations = { recommendedTime: params.requestedTime }
     }
 
-    // Resolve brokerage_id from the agent's user record
+    // Resolve brokerage_id from the agent's user record. params.agentId is a
+    // USERS id — the caller (tour-confirm-tab) passes agentUserId — so this
+    // lookup is the correct half.
     const { data: agentUser } = await supabase
       .from("users")
       .select("brokerage_id")
       .eq("id", params.agentId)
       .maybeSingle()
+
+    // IDENTITY CLASS. showings.agent_id and activities.agent_id both FK AGENTS,
+    // not users — so writing params.agentId straight into them is a foreign-key
+    // violation and every AI-scheduled showing failed at the insert. The same
+    // value was being used as BOTH classes inside this one function, which is
+    // the self-contradiction test:identity-class now fails on.
+    const agentRecordId = agentUser?.brokerage_id
+      ? await resolveUserIdToAgentRecord(params.agentId, agentUser.brokerage_id)
+      : null
+    if (!agentRecordId) {
+      return { success: false, error: "No agent record for this user — can't book the showing to them." }
+    }
 
     const recommendedTime = aiRecommendations.recommendedTime || params.requestedTime
     const scheduledAt = params.requestedDate && recommendedTime
@@ -269,7 +381,7 @@ Return JSON only:
       .insert({
         listing_id:     propertyIsUuid ? params.propertyId : null,
         contact_id:     params.contactId,
-        agent_id:       params.agentId,
+        agent_id:       agentRecordId,
         brokerage_id:   agentUser?.brokerage_id ?? null,
         scheduled_date: params.requestedDate,
         scheduled_at:   scheduledAt,
@@ -286,10 +398,10 @@ Return JSON only:
 
     // Write an activities row so the showing appears on the agent's activity feed as pending.
     // No calendar_event yet — that is written only when the agent confirms the showing time.
-    try {
-      await supabase.from("activities").insert({
+    await bestEffort(
+      supabase.from("activities").insert({
         brokerage_id:  agentUser?.brokerage_id ?? null,
-        agent_id:      params.agentId,
+        agent_id:      agentRecordId,
         contact_id:    params.contactId,
         activity_type: "showing",
         title:         `Showing scheduled — ${params.requestedDate} at ${resolvedTime}`,
@@ -297,8 +409,9 @@ Return JSON only:
         scheduled_at:  scheduledAt,
         status:        "pending",
         priority:      "high",
-      })
-    } catch { /* non-critical */ }
+      }),
+      "the showings row above is the booking and its error is already checked; this feed row only surfaces the booking to the agent and must not fail a showing that is already scheduled",
+    )
 
     revalidatePath("/showings")
     revalidatePath("/dashboard")
@@ -314,145 +427,216 @@ Return JSON only:
 }
 
 /**
- * AI Route Optimizer
- * Creates optimal showing routes based on location, time, and traffic patterns
+ * THE AGENT'S WHOLE SHOWING DAY, SEQUENCED BY THE ONE ROUTE ENGINE.
+ *
+ * SCOPE — why this is not a duplicate of optimizeTourRoute above: that one
+ * orders the stops of ONE buyer's tour; this one orders every showing on an
+ * agent's calendar for a date, which may span several buyers and several tours.
+ * Same fact (order + drive time), different SET of stops.
+ *
+ * REWIRED onto lib/kernel/tour-optimizer.ts (this wave). The previous body was
+ * the third parallel implementation of drive time in the tree: it asked
+ * gpt-4o to invent `travelTimeFromPrevious`, `estimatedMiles` and an
+ * `optimizationScore`, then wrote those invented numbers into `showing_routes`
+ * and PUSHED THEM ONTO `showings.scheduled_time` — real appointments moved by a
+ * guess. The kernel does the honest version: nearest-neighbor over coordinates
+ * the free Nominatim geocoder actually resolved, per-leg estimates at a
+ * documented assumed speed labeled as ESTIMATES, and NO number at all for a
+ * showing whose address could not be placed.
+ *
+ * TWO DEFECTS FIXED WITH IT:
+ *   · IDENTITY CLASS. It filtered `showings.agent_id` — an agents.id — with the
+ *     users.id its only caller had (the CRM day-of tab). Disjoint spaces (§3),
+ *     so the read matched NOTHING and every click answered "No showings found
+ *     for this date". The agent is resolved from the SESSION now; the parameter
+ *     survives only as an admin's narrowing claim, exactly as in getTours.
+ *   · TENANT. The `showing_routes` insert omitted `brokerage_id`, so the audit
+ *     row it wrote was unreadable by every tenant-scoped policy, and the read
+ *     was not tenant-pinned either.
+ *
+ * A SHOWING IS ONLY MOVED WHEN THE MOVE IS MEASURED. Un-geocoded showings keep
+ * their booked time untouched — a confirmed appointment must never be rewritten
+ * on the strength of a stop we could not place.
  */
 export async function aiOptimizeShowingRoute(params: {
-  agentId: string
+  /**
+   * OPTIONAL narrowing claim, honored only for an admin/broker seat — never the
+   * authority. An ordinary agent is scoped to their own agents.id from session.
+   */
+  agentId?: string
   date: string
   showingIds?: string[]
 }) {
-  if (!isValidUUID(params.agentId)) {
+  if (params.agentId && !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const supabase = await createClient()
-
   try {
-    // Get all showings for the date
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
+    // agents.id, from the session. Never a users.id, never a caller's claim.
+    let agentFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      agentFilter = params.agentId
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found" }
+      agentFilter = ctx.agentId
+    }
+
+    // The route write needs the service client (showing_routes); the tenant and
+    // agent scope above are the gate, applied to every statement below.
+    const supabase = createServiceClient()
+
+    // showings→listings is a SINGLE foreign key (listing_id), so this embed is
+    // unambiguous — no PGRST201 risk, and the columns are named so the schema
+    // guard can see drift.
     let query = supabase
       .from("showings")
-      .select(`
-        *,
-        listings(*),
-        contacts(first_name, last_name, phone, email)
-      `)
-      .eq("agent_id", params.agentId)
+      .select("id, scheduled_time, scheduled_date, duration_minutes, listing_id, listings(address, city, state, zip)")
+      .eq("brokerage_id", ctx.brokerageId)
       .eq("scheduled_date", params.date)
       .in("status", ["scheduled", "confirmed"])
 
-    if (params.showingIds?.length) {
-      query = query.in("id", params.showingIds)
+    if (agentFilter) query = query.eq("agent_id", agentFilter)
+    if (params.showingIds?.length) query = query.in("id", params.showingIds)
+
+    // THE ERROR IS READ. A refused read and an empty day are byte-identical if
+    // only `data` is destructured, and telling an agent they have no showings
+    // when we simply could not look is the failure this whole guard family
+    // exists to prevent.
+    const { data: showings, error: showingsError } = await query
+    if (showingsError) {
+      return { success: false, error: `Could not read the day's showings: ${showingsError.message}` }
     }
-
-    const { data: showings } = await query
-
     if (!showings || showings.length === 0) {
       return { success: false, error: "No showings found for this date" }
     }
 
-    // Get agent's starting location from their brokerage (users has no address columns;
-    // brokerages exposes city/state only).
-    const { data: agent } = await supabase
-      .from("users")
-      .select("brokerages(name, city, state)")
-      .eq("id", params.agentId)
-      .single()
+    const kernel = await import("@/lib/kernel/tour-optimizer")
+    const geocode = (await import("@/lib/external/nominatim-geocode")).createCachedGeocoder()
 
-    // AI Route Optimization
-    const { text: routeAnalysis } = await generateText({
-      model: "openai/gpt-4o",
-      prompt: `You are a real estate showing route optimizer. Create an optimal route.
+    const rows = showings as unknown as Array<{
+      id: string
+      scheduled_time: string | null
+      duration_minutes: number | null
+      listings: { address: string | null; city: string | null; state: string | null; zip: string | null } | null
+    }>
 
-AGENT STARTING LOCATION: ${(agent as any)?.brokerages?.name || "Office"}, ${(agent as any)?.brokerages?.city || ""}, ${(agent as any)?.brokerages?.state || ""}
+    // Original order = the booked clock, so the optimization score compares the
+    // new sequence against the day as it actually stands.
+    const byClock = [...rows].sort((a, b) => String(a.scheduled_time ?? "").localeCompare(String(b.scheduled_time ?? "")))
 
-SHOWINGS TO SCHEDULE:
-${showings
-  .map(
-    (s: any, i: number) => `
-${i + 1}. Property: ${s.listings?.address}, ${s.listings?.city}
-   - Scheduled Time: ${s.scheduled_time}
-   - Contact: ${s.contacts?.first_name} ${s.contacts?.last_name}
-   - Property Type: ${s.listings?.property_type}
-   - Notes: ${s.notes || "None"}
-`
-  )
-  .join("")}
-
-Consider:
-1. Geographic clustering to minimize travel
-2. Traffic patterns (rush hour, school zones)
-3. Time between showings (minimum 30 min)
-4. Property viewing duration (larger homes need more time)
-
-Provide JSON response:
-{
-  "optimizedOrder": [
-    {
-      "showingId": "id",
-      "recommendedTime": "HH:MM",
-      "estimatedDuration": 30,
-      "travelTimeFromPrevious": 15,
-      "notes": "string"
-    }
-  ],
-  "totalDuration": 240,
-  "estimatedMiles": 25,
-  "optimizationScore": 85,
-  "routeNotes": ["note1", "note2"],
-  "breakSuggestion": {
-    "afterShowing": 2,
-    "duration": 15,
-    "nearbyOptions": ["coffee shop", "restaurant"]
-  }
-}`,
-    })
-
-    let optimizedRoute
-    try {
-      const jsonMatch = routeAnalysis.match(/\{[\s\S]*\}/)
-      optimizedRoute = jsonMatch ? JSON.parse(jsonMatch[0]) : {}
-    } catch {
-      optimizedRoute = { optimizedOrder: showings.map((s: any) => ({ showingId: s.id })) }
+    const geoStops = []
+    for (let i = 0; i < byClock.length; i++) {
+      const s = byClock[i]
+      const point = s.listings?.address
+        ? await geocode({
+            address: s.listings.address,
+            city: s.listings.city,
+            state: s.listings.state,
+            zip: s.listings.zip,
+          })
+        : null
+      geoStops.push({
+        id: s.id,
+        order_index: i,
+        lat: point?.lat ?? null,
+        lng: point?.lng ?? null,
+        address: s.listings?.address ?? null,
+      })
     }
 
-    // Save the optimized route
-    const { data: route, error } = await supabase
+    // ORIGIN — the brokerage's own city/state, the only address the schema
+    // carries for an agent's day (users has no address columns). Un-geocodable →
+    // the sequence anchors on the first booked showing instead.
+    const { data: brokerage } = await supabase
+      .from("brokerages")
+      .select("name, city, state")
+      .eq("id", ctx.brokerageId)
+      .maybeSingle()
+    const office = brokerage as { name?: string | null; city?: string | null; state?: string | null } | null
+    const origin = office?.city
+      ? await geocode({ address: office.name ?? null, city: office.city, state: office.state })
+      : null
+
+    const sequenced = kernel.sequenceStopsByDriveTime(geoStops, origin)
+    const stopsSequenced = sequenced.filter((s) => s.sequenced).length
+    const measuredLegs = sequenced.filter((s) => s.driveMinutes != null).length
+    const totalDriveMinutes = measuredLegs > 0 ? kernel.totalEstimatedDriveMinutes(sequenced) : null
+    const score = kernel.optimizationScore(geoStops, sequenced, origin)
+    const estimatedMiles = sequenced.reduce((sum, s) => sum + (s.haversineMiles ?? 0), 0)
+
+    // The day starts at the earliest time already on the books — we re-order the
+    // day, we do not decide when the agent starts working.
+    const dayStart = byClock.find((s) => s.scheduled_time)?.scheduled_time ?? null
+    const durations = new Map(
+      byClock.map((s) => [s.id, Number(s.duration_minutes ?? 30)] as [string, number]),
+    )
+    const newTimes = kernel.recomputeStopTimes(sequenced, dayStart, durations)
+
+    const optimizedOrder = sequenced.map((s) => ({
+      showingId: s.id,
+      order: s.order_index,
+      address: (s as { address?: string | null }).address ?? null,
+      recommendedTime: s.sequenced ? (newTimes.get(s.id) ?? null) : null,
+      estimatedDuration: durations.get(s.id) ?? 30,
+      travelTimeFromPrevious: s.driveMinutes,
+      milesFromPrevious: s.haversineMiles != null ? Number(s.haversineMiles.toFixed(2)) : null,
+      placedByGeocoder: s.sequenced,
+    }))
+
+    const { data: route, error: routeError } = await supabase
       .from("showing_routes")
       .insert({
-        agent_id: params.agentId,
+        agent_id: agentFilter ?? ctx.agentId,
+        // Without this the audit row is unreadable by every tenant-scoped policy.
+        brokerage_id: ctx.brokerageId,
         route_date: params.date,
-        showings: showings.map((s: any) => s.id),
-        optimized_order: optimizedRoute.optimizedOrder,
-        total_duration: optimizedRoute.totalDuration,
-        estimated_miles: optimizedRoute.estimatedMiles,
-        optimization_score: optimizedRoute.optimizationScore,
-        route_notes: optimizedRoute.routeNotes,
-        created_at: new Date().toISOString(),
+        showings: rows.map((s) => s.id),
+        optimized_order: optimizedOrder,
+        total_duration: totalDriveMinutes,
+        estimated_miles: Number(estimatedMiles.toFixed(2)),
+        optimization_score: score,
+        route_notes: `Agent day route — nearest-neighbor over geocoded addresses. Drive times are ESTIMATES at ${kernel.ASSUMED_AVG_MPH}mph straight-line (haversine), not traffic-aware. ${stopsSequenced}/${rows.length} showings had a placeable address; the rest kept their booked time.`,
       })
-      .select()
-      .single()
+      .select("id")
+      .maybeSingle()
+    if (routeError) {
+      return { success: false, error: `The route could not be saved: ${routeError.message}` }
+    }
 
-    if (error) throw error
-
-    // Update showing times if changed
-    for (const item of optimizedRoute.optimizedOrder || []) {
-      if (item.showingId && item.recommendedTime) {
-        await supabase
-          .from("showings")
-          .update({
-            scheduled_time: item.recommendedTime,
-          })
-          .eq("id", item.showingId)
-      }
+    // ONLY MEASURED MOVES ARE WRITTEN BACK.
+    let moved = 0
+    for (const item of optimizedOrder) {
+      if (!item.placedByGeocoder || !item.recommendedTime) continue
+      const { error: moveError } = await supabase
+        .from("showings")
+        .update({ scheduled_time: item.recommendedTime })
+        .eq("id", item.showingId)
+        .eq("brokerage_id", ctx.brokerageId)
+      if (!moveError) moved += 1
     }
 
     revalidatePath("/showings")
 
+    const summary =
+      stopsSequenced === rows.length
+        ? `${rows.length} showings reordered by drive time${
+            totalDriveMinutes != null ? ` (~${totalDriveMinutes} min total drive, est., straight-line)` : ""
+          }.`
+        : `${stopsSequenced}/${rows.length} showings had a placeable address and were reordered; the rest kept their booked time (no drive invented).`
+
     return {
       success: true,
       route,
-      optimizedRoute,
+      summary,
+      moved,
+      stopsSequenced,
+      stopsTotal: rows.length,
+      totalDriveMinutes,
+      optimizedOrder,
     }
   } catch (error) {
     return handleError(error, "aiOptimizeShowingRoute")
@@ -468,6 +652,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
     return { success: false, error: "Invalid showing ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -488,6 +674,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
 
     // Generate personalized confirmation message
     const { text: confirmationContent } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Create a friendly, professional showing confirmation message.
 
@@ -554,6 +742,8 @@ export async function aiCollectShowingFeedback(showingId: string) {
     return { success: false, error: "Invalid showing ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -573,6 +763,8 @@ export async function aiCollectShowingFeedback(showingId: string) {
 
     // Generate personalized feedback request
     const { text: feedbackRequest } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Create a personalized showing feedback request.
 
@@ -647,6 +839,8 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
     return { success: false, error: "Invalid feedback ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -667,6 +861,8 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
 
     // AI Analysis of feedback
     const { text: analysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o",
       prompt: `Analyze this showing feedback and recommend next steps.
 
@@ -740,6 +936,8 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -775,6 +973,8 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
 
     // AI Generate insights
     const { text: aiInsights } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Analyze showing performance and provide insights.
 

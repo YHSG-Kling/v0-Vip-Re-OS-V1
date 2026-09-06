@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import {
@@ -67,14 +67,22 @@ import {
   createNewsletterCampaign,
   getNewsletterAnalytics,
   aiAnalyzeNewsletterPerformance,
+  // SENDING A NEWSLETTER USES THE NEWSLETTER SENDER. This screen creates rows
+  // in newsletter_campaigns (createNewsletterCampaign above) and used to send
+  // them with sendEmailCampaign, which looks the id up in email_campaigns — a
+  // DIFFERENT table. That lookup could never match, so every Send returned
+  // "Campaign not found" and no newsletter this screen created was ever
+  // sendable. sendNewsletter queries newsletter_campaigns, and returns the same
+  // { success, recipientCount } shape this screen already reads.
+  sendNewsletter,
+  // Schedule and Delete carried the SAME wrong-table defect Send did — all
+  // three called the email_campaigns lane with a newsletter_campaigns id, so
+  // every one of them answered "Campaign not found". These are the newsletter
+  // -lane counterparts.
+  deleteNewsletterCampaign,
 } from "@/app/actions/ai-newsletter"
-import {
-  sendEmailCampaign,
-  scheduleEmailCampaign,
-  deleteEmailCampaign,
-} from "@/app/actions/email-campaigns"
 import { fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent } from "@/app/actions/newsletter/fetch-local-news"
-import { scheduleNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
+import { scheduleNewsletter, scheduleExistingNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
 import { listTemplates } from "@/app/actions/newsletter/list-templates"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
 import { validateScheduleTime } from "@/lib/newsletter/schedule-time"
@@ -118,6 +126,11 @@ interface WizardData {
   // Step 1 – Setup
   campaignName: string
   audienceSegment: "all" | "buyers" | "sellers" | "lifetime_customers" | "custom"
+  /** Umbrella marketing_campaigns id ("" = standalone issue). The write side of
+   *  newsletter_campaigns.marketing_campaign_id, which the campaign ROI
+   *  measurer reads — server-verified against the session brokerage inside
+   *  createNewsletterCampaign, never trusted from this state. */
+  marketingCampaignId: string
   fromName: string
   replyTo: string
   topic: string
@@ -150,6 +163,7 @@ interface WizardData {
 const INITIAL_WIZARD: WizardData = {
   campaignName: "",
   audienceSegment: "all",
+  marketingCampaignId: "",
   fromName: "",
   replyTo: "",
   topic: "",
@@ -519,6 +533,10 @@ export function NewslettersClient({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [subjectVariantsLoading, setSubjectVariantsLoading] = useState(false)
   const [editingSection, setEditingSection] = useState<number | null>(null)
+  // Umbrella campaign options for Step 1 — loaded on wizard open (see
+  // openWizard). Session-scoped server-side via getCampaigns.
+  const [umbrellaCampaigns, setUmbrellaCampaigns] = useState<Array<{ id: string; campaign_name: string }>>([])
+  const [umbrellaCampaignsError, setUmbrellaCampaignsError] = useState<string | null>(null)
 
   // ── Pull Local News panel (Step 3) ──────────────────────────────────────
   // Wires fetchLocalNews / setupLocalNewsSource: the agent enters market ZIPs,
@@ -587,6 +605,32 @@ export function NewslettersClient({
     setLocalNewsFetched(false)
     setScheduleTemplateId("")
     setWizardOpen(true)
+    // Umbrella campaign options for the Step 1 picker — loaded on OPEN, not at
+    // mount, same policy as the studio's segment loader: one query at the
+    // moment an agent is actually choosing. getCampaigns is session-scoped
+    // server-side (brokerage from getAgentContext, never from here). A refusal
+    // must not render as "this brokerage has no campaigns" — surface it so the
+    // agent doesn't silently file every issue as standalone.
+    import("@/app/actions/marketing-studio")
+      .then(({ getCampaigns }) => getCampaigns())
+      .then((res) => {
+        if (res.success) {
+          setUmbrellaCampaigns(
+            ((res.campaigns ?? []) as Array<{ id: string; campaign_name: string }>).map((c) => ({
+              id: c.id,
+              campaign_name: c.campaign_name,
+            }))
+          )
+          setUmbrellaCampaignsError(null)
+        } else {
+          setUmbrellaCampaigns([])
+          setUmbrellaCampaignsError((res as { error?: string }).error ?? "Could not load campaigns")
+        }
+      })
+      .catch((err) => {
+        setUmbrellaCampaigns([])
+        setUmbrellaCampaignsError(err instanceof Error ? err.message : "Could not load campaigns")
+      })
     // Load approved templates for the governed Schedule Send control (Step 6).
     // Only approved templates can be scheduled (enforced server-side too).
     listTemplates("approved")
@@ -787,6 +831,9 @@ export function NewslettersClient({
         content: wizard.generatedSections as any,
         audienceSegment: wizard.audienceSegment,
         scheduledAt: wizard.sendMode === "scheduled" && wizard.scheduleDate ? wizard.scheduleDate : undefined,
+        // The umbrella campaign chosen in Step 1 — server-verified against the
+        // session brokerage before it is written.
+        marketingCampaignId: wizard.marketingCampaignId || undefined,
         // Wave 20.1 — thread the topic IDs that anchored the generated
         // sections so the Wave 19 content_topic_uses ledger captures
         // newsletter_campaign-asset uses AND the video render reads them
@@ -817,7 +864,7 @@ export function NewslettersClient({
 
         if (wizard.sendMode === "now") {
           // Immediately send
-          const sendResult = await sendEmailCampaign(result.newsletter.id, userId, brokerageId)
+          const sendResult = await sendNewsletter({ newsletterId: result.newsletter.id })
           if (sendResult.success) {
             toast.success(`Sent to ${(sendResult as any).recipientCount ?? 0} subscribers`)
             setCampaigns((prev) =>
@@ -871,6 +918,10 @@ export function NewslettersClient({
         sectionsIncluded: wizard.sections,
         htmlContent: html || undefined,
         primaryKeyword: wizard.topic || wizard.campaignName,
+        // Step 1's umbrella campaign — this path creates its own
+        // newsletter_campaigns row server-side, so the link rides along and is
+        // verified against the session brokerage there.
+        marketingCampaignId: wizard.marketingCampaignId || undefined,
       })
       if (result.success) {
         toast.success(
@@ -891,7 +942,7 @@ export function NewslettersClient({
   async function handleSend(campaignId: string) {
     setSendingId(campaignId)
     try {
-      const result = await sendEmailCampaign(campaignId, userId, brokerageId)
+      const result = await sendNewsletter({ newsletterId: campaignId })
       if (result.success) {
         setCampaigns((prev) =>
           prev.map((c) => (c.id === campaignId ? { ...c, status: "sent" } : c))
@@ -913,17 +964,28 @@ export function NewslettersClient({
       return
     }
     try {
-      const result = await scheduleEmailCampaign(campaignId, userId, scheduleDate)
+      const result = await scheduleExistingNewsletter({
+        newsletterId: campaignId,
+        scheduledSendTime: scheduleDate,
+      })
       if (result.success) {
         setCampaigns((prev) =>
           prev.map((c) =>
-            c.id === campaignId ? { ...c, status: "scheduled", send_date: scheduleDate } : c
+            c.id === campaignId
+              ? { ...c, status: "scheduled", send_date: result.scheduledFor ?? scheduleDate }
+              : c
           )
         )
-        toast.success("Campaign scheduled")
+        // A scheduled send whose ledger row failed still goes out — say which
+        // half succeeded rather than a flat "Scheduled".
+        if (result.ledgerWarning) {
+          toast.warning(result.ledgerWarning)
+        } else {
+          toast.success("Newsletter scheduled — the send cron will deliver it")
+        }
         setScheduleDate("")
       } else {
-        toast.error((result as any).error ?? "Failed to schedule campaign")
+        toast.error(result.error ?? "Failed to schedule newsletter")
       }
     } catch {
       toast.error("Unexpected error scheduling campaign")
@@ -933,12 +995,12 @@ export function NewslettersClient({
   async function handleDelete(campaignId: string) {
     setDeletingId(campaignId)
     try {
-      const result = await deleteEmailCampaign(campaignId)
+      const result = await deleteNewsletterCampaign(campaignId)
       if (result.success) {
         setCampaigns((prev) => prev.filter((c) => c.id !== campaignId))
-        toast.success("Campaign deleted")
+        toast.success("Newsletter deleted")
       } else {
-        toast.error((result as any).error ?? "Failed to delete campaign")
+        toast.error((result as any).error ?? "Failed to delete newsletter")
       }
     } catch {
       toast.error("Unexpected error deleting campaign")
@@ -1049,6 +1111,34 @@ export function NewslettersClient({
                       <SelectItem value="custom">Custom Segment</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                {/* ★ THE UMBRELLA LINK ★ newsletter_campaigns.marketing_campaign_id.
+                    Read by the campaign ROI measurer and the publish cron's
+                    campaign row, and written by NOBODY — no creation surface
+                    knew both a newsletter and its umbrella campaign, so no
+                    issue could ever be measured with its campaign. Mirrors the
+                    control the studio's email dialog got in the previous wave. */}
+                <div className="space-y-2">
+                  <Label>Part of a campaign (optional)</Label>
+                  <Select
+                    value={wizard.marketingCampaignId || "none"}
+                    onValueChange={(v) => updateWizard({ marketingCampaignId: v === "none" ? "" : v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Standalone newsletter" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Standalone newsletter</SelectItem>
+                      {umbrellaCampaigns.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.campaign_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {umbrellaCampaignsError ? (
+                    <p className="text-xs text-red-600">{umbrellaCampaignsError}</p>
+                  ) : null}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
@@ -1821,13 +1911,22 @@ export function NewslettersClient({
       {/* Analytics panel (lazy loaded) */}
       {analyticsLoaded && (
         <div className="mb-6 space-y-4">
-          {analyticsData?.success && (analyticsData as any).metrics && (
+          {/* Reads `.analytics` — the shape getNewsletterAnalytics actually
+              returns. This block read `.metrics` (openRate/unsubscribeCount/
+              bounceCount), a shape NO action has ever returned, so the tiles
+              never rendered at all — the shape mismatch hid the fact that the
+              action itself was reading five nonexistent columns underneath.
+              Both halves fixed together: the action now derives real counts
+              from the newsletter_sends delivery ledger, and this reader speaks
+              its vocabulary. `unsubscribed` is null by design (no per-campaign
+              unsubscribe ledger exists) and renders as an honest em dash. */}
+          {analyticsData?.success && (analyticsData as any).analytics && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {[
-                { label: "Open Rate", value: `${((analyticsData as any).metrics.openRate ?? 0).toFixed(1)}%` },
-                { label: "Click Rate", value: `${((analyticsData as any).metrics.clickRate ?? 0).toFixed(1)}%` },
-                { label: "Unsubscribes", value: (analyticsData as any).metrics.unsubscribeCount ?? 0 },
-                { label: "Bounces", value: (analyticsData as any).metrics.bounceCount ?? 0 },
+                { label: "Open Rate", value: `${((analyticsData as any).analytics.openRate ?? 0).toFixed(1)}%` },
+                { label: "Click Rate", value: `${((analyticsData as any).analytics.clickRate ?? 0).toFixed(1)}%` },
+                { label: "Unsubscribes", value: (analyticsData as any).analytics.unsubscribed ?? "—" },
+                { label: "Bounces", value: (analyticsData as any).analytics.bounced ?? 0 },
               ].map((m) => (
                 <Card key={m.label}>
                   <CardContent className="pt-4 pb-4">

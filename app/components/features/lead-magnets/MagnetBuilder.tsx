@@ -23,7 +23,9 @@ import { Bell, CheckCircle2, Loader2, Sparkles } from "lucide-react"
 
 interface Props {
   brokerageId: string
-  agentId: string
+  // No agentId prop: createLeadMagnetAction resolves agents.id server-side from
+  // the session. The prop was never read, and every caller was passing the auth
+  // user id — the wrong id class for lead_capture_forms.agent_id.
   onCreated?: (magnetId: string, slug: string) => void
 }
 
@@ -44,7 +46,7 @@ const PUBLISH_CHANNELS = [
   { id: "social",       label: "Social Media" },
 ] as const
 
-export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
+export function MagnetBuilder({ brokerageId, onCreated }: Props) {
   const [step, setStep] = useState<"configure" | "publish" | "done">("configure")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -59,7 +61,8 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
-  // notifyByEmail: email notifications not yet implemented; kept false until wired up
+  // notifyByEmail: email the agent (in addition to the in-app alert) on each submission.
+  const [notifyByEmail, setNotifyByEmail] = useState(false)
 
   // AI landing copy — built from real buyer/seller demand topics + the GEO FAQ/JSON-LD.
   const [area, setArea] = useState("")
@@ -114,6 +117,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
         description: description.trim(),
         thank_you_message: thankYouMessage.trim(),
         tcpa_text: tcpaText.trim() || undefined,
+        notify_on_submission: notifyByEmail,
       })
 
       if (!result.success || !result.magnetId) {
@@ -329,19 +333,19 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
           />
         </div>
 
-        {/* Email notification preference — email delivery is not yet available */}
-        <div className="flex items-center justify-between rounded-lg border p-4 opacity-60">
+        {/* Email notification preference — emails the agent on each submission */}
+        <div className="flex items-center justify-between rounded-lg border p-4">
           <div className="flex items-center gap-3">
             <Bell className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-sm font-medium">Email notifications <span className="ml-1 text-xs font-normal text-muted-foreground">(coming soon)</span></p>
-              <p className="text-xs text-muted-foreground">In-app notifications are sent automatically for every submission</p>
+              <p className="text-sm font-medium">Email notifications</p>
+              <p className="text-xs text-muted-foreground">Email you on every submission (in-app alerts are always sent)</p>
             </div>
           </div>
           <Switch
-            checked={false}
-            disabled
-            aria-label="Email notifications coming soon"
+            checked={notifyByEmail}
+            onCheckedChange={setNotifyByEmail}
+            aria-label="Email me on every submission"
           />
         </div>
 

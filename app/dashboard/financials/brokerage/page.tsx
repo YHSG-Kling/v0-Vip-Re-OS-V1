@@ -1,10 +1,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Suspense } from "react"
+import { generateBrokeragePnl } from "@/lib/intelligence/brokerage-pnl"
+import { Handshake } from "lucide-react"
 import {
   DollarSign,
   TrendingUp,
@@ -25,7 +28,6 @@ import { AgentPLTable } from "./agent-pl-table"
 import {
   FinancialCommandStrip,
   MarginBreakdownPanel,
-  PayoutReadinessPanel,
   FinancialActionStack,
   ProfitLossReportPanel,
   type FinancialPriority,
@@ -53,9 +55,10 @@ export default async function BrokeragePLPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  // RBAC: Only broker, admin, superadmin can access
-  const allowedRoles = ["broker", "admin", "superadmin"]
-  if (!profile || !allowedRoles.includes(profile.user_type || "")) {
+  // BROKERAGE-WIDE MONEY (m472) — this is the whole brokerage's P&L. The ONE
+  // finance roster: excludes team_lead per the owner's ruling, and admits
+  // broker_owner, whom the local literal refused from their own books.
+  if (!profile || !isBrokerageFinanceAdmin(profile as { user_type?: string | null })) {
     redirect("/dashboard/financials/agent")
   }
 
@@ -122,14 +125,16 @@ export default async function BrokeragePLPage() {
         teams:team_id(id, name)
       `)
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("period_type", "monthly")
+      .eq("period_type", "mtd")
       .order("gross_commission", { ascending: false })
       .then(r => r.data || []),
 
-    // Agents with cap status
+    // Active agents. `cap_progress` and `cap_amount` are NO LONGER READ from
+    // here — they are the copy the commission engine never applied and they are
+    // being dropped. Cap state comes from agent_cap_tracking, read below.
     supabase
       .from("agents")
-      .select("id, cap_progress, cap_amount, user_id, ytd_gci")
+      .select("id, user_id, ytd_gci")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("is_active", true)
       .then(r => r.data || []),
@@ -168,18 +173,82 @@ export default async function BrokeragePLPage() {
       .limit(8),
   ])
 
-  // ─── COMPUTE CAP SUMMARY ───────────────────────────────────────────────────
+  // ─── COMPUTE CAP SUMMARY, FROM THE LEDGER THE ENGINE READS ─────────────────
+  //
+  // This block used to derive every figure on the cap card from
+  // `agents.cap_progress` and `agents.cap_amount`. Both were wrong in a way that
+  // is worth stating, because the card looked plausible either way:
+  //
+  //  · `cap_progress` measured THE WRONG SIDE OF THE SPLIT. Its only writer
+  //    computed `ytd_gci / cap_amount * 100`, and `ytd_gci` is what the AGENT
+  //    KEPT — but a cap is a ceiling on what the BROKERAGE COLLECTS
+  //    (lib/commission/waterfall/07-apply-cap.ts: "Cap tracks brokerage's
+  //    cumulative earnings, NOT agent's"). On a 70/30 an agent read as capped
+  //    when the brokerage had taken roughly 43% of the cap.
+  //  · `totalCapRevenue` then multiplied that percentage back out into dollars,
+  //    so "Cap Revenue" — a number a broker reads as money collected — was a
+  //    reconstruction of a figure that measured the other party's earnings.
+  //
+  // MEASURED before this change: of four agents carrying `agents.cap_amount`,
+  // THREE had no ledger row at all, so the engine never capped them. The screen
+  // showed caps that had never been applied to a cheque.
+  //
+  // Now every figure comes from `agent_cap_tracking` for the window containing
+  // today — stage 07's own filter — so this card and the payout agree by
+  // construction. `cap_paid_to_date` is already dollars the brokerage collected;
+  // nothing is reconstructed.
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const { data: capRows, error: capRowsError } = await supabase
+    .from("agent_cap_tracking")
+    .select("agent_id, cap_amount, cap_paid_to_date, is_capped")
+    .eq("brokerage_id", profile.brokerage_id)
+    .lte("anniversary_start", todayIso)
+    .gte("anniversary_end", todayIso)
+
+  const num = (v: unknown): number => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : 0
+  }
+  // A refused read is not "nobody is capped". Reported rather than rendered as
+  // a confident zero — the whole defect this replaces was a confident number.
+  const capLedgerUnavailable = !!capRowsError
+  const capByAgent = new Map<string, { amount: number; paid: number; capped: boolean }>()
+  for (const r of (capRows ?? []) as Array<{ agent_id: string; cap_amount: unknown; cap_paid_to_date: unknown; is_capped: unknown }>) {
+    // agent_cap_tracking has no uniqueness on (agent, window); if two rows
+    // overlap, the one further along is the one the money is actually against.
+    const prev = capByAgent.get(r.agent_id)
+    const next = { amount: num(r.cap_amount), paid: num(r.cap_paid_to_date), capped: r.is_capped === true }
+    if (!prev || next.paid > prev.paid) capByAgent.set(r.agent_id, next)
+  }
+
+  const cappedAgents = agents.filter(a => {
+    const c = capByAgent.get(a.id)
+    return !!c && (c.capped || c.paid >= c.amount)
+  })
+
   const capSummary = {
-    belowCap: agents.filter(a => (a.cap_progress || 0) < 100).length,
-    atCap: agents.filter(a => (a.cap_progress || 0) >= 100 && (a.cap_progress || 0) < 101).length,
-    postCap: agents.filter(a => (a.cap_progress || 0) >= 101).length,
-    recentlyCapped: agents.filter(a => (a.cap_progress || 0) >= 100),
+    // Has a cap and has not reached it.
+    belowCap: agents.filter(a => {
+      const c = capByAgent.get(a.id)
+      return !!c && !(c.capped || c.paid >= c.amount)
+    }).length,
+    // Has reached it: the brokerage's share is now $0 and the agent is on 100%.
+    atCap: cappedAgents.length,
+    // NO cap configured at all — uncapped for ever, which is the real revenue
+    // exposure the old "Post-Cap" card was gesturing at with a percentage band
+    // (`>= 101`) that a value clamped to 100 could never enter, so it always
+    // read zero.
+    uncapped: agents.filter(a => !capByAgent.has(a.id)).length,
+    recentlyCapped: cappedAgents,
     totalAgents: agents.length,
+    capLedgerUnavailable,
+    // Dollars the brokerage has actually collected toward caps, straight off the
+    // ledger. Clamped at the cap because collection stops there.
     totalCapRevenue: agents.reduce((sum, a) => {
-      const capPaid = ((a.cap_progress || 0) / 100) * (a.cap_amount || 0)
-      return sum + Math.min(capPaid, a.cap_amount || 0)
+      const c = capByAgent.get(a.id)
+      return c ? sum + Math.min(c.paid, c.amount) : sum
     }, 0),
-    totalCapPotential: agents.reduce((sum, a) => sum + (a.cap_amount || 0), 0),
+    totalCapPotential: agents.reduce((sum, a) => sum + (capByAgent.get(a.id)?.amount ?? 0), 0),
   }
 
   // Format currency
@@ -211,13 +280,19 @@ export default async function BrokeragePLPage() {
       }
     }
     
-    if (capSummary.postCap > capSummary.totalAgents * 0.3) {
+    // This priority could NEVER FIRE before. It tested `postCap`, defined as
+    // `cap_progress >= 101` — and cap_progress was written as
+    // `Math.min(…, 100)`, clamped, so no agent could ever exceed 100 and the
+    // count was structurally zero. The exposure it was written to catch is real,
+    // so it is now asked of the ledger: agents who have HIT their cap are on
+    // 100% commission from here to their anniversary.
+    if (capSummary.atCap > capSummary.totalAgents * 0.3) {
       return {
         id: "cap-exposure",
         title: "High Post-Cap Agent Ratio",
-        description: `${capSummary.postCap} agents at 100% commission - revenue exposure`,
+        description: `${capSummary.atCap} agents have hit their cap and are on 100% commission - revenue exposure`,
         urgency: "medium",
-        metric: `${capSummary.postCap}`,
+        metric: `${capSummary.atCap}`,
         metricLabel: "post-cap agents",
         ctaLabel: "Review Caps",
         ctaHref: "/dashboard/financials/payouts",
@@ -507,7 +582,9 @@ export default async function BrokeragePLPage() {
             Agent Caps Summary
           </CardTitle>
           <CardDescription>
-            Cap status distribution and revenue impact
+            {capSummary.capLedgerUnavailable
+              ? "The cap ledger could not be read — the figures below are not a statement that nobody is capped."
+              : "Cap status distribution and revenue impact, from agent_cap_tracking — the ledger the payout engine applies"}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -526,12 +603,20 @@ export default async function BrokeragePLPage() {
               </div>
               <p className="text-2xl font-bold mt-1">{capSummary.atCap}</p>
             </div>
+            {/*
+              Was "Post-Cap", counting cap_progress >= 101 — impossible, because
+              the writer clamped that value to 100. It read 0 for every brokerage
+              for its whole life. The genuinely distinct third state, which
+              nothing surfaced before, is an agent with NO cap configured: they
+              never stop earning the brokerage its full split, and equally the
+              brokerage has never agreed a ceiling with them.
+            */}
             <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
               <div className="flex items-center gap-2">
                 <Award className="h-4 w-4 text-green-600" />
-                <span className="text-sm text-green-800">Post-Cap</span>
+                <span className="text-sm text-green-800">No Cap Set</span>
               </div>
-              <p className="text-2xl font-bold mt-1">{capSummary.postCap}</p>
+              <p className="text-2xl font-bold mt-1">{capSummary.uncapped}</p>
             </div>
             <div className="p-4 bg-muted rounded-lg">
               <div className="flex items-center gap-2">
@@ -718,7 +803,137 @@ export default async function BrokeragePLPage() {
 
       {/* ─── SECTION 9: AGENT P&L TRUTH ENGINE ────────────────────────────────── */}
       {/* Per-agent net ROI: GCI – agent_payout – AI costs – fees = true brokerage margin */}
+      {/* ─── SECTION 8: RECRUITING & REFERRAL ECONOMICS ────────────────────────
+          KEEP-ONE. /dashboard/admin/brokerage-pnl rendered a second "Brokerage P&L"
+          — same nav label, same owner audience, a fraction of the depth (134 lines
+          against this page's 1,421). It was removed, but NOT before porting the two
+          things it had that this page did not: recruiting ROI and referral value.
+          A grep for recruit|referral across this directory previously returned
+          nothing, so deleting the smaller page without this section would have lost
+          the owner's whole recruiting-economics view. Same generateBrokeragePnl
+          source, so the numbers agree with what that page showed. */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <RecruitingAndReferralEconomics brokerageId={profile.brokerage_id} />
+      </Suspense>
+
+      {/* ─── SECTION 9: COMPANY-BOOKS OBLIGATIONS (m577) ──────────────────────
+          The READ half of the post-cap company-books ledger. Waterfall stage 11
+          writes an obligation here when a brokerage-funded share (revenue share,
+          team split) lands on a deal whose company dollar cannot fund it — post-
+          cap the brokerage's in-deal final is $0 (owner ruling 2026-08-28: the
+          cap ends the brokerage TAKING, not the brokerage PAYING). These are
+          payables from the company's own books, deliberately OUTSIDE the deal's
+          distribution set, so the deal's disbursement sweeps never mark them
+          paid — which is exactly why they need their own surface: an unread
+          payables ledger is a bill nobody knows they owe. */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <CompanyBooksObligations brokerageId={profile.brokerage_id} />
+      </Suspense>
+
       <AgentPLTruthSection brokerageId={profile.brokerage_id} />
+    </div>
+  )
+}
+
+/**
+ * Recruiting + referral economics — the owner's two questions this P&L could not
+ * answer: did recruiting pay for itself, and what are referral partners worth.
+ */
+async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: string }) {
+  const pnl = await generateBrokeragePnl({ brokerageId })
+  const usd = (n: number | null | undefined) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+      .format(Number(n ?? 0))
+
+  return (
+    <div className="space-y-6">
+    {/* BY OFFICE — rendered only for a brokerage that HAS offices. generateBrokeragePnl
+        returns an empty array for a single-office brokerage rather than one row
+        restating the brokerage total, so this whole card disappears instead of
+        showing a breakdown that breaks nothing down. The office comes from
+        agents.location_id joined through the producing agent — see the
+        OfficeProduction doc comment for why it is derived rather than stored,
+        and what that costs when an agent transfers offices. */}
+    {pnl.byOffice.length > 0 && (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building2 className="h-5 w-5" /> Production by office
+          </CardTitle>
+          <CardDescription>
+            Company dollar and payouts per office. Offices are set in Admin → Office Locations;
+            an agent with no office lands in “No office assigned” so the parts still sum to the total.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-muted/40">
+                <tr className="text-left">
+                  <th className="px-4 py-2 font-medium">Office</th>
+                  <th className="px-4 py-2 font-medium text-right">Agents</th>
+                  <th className="px-4 py-2 font-medium text-right">Closings</th>
+                  <th className="px-4 py-2 font-medium text-right">GCI</th>
+                  <th className="px-4 py-2 font-medium text-right">Company dollar</th>
+                  <th className="px-4 py-2 font-medium text-right">Agent payouts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pnl.byOffice.map((o) => (
+                  <tr key={o.locationId ?? "unassigned"} className="border-b last:border-0">
+                    <td className="px-4 py-2">
+                      {o.name}
+                      {o.locationId === null && (
+                        <span className="ml-2 text-xs text-amber-700">needs assignment</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">{o.agentCount}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{o.closings}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.gci)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.brokerageNet)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{usd(o.agentPayouts)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    )}
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5" /> Recruiting economics
+          </CardTitle>
+          <CardDescription>Did recruiting pay for itself</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div className="flex justify-between"><span className="text-muted-foreground">Recruited agents</span><span className="font-medium">{pnl.recruiting.recruitedAgentCount}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Total recruiting cost</span><span className="font-medium">{usd(pnl.recruiting.totalRecruitingCost)}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Lifetime brokerage net</span><span className="font-medium">{usd(pnl.recruiting.lifetimeBrokerageNet)}</span></div>
+          <div className="flex justify-between border-t pt-1 mt-1">
+            <span className="text-muted-foreground">Blended ROI</span>
+            <span className={"font-semibold " + ((pnl.recruiting.blendedRoiPct ?? 0) >= 0 ? "text-green-700" : "text-red-700")}>
+              {pnl.recruiting.blendedRoiPct === null ? "—" : `${pnl.recruiting.blendedRoiPct}%`}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Handshake className="h-5 w-5" /> Referral economics
+          </CardTitle>
+          <CardDescription>What partner relationships are worth</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div className="flex justify-between"><span className="text-muted-foreground">Active partners</span><span className="font-medium">{pnl.referrals.activePartners}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Partner value generated</span><span className="font-medium">{usd(pnl.referrals.partnerValueGenerated)}</span></div>
+          <p className="text-xs text-muted-foreground pt-2">Credited automatically by the referral closing loop as deals close.</p>
+        </CardContent>
+      </Card>
+    </div>
     </div>
   )
 }
@@ -730,5 +945,113 @@ async function AgentPLTruthSection({ brokerageId }: { brokerageId: string }) {
     <div className="space-y-2">
       <AgentPLTable rows={result.rows} monthYear={result.monthYear} />
     </div>
+  )
+}
+
+/**
+ * Company-books obligations — the reader of every column stage 11 writes.
+ * Cookie client on purpose: m577's tenant RLS applies to the read itself, so a
+ * cross-tenant row cannot render even if a predicate were wrong. A refused read
+ * is reported, never rendered as a confidently empty ledger (§4).
+ */
+async function CompanyBooksObligations({ brokerageId }: { brokerageId: string }) {
+  const supabase = await createClient()
+  const { data: rows, error } = await supabase
+    .from("company_books_obligations")
+    .select("id, agent_id, obligation_type, calculation_type, calculation_value, calculated_amount, reason, cap_status, status, calculation_version, created_at")
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(100)
+
+  if (error) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Company-books obligations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-destructive">
+            The obligations ledger could not be read: {error.message}. Nothing here means “unreadable”, not “nothing owed”.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+  const obligations = rows ?? []
+  if (obligations.length === 0) return null
+
+  // Recipient names — agents.id keys the ledger, but the NAME lives on users
+  // (agents has no name columns; agents.id and users.id are DISJOINT, §3 —
+  // cross via agents.user_id, the same embed pl-truth-engine.ts uses).
+  const agentIds = Array.from(new Set(obligations.map((o) => o.agent_id).filter(Boolean)))
+  const { data: agentRows } = await supabase
+    .from("agents").select("id, users:user_id (first_name, last_name)").in("id", agentIds).limit(200)
+  const nameOf = new Map((agentRows ?? []).map((a: any) => {
+    const u = Array.isArray(a.users) ? a.users[0] : a.users
+    return [a.id, `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim()]
+  }))
+
+  const usd = (n: number | null | undefined) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(n ?? 0))
+  const pendingTotal = obligations.filter((o) => o.status === "pending").reduce((s, o) => s + Number(o.calculated_amount ?? 0), 0)
+  // §6 vocabulary rendered, not restated: 'residual' is the revenue-share word,
+  // 'team_member' the brokerage-funded team split; 'post_cap_company_books' is
+  // the only reason stage 11 writes today.
+  const kindLabel = (t: string | null) => (t === "residual" ? "Revenue share" : t === "team_member" ? "Team member share" : t ?? "—")
+  const reasonLabel = (r: string | null) => (r === "post_cap_company_books" ? "post-cap — company books" : r ?? "—")
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Handshake className="h-5 w-5" /> Company-books obligations
+        </CardTitle>
+        <CardDescription>
+          Brokerage-funded shares that landed on capped deals — the cap ended the taking, not the paying.
+          These are owed from company books, not from any deal&apos;s disbursement. Pending: {usd(pendingTotal)}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b bg-muted/40">
+              <tr className="text-left">
+                <th className="px-4 py-2 font-medium">Owed to</th>
+                <th className="px-4 py-2 font-medium">Kind</th>
+                <th className="px-4 py-2 font-medium text-right">Amount</th>
+                <th className="px-4 py-2 font-medium">Basis</th>
+                <th className="px-4 py-2 font-medium">Why on company books</th>
+                <th className="px-4 py-2 font-medium">Deal cap state</th>
+                <th className="px-4 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {obligations.map((o) => (
+                <tr key={o.id} className="border-b last:border-0">
+                  <td className="px-4 py-2">{nameOf.get(o.agent_id) || "Unknown agent"}</td>
+                  <td className="px-4 py-2">{kindLabel(o.obligation_type)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">{usd(o.calculated_amount)}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    {o.calculation_type === "percent" && o.calculation_value != null
+                      ? `${o.calculation_value}%`
+                      : o.calculation_type === "flat"
+                        ? "flat"
+                        : o.calculation_type ?? "—"}
+                    {o.calculation_version != null && <span className="ml-1">· engine v{o.calculation_version}</span>}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{reasonLabel(o.reason)}</td>
+                  <td className="px-4 py-2">
+                    {o.cap_status ? <Badge variant="outline" className="text-[11px]">{o.cap_status}</Badge> : "—"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <Badge variant={o.status === "paid" ? "default" : "outline"} className="text-[11px] capitalize">{o.status}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

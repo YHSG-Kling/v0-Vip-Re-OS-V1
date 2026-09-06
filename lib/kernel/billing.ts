@@ -2,8 +2,24 @@
 // Kernel OS: Canonical Billing Commands
 // No mocks, stubs, or placeholders. All operations read real data from Supabase.
 
-import { SupabaseClient } from "@supabase/supabase-js"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `import { SupabaseClient } from "@supabase/supabase-js"` stood here and was read by
+// NOTHING in this file: no export takes a client parameter, every function builds its
+// own through createServiceClient() below. The typed-client vocabulary this repo does
+// use is `ReturnType<typeof createServiceClient>` — see lib/lead-assignment/routing-profiles.ts:20
+// for the pattern — so the raw class import was a second spelling of a type nobody
+// needed here (CLAUDE.md §6). Note it was a VALUE import of a type-only symbol, which
+// kept @supabase/supabase-js in this module's runtime graph for nothing.
 import { createServiceClient } from "@/lib/supabase/service"
+// ONE definition of the billing month, shared with usage_counters. Every
+// billing_usage writer AND reader in this file filters on it — see the note in
+// lib/usage/period.ts for what happened when neither side did.
+import { currentBillingPeriodLabel } from "@/lib/usage/period"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+// The PURE claimed-tenant decision table (no I/O, no client) — see the
+// CLAIMED-TENANT RULE header in lib/platform/acting-context.ts. Imported so this
+// command and the act-as write seam apply ONE rule, not two spellings of it (§6).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 
 /**
  * PURE: is a feature included in a subscription tier's feature set? subscription_tiers.features is a
@@ -26,12 +42,43 @@ export function isTierFeatureIncluded(
 // INPUT/OUTPUT CONTRACTS
 // ============================================================================
 
+/**
+ * THE BILLING ACTOR — and why `userType` alone was never enough.
+ *
+ * Staff identity on this database is DUAL-COLUMN. `users.platform_role` and
+ * `users.user_type` hold different vocabularies, and the platform's ONE
+ * superadmin is (user_type='admin', platform_role='superadmin'). Every gate in
+ * this file tested `userType === "superadmin"` — a test that account cannot pass
+ * — so applyFeatureOverride and updateSubscriptionState refused the only person
+ * they exist to admit. Both columns travel together now, exactly as they do on
+ * AuthResult in lib/kernel/api-auth.ts.
+ *
+ * `userType` is `string` rather than a literal union for the same reason: it is a
+ * raw `users.user_type` value and the genuine superadmin's is 'admin'. The union
+ * forced every call site to LABEL the caller "superadmin" to satisfy the compiler,
+ * which is the shape that hides an identity bug instead of surfacing it.
+ *
+ * `platformRole` is optional and null-by-default: a caller that does not know the
+ * column omits it and is treated as a tenant user. Absence never grants.
+ */
+export interface BillingActorContext {
+  userId: string
+  /** Raw `users.user_type` — 'superadmin' here is the LEGACY staff marker only. */
+  userType: string
+  /** Raw `users.platform_role` — null for every tenant user. */
+  platformRole?: string | null
+  /**
+   * The actor's OWN `users.brokerage_id`, session-resolved — the tenant this caller
+   * is entitled to by membership. Optional only so the two commands that do not yet
+   * pass it keep compiling; where it is READ (loadBillingWorkspace) its ABSENCE is a
+   * REFUSAL for anyone who is not platform staff, never a pass (§4 fail closed).
+   */
+  brokerageId?: string | null
+}
+
 export interface LoadBillingWorkspaceInput {
   brokerageId: string
-  actorContext: {
-    userId: string
-    userType: "superadmin" | "broker_admin" | "agent"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface LoadBillingWorkspaceOutput {
@@ -109,10 +156,7 @@ export interface ApplyFeatureOverrideInput {
   featureKey: string
   overrideType: "enable_trial" | "disable" | "extend_trial"
   trialEndsAt?: string
-  actorContext: {
-    userId: string
-    userType: "superadmin"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface ApplyFeatureOverrideOutput {
@@ -172,10 +216,7 @@ export interface UpdateSubscriptionStateInput {
   tier?: string
   newStatus: "active" | "trial" | "cancelled"
   cancellationReason?: string
-  actorContext: {
-    userId: string
-    userType: "superadmin"
-  }
+  actorContext: BillingActorContext
 }
 
 export interface UpdateSubscriptionStateOutput {
@@ -198,11 +239,32 @@ const BILLING_VALIDATION_RULES = {
   ONLY_SUPERADMIN: ["applyFeatureOverride", "updateSubscriptionState", "loadRevenueSummary"],
 }
 
-function validateSuperadminOnly(userType: string, command: string): boolean {
+/**
+ * SUPERADMIN GATE — BOTH COLUMNS, never `user_type` alone.
+ *
+ * It read `return userType === "superadmin"`. The platform's only superadmin is
+ * (user_type='admin', platform_role='superadmin'), so this returned false for
+ * them and applyFeatureOverride and updateSubscriptionState were refused to the
+ * one account entitled to call them. Adding the platform_role marker admits that
+ * account and nobody else: 'superadmin' in platform_role is written solely by the
+ * superadmin-gated staff CRUD (app/actions/superadmin/platform-staff.ts). This is
+ * the same shape public.is_platform_admin() uses in RLS.
+ *
+ * The legacy user_type='superadmin' marker is kept for the same reason RLS keeps
+ * it — an account predating the platform_role column must not be demoted.
+ *
+ * NOTE on `loadRevenueSummary`: it is named in ONLY_SUPERADMIN but never calls
+ * this function — its input carries no actor at all, and its only gate is in
+ * app/actions/admin/billing.ts:loadRevenueSummaryAction, which is still
+ * user_type-only. That is out of this file and is reported, not silently patched:
+ * giving the command a required actor would break its one live caller.
+ */
+function validateSuperadminOnly(actor: BillingActorContext, command: string): boolean {
   if (!BILLING_VALIDATION_RULES.ONLY_SUPERADMIN.includes(command)) {
     return true
   }
-  return userType === "superadmin"
+  // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+  return isPlatformSuperadminIdentity(actor.userType, actor.platformRole)
 }
 
 // ============================================================================
@@ -213,14 +275,59 @@ export async function loadBillingWorkspace(
   input: LoadBillingWorkspaceInput
 ): Promise<LoadBillingWorkspaceOutput> {
   try {
-    // Superadmin can view any brokerage; broker can only view own
-    if (
-      input.actorContext.userType === "broker_admin" &&
-      input.actorContext.userId !== input.brokerageId
-    ) {
-      return {
-        success: false,
-        error: "Unauthorized: cannot access other brokerages",
+    // ── THE QUERY-SUPPLIED TENANT ON THIS COMMAND: RESEARCHED, KEPT, AUTHORIZED ──
+    //
+    // `input.brokerageId` reaches here from `?brokerageId=` on
+    // /api/admin/billing/dashboard (app/components/features/admin/billing-dashboard.tsx
+    // builds that URL). A caller-named tenant on a billing READ is the IDOR shape,
+    // so it was researched rather than deleted (owner ruling, 2026-08-26).
+    //
+    // VERDICT: it is a REAL capability and it stays. Platform staff must be able to
+    // open ANY tenant's billing workspace — that is the whole purpose of this
+    // superadmin surface, it is how app/dashboard/admin/billing/page.tsx navigates
+    // ("Pass ?brokerageId=YOUR_ID to view other brokerages"), and §4 says platform
+    // sees all tenants. It is NOT an act-as case: staff are inspecting the tenant's
+    // billing as the PLATFORM, not operating as them, so the impersonation seam is
+    // the wrong instrument here. What was missing was the authorization.
+    //
+    // WHAT WAS ACTUALLY HERE, and why it protected nothing:
+    //   `actorContext.userType === "broker_admin" && actorContext.userId !== input.brokerageId`
+    //   · It compared a users.id to a brokerages.id — two disjoint uuid spaces, so
+    //     for a broker_admin it was ALWAYS true and the command always refused; for
+    //     everyone else it never ran at all.
+    //   · It named ONE user_type out of the fifteen the CHECK admits. A 'broker',
+    //     'admin', 'team_lead' or 'agent' naming a foreign brokerage walked straight
+    //     past it.
+    // The route's requireSuperadminAuth is what has actually been holding this line.
+    // A kernel command must not depend on one caller's gate to be safe: the rule is
+    // stated here, in the command, so a second caller cannot inherit a hole.
+    //
+    // THE RULE: platform staff may name any tenant; everyone else is confined to the
+    // brokerage their own session resolves to; an actor whose tenant is unknown is
+    // REFUSED, because "nobody checked" must never render as "checked and fine".
+    //
+    // ONE VOCABULARY (§6): the "a caller-named tenant is a CLAIM, verified against
+    // the tenant the caller actually holds" rule is decideClaimedTenant — the same
+    // pure decision table the act-as write seam gates server actions with. This
+    // command's only difference is WHO may name a foreign tenant, and that is the
+    // platform-staff test above, not a second spelling of the comparison.
+    const actorIsPlatform = isPlatformSuperadminIdentity(
+      input.actorContext.userType,
+      input.actorContext.platformRole,
+    )
+    if (!actorIsPlatform) {
+      const decision = decideClaimedTenant({
+        actingBrokerageId: input.actorContext.brokerageId,
+        claimedBrokerageId: input.brokerageId,
+      })
+      if (!decision.ok) {
+        return {
+          success: false,
+          error:
+            decision.reason === "no_session_tenant"
+              ? "Unauthorized: billing actor has no resolved brokerage"
+              : "Unauthorized: cannot access other brokerages",
+        }
       }
     }
 
@@ -255,10 +362,16 @@ export async function loadBillingWorkspace(
       .eq("brokerage_id", input.brokerageId)
 
     // Fetch usage for cost calculation
+    // SAME PERIOD KEY AS THE WRITER (lib/usage/period.ts). Without it this read
+    // returned an arbitrary month once a second existed — and `.maybeSingle()`
+    // over two rows is a PostgREST error, not a row.
     const { data: usage, error: usageError } = await supabase
       .from("billing_usage")
       .select("ai_calls_count,video_minutes,storage_bytes")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", currentBillingPeriodLabel())
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     // Build feature map
@@ -463,17 +576,49 @@ export async function resolveFeatureEntitlement(
 // COMMAND 4: RECORD USAGE EVENT
 // ============================================================================
 
+/**
+ * THE ONLY WRITER OF `billing_usage` — and, until this change, one nothing
+ * called. See the tombstone at app/actions/admin/billing.ts for the census.
+ *
+ * VALIDATION MERGED IN FROM THE DELETED `"use server"` WRAPPER: the metric and
+ * the non-negative-units checks used to live only in `recordUsageEventAction`,
+ * so a server-side caller reaching this command directly bypassed both. They
+ * belong on the command, not on one door into it, and they are here now.
+ *
+ * `units` is a DELTA — what the caller JUST consumed, never a running total.
+ */
 export async function recordUsageEvent(
   input: RecordUsageEventInput
 ): Promise<RecordUsageEventOutput> {
   try {
+    if (!input.brokerageId) {
+      return { success: false, error: "Missing required field: brokerageId" }
+    }
+    if (!input.metric) {
+      return { success: false, error: "Missing required field: metric" }
+    }
+    if (!Number.isFinite(input.units) || input.units < 0) {
+      return { success: false, error: "Units must be a non-negative number" }
+    }
+
     const supabase = await createServiceClient()
 
-    // Fetch current usage
+    // THE PERIOD IS PART OF THE ROW'S IDENTITY. This fetch used to filter on
+    // brokerage alone and then UPDATE whatever it found, so every later month's
+    // usage accumulated into the FIRST month's row and the meter never reset.
+    // lib/usage/period.ts is the one definition of the month, shared with the
+    // readers below and with usage_counters. `.order().limit(1)` rather than a
+    // bare `.maybeSingle()`: two rows for one period (a write race) must degrade
+    // to "use the newest", not to a PostgREST error that blanks the meter.
+    const periodLabel = currentBillingPeriodLabel()
+
     const { data: currentUsage, error: fetchError } = await supabase
       .from("billing_usage")
       .select("*")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", periodLabel)
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (fetchError && fetchError.code !== "PGRST116") {
@@ -501,15 +646,22 @@ export async function recordUsageEvent(
     }
 
     const newTotal = (currentUsage?.[column as keyof typeof currentUsage] || 0) + input.units
+    const now = new Date().toISOString()
 
     // Update or insert usage record
     if (currentUsage) {
-      const { error: updateError } = await supabase
+      // Keyed on the ROW ID, not on brokerage_id: the brokerage predicate would
+      // have rewritten every period's row for this tenant with one month's total.
+      // `recorded_at` is refreshed because app/actions/billing.ts getBillingUsage
+      // orders on it.
+      const { data: updated, error: updateError } = await supabase
         .from("billing_usage")
         .update({
           [column]: newTotal,
+          recorded_at: now,
         })
-        .eq("brokerage_id", input.brokerageId)
+        .eq("id", (currentUsage as { id: string }).id)
+        .select("id")
 
       if (updateError) {
         return {
@@ -517,12 +669,23 @@ export async function recordUsageEvent(
           error: `Failed to update usage: ${updateError.message}`,
         }
       }
+      // A zero-row UPDATE is not an error in PostgREST. Recording usage that
+      // landed nowhere while reporting success is how billing_usage would go on
+      // reading zero even after it had a writer.
+      if (!Array.isArray(updated) || updated.length === 0) {
+        return {
+          success: false,
+          error: `Failed to update usage: no billing_usage row matched id ${(currentUsage as { id: string }).id}`,
+        }
+      }
     } else {
       const insertData: Record<string, any> = {
         brokerage_id: input.brokerageId,
         [column]: input.units,
-        // period_label is NOT NULL — the current billing month (YYYY-MM)
-        period_label: new Date().toISOString().slice(0, 7),
+        // period_label is NOT NULL — the current billing month (YYYY-MM), from
+        // the shared UTC definition rather than an inline slice of a local date.
+        period_label: periodLabel,
+        recorded_at: now,
       }
 
       const { error: insertError } = await supabase
@@ -560,7 +723,7 @@ export async function applyFeatureOverride(
 ): Promise<ApplyFeatureOverrideOutput> {
   try {
     // Validate superadmin
-    if (!validateSuperadminOnly(input.actorContext.userType, "applyFeatureOverride")) {
+    if (!validateSuperadminOnly(input.actorContext, "applyFeatureOverride")) {
       return {
         success: false,
         error: "Only superadmins can apply feature overrides",
@@ -653,10 +816,17 @@ export async function calculateOverageExposure(
     }
 
     // Fetch current usage
+    // SAME PERIOD KEY AS THE WRITER (lib/usage/period.ts). The overage
+    // PROJECTION is the surface this table exists for; reading an unkeyed
+    // "whatever row comes back" meant projecting one month's exposure from
+    // another month's counters as soon as a second month existed.
     const { data: usage, error: usageError } = await supabase
       .from("billing_usage")
       .select("ai_calls_count,video_minutes,storage_bytes,scraper_calls,active_agents")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", currentBillingPeriodLabel())
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (usageError) {
@@ -845,7 +1015,7 @@ export async function updateSubscriptionState(
 ): Promise<UpdateSubscriptionStateOutput> {
   try {
     // Validate superadmin
-    if (!validateSuperadminOnly(input.actorContext.userType, "updateSubscriptionState")) {
+    if (!validateSuperadminOnly(input.actorContext, "updateSubscriptionState")) {
       return {
         success: false,
         error: "Only superadmins can update subscription state",

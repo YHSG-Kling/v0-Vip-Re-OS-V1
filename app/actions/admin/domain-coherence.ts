@@ -5,8 +5,50 @@
 // Input:  Validated, typed contract objects
 // Output: { success: boolean; data?: T; error?: string }
 // Tables: none (registry-only, no DB reads/writes)
+//
+// AUTHORIZATION — this is PLATFORM GOVERNANCE data, not tenant data. The route
+// registry enumerates every surface in the product, its kernel owner, its
+// access level and every unresolved coherence finding across ALL tenants.
+// It carries no brokerage_id and therefore cannot be tenant-filtered.
+//
+// The previous guard here accepted users.user_type ∈ {superadmin, admin,
+// broker} — but 'admin' and 'broker' are TENANT roles in this schema
+// (users.user_type CHECK: admin | agent | broker | broker_owner |
+// compliance_officer | contact | isa | lender | superadmin | support | system |
+// tc | team_lead | vendor). Any brokerage broker could read the platform's
+// whole route map and governance backlog. It also ignored users.platform_role
+// entirely, so real platform staff whose authority comes from platform_role
+// were judged by the wrong column.
+//
+// Both halves are fixed by delegating to the one canonical platform gate,
+// requirePlatformCapability('sentinel') — the same capability the superadmin
+// observability surface uses.
+//
+// ─── TOMBSTONE (wave 14) — the /api/admin/domain-coherence HTTP twins ─────────
+// Three unreferenced route files sat in front of the same kernel commands and
+// were retired here. Their own headers already said so: "These routes are the
+// HTTP path around app/actions/admin/domain-coherence.ts." They had zero callers
+// in the tree, are not cron (vercel.json crons is only /api/cron/dispatch) and
+// are not webhooks — they were platform-staff GETs behind the SAME
+// requirePlatformCapability("sentinel") gate as the actions below.
+//
+//   app/api/admin/domain-coherence/routes/enumerate/route.ts GET
+//        → actionEnumerateDomainRoutes()          :80
+//   app/api/admin/domain-coherence/routes/classify/route.ts  GET
+//        → actionClassifyRouteOwnership()         :89
+//          + actionDetectDuplicateManagerSurfaces() :112
+//   app/api/admin/domain-coherence/routes/validate/route.ts  GET
+//        → actionGenerateDomainCoherenceReport()  :158
+//
+// Nothing needed merging: each route body was `gate → kernel call → NextResponse`
+// with the identical arguments the matching action already passes
+// (includePersonaRoutes: true for classify, includeRecommendations: true for
+// validate). The only shape the routes had that no single action has is
+// classify's COMBINED `{ classification, duplicates }` envelope — that is a
+// caller's composition of actions 2 and 4, not a capability, and any reader can
+// await both. No action is dropped and no argument is lost.
 
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   enumerateDomainRoutes,
   classifyRouteOwnership,
@@ -23,26 +65,20 @@ import {
 } from "@/lib/kernel/routes"
 
 // ─── Auth guard ───────────────────────────────────────────────────────────────
-async function requireAdminRole(): Promise<{ userId: string } | { error: string; status: number }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: "Unauthorized", status: 401 }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (!profile || !["superadmin", "admin", "broker"].includes(profile.user_type ?? "")) {
-    return { error: "Forbidden", status: 403 }
+// Platform staff only. Returns the resolved staff identity or a refusal — no
+// third "empty result" branch, because an ungated caller must never receive a
+// coherence verdict that looks clean.
+async function requirePlatformStaff(): Promise<{ userId: string; role: string } | { error: string }> {
+  const gate = await requirePlatformCapability("sentinel")
+  if (!gate.ok || !gate.userId) {
+    return { error: gate.error ?? "Forbidden — platform staff only" }
   }
-  return { userId: user.id }
+  return { userId: gate.userId, role: gate.role ?? "superadmin" }
 }
 
 // ─── Action 1: Enumerate Domain Routes ───────────────────────────────────────
 export async function actionEnumerateDomainRoutes(input: EnumerateRoutesInput) {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   const data = enumerateDomainRoutes(input)
@@ -51,7 +87,7 @@ export async function actionEnumerateDomainRoutes(input: EnumerateRoutesInput) {
 
 // ─── Action 2: Classify Route Ownership ──────────────────────────────────────
 export async function actionClassifyRouteOwnership() {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   const { routes } = enumerateDomainRoutes({ includePersonaRoutes: true })
@@ -61,7 +97,7 @@ export async function actionClassifyRouteOwnership() {
 
 // ─── Action 3: Validate Canonical Manager Usage ───────────────────────────────
 export async function actionValidateCanonicalManagerUsage(input: ValidateManagerInput) {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   if (!Array.isArray(input.kernelModules) || input.kernelModules.length === 0) {
@@ -74,7 +110,7 @@ export async function actionValidateCanonicalManagerUsage(input: ValidateManager
 
 // ─── Action 4: Detect Duplicate Manager Surfaces ─────────────────────────────
 export async function actionDetectDuplicateManagerSurfaces() {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   const { routes } = enumerateDomainRoutes({ includePersonaRoutes: true })
@@ -84,7 +120,7 @@ export async function actionDetectDuplicateManagerSurfaces() {
 
 // ─── Action 5: Normalize Navigation Visibility ───────────────────────────────
 export async function actionNormalizeNavigationVisibility(input: NormalizeNavInput) {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   if (!input.userType) {
@@ -97,7 +133,7 @@ export async function actionNormalizeNavigationVisibility(input: NormalizeNavInp
 
 // ─── Action 6: Validate Provider-Backed Features ─────────────────────────────
 export async function actionValidateProviderBackedFeatures(input: ValidateProvidersInput) {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   if (!Array.isArray(input.domains) || input.domains.length === 0) {
@@ -110,7 +146,7 @@ export async function actionValidateProviderBackedFeatures(input: ValidateProvid
 
 // ─── Action 7: Validate Contract Integrity ───────────────────────────────────
 export async function actionValidateContractIntegrity() {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   const { routes } = enumerateDomainRoutes({ includePersonaRoutes: true })
@@ -120,7 +156,7 @@ export async function actionValidateContractIntegrity() {
 
 // ─── Action 8: Generate Domain Coherence Report ───────────────────────────────
 export async function actionGenerateDomainCoherenceReport() {
-  const auth = await requireAdminRole()
+  const auth = await requirePlatformStaff()
   if ("error" in auth) return { success: false as const, error: auth.error }
 
   const data = generateDomainCoherenceReport({ includeRecommendations: true })

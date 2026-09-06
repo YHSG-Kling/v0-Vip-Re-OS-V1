@@ -5,7 +5,10 @@
  *
  * Ownership rules:
  *   - ONLY this file writes the dedup / merge decision to contacts.
- *   - ONLY this file writes contact_suppression_list via applyContactSuppressionState().
+ *   - contact_suppression_list is written by lib/kernel/compliance/check-suppression.ts
+ *     `addSuppression` — NOT by this file. The rule that used to stand here named
+ *     `applyContactSuppressionState()`, which had zero callers and has been deleted
+ *     as a duplicate (tombstone at COMMAND 14 below).
  *   - ONLY this file writes to lead_enrichment_queue for contact-triggered enrichment.
  *   - ONLY this file writes lead_deduplication_log rows.
  *   - Server actions call these commands — they do not duplicate the logic.
@@ -24,9 +27,20 @@
  * All events use KernelEvent enum values — no string literals.
  */
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here,
+// below the header where use-server-export-guard's raw-line-3 check never looked,
+// published all thirteen commands as Server Actions callable by action id, with
+// zero session tokens in the file and the tenant taken from `brokerage_id` /
+// `brokerageId` parameters on the service client (§4). Every real caller gates
+// first and passes the SESSION's tenant: app/actions/contacts.ts
+// (resolveWriteContext), app/actions/transactions.ts (getAgentContext), the
+// widget route (tenant from the minted chat_sessions row), and the server-only
+// kernel barrel. The module already reached `server-only` through ./emit; it is
+// now declared here so the boundary guards read it off this file directly.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 
@@ -59,7 +73,17 @@ export interface CreateContactParams {
   city?: string | null
   state?: string | null
   zip_code?: string | null
-  contact_type?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // `investor` removed 2026-08-31 (owner: "investor is a persona and not a
+  // contact type") — an investor is a buyer with contact_persona='investor'.
+  // `lender` removed 2026-09-01: the live contacts_contact_type_check refuses
+  // it (23514, which supabase-js resolves silently — the insert at createContact
+  // below would just lose the row). No caller passed it (app/actions/contacts.ts,
+  // app/actions/transactions.ts, app/api/widget/live-agent-request all narrow
+  // further), but this type is exported through the kernel barrel
+  // (lib/kernel/index.ts), so leaving it invited the next caller to write a row
+  // Postgres kills. A lender is vendors.category='lender' /
+  // users.user_type='lender', never a contact_type.
+  contact_type?: "buyer" | "seller" | "both" | "vendor"
   status?: string
   contact_persona?: string
   notes?: string
@@ -88,15 +112,10 @@ export interface DeduplicateResult {
   matchScore?: number
 }
 
-export interface SuppressionStateParams {
-  contactId: string
-  brokerageId: string
-  channel: "email" | "sms" | "phone" | "mail"
-  reason: string
-  source: string
-  email?: string | null
-  phone?: string | null
-}
+/* `SuppressionStateParams` was the input type of `applyContactSuppressionState`
+ * and went with it (tombstone at COMMAND 14). The live shape is the inline
+ * parameter object of `addSuppression`,
+ * lib/kernel/compliance/check-suppression.ts:263. */
 
 export interface CRMResult {
   success: boolean
@@ -216,9 +235,13 @@ export async function mergeOrUpdateContactIfDuplicate(params: {
     brokerage_id: params.brokerageId,
     duplicate_of_contact_id: params.existingContactId,
     raw_record_id: params.rawRecordId ?? null,
-    action_taken: "merged_into_existing",
+    // lead_deduplication_log.action_taken says 'merged'.
+    action_taken: "merged",
     match_score: 90,
-    stage: "contact",
+    // lead_deduplication_log.stage is (pre_enrichment|post_enrichment|
+    // viability_gate|lead_creation) — the point in the pipeline, not the
+    // record kind. This dedupe happens as the record is created.
+    stage: "lead_creation",
     created_at: now,
   })
 
@@ -275,7 +298,11 @@ export async function createOrUpdateContactFromDirectIntake(
         email: params.email ?? undefined,
         phone: params.phone ?? undefined,
         contact_type: params.contact_type,
-        status: params.status,
+        // Direct intake that deduped onto an EXISTING contact. A forged 'qualified'
+        // is refused here too (owner ruling — see the insert below); `undefined` is
+        // what this path already meant by "no status supplied", so the refusal
+        // leaves the existing contact's status untouched rather than overwriting it.
+        status: statusForNewContact(params.status, undefined),
         source: params.source?.source,
         source_family: params.source?.source_family,
         source_channel: params.source?.source_channel,
@@ -305,7 +332,18 @@ export async function createOrUpdateContactFromDirectIntake(
       state:                   params.state ?? null,
       zip_code:                params.zip_code ?? null,
       contact_type:            params.contact_type ?? "buyer",
-      status:                  params.status ?? "new",
+      // OWNER RULING, verbatim: "invitation from a lead converting to a contact
+      // makes sense for status qualified but any other new contacts coming in from
+      // forms, lead magnets, other real estate sites, etc. haven't been qualified
+      // yet." THIS IS THE "any other" DOOR — direct intake and the CRM manual add
+      // both land here, and `params.status` is caller-supplied through a
+      // "use server" export, i.e. a public HTTP endpoint (§4). Removing "Qualified"
+      // from the add dialog's dropdown (app/crm/page.tsx) hides the handle; this
+      // closes the door. 'qualified' is earned by the lead→contact CONVERSION alone
+      // and stamped in exactly one place, lib/portal/portal-invite-core.ts:77
+      // stampQualifiedIfLeadConverted, off the `leads.contact_id` marker. The
+      // fallback is this path's OWN prior default, so no other status moves.
+      status:                  statusForNewContact(params.status, "new"),
       contact_persona:         params.contact_persona ?? null,
       notes:                   params.notes ?? null,
       preferred_channel:       params.preferred_channel ?? null,
@@ -348,7 +386,9 @@ export async function createOrUpdateContactFromDirectIntake(
   })
 
   // ── 4. Create first activity (intake note) ──────────────────────────────
-  await supabase.from("activities").insert({
+  // The CRM contact timeline is built from `activities` (see COMMAND 12), so
+  // this is the row that makes a new contact look like it exists at all.
+  const { error: intakeActivityError } = await supabase.from("activities").insert({
     brokerage_id:  params.brokerage_id,
     agent_id:      params.agent_id,
     contact_id:    contactId,
@@ -358,6 +398,9 @@ export async function createOrUpdateContactFromDirectIntake(
     entity_type:   "contact",
     status:        "completed",
   })
+  if (intakeActivityError) {
+    console.error("[kernel/crm] intake activity REJECTED — the contact exists but its timeline starts empty:", intakeActivityError.message)
+  }
 
   // ── 5. Queue enrichment (non-blocking) ──────────────────────────────────
   void enrichContactAfterIntake({ contactId, brokerageId: params.brokerage_id }).catch(() => {})
@@ -452,6 +495,34 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
     return { success: false, error: error?.message ?? "Lead insert failed" }
   }
 
+  // ── LEAD ENRICHMENT (wave 5, DIRECT HOOK) ──────────────────────────────────
+  // "enrichment also needs to still happen with raw leads" (owner).
+  //
+  // This is one of the three `leads` INSERT sites in app/ + lib/ and it emits NO
+  // kernel event, so the reactor chokepoint (event-reactor.ts D-septies, on
+  // RAW_RECORD_PROMOTED / LEAD_CAPTURED) cannot see it. A direct hook is what a
+  // door without an event gets — and a direct hook rots silently, so this one is
+  // named individually in scripts/enrichment-suppression-simulator.ts, which
+  // fails if the call disappears.
+  //
+  // BEST-EFFORT AND VOIDED: creating a lead must never fail because of
+  // enrichment. queueLeadEnrichment never throws either, so this is belt and
+  // braces on purpose. Imported dynamically because
+  // lib/enrichment/lead-enrichment-core.ts is `server-only` and a static import
+  // would drag that into every module graph reaching this file — including the
+  // plain-tsx guards, which crash on `server-only` at load. Same pattern as
+  // queueContactEnrichment below.
+  try {
+    const { queueLeadEnrichmentBestEffort } = await import("@/lib/enrichment/lead-enrichment-core")
+    queueLeadEnrichmentBestEffort({
+      leadId:      data.id,
+      brokerageId: params.brokerage_id,
+      triggerType: "acquisition_source",
+    })
+  } catch (err) {
+    console.error("[crm] lead enrichment enqueue failed:", err)
+  }
+
   return { success: true, data: { leadId: data.id } }
 }
 
@@ -505,17 +576,25 @@ export async function convertLeadToContact(params: {
     }
   }
 
-  // Map lead_type → a VALID contacts.contact_type (CHECK: buyer|seller|both|
-  // investor|vendor|lender). A raw cast of lead_type (e.g. "motivated_seller")
-  // would violate the CHECK. Derive persona from motivation_type.
+  // Map lead_type → a VALID contacts.contact_type. A raw cast of lead_type
+  // (e.g. "motivated_seller") would violate the CHECK. Derive persona from
+  // motivation_type. An 'investor' lead is a BUYER whose persona is 'investor'
+  // (owner ruling 2026-08-31: "investor is a persona and not a contact type";
+  // m589 admits the persona, m593 retires the type).
   const lt = (lead.lead_type ?? "").toLowerCase()
-  const contactType: "buyer" | "seller" | "both" | "investor" =
-    lt.includes("seller") ? "seller" : lt === "investor" ? "investor" : lt === "both" ? "both" : "buyer"
+  const contactType: "buyer" | "seller" | "both" =
+    lt.includes("seller") ? "seller" : lt === "both" ? "both" : "buyer"
   const mt = (lead.motivation_type ?? "").toLowerCase()
+  // NOTE the foreclosure arm: this used to write 'motivated_seller', a value
+  // contacts_contact_persona_check has NEVER admitted — Postgres refused the
+  // whole row (23514, §3) for every foreclosure-motivated conversion. The
+  // persona names the SITUATION; 'foreclosure' is that situation. Urgency lives
+  // on lead_temperature and the scraped signal record, never in the persona.
   const contactPersona =
-    mt === "probate" ? "probate"
+    lt === "investor" ? "investor"
+    : mt === "probate" ? "probate"
     : mt === "divorce" ? "divorce"
-    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "motivated_seller"
+    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "foreclosure"
     : mt === "fsbo" ? "fsbo"
     : undefined
 
@@ -541,7 +620,31 @@ export async function convertLeadToContact(params: {
     return result
   }
 
-  // Link lead → contact
+  // ── Link lead → contact, THEN close the lead out ──────────────────────────
+  //
+  // THE CONVERTER GAP (closed here). Three converters exist and they did not
+  // agree on what a conversion writes. This one — the MANUAL lead-desk lane —
+  // stamped `contact_id`, `lifecycle_state` and `converted_at` and stopped:
+  // it never set `is_active=false`, never released `ai_isa_owner`, and never
+  // closed `sequence_enrollments`. So a lead converted through this door stayed
+  // ACTIVE and stayed ENROLLED, and therefore sailed through every downstream
+  // "is_active === false" stop the other two converters relied on. That is the
+  // leak that let the AI ISA, the stale-lead sweeps and the campaign sequences
+  // keep working a person who had already become a client.
+  //
+  // Closed by DELEGATION, not by a third copy (CLAUDE.md §6): the deactivation
+  // is `lib/contact-promotion/lead-deactivator.ts:deactivateLead`, the same one
+  // the promotion service uses. One implementation, three callers.
+  //
+  // NOT reconciled here, and deliberately reported rather than quietly changed:
+  // `lifecycle_state`. This writes 'assigned'; `LEAD_CONVERTED_STATE`
+  // (lib/lead-pipeline/lead-lifecycle.ts:51) is 'representation' and NOTHING
+  // writes it. Moving this to 'representation' is not a one-liner — the
+  // transition graph in lib/kernel/lead-acquisition-handlers.ts:19-24 admits
+  // only assigned→appointment→representation, that file declares itself the
+  // column's ONLY writer, and the readers of 'assigned' live in files this lane
+  // does not own. The conversion GUARD therefore keys on `contact_id`, which is
+  // the one marker every converter writes and every reader can trust.
   await supabase
     .from("leads")
     .update({
@@ -552,11 +655,91 @@ export async function convertLeadToContact(params: {
     })
     .eq("id", params.leadId)
 
+  // is_active=false + ai_isa_owner=false + sequence_enrollments closed.
+  // Best-effort by construction: the contact EXISTS, and a deactivation failure
+  // must not unwind a successful conversion — but it is READ and reported, never
+  // swallowed, because an active converted lead is the exact shape this whole
+  // guard exists to prevent.
+  {
+    const { deactivateLead } = await import("@/lib/contact-promotion/lead-deactivator")
+    const deactivated = await deactivateLead(supabase, params.leadId)
+    if (!deactivated.success) {
+      console.error(
+        `[crm] lead ${params.leadId} converted to contact ${result.contactId} but was NOT deactivated: ${deactivated.error ?? "unknown error"} — ` +
+          `the lead is still is_active=true and may still be picked up by lead-keyed sweeps.`,
+      )
+    }
+  }
+
+  // PROMOTE THE NEW CONTACT INTO THE AGENT'S RETARGETING AUDIENCE.
+  //
+  // MERGED ONTO THIS SURVIVOR (§1) from the automatic lane, which has always done
+  // it (lib/kernel/lead-acquisition-handlers.ts, inside handleLeadAssigned) while
+  // this MANUAL lane never did. `onLeadConvertedForAudience` had exactly ONE
+  // caller in the tree, and it was that one — so a lead a broker converted by hand
+  // stayed out of the agent's Meta audience while an identical lead converted
+  // automatically went in. Same business fact, two outcomes, decided by which
+  // button someone pressed.
+  //
+  // agentUserId IS A users.id, AND params.agentId IS AN agents.id. Those id spaces
+  // are DISJOINT here (23503 on the FK), so the agents row is crossed via
+  // `user_id` rather than passing agentId straight through — passing it would not
+  // error, it would just silently match no audience row and promote nobody, which
+  // is how this kind of wire looks connected while doing nothing.
+  //
+  // Non-blocking and best-effort by construction: a retargeting push must never
+  // unwind a completed conversion. The failure is logged, not swallowed.
+  if (!result.isDuplicate) {
+    try {
+      const { data: agentRow, error: agentErr } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+      const agentUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+      if (agentErr) {
+        console.error(`[crm] audience promote skipped — agents.user_id unreadable for ${params.agentId}: ${agentErr.message}`)
+      }
+      const { onLeadConvertedForAudience } = await import("@/lib/audiences/audience-sync")
+      void onLeadConvertedForAudience({
+        contactId:   result.contactId as string,
+        leadId:      params.leadId,
+        brokerageId: params.brokerageId,
+        agentUserId,
+      }).catch((e) => {
+        console.error("[crm] FB audience promote failed:", e)
+      })
+    } catch { /* best-effort */ }
+  }
+
   // Lifecycle event
+  //
+  // VOCABULARY SPLIT — NOW CLOSED. This lane used to emit CONTACT_LEAD_CONVERTED
+  // while the automatic lane (lib/kernel/lead-acquisition-handlers.ts:538) emits
+  // LEAD_CONVERTED_TO_CONTACT for the VERY SAME FACT. processKernelEvent routes
+  // by matching notification_rules.trigger_event against the event STRING, so a
+  // rule written for one name could never fire for the other: a brokerage that
+  // configured "notify me when a lead converts" would have been notified for
+  // conversions that arrived down one path and silently missed every conversion
+  // that arrived down the other. Which path a conversion takes is invisible to
+  // the person writing the rule.
+  //
+  // A previous wave measured this and left it, on the grounds that renaming an
+  // emitted event with no evidence behind it is a guess. The evidence is now
+  // complete, re-measured live: 42 notification rules, ZERO referencing either
+  // name, and ZERO lifecycle_events rows carrying either string. Nothing to
+  // migrate and nothing to break — which is exactly why this is the moment to
+  // do it. After the first tenant writes the first conversion rule, closing this
+  // split stops being an edit and becomes a data migration.
+  //
+  // LEAD_CONVERTED_TO_CONTACT is the survivor (CLAUDE.md §6, one vocabulary per
+  // function): it names both sides of the fact, the automatic lane and
+  // lib/audiences/audience-sync.ts:204 already speak it, and
+  // scripts/lead-pipeline-simulator.ts:262 already asserts on it.
   await supabase.from("lifecycle_events").insert({
     entity_type:  "lead",
     entity_id:    params.leadId,
-    event_type:   KernelEvent.CONTACT_LEAD_CONVERTED,
+    event_type:   KernelEvent.LEAD_CONVERTED_TO_CONTACT,
     brokerage_id: params.brokerageId,
     created_at:   now,
     metadata:     { contact_id: result.contactId },
@@ -567,7 +750,23 @@ export async function convertLeadToContact(params: {
   // serviceConvertLeadToContact). Skip on a dedup-merge so we never silently
   // re-enable ISA on an existing contact an agent had toggled off.
   if (!result.isDuplicate) {
-    await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+    // READ AND REPORTED, NEVER SWALLOWED — the same contract the deactivateLead
+    // block above states in words. `ai_isa_enabled` is an AUTONOMY flag, and a
+    // refusal here used to be indistinguishable from success, so a conversion
+    // could report "done" while the ISA was never actually armed for the new
+    // contact and nobody could tell which contacts that had happened to.
+    //
+    // The conversion itself is NOT failed over this: the contact EXISTS, and
+    // failing to ARM autonomy errs toward less automated outreach, not more —
+    // the opposite direction from a lost suppression. Reversing a completed
+    // conversion would be the larger harm.
+    const { error: armError } = await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+    if (armError) {
+      console.error(
+        `[crm] lead ${params.leadId} converted to contact ${result.contactId} but ai_isa_enabled was NOT set: ${armError.message} — ` +
+          `the AI ISA will not engage this contact until an agent toggles it on.`,
+      )
+    }
   }
 
   return result
@@ -614,11 +813,21 @@ export async function attachLeadOriginHistoryToContact(params: {
   if (lead.source_subtype)                          updates.source_subtype = lead.source_subtype
   if (lead.campaign_attribution_id)                 updates.campaign_attribution_id = lead.campaign_attribution_id
 
-  await supabase
+  // The error is READ. This write is the WHOLE POINT of the command — the
+  // referral_sources mirror was deliberately removed (note below), so contacts is
+  // now the only place the attribution lands. A refusal returned { success: true }
+  // with nothing attached.
+  const { error: attributionError } = await supabase
     .from("contacts")
     .update(updates)
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
+  if (attributionError) {
+    console.error(
+      `[crm] lead-origin attribution write REFUSED for contact ${params.contactId}:`,
+      attributionError.message,
+    )
+  }
 
   // Keep-one: the same values already land on contacts.source/source_family above,
   // which is the read surface for attribution — the referral_sources insert was a
@@ -630,54 +839,42 @@ export async function attachLeadOriginHistoryToContact(params: {
 // ─── COMMAND 8: enrichContactAfterIntake ─────────────────────────────────────
 /**
  * Queues the contact for enrichment. Non-blocking — caller should void this.
- * Writes a lead_enrichment_queue row with enrichments_needed based on missing fields.
+ *
+ * MERGED, then delegated. The body used to be a fourth private copy of "write a
+ * lead_enrichment_queue row", and the four copies had disagreed for a long time:
+ * this one had a 7-day freshness check but no guard against an already-pending
+ * row (so a double intake queued twice and paid twice), contact-capture's copy
+ * had the pending guard but no freshness check, the widget route had neither,
+ * and lib/ghl-integration.ts had neither AND omitted brokerage_id, which made
+ * every GHL-synced contact's queue row invisible to the drain.
+ *
+ * The survivor is
+ * lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment — it carries
+ * BOTH guards, requires the tenant, consults BOTH enrichment stamps
+ * (`enriched_at` and `last_enriched_at` are different columns owned by different
+ * lanes), and applies the owner's live-deal suppression rule, which none of the
+ * four copies had.
+ *
+ * This export is kept: it is the CRM kernel's name for the operation and
+ * createOrUpdateContactFromDirectIntake calls it. Its `CRMResult` contract is
+ * unchanged — success with `data.skipped` when nothing was queued.
  */
 export async function enrichContactAfterIntake(params: {
   contactId: string
   brokerageId: string
 }): Promise<CRMResult> {
-  const supabase = createServiceClient()
-  const now = new Date().toISOString()
-
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("email, phone, last_enriched_at")
-    .eq("id", params.contactId)
-    .maybeSingle()
-
-  if (!contact) return { success: false, error: "Contact not found" }
-
-  // Only enrich if not recently enriched (within 7 days)
-  if (contact.last_enriched_at) {
-    const age = Date.now() - new Date(contact.last_enriched_at as string).getTime()
-    const sevenDays = 7 * 24 * 60 * 60 * 1000
-    if (age < sevenDays) return { success: true, data: { skipped: true } }
-  }
-
-  const enrichments_needed: string[] = ["skip_trace"]
-  if (!contact.email) enrichments_needed.push("email_append")
-  if (!contact.phone) enrichments_needed.push("phone_append")
-
-  await supabase.from("lead_enrichment_queue").insert({
-    contact_id:         params.contactId,
-    brokerage_id:       params.brokerageId,
-    enrichment_type:    "skip_trace",
-    enrichments_needed,
-    status:             "pending",
-    trigger_type:       "contact_intake",
-    queued_at:          now,
-    max_retries:        3,
+  const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+  const result = await queueContactEnrichment({
+    contactId:   params.contactId,
+    brokerageId: params.brokerageId,
+    triggerType: "contact_intake",
   })
 
-  await supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_ENRICHMENT_QUEUED,
-    brokerage_id: params.brokerageId,
-    created_at:   now,
-  })
-
-  return { success: true }
+  if (result.queued) return { success: true, data: { queued: true } }
+  if (result.reason === "not_found") return { success: false, error: "Contact not found" }
+  if (result.reason === "error") return { success: false, error: result.error }
+  // already_queued | recently_enriched | live_deal — nothing to do, not a failure.
+  return { success: true, data: { skipped: true, reason: result.reason } }
 }
 
 // ─── COMMAND 9: notifyAssignedAgentForNextAction ──────────────────────────────
@@ -737,6 +934,9 @@ export async function updateContactRecord(params: {
   brokerageId: string
   agentId?: string
   userType?: string
+  /** The REAL accountable actor (users.id) — under staff act-as this is the
+   *  impersonator, so lifecycle_events.actor_user_id names who really wrote. */
+  actorUserId?: string | null
   updates: Partial<{
     first_name: string
     last_name: string
@@ -784,12 +984,14 @@ export async function updateContactRecord(params: {
     return { success: false, error: error?.message ?? "Update failed or contact not found" }
   }
 
-  // Lifecycle event
+  // Lifecycle event — actor_user_id names the REAL actor (act-as seam: the
+  // impersonating staff member, never the tenant identity they act as).
   await supabase.from("lifecycle_events").insert({
     entity_type:  "contact",
     entity_id:    params.contactId,
     event_type:   KernelEvent.CONTACT_UPDATED,
     brokerage_id: params.brokerageId,
+    actor_user_id: params.actorUserId ?? null,
     created_at:   now,
     metadata:     { updated_fields: Object.keys(params.updates) },
   })
@@ -811,6 +1013,9 @@ export async function archiveContactRecord(params: {
   brokerageId: string
   agentId?: string
   userType?: string
+  /** The REAL accountable actor (users.id) — under staff act-as this is the
+   *  impersonator, so lifecycle_events.actor_user_id names who really archived. */
+  actorUserId?: string | null
   reason?: string
 }): Promise<CRMResult> {
   const supabase = createServiceClient()
@@ -827,10 +1032,26 @@ export async function archiveContactRecord(params: {
     query = query.eq("agent_id", params.agentId)
   }
 
-  const { error } = await query
+  // 🐛 A CONTROL THAT REPORTED SUCCESS WITHOUT DOING THE THING.
+  // The predicates above are the authorization: wrong tenant, an agent who does not
+  // own the contact, or an already-archived row all match ZERO rows. A zero-row
+  // UPDATE is not an error in Postgres, so `error` was null, this returned
+  // { success: true }, AND it wrote a CONTACT_ARCHIVED lifecycle event — an audit
+  // trail asserting an archive that never happened, and a UI free to tell the user
+  // their contact was removed while the record stayed live and reachable.
+  // `.select("id")` makes the affected rows observable so the outcome is the truth.
+  // `contact_user_id` and `agent_id` come back too — ABSORBED (wave 14) from the
+  // retired app/api/contacts/delete route, which recorded the portal-login fact.
+  const { data: archived, error } = await query.select("id, contact_user_id, agent_id")
 
   if (error) {
     return { success: false, error: error.message }
+  }
+
+  if (!archived?.length) {
+    // Deliberately does not distinguish "does not exist" from "not yours" — that
+    // difference is itself an id-enumeration oracle across tenants.
+    return { success: false, error: "Contact not found, already archived, or not yours to archive" }
   }
 
   await supabase.from("lifecycle_events").insert({
@@ -838,9 +1059,52 @@ export async function archiveContactRecord(params: {
     entity_id:    params.contactId,
     event_type:   KernelEvent.CONTACT_ARCHIVED,
     brokerage_id: params.brokerageId,
+    actor_user_id: params.actorUserId ?? null,
     created_at:   now,
     metadata:     { reason: params.reason ?? "manual" },
   })
+
+  // ── ABSORBED (wave 14) from app/api/contacts/delete/route.ts ────────────────
+  // That route wrote an `activities` row on removal; this command wrote only a
+  // lifecycle_events row. They are not the same surface: loadContactWorkspace()
+  // (COMMAND 12, below) builds the contact timeline from `activities` and never
+  // reads lifecycle_events, so an archive done through this lane left NO trace on
+  // the timeline the CRM actually renders — the record vanished with no entry
+  // saying who removed it or when. The retired route also carried one fact worth
+  // keeping: a contact with a `contact_user_id` still has a live auth user after
+  // the archive, because archiving deliberately does NOT delete the login (that is
+  // an admin action). Both are recorded here now.
+  // Vocabulary follows the intake activity written by createContactManually above
+  // (activity_type/title/description/entity_type/status) — the route's
+  // `notes: JSON.stringify(...)` spelling is deliberately NOT ported, because the
+  // timeline reader selects title/description and would have shown nothing.
+  const archivedRow = archived[0] as { contact_user_id?: string | null; agent_id?: string | null }
+  // The comment above is precisely about a record that "vanished with no entry
+  // saying who removed it or when". A rejected insert reproduces that exactly,
+  // so this one reports instead of assuming.
+  const { error: archiveActivityError } = await supabase.from("activities").insert({
+    brokerage_id:  params.brokerageId,
+    agent_id:      params.agentId ?? archivedRow.agent_id ?? null,
+    contact_id:    params.contactId,
+    activity_type: "contact_archived",
+    title:         "Contact Archived",
+    description:   archivedRow.contact_user_id
+      ? `Contact archived (${params.reason ?? "manual"}). Portal login retained — deleting the auth user is a separate admin action.`
+      : `Contact archived (${params.reason ?? "manual"}).`,
+    entity_type:   "contact",
+    status:        "completed",
+    completed_at:  now,
+    agent_user_id: params.actorUserId ?? null,
+    metadata:      {
+      reason:          params.reason ?? "manual",
+      archived_by:     params.actorUserId ?? null,
+      contact_user_id: archivedRow.contact_user_id ?? null,
+    },
+    created_at:    now,
+  })
+  if (archiveActivityError) {
+    console.error("[kernel/crm] contact_archived activity REJECTED — the archive left no trace on the timeline the CRM renders:", archiveActivityError.message)
+  }
 
   return { success: true }
 }
@@ -896,7 +1160,19 @@ export async function loadContactWorkspace(params: {
       .limit(50),
     supabase
       .from("conversations")
-      .select("id, type, status, last_message_at, unread_count, sentiment, message_count")
+      // TOMBSTONE — `conversations.sentiment` removed from this select.
+      // It was READ BY CODE AND WRITTEN BY NOBODY (census 1b): neither writer of
+      // a conversations row (lib/kernel/conversation-thread.ts:63,
+      // app/api/webhooks/meta-dm/route.ts) has ever named the column, so this
+      // packet handed its consumer a null sentiment on every thread.
+      // SURVIVOR: `conversation_insights.overall_sentiment`, written for every
+      // analysed thread at lib/intelligence/conversation-insights.ts:429/459 and
+      // reached in this same shape by lib/kernel/conversation-memory.ts:230 —
+      // the contact-memory builder that actually reasons about mood. This packet
+      // is a thread LIST (type, unread, last message); it does not reason about
+      // sentiment, so it stops asking for a value that was never there rather
+      // than growing a second embed for a field nothing here reads.
+      .select("id, type, status, last_message_at, unread_count, message_count")
       .eq("contact_id", params.contactId)
       .eq("brokerage_id", params.brokerageId)
       .order("last_message_at", { ascending: false })
@@ -980,76 +1256,54 @@ export async function generateContactFollowupDraft(params: {
   return { success: true, data: { draftId: data.id } }
 }
 
-// ─── COMMAND 14: applyContactSuppressionState ────────────────────────────────
-/**
- * Applies a suppression state to a contact across one channel.
- * Writes to contact_suppression_list, updates the contact's opt-out flags,
- * and writes a consent event for audit.
+// ─── COMMAND 14: applyContactSuppressionState — REMOVED (duplicate) ──────────
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `applyContactSuppressionState` was DELETED as a DUPLICATE.
  *
- * Called by: unsubscribe handlers, SMS STOP processor, DNC ingestion, manual admin.
- */
-export async function applyContactSuppressionState(
-  params: SuppressionStateParams
-): Promise<CRMResult> {
-  const supabase = createServiceClient()
-  const now = new Date().toISOString()
-
-  // Write suppression list entry
-  await supabase.from("contact_suppression_list").insert({
-    brokerage_id:       params.brokerageId,
-    contact_id:         params.contactId,
-    email:              params.email ?? null,
-    phone:              params.phone ?? null,
-    channel:            params.channel,
-    suppression_reason: params.reason,
-    source:             params.source,
-    created_at:         now,
-  })
-
-  // Update contact opt-out flags
-  const updates: Record<string, unknown> = { updated_at: now }
-  if (params.channel === "email") {
-    updates.email_unsubscribed    = true
-    updates.email_unsubscribed_at = now
-    updates.email_opt_out         = true
-  } else if (params.channel === "sms") {
-    updates.sms_unsubscribed    = true
-    updates.sms_unsubscribed_at = now
-    updates.sms_opt_out         = true
-    updates.sms_unsubscribed    = true
-  } else if (params.channel === "phone") {
-    updates.call_stop_flag = true
-    updates.dnc_status     = true
-  } else if (params.channel === "mail") {
-    updates.direct_mail_opt_out = true
-  }
-
-  await supabase
-    .from("contacts")
-    .update(updates)
-    .eq("id", params.contactId)
-    .eq("brokerage_id", params.brokerageId)
-
-  // Consent event for audit
-  await supabase.from("contact_consent_events").insert({
-    contact_id:     params.contactId,
-    brokerage_id:   params.brokerageId,
-    consent_type:   params.channel === "email" ? "email_unsubscribe" : `${params.channel}_opt_out`,
-    consent_text:   `${params.source}: ${params.reason}`,
-    consent_source: params.source,
-    consented:      false,
-    created_at:     now,
-  })
-
-  // Lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_SUPPRESSION_APPLIED,
-    brokerage_id: params.brokerageId,
-    created_at:   now,
-    metadata:     { channel: params.channel, reason: params.reason, source: params.source },
-  })
-
-  return { success: true }
-}
+ * SURVIVOR: `addSuppression` at lib/kernel/compliance/check-suppression.ts:263.
+ *
+ * It is the survivor because it is the one that RUNS. `applyContactSuppressionState`
+ * had ZERO callers: `grep -rn applyContactSuppressionState` over app/ lib/
+ * components/ scripts/ returned this definition, this file's header line, and the
+ * re-export in lib/kernel/index.ts — nothing invoked it, ever. `addSuppression`
+ * has three live callers (app/api/unsubscribe/route.ts, app/api/sms/inbound-optout/
+ * route.ts, lib/direct-mail/mail-unsubscribe.ts). The header rule at the top of
+ * this file — "ONLY this file writes contact_suppression_list via
+ * applyContactSuppressionState()" — was never true of the running product, and is
+ * corrected there.
+ *
+ * MERGED ONTO THE SURVIVOR BEFORE DELETING — this copy was the more CORRECT of
+ * the two on three counts, and all three were carried across:
+ *   1. `channel === 'mail'` → `contacts.direct_mail_opt_out`. The survivor had no
+ *      'mail' arm at all, so a direct-mail opt-out set no contact flag and the two
+ *      live mail senders (app/actions/ai-isa/engage-contact.ts:492/612,
+ *      app/api/cron/farm-mail-weekly) kept sending.
+ *   2. `channel === 'phone'` → `dnc_status` as well as `call_stop_flag`. The
+ *      survivor wrote only `call_stop_flag`. (The survivor additionally now writes
+ *      `phone_opt_out`, which NEITHER copy had and which lib/lead-intent/
+ *      lead-opt-out.ts and app/actions/ai-isa/process-opt-out.ts both key on.)
+ *   3. A per-channel `consent_type` instead of a two-way branch over a four-member
+ *      union. The survivor ledgered a MAIL opt-out and a PHONE/DNC request both as
+ *      'sms_stop'.
+ *
+ * NOT MERGED, deliberately and with the reason stated:
+ *   · `.eq('brokerage_id', …)` on the `contacts` UPDATE. The other predicate is
+ *     `.eq('id', …)` — the PRIMARY KEY, which already identifies exactly one row in
+ *     exactly one tenant. A second predicate cannot narrow a PK lookup; it can only
+ *     turn a legitimate opt-out into a zero-row miss when the caller's brokerageId
+ *     and the contact's disagree. The survivor instead SELECTS THE UPDATED ID BACK,
+ *     which is what actually catches a miss (a zero-row UPDATE is not an error).
+ *   · The raw `lifecycle_events` INSERT. It bypassed lib/events/event-helpers.ts —
+ *     the canonical emitter — so it wrote a row without the `source`/`dedupe_key`
+ *     shape that path stamps, and `KernelEvent.CONTACT_SUPPRESSION_APPLIED` has
+ *     ZERO consumers repo-wide (grep: this file and the enum declaration at
+ *     lib/kernel/events.ts:521, nothing else). Copying it across would have merged a
+ *     defect and added a write nothing reads. If an owner wants a suppression event,
+ *     it should be emitted through event-helpers, and that is a decision, not a gap.
+ *
+ * ALSO FIXED IN THE SURVIVOR AND PRESENT IN NEITHER COPY: both discarded all three
+ * write results and returned without checking them. supabase-js RESOLVES refusals,
+ * so a foreign-key violation on the suppression row read as success — which is how
+ * the unsubscribe endpoint came to report suppressions it had not performed. The
+ * survivor now returns AddSuppressionResult and every caller checks it.
+ * ───────────────────────────────────────────────────────────────────────────── */

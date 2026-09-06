@@ -6,18 +6,14 @@ import { createClient } from "@/lib/supabase/server"
 import { selectClientMilestones } from "@/lib/kernel/portal"
 import { SELLER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import {
-  resolveSellerContext,
-  getShowingStats,
-  getRecentFeedback,
-  getOfferSummary,
-} from "@/lib/portal/resolve-seller-context"
-import {
   getMarketPosition,
+  getSellerDashboardData,
   getSellerVendors,
   getShowingInsights,
 } from "@/app/actions/portal-seller"
 import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ClientActionCard } from "./components/ClientActionCard"
 import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
@@ -26,6 +22,7 @@ import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
 import { MilestoneProgressBar, type TransactionMilestone } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
+import { HomeValueReportCard } from "@/app/components/portal/HomeValueReportCard"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
@@ -33,7 +30,6 @@ import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import {
-  AlertTriangle,
   ArrowRight,
   BarChart3,
   BookOpen,
@@ -102,8 +98,25 @@ interface SellerHomeProps {
 export default async function SellerHome({ contactId }: SellerHomeProps) {
   const supabase = await createClient()
 
-  // Get base seller context
-  const context = await resolveSellerContext(supabase, contactId)
+  // ONE authorized aggregate for the seller's home screen:
+  // app/actions/portal-seller.ts:getSellerDashboardData. This page used to
+  // resolve the context and then call getShowingStats / getRecentFeedback /
+  // getOfferSummary inline — the same four calls the action makes, minus the
+  // action's requireContactAccess check. Every OTHER module on this page
+  // (getMarketPosition, getSellerVendors, getShowingInsights) already goes
+  // through that gate; these four were the ones that did not.
+  const dashboard = await getSellerDashboardData(contactId)
+  const context = {
+    contactId:     dashboard.contactId,
+    contactName:   dashboard.contactName,
+    listing:       dashboard.listing,
+    metrics:       dashboard.metrics,
+    transactionId: dashboard.transactionId,
+    agentId:       dashboard.agentId,
+  }
+  const showingStats   = dashboard.showingStats
+  const recentFeedback = dashboard.recentFeedback
+  const offerSummary   = dashboard.offerSummary
 
   // Fetch richer insight data — only when a listing exists, errors silently swallowed
   let showingInsights: Awaited<ReturnType<typeof getShowingInsights>> | null = null
@@ -114,9 +127,6 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
 
   // Parallel data fetches
   const [
-    showingStats,
-    recentFeedback,
-    offerSummary,
     marketPosition,
     vendorData,
     milestonesResult,
@@ -126,18 +136,6 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     educationResult,
     recentUpdatesResult,
   ] = await Promise.all([
-    // Showing stats
-    context.listing
-      ? getShowingStats(supabase, context.listing.id)
-      : Promise.resolve({ thisWeek: 0, total: 0, avgRating: null }),
-    // Recent feedback
-    context.listing
-      ? getRecentFeedback(supabase, context.listing.id, 3)
-      : Promise.resolve([]),
-    // Offer summary
-    context.listing
-      ? getOfferSummary(supabase, context.listing.id)
-      : Promise.resolve({ total: 0, highest: null, accepted: null, pending: 0 }),
     // Market position
     getMarketPosition(contactId),
     // Vendors
@@ -182,7 +180,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     // listing milestones fire (LISTING_PUBLISHED, OFFER_ACCEPTED, etc.)
     supabase
       .from("transparency_updates")
-      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id, metadata")
       .eq("contact_id", contactId)
       .eq("is_visible_to_client", true)
       .order("created_at", { ascending: false })
@@ -212,6 +210,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const recentUpdates = (recentUpdatesResult as any).data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
+  // "No vendors on this deal" and "we could not read your vendors" are different
+  // statements. getSellerVendors now reports which one happened.
+  const vendorError = vendorData.error ?? null
 
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
@@ -257,6 +258,13 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
            Hidden when nothing client-visible yet. */}
       <RecentUpdatesFeed contactId={contactId} updates={recentUpdates} hideWhenEmpty />
 
+      {/* 0b. THE HOME VALUE REPORT — the seller asked "what's my home worth",
+           got a report, and this is where it lives in the portal. Carries the
+           portal's way in to the ≥7-day listing appointment. Renders nothing
+           when this contact has no home_value_estimates row, so it is invisible
+           to every seller who arrived by another door. */}
+      <HomeValueReportCard contactId={contactId} />
+
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard
         listing={context.listing}
@@ -289,6 +297,12 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* CLIENT-AS-ACTOR (manager-registry.ts:778) — the seller asks for a price
+          review or listing change and it is PROPOSED into the agent's approval
+          queue via the gated /api/portal/client-action route — never executed
+          by the portal (a seller action is the agent's decision). */}
+      <ClientActionCard contactId={contactId} audience="seller" />
 
       {/* DAYS ON MARKET + OFFER COUNT STATS */}
       {context.listing && (daysOnMarket !== null || dashboardOfferCount > 0) && (
@@ -564,7 +578,11 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
             </div>
           </CardHeader>
           <CardContent>
-            {vendorAssignments.length === 0 ? (
+            {vendorError ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                We could not load your vendors just now. Your agent can confirm who is on this deal.
+              </p>
+            ) : vendorAssignments.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">
                 Vendor assignments will appear here
               </p>
@@ -622,6 +640,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         <ShareMyHomeCard
           listingId={context.listing.id}
           listingAddress={context.listing.address ?? "your home"}
+          contactId={contactId}
         />
       )}
     </div>

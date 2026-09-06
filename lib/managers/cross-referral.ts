@@ -56,6 +56,14 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/ad-campaign-vocabulary"
+import {
+  BLOG_PENDING_PUBLISH_STATUS,
+  NEWSLETTER_PENDING_APPROVAL_STATUSES,
+  AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+  PODCAST_PENDING_APPROVAL_STATUS,
+  VIDEO_SNIPPET_PENDING_APPROVAL_STATUS,
+} from "@/lib/kernel/approval-pending"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, canRefer, type ManagerKey,
 } from "@/lib/kernel/manager-registry"
@@ -154,17 +162,25 @@ export async function raiseReferralDeduped(
 
 /** The probes that find CANDIDATE brokerages cheaply: any tenant carrying at least
  *  one pending approval row older than the breach line, per the aggregator's own
- *  source tables + filters (mirrored read-only — the aggregator stays untouched). */
+ *  source tables + filters (mirrored read-only — the aggregator stays untouched).
+ *
+ *  MIRRORED FROM THE SHARED CONSTANTS, NOT RETYPED. This list originally
+ *  hardcoded its literals, which is exactly how it drifted: it asked
+ *  video_snippets for approval_status='pending', a value that column's CHECK
+ *  does not admit, so a snippet breaching its SLA could never make its tenant a
+ *  candidate. Every pending value that lib/kernel/approval-pending.ts owns is
+ *  now imported from there, so this mirror cannot diverge from the queue it
+ *  mirrors. */
 const BREACH_CANDIDATE_PROBES: Array<{
   table: string
   apply: (q: any, cutoffIso: string) => any
 }> = [
-  { table: "newsletter_campaigns",   apply: (q, c) => q.in("approval_status", ["pending", "pending_review"]).lt("created_at", c) },
+  { table: "newsletter_campaigns",   apply: (q, c) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]).lt("created_at", c) },
   { table: "email_campaigns",        apply: (q, c) => q.eq("approval_status", "pending").lt("created_at", c) },
-  { table: "ad_creative_variations", apply: (q, c) => q.eq("approval_status", "draft").lt("created_at", c) },
-  { table: "video_snippets",         apply: (q, c) => q.eq("approval_status", "pending").lt("created_at", c) },
-  { table: "blog_posts",             apply: (q, c) => q.eq("publish_status", "draft").lt("created_at", c) },
-  { table: "podcast_episodes",       apply: (q, c) => q.eq("approval_status", "pending_review").lt("created_at", c) },
+  { table: "ad_creative_variations", apply: (q, c) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]).lt("created_at", c) },
+  { table: "video_snippets",         apply: (q, c) => q.eq("approval_status", VIDEO_SNIPPET_PENDING_APPROVAL_STATUS).lt("created_at", c) },
+  { table: "blog_posts",             apply: (q, c) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS).lt("created_at", c) },
+  { table: "podcast_episodes",       apply: (q, c) => q.eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS).lt("created_at", c) },
   { table: "ai_video_projects",      apply: (q, c) => q.eq("approval_status", "pending_review").lt("created_at", c) },
   { table: "offers",                 apply: (q, c) => q.eq("status", "pending").lt("created_at", c) },
   { table: "property_alerts",        apply: (q, c) => q.eq("is_active", false).in("source", ["voice_conversation", "text_conversation"]).lt("created_at", c) },
@@ -247,9 +263,9 @@ export async function publishApprovalSlaReferrals(client?: Svc): Promise<SlaRefe
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Paid leads must clear this floor in 30d before the quality dispute is worth arguing. */
-export const LEAD_QUALITY_MIN_PAID_LEADS = 5
+const LEAD_QUALITY_MIN_PAID_LEADS = 5
 /** Below this qualified share (ISA ledger vs ad-reported leads) the sweep raises the dispute. */
-export const LEAD_QUALITY_QUALIFIED_SHARE_FLOOR = 0.2
+const LEAD_QUALITY_QUALIFIED_SHARE_FLOOR = 0.2
 
 /**
  * THE LEAD-QUALITY SWEEP (lead_quality_spend, deliberative): tenants with LIVE ad
@@ -268,7 +284,7 @@ export async function publishLeadQualityReferrals(client?: Svc): Promise<SlaRefe
   try {
     const { data: camps } = await svc.from("ad_campaigns")
       .select("id, brokerage_id, campaign_name, status")
-      .in("status", ["live", "active"]).limit(500)
+      .in("status", [...AD_CAMPAIGN_RUNNING_STATUSES]).limit(500)
     const byBrokerage = new Map<string, Array<{ id: string; campaign_name: string | null }>>()
     for (const c of (camps ?? []) as Array<{ id: string; brokerage_id: string | null; campaign_name: string | null }>) {
       if (!c.brokerage_id) continue

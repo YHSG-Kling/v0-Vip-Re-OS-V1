@@ -5,22 +5,22 @@
  *   - Quiet hours: federal TCPA mandates outbound auto-dial calls 8am-9pm
  *     in the RECIPIENT'S local time. We resolve area code → timezone and
  *     check the recipient's local clock.
- *   - Recording disclosure: 12 two-party-consent states require an explicit
- *     "this call may be recorded" intro. We default to ALWAYS PLAY a brief
- *     disclosure (safer + no state-lookup logic gone wrong) but expose the
- *     state-aware helper for callers that want to skip in 1-party states.
+ *   - Recording disclosure: NOT composed here any more. The platform's settled
+ *     posture is to announce recording on EVERY recorded call, and the single
+ *     composer for that is lib/communication/call-disclosures.ts:
+ *     withAiCallDisclosures, re-exported at the foot of this file so the call
+ *     paths keep one import site. See the tombstone in the "Recording
+ *     disclosure" section below.
  *
- * Both functions are pure / deterministic — no DB access, safe to call
+ * Everything here is pure / deterministic — no DB access, safe to call
  * synchronously in compliance pipelines.
  */
 
 import "server-only"
 
-// Two-party consent states — require ALL parties to consent to recording.
-// Default platform behavior: play the disclosure ALWAYS (zero risk; ~3s overhead).
-export const TWO_PARTY_CONSENT_STATES = new Set([
-  "CA", "CT", "DE", "FL", "IL", "MD", "MA", "MT", "NV", "NH", "PA", "WA",
-])
+// (TWO_PARTY_CONSENT_STATES deleted with getRecordingDisclosure — see the
+//  tombstone in the "Recording disclosure" section below. The platform announces
+//  recording on EVERY recorded call, so no code needs the per-state list.)
 
 // Compact area-code → state mapping (US/CA). Some area codes span multiple
 // states; we pick the dominant state. For exact precision in production,
@@ -123,37 +123,43 @@ export function checkQuietHours(phone: string, now: Date = new Date()): QuietHou
 }
 
 // ─── Recording disclosure ────────────────────────────────────────────────────
+//
+// TOMBSTONE: `getRecordingDisclosure(recipientPhone, { onlyTwoPartyStates })`
+// and its private `RECORDING_DISCLOSURE` copy — DELETED. The functionality lives
+// entirely in lib/communication/call-disclosures.ts:
+//   · the string        → call-disclosures.ts:15  `RECORDING_DISCLOSURE` (exported,
+//                          byte-identical to the copy that used to sit here — two
+//                          spellings of a legal announcement is how one of them
+//                          silently drifts)
+//   · the prepend       → call-disclosures.ts:49  `withAiCallDisclosures`, which is
+//                          idempotent (`hasRecordingDisclosure` guards it) and is
+//                          the ONE composer every live path uses: the outbound
+//                          dialer (lib/voice/twilio-outbound.ts:82), the inbound
+//                          receptionist (lib/voice/reception-brain.ts:20,52) and the
+//                          platform line (lib/voice/platform-reception.ts:91).
+//
+// NOTHING WAS MERGED, because the only thing this function added was the half the
+// platform has ruled AGAINST: skipping the announcement in 1-party-consent states.
+// call-disclosures.ts states the settled posture in its own header — "Recording
+// announcement on EVERY recorded call … always announcing removes the state-lookup
+// failure mode" — and the area-code→state map here is explicitly best-effort
+// ("Some area codes span multiple states; we pick the dominant state"), so wiring
+// the skip would have staked an all-party-consent felony exposure on a guess about
+// which state a phone number is in. No caller ever asked for it.
+//
+// `TWO_PARTY_CONSENT_STATES` went with it: it existed only to feed that skip and
+// had no other reader in the tree. `parseAreaCode` / `stateFromPhone` stay — they
+// serve the quiet-hours gate above and lib/communication/tcpa-gate.ts:174.
 
-const RECORDING_DISCLOSURE =
-  "This call may be recorded for quality and training purposes. "
-
-/**
- * Returns the disclosure string to PREPEND to the assistant's first message.
- * Default: always play (safe). Pass `onlyTwoPartyStates: true` to skip in
- * 1-party-consent states.
- */
-export function getRecordingDisclosure(
-  recipientPhone: string,
-  options: { onlyTwoPartyStates?: boolean } = {}
-): string {
-  if (!options.onlyTwoPartyStates) return RECORDING_DISCLOSURE
-
-  const state = stateFromPhone(recipientPhone)
-  if (state && TWO_PARTY_CONSENT_STATES.has(state)) {
-    return RECORDING_DISCLOSURE
-  }
-  return ""
-}
-
-export function withRecordingDisclosure(
-  firstMessage: string,
-  recipientPhone: string,
-  options?: { onlyTwoPartyStates?: boolean }
-): string {
-  const disclosure = getRecordingDisclosure(recipientPhone, options)
-  if (!disclosure) return firstMessage
-  return `${disclosure}${firstMessage}`
-}
+// TOMBSTONE (orphan tranche 4): withRecordingDisclosure deleted. Its job —
+// prepend the recording announcement to a call's first message — is done more
+// completely by lib/communication/call-disclosures.ts:withAiCallDisclosures
+// (re-exported below), which is IDEMPOTENT (never stacks a second disclosure)
+// and is the documented single composer both inbound and outbound call paths
+// use. The state-aware half this wrapper offered (skip in 1-party-consent
+// states) briefly survived as getRecordingDisclosure — which has now been
+// deleted too, for the reason that half was never wanted: the platform's settled
+// posture is always-announce. See the tombstone directly above.
 
 // ─── AI + recording disclosures ──────────────────────────────────────────────
 // Pure composers live in ./call-disclosures (no server-only guard — simulators

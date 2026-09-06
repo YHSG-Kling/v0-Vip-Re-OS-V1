@@ -1,22 +1,9 @@
 "use client"
 
-import { useState } from "react"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
-import { Input } from "@/app/components/ui/input"
-import { Label } from "@/app/components/ui/label"
-import { Switch } from "@/app/components/ui/switch"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/app/components/ui/dialog"
-import { Rss, Music2, Apple, Youtube, Loader2, ExternalLink, Radio, Plus } from "lucide-react"
-import { updateDistributionChannel, createDistributionChannel } from "@/app/actions/podcast-generation"
+import { Rss, Music2, Apple, Youtube, ExternalLink, Radio, Settings2 } from "lucide-react"
 
 interface DistributionChannel {
   id: string
@@ -29,7 +16,8 @@ interface DistributionChannel {
 interface DistributionChannelsTabProps {
   channels: DistributionChannel[]
   loading: boolean
-  onUpdate: () => void
+  // Kept for call-site compatibility; this view is read-only (editing lives in Settings).
+  onUpdate?: () => void
   isAdmin?: boolean
 }
 
@@ -47,102 +35,29 @@ const CHANNEL_COLORS: Record<string, string> = {
   rss: "bg-orange-500",
 }
 
-const DEFAULT_CHANNELS = ["spotify", "apple", "youtube", "rss"]
+const SETTINGS_HREF = "/dashboard/settings/podcast-channels"
 
-export function DistributionChannelsTab({ channels, loading, onUpdate, isAdmin = false }: DistributionChannelsTabProps) {
-  const [editingChannel, setEditingChannel] = useState<DistributionChannel | null>(null)
-  const [processing, setProcessing] = useState(false)
-  const [seeding, setSeeding] = useState(false)
-  const [formData, setFormData] = useState({
-    isEnabled: false,
-    externalShowId: "",
-  })
-
-  function openEditDialog(channel: DistributionChannel) {
-    setEditingChannel(channel)
-    setFormData({
-      isEnabled: channel.is_enabled,
-      externalShowId: channel.external_show_id || "",
-    })
-  }
-
-  function closeDialog() {
-    setEditingChannel(null)
-    setFormData({ isEnabled: false, externalShowId: "" })
-  }
-
-  async function handleSave() {
-    if (!editingChannel) return
-
-    setProcessing(true)
-    try {
-      const result = await updateDistributionChannel(editingChannel.id, {
-        isEnabled: formData.isEnabled,
-        externalShowId: formData.externalShowId || undefined,
-      })
-
-      if (result.success) {
-        onUpdate()
-        closeDialog()
-      } else {
-        console.error("Failed to update channel:", result.error)
-      }
-    } finally {
-      setProcessing(false)
-    }
-  }
-
-  async function handleToggle(channel: DistributionChannel) {
-    setProcessing(true)
-    try {
-      const result = await updateDistributionChannel(channel.id, {
-        isEnabled: !channel.is_enabled,
-      })
-
-      if (result.success) {
-        onUpdate()
-      } else {
-        console.error("Failed to toggle channel:", result.error)
-      }
-    } finally {
-      setProcessing(false)
-    }
-  }
-
-  async function handleSeedChannels() {
-    setSeeding(true)
-    try {
-      await Promise.all(DEFAULT_CHANNELS.map((name) => createDistributionChannel(name)))
-      onUpdate()
-    } finally {
-      setSeeding(false)
-    }
-  }
-
+/**
+ * READ-ONLY syndication status. The channel EDITOR lives on the main Settings
+ * page (/dashboard/settings/podcast-channels) — the single source of truth,
+ * hierarchy-aware (brokerage → personal). The Podcast Studio is a syndication
+ * studio: it shows WHERE finished episodes are published and links out to
+ * Settings to configure them, rather than duplicating the editor here.
+ */
+export function DistributionChannelsTab({ channels, loading }: DistributionChannelsTabProps) {
   function getChannelIcon(channelName: string) {
-    const name = channelName.toLowerCase()
-    return CHANNEL_ICONS[name] || <Radio className="h-5 w-5" />
+    return CHANNEL_ICONS[channelName.toLowerCase()] || <Radio className="h-5 w-5" />
   }
 
   function getChannelColor(channelName: string) {
-    const name = channelName.toLowerCase()
-    return CHANNEL_COLORS[name] || "bg-gray-500"
+    return CHANNEL_COLORS[channelName.toLowerCase()] || "bg-gray-500"
   }
 
   function getChannelDocs(channelName: string): { url: string; label: string } | null {
     const docs: Record<string, { url: string; label: string }> = {
-      spotify: {
-        url: "https://podcasters.spotify.com/",
-        label: "Spotify for Podcasters",
-      },
-      apple: {
-        url: "https://podcasters.apple.com/",
-        label: "Apple Podcasts Connect",
-      },
-      youtube: {
-        url: "https://studio.youtube.com/",
-        label: "YouTube Studio",
-      },
+      spotify: { url: "https://podcasters.spotify.com/", label: "Spotify for Podcasters" },
+      apple: { url: "https://podcasters.apple.com/", label: "Apple Podcasts Connect" },
+      youtube: { url: "https://studio.youtube.com/", label: "YouTube Studio" },
     }
     return docs[channelName.toLowerCase()] || null
   }
@@ -167,117 +82,67 @@ export function DistributionChannelsTab({ channels, loading, onUpdate, isAdmin =
     )
   }
 
-  if (channels.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="p-4 bg-gray-100 rounded-full mb-4">
-          <Radio className="h-8 w-8 text-gray-400" />
-        </div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">No distribution channels</h3>
-        {isAdmin ? (
-          <>
-            <p className="text-sm text-gray-500 max-w-sm mb-4">
-              Set up distribution channels to publish your podcast to Spotify, Apple Podcasts, YouTube, and RSS.
-            </p>
-            <Button onClick={handleSeedChannels} disabled={seeding}>
-              {seeding ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Initializing...
-                </>
-              ) : (
-                <>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Initialize Distribution Channels
-                </>
-              )}
-            </Button>
-          </>
-        ) : (
-          <div className="space-y-4 w-full max-w-md">
-            <div className="grid grid-cols-2 gap-3">
-              {(["spotify", "apple", "youtube", "rss"] as const).map((name) => (
-                <div
-                  key={name}
-                  className="flex flex-col items-center gap-2 p-4 rounded-xl border bg-muted/30 opacity-60"
-                >
-                  <div className={`p-2 rounded-lg text-white ${getChannelColor(name)}`}>
-                    {getChannelIcon(name)}
-                  </div>
-                  <span className="text-xs capitalize font-medium">{name === "apple" ? "Apple Podcasts" : name}</span>
-                  <span className="text-[10px] text-muted-foreground">Not configured</span>
-                </div>
-              ))}
-            </div>
-            <p className="text-sm text-muted-foreground text-center">
-              Channels follow brokerage → team → agent hierarchy.{" "}
-              <a
-                href="/dashboard/settings/podcast-channels"
-                className="text-primary underline underline-offset-2 hover:no-underline"
-              >
-                Configure your personal channels
-              </a>{" "}
-              or contact your administrator for brokerage-level setup.
-            </p>
-          </div>
-        )}
-      </div>
-    )
-  }
-
   return (
-    <>
-      <div className="mb-4 flex items-center justify-between">
-        <p className="text-sm text-gray-600">
-          Configure where your podcast episodes are distributed. Enable channels and provide the required IDs to start distributing.
-        </p>
-        {isAdmin && (
-          <Button variant="outline" size="sm" onClick={handleSeedChannels} disabled={seeding}>
-            {seeding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
-            Add Channels
-          </Button>
-        )}
+    <div className="space-y-4">
+      {/* Setup lives in Settings — this studio only syndicates to those channels. */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-lg border bg-muted/30 p-4">
+        <div>
+          <p className="text-sm font-medium">Distribution channels are configured in Settings</p>
+          <p className="text-sm text-muted-foreground">
+            Your podcast syndicates to the channels set up on the main Settings page. Enable channels and
+            add show IDs there, then publish episodes here.
+          </p>
+        </div>
+        <Button asChild className="shrink-0">
+          <a href={SETTINGS_HREF}>
+            <Settings2 className="h-4 w-4 mr-2" />
+            Manage Channels
+          </a>
+        </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {channels.map((channel) => {
-          const docs = getChannelDocs(channel.channel_name)
-
-          return (
-            <Card key={channel.id} className="relative">
-              <CardHeader>
-                <div className="flex items-center justify-between">
+      {channels.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-14 text-center">
+          <div className="p-4 bg-gray-100 rounded-full mb-4">
+            <Radio className="h-8 w-8 text-gray-400" />
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No distribution channels yet</h3>
+          <p className="text-sm text-muted-foreground max-w-sm mb-4">
+            Set up Spotify, Apple Podcasts, YouTube, and RSS in Settings to start syndicating your show.
+          </p>
+          <Button asChild variant="outline">
+            <a href={SETTINGS_HREF}>
+              <Settings2 className="h-4 w-4 mr-2" />
+              Set Up Channels in Settings
+            </a>
+          </Button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {channels.map((channel) => {
+            const docs = getChannelDocs(channel.channel_name)
+            return (
+              <Card key={channel.id} className="relative">
+                <CardHeader>
                   <div className="flex items-center gap-3">
-                    <div
-                      className={`p-2.5 rounded-lg text-white ${getChannelColor(channel.channel_name)}`}
-                    >
+                    <div className={`p-2.5 rounded-lg text-white ${getChannelColor(channel.channel_name)}`}>
                       {getChannelIcon(channel.channel_name)}
                     </div>
                     <div>
-                      <CardTitle className="text-base capitalize">
-                        {channel.channel_name}
-                      </CardTitle>
+                      <CardTitle className="text-base capitalize">{channel.channel_name}</CardTitle>
                       <CardDescription>
                         {channel.external_show_id
-                          ? `Show ID: ${channel.external_show_id.slice(0, 12)}...`
+                          ? `Show ID: ${channel.external_show_id.slice(0, 12)}…`
                           : "Not configured"}
                       </CardDescription>
                     </div>
                   </div>
-                  <Switch
-                    checked={channel.is_enabled}
-                    onCheckedChange={() => handleToggle(channel)}
-                    disabled={processing}
-                  />
-                </div>
-              </CardHeader>
-
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <Badge variant={channel.is_enabled ? "default" : "secondary"}>
-                    {channel.is_enabled ? "Enabled" : "Disabled"}
-                  </Badge>
-                  <div className="flex items-center gap-2">
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between">
+                    <Badge variant={channel.is_enabled ? "default" : "secondary"}>
+                      {channel.is_enabled ? "Syndicating" : "Disabled"}
+                    </Badge>
                     {docs && (
                       <Button variant="ghost" size="sm" asChild>
                         <a href={docs.url} target="_blank" rel="noopener noreferrer">
@@ -286,101 +151,13 @@ export function DistributionChannelsTab({ channels, loading, onUpdate, isAdmin =
                         </a>
                       </Button>
                     )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openEditDialog(channel)}
-                    >
-                      Configure
-                    </Button>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          )
-        })}
-      </div>
-
-      {/* Edit Dialog */}
-      <Dialog open={!!editingChannel} onOpenChange={closeDialog}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="capitalize">
-              Configure {editingChannel?.channel_name}
-            </DialogTitle>
-            <DialogDescription>
-              Update the distribution settings for this channel.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-4 py-4">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="enabled">Enable Distribution</Label>
-              <Switch
-                id="enabled"
-                checked={formData.isEnabled}
-                onCheckedChange={(checked) =>
-                  setFormData({ ...formData, isEnabled: checked })
-                }
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="showId">
-                {editingChannel?.channel_name === "youtube"
-                  ? "YouTube Channel ID"
-                  : editingChannel?.channel_name === "spotify"
-                    ? "Spotify Show ID"
-                    : editingChannel?.channel_name === "apple"
-                      ? "Apple Podcast ID"
-                      : "External Show ID"}
-              </Label>
-              <Input
-                id="showId"
-                value={formData.externalShowId}
-                onChange={(e) =>
-                  setFormData({ ...formData, externalShowId: e.target.value })
-                }
-                placeholder={
-                  editingChannel?.channel_name === "spotify"
-                    ? "e.g., 4rOoJ6Egrf8K2IrywzwOMk"
-                    : "Enter your show/channel ID"
-                }
-              />
-              <p className="text-xs text-gray-500">
-                {editingChannel?.channel_name === "spotify" && (
-                  <>Find your Show ID in Spotify for Podcasters dashboard.</>
-                )}
-                {editingChannel?.channel_name === "apple" && (
-                  <>Find your Podcast ID in Apple Podcasts Connect.</>
-                )}
-                {editingChannel?.channel_name === "youtube" && (
-                  <>Find your Channel ID in YouTube Studio settings.</>
-                )}
-                {editingChannel?.channel_name === "rss" && (
-                  <>RSS feeds are automatically generated.</>
-                )}
-              </p>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={closeDialog}>
-              Cancel
-            </Button>
-            <Button onClick={handleSave} disabled={processing}>
-              {processing ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save Changes"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

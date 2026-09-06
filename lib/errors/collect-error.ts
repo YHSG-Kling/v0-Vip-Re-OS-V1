@@ -1,6 +1,19 @@
 /**
- * Central Error Collection Utility
- * 
+ * Central Error Collection Utility — the ONE writer for automation_errors.
+ *
+ * automation_errors.status carries a live CHECK admitting exactly
+ * open / investigating / resolved / dismissed, and defaults to 'open'. Four
+ * AI-ISA call sites hand-rolled their own insert with `status: 'new'`, which the
+ * constraint rejects. supabase-js resolves a rejected insert with `{ error }`
+ * instead of throwing, and all four discarded the result — so every AI-ISA
+ * engagement failure was reported to the operator, written nowhere, and lost.
+ * They also set no brokerage_id, and every console that reads this table filters
+ * on it, so even an accepted row would have been invisible.
+ *
+ * Going through here instead gets the vocabulary, the tenant anchor, the stack
+ * trace, the resolution-log entry and the critical-severity kernel alert, all of
+ * which a hand-rolled insert skips.
+ *
  * Usage examples:
  * In a server action:
  *   import { collectError } from '@/lib/errors/collect-error'
@@ -21,9 +34,52 @@
  *                        severity: 'medium', agentId, context: { scriptId, templateId } })
  */
 
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { classifyError } from "./error-classifier"
 import crypto from "crypto"
+
+/**
+ * THE MISSING WRITER for error_stack_traces.file_path / line_number /
+ * function_name, and the reason error_hash could not group anything.
+ *
+ * `fileInfo` is optional and NO CALLER IN THE TREE EVER PASSES IT — the six
+ * in-tree collectError() sites (ai-isa/engage-contact, ai-isa/
+ * initiate-engagement, ai-isa/initiate-contact-engagement, ai-isa/
+ * email-generator, errors/auto-retry, and the /api/errors/collect route, which
+ * only forwards whatever an external poster put in the body) all supply `stack`
+ * and none supply `fileInfo`. So three live columns were written NULL on every
+ * row, and `hashInput` below degraded to `workflow|type||`: one hash for every
+ * error a workflow has ever thrown, which is a grouping key that groups
+ * everything and therefore distinguishes nothing.
+ *
+ * The identity those columns want is already IN the stack every caller passes.
+ * This reads the first frame that is not this error module itself, so the
+ * recorded location is where the throw happened rather than where it was
+ * reported.
+ *
+ * Handles both V8 shapes — `at fn (/path/file.ts:12:34)` and the bare
+ * `at /path/file.ts:12:34` — and returns null rather than guessing when neither
+ * matches, so a non-V8 stack degrades to the previous NULLs instead of to a
+ * wrong file.
+ */
+function frameFromStack(stack: string | undefined): { path: string; line: number; function: string } | null {
+  if (!stack) return null
+  for (const raw of stack.split("\n")) {
+    const line = raw.trim()
+    if (!line.startsWith("at ")) continue
+    // Skip this module's own frames: the collector is never the culprit.
+    if (line.includes("/lib/errors/")) continue
+    const withFn = line.match(/^at\s+(.+?)\s+\((.+):(\d+):(\d+)\)$/)
+    if (withFn) {
+      return { path: withFn[2], line: Number(withFn[3]), function: withFn[1] }
+    }
+    const bare = line.match(/^at\s+(.+):(\d+):(\d+)$/)
+    if (bare) {
+      return { path: bare[1], line: Number(bare[2]), function: "<anonymous>" }
+    }
+  }
+  return null
+}
 
 export type ErrorSeverity = "critical" | "high" | "medium" | "low"
 
@@ -38,6 +94,17 @@ export interface CollectErrorParams {
   leadId?: string
   fileInfo?: { path: string; line: number; function: string }
   errorType?: string
+  /**
+   * The Supabase client to write with. Defaults to the SERVICE client (m483):
+   * error intake is a post-authorization AUDIT write — every caller has already
+   * passed its own gate (route auth, action gate, cron secret) before reporting,
+   * and a consumer seat reporting an error is the product working. The previous
+   * RLS-scoped default silently dropped exactly those reports once the
+   * automation_errors / error_stack_traces / error_resolution_log INSERT
+   * policies were staff-seat-tightened. Callers may still inject a client
+   * (the AI-ISA engines pass their own service client through).
+   */
+  client?: { from: (table: string) => any }
 }
 
 /**
@@ -47,8 +114,8 @@ export interface CollectErrorParams {
  */
 export async function collectError(params: CollectErrorParams): Promise<string | null> {
   try {
-    const supabase = await createClient()
-    
+    const supabase = params.client ?? createServiceClient()
+
     const {
       workflowName,
       errorMessage,
@@ -63,12 +130,19 @@ export async function collectError(params: CollectErrorParams): Promise<string |
     // Determine severity using classifier if not provided
     let severity = params.severity
     if (!severity) {
-      const classification = classifyError(errorMessage, workflowName, stack)
+      const classification = classifyError(errorMessage, workflowName)
       severity = classification.severity
     }
 
-    // Generate error hash for grouping
-    const hashInput = `${workflowName}|${errorType || "unknown"}|${fileInfo?.path || ""}|${fileInfo?.line || ""}`
+    // Caller-supplied location wins; otherwise derive it from the stack the
+    // caller DID pass. See frameFromStack above for why this half was missing.
+    const frame = fileInfo ?? frameFromStack(stack)
+
+    // Generate error hash for grouping. THE ONE grouping identity in this
+    // system — persisted to error_stack_traces.error_hash below and nowhere
+    // else. (error-classifier.ts once returned a second one, `groupingKey`,
+    // that nothing read; see the tombstone at lib/errors/error-classifier.ts:23.)
+    const hashInput = `${workflowName}|${errorType || "unknown"}|${frame?.path || ""}|${frame?.line || ""}`
     const errorHash = crypto.createHash("md5").update(hashInput).digest("hex")
 
     // Insert into automation_errors
@@ -101,9 +175,9 @@ export async function collectError(params: CollectErrorParams): Promise<string |
           error_id: errorId,
           brokerage_id: brokerageId || null,
           stack_trace: stack,
-          file_path: fileInfo?.path || null,
-          line_number: fileInfo?.line || null,
-          function_name: fileInfo?.function || null,
+          file_path: frame?.path || null,
+          line_number: frame?.line || null,
+          function_name: frame?.function || null,
           error_type: errorType || null,
           error_hash: errorHash,
           runtime_context: context || null,
@@ -158,14 +232,23 @@ export async function collectError(params: CollectErrorParams): Promise<string |
   }
 }
 
-/**
- * Batch collect multiple errors at once
- */
-export async function collectErrors(errors: CollectErrorParams[]): Promise<(string | null)[]> {
-  const results: (string | null)[] = []
-  for (const error of errors) {
-    const id = await collectError(error)
-    results.push(id)
-  }
-  return results
-}
+// TOMBSTONE (orphan burn-down, lane E): `collectErrors(errors[])` DELETED.
+//
+// It was a sequential `for` loop over `collectError` with zero callers, and the
+// name promised something it did not do: NOTHING about it was batched. Each
+// element still cost the same four round-trips collectError makes (the
+// automation_errors insert, the stack trace, the resolution-log row, and the
+// kernel event on critical) — there was no multi-row insert, no shared
+// transaction, no single classification pass. It was `Promise` sugar that
+// serialised.
+//
+// SURVIVOR: `collectError` (:72 above) — THE one writer for automation_errors,
+// as this module's header states. A caller holding several failures loops over
+// it at the call site, which is what the live intake sites already do (the
+// AI-ISA engines, the cron routes, and the workflow handlers each report inside
+// their own catch, where they still have the context — workflowName, brokerageId,
+// leadId — that a flattened array argument would have stripped).
+//
+// Nothing merged: the deleted wrapper added no field, no gate and no vocabulary
+// that collectError lacks. If a genuine batch ever becomes worth having, it
+// belongs INSIDE collectError as a multi-row insert, not as a loop beside it.

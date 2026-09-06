@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+// NOT isAdminOrBroker (lane ROSTER, 2026-09-04). Provisioning a recruit runs
+// `seatGate` below and turns them into a BILLED seat on the tenant's
+// subscription — the same spend as app/actions/admin/invite-user.ts, and here
+// the whole route runs on the SERVICE client, so this app predicate is the ONLY
+// gate. The owner's ruling added `compliance_officer` to
+// TENANT_ADMIN_USER_TYPES as tenant staff admin, not as the seat buyer, so this
+// site takes the commerce tier: the same roster minus exactly that role, with
+// team_lead / broker / broker_owner / broker_admin / admin unchanged.
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
+import { seatGate } from "@/lib/kernel/seat-usage"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function POST(req: Request) {
   try {
@@ -15,8 +27,9 @@ export async function POST(req: Request) {
       .maybeSingle()
 
     const resolvedType = profile?.user_type ?? ""
-    const isPlatformAdmin = profile?.platform_role === "superadmin" || resolvedType === "superadmin"
-    const isBrokerageAdmin = ["broker", "broker_owner", "admin"].includes(resolvedType)
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    const isPlatformAdmin = isPlatformSuperadminIdentity(resolvedType, profile?.platform_role)
+    const isBrokerageAdmin = isTenantCommerceAdmin({ user_type: resolvedType })
     if (!isPlatformAdmin && !isBrokerageAdmin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
@@ -61,14 +74,71 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Recruit must be in 'joined' status before provisioning" }, { status: 422 })
     }
 
-    // Check for existing user with this email to avoid duplicate auth record
+    // Check for existing user with this email to avoid duplicate auth record.
+    //
+    // brokerage_id is selected, not just id, because the upsert below conflicts on
+    // `email` — a GLOBAL key — while setting brokerage_id to the recruit's. Without
+    // this check, provisioning a recruit whose email already belongs to a user at
+    // ANOTHER brokerage silently rewrites that person's row into this one, and takes
+    // their agents row and commission profile with it. Same cross-tenant capture that
+    // createOrRepairUserDomainRecords guards in lib/kernel/users.ts; the rule matches:
+    // the person must leave their current brokerage first, and only a platform admin
+    // may move them deliberately.
     const { data: existingUser } = await service
       .from("users")
-      .select("id")
+      .select("id, brokerage_id")
       .eq("email", recruit.email)
       .maybeSingle()
 
+    const holderBrokerageId = (existingUser as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (holderBrokerageId && holderBrokerageId !== recruit.brokerage_id && !isPlatformAdmin) {
+      await service.from("tenant_transition_log").insert({
+        actor_user_id: user.id,
+        action: "provision_recruit_denied_email_belongs_to_other_brokerage",
+        entity_type: "recruit",
+        entity_id: recruit.id,
+        from_brokerage_id: holderBrokerageId,
+        to_brokerage_id: recruit.brokerage_id,
+        metadata: { reason: "email_holder_at_other_brokerage" },
+      }).then(() => {}, () => {})
+      return NextResponse.json({
+        error: "That email already belongs to a user at another brokerage. They must leave it before they can be provisioned here.",
+      }, { status: 409 })
+    }
+
     let newUserId: string | null = existingUser?.id ?? null
+
+    // ── SEATS ─────────────────────────────────────────────────────────────────
+    // A provisioned recruit becomes user_type 'agent' — a working seat — and this
+    // route had no tier or seat check at all, so recruiting was a way past the
+    // subscription cap that the invite surface enforces. Same ONE gate as the
+    // invite, the god console, the role-change and the reactivation paths
+    // (lib/kernel/seat-usage.ts): the count comes from both role sources, the
+    // limit from the plan catalogue, and it FAILS CLOSED if any of the three
+    // reads is refused.
+    //
+    // The tenant is the RECRUIT'S brokerage, which the block above has already
+    // proved the caller may act on (own tenant, or platform staff) — never a
+    // value from the request body. `subjectUserId` keeps a re-provision of
+    // someone already seated here from being charged twice.
+    //
+    // 409, not 403: nothing is wrong with the caller or the recruit. The plan is
+    // full, and the body names the tier that fixes it so the recruiting UI can
+    // put an Upgrade button on the refusal instead of a shrug.
+    {
+      const verdict = await seatGate(service, recruit.brokerage_id as string, "agent", {
+        subjectUserId: existingUser?.id ?? null,
+      })
+      if (!verdict.allowed) {
+        return NextResponse.json({
+          error: verdict.message ?? "Seat limit reached.",
+          reason: verdict.reason,
+          upgradeTo: verdict.decision?.upgradeTo ?? null,
+          upgradeSeats: verdict.decision?.upgradeSeats ?? null,
+          seatLimit: verdict.decision?.limit ?? null,
+        }, { status: 409 })
+      }
+    }
 
     if (!existingUser) {
       // Send auth invite — creates auth.users record
@@ -120,7 +190,9 @@ export async function POST(req: Request) {
             is_active: true,
             years_experience: recruit.years_experience ?? 0,
             license_state: recruit.license_state ?? null,
-            onboarding_status: "pending",
+            // agents.onboarding_status is (not_started|in_progress|completed|
+            // pending_review). A freshly provisioned recruit has not started.
+            onboarding_status: "not_started",
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           },
@@ -165,34 +237,54 @@ export async function POST(req: Request) {
         // step read agent_relationships, which had NO writer until now.
         // Live rules: UNIQUE(agent_id, brokerage_id, relationship_type),
         // agent ≠ sponsor, depth_level = sponsor's depth + 1 (root sponsor = 1).
+        //
+        // TERMS COME FROM THE CONFIGURED MODEL (owner ruling 2026-08-27: the
+        // settings tell the platform how the share is distributed — this write
+        // used to invent `revenue_share_percent: 5, source_of_funds:
+        // "brokerage"` for every brokerage). FAIL-CLOSED: an enabled mark with
+        // no configured model (m575) plants NO edge — nothing is invented; the
+        // broker configures the model in Settings → Commission & Offerings and
+        // future provisions stamp it.
         if ((recruit as any).recruiter_agent_id && (recruit as any).recruiter_agent_id !== agentId) {
-          const sponsorId = (recruit as any).recruiter_agent_id as string
-          const { data: sponsorEdge } = await service
-            .from("agent_relationships")
-            .select("depth_level")
-            .eq("agent_id", sponsorId)
-            .eq("brokerage_id", recruit.brokerage_id)
-            .eq("relationship_type", "sponsor")
-            .eq("is_active", true)
-            .maybeSingle()
-          // Plain await (supabase-js resolves with {error}, never throws) —
-          // the pass-4 silencer ratchet forbids new '.then(noop,noop)' writes.
-          await service.from("agent_relationships").upsert(
-            {
-              brokerage_id: recruit.brokerage_id,
-              agent_id: agentId,
-              sponsor_agent_id: sponsorId,
-              relationship_type: "sponsor",
-              // m264's default residual — brokerage-funded so the downline
-              // never dilutes the producing agent's own split.
-              revenue_share_percent: 5,
-              source_of_funds: "brokerage",
-              depth_level: ((sponsorEdge as any)?.depth_level ?? 0) + 1,
-              effective_from: new Date().toISOString().slice(0, 10),
-              is_active: true,
-            },
-            { onConflict: "agent_id,brokerage_id,relationship_type" }
-          )
+          const { getRevenueShareModel, edgeTermsFromModel } = await import("@/lib/commission/revenue-share-model")
+          const rsState = await getRevenueShareModel(recruit.brokerage_id, service)
+          const edgeTerms = edgeTermsFromModel(rsState)
+          if (!edgeTerms) {
+            console.warn(
+              `[provision-agent] no revenue-share edge planted for recruit ${recruitId}: ` +
+                (rsState.enabled
+                  ? `distribution model unconfigured (missing: ${rsState.missing.join(", ")})`
+                  : "brokerage has not enabled revenue share")
+            )
+          } else {
+            const sponsorId = (recruit as any).recruiter_agent_id as string
+            const { data: sponsorEdge } = await service
+              .from("agent_relationships")
+              .select("depth_level")
+              .eq("agent_id", sponsorId)
+              .eq("brokerage_id", recruit.brokerage_id)
+              .eq("relationship_type", "sponsor")
+              .eq("is_active", true)
+              .maybeSingle()
+            // Plain await (supabase-js resolves with {error}, never throws) —
+            // the pass-4 silencer ratchet forbids new '.then(noop,noop)' writes.
+            // edgeTerms only carries revenue_share_flat_cents for a flat model
+            // (an m575-only configuration), so a percent-model write stays
+            // valid pre-apply — naming an absent column would refuse the whole
+            // upsert (PGRST204, §3).
+            await service.from("agent_relationships").upsert(
+              {
+                brokerage_id: recruit.brokerage_id,
+                agent_id: agentId,
+                sponsor_agent_id: sponsorId,
+                relationship_type: "sponsor",
+                ...edgeTerms,
+                depth_level: ((sponsorEdge as any)?.depth_level ?? 0) + 1,
+                is_active: true,
+              },
+              { onConflict: "agent_id,brokerage_id,relationship_type" }
+            )
+          }
         }
       }
     }
@@ -206,15 +298,18 @@ export async function POST(req: Request) {
     }).eq("id", recruitId)
 
     // Activity log
-    await service.from("activities").insert({
-      activity_type: "recruiting.agent_provisioned",
-      agent_user_id: user.id,
-      brokerage_id: recruit.brokerage_id,
-      title: `Agent provisioned from recruit: ${recruit.first_name} ${recruit.last_name}`,
-      notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      service.from("activities").insert({
+        activity_type: "recruiting.agent_provisioned",
+        agent_user_id: user.id,
+        brokerage_id: recruit.brokerage_id,
+        title: `Agent provisioned from recruit: ${recruit.first_name} ${recruit.last_name}`,
+        notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "the users, agents and recruits rows are already provisioned above; an audit echo must not fail a provisioning that has already created a live login",
+    )
 
     // MANAGERS TALKING — the Recruiting Manager tells the Deal Coordinator a recruit just
     // became an ACTIVE AGENT (provisioned users+agents rows). No contacts are involved at

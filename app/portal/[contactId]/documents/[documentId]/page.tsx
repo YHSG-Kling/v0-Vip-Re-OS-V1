@@ -13,7 +13,6 @@ import {
   Sparkles,
   CheckCircle2,
   AlertTriangle,
-  XCircle,
   HelpCircle,
   Play,
   ChevronDown,

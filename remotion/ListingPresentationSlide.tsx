@@ -57,13 +57,9 @@
  * inject whatever it needs without forking compositions.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 
 export type SlideKind = "title" | "image" | "comps" | "chart" | "closing"
 
@@ -122,7 +118,7 @@ export const ListingPresentationSlide: React.FC<ListingPresentationSlideProps> =
         padding: "0 48px",
       }}>
         {brand.logoUrl ? (
-          <Img src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
+          <SafeImg src={brand.logoUrl} style={{ height: 40, objectFit: "contain" }} />
         ) : (
           <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 2 }}>{brand.brokerageName}</div>
         )}
@@ -200,17 +196,17 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
     }}>
       <div style={{
         width: 64, height: 4, backgroundColor: accentColor, marginBottom: 32,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }} />
       <div style={{
         fontSize: 84, fontWeight: 800, lineHeight: 1.05, marginBottom: 24,
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         {title}
       </div>
       {body.map((p, i) => (
         <div key={i} style={{
-          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8]),
+          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           maxWidth: 1200, lineHeight: 1.45,
         }}>{p}</div>
       ))}
@@ -225,7 +221,7 @@ const ImageSlideBody: React.FC<{
     <div style={{ height: "100%", display: "flex", gap: 48 }}>
       <div style={{ width: "58%", height: "100%", borderRadius: 12, overflow: "hidden", backgroundColor: "#E5E7EB" }}>
         {heroImageUrl ? (
-          <Img src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          <SafeImg src={heroImageUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <div style={{
             width: "100%", height: "100%", display: "flex",
@@ -322,10 +318,11 @@ const AvatarPIP: React.FC<{
     return (
       <div style={ring}>
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          trimBefore={startFrame}
+          trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }}
         />
       </div>
     )
@@ -333,7 +330,7 @@ const AvatarPIP: React.FC<{
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }

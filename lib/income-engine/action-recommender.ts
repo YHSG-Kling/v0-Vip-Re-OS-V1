@@ -32,6 +32,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { GapAnalysisResult } from "./gap-analyzer"
+import { loadCurrentLedger, topByValue } from "@/lib/lifetime-customer-npv/current"
 
 export type ActionCategory =
   | "prospecting" | "listing_acquisition" | "referral_ask" | "conversion_focus"
@@ -73,7 +74,22 @@ function nextSundayISO(): string {
 }
 
 export async function recommendActionsForAgent(params: {
+  /** agents.id — what contacts/transactions/listings.agent_id reference. */
   agentId:      string
+  /**
+   * users.id — retained on the CONTRACT, not used for the NPV ledger any more.
+   *
+   * History: lifetime_customer_npv_scores.agent_id used to FK users(id) while
+   * every other table this recommender reads FK'd agents(id), so Rule 4 filtered
+   * the ledger with the wrong class and the sphere-nurture action never once
+   * reached an agent's queue. m366 re-pointed that column at agents(id) and the
+   * writer (lib/lifetime-customer-npv/scorer.ts) now files contacts.agent_id, so
+   * reader and writer are both agents-class and the filter below uses agentId.
+   *
+   * The param stays because it is a genuine users id the caller already has and
+   * downstream users-class work may need; it is not a second spelling of agentId.
+   */
+  agentUserId:  string
   brokerageId:  string
   gap:          GapAnalysisResult
   maxActions?:  number
@@ -117,7 +133,7 @@ export async function recommendActionsForAgent(params: {
     .from("transactions")
     .select("id, property_address, stage, status, estimated_close_date, purchase_price, commission_amount")
     .eq("agent_id", params.agentId)
-    .in("status", ["pending", "active", "under_contract"])
+    .in("status", ["active", "under_contract"])
     .not("estimated_close_date", "is", null)
     .order("estimated_close_date", { ascending: true })
     .limit(10)
@@ -142,16 +158,31 @@ export async function recommendActionsForAgent(params: {
   }
 
   // ── Rule 4: Reactivation — sphere with next_touchpoint_due ≤ 7d ──
-  const { data: dueSphere } = await svc
-    .from("lifetime_customer_npv_scores")
-    .select("contact_id, npv_dollars, tier, recommended_action, recommended_cadence, next_touchpoint_due")
-    .eq("agent_id", params.agentId)
-    .lte("next_touchpoint_due", new Date(now + 7 * 86_400_000).toISOString())
-    .in("tier", ["platinum", "gold", "silver"])
-    .order("npv_dollars", { ascending: false })
-    .limit(10)
+  // lifetime_customer_npv_scores is an APPEND-ONLY LEDGER (scoreContactNpv
+  // inserts a row per run and keeps previous_score/score_delta). This used to
+  // read it with `.order("npv_dollars", desc).limit(10)`, which ranks HISTORY as
+  // if it were state: the same contact appeared once per historical row, each
+  // was selected at their PEAK npv_dollars rather than their current standing —
+  // carrying that stale figure into estimated_gci_impact_cents below — and one
+  // well-scored contact's history could consume the whole 10-row budget, hiding
+  // every other client actually due. The three sibling readers each hand-rolled
+  // the newest-per-contact rule; loadCurrentLedger is now the single copy.
+  const dueSphere = await loadCurrentLedger<{
+    contact_id: string; npv_dollars: number | null; tier: string | null
+    recommended_action: string | null; recommended_cadence: string | null
+    next_touchpoint_due: string | null
+  }>(svc, {
+    // Matches the class scoreContactNpv writes. Since m366 that is an AGENTS
+    // id: lifetime_customer_npv_scores.agent_id FKs agents(id), so filtering by
+    // the users id matched nothing and Rule 4 silently produced no sphere
+    // actions at all.
+    agentId: params.agentId,
+    brokerageId: params.brokerageId,
+    dueOnOrBefore: new Date(now + 7 * 86_400_000).toISOString().slice(0, 10),
+    tiers: ["platinum", "gold", "silver"],
+  }).then((rows) => topByValue(rows, 10))
 
-  for (const s of dueSphere ?? []) {
+  for (const s of dueSphere) {
     const expectedGCI = Math.round(Number(s.npv_dollars ?? 0) * 100 / 12)  // monthly slice of NPV
     candidates.push({
       action_rank: 0,

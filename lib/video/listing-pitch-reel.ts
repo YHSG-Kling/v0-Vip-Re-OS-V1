@@ -18,8 +18,19 @@
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
 import type { RoiLedger } from "@/lib/intelligence/roi-ledger"
 import type { ReelBrand } from "@/lib/video/reel-brand"
+import { geometryFor } from "@/lib/remotion/composition-geometry"
+// PURE (no DB, no server-only) — the companion-card gate, the hint cutter and
+// the sentence the refusal log names.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { describeMissingContent } from "@/lib/remotion/content-contract"
 
 export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
+
+/**
+ * The composition this reel rides, named ONCE (§6) — the dedupe probe, the
+ * caption timeline and the queued render all have to mean the same video.
+ */
+const LISTING_PITCH_COMPOSITION = "PartnersMeetingReel"
 
 const money = (cents: number) => {
   const v = Math.round(Math.max(0, cents) / 100)
@@ -91,7 +102,7 @@ export async function queueListingPitchReel(
   p: { brokerageId: string; agentUserId: string | null; appointmentId: string; address: string },
 ): Promise<boolean> {
   const { data: existing } = await svc.from("remotion_composition_renders").select("id")
-    .eq("brokerage_id", p.brokerageId).eq("composition_id", "PartnersMeetingReel")
+    .eq("brokerage_id", p.brokerageId).eq("composition_id", LISTING_PITCH_COMPOSITION)
     .eq("entity_type", LISTING_PITCH_REEL_ENTITY).eq("entity_id", p.appointmentId)
     .limit(1).maybeSingle()
   if (existing) return false
@@ -119,9 +130,29 @@ export async function queueListingPitchReel(
     // WORD-SYNCED CAPTIONS (finish-spec: client-facing report shows carry
     // captions) — real alignment when the timestamped path succeeded, honest
     // even-distribution from the script otherwise.
+    //
+    // THE TIMELINE IS DERIVED. `900, 30` used to be typed here: correct against
+    // PartnersMeetingReel today and silently wrong the moment its
+    // durationInFrames changes — the captions would end at second 30 of a
+    // longer reel with every assertion still green (§2: assert the rule, derive
+    // the number; never pin to a waypoint).
     const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
-    const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
-    if (plan.cues.length > 0) props.captionsCues = plan.cues
+    const geo = geometryFor(LISTING_PITCH_COMPOSITION)
+    if (!geo) {
+      // REFUSE rather than fall back to a remembered 900/30: a composition that
+      // left the registry has no timeline to cue against.
+      console.error(
+        `[listing-pitch-reel] ${LISTING_PITCH_COMPOSITION} is not in the composition registry — `
+        + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
+      )
+    } else {
+      const plan = buildCaptionPlan(
+        vo.alignment ?? (props as any).narration,
+        geo.duration_frames, geo.fps,
+        { tailPaddingFrames: 45 },
+      )
+      if (plan.cues.length > 0) props.captionsCues = plan.cues
+    }
   }
   // Finish-spec: the pitch is CLIENT-FACING → tracked outro QR (scan to book).
   try {
@@ -131,14 +162,27 @@ export async function queueListingPitchReel(
       if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to get started" }
     }
   } catch { /* QR is additive */ }
-  props.thumbnail_props = {
+  // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this
+  // producer omitted it, so a listing-pitch card printed the just-listed
+  // composition's SAMPLE sentence as its summary line and as the hero image's
+  // alt text. Cut verbatim from the pitch's own narration.
+  //
+  // CAPPED AT TWO SENTENCES (§5). buildListingPitchReelProps' third sentence is
+  // the ROI line — "…in closed volume across N deals" — brokerage money spoken
+  // to a prospective seller in the room, not something to publish as the page
+  // summary if this render is ever put on /v/[slug]. The first two sentences
+  // are the introduction and the promise, which is what the card is for.
+  const card = companionCard(VIDEO_COVER_THUMB, {
     kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
     agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
     brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
-  }
+    seoHint: seoHintFromNarration((props as { narration?: unknown }).narration as string | null, SEO_HINT_MAX_CHARS, 2),
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[listing-pitch-reel] no companion share card for appointment ${p.appointmentId} — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
-    brokerageId: p.brokerageId, compositionId: "PartnersMeetingReel",
+    brokerageId: p.brokerageId, compositionId: LISTING_PITCH_COMPOSITION,
     agentUserId: p.agentUserId,
     entityType: LISTING_PITCH_REEL_ENTITY, entityId: p.appointmentId,
     inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",

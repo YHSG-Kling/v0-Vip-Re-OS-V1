@@ -3,14 +3,13 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { redirect } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
-import { Mic, MicOff, Phone, PhoneIncoming, PhoneOutgoing, Clock, Search, User, CheckCircle, XCircle } from "lucide-react"
+import { Mic, MicOff, PhoneIncoming, PhoneOutgoing, Clock, CheckCircle, XCircle } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"
 import { VoiceSessionButton } from "./voice-session-button"
+import { VoiceSettingsCard } from "./voice-settings-card"
 import { QuickDialSearch } from "./quick-dial-search"
 import { MobileCommandStrip, QuickContactPanel } from "../components/os"
-import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 
 export const dynamic = "force-dynamic"
 
@@ -19,7 +18,11 @@ export const metadata = {
   description: "Voice commands and calls",
 }
 
-export default async function MobileVoicePage() {
+export default async function MobileVoicePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ resume?: string; mode?: string }>
+}) {
   const supabase = await createClient()
 
   let agentContext
@@ -30,6 +33,43 @@ export default async function MobileVoicePage() {
   }
 
   const { agentId, brokerageId, userId } = agentContext
+  const { resume } = await searchParams
+
+  // ── Resume deep link (?resume=<id>&mode=<intake_type>) ────────────────────
+  // The id arrives from the URL, so ownership is RE-VERIFIED here before it is
+  // threaded anywhere: the row is loaded WITH `.eq("agent_user_id", userId)` —
+  // §4, identity from the session, never from the request. A mismatch, a
+  // finished/expired session, or a refused read all degrade silently to
+  // no-resume rather than threading a session id this user does not own.
+  // The mode passed down is the ROW's own intake_type, not the ?mode= param —
+  // the param is only a hint and is never trusted over the row.
+  let resumeSessionId: string | null = null
+  let resumeMode: "offer" | "listing" | null = null
+  if (resume) {
+    const { data: resumeRow } = await supabase
+      .from("workflow_intake_sessions")
+      .select("id, intake_type, status")
+      .eq("id", resume)
+      .eq("agent_user_id", userId)
+      .in("status", ["in_progress", "ready_to_draft"])
+      .maybeSingle()
+    if (resumeRow && (resumeRow.intake_type === "offer" || resumeRow.intake_type === "listing")) {
+      resumeSessionId = resumeRow.id
+      resumeMode = resumeRow.intake_type
+    }
+  }
+
+  // QuickContactPanel sat below QuickDialSearch with a hardcoded [] — the
+  // search box worked, the recents list under it was permanently empty. They
+  // are complementary (type-to-find vs tap-the-last-few), so the fix is to feed
+  // it, not to delete it. contacts.agent_id FKs agents(id) and getAgentContext
+  // returns the agents id.
+  const { data: recentContacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, phone, email, contact_type, status, last_contacted_at")
+    .eq("agent_id", agentId)
+    .order("last_contacted_at", { ascending: false, nullsFirst: false })
+    .limit(20)
 
   // Fetch voice assistant config
   const { data: voiceConfig } = await supabase
@@ -56,7 +96,7 @@ export default async function MobileVoicePage() {
     .order("created_at", { ascending: false })
     .limit(5)
 
-  // Fetch recent voice calls via vapi_voice_calls joined to voice_calls
+  // Fetch recent voice calls from the canonical voice_calls ledger
   const { data: recentCalls } = await supabase
     .from("voice_calls")
     .select(`
@@ -93,12 +133,27 @@ export default async function MobileVoicePage() {
       </header>
 
       <main className="px-4 py-4 space-y-6">
-        {/* Voice Assistant Panel as Hero */}
-        <VoiceAssistantPanel
-          userId={userId ?? ""}
-          userRole="agent"
-          brokerageId={brokerageId ?? ""}
-        />
+        {/* Unified assistant hero — the separate VoiceAssistantPanel (a second
+            voice engine) was retired 2026-07. Its three flows — draft offer,
+            draft listing, and natural-language property search — now live in the
+            one always-on assistant (the mic/chat button, bottom-right), so mobile
+            and desktop share a single voice brain. */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Mic className="w-4 h-4" /> Talk to your AI assistant
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground space-y-1">
+            <p>Tap the assistant button (bottom-right) and speak or type:</p>
+            <ul className="list-disc list-inside space-y-0.5">
+              <li>&ldquo;Find the Hendersons a 3-bed under 500k in Austin&rdquo;</li>
+              <li>&ldquo;Draft an offer for the Hendersons on 44 Birch at 450&rdquo;</li>
+              <li>&ldquo;Draft a listing agreement for the Garcias at 12 Oak&rdquo;</li>
+              <li>&ldquo;What should I do today?&rdquo; · &ldquo;Follow up with Jordan&rdquo;</li>
+            </ul>
+          </CardContent>
+        </Card>
 
         {/* Mobile OS Command Strip */}
         <MobileCommandStrip agentId={agentId ?? ""} />
@@ -149,6 +204,13 @@ export default async function MobileVoicePage() {
               </div>
             </CardContent>
           </Card>
+        </section>
+
+        {/* Voice settings — the writer half of voice_assistant_config (see
+            voice-settings-card.tsx header). Opening it bootstraps the default
+            config, which is what flips the "Not Set Up" badge above. */}
+        <section>
+          <VoiceSettingsCard />
         </section>
 
         {/* Section 2: Recent Voice Commands */}
@@ -205,6 +267,8 @@ export default async function MobileVoicePage() {
             agentId={agentId ?? ""}
             hasActiveSession={!!activeSession}
             isConfigured={!!voiceConfig}
+            resumeSessionId={resumeSessionId}
+            resumeMode={resumeMode}
           />
         </section>
 
@@ -297,7 +361,7 @@ export default async function MobileVoicePage() {
         </section>
 
         {/* Mobile OS Quick Contact Panel */}
-        <QuickContactPanel contacts={[]} />
+        <QuickContactPanel contacts={(recentContacts ?? []) as any} />
       </main>
     </div>
   )

@@ -23,7 +23,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { normalizeSectionType, defaultOrderFor, type NewsletterSectionType } from "./section-types"
+import { defaultOrderFor, type NewsletterSectionType } from "./section-types"
 
 export interface NewsletterSection {
   id:              string

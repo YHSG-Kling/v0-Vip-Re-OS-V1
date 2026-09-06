@@ -42,7 +42,6 @@ import {
   Check,
   Heart,
   BookTemplate,
-  Clock,
   PackageCheck,
   PlusCircle,
   Mail,
@@ -65,8 +64,10 @@ import {
   loadNoteHistoryAction,
   loadGiftHistoryAction,
   createReviewRequestAction,
+  loadReviewPerformanceAction,
 } from "@/app/actions/reputation-kernel"
 import { getReputationPreferences, saveReputationPreferences } from "@/app/actions/settings/reputation-preferences"
+import { sendReviewRequest } from "@/app/actions/listing-lifecycle"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,22 @@ interface ReputationPanelProps {
   clients?:       any[]
   reviews?:       any[]
   recentClosings?: any[]
+  /**
+   * review_requests rows for this agent, from loadReputationWorkspaceAction.
+   * "Log Request" has always WRITTEN one of these (status 'pending'); nothing
+   * ever displayed them and nothing ever sent one — `sendReviewRequest`, the
+   * send half, had no caller anywhere in the tree. The pending list below is
+   * that missing half.
+   */
+  reviewRequests?: Array<{
+    id:           string
+    contact_id:   string | null
+    contact_name: string | null
+    platform:     string
+    status:       string
+    sent_at:      string | null
+    created_at:   string
+  }>
 }
 
 const OCCASIONS = [
@@ -102,7 +119,37 @@ const GIFT_TYPES = [
   { value: "donation",   label: "Donation"       },
 ]
 
-const REVIEW_PLATFORMS = ["google", "zillow", "realtor", "facebook", "yelp"]
+// A picker stores a VALUE and shows a LABEL, and the value set belongs to the
+// constraint. agent_reviews_platform_check (verified live in pg_constraint)
+// admits google | zillow | realtor_com | internal | facebook | yelp. This list
+// stored "realtor", which is in no constraint and matches no recorded review, so
+// a request raised on Realtor.com could never be reconciled against the review
+// that answered it. `internal` is excluded on purpose: it is the platform the
+// app writes for its own in-portal reviews, not something an agent asks for.
+const REVIEW_PLATFORMS: Array<{ value: string; label: string }> = [
+  { value: "google",      label: "Google"      },
+  { value: "zillow",      label: "Zillow"      },
+  { value: "realtor_com", label: "Realtor.com" },
+  { value: "facebook",    label: "Facebook"    },
+  { value: "yelp",        label: "Yelp"        },
+]
+
+/**
+ * The AI DRAFT generator (app/actions/ai-review-automation.ts) carries its own
+ * older literal union and keys its URL map on "realtor". That is a different
+ * vocabulary from the one the COLUMN accepts, and the two must not be conflated
+ * — so the stored value stays realtor_com and only the draft call is translated.
+ */
+const DRAFT_PLATFORM: Record<string, "google" | "zillow" | "realtor" | "yelp" | "facebook"> = {
+  google: "google", zillow: "zillow", realtor_com: "realtor", facebook: "facebook", yelp: "yelp",
+}
+
+/** Filters must speak the same vocabulary the rows are stored in. */
+const REVIEW_FILTER_PLATFORMS: Array<{ value: string; label: string }> = [
+  { value: "all", label: "All" },
+  ...REVIEW_PLATFORMS,
+  { value: "internal", label: "In-app" },
+]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,14 +176,44 @@ export function ReputationPanel({
   clients       = [],
   reviews       = [],
   recentClosings = [],
+  reviewRequests = [],
 }: ReputationPanelProps) {
   const [isPending, startTransition] = useTransition()
+
+  // ── Logged review requests: send / status ─────────────────────────────────
+  // Rows start life as status 'pending' with sent_at null. sendReviewRequest
+  // dispatches through the SMS gate (consent / DNC / quiet hours still apply)
+  // and stamps status 'sent'. Locally we track which ids this session has sent
+  // so the row updates without a full reload; the server row is the truth.
+  const [sentRequestIds, setSentRequestIds] = useState<Set<string>>(new Set())
+  const [sendingRequestId, setSendingRequestId] = useState<string | null>(null)
+
+  async function handleSendReviewRequest(requestId: string, platform: string) {
+    setSendingRequestId(requestId)
+    try {
+      const result = await sendReviewRequest(requestId, platform)
+      // sendReviewRequest RETURNS { success:false, error } for an
+      // unauthenticated caller, a cross-brokerage request or an unreadable
+      // row. Marking the row sent on a refusal would claim an outbound
+      // message the contact never received.
+      if ((result as { success?: boolean })?.success === false) {
+        toast.error((result as { error?: string }).error ?? "The review request was not sent.")
+        return
+      }
+      setSentRequestIds(prev => new Set(prev).add(requestId))
+      toast.success("Review request sent")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "The review request was not sent.")
+    } finally {
+      setSendingRequestId(null)
+    }
+  }
 
   // ── Shared ──────────────────────────────────────────
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   // J8 Gap 8.2 — review filters + auto-respond preferences
-  const [reviewFilterPlatform, setReviewFilterPlatform] = useState<"all" | "google" | "zillow" | "realtor" | "yelp" | "facebook">("all")
+  const [reviewFilterPlatform, setReviewFilterPlatform] = useState<string>("all")
   const [reviewFilterRange, setReviewFilterRange] = useState<"30d" | "90d" | "all">("all")
   const [autoRespondMode, setAutoRespondMode] = useState<"off" | "review" | "auto">("off")
   const [autoRespondApprovalHours, setAutoRespondApprovalHours] = useState<number>(24)
@@ -172,6 +249,41 @@ export function ReputationPanel({
   const [reviewDraft,       setReviewDraft]        = useState("")
   const [reviewClient,      setReviewClient]       = useState<any>(null)
   const [reviewDialogOpen,  setReviewDialogOpen]   = useState(false)
+  const [loggingRequest,    setLoggingRequest]     = useState(false)
+
+  // ── REPUTATION PERFORMANCE ────────────────────────────────────────────────
+  //
+  // The four tiles above are computed from the `reviews` prop, so they can only
+  // ever say "how many" and "how good". Response rate, per-platform breakdown
+  // and direction of travel are computed server-side by the reputation kernel
+  // and were reaching no screen at all. This read is scoped to the acting agent
+  // by the action itself — no id crosses the wire.
+  //
+  // `null` is "not loaded yet"; a refusal is kept as its own state so an
+  // unreadable performance strip cannot be mistaken for a spotless one.
+  const [performance, setPerformance] = useState<{
+    avgRating: number
+    totalReviews: number
+    responseRate: number
+    byPlatform: Record<string, { count: number; avgRating: number }>
+    recentTrend: "improving" | "stable" | "declining"
+  } | null>(null)
+  const [performanceError, setPerformanceError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    loadReviewPerformanceAction().then((res) => {
+      if (cancelled) return
+      if (res.success && (res as any).data) {
+        setPerformance((res as any).data)
+        setPerformanceError(null)
+      } else {
+        setPerformance(null)
+        setPerformanceError((res as { error?: string })?.error ?? "Reputation performance could not be loaded.")
+      }
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const reviewReadyClients = recentClosings.filter((c: any) => {
     const d = new Date(c.actual_close_date || c.close_date || Date.now())
@@ -188,7 +300,7 @@ export function ReputationPanel({
       const result = await aiGenerateReviewRequest({
         transactionId,
         agentId,
-        platform: reviewPlatform as "google" | "zillow" | "realtor" | "yelp" | "facebook",
+        platform: DRAFT_PLATFORM[reviewPlatform] ?? "google",
         channel:  "email",
       })
       if (result.success && result.message) {
@@ -216,9 +328,34 @@ export function ReputationPanel({
   const [templateName,      setTemplateName]      = useState("")
   const [savingTemplate,    setSavingTemplate]    = useState(false)
 
-  // Note history
+  // Note history. `noteHistory` feeds the "Previous Notes" accordion inside the
+  // composer AND the standalone history dialog below. `noteHistoryOpen` was
+  // declared with neither a writer nor a reader — the dialog it was meant to
+  // open never existed, so the only way to see what a client had already been
+  // sent was to start composing them another note.
   const [noteHistory,       setNoteHistory]       = useState<any[]>([])
   const [noteHistoryOpen,   setNoteHistoryOpen]   = useState(false)
+  const [noteHistoryClient, setNoteHistoryClient] = useState<any>(null)
+  const [noteHistoryLoading, setNoteHistoryLoading] = useState(false)
+  const [noteHistoryError,  setNoteHistoryError]  = useState<string | null>(null)
+
+  function openNoteHistory(client: any) {
+    const contactId = client.contact_id || client.id
+    if (!contactId) { toast.error("No contact found"); return }
+    setNoteHistoryClient(client)
+    setNoteHistory([])
+    setNoteHistoryError(null)
+    setNoteHistoryOpen(true)
+    setNoteHistoryLoading(true)
+    // The action returns { success, error } — a refusal is shown as one, not as
+    // an empty history.
+    loadNoteHistoryAction(contactId)
+      .then(r => {
+        if (r.success) setNoteHistory(r.notes ?? [])
+        else setNoteHistoryError(r.error ?? "Note history could not be loaded.")
+      })
+      .finally(() => setNoteHistoryLoading(false))
+  }
 
   async function loadTemplates(occasion?: string) {
     const result = await loadThankYouTemplatesAction(occasion)
@@ -295,7 +432,15 @@ export function ReputationPanel({
         transactionId: tyClient.id,
       })
       if (result.success) {
-        toast.success(tyChannel === "email" ? "Note sent via email" : "Note marked as sent")
+        // All three channels now really dispatch — email through the email lane,
+        // sms through dispatchSms, and the handwritten card down the SAME
+        // direct-mail line as a postcard (owner's ruling). The old copy said
+        // "marked as sent" for the last two because nothing sent them.
+        toast.success(
+          tyChannel === "email" ? "Note sent via email"
+          : tyChannel === "sms" ? "Text sent"
+          : "Card sent to print & mail",
+        )
         setTyDialogOpen(false)
       } else {
         toast.error(result.error ?? "Failed to send note")
@@ -340,8 +485,29 @@ export function ReputationPanel({
   const [giftDialogOpen,  setGiftDialogOpen]  = useState(false)
   const [assigningGift,   setAssigningGift]   = useState(false)
   const [giftHistory,     setGiftHistory]     = useState<any[]>([])
+  // Same shape as the note history: `giftHistoryOpen` had no writer and no
+  // reader until the standalone dialog below.
   const [giftHistoryOpen, setGiftHistoryOpen] = useState(false)
+  const [giftHistoryClient,  setGiftHistoryClient]  = useState<any>(null)
+  const [giftHistoryLoading, setGiftHistoryLoading] = useState(false)
+  const [giftHistoryError,   setGiftHistoryError]   = useState<string | null>(null)
   const [markingSent,     setMarkingSent]     = useState<string | null>(null)
+
+  function openGiftHistory(client: any) {
+    const contactId = client.id || client.contact_id
+    if (!contactId) { toast.error("No contact found"); return }
+    setGiftHistoryClient(client)
+    setGiftHistory([])
+    setGiftHistoryError(null)
+    setGiftHistoryOpen(true)
+    setGiftHistoryLoading(true)
+    loadGiftHistoryAction(contactId)
+      .then(r => {
+        if (r.success) setGiftHistory(r.gifts ?? [])
+        else setGiftHistoryError(r.error ?? "Gift history could not be loaded.")
+      })
+      .finally(() => setGiftHistoryLoading(false))
+  }
 
   function openGiftDialog(client: any) {
     setGiftClient(client)
@@ -411,13 +577,26 @@ export function ReputationPanel({
     }
   }
 
+  // What was ACTUALLY paid, per gift row, entered at the moment the agent marks
+  // it sent. Empty = "don't know", which leaves client_gifts.actual_cost NULL and
+  // the spend read falls back to the budget exactly as it did before.
+  const [giftPaid, setGiftPaid] = useState<Record<string, string>>({})
+
   async function handleMarkGiftSent(giftId: string) {
     setMarkingSent(giftId)
     try {
-      const result = await markGiftSentAction(giftId)
+      const typed = (giftPaid[giftId] ?? "").trim()
+      const paid = typed === "" ? undefined : Number(typed)
+      if (paid !== undefined && (!Number.isFinite(paid) || paid < 0)) {
+        toast.error("Enter what you paid as a non-negative number, or leave it blank")
+        return
+      }
+      const result = await markGiftSentAction(giftId, paid)
       if (result.success) {
-        toast.success("Gift marked as sent")
-        setGiftHistory(prev => prev.map(g => g.id === giftId ? { ...g, status: "sent", sent_at: new Date().toISOString() } : g))
+        toast.success(paid === undefined ? "Gift marked as sent" : `Gift marked as sent — $${paid} recorded`)
+        setGiftHistory(prev => prev.map(g => g.id === giftId
+          ? { ...g, status: "sent", sent_at: new Date().toISOString(), actual_cost: paid ?? g.actual_cost }
+          : g))
       } else {
         toast.error(result.error ?? "Failed to update gift")
       }
@@ -451,6 +630,101 @@ export function ReputationPanel({
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
+  // ── Shared history renderers ─────────────────────────
+  // ONE renderer per list, used by the composer accordions ("Previous Notes"
+  // inside the Thank You dialog, "Gift History" inside the Gift dialog) AND by
+  // the standalone history dialogs — so the two surfaces can never drift.
+  function renderNoteHistoryList() {
+    return (
+      <div className="space-y-1.5">
+        {noteHistory.map(n => (
+          <div key={n.id} className="flex items-start justify-between gap-2 p-2 rounded border text-sm">
+            <div className="min-w-0">
+              <p className="font-medium truncate capitalize">
+                {n.occasion}
+                {/* Provenance the table always recorded and never showed:
+                    AI-written vs typed, which template, which surface. */}
+                {n.ai_generated && (
+                  <Badge variant="outline" className="ml-1.5 text-[10px] align-middle">AI</Badge>
+                )}
+                {n.template_id && (
+                  <Badge variant="outline" className="ml-1 text-[10px] align-middle">template</Badge>
+                )}
+              </p>
+              {/* What was actually said — so the agent does not send the
+                  same note twice. Title carries the full body on hover. */}
+              {n.body && (
+                <p className="text-xs text-muted-foreground truncate" title={n.body}>
+                  {n.body}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {n.channel} &middot; {new Date(n.created_at).toLocaleDateString()}
+                {n.source ? <> &middot; {String(n.source).replace(/_/g, " ")}</> : null}
+                {n.transaction_id ? <> &middot; for a transaction</> : null}
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
+              {/* The queue row is the delivery truth for email notes —
+                  the note is stamped 'sent' when it is merely queued. */}
+              {n.delivery_status && n.delivery_status !== "sent" && (
+                <span className="text-[10px] text-amber-600">email {n.delivery_status}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderGiftHistoryList() {
+    return (
+      <div className="space-y-2">
+        {giftHistory.map(g => (
+          <div key={g.id} className="flex items-center justify-between p-2 rounded border text-sm">
+            <div className="min-w-0">
+              <p className="font-medium truncate">{g.gift_name}</p>
+              <p className="text-xs text-muted-foreground capitalize">
+                {g.occasion} &middot;{" "}
+                {g.actual_cost != null
+                  ? `$${g.actual_cost} paid`
+                  : `$${g.estimated_cost} budget`}{" "}
+                &middot; {new Date(g.created_at).toLocaleDateString()}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 ml-2">
+              <Badge variant="outline" className={`text-xs ${statusBadge(g.status)}`}>{g.status}</Badge>
+              {g.status === "recommended" && (
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  className="h-8 w-24 text-xs"
+                  placeholder="Paid $"
+                  aria-label="Amount actually paid for this gift"
+                  value={giftPaid[g.id] ?? ""}
+                  onChange={(e) => setGiftPaid(prev => ({ ...prev, [g.id]: e.target.value }))}
+                />
+              )}
+              {g.status === "recommended" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={markingSent === g.id}
+                  onClick={() => handleMarkGiftSent(g.id)}
+                >
+                  {markingSent === g.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
 
@@ -476,6 +750,61 @@ export function ReputationPanel({
         ))}
       </div>
 
+      {/* Performance — the server's view of this agent's reputation */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <ThumbsUp className="w-4 h-4 text-emerald-500" /> Reputation Performance
+          </CardTitle>
+          <CardDescription>Response rate and direction of travel across every platform</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {performanceError ? (
+            <p className="text-sm text-destructive">{performanceError}</p>
+          ) : !performance ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading performance…
+            </p>
+          ) : performance.totalReviews === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No reviews recorded yet — performance appears here once the first one lands.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                <span>
+                  <span className="font-semibold">{performance.responseRate}%</span>{" "}
+                  <span className="text-muted-foreground">responded to</span>
+                </span>
+                <span>
+                  <span className="font-semibold">{performance.avgRating}</span>{" "}
+                  <span className="text-muted-foreground">avg over {performance.totalReviews}</span>
+                </span>
+                <Badge
+                  variant="outline"
+                  className={
+                    performance.recentTrend === "improving"
+                      ? "border-green-200 bg-green-50 text-green-700"
+                      : performance.recentTrend === "declining"
+                        ? "border-red-200 bg-red-50 text-red-700"
+                        : "border-slate-200 bg-slate-50 text-slate-600"
+                  }
+                >
+                  {performance.recentTrend}
+                </Badge>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(performance.byPlatform).map(([platform, stats]) => (
+                  <Badge key={platform} variant="outline" className="text-xs">
+                    {platform}: {stats.count} &middot; {stats.avgRating.toFixed(1)}★
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Tabs defaultValue="reviews">
         <TabsList className="w-full grid grid-cols-3">
           <TabsTrigger value="reviews">Reviews</TabsTrigger>
@@ -500,7 +829,7 @@ export function ReputationPanel({
                   </SelectTrigger>
                   <SelectContent>
                     {REVIEW_PLATFORMS.map(p => (
-                      <SelectItem key={p} value={p} className="capitalize">{p}</SelectItem>
+                      <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -534,6 +863,60 @@ export function ReputationPanel({
             </CardContent>
           </Card>
 
+          {/* Logged review requests — the send half of "Log Request". */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Send className="w-4 h-4 text-blue-500" /> Logged Requests
+              </CardTitle>
+              <CardDescription>
+                Requests you have logged. Sending texts the client through the compliance gate —
+                consent, DNC and quiet hours still apply, so a refusal here is a refusal to send.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {reviewRequests.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Nothing logged yet — use “Request” above, then send it from here.
+                </p>
+              ) : (
+                reviewRequests.slice(0, 10).map((req) => {
+                  const alreadySent = req.status === "sent" || !!req.sent_at || sentRequestIds.has(req.id)
+                  return (
+                    <div
+                      key={req.id}
+                      className="flex items-center justify-between gap-3 p-3 rounded-lg border"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">{req.contact_name || "Client"}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {req.platform} · logged {new Date(req.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Badge variant="outline" className={`text-xs ${statusBadge(alreadySent ? "sent" : req.status)}`}>
+                          {alreadySent ? "sent" : req.status}
+                        </Badge>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={alreadySent || sendingRequestId === req.id}
+                          onClick={() => handleSendReviewRequest(req.id, req.platform)}
+                        >
+                          {sendingRequestId === req.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <><Send className="w-4 h-4 mr-1" />Send</>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </CardContent>
+          </Card>
+
           {/* Recent Reviews */}
           <Card>
             <CardHeader className="space-y-3">
@@ -543,17 +926,17 @@ export function ReputationPanel({
               {/* J8 Gap 8.2 — platform + date filters */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-muted-foreground">Platform:</span>
-                {(["all", "google", "zillow", "realtor", "yelp", "facebook"] as const).map((p) => (
+                {REVIEW_FILTER_PLATFORMS.map((p) => (
                   <button
-                    key={p}
-                    onClick={() => setReviewFilterPlatform(p)}
-                    className={`px-2 py-0.5 rounded-full border capitalize ${
-                      reviewFilterPlatform === p
+                    key={p.value}
+                    onClick={() => setReviewFilterPlatform(p.value)}
+                    className={`px-2 py-0.5 rounded-full border ${
+                      reviewFilterPlatform === p.value
                         ? "bg-primary text-primary-foreground border-primary"
                         : "bg-background border-muted-foreground/20 hover:border-primary/50"
                     }`}
                   >
-                    {p}
+                    {p.label}
                   </button>
                 ))}
                 <span className="text-muted-foreground ml-2">Range:</span>
@@ -686,9 +1069,14 @@ export function ReputationPanel({
                       </p>
                       <p className="text-xs text-muted-foreground truncate">{client.property_address}</p>
                     </div>
-                    <Button size="sm" variant="outline" onClick={() => openThankYouDialog(client)}>
-                      <Send className="w-4 h-4 mr-1" />Note
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <Button size="sm" variant="ghost" onClick={() => openNoteHistory(client)} title="Previous notes">
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => openThankYouDialog(client)}>
+                        <Send className="w-4 h-4 mr-1" />Note
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -717,9 +1105,14 @@ export function ReputationPanel({
                         {client.transactions?.[0]?.property_address || "Lifetime Customer"}
                       </p>
                     </div>
-                    <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>
-                      <Gift className="w-4 h-4 mr-1" />Gifts
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <Button size="sm" variant="ghost" onClick={() => openGiftHistory(client)} title="Gift history">
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>
+                        <Gift className="w-4 h-4 mr-1" />Gifts
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -744,15 +1137,38 @@ export function ReputationPanel({
             <Button variant="outline" onClick={() => copy(reviewDraft, "review")}>
               {copiedId === "review" ? <><Check className="w-4 h-4 mr-1" />Copied</> : <><Copy className="w-4 h-4 mr-1" />Copy</>}
             </Button>
-            <Button onClick={async () => {
-              const contactName = `${reviewClient?.contacts?.first_name || reviewClient?.first_name || ""} ${reviewClient?.contacts?.last_name || reviewClient?.last_name || ""}`.trim()
-              await createReviewRequestAction({
-                contactId: reviewClient?.contact_id || reviewClient?.id,
-                contactName: contactName || "Client",
-                platform: reviewPlatform as any,
-              }).catch(() => null)
-              setReviewDialogOpen(false)
-            }}>Done</Button>
+            {/* This button used to `.catch(() => null)` and close the dialog
+                unconditionally. The kernel refuses a duplicate pending request
+                for the same contact and platform, and refuses an unresolvable
+                actor — both verdicts went into the bin and the agent was shown
+                a dialog that closed as if the request had been logged. The
+                dialog now stays open on a refusal and repeats what the server
+                said. */}
+            <Button
+              disabled={loggingRequest}
+              onClick={async () => {
+                const contactName = `${reviewClient?.contacts?.first_name || reviewClient?.first_name || ""} ${reviewClient?.contacts?.last_name || reviewClient?.last_name || ""}`.trim()
+                setLoggingRequest(true)
+                try {
+                  const result = await createReviewRequestAction({
+                    contactId: reviewClient?.contact_id || reviewClient?.id,
+                    contactName: contactName || "Client",
+                    platform: reviewPlatform as any,
+                  })
+                  if (result?.success) {
+                    toast.success("Review request logged")
+                    setReviewDialogOpen(false)
+                  } else {
+                    toast.error((result as { error?: string })?.error ?? "The review request was not logged.")
+                  }
+                } finally {
+                  setLoggingRequest(false)
+                }
+              }}
+            >
+              {loggingRequest ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Log Request
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -873,19 +1289,8 @@ export function ReputationPanel({
                   </span>
                 </AccordionTrigger>
                 <AccordionContent>
-                  <div className="space-y-1.5">
-                    {noteHistory.map(n => (
-                      <div key={n.id} className="flex items-center justify-between p-2 rounded border text-sm">
-                        <div className="min-w-0">
-                          <p className="font-medium truncate capitalize">{n.occasion}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {n.channel} &middot; {new Date(n.created_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
-                      </div>
-                    ))}
-                  </div>
+                  {/* One renderer for both surfaces — see renderNoteHistoryList. */}
+                  {renderNoteHistoryList()}
                 </AccordionContent>
               </AccordionItem>
             )}
@@ -897,7 +1302,7 @@ export function ReputationPanel({
             </Button>
             <Button onClick={handleSendThankYou} disabled={tySending || !tyDraft}>
               {tySending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
-              {tyChannel === "email" ? "Send Email" : tyChannel === "sms" ? "Mark Sent (SMS)" : "Mark Sent (Handwritten)"}
+              {tyChannel === "email" ? "Send Email" : tyChannel === "sms" ? "Send Text" : "Mail Card"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1061,31 +1466,8 @@ export function ReputationPanel({
                   </span>
                 </AccordionTrigger>
                 <AccordionContent>
-                  <div className="space-y-2">
-                    {giftHistory.map(g => (
-                      <div key={g.id} className="flex items-center justify-between p-2 rounded border text-sm">
-                        <div className="min-w-0">
-                          <p className="font-medium truncate">{g.gift_name}</p>
-                          <p className="text-xs text-muted-foreground capitalize">
-                            {g.occasion} &middot; ${g.estimated_cost} &middot; {new Date(g.created_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <Badge variant="outline" className={`text-xs ${statusBadge(g.status)}`}>{g.status}</Badge>
-                          {g.status === "recommended" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={markingSent === g.id}
-                              onClick={() => handleMarkGiftSent(g.id)}
-                            >
-                              {markingSent === g.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  {/* One renderer for both surfaces — see renderGiftHistoryList. */}
+                  {renderGiftHistoryList()}
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -1093,6 +1475,78 @@ export function ReputationPanel({
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setGiftDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ════════════════════════════════════════════════════════════════
+          NOTE HISTORY DIALOG — read-only. `noteHistoryOpen` existed with
+          no dialog behind it; loadNoteHistoryAction ran only from inside
+          the composer. Same shape as the sibling dialogs above.
+      ════════════════════════════════════════════════════════════════ */}
+      <Dialog open={noteHistoryOpen} onOpenChange={setNoteHistoryOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Previous Notes</DialogTitle>
+            <DialogDescription>
+              Sent to {noteHistoryClient?.contacts?.first_name || noteHistoryClient?.first_name}{" "}
+              {noteHistoryClient?.contacts?.last_name  || noteHistoryClient?.last_name}
+            </DialogDescription>
+          </DialogHeader>
+          {noteHistoryLoading ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2 py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+            </p>
+          ) : noteHistoryError ? (
+            <p className="text-sm text-red-600 py-4">{noteHistoryError}</p>
+          ) : noteHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No notes sent yet</p>
+          ) : (
+            renderNoteHistoryList()
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNoteHistoryOpen(false)}>Close</Button>
+            {noteHistoryClient && (
+              <Button onClick={() => { setNoteHistoryOpen(false); openThankYouDialog(noteHistoryClient) }}>
+                <Send className="w-4 h-4 mr-1" />Write a Note
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ════════════════════════════════════════════════════════════════
+          GIFT HISTORY DIALOG — same story as the note history: the state
+          existed, the surface did not. The "Paid $" + mark-sent controls
+          come with the shared renderer, so a gift can be closed out here
+          without opening the recommender.
+      ════════════════════════════════════════════════════════════════ */}
+      <Dialog open={giftHistoryOpen} onOpenChange={setGiftHistoryOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Gift History</DialogTitle>
+            <DialogDescription>
+              For {giftHistoryClient?.first_name} {giftHistoryClient?.last_name}
+            </DialogDescription>
+          </DialogHeader>
+          {giftHistoryLoading ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2 py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+            </p>
+          ) : giftHistoryError ? (
+            <p className="text-sm text-red-600 py-4">{giftHistoryError}</p>
+          ) : giftHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No gifts recorded yet</p>
+          ) : (
+            renderGiftHistoryList()
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGiftHistoryOpen(false)}>Close</Button>
+            {giftHistoryClient && (
+              <Button onClick={() => { setGiftHistoryOpen(false); openGiftDialog(giftHistoryClient) }}>
+                <Gift className="w-4 h-4 mr-1" />Find a Gift
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

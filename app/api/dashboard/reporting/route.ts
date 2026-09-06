@@ -156,7 +156,9 @@ export async function GET(req: Request) {
           .from("listings")
           .select("id, list_price, address", { count: "exact" })
           .eq("brokerage_id", brokerageId)
-          .eq("status", "closed")
+          // listings.status has no "closed" — the terminal status is "sold", so this
+          // "Closed listings in period" figure was permanently 0.
+          .eq("status", "sold")
           .gte("updated_at", startIso)
       : Promise.resolve({ data: [], count: 0 }),
 

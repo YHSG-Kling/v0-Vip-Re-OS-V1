@@ -26,7 +26,10 @@ import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 
-const AGENT_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
+// SCOPE LADDER (kept inline — admits agent/team_lead): 'superadmin' removed —
+// dead as users.user_type (0 live rows); broker_owner added — storable seat
+// that owns the brokerage.
+const AGENT_ROLES = new Set(["broker","broker_owner","broker_admin","admin","team_lead","agent"])
 
 async function requireAgentInBrokerage(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; agentId: string | null }
@@ -271,7 +274,6 @@ export async function dispatchBBAToSigningProviderAction(
   const txReq = await resolved.provider.createTransaction({
     propertyAddress: "Buyer Representation Agreement",
     transactionType: "purchase",
-    agentId:         bba.agent_id as string,
     contactId:       bba.buyer_contact_id as string,
   })
   if (!txReq.success || !txReq.externalTransactionId) {

@@ -1,20 +1,34 @@
 // ─── AI ISA ───────────────────────────────────────────────────────────────────
+// getAIISACampaignsService / getAIISACallsService were deleted (lane E2
+// 2026-08-28) — tombstones naming their survivors sit in ./ai-isa.
+// launchAIISACampaignService and queueAIISACallService were RESTORED by owner
+// ruling (lane F1 2026-08-28): the launcher is a campaign-type chooser that
+// enrolls the matched segment into the sequence cadence (it does not dial);
+// the call-queue service regained its public action door in
+// app/actions/ai-isa.ts:queueAIISACall.
+// updateCampaignStatusService was deleted (lane G5 2026-08-28) — it was an
+// ungated, tenant-free write. Survivors are app/actions/ai-isa.ts:
+// toggleCampaignStatus (active↔paused) and completeISACampaign (terminal);
+// tombstone in ./ai-isa.
 export {
   launchAIISACampaignService,
   queueAIISACallService,
-  handleVapiCallCompleteService,
-  getAIISACampaignsService,
-  getAIISACallsService,
   retryFailedCallsService,
-  updateCampaignStatusService,
 } from "./ai-isa"
+export type { ISALaunchCampaignType, LaunchAIISACampaignResult } from "./ai-isa"
 
 // ─── COMPLIANCE MONITORING ────────────────────────────────────────────────────
+// logAuditEventService / logCommunicationWithComplianceService were deleted
+// (lane E2 2026-08-28) — tombstones naming their survivors sit in
+// ./compliance-monitoring. analyzeFairHousingRiskService was RESTORED by owner
+// ruling (lane F2 2026-08-28): the contact-linked post-hoc review is a
+// different business process from the generation-time and outbound gates.
 export {
-  logAuditEventService,
-  checkComplianceStatusService,
-  trackCertificationExpirationService,
   analyzeFairHousingRiskService,
+  checkComplianceStatusService,
+  resolveComplianceAlertService,
+  resolveCompRiskFlagService,
+  trackCertificationExpirationService,
   monitorTRIDComplianceService,
   createTRIDTimelineService,
   updateTRIDMilestoneService,
@@ -23,12 +37,12 @@ export {
   scanContentComplianceService,
   submitContentForApprovalService,
   reviewContentApprovalService,
-  logCommunicationWithComplianceService,
   getApprovedContentLibraryService,
   getPendingApprovalsService,
   getComplianceViolationsService,
   generateComplianceReportService,
 } from "./compliance-monitoring"
+export type { FairHousingInteractionType } from "./compliance-monitoring"
 
 // ─── LEAD APPLICATION SERVICE ─────────────────────────────────────────────────
 export type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "./lead-application-service"
@@ -112,6 +126,8 @@ export {
   generateCostBreakdown,
   generateStatusUpdate,
   generateSmartChecklist,
+  getSmartChecklists,
+  setTaskItemCompleted,
   detectTransactionIssues,
   deliverEducationalContent,
   monitorTransactionHealth,

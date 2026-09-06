@@ -46,6 +46,49 @@ export function classifyHook(title: string): string {
   return "statement"
 }
 
+/**
+ * Emotional tone from the caption/title — the missing half of `emotional_tone`.
+ *
+ * WHAT WAS BROKEN. `competitor_content.emotional_tone` was read by
+ * getCompetitorPostInspiration (app/actions/marketing-intelligence.ts:201) and
+ * written by nobody, so the "repurpose this concept" prompt an agent generates
+ * from a rival's post always said the SAME thing — the `?? "warm and
+ * informative"` fallback — no matter what the post's tone actually was. That is
+ * a scored input that never varied.
+ *
+ * Deterministic and free, the same shape as classifyHook above: the tone is
+ * read off text we already hold at scan time, so it costs no extra provider
+ * call and invents nothing the caption does not say. Ordered most-specific
+ * first; "informative" is the honest default for a plain statement, and it is
+ * the same word the reader's old fallback used, so an existing row that never
+ * got a tone and a new plain one still read alike.
+ *
+ * NOT EXPORTED, deliberately unlike classifyHook and extractKeyphrases above.
+ * Those two carry an `export` no other file in the tree reads, which is why
+ * this file already stood at two unreferenced exports before this function
+ * existed — and adding a third in the same style would have been copying a
+ * defect for consistency's sake. runContentIntelScan is the module's one door.
+ *
+ * WHY THE OTHER TWO WERE LEFT ALONE, having been un-exported and then put back:
+ * orphan-export-guard tracks its baseline BY NAME, so removing the `export`
+ * keyword from a name already in that baseline is indistinguishable, to the
+ * guard, from deleting the capability — it reported "CAPABILITY REMOVED — 2
+ * exports exist NOWHERE in the tree" and was right to. Tidying two accepted
+ * entries is not burn-down; it buys a cosmetic −2 with a false signal on the
+ * one guard that exists to make deletions expensive. This function is different
+ * because it is NEW: it never entered the baseline, so declining to export it
+ * costs nothing and closes the regression it would otherwise have opened.
+ */
+function classifyEmotionalTone(text: string): string {
+  const t = text.toLowerCase()
+  if (/\b(don't|avoid|mistake|warning|beware|risk|before you)\b/.test(t)) return "cautionary"
+  if (/\b(congratulations|thrilled|excited|proud|celebrat|love|dream)\b/.test(t)) return "celebratory"
+  if (/\b(sold|closed|record|success|helped|thank you|testimonial)\b/.test(t)) return "reassuring"
+  if (/\b(now|today|hurry|last chance|limited|don t miss|act fast|only \d)\b/.test(t)) return "urgent"
+  if (/[?]|\b(how|why|what if|did you know|guess)\b/.test(t)) return "curious"
+  return "informative"
+}
+
 function platformFromUrl(url: string): string {
   if (url.includes("facebook.com/ads/library")) return "facebook"
   if (url.includes("facebook.com")) return "facebook"
@@ -65,11 +108,16 @@ async function ensureCompetitorProfile(
   const { data: existing } = await svc.from("competitor_profiles")
     .select("id").eq("brokerage_id", w.brokerage_id).eq("competitor_name", w.competitor_name).maybeSingle()
   if (existing) return (existing as any).id as string
+  // `market_zip_codes` is NOT copied onto the profile twin (wave 26, §1
+  // duplicate). The zips originate on competitor_brokerages.watch_zip_codes —
+  // written by app/actions/direct-mail-settings.ts:132, read as the geo hint
+  // at scanOneCompetitor below (:130) and app/api/cron/competitor-ads-exa/
+  // route.ts:98 — and the copy here had no reader. The watch row is the
+  // survivor; competitor_id ↔ competitor_name is the join back to it.
   const { data, error } = await svc.from("competitor_profiles").insert({
     brokerage_id: w.brokerage_id,
     competitor_name: w.competitor_name,
     competitor_type: "brokerage",
-    market_zip_codes: w.watch_zip_codes ?? null,
     is_active: true,
   }).select("id").single()
   return error ? null : ((data as any).id as string)
@@ -115,6 +163,14 @@ async function scanOneCompetitor(
         platform: platformFromUrl(r.url),
         content_type: contentType,
         content_url: r.url,
+        // §1.2 (2026-09-04) — THE MISSING WRITER. competitor_content.media_url
+        // is read by app/actions/marketing-intelligence.ts:148 and was written
+        // by nobody, so every competitor card rendered image-less. Exa carries
+        // the page image on the result; it is now mapped through
+        // (lib/content-intel/exa-scraper.ts :: ExaSearchResult.image_url) and
+        // stays NULL when Exa has none — a competitor-intel card must not
+        // invent a picture of a rival's creative.
+        media_url: r.image_url,
         caption,
         posted_at: r.published_date,
         observed_at: now.toISOString(),
@@ -125,6 +181,12 @@ async function scanOneCompetitor(
         detected_topics: extractKeyphrases(r.title, 4),
         detected_keywords: extractKeyphrases(`${r.title} ${r.summary}`, 8),
         hook_type: classifyHook(r.title),
+        // The other half of the repurpose brief. hook_type says HOW the post
+        // opens; emotional_tone says how it FEELS, and the inspiration prompt
+        // at app/actions/marketing-intelligence.ts:221 asks for both. Only
+        // hook_type was ever written, so the tone half of every brief was the
+        // reader's hardcoded fallback.
+        emotional_tone: classifyEmotionalTone(`${r.title} ${r.summary}`),
         cta_present: /call|contact|dm|schedule|book|visit/i.test(caption),
         raw_engagement_data: { source: "exa", exa_score: r.engagement_score, rank: i, categories: r.categories },
       })

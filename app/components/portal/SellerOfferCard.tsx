@@ -10,18 +10,16 @@ import { Button } from "@/app/components/ui/button"
 import { Skeleton } from "@/app/components/ui/skeleton"
 import {
   FileText,
-  DollarSign,
   ArrowRight,
   PartyPopper,
   Clock,
   TrendingUp,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import {
-  OFFER_STATUS_CONFIG,
   formatPrice,
+  OFFER_STATUS_CONFIG,
   type OfferData,
-} from "@/lib/portal/resolve-seller-context"
+} from "@/lib/portal/seller-context-presentation"
 
 interface SellerOfferCardProps {
   total: number
@@ -49,6 +47,17 @@ export function SellerOfferCard({
   // Accepted offer celebration card
   if (accepted) {
     const buyerName = accepted.buyer?.first_name || "Buyer"
+    // The offer's own status, spelled ONCE. OFFER_STATUS_CONFIG
+    // (lib/portal/seller-context-presentation.ts:122) is the single label/colour
+    // vocabulary for offer status in the portal; this card used to hardcode its
+    // own amber pair for "pending" and show no status chip at all on the
+    // accepted branch, which is the two-spellings-of-one-idea defect CLAUDE.md §6
+    // names. An unknown status falls back to the raw value rather than rendering
+    // an empty chip — a seller must never be shown a blank where a state goes.
+    const acceptedChip = OFFER_STATUS_CONFIG[accepted.status] ?? {
+      label: accepted.status,
+      color: "bg-slate-100 text-slate-600",
+    }
     return (
       <Card className="bg-gradient-to-r from-green-50 to-emerald-50 border-green-200">
         <CardContent className="py-6">
@@ -57,9 +66,14 @@ export function SellerOfferCard({
               <PartyPopper className="h-6 w-6 text-green-600" />
             </div>
             <div className="space-y-2 flex-1">
-              <h3 className="text-lg font-semibold text-green-800">
-                Congratulations! Offer Accepted!
-              </h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-lg font-semibold text-green-800">
+                  Congratulations! Offer Accepted!
+                </h3>
+                <Badge variant="secondary" className={acceptedChip.color}>
+                  {acceptedChip.label}
+                </Badge>
+              </div>
               <p className="text-green-700">
                 {buyerName} for {formatPrice(accepted.offer_amount)}
               </p>
@@ -121,8 +135,8 @@ export function SellerOfferCard({
             <FileText className="h-4 w-4" />
             Offers
             {pending > 0 && (
-              <Badge variant="secondary" className="bg-amber-100 text-amber-800 ml-1">
-                {pending} pending
+              <Badge variant="secondary" className={`${OFFER_STATUS_CONFIG.pending.color} ml-1`}>
+                {pending} {OFFER_STATUS_CONFIG.pending.label.toLowerCase()}
               </Badge>
             )}
           </CardTitle>
@@ -176,74 +190,11 @@ function SellerOfferCardSkeleton() {
   )
 }
 
-// Offer comparison table for offers page
-interface OfferComparisonTableProps {
-  offers: OfferData[]
-  listPrice: number | null
-}
-
-export function OfferComparisonTable({ offers, listPrice }: OfferComparisonTableProps) {
-  if (offers.length === 0) {
-    return null
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b">
-            <th className="text-left py-3 px-4 font-medium">Buyer</th>
-            <th className="text-right py-3 px-4 font-medium">Amount</th>
-            <th className="text-center py-3 px-4 font-medium">vs List</th>
-            <th className="text-center py-3 px-4 font-medium">Status</th>
-            <th className="text-right py-3 px-4 font-medium">Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {offers.map((offer) => {
-            const status = OFFER_STATUS_CONFIG[offer.status] ?? OFFER_STATUS_CONFIG.pending
-            const vsList = listPrice && offer.offer_amount
-              ? ((offer.offer_amount / listPrice) * 100).toFixed(1)
-              : null
-
-            return (
-              <tr key={offer.id} className="border-b hover:bg-muted/50">
-                <td className="py-3 px-4">
-                  {offer.buyer?.first_name || "Buyer"} {offer.buyer?.last_name?.charAt(0) || ""}.
-                </td>
-                <td className="text-right py-3 px-4 font-medium">
-                  {formatPrice(offer.offer_amount)}
-                </td>
-                <td className="text-center py-3 px-4">
-                  {vsList && (
-                    <span className={cn(
-                      "font-medium",
-                      Number(vsList) >= 100 ? "text-green-600" : "text-amber-600"
-                    )}>
-                      {vsList}%
-                    </span>
-                  )}
-                </td>
-                <td className="text-center py-3 px-4">
-                  <Badge variant="secondary" className={cn("text-xs", status.color)}>
-                    {status.label}
-                  </Badge>
-                </td>
-                <td className="text-right py-3 px-4 text-muted-foreground">
-                  {offer.offer_date
-                    ? new Date(offer.offer_date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                      })
-                    : "N/A"}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+// TOMBSTONE (orphan tranche 3): OfferComparisonTable deleted — a comparison
+// table no surface rendered. The live survivor is the portal offers page
+// itself, app/portal/[contactId]/offers/page.tsx, whose comparison section
+// covers everything this table showed (per-offer buyer/amount/status/date
+// rows, best-offer highlight) plus the persisted agent-authored comparison
+// rows this static table could not display.
 
 export { SellerOfferCardSkeleton }

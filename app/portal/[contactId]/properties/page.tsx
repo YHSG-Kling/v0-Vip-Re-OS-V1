@@ -7,6 +7,7 @@ import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 import { getBuyerPortalMatches } from "@/app/actions/buyer-portal-matches"
 import { CompareHomesCard } from "./CompareHomesCard"
 import { TopMatchesPanel } from "@/app/portal/[contactId]/components/TopMatchesPanel"
+import { buildPortalShowingFeed } from "@/lib/portal/portal-showing-feed"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -30,10 +31,14 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     .eq("contact_id", contactId)
     .order("saved_at", { ascending: false })
 
-  // Fetch showing requests
-  const { data: showings } = await supabase
+  // Fetch showing requests. THE REQUEST IS ONLY HALF THE ROW: the dashboard
+  // renders confirmed_date / buyer_name / buyer_feedback / buyer_concerns /
+  // buyer_interest_level, and `showing_requests` has none of the five — they live
+  // on `showings`, joined by converted_showing_id. Both halves are merged into the
+  // ONE portal shape by lib/portal/portal-showing-feed.ts:169.
+  const { data: showingRequests } = await supabase
     .from("showing_requests")
-    .select("*")
+    .select("id, listing_id, contact_id, property_address, requested_date, requested_start_time, status, converted_showing_id, buyer_agent_name")
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
@@ -158,13 +163,50 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
         "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, lifecycle_stage, status, showing_count, mls_number, listing_date"
       )
       .eq("seller_contact_id", contactId)
-      .in("status", ["active", "pending", "coming_soon", "under_contract"])
+      .in("status", ["active", "pending", "coming_soon"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
 
     sellerListing = listing ?? null
   }
+
+  // THE OUTCOME HALF. `showings` carries what actually happened — status,
+  // scheduled_at/completed_at, buyer_agent_name, feedback, notes, rating and the
+  // canonical buyer_interest_level (love_it|like_it|maybe|no). Scoped by view:
+  //   buyer  → the buyer's own walk-throughs (showings.contact_id)
+  //   seller → every showing on THEIR listing (showings.listing_id), because a
+  //            seller must see walk-throughs their agent booked directly, not
+  //            only the ones a portal request preceded.
+  const SHOWING_COLUMNS =
+    "id, listing_id, contact_id, scheduled_at, completed_at, status, feedback, notes, rating, buyer_interest_level, buyer_agent_name, external_address"
+
+  const { data: showingRows } = sellerListing
+    ? await supabase
+        .from("showings")
+        .select(SHOWING_COLUMNS)
+        .eq("listing_id", sellerListing.id)
+        .order("scheduled_at", { ascending: false })
+    : await supabase
+        .from("showings")
+        .select(SHOWING_COLUMNS)
+        .eq("contact_id", contactId)
+        .order("scheduled_at", { ascending: false })
+
+  // A seller's board is about THEIR listing, so the requests are the ones against
+  // that listing — not the seller contact's own buyer-side requests.
+  const { data: sellerShowingRequests } = sellerListing
+    ? await supabase
+        .from("showing_requests")
+        .select("id, listing_id, contact_id, property_address, requested_date, requested_start_time, status, converted_showing_id, buyer_agent_name")
+        .eq("listing_id", sellerListing.id)
+        .order("created_at", { ascending: false })
+    : { data: null }
+
+  const showings = buildPortalShowingFeed(
+    (sellerListing ? sellerShowingRequests : showingRequests) ?? [],
+    showingRows ?? [],
+  )
 
   // Load AI-recommended properties for buyers only — uses buyer preferences
   // and budget from contacts table to surface matched active listings.
@@ -206,7 +248,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       persona={persona}
       personaConfig={personaConfig}
       savedProperties={savedProperties || []}
-      showings={showings || []}
+      showings={showings}
       offers={offers || []}
       propertyAlerts={propertyAlerts || []}
       propertyInterests={propertyInterests || []}

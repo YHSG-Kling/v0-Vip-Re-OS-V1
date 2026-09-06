@@ -24,10 +24,12 @@ import {
   ClosingPrepPanel,
   ExtractedFactsPanel,
 } from "./components/os"
-import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
+import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
-import { predictDeadlineRisks } from "@/app/actions/multi-persona"
+import { ClosingReadinessGate } from "./components/closing-readiness-gate"
+import { TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
+import { predictDeadlineRisks, getCoordinatorDashboard } from "@/app/actions/multi-persona"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 
 export default async function CoordinatorDashboard({
@@ -103,47 +105,17 @@ export default async function CoordinatorDashboard({
     )
   }
 
-  // Fetch assigned transactions via transaction_assignments
-  const { data: assignments } = await supabase
-    .from("transaction_assignments")
-    .select(
-      `
-      id,
-      is_primary,
-      assigned_at,
-      transaction_id,
-      transactions (
-        id,
-        property_address,
-        close_date,
-        status,
-        stage,
-        purchase_price,
-        health_score,
-        agent_id,
-        contact_id,
-        deal_type,
-        buyer_contact_id,
-        seller_contact_id,
-        buyer_agent_id,
-        seller_agent_id,
-        created_at
-      )
-    `
-    )
-    .eq("coordinator_id", coordinatorId)
-
-  // Extract transaction IDs and full transaction data
-  const transactionIds = assignments?.map((a) => a.transaction_id).filter(Boolean) || []
-  const transactions =
-    assignments
-      ?.map((a: any) => ({
-        ...a.transactions,
-        assignment_id: a.id,
-        is_primary: a.is_primary,
-        assigned_at: a.assigned_at,
-      }))
-      .filter((t: any) => t && t.id && t.status !== "closed" && t.status !== "cancelled") || []
+  // THE ONE WORKLOAD READ. This page used to query transaction_assignments
+  // inline, which meant it could not see a TC assigned from the deal page's
+  // "Assign TC" panel — that path writes transactions.coordinator_id and nothing
+  // else, so those deals were invisible to the very coordinator assigned to them.
+  // getCoordinatorDashboard reads BOTH sources, unions them, scopes every
+  // statement by brokerage, and reports read failures instead of resolving them
+  // to an empty pipeline that looks like "no work today".
+  const coordinatorWorkload = await getCoordinatorDashboard(coordinatorId, { deadlineWindowDays: 14 })
+  const workloadError = coordinatorWorkload.error
+  const transactions = coordinatorWorkload.transactions
+  const transactionIds = coordinatorWorkload.transactionIds
 
   // Fetch deal health scores for assigned transactions
   const { data: healthScores } = transactionIds.length
@@ -162,29 +134,9 @@ export default async function CoordinatorDashboard({
     }
   })
 
-  // Fetch upcoming deadlines for assigned transactions
-  const today = new Date().toISOString().split("T")[0]
-  const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
-  const { data: deadlines } = transactionIds.length
-    ? await supabase
-        .from("transaction_deadlines")
-        .select("*, transactions(property_address)")
-        .in("transaction_id", transactionIds)
-        .in("status", ["pending", "in_progress"])
-        .gte("deadline_date", today)
-        .lte("deadline_date", twoWeeksOut)
-        .order("deadline_date")
-    : { data: [] }
-
-  // Fetch incomplete milestones
-  const { data: incompleteMilestones } = transactionIds.length
-    ? await supabase
-        .from("transaction_milestones")
-        .select("*, transactions(property_address)")
-        .in("transaction_id", transactionIds)
-        .in("status", ["pending", "in_progress"])
-        .order("target_date")
-    : { data: [] }
+  // Deadlines (14-day window) and open milestones come from the same scoped read.
+  const deadlines = coordinatorWorkload.deadlines
+  const incompleteMilestones = coordinatorWorkload.incompleteMilestones
 
   // Calculate overdue milestones
   const overdueMilestones = incompleteMilestones?.filter((m) => {
@@ -214,8 +166,21 @@ export default async function CoordinatorDashboard({
 
   const brokerageId = userData?.brokerage_id
 
+  // CLOSING_PREP is reachable from exactly ONE stage — FINANCING_PENDING
+  // (see ALLOWED_TRANSITIONS in lib/transactions/transaction-stages). Those are
+  // the deals about to attempt the transition, and canProceedToClosingPrep is
+  // the same compliance gate that transition runs server-side
+  // (lib/transactions/stage-progression). Until now that gate had no UI: the TC
+  // could only discover a blocking compliance check by attempting the advance
+  // and having it refused. Scoping the list to FINANCING_PENDING keeps the
+  // check meaningful — asking it of an UNDER_CONTRACT deal is premature noise.
+  const awaitingClosingPrep = transactions.filter(
+    (t: any) => t.stage === TRANSACTION_STAGES.FINANCING_PENDING
+  )
+
   // Deadline risk prediction — scoped to the same transaction IDs the dashboard
-  // already fetched via transaction_assignments (not transactions.coordinator_id)
+  // already resolved by getCoordinatorDashboard (the UNION of transaction_assignments
+  // and transactions.coordinator_id — neither source alone sees the whole workload)
   const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId, transactionIds)
 
   // Pre-compute per-transaction risk details for display
@@ -237,7 +202,9 @@ export default async function CoordinatorDashboard({
 
   // Today's AI brief — closings, at-risk deals, missing docs, interventions
   const tcBrief = await generateUserTypeBrief({
-    userType: "TC",
+    // "tc" is the live users.user_type spelling (m036 retired "TC"); the
+    // generator's switch tolerates the old casing, but writers name the survivor.
+    userType: "tc",
     userId: user.id,
     brokerageId: brokerageId ?? null,
   })
@@ -264,6 +231,16 @@ export default async function CoordinatorDashboard({
           </Badge>
         </div>
       </div>
+
+      {/* A refused or failed workload read is NOT "no deals today". Say so. */}
+      {workloadError && (
+        <Alert className="border-amber-200 bg-amber-50">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            Your assigned deals could not be loaded, so this page may be incomplete: {workloadError}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Today's Focus — AI Brief */}
       <TodaysFocusCard brief={tcBrief} />
@@ -338,9 +315,60 @@ export default async function CoordinatorDashboard({
         <ExtractedFactsPanel />
       </div>
 
-      {/* OS Closing Prep */}
+      {/* OS Closing Prep.
+          ClosingPrepPanel lists deals ALREADY in CLOSING_PREP. The readiness
+          card beside it answers the upstream question for deals one step away:
+          will the compliance gate let this deal in, and if not, which checks are
+          failing/pending/needs-review. Different question, different data source
+          (transaction_compliance_log blocking checks vs. the transactions.status
+          string), so this is a companion — not a second copy of the panel. */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ClosingPrepPanel brokerageId={brokerageId || ""} />
+
+        {awaitingClosingPrep.length > 0 && (
+          <Card className="border-l-4 border-l-sky-500">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg">Closing Readiness</CardTitle>
+                  <CardDescription>
+                    Financing-pending deals — check compliance before advancing to closing prep
+                  </CardDescription>
+                </div>
+                <ClipboardList className="h-5 w-5 text-muted-foreground" />
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-80 overflow-y-auto">
+              {awaitingClosingPrep.map((txn: any) => (
+                <div key={txn.id} className="rounded-lg border p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <Link
+                        href={`/dashboard/transactions/${txn.id}`}
+                        className="font-medium text-sm truncate hover:underline block"
+                      >
+                        {txn.property_address || "Unknown address"}
+                      </Link>
+                      <p className="text-xs text-muted-foreground">
+                        {txn.close_date
+                          ? `Closes ${new Date(txn.close_date).toLocaleDateString()}`
+                          : "No close date set"}
+                      </p>
+                    </div>
+                    {/* Runs canProceedToClosingPrep on demand — the check hits
+                        transaction_compliance_log, so it is deliberately
+                        click-triggered rather than fired for every row on load. */}
+                    <ClosingReadinessGate
+                      transactionId={txn.id}
+                      transactionStage={txn.stage ?? TRANSACTION_STAGES.FINANCING_PENDING}
+                      brokerageId={brokerageId || ""}
+                    />
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* TC Fast Actions Panel */}

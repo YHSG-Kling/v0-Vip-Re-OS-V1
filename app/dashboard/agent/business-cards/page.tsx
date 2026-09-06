@@ -30,6 +30,11 @@ type ScanRow = {
   review_status: "approved" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** users.id of a human reviewer — the writer only ever stamps null (see
+   *  getRecentScans in business-card-actions.ts); rendered honestly below. */
+  reviewed_by: string | null
+  /** When the viability gate ran. */
+  reviewed_at: string | null
 }
 
 type ScanResult = {
@@ -71,7 +76,13 @@ export default function BusinessCardsPage() {
 
   // Option 1 — Referral partner form state
   const [showReferralForm, setShowReferralForm] = useState(false)
-  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  // referral_partners.partner_type CHECK — the UI used to offer agent_to_agent /
+  // vendor / lender / title, NONE of which the column accepts, so every scanned
+  // card failed on insert and the agent just saw "Please try again" forever.
+  const [referralPartnerType, setReferralPartnerType] = useState<
+    "real_estate_agent" | "mortgage_broker" | "title_company" | "home_inspector"
+    | "contractor" | "insurance_agent" | "attorney" | "property_manager" | "other"
+  >("real_estate_agent")
   const [referralNotes, setReferralNotes] = useState("")
   const [referralSubmitting, setReferralSubmitting] = useState(false)
   const [referralDone, setReferralDone] = useState(false)
@@ -118,7 +129,19 @@ export default function BusinessCardsPage() {
   }, [])
 
   const processFile = useCallback(async (file: File) => {
-    if (!agentId || !brokerageId) return
+    // Don't silently swallow the drop ("file won't add" from the walkthrough) — a
+    // signed-in but not-yet-provisioned account (agent record / brokerage still
+    // being set up by the login-time self-heal) gets clear feedback instead of
+    // nothing. Once /dashboard has provisioned the records, the ids resolve and
+    // the scan works.
+    if (!agentId || !brokerageId) {
+      toast({
+        title: "Finishing your account setup",
+        description: "We're still setting up your agent profile — refresh in a moment, then add your card.",
+        variant: "destructive",
+      })
+      return
+    }
     setScanning(true)
     setResult(null)
     try {
@@ -182,7 +205,8 @@ export default function BusinessCardsPage() {
       const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
-        agreementType: "referral_fee",
+        agreementType: "informal",
+        notes: referralNotes.trim() || undefined,
       })
 
       // Step 2: log the referral, linking the scanned contact as the referred person
@@ -420,6 +444,16 @@ export default function BusinessCardsPage() {
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* The status above is the automatic viability gate's verdict.
+                            No person reviews these scans today (reviewed_by is written
+                            as null by its only writer), and this says so rather than
+                            implying a reviewer. A non-null id has no resolver yet — by
+                            ruling, none is built for a column nothing sets. */}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {s.reviewed_by
+                            ? "reviewed by a person (name not resolved)"
+                            : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
                         {s.contact_id ? (
@@ -527,10 +561,14 @@ export default function BusinessCardsPage() {
                       onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                     >
-                      <option value="agent_to_agent">Agent to Agent</option>
-                      <option value="vendor">Vendor</option>
-                      <option value="lender">Lender</option>
-                      <option value="title">Title</option>
+                      <option value="real_estate_agent">Real estate agent</option>
+                      <option value="mortgage_broker">Lender / mortgage broker</option>
+                      <option value="title_company">Title company</option>
+                      <option value="home_inspector">Home inspector</option>
+                      <option value="contractor">Contractor</option>
+                      <option value="insurance_agent">Insurance agent</option>
+                      <option value="attorney">Attorney</option>
+                      <option value="property_manager">Property manager</option>
                       <option value="other">Other</option>
                     </select>
                   </div>

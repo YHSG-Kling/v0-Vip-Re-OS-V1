@@ -46,7 +46,9 @@ export async function reapStuckCampaigns(
     .from("users")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin", "superadmin"])
+    // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type rows);
+    // broker_owner added — storable seat that owns the brokerage.
+    .in("user_type", ["broker", "admin", "broker_owner"])
     .limit(10)
   const adminIds = ((admins ?? []) as Array<{ id: string }>).map((a) => a.id)
   if (adminIds.length === 0) {

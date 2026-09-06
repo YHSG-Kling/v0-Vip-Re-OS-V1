@@ -75,7 +75,14 @@ export async function processKernelEvent(params: {
 
     for (const recipient of matchingRecipients) {
       try {
-        await supabase.from("notifications").insert({
+        // supabase-js RESOLVES a rejected write — an FK violation on
+        // notifications.user_id comes back as `{ error }`, it does NOT throw. The
+        // try/catch below therefore never fired, and the success line printed for
+        // every row the database had refused. That is how the id-class defect
+        // above stayed invisible: the log said "Created notification" while the
+        // bell stayed empty. Destructure the error and say which of the two
+        // actually happened.
+        const { error: insertError } = await supabase.from("notifications").insert({
           user_id:     recipient.user_id,
           brokerage_id: params.brokerageId,
           type:        params.event,
@@ -85,6 +92,17 @@ export async function processKernelEvent(params: {
           body:        generateBody(params.event, params.entityType),
           is_read:     false,
         })
+
+        if (insertError) {
+          // NOT rethrown, deliberately. processKernelEvent sits on the emit path
+          // of every lifecycle action in the product; throwing here would turn a
+          // failed bell into a failed offer/transaction write for the human who
+          // triggered it. The notification is the echo, never the deal.
+          console.error(
+            `[NotificationEngine] notification NOT created for user ${recipient.user_id} (role ${recipient.role}, event ${params.event}): ${insertError.message}`,
+          )
+          continue
+        }
 
         console.log(`[NotificationEngine] Created notification for user ${recipient.user_id}`)
       } catch (err) {
@@ -142,6 +160,62 @@ export async function processKernelEvent(params: {
 //
 // For now: Query-per-event is acceptable. Mark for optimization when volume testing shows need.
 
+// ─── ID CLASS OF EVERY RECIPIENT RESOLUTION IN THIS FILE ─────────────────────
+//
+// `notifications.user_id` FKs `users(id)` (verified live against pg_constraint).
+// Every value pushed into `recipients[].user_id` must therefore be a USERS id.
+// The columns this resolver reads split into two disjoint classes:
+//
+//   AGENTS-class — FK `agents(id)`, MUST be resolved before use:
+//     · contacts.agent_id      (contact / buyer / seller branch)
+//     · transactions.agent_id  (transaction branch)
+//     · listings.agent_id      (listing_stage_machine branch)
+//   USERS-class — safe to push straight through:
+//     · contacts.tc_user_id
+//     · contacts.compliance_officer_id
+//     · contacts.user_id       (the seller-channel lookup)
+//     · users.id               (the brokerage-level pool)
+//
+// All three AGENTS-class columns were being written straight into
+// `notifications.user_id`. The insert is FK-rejected — and supabase-js resolves
+// a rejected write, so the engine logged a created notification for a row the
+// database threw away. The assigned agent, on the three entity types where the
+// assignment actually lives, had never received one of these notifications.
+//
+// The two classes are the same distance apart everywhere in this schema; see
+// scripts/agent-fk-columns.ts for the authoritative snapshot and
+// lib/kernel/agent-identity-resolver.ts for the ONE resolver. Nothing here
+// invents a second one, and nothing `??`-falls-back across the boundary — a
+// fallback would just write a different wrong id.
+//
+// The resolver is loaded at CALL TIME, the same way the reactor is dispatched
+// below. It carries `import "server-only"`, and `lib/kernel/lifecycle.ts`
+// imports this module statically — a static edge here would make the whole
+// lifecycle chain unloadable outside a react-server condition and take
+// scripts/transaction-parties-notify-simulator.ts down with it (verified: it
+// did). Same idiom as lib/kernel/event-reactor.ts, which resolves this exact
+// column the same way.
+async function pushResolvedAgentRecipient(
+  recipients: Array<{ user_id: string; role: string }>,
+  agentRecordId: string | null | undefined,
+  role: string,
+  source: string,
+): Promise<void> {
+  if (!agentRecordId) return
+  const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+  const userId = await resolveAgentRecordToUserId(agentRecordId)
+  if (!userId) {
+    // A resolve that yields nothing is a recipient we DO NOT HAVE. Saying so is
+    // the whole point: the alternative is pushing the agents id and letting the
+    // database refuse it out of sight.
+    console.error(
+      `[NotificationEngine] ${source}=${agentRecordId} is an agents.id with no users row — no '${role}' recipient resolved; nothing is sent to them.`,
+    )
+    return
+  }
+  recipients.push({ user_id: userId, role })
+}
+
 async function resolveRecipients(params: {
   event: KernelEvent
   brokerageId: string
@@ -158,21 +232,28 @@ async function resolveRecipients(params: {
     params.entityType === "buyer" ||
     params.entityType === "seller"
   ) {
-    const { data: contact } = await supabase
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("agent_id, tc_user_id, compliance_officer_id")
       .eq("id", params.entityId)
       .single()
 
-    if (contact?.agent_id) {
-      recipients.push({ user_id: contact.agent_id, role: "agent" })
+    // supabase-js resolves a refused read: without this, "the query was refused"
+    // and "this contact has no agent" are the same silence.
+    if (contactError) {
+      console.error(`[NotificationEngine] contact ${params.entityId} lookup failed: ${contactError.message}`)
     }
+
+    // AGENTS-class → resolved. Not a users id.
+    await pushResolvedAgentRecipient(recipients, contact?.agent_id, "agent", "contacts.agent_id")
     // Per-contact Transaction Coordinator (not in the brokerage-level pool).
     // Role casing must match notification_rules.recipient_role CHECK ('TC').
+    // USERS-class column (FK users(id)) — pushed straight through, correctly.
     if (contact?.tc_user_id) {
       recipients.push({ user_id: contact.tc_user_id, role: "TC" })
     }
     // Named compliance officer for this contact (in addition to brokerage-wide).
+    // USERS-class column (FK users(id)) — pushed straight through, correctly.
     if (contact?.compliance_officer_id) {
       recipients.push({ user_id: contact.compliance_officer_id, role: "compliance_officer" })
     }
@@ -181,33 +262,38 @@ async function resolveRecipients(params: {
   // Owning agent of the transaction (there is no separate assigned_tc_id column;
   // the responsible party is transactions.agent_id).
   if (params.entityType === "transaction") {
-    const { data: transaction } = await supabase
+    const { data: transaction, error: transactionError } = await supabase
       .from("transactions")
       .select("agent_id")
       .eq("id", params.entityId)
       .single()
 
-    if (transaction?.agent_id) {
-      recipients.push({
-        user_id: transaction.agent_id,
-        role: "agent",
-      })
+    if (transactionError) {
+      console.error(`[NotificationEngine] transaction ${params.entityId} lookup failed: ${transactionError.message}`)
     }
+
+    // AGENTS-class → resolved. This is the deal's responsible agent, and until
+    // now every transaction notification addressed to them was FK-rejected.
+    await pushResolvedAgentRecipient(recipients, transaction?.agent_id, "agent", "transactions.agent_id")
   }
 
   // Listing stage machine — resolve assigned agent + TC via listings table.
   // Metadata-aware routing: TC, seller channel, and escalation per event spec.
   if (params.entityType === "listing_stage_machine") {
-    const { data: listing } = await supabase
+    const { data: listing, error: listingError } = await supabase
       .from("listings")
       .select("agent_id, brokerage_id")
       .eq("id", params.entityId)
       .single()
 
-    // Agent always receives listing sub-event notifications
-    if (listing?.agent_id) {
-      recipients.push({ user_id: listing.agent_id, role: "agent" })
+    if (listingError) {
+      console.error(`[NotificationEngine] listing ${params.entityId} lookup failed: ${listingError.message}`)
     }
+
+    // Agent always receives listing sub-event notifications.
+    // AGENTS-class → resolved, the same way lib/kernel/event-reactor.ts already
+    // resolves this exact column before using it as a users id.
+    await pushResolvedAgentRecipient(recipients, listing?.agent_id, "agent", "listings.agent_id")
 
     // Seller channel — only if brokerage policy allows it
     // Read from brokerage_settings.seller_notification_policy
@@ -237,6 +323,8 @@ async function resolveRecipients(params: {
             .eq("id", listingAgreement.seller_contact_id)
             .maybeSingle()
 
+          // USERS-class column (contacts.user_id FKs users(id)) — the seller's
+          // login, not their contact row. Pushed straight through, correctly.
           if (contact?.user_id) {
             recipients.push({ user_id: contact.user_id, role: "seller" })
           }
@@ -246,12 +334,17 @@ async function resolveRecipients(params: {
   }
 
   // Brokerage-level roles (always included).
+  // USERS-class by construction — this reads users.id itself.
   // TODO: Cache optimization — this query runs on every event.
-  const { data: brokerageUsers } = await supabase
+  const { data: brokerageUsers, error: brokerageUsersError } = await supabase
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", params.brokerageId)
     .in("user_type", ["admin", "broker", "compliance_officer", "team_lead"])
+
+  if (brokerageUsersError) {
+    console.error(`[NotificationEngine] brokerage ${params.brokerageId} recipient pool lookup failed: ${brokerageUsersError.message}`)
+  }
 
   for (const user of brokerageUsers || []) {
     recipients.push({

@@ -7,6 +7,35 @@ import { createClient } from "@/lib/supabase/server"
  * Returns real counts for every badgeKey used in navigation-config.ts.
  * Called once per session from AppShell and refreshed on navigation.
  * All queries are scoped to the authenticated user's brokerage.
+ *
+ * ─── TOMBSTONE ───────────────────────────────────────────────────────────────
+ *
+ * `app/api/notifications/unread-count/route.ts` was DELETED into this route. It
+ * was a GET returning `{ unread }` and nothing else — a third door onto the one
+ * number `unread_notifications` below already serves, and nothing in the tree
+ * addressed it (no fetch, no SWR key, no config entry, no cron, and no database
+ * caller — checked live on `hrvaqgvukzxfskkcrwbt`: zero edge functions, zero
+ * pg_proc bodies naming an `/api/` path). Deleting it removed the whole
+ * `app/api/notifications/` directory.
+ *
+ * Nothing needed merging: it was a two-line wrapper over
+ * `countUnreadNotifications`, strictly less than either survivor.
+ *
+ * WHERE THE CAPABILITY LIVES:
+ *   · the HTTP surface, i.e. the unread badge → this route, read by
+ *     app/components/layout/app-shell.tsx:62 through SWR.
+ *   · the in-process count → lib/kernel/notification-center.ts:60
+ *     `countUnreadNotifications`, read by app/notifications/page.tsx:34.
+ *
+ * ONE HONEST DIVERGENCE, LEFT STANDING AND WRITTEN DOWN RATHER THAN GUESSED AT
+ * (§6): the two survivors spell "unread" differently. This route filters
+ * `brokerage_id` AND `user_id`; `countUnreadNotifications` filters `user_id`
+ * only. For a single-brokerage user they agree; for anyone whose notifications
+ * span tenants the bell and the /notifications page would show different
+ * numbers. It is NOT collapsed here because `public.notifications` currently
+ * holds 0 rows (live count, 2026-08-26), so there is no evidence which way the
+ * live data would break, and tightening the page's count on a guess could take
+ * a working list to zero. Whoever gets rows into that table owns the merge.
  */
 export async function GET() {
   try {
@@ -20,12 +49,22 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Resolve brokerage + role from users row (source of truth per spec)
-    const { data: userData } = await supabase
+    // Resolve brokerage + role from users row (source of truth per spec).
+    //
+    // `error` is destructured: supabase-js RESOLVES a refused read, so without it
+    // a refusal arrives as `data: null`, `brokerageId` falls to null, and EVERY
+    // badge on the page silently reports zero — indistinguishable from a quiet
+    // day. This one value is also the tenant every notification writer must stamp
+    // (see lib/notifications/recipient-tenant.ts): `.eq("brokerage_id", …)` below
+    // compares against exactly this, and `NULL = <uuid>` is NULL, never true.
+    const { data: userData, error: userLookupError } = await supabase
       .from("users")
       .select("id, brokerage_id, user_type")
       .eq("id", user.id)
       .maybeSingle()
+    if (userLookupError) {
+      console.error("[badge-counts] users lookup refused:", userLookupError.message)
+    }
 
     const brokerageId = userData?.brokerage_id ?? null
     const userType: string = userData?.user_type ?? "agent"
@@ -75,7 +114,9 @@ export async function GET() {
         .from("compliance_flags")
         .select("id", { count: "exact", head: true })
         .eq("user_id", user.id)
-        .in("status", ["open", "pending"]),
+        // compliance_flags.status is flagged|reviewed|resolved|overridden — neither
+        // "open" nor "pending" exists, so this badge count was always 0.
+        .in("status", ["flagged"]),
 
       // Active deals (transactions coordinator — TC/broker/admin only)
       ["tc", "broker", "admin", "team_lead"].includes(userType)
@@ -83,7 +124,7 @@ export async function GET() {
             .from("transactions")
             .select("id", { count: "exact", head: true })
             .eq("brokerage_id", brokerageId)
-            .in("status", ["active", "pending", "under_contract"])
+            .in("status", ["active", "under_contract"])
         : Promise.resolve({ count: 0 }),
 
       // Vendor pending jobs (vendor role only)
@@ -116,6 +157,17 @@ export async function GET() {
             .is("assigned_at", null)
         : Promise.resolve({ count: 0 }),
     ])
+
+    // A COUNT query carries its refusal in `error` too, and `count` comes back
+    // null — which `?? 0` then renders as "no unread notifications". The response
+    // contract is deliberately unchanged (this route never fails navigation), but
+    // the refusal is no longer silent.
+    if ((notificationsResult as { error?: { message: string } | null }).error) {
+      console.error(
+        "[badge-counts] unread notifications count refused:",
+        (notificationsResult as { error: { message: string } }).error.message,
+      )
+    }
 
     return NextResponse.json({
       unread_notifications: notificationsResult.count ?? 0,

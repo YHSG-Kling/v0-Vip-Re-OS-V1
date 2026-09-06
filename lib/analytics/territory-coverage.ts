@@ -37,7 +37,7 @@ import { activeSubscriberBrokerageIds, ACTIVE_SUBSCRIPTION_STATUSES } from "@/li
 /** Days of lead/raw volume the coverage board counts. */
 export const COVERAGE_WINDOW_DAYS = 30
 /** Row cap per bounded read — a hit cap is reported, never silently truncated. */
-export const COVERAGE_ROW_CAP = 5000
+const COVERAGE_ROW_CAP = 5000
 /** Max expansion hints shown on the tenant card. */
 export const EXPANSION_HINT_LIMIT = 12
 

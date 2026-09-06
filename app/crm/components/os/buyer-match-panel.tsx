@@ -30,6 +30,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { draftSmartEmail } from "@/app/actions/ai-insights"
 import { sendEmail } from "@/app/actions/communications"
 import { PropertyAlertsPanel } from "./property-alerts-panel"
+import { BUYER_STAGES, BUYER_STAGE_LABELS, isBuyerStage } from "@/lib/contacts/buyer-stage"
 
 function escapeHtml(str: string): string {
   return str
@@ -40,15 +41,16 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;")
 }
 
-const BUYER_STAGES = [
-  { value: "new", label: "New Lead" },
-  { value: "nurturing", label: "Nurturing" },
-  { value: "active", label: "Active Buyer" },
-  { value: "qualified", label: "Qualified" },
-  { value: "under_contract", label: "Under Contract" },
-  { value: "closed", label: "Closed" },
-  { value: "lost", label: "Lost" },
-]
+// TOMBSTONE (§6) — a local seven-value stage list (new / nurturing / active /
+// qualified / under_contract / closed / lost) stood here and fed the Select
+// below, which writes contacts.buyer_stage. The live CHECK on that column
+// admits ONLY the thirteen BUYER_* ladder tokens (scripts/check-vocabularies.ts,
+// contacts.buyer_stage), so Postgres refused EVERY value this dropdown ever
+// offered (23514) — the toast said "Failed to update stage" on each attempt,
+// and this control has likely never saved once. SURVIVOR:
+// lib/contacts/buyer-stage.ts — BUYER_STAGES (the CHECK-matched ladder) and
+// BUYER_STAGE_LABELS (the wording), the same module whose header records two
+// server-side consumers failing the identical silent way on invented spellings.
 
 interface BuyerMatchPanelProps {
   contactId: string
@@ -77,7 +79,9 @@ export function BuyerMatchPanel({
   buyerStage,
   contactName,
 }: BuyerMatchPanelProps) {
-  const [stage, setStage] = useState(buyerStage ?? "")
+  // A stored value outside the ladder (legacy spelling, or null) renders the
+  // placeholder rather than a phantom selection the CHECK would refuse to save.
+  const [stage, setStage] = useState(isBuyerStage(buyerStage) ? buyerStage : "")
   // Generation counter to handle rapid stage changes — only apply result from latest request
   const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
@@ -332,7 +336,7 @@ export function BuyerMatchPanel({
             </SelectTrigger>
             <SelectContent>
               {BUYER_STAGES.map((s) => (
-                <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+                <SelectItem key={s} value={s} className="text-xs">{BUYER_STAGE_LABELS[s]}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -586,11 +590,21 @@ export function BuyerMatchPanel({
                   const matchSummary = matches.slice(0, 5).map(m =>
                     `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
                   ).join("\n")
-                  const draft = await draftSmartEmail(
+                  const result = await draftSmartEmail(
                     contactId,
                     `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
                   )
-                  setEmailDraft(draft)
+                  // A REFUSAL NO LONGER OPENS AN EMPTY COMPOSE BOX (wave 27).
+                  // draftSmartEmail used to answer "" for a refused seat, an
+                  // unreadable contact and an empty model reply alike, and this
+                  // handler put that "" straight into the dialog — so "you may
+                  // not do this" and "the AI had nothing to say" looked the
+                  // same, on a screen that invites you to hit Send.
+                  if (!result.ok) {
+                    toast.error(result.reason)
+                    return
+                  }
+                  setEmailDraft(result.body)
                   setEmailDialogOpen(true)
                 } catch {
                   toast.error("Could not generate email draft")

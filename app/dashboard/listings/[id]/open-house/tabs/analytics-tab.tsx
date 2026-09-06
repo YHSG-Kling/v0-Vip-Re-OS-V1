@@ -6,10 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Users, Mail, Flame, Star, TrendingUp, BarChart3, Loader2, CheckCircle2, Send, MessageSquare } from "lucide-react"
-import { getOpenHouseAnalytics } from "@/app/actions/seller-open-house"
+import {
+  getOpenHouseAnalytics,
+  generateOpenHouseAISummary,
+  requestFeedbackFromAttendee,
+} from "@/app/actions/seller-open-house"
 import {
   generatePerformanceInsights,
-  sendFeedbackRequestToAttendee,
   getOpenHouseVisitors,
 } from "@/app/actions/open-house-automation"
 import { useToast } from "@/hooks/use-toast"
@@ -27,6 +30,9 @@ export function AnalyticsTab({ listingId }: Props) {
   const [feedbackSent, setFeedbackSent] = useState<Set<string>>(new Set())
   const [eventAttendees, setEventAttendees] = useState<any[]>([])
   const [feedbackData, setFeedbackData] = useState<any[]>([])
+  const [debrief, setDebrief] = useState<string | null>(null)
+  const [debriefError, setDebriefError] = useState<string | null>(null)
+  const [generatingDebrief, setGeneratingDebrief] = useState(false)
   const { toast } = useToast()
 
   useEffect(() => {
@@ -100,17 +106,42 @@ export function AnalyticsTab({ listingId }: Props) {
     }
   }
 
+  /**
+   * The attendee debrief — who came, who is unrepresented, what they said.
+   *
+   * Deliberately NOT the same thing as "Generate Performance Report" above it.
+   * That one grades open_house_analytics, whose only writer is
+   * open-house-automation.ts:createOpenHouseEvent — a create path this product's
+   * screens do not use — so for an event made through the UI it answers
+   * "Analytics data not found" every time. This reads open_house_attendees,
+   * which endOpenHouseEvent's scoring pass genuinely fills.
+   */
+  async function handleGenerateDebrief() {
+    if (!completedEventId) {
+      toast({ title: "No completed event found", description: "Complete an event first.", variant: "destructive" })
+      return
+    }
+    setGeneratingDebrief(true)
+    setDebriefError(null)
+    const res = await generateOpenHouseAISummary({ eventId: completedEventId })
+    setGeneratingDebrief(false)
+    if (!res.success) {
+      setDebrief(null)
+      setDebriefError(res.error ?? "The debrief could not be generated.")
+      return
+    }
+    setDebrief(res.summary ?? null)
+  }
+
   async function handleSendFeedback(attendeeId: string) {
-    try {
-      const res = await sendFeedbackRequestToAttendee(attendeeId)
-      if (res.success) {
-        setFeedbackSent((prev) => new Set(prev).add(attendeeId))
-        toast({ title: "Feedback request sent" })
-      } else {
-        toast({ title: "Failed to send request", description: res.error, variant: "destructive" })
-      }
-    } catch {
-      toast({ title: "Failed to send request", variant: "destructive" })
+    // Tenant-bounded path: requestFeedbackFromAttendee proves the attendee row
+    // belongs to the caller's brokerage before delegating to the sender.
+    const res = await requestFeedbackFromAttendee({ attendeeId, listingId })
+    if (res.success) {
+      setFeedbackSent((prev) => new Set(prev).add(attendeeId))
+      toast({ title: "Feedback request sent" })
+    } else {
+      toast({ title: "Failed to send request", description: res.error, variant: "destructive" })
     }
   }
 
@@ -205,6 +236,35 @@ export function AnalyticsTab({ listingId }: Props) {
                 </Button>
               </div>
             )}
+
+            {/* Attendee debrief — reads the attendee table, not the analytics table */}
+            <div className="flex flex-col gap-2 border-t border-border pt-4">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Attendee Debrief
+              </span>
+              {debriefError && (
+                <p className="text-xs text-destructive">{debriefError}</p>
+              )}
+              {debrief && (
+                <p className="text-sm text-foreground leading-relaxed rounded-md bg-muted/40 px-3 py-2">
+                  {debrief}
+                </p>
+              )}
+              <Button
+                size="sm"
+                variant={debrief ? "ghost" : "outline"}
+                onClick={handleGenerateDebrief}
+                disabled={generatingDebrief}
+                className="self-start text-xs h-7"
+              >
+                {generatingDebrief ? (
+                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                ) : (
+                  <MessageSquare className="mr-1.5 h-3 w-3" />
+                )}
+                {debrief ? "Refresh debrief" : "Summarise who attended"}
+              </Button>
+            </div>
 
             {/* Feedback requests */}
             {eventAttendees.length > 0 && (

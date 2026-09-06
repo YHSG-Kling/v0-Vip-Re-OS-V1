@@ -28,6 +28,9 @@ const STATUS_COLORS: Record<string, string> = {
   accepted:  "bg-green-50 text-green-700 border-green-200",
   rejected:  "bg-red-50 text-red-700 border-red-200",
   withdrawn: "bg-muted text-muted-foreground border-border",
+  // Terminal, and reachable from two doors: the hourly /api/cron/offer-expiry
+  // sweep and the "Mark expired" control below (markOfferExpired).
+  expired:   "bg-amber-50 text-amber-800 border-amber-300",
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -79,7 +82,24 @@ export function OfferWorkspace({
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
 
-  const isFinal = ["accepted", "rejected", "withdrawn"].includes(offer.status)
+  const isFinal = ["accepted", "rejected", "withdrawn", "expired"].includes(offer.status)
+
+  // The offer's own response deadline has passed and the offer is still live.
+  //
+  // WHY THIS CONTROL EXISTS: `markOfferExpired`
+  // (app/actions/buyer-offer/track-offer-lifecycle.ts) is the session-gated door
+  // that lib/buyer-offer/expire-offers.ts names as one of exactly two entrances
+  // to PENDING → EXPIRED — the other being the hourly /api/cron/offer-expiry
+  // sweep, which holds a service credential. The cron half was wired; this half
+  // had NO caller anywhere in the tree, so an agent looking at an offer whose
+  // deadline lapsed had no way to clear it and simply waited on the sweep.
+  //
+  // The action is the gate, not this predicate: it re-derives the state, and
+  // expireOffer REFUSES an offer whose `response_deadline` is null or still in
+  // the future ("deadline_passed" used to be asserted in the audit payload and
+  // never checked). This flag only decides whether to show the button.
+  const deadlinePassed =
+    !!offer.response_deadline && new Date(offer.response_deadline).getTime() <= Date.now()
 
   async function handleAccept() {
     setActionMsg(null)
@@ -122,6 +142,24 @@ export function OfferWorkspace({
         window.location.reload()
       } else {
         setActionErr(res.error ?? "Failed to withdraw offer")
+      }
+    })
+  }
+
+  async function handleMarkExpired() {
+    setActionMsg(null)
+    setActionErr(null)
+    startTrans(async () => {
+      const { markOfferExpired } = await import("@/app/actions/buyer-offer/track-offer-lifecycle")
+      const res = await markOfferExpired(offer.id)
+      if (res.success) {
+        setActionMsg("Offer marked expired.")
+        window.location.reload()
+      } else {
+        // expireOffer reports its refusal BY RETURN (not-PENDING, deadline not
+        // reached, refused write). Show it — the whole point of the deadline
+        // check landing server-side is that the agent hears the real reason.
+        setActionErr(res.error ?? "Failed to mark the offer expired")
       }
     })
   }
@@ -197,6 +235,16 @@ export function OfferWorkspace({
               >
                 Withdraw
               </button>
+              {deadlinePassed && (
+                <button
+                  onClick={handleMarkExpired}
+                  disabled={isPending}
+                  title={`Response deadline passed ${fmtDate(offer.response_deadline)}`}
+                  className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50 transition-colors"
+                >
+                  Mark expired
+                </button>
+              )}
             </div>
           )}
         </div>

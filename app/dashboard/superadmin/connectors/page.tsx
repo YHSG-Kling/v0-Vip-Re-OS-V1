@@ -13,6 +13,8 @@ import { A2pVerifyCard } from "./a2p-verify-card"
 import { GoLiveCard, LaunchChecklistCard } from "./go-live-card"
 import { buildLaunchChecklist } from "@/lib/platform/launch-checklist"
 import { TwilioFleetPostureCard, SendgridPostureCard, FullProviderRegistryCard } from "./provider-posture-cards"
+import { WebhookContractCard } from "./webhook-contract-card"
+import { CapabilityResolverCard } from "./capability-resolver-card"
 
 export const dynamic = "force-dynamic"
 
@@ -211,6 +213,15 @@ export default async function SuperadminConnectorsPage() {
       {/* FULL-REGISTRY provider posture — every provider the platform manages,
           derived from the code's own vocabularies (DB-only sweep, no vendor calls) */}
       <FullProviderRegistryCard />
+
+      {/* INBOUND WEBHOOK CONTRACT — canonical callback URLs + verification schemes
+          (the connection self-heal read surface; lib/providers/webhook-contract.ts) */}
+      <WebhookContractCard />
+
+      {/* WHICH CONNECTOR SERVES A CAPABILITY RIGHT NOW — the platform door onto
+          /api/agentic-os/resolve-capability (staff-gated; the tenant-facing manifest
+          stays vendor-anonymous). */}
+      <CapabilityResolverCard />
 
       {/* Deep-dive drill-downs (real vendor calls, on-demand): Twilio fleet + SendGrid */}
       <TwilioFleetPostureCard />

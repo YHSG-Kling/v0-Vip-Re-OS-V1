@@ -1,9 +1,17 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. This file's event rail is the ORCHESTRATOR,
+// not the notification engine: the hero-photo fan-out at :113 emits through
+// `emitEventFromCron` (lib/orchestrator/internal.ts) with event_type
+// "image.generated", which is a dotted orchestrator type and deliberately not a
+// KernelEvent member. There is no KernelEvent for listing-media approval either
+// — `LISTING_MEDIA_SCHEDULED` (lib/kernel/events.ts:62) is the only media member
+// and it belongs to the scheduler, not to this file — so there is no missing
+// emission here to build, only a pair of imports naming the wrong rail.
 
 // ─────────────────────────────────────────────────────────────
 // LISTING MEDIA
@@ -23,7 +31,15 @@ export async function getListingMedia(listingId: string) {
 export async function uploadListingMedia(params: {
   listingId: string
   brokerageId: string
-  mediaType: "photo" | "video" | "floor_plan" | "virtual_tour" | "document"
+  // MIRRORS the live listing_media_media_type_check exactly. This union said
+  // "floor_plan" — one underscore the column does not have — so a floor plan
+  // typed here could never store, and it omitted graphic / reel / story, three
+  // types the column accepts and no caller could name. The picker in
+  // media-grid.tsx was already corrected to the real vocabulary; this signature
+  // was left behind, so the screen and the action disagreed about what a media
+  // type is. A value the CHECK rejects fails SILENTLY — supabase-js resolves a
+  // refused insert — so the upload would report success and store nothing.
+  mediaType: "photo" | "video" | "floorplan" | "virtual_tour" | "graphic" | "reel" | "story" | "document"
   fileUrl: string
   thumbnailUrl?: string
   caption?: string
@@ -227,14 +243,11 @@ export async function createVideoProject(params: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: "Not authenticated" }
 
-  // Resolve agent record for agent_id (NOT NULL)
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!agent?.id) return { data: null, error: "No agent record found" }
+  // Brokerage-scoped: params.brokerageId names the tenant this listing belongs
+  // to, and a user can hold an agents row in more than one. No row ⇒ refuse;
+  // ai_video_projects.agent_id has nothing valid to carry.
+  const agentRecordId = await resolveAgentIdInBrokerage(supabase, user.id, params.brokerageId)
+  if (!agentRecordId) return { data: null, error: "No agent record found" }
 
   // Migration 1052: resolve the actual provider (D-ID default, with agent
   // + brokerage overrides). Listing videos are customer-facing by default
@@ -251,13 +264,13 @@ export async function createVideoProject(params: {
     .insert({
       listing_id:          params.listingId,
       brokerage_id:        params.brokerageId,
-      agent_id:            agent.id,
+      agent_id:            agentRecordId,
       title:               params.title,
       script_content:      params.scriptContent,
       video_type:          params.videoType,
       video_provider:      provider,
       ...providerCols,
-      status:              "planning",
+      status:              "draft",
       audience_type:       "customer_facing",
       provider_avatar_id:  params.avatarId ?? null,
       provider_voice_id:   params.voiceId ?? null,

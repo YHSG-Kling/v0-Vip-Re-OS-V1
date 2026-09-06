@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
-import { Users, TrendingUp, AlertCircle, Zap, ShieldCheck, CheckCircle2 } from 'lucide-react'
+import { TrendingUp, AlertCircle, Zap, ShieldCheck, CheckCircle2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   OnboardingCommandStrip,
@@ -20,12 +20,20 @@ import {
 } from './components/os'
 import { getBrokerageAgentLicenseStatuses, reviewLicenseManually, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
 import { CdaSetupPanel } from './components/os/cda-setup-panel'
+import type { BrokerageProviderReadiness } from '@/lib/platform/provider-posture'
 
 interface AdoptionMetrics {
   avgCompletion: number
   activeAgents: number
   completedAgents: number
+  /**
+   * DERIVED by loadOnboardingRoster — in_progress with no completed step in the
+   * last 7 days. It used to be `status === 'stalled'`, a value the
+   * agent_onboarding.status CHECK (in_progress|completed|paused) forbids, so
+   * this was permanently 0 and the whole intervention path was unreachable.
+   */
   stalledCount: number
+  stalledAgentIds: string[]
 }
 
 interface SetupBlocker {
@@ -36,12 +44,6 @@ interface SetupBlocker {
 interface TrainingProgress {
   status: string
   score: number | null
-}
-
-interface Provider {
-  provider_type: string
-  status: string
-  last_health_check_at?: string
 }
 
 interface RecentOnboarding {
@@ -58,9 +60,20 @@ interface AdminOnboardingOsClientProps {
   adoptionMetrics: AdoptionMetrics
   setupBlockers: SetupBlocker[]
   trainingProgress: TrainingProgress[]
-  providers: Provider[]
+  providerReadiness: BrokerageProviderReadiness
   recentOnboardings: RecentOnboarding[]
+  /**
+   * Which tab to open on. Resolved SERVER-SIDE from ?tab= (page.tsx) against
+   * TAB_KEYS, so a deep link lands where it says it does — the broker's licence
+   * links (app/dashboard/admin/components/os/license-expiry-panel.tsx and
+   * lib/intelligence/user-type-briefs/broker.ts) point at ?tab=license.
+   */
+  initialTab?: TabKey
 }
+
+/** The tab vocabulary — ONE list, shared with page.tsx's ?tab= normaliser. */
+export const TAB_KEYS = ['overview', 'setup', 'training', 'license', 'actions'] as const
+export type TabKey = (typeof TAB_KEYS)[number]
 
 export function AdminOnboardingOsClient({
   userId,
@@ -69,11 +82,12 @@ export function AdminOnboardingOsClient({
   adoptionMetrics,
   setupBlockers,
   trainingProgress,
-  providers,
+  providerReadiness,
   recentOnboardings,
+  initialTab,
 }: AdminOnboardingOsClientProps) {
-  const [activeTab, setActiveTab] = useState('overview')
-  const [selectedBatch, setSelectedBatch] = useState<string[]>([])
+  const [activeTab, setActiveTab] = useState<string>(initialTab ?? 'overview')
+  const [batchPreselect, setBatchPreselect] = useState<string[] | undefined>(undefined)
   const [licenseStatuses, setLicenseStatuses] = useState<AgentLicenseStatus[]>([])
   const [licenseLoading, setLicenseLoading] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
@@ -110,8 +124,11 @@ export function AdminOnboardingOsClient({
 
   const needsReviewCount = licenseStatuses.filter((a) => a.needsManualReview).length
 
-  const handleBatchAction = useCallback((_action: string, _agentIds: string[]) => {
-    // Batch actions handled by OnboardingBatchActionsPanel
+  // Quick Actions hands its selection to the Actions tab rather than owning a
+  // second, divergent copy of the batch UI.
+  const handleOpenBatchActions = useCallback((preselectAgentIds?: string[]) => {
+    setBatchPreselect(preselectAgentIds)
+    setActiveTab('actions')
   }, [])
 
   return (
@@ -125,10 +142,7 @@ export function AdminOnboardingOsClient({
       </div>
 
       {/* Command Strip */}
-      <OnboardingCommandStrip
-        brokerageId={brokerageId}
-        userId={userId}
-      />
+      <OnboardingCommandStrip />
 
       {/* Adoption Radar & Key Metrics */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -189,9 +203,9 @@ export function AdminOnboardingOsClient({
               avgCompletion={adoptionMetrics.avgCompletion}
             />
             <OnboardingActionStack
-              brokerageId={brokerageId}
-              userId={userId}
               stallCount={adoptionMetrics.stalledCount}
+              stalledAgentIds={adoptionMetrics.stalledAgentIds}
+              onOpenBatchActions={handleOpenBatchActions}
             />
           </div>
         </TabsContent>
@@ -199,10 +213,7 @@ export function AdminOnboardingOsClient({
         <TabsContent value="setup" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <SetupBlockersPanel blockers={setupBlockers} />
-            <ProviderReadinessPanel
-              providers={providers}
-              brokerageId={brokerageId}
-            />
+            <ProviderReadinessPanel readiness={providerReadiness} />
           </div>
           {/* CDA setup — does the brokerage offer Commission Disbursement
               Authorizations? If yes, broker uploads template PDFs here. */}
@@ -341,11 +352,7 @@ export function AdminOnboardingOsClient({
         </TabsContent>
 
         <TabsContent value="actions" className="space-y-4">
-          <OnboardingBatchActionsPanel
-            brokerageId={brokerageId}
-            userId={userId}
-            onBatchAction={handleBatchAction}
-          />
+          <OnboardingBatchActionsPanel preselectAgentIds={batchPreselect} />
         </TabsContent>
       </Tabs>
     </div>

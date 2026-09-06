@@ -6,10 +6,6 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/ta
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
 import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2, Scissors, Code2 } from "lucide-react"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/app/components/ui/dialog"
-import { Input } from "@/app/components/ui/input"
-import { Label } from "@/app/components/ui/label"
-import { Textarea } from "@/app/components/ui/textarea"
 import { EpisodesTab } from "./components/episodes-tab"
 import { CreateEpisodeDialog } from "./components/create-episode-dialog"
 import { AnalyticsTab } from "./components/analytics-tab"
@@ -181,7 +177,7 @@ export function PodcastDashboard({
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setIsCreateTemplateOpen(true)}>
+          <Button variant="outline" onClick={() => setActiveTab("setup")}>
             <Settings className="h-4 w-4 mr-2" />
             New Template
           </Button>
@@ -343,43 +339,9 @@ export function PodcastDashboard({
         hasVoiceClone={hasVoiceClone}
       />
 
-      {/* Create Template Dialog */}
-      <Dialog open={isCreateTemplateOpen} onOpenChange={setIsCreateTemplateOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>New Podcast Template</DialogTitle>
-            <DialogDescription>Create a reusable template for your podcast episodes.</DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 py-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tpl-name">Template Name</Label>
-              <Input
-                id="tpl-name"
-                value={newTemplateName}
-                onChange={e => setNewTemplateName(e.target.value)}
-                placeholder="e.g. Weekly Market Update"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="tpl-desc">Description (optional)</Label>
-              <Textarea
-                id="tpl-desc"
-                value={newTemplateDesc}
-                onChange={e => setNewTemplateDesc(e.target.value)}
-                placeholder="Describe what this template is used for…"
-                rows={3}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCreateTemplateOpen(false)}>Cancel</Button>
-            <Button onClick={handleCreateTemplate} disabled={creatingTemplate || !newTemplateName.trim()}>
-              {creatingTemplate ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-              Create Template
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* The "New Template" header button routes to Setup → Templates (the single,
+          richer template creator) — the inline duplicate dialog that wrote an
+          invalid templateType:"standard" was removed. */}
     </div>
   )
 }

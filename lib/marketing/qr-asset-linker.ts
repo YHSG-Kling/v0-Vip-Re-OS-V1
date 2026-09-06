@@ -29,19 +29,16 @@ export type QrPlacementType =
   | "website"
   | "other"
 
-/** Wave 36 — canonical semantic of where a QR scan lands. target_url is
- *  the runtime URL; this enum is what analytics aggregates over. The
- *  CHECK constraint on qr_codes.destination_type (m148) is the source
- *  of truth for the allowed values. */
-export type QrDestinationType =
-  | "landing_page"
-  | "video_avatar_tour"
-  | "cma_form"
-  | "listing_detail"
-  | "book_meeting"
-  | "podcast_episode"
-  | "anniversary_video"
-  | "other"
+/** Wave 36 — canonical semantic of where a QR scan lands. This enum is what analytics aggregates
+ *  over; the CHECK constraint on qr_codes.destination_type (m148) is the source of truth for the
+ *  allowed values.
+ *
+ *  MERGED: this file used to declare its own copy of the union. It is now an alias of the one
+ *  declared next to the one QR minter, so the reader and the writer cannot drift into disagreeing
+ *  about the live vocabulary — which is how a value outside the CHECK reaches an insert and gets
+ *  silently refused. */
+export type { QrDestinationType } from "./tracked-qr"
+import type { QrDestinationType } from "./tracked-qr"
 
 export interface QrLinkParams {
   marketingAssetId: string

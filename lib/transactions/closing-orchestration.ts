@@ -22,11 +22,31 @@
  * rows. The engine never duplicates. When a detected condition disappears
  * (agent ordered the appraisal), the previously-open row is auto-superseded
  * so the agent's dashboard cleans itself up.
+ *
+ * HONESTY CONTRACT (wave 14, C2). Every read here destructures its `error`.
+ * supabase-js RESOLVES a refused query, so a denied read arrives as an empty
+ * list — and on this lane "empty" is the shape of both "there is nothing to do"
+ * and "we were not allowed to look". The runner's return type carries a REQUIRED
+ * `outcome` discriminant so the two can never be reported as the same thing, and
+ * a deal whose evidence could not be read is SKIPPED and NAMED rather than
+ * judged on evidence that was never fetched (several detectors fire on absence).
+ *
+ * A deal that carries NO milestones is re-seeded through the kernel's idempotent
+ * retry before it is judged — five detectors are blind without them — and a
+ * re-seed that fails is reported as a refusal, never healed in silence.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
+import {
+  readHazardInsurance,
+  hazardSeverity,
+  hazardReminderHeadline,
+  HAZARD_EVIDENCE_LEAD_DAYS,
+  type HazardServiceRow,
+  selectHazardService,
+} from "./hazard-insurance"
 
 type Severity = "low" | "medium" | "high" | "urgent"
 type Recipient = "buyer" | "seller" | "lender" | "inspector" | "title" | "escrow" | "co_agent" | "agent"
@@ -59,6 +79,8 @@ interface TransactionContext {
   propertyAddress:     string | null
   /** Resolved from transaction_milestones where milestone_type='earnest_money_due' */
   earnestMoneyDueAt:   string | null
+  /** transactions.deal_type — 'buyer' | 'seller' | 'dual' | null on legacy rows. */
+  dealType:            string | null
 }
 
 interface TransactionEvidence {
@@ -86,6 +108,16 @@ interface TransactionEvidence {
     completed_at:    string | null
     target_date:     string | null
   }>
+  /** transaction_vendor_services rows with service_type='insurance_quote' (m385). */
+  insuranceServices: HazardServiceRow[]
+  /**
+   * FALSE when the insurance read was REFUSED. An empty array and a refused
+   * query are indistinguishable in supabase-js (both resolve), and here they
+   * mean opposite things: "this buyer has no coverage on file" versus "we could
+   * not look". Opening an urgent closing alarm on the second would be a
+   * fabricated finding, so the detector abstains instead.
+   */
+  insuranceEvidenceAvailable: boolean
 }
 
 // Match a milestone by its CANONICAL identity (milestone_type for catalog/journey
@@ -119,6 +151,17 @@ function detectAppraisalNotOrdered(ctx: TransactionContext, ev: TransactionEvide
   }
 }
 
+/**
+ * `ctx` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and it is the only
+ * thing in scope that knows WHICH SIDE OF THE DEAL this brokerage is on.
+ *
+ * Both branches addressed the action to the "buyer" unconditionally. On a
+ * SELLER-side listing the brokerage does not represent the buyer, cannot schedule
+ * the buyer's inspector, and routing the item to a party it has no relationship with
+ * is how an urgent action gets ignored. The buyer-side gate on `ctx.dealType` is the
+ * same one `detectHazardInsuranceUnbound` already applies in this file — this is that
+ * rule in one more place, not a new one (§6).
+ */
 function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
   const insMile = ev.milestones.find((m) => isMilestone(m, "inspection_deadline"))
   const deadline = insMile?.target_date
@@ -127,14 +170,20 @@ function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence
   const completed = ev.inspections.filter((i) => i.completed_date != null).length
   const scheduled = ev.inspections.filter((i) => i.scheduled_date != null && !i.completed_date).length
 
+  // Buyer-side (or dual) deals talk to the buyer; a listing side talks to the
+  // cooperating agent, who is the only person on the other side it can reach.
+  const buyerSide = ctx.dealType === "buyer" || ctx.dealType === "dual" || ctx.dealType == null
+  const recipient: Recipient = buyerSide ? "buyer" : "co_agent"
+  const whom = buyerSide ? "Buyer" : "The buyer's side"
+
   if (daysToDeadline < 0 && completed === 0) {
     return {
       actionType:         "inspection_overdue",
       severity:           "urgent",
       dueDate:            deadline,
       headline:           `Inspection deadline passed — ${Math.abs(daysToDeadline)} days late`,
-      detail:             `Inspection window closed ${Math.abs(daysToDeadline)} days ago and no inspections were marked complete. Buyer may have lost the right to object or terminate.`,
-      suggestedRecipient: "buyer",
+      detail:             `Inspection window closed ${Math.abs(daysToDeadline)} days ago and no inspections were marked complete. ${whom} may have lost the right to object or terminate.`,
+      suggestedRecipient: recipient,
       bucketKey:          `deadline:${deadline}`,
     }
   }
@@ -144,8 +193,8 @@ function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence
       severity:           daysToDeadline <= 1 ? "urgent" : "high",
       dueDate:            deadline,
       headline:           `Inspection window closes in ${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} — nothing scheduled`,
-      detail:             `Buyer hasn't scheduled any inspections and the deadline is ${daysToDeadline === 0 ? "today" : `${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} out`}. Get something on the calendar today.`,
-      suggestedRecipient: "buyer",
+      detail:             `${whom} hasn't scheduled any inspections and the deadline is ${daysToDeadline === 0 ? "today" : `${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} out`}. ${buyerSide ? "Get something on the calendar today." : "Confirm with the cooperating agent today — the contingency runs against your seller either way."}`,
+      suggestedRecipient: recipient,
       bucketKey:          `deadline:${deadline}`,
     }
   }
@@ -253,6 +302,69 @@ function detectTitleCommitmentLate(ctx: TransactionContext, ev: TransactionEvide
   }
 }
 
+/**
+ * HAZARD / HOMEOWNER'S INSURANCE NOT BOUND (m385).
+ *
+ * The lead-time reminder the owner asked for, riding the closing-prerequisite
+ * engine that already exists rather than a second one beside it. A lender wants
+ * evidence of coverage roughly 7-10 days before funding, so this opens at
+ * HAZARD_EVIDENCE_LEAD_DAYS (10) and escalates inside 7.
+ *
+ * BUYER SIDE ONLY, decided from two independent signals so a NULL deal_type on a
+ * legacy row cannot silently mute it AND a seller-side deal cannot silently
+ * acquire it:
+ *   · transactions.deal_type is 'buyer' or 'dual' (we represent the buyer), OR
+ *   · the deal carries the hazard_insurance_bound milestone, which only the
+ *     BUYER journey seeds (lib/transactions/milestone-catalog.ts).
+ * Neither present → the detector stays silent. That is honest: on a seller-side
+ * deal the buyer's coverage is not ours to chase.
+ *
+ * The verdict itself comes from the shared pure evaluator, so what the cron acts
+ * on and what the agent's panel renders can never disagree.
+ */
+function detectHazardInsuranceUnbound(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
+  // Never raise an alarm off a read we could not perform.
+  if (!ev.insuranceEvidenceAvailable) return null
+  if (!ctx.closeDate) return null
+  const daysToClose = daysBetween(today(), ctx.closeDate)
+  if (daysToClose > HAZARD_EVIDENCE_LEAD_DAYS || daysToClose < 0) return null
+
+  const milestone = ev.milestones.find((m) => isMilestone(m, "hazard_insurance_bound"))
+  const buyerSide =
+    ctx.dealType === "buyer" || ctx.dealType === "dual" || milestone != null
+  if (!buyerSide) return null
+
+  // An explicitly completed milestone is the agent asserting the step is done.
+  // Honour it — the panel is where the evidence gets argued, not the cron.
+  if (milestone?.status === "completed" || milestone?.completed_at) return null
+
+  const status = readHazardInsurance({
+    // ONE SELECTOR. Taking [0] meant the closing engine and the agent's hazard
+    // panel could name DIFFERENT engagements off the same list — the panel uses
+    // selectHazardService (which prefers a real, non-cancelled engagement),
+    // whereas [0] is whatever the query happened to return first. Two surfaces
+    // disagreeing about which policy is the deal's is worse than either being
+    // wrong, because each looks authoritative on its own screen.
+    service: selectHazardService(ev.insuranceServices),
+    closeDate: ctx.closeDate,
+    now: new Date(),
+  })
+  if (!status.blocksClosing) return null
+
+  return {
+    actionType:         "hazard_insurance_unbound",
+    severity:           hazardSeverity(status),
+    dueDate:            status.evidenceDueDate ?? ctx.closeDate,
+    headline:           hazardReminderHeadline(status),
+    detail:
+      `${status.detail} The lender needs the binder or declarations page on file by ` +
+      `${status.evidenceDueDate ?? "the lead-time date"} to fund on ${ctx.closeDate}. ` +
+      `Recommend an insurance vendor from the brokerage marketplace on the transaction's Hazard Insurance panel.`,
+    suggestedRecipient: "buyer",
+    bucketKey:          `hazard_insurance:${ctx.closeDate}`,
+  }
+}
+
 const DETECTORS: Array<(c: TransactionContext, e: TransactionEvidence) => DetectedAction | null> = [
   detectAppraisalNotOrdered,
   detectInspectionWindow,
@@ -262,52 +374,228 @@ const DETECTORS: Array<(c: TransactionContext, e: TransactionEvidence) => Detect
   detectWireInstructionsMissing,
   detectCDAMissing,
   detectTitleCommitmentLate,
+  detectHazardInsuranceUnbound,
 ]
 
 // ────────────────────────────────────────────────────────────────────────────
 // Runner — invoked by the cron
 // ────────────────────────────────────────────────────────────────────────────
 
-export async function runClosingOrchestration(opts?: { limit?: number }): Promise<{
-  scanned: number
-  opened:  number
-  superseded: number
-}> {
+/**
+ * ONE READ THAT DID NOT RUN, NAMED.
+ *
+ * `transactionId` is null for the scan-level read (the transactions query
+ * itself), and set for a per-deal read. `read` is the table the refusal came
+ * from, so the operator is told WHICH lane went blind rather than being handed a
+ * count that silently shrank.
+ */
+export interface ClosingOrchestrationRefusal {
+  transactionId: string | null
+  read:          string
+  error:         string
+}
+
+/**
+ * WHY THE RETURN SHAPE LOOKS LIKE THIS.
+ *
+ * supabase-js RESOLVES a refused query, so `const { data: txns }` renders "the
+ * transactions read was denied" and "there are no active transactions" as the
+ * SAME value — an empty list. Pre-rollout every table is EMPTY, so the engine
+ * reporting `{ scanned: 0 }` looks identical in both cases and the lane that
+ * drives closings can be dead for its entire life without the output changing.
+ *
+ * The two are separated here by CONSTRUCTION, following the discriminant already
+ * used by lib/storage/orphan-sweeper.ts:OrphanSweepResult: `outcome` is REQUIRED,
+ * and a refused scan-level read can only ever produce `"read_refused"` — never
+ * `"nothing_to_orchestrate"`. Per-deal refusals cannot be collapsed into a count
+ * either: they are listed in `refusals`, and a deal whose evidence could not be
+ * read is SKIPPED rather than run through detectors on absent evidence (several
+ * detectors fire on ABSENCE — a refused transaction_title_escrow read would
+ * otherwise open an urgent "title commitment not received" alarm on a deal whose
+ * title record we simply could not see).
+ *
+ * Every variant carries scanned/opened/superseded so a caller reading the
+ * numbers keeps compiling — but it cannot report health without looking at
+ * `outcome`, and the numbers are 0 on the refused variant by TYPE.
+ */
+export type ClosingOrchestrationResult =
+  /** The scan-level transactions read was refused. NOTHING is known. */
+  | {
+      outcome: "read_refused"
+      error:   string
+      scanned: 0; opened: 0; superseded: 0; reseeded: 0; skipped: 0
+      refusals: ClosingOrchestrationRefusal[]
+    }
+  /** The scan READ successfully and there are no active transactions to work. */
+  | {
+      outcome: "nothing_to_orchestrate"
+      error:   null
+      scanned: 0; opened: 0; superseded: 0; reseeded: 0; skipped: 0
+      refusals: []
+    }
+  /** Deals were scanned. `refusals` may still be non-empty — per-deal reads that
+   *  were denied, whose deals were skipped rather than half-evaluated. */
+  | {
+      outcome: "orchestrated"
+      error:   null
+      scanned: number
+      opened:  number
+      superseded: number
+      /** Deals that had NO milestones and were re-seeded through the kernel's
+       *  idempotent retry (see lib/kernel/transactions.ts:seedTransactionMilestones). */
+      reseeded: number
+      /** Deals skipped because one of their reads was refused. */
+      skipped:  number
+      refusals: ClosingOrchestrationRefusal[]
+    }
+
+export async function runClosingOrchestration(opts?: { limit?: number }): Promise<ClosingOrchestrationResult> {
   const svc = createServiceClient()
   const limit = opts?.limit ?? 100
+  const refusals: ClosingOrchestrationRefusal[] = []
 
   // Active transactions only — anything between accepted offer and closed.
   // Status values vary across brokerages; we exclude only terminal states.
   // earnest_money_due_at lives on transaction_milestones (not on transactions
   // itself) — we resolve it per-transaction from the milestones evidence pull.
-  const { data: txns } = await svc
+  // The contingency deadline columns come along because a deal that has to be
+  // re-seeded (below) needs the dates it already lives by; they are read here,
+  // never invented.
+  const { data: txns, error: txnsError } = await svc
     .from("transactions")
-    .select("id, brokerage_id, agent_id, contract_date, close_date, property_address")
+    .select("id, brokerage_id, agent_id, contract_date, close_date, property_address, deal_type, inspection_deadline, appraisal_deadline, financing_deadline")
     .not("status", "in", "(closed,cancelled,terminated)")
     .not("contract_date", "is", null)
     .order("close_date", { ascending: true, nullsFirst: false })
     .limit(limit)
 
+  if (txnsError) {
+    // THE ONE THAT MATTERS MOST. Without this branch a denied read on the
+    // driving table returned `{ scanned: 0 }` — "nothing to do" — on every run.
+    console.error("[closing-orchestration] transactions scan refused:", txnsError.message)
+    return {
+      outcome: "read_refused",
+      error:   txnsError.message,
+      scanned: 0, opened: 0, superseded: 0, reseeded: 0, skipped: 0,
+      refusals: [{ transactionId: null, read: "transactions", error: txnsError.message }],
+    }
+  }
+
   if (!txns || txns.length === 0) {
-    return { scanned: 0, opened: 0, superseded: 0 }
+    return {
+      outcome: "nothing_to_orchestrate",
+      error: null,
+      scanned: 0, opened: 0, superseded: 0, reseeded: 0, skipped: 0,
+      refusals: [],
+    }
   }
 
   let opened = 0
   let superseded = 0
+  let reseeded = 0
+  let skipped = 0
 
   for (const t of txns as any[]) {
     // Pull evidence in parallel
-    const [inspectionsRes, lenderRes, titleRes, milestonesRes] = await Promise.all([
+    const [inspectionsRes, lenderRes, titleRes, milestonesRes, insuranceRes] = await Promise.all([
       svc.from("transaction_inspections").select("inspection_type, status, scheduled_date, completed_date").eq("transaction_id", t.id),
       svc.from("transaction_lenders").select("appraisal_ordered_date, appraisal_completed_date, clear_to_close_date, underwriting_status").eq("transaction_id", t.id).maybeSingle(),
       svc.from("transaction_title_escrow").select("earnest_money_received_date, title_commitment_date, closing_scheduled_date").eq("transaction_id", t.id).maybeSingle(),
       svc.from("transaction_milestones").select("milestone_type, milestone_name, status, completed_at, target_date").eq("transaction_id", t.id),
+      // m385 — the deal's hazard-insurance engagement(s). Tenant-scoped on top of
+      // the transaction id: transaction_vendor_services carries its own
+      // brokerage_id and this sweep runs with the service client.
+      svc.from("transaction_vendor_services")
+        .select("id, service_type, status, vendor_name, vendor_id, quote_amount, cost, policy")
+        .eq("transaction_id", t.id)
+        .eq("brokerage_id", t.brokerage_id)
+        .eq("service_type", "insurance_quote")
+        .order("created_at", { ascending: false }),
     ])
+
+    // A REFUSED read RESOLVES with data:null, which is indistinguishable from an
+    // empty result — and here those mean opposite things. Every evidence read is
+    // checked, not just the insurance one: DETECTORS FIRE ON ABSENCE. A denied
+    // transaction_title_escrow read makes `titleEscrow` null, which is precisely
+    // the shape detectTitleCommitmentLate treats as "no commitment on file", so
+    // the engine would open an urgent alarm off a read it never performed. A
+    // denied transaction_milestones read empties five detectors' evidence at
+    // once and reads as a quiet, healthy deal.
+    //
+    // So the deal is SKIPPED and the refusal NAMED. A skipped deal is visible in
+    // the return value; a fabricated alarm and a silent miss are not.
+    const evidenceRefusals: ClosingOrchestrationRefusal[] = [
+      { res: inspectionsRes, read: "transaction_inspections" },
+      { res: lenderRes,      read: "transaction_lenders" },
+      { res: titleRes,       read: "transaction_title_escrow" },
+      { res: milestonesRes,  read: "transaction_milestones" },
+      { res: insuranceRes,   read: "transaction_vendor_services" },
+    ]
+      .filter((e) => e.res.error)
+      .map((e) => ({ transactionId: t.id as string, read: e.read, error: e.res.error!.message }))
+
+    if (evidenceRefusals.length > 0) {
+      for (const r of evidenceRefusals) {
+        console.error(`[closing-orchestration] ${r.read} read refused for ${r.transactionId}: ${r.error}`)
+      }
+      refusals.push(...evidenceRefusals)
+      skipped++
+      continue
+    }
+
+    // ── A DEAL WITH NO MILESTONES IS A DEAL THIS ENGINE CANNOT SEE ───────────
+    // Five of the nine detectors key off transaction_milestones (inspection
+    // window + overdue, earnest money, walkthrough, CDA). The offer→transaction
+    // bridge inserts the transaction row BEFORE it seeds, and the seeder throws
+    // on a refused insert — so a deal whose seeding failed is committed, carries
+    // zero milestones, and stays silent here forever. The kernel's idempotent
+    // retry re-seeds it from the canonical catalog, using the dates the deal
+    // already lives by (read above, never invented). Reported as `reseeded`, and
+    // a retry that FAILS is a named refusal — never a silent heal.
+    let milestoneRows = milestonesRes.data ?? []
+    if (milestoneRows.length === 0) {
+      const { seedTransactionMilestones } = await import("@/lib/kernel/transactions")
+      const seed = await seedTransactionMilestones({
+        transactionId: t.id,
+        brokerageId:   t.brokerage_id,
+        dealType:      t.deal_type ?? null,
+        contractTerms: {
+          closingDate:        t.close_date            ?? undefined,
+          inspectionDeadline: t.inspection_deadline   ?? undefined,
+          appraisalDeadline:  t.appraisal_deadline    ?? undefined,
+          financingDeadline:  t.financing_deadline    ?? undefined,
+        },
+      })
+      if (!seed.success) {
+        refusals.push({ transactionId: t.id, read: "transaction_milestones:reseed", error: seed.error ?? "re-seed failed" })
+        console.error(`[closing-orchestration] milestone re-seed failed for ${t.id}: ${seed.error}`)
+        skipped++
+        continue
+      }
+      if (seed.data?.seeded) reseeded++
+
+      const reread = await svc
+        .from("transaction_milestones")
+        .select("milestone_type, milestone_name, status, completed_at, target_date")
+        .eq("transaction_id", t.id)
+      if (reread.error) {
+        refusals.push({ transactionId: t.id, read: "transaction_milestones", error: reread.error.message })
+        skipped++
+        continue
+      }
+      milestoneRows = reread.data ?? []
+    }
+
     const evidence: TransactionEvidence = {
       inspections: inspectionsRes.data ?? [],
       lender:      lenderRes.data ?? null,
       titleEscrow: titleRes.data ?? null,
-      milestones:  milestonesRes.data ?? [],
+      milestones:  milestoneRows,
+      insuranceServices: ((insuranceRes.data ?? []) as unknown as HazardServiceRow[]),
+      // Proven above: this deal is only evaluated when every evidence read
+      // SUCCEEDED, so the hazard detector's abstain flag is a fact here rather
+      // than an assumption.
+      insuranceEvidenceAvailable: true,
     }
 
     // Derive earnest-money due date from milestones; column doesn't exist on
@@ -323,6 +611,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       closeDate:         t.close_date,
       propertyAddress:   t.property_address,
       earnestMoneyDueAt: emMile?.target_date ?? null,
+      dealType:          t.deal_type ?? null,
     }
 
     // Run all detectors
@@ -332,12 +621,21 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       if (result) detected.push(result)
     }
 
-    // Load currently-open rows for this transaction
-    const { data: openRows } = await svc
+    // Load currently-open rows for this transaction. A refused read here is the
+    // same trap one layer down: it renders as "nothing is open", which would
+    // re-open rows that already exist (the unique index refuses them, so the
+    // detection is LOST) and supersede nothing. The deal is skipped instead.
+    const { data: openRows, error: openError } = await svc
       .from("transaction_pending_actions")
       .select("id, action_type, bucket_key")
       .eq("transaction_id", t.id)
       .eq("status", "open")
+    if (openError) {
+      console.error(`[closing-orchestration] open-actions read refused for ${t.id}:`, openError.message)
+      refusals.push({ transactionId: t.id, read: "transaction_pending_actions", error: openError.message })
+      skipped++
+      continue
+    }
     const openSet = new Set((openRows ?? []).map((r: any) => `${r.action_type}:${r.bucket_key}`))
     const detectedSet = new Set(detected.map((d) => `${d.actionType}:${d.bucketKey}`))
 
@@ -392,7 +690,16 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
     }
   }
 
-  return { scanned: txns.length, opened, superseded }
+  return {
+    outcome: "orchestrated",
+    error: null,
+    scanned: txns.length,
+    opened,
+    superseded,
+    reseeded,
+    skipped,
+    refusals,
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -409,12 +716,15 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
  * in deal_autopsy_observations). Re-running this for the same lost transaction
  * is a cheap no-op.
  */
-export async function runLostTransactionAutopsies(opts?: { limit?: number; sinceHours?: number }): Promise<{
-  scanned:   number
-  autopsied: number
-  skipped:   number
-  errors:    string[]
-}> {
+export type LostTransactionAutopsyResult =
+  /** The lost-transactions read was refused. Nothing is known — NOT "none lost". */
+  | { outcome: "read_refused"; scanned: 0; autopsied: 0; skipped: 0; errors: string[] }
+  /** The read SUCCEEDED and no transaction is sitting in status='lost'. */
+  | { outcome: "nothing_lost"; scanned: 0; autopsied: 0; skipped: 0; errors: [] }
+  /** Lost transactions were found and each was put through the autopsy. */
+  | { outcome: "autopsied"; scanned: number; autopsied: number; skipped: number; errors: string[] }
+
+export async function runLostTransactionAutopsies(opts?: { limit?: number; sinceHours?: number }): Promise<LostTransactionAutopsyResult> {
   const svc = createServiceClient()
   const limit = opts?.limit ?? 50
   // Default look-back: transactions that went lost in the last 72 hours (catches
@@ -435,8 +745,15 @@ export async function runLostTransactionAutopsies(opts?: { limit?: number; since
     .limit(limit)
   if (since) q = q.gte("updated_at", since)
 
-  const { data: lostTxns } = await q
-  if (!lostTxns || lostTxns.length === 0) return { scanned: 0, autopsied: 0, skipped: 0, errors: [] }
+  // Same discipline as the scan above: a refused read RESOLVES, so without the
+  // error a denied query reads as "no deal fell through" — the most flattering
+  // possible answer — and every lost deal goes un-autopsied in silence.
+  const { data: lostTxns, error: lostError } = await q
+  if (lostError) {
+    console.error("[closing-orchestration] lost-transaction scan refused:", lostError.message)
+    return { outcome: "read_refused", scanned: 0, autopsied: 0, skipped: 0, errors: [`lost-transaction scan refused: ${lostError.message}`] }
+  }
+  if (!lostTxns || lostTxns.length === 0) return { outcome: "nothing_lost", scanned: 0, autopsied: 0, skipped: 0, errors: [] }
 
   let autopsied = 0
   let skipped   = 0
@@ -459,5 +776,5 @@ export async function runLostTransactionAutopsies(opts?: { limit?: number; since
     }
   }
 
-  return { scanned: lostTxns.length, autopsied, skipped, errors }
+  return { outcome: "autopsied", scanned: lostTxns.length, autopsied, skipped, errors }
 }

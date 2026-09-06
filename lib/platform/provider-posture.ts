@@ -33,10 +33,11 @@
 // not a fan-out storm. All egress via the connector gateway.
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { canonicalWebhookUrl, findWebhookContractEntry } from "@/lib/providers/webhook-contract"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
 import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
-import { PROVIDER_TENANCY } from "@/lib/providers/tenancy-matrix"
+import { PROVIDER_TENANCY, providerTenancy, type TenancyModel } from "@/lib/providers/tenancy-matrix"
 import { PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "@/lib/agentic-os/vendor-ownership"
 import { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 import { VENDOR_PRICING } from "@/lib/vendor-governance/cost-normalizer"
@@ -46,19 +47,30 @@ import { composeSentinelLossReport } from "@/lib/kernel/write-sentinel"
 import { geoapifyConfigured } from "@/lib/external/geoapify-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
+import { runFreeOsintLane } from "@/lib/external/osint-free"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
+// ONE VOCABULARY (§6): the paths come from lib/providers/webhook-contract.ts —
+// the per-provider inbound webhook contract — so the drift detector below and
+// the superadmin contract card can never disagree about the canonical URL.
 
 export interface ExpectedWebhooks {
   voice: string
   sms: string
 }
 
-/** PURE: the webhook URLs a bound tenant number is expected to carry. */
+/** PURE: the webhook URLs a bound tenant number is expected to carry —
+ *  derived from the webhook contract, never retyped. */
 export function expectedWebhookTargets(appUrl: string): ExpectedWebhooks {
-  const base = appUrl.replace(/\/$/, "")
-  return { voice: `${base}/api/voice/twilio/inbound`, sms: `${base}/api/providers/inbound` }
+  const voiceEntry = findWebhookContractEntry("/api/voice/twilio/inbound")
+  const smsEntry = findWebhookContractEntry("/api/providers/inbound")
+  // The contract carries both entries by construction (webhook-contract-guard
+  // asserts full route coverage); the fallback keeps this PURE helper total.
+  return {
+    voice: canonicalWebhookUrl(appUrl, voiceEntry ?? { path: "/api/voice/twilio/inbound" }),
+    sms: canonicalWebhookUrl(appUrl, smsEntry ?? { path: "/api/providers/inbound" }),
+  }
 }
 
 export type NumberBinding = "bound" | "unbound" | "drifted"
@@ -98,7 +110,7 @@ export interface TwilioTenantPosture {
   subaccountSid: string | null
   /** Live subaccount status from Twilio (active | suspended | closed) — null when not probed. */
   subaccountStatus: string | null
-  /** Numbers our DB says this tenant has (vapi_phone_numbers active). */
+  /** Numbers our DB says this tenant has (tenant_phone_numbers active). */
   dbNumberCount: number
   /** Numbers Twilio says the tenant's account owns — null when not probed. */
   twilioNumberCount: number | null
@@ -121,8 +133,15 @@ export interface TwilioFleetPosture {
   tenants: TwilioTenantPosture[]
 }
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: A2P_BRAND_STALL_DAYS, A2P_CAMPAIGN_STALL_DAYS, A2P_IDLE_STALL_DAYS, TWILIO_PROBE_TENANT_CAP, UNHEALED_ATTENTION_THRESHOLD.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Bound: how many tenants get LIVE Twilio probes per sweep (3 calls each). */
-export const TWILIO_PROBE_TENANT_CAP = 20
+const TWILIO_PROBE_TENANT_CAP = 20
 const TWILIO_API = "https://api.twilio.com"
 
 type Creds = { accountSid: string; authToken: string }
@@ -176,7 +195,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
     svc.from("brokerages").select("id, name").is("deleted_at", null).order("name").limit(300),
     svc.from("platform_credentials").select("brokerage_id, platform, account_id, access_token")
       .in("platform", ["twilio_byo", "twilio_subaccount"]).eq("is_active", true),
-    svc.from("vapi_phone_numbers").select("brokerage_id, phone_number, byoc_credential_id").eq("is_active", true),
+    svc.from("tenant_phone_numbers").select("brokerage_id, phone_number, twilio_number_sid").eq("is_active", true),
   ])
 
   const byoBy = new Map<string, Creds>()
@@ -190,7 +209,7 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
   const dbNumbersBy = new Map<string, Array<{ phone_number: string; sid: string | null }>>()
   for (const n of (numRows ?? []) as any[]) {
     const list = dbNumbersBy.get(n.brokerage_id) ?? []
-    list.push({ phone_number: n.phone_number, sid: n.byoc_credential_id ?? null })
+    list.push({ phone_number: n.phone_number, sid: n.twilio_number_sid ?? null })
     dbNumbersBy.set(n.brokerage_id, list)
   }
 
@@ -288,10 +307,10 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
 // #1 real-world SMS blocker — and someone must act (re-run the runner to
 // re-poll, fix the profile, or open a Twilio ticket).
 
-export const A2P_BRAND_STALL_DAYS = 3
-export const A2P_CAMPAIGN_STALL_DAYS = 7
+const A2P_BRAND_STALL_DAYS = 3
+const A2P_CAMPAIGN_STALL_DAYS = 7
 export const A2P_FAILED_STALL_DAYS = 2
-export const A2P_IDLE_STALL_DAYS = 14
+const A2P_IDLE_STALL_DAYS = 14
 
 export interface A2pStallAssessment {
   stalled: boolean
@@ -554,7 +573,7 @@ const POSTURE_CANON: Record<string, string> = {
  *  • vapi — the third-party voice-AI vendor was RETIRED; the Twilio-native
  *    turn engine replaced it (VoiceUrl → our webhook → AI gateway → TwiML).
  *    Legacy code stays reachable only behind VOICE_ENGINE=vapi for the
- *    migration window and table names (vapi_phone_numbers) persist, but Vapi
+ *    migration window and table names (tenant_phone_numbers) persist, but Vapi
  *    is not a managed provider — nothing new binds to it.
  *  • heygen — owner: "no HeyGen". The avatar/explainer engine is D-ID-locked
  *    (resolveVideoProvider forces 'did'; the direct api.heygen.com calls were
@@ -592,7 +611,7 @@ const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   cma_aggregate: "enrichment",
   openai: "ai_llm", ai_gateway: "ai_llm", perplexity: "ai_llm",
   heygen: "ai_media", remotion: "ai_media", pexels: "ai_media", browser_tts: "ai_media",
-  vapi: "voice_sms",
+  twilio: "voice_sms",
   stripe: "payments", plaid: "payments",
   quickbooks: "accounting",
   lob: "mail",
@@ -765,7 +784,15 @@ export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
   // geocoding, Overpass amenities, US Census ACS — all keyless free tiers.
   // Its gateway calls log under service keys nominatim/overpass/census, which
   // POSTURE_CANON folds here so the lane's traffic attributes to this row.
+  //
+  // SELECTABLE FROM THE ENRICHMENT LANE (wave 5): lib/external/osint-free.ts is
+  // the lane's provider surface — planEnrichmentLane routes a queue row to it and
+  // runFreeOsintLane executes it. Bound here too, so the posture row cannot drift
+  // away from the module the enrichment drain actually selects. NOT in
+  // DECOMMISSIONED_PROVIDERS and nothing new is added to the registry: this is the
+  // SAME osint_free row, now with a second binding.
   void fetchOSINTNeighborhoodData // binding: lib/external/osint-neighborhood
+  void runFreeOsintLane           // binding: lib/external/osint-free (the selectable lane)
   {
     const a = get("osint_free", "osint-neighborhood (keyless module)")
     a.label = "OSINT Free (OSM + Census)"
@@ -812,9 +839,65 @@ export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
 // ── Full-registry posture (DB + env only — no vendor calls; the deep-dive
 //    Twilio/SendGrid sweeps above remain the vendor-calling drill-downs) ──────
 
+// ─── IS THIS PROVIDER'S PLATFORM KEY PRESENT? — one implementation ───────────
+//
+// "Configured at the platform level" was answered by reading process.env inline
+// at each call site (getBrokerageProviderReadiness below, the connector-health
+// cron). Each site knew a DIFFERENT set of env vars for the same provider, so
+// the answers could disagree: the capability resolver looked only at
+// platform_credentials ROWS and reported Lob dark while LOB_API_KEY was set and
+// dispatchDirectMail was sending happily.
+//
+// The canonical registry already knows every env var that can carry a
+// provider's key (CONNECTOR_REGISTRY.envKey + the tenancy matrix +
+// PLATFORM_PROVIDER_KEYS). So the answer is derived from it, once, here.
+//
+// The registry MAP is memoized (it is pure and deterministic); the ENV read
+// never is — a key added at deploy time must be seen on the next call.
+let ENV_VARS_BY_PROVIDER: Map<string, string[]> | null = null
+
+function envVarsByProvider(): Map<string, string[]> {
+  if (!ENV_VARS_BY_PROVIDER) {
+    const m = new Map<string, string[]>()
+    for (const e of getPlatformProviderRegistry()) {
+      m.set(e.provider, e.envVars)
+      // Storage aliases resolve too, so a caller holding 'd_id' or
+      // 'twilio_voice' gets the same answer as one holding the canonical key.
+      for (const al of e.storageAliases) if (!m.has(al)) m.set(al, e.envVars)
+    }
+    ENV_VARS_BY_PROVIDER = m
+  }
+  return ENV_VARS_BY_PROVIDER
+}
+
+/** The ONE env-presence expression. null = no env home, so "no platform lane
+ *  exists" stays distinguishable from "the platform lane is dark". */
+export function envPresence(vars: readonly string[]): boolean | null {
+  if (vars.length === 0) return null
+  return vars.some((v) => !!process.env[v])
+}
+
+/** Every platform env var that can carry this provider's key. [] = the provider
+ *  has no env home at all (credential-stores only, or keyless). */
+export function platformEnvVarsFor(provider: string): string[] {
+  const key = canonPostureKey(provider)
+  return envVarsByProvider().get(key) ?? envVarsByProvider().get((provider ?? "").trim().toLowerCase()) ?? []
+}
+
+/**
+ * Is this provider configured AT THE PLATFORM LEVEL?
+ *
+ * Returns null — not false — when the provider has no env home: "no platform
+ * lane exists" is a different fact from "the platform lane is dark", and
+ * resolveBrokerageReadinessState below branches on exactly that distinction.
+ */
+export function platformEnvConfigured(provider: string): boolean | null {
+  return envPresence(platformEnvVarsFor(provider))
+}
+
 export const POSTURE_WINDOW_DAYS = 14
 /** A provider with ≥ this many unhealed failures (failed/escalated) in the window needs attention. */
-export const UNHEALED_ATTENTION_THRESHOLD = 3
+const UNHEALED_ATTENTION_THRESHOLD = 3
 const LEDGER_FETCH_CAP = 8000
 const HEAL_FETCH_CAP = 8000
 const QUARANTINE_FETCH_CAP = 2000
@@ -976,7 +1059,7 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
 
   let needsAttentionCount = 0
   const rows: ProviderPostureRow[] = registry.map((e) => {
-    const envConfigured = e.envVars.length === 0 ? null : e.envVars.some((v) => !!process.env[v])
+    const envConfigured = envPresence(e.envVars)
     const l = ledger.get(e.provider) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
     const h = healByProvider.get(e.provider) ?? { healed: 0, failed: 0, escalated: 0, failures: [] }
     const d = driftByProvider.get(e.provider) ?? { pending: 0, lastAt: null }
@@ -1025,6 +1108,237 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
       `${rows.length} providers derived from ${new Set(registry.flatMap((e) => e.sources)).size} code sources · ` +
       `signals: env/credential presence, connector ledger (api_response_logs), self-heal ledger (self_heal_events), ` +
       `pull-drift quarantines — DB + env only, zero vendor calls${capped ? " · a fetch hit its cap; counts are floors" : ""}.`,
+    rows,
+  }
+}
+
+// ── Brokerage-scoped readiness (the tenant "what can I actually use?" view) ────
+//
+// The onboarding readiness panel previously read brokerage_integrations RAW and
+// marked anything not status='connected' as "Pending". That is BLIND to two
+// whole classes of live capability: keyless free lanes, and platform-PROVIDED
+// providers (a platform env key the tenant never has to configure). A solo
+// admin who relies entirely on the platform's keys had ZERO integration rows —
+// so the panel showed 0% "nothing ready" while their whole capability set was
+// live. This derives readiness from the SAME canonical registry the fleet
+// posture uses, scoped to one brokerage, so the two surfaces cannot drift.
+
+export type BrokerageReadinessState =
+  | "live_connected"   // this brokerage's own active credentials
+  | "live_platform"    // provided by the platform (env key present), zero tenant setup
+  | "keyless"          // free lane, always on, no key at all
+  | "needs_connection" // tenant-BYO provider the brokerage has not connected yet
+  | "platform_dark"    // platform-scoped but the platform key is absent — staff's job, not the tenant's
+
+export interface BrokerageReadinessInput {
+  keyless: boolean
+  scope: ProviderScope
+  /** Platform env key present for this provider. null when it has no env home. */
+  envConfigured: boolean | null
+  /** This brokerage has an active credential/connection row for this provider. */
+  tenantConnected: boolean
+  /**
+   * Can THIS TENANT actually go and turn the lane on themselves?
+   *
+   * `scope` is a lossy fold: getPlatformProviderRegistry collapses the tenancy
+   * matrix's five models into a platform/tenant boolean pair, and `byo_top_tier`
+   * — an enterprise escape hatch the matrix scopes to the multi_location tier —
+   * lands in the same bucket as `user_oauth`. So Twilio, whose whole product
+   * promise is "tenants never touch a Twilio signup", read as the broker's move.
+   *
+   * `undefined` means unknown → treated as actionable, which is the behaviour
+   * every caller had before this field existed. Only an explicit `false`
+   * reassigns the work to platform staff.
+   */
+  tenantActionable?: boolean
+}
+
+/**
+ * PURE: the single source of truth for a provider's readiness state FOR A
+ * BROKERAGE. Kept pure + exported so the simulator can exhaust every branch
+ * without a DB or env. `ready` means "usable by this brokerage right now".
+ */
+export function resolveBrokerageReadinessState(
+  input: BrokerageReadinessInput,
+): { state: BrokerageReadinessState; ready: boolean } {
+  // A tenant's own connection always wins — it's the strongest, most explicit signal.
+  if (input.tenantConnected) return { state: "live_connected", ready: true }
+  if (input.keyless) return { state: "keyless", ready: true }
+  // Platform-provided: a present platform key means the tenant gets it for free.
+  if (input.envConfigured === true && (input.scope === "platform" || input.scope === "both")) {
+    return { state: "live_platform", ready: true }
+  }
+  // BYO lanes the tenant can still turn on themselves.
+  if ((input.scope === "tenant_byo" || input.scope === "both") && input.tenantActionable !== false) {
+    return { state: "needs_connection", ready: false }
+  }
+  // Platform-scoped but the key is absent — nothing the tenant can do; staff owns it.
+  return { state: "platform_dark", ready: false }
+}
+
+// ── The tenancy decision, read from the matrix rather than re-derived ─────────
+//
+// PROVIDER_TENANCY is the owner's ONE ruling on who owns each vendor
+// relationship, and lib/providers/tenancy-matrix.ts:providerTenancy is its
+// lookup. Above, the registry builder reads that table for its ENV VARS and
+// folds the five models into two booleans; the readiness surface then had no
+// way back to the ruling itself, so it answered "whose job is this?" from the
+// fold and got Twilio wrong. These two helpers ask the matrix directly.
+//
+// Deliberately NOT exported: their only consumer is
+// getBrokerageProviderReadiness below, and an exported helper with no
+// cross-file caller is a brand-new orphan in the file that measures them.
+
+/** Models that put the switch in the TENANT's hands (they connect their own
+ *  account / key). `byo_top_tier` is NOT one: the matrix scopes it to the
+ *  multi_location tier, so it is an enterprise option, never the broker's
+ *  to-do. */
+const TENANT_INITIATED_MODELS: readonly TenancyModel[] = ["user_oauth", "tenant_optional_key"]
+
+/** Is the remaining work this tenant's, per the tenancy matrix? `undefined` =
+ *  the provider has no matrix row (the per-lane scraper entries, and every
+ *  provider that reaches the registry only through the connector/capability
+ *  vocabularies), so the caller keeps its prior behaviour. */
+function tenantActionableFor(provider: string): boolean | undefined {
+  const t = providerTenancy(provider)
+  if (!t) return undefined
+  return t.models.some((m) => TENANT_INITIATED_MODELS.includes(m))
+}
+
+/** The honest one-liner for a state, sharpened by the provider's declared
+ *  tenancy when the matrix has a ruling for it. */
+function readinessNote(state: BrokerageReadinessState, provider: string): string {
+  const t = providerTenancy(provider)
+  if (!t) return READINESS_NOTE[state]
+
+  if (state === "needs_connection") {
+    if (t.models.includes("user_oauth")) {
+      return "Connect your own account — this lane runs on your identity, not the platform's."
+    }
+    if (t.models.includes("tenant_optional_key")) {
+      return "The platform key covers this; connect your own only if you want the usage on your account."
+    }
+    return READINESS_NOTE[state]
+  }
+
+  if (state === "platform_dark") {
+    const platformRun = t.models.includes("platform_subaccount") || t.models.includes("platform_metered")
+    if (platformRun && t.models.includes("byo_top_tier")) {
+      return "Not yet enabled at the platform level. The platform provisions this for you — bringing your own account is a multi-location-tier option, never a requirement."
+    }
+    if (platformRun) return "Not yet enabled at the platform level — nothing for you to set up; it is provided with your plan."
+  }
+
+  return READINESS_NOTE[state]
+}
+
+export interface BrokerageProviderReadinessRow {
+  provider: string
+  label: string
+  category: ProviderCategory
+  scope: ProviderScope
+  state: BrokerageReadinessState
+  ready: boolean
+  note: string
+}
+
+export interface BrokerageProviderReadiness {
+  generatedAt: string
+  total: number
+  /** Capabilities usable by this brokerage right now (connected + platform + keyless). */
+  ready: number
+  /** BYO lanes the brokerage can enable themselves. */
+  needsConnection: number
+  /** Platform-scoped rails not yet lit at the platform level (staff's job). */
+  platformDark: number
+  readinessPct: number
+  rows: BrokerageProviderReadinessRow[]
+}
+
+const READINESS_NOTE: Record<BrokerageReadinessState, string> = {
+  live_connected: "Connected — your own credentials are active.",
+  live_platform: "Included — provided by the platform, no setup needed.",
+  keyless: "Included — free data lane, always on.",
+  needs_connection: "Connect your account to switch this on.",
+  platform_dark: "Not yet enabled at the platform level.",
+}
+
+/**
+ * Brokerage-scoped provider readiness. Derives the full provider list from the
+ * canonical registry, checks THIS brokerage's active connections across the
+ * three credential stores + brokerage_integrations, and folds in platform env
+ * presence — so platform-provided and keyless capabilities read LIVE instead of
+ * "Pending". DB + env only, no vendor calls.
+ */
+export async function getBrokerageProviderReadiness(
+  svc: any,
+  brokerageId: string,
+): Promise<BrokerageProviderReadiness> {
+  const generatedAt = new Date().toISOString()
+  const registry = getPlatformProviderRegistry()
+
+  const aliasToCanon = new Map<string, string>()
+  for (const e of registry) {
+    aliasToCanon.set(e.provider, e.provider)
+    for (const al of e.storageAliases) aliasToCanon.set(al, e.provider)
+  }
+  const canonOf = (name: string | null | undefined): string | null => {
+    const lc = (name ?? "").trim().toLowerCase()
+    if (!lc) return null
+    return aliasToCanon.get(lc) ?? aliasToCanon.get(canonPostureKey(lc)) ?? null
+  }
+
+  const [intCreds, agentCreds, platCreds, brokIntegrations] = await Promise.all([
+    svc.from("integration_credentials").select("provider_name").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("agent_api_credentials").select("service_name").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("platform_credentials").select("platform").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("brokerage_integrations").select("provider_type, provider_name, status").eq("brokerage_id", brokerageId),
+  ])
+
+  const connected = new Set<string>()
+  const markConnected = (name: string | null | undefined) => {
+    const canon = canonOf(name)
+    if (canon) connected.add(canon)
+  }
+  for (const r of ((intCreds.data ?? []) as any[])) markConnected(r.provider_name)
+  for (const r of ((agentCreds.data ?? []) as any[])) markConnected(r.service_name)
+  for (const r of ((platCreds.data ?? []) as any[])) markConnected(r.platform)
+  for (const r of ((brokIntegrations.data ?? []) as any[])) {
+    if (r.status === "connected") { markConnected(r.provider_type); markConnected(r.provider_name) }
+  }
+
+  const rows: BrokerageProviderReadinessRow[] = registry.map((e) => {
+    const envConfigured = envPresence(e.envVars)
+    const { state, ready } = resolveBrokerageReadinessState({
+      keyless: e.keyless,
+      scope: e.scope,
+      envConfigured,
+      tenantConnected: connected.has(e.provider),
+      // The tenancy matrix's own ruling, not the registry's platform/tenant fold.
+      tenantActionable: tenantActionableFor(e.provider),
+    })
+    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: readinessNote(state, e.provider) }
+  })
+
+  // Ready first, then needs-connection (tenant-actionable) ahead of platform-dark, then by category.
+  const stateRank: Record<BrokerageReadinessState, number> = {
+    live_connected: 0, live_platform: 0, keyless: 0, needs_connection: 1, platform_dark: 2,
+  }
+  rows.sort((a, b) =>
+    stateRank[a.state] - stateRank[b.state] ||
+    CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+    a.provider.localeCompare(b.provider))
+
+  const ready = rows.filter((r) => r.ready).length
+  const needsConnection = rows.filter((r) => r.state === "needs_connection").length
+  const platformDark = rows.filter((r) => r.state === "platform_dark").length
+  return {
+    generatedAt,
+    total: rows.length,
+    ready,
+    needsConnection,
+    platformDark,
+    readinessPct: rows.length > 0 ? Math.round((ready / rows.length) * 100) : 0,
     rows,
   }
 }

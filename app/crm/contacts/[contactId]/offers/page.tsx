@@ -2,10 +2,13 @@ import { redirect } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { OffersClient }        from "./offers-client"
-import { canBuyerSubmitOffers } from "@/app/actions/buyer-lifecycle-core"
+import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
+import { getBuyerOffers }       from "@/app/actions/buyer-offers"
+import { resolveAgentId }       from "@/lib/kernel/agent-identity"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertTriangle } from "lucide-react"
 import Link from "next/link"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 const OFFER_ELIGIBLE_STAGES = [
   "BUYER_OFFER_ELIGIBLE",
@@ -44,8 +47,14 @@ export default async function BuyerOffersPage({ params }: PageProps) {
 
   if (!contact) redirect("/crm?contact_type=buyer")
 
-  const isOwner  = contact.agent_id === user.id
-  const isBroker = ["broker", "broker_owner", "admin", "superadmin"].includes(agentProfile?.user_type ?? "") &&
+  // ACCESS DEFECT FIXED (w6s3, lesson 7 — disjoint id spaces): this compared
+  // `contact.agent_id` (an **agents.id**) against `user.id` (a **users.id**), so
+  // `isOwner` was ALWAYS false and the buyer's own agent was redirected away from
+  // their own buyer's offers page unless they also happened to be a broker/admin.
+  // The users.id is resolved to the agents.id before the comparison.
+  const callerAgentId = await resolveAgentId(supabase, user.id)
+  const isOwner  = !!callerAgentId && contact.agent_id === callerAgentId
+  const isBroker = isAdminOrBroker({ user_type: agentProfile?.user_type ?? "" }) &&
     agentProfile?.brokerage_id === contact.brokerage_id
 
   if (!isOwner && !isBroker) redirect("/crm?contact_type=buyer")
@@ -56,20 +65,18 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   }
 
   // Lifecycle gate check
-  const offerGateResult = await canBuyerSubmitOffers(buyerId)
+  const offerGateResult = await checkBuyerOfferEligibility(buyerId)
 
-  // Load existing offers
-  const { data: offers } = await supabase
-    .from("offers")
-    .select(`
-      id, property_address, offer_price, status, esign_status,
-      esign_sent_at, form_source, esign_provider, strategy_recommendation_id,
-      created_at, submitted_at, closing_date, financing_type,
-      earnest_money, contingencies, listing_id
-    `)
-    .eq("contact_id", buyerId)
-    .eq("brokerage_id", contact.brokerage_id)
-    .order("created_at", { ascending: false })
+  // Load existing offers through the SURVIVOR reader
+  // (`app/actions/buyer-offers.ts:getBuyerOffers`) rather than the inline
+  // service-client copy that used to live here. That copy duplicated the query and
+  // therefore the tenant rule; the action resolves the tenant from the contact row
+  // via `requireContactAccess`, which is the invariant this lane is built on — a
+  // buyer's offer_price / earnest_money / contingencies / financing is the most
+  // commercially damaging read in the product. `listing_id` was ported onto the
+  // survivor's projection so nothing this page renders was lost.
+  const offersRes = await getBuyerOffers(buyerId)
+  const offers = offersRes.success ? (offersRes.offers ?? []) : []
 
   const brokerageId  = contact.brokerage_id ?? agentProfile?.brokerage_id ?? ""
   const contactName  = `${contact.first_name} ${contact.last_name}`

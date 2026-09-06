@@ -16,6 +16,26 @@ export async function POST(req: NextRequest) {
   const { contactId, channel = "email" } = body
   if (!contactId) return NextResponse.json({ error: "contactId is required" }, { status: 400 })
 
+  // §4 — THE TENANT COMES FROM THE SESSION. This route authenticated the user
+  // and then read the body-named contact on the SERVICE client with no tenant
+  // predicate, taking `contact.brokerage_id` as the brokerage for every
+  // downstream call: assembleEmail, resolveOutboundSender, dispatchEmail and the
+  // direct_mail_queued activity. One contact UUID was therefore enough for any
+  // signed-in user to make ANOTHER brokerage send a paid email or queue a mail
+  // piece — billed to that brokerage, under its verified sender. Exactly the
+  // IDOR shape §4 names, and it only stayed harmless because nothing addressed
+  // this route yet. The caller's brokerage is resolved here and the contact read
+  // is pinned to it.
+  const { data: callerRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+  const callerBrokerageId = callerRow.brokerage_id as string
+
   const service = createServiceClient()
 
   // Fetch contact (the linked lead is resolved separately — leads point at
@@ -24,6 +44,7 @@ export async function POST(req: NextRequest) {
     .from("contacts")
     .select("id, brokerage_id, email, call_stop_flag, dnc_status, email_opt_out, mailing_address, address")
     .eq("id", contactId)
+    .eq("brokerage_id", callerBrokerageId)
     .maybeSingle()
 
   if (contactErr || !contact) {
@@ -72,8 +93,18 @@ export async function POST(req: NextRequest) {
       contactId: contact.id,
     })
 
+    // The from-address is never a placeholder. "noreply@example.com" both
+    // fails SendGrid's verified-sender check and OVERRIDES the brokerage's own
+    // configured sender, because sendEmail resolves params.from first.
+    const { resolveOutboundSender, formatSender, NO_SENDER_ERROR } =
+      await import("@/lib/providers/outbound-sender")
+    const sender = await resolveOutboundSender(service, contact.brokerage_id)
+    if (!sender) {
+      return NextResponse.json({ success: false, error: NO_SENDER_ERROR }, { status: 422 })
+    }
+
     await dispatchEmail({
-      from: process.env.OUTBOUND_EMAIL_FROM || "noreply@example.com",
+      from: formatSender(sender),
       to: contact.email,
       subject: "Following up on your real estate inquiry",
       html: emailPayload.html,
@@ -84,8 +115,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true })
   }
 
-  // direct_mail — log the request as an activity for fulfillment
-  await service.from("activities").insert({
+  // direct_mail — log the request as an activity for fulfillment. THIS ROW IS
+  // THE QUEUE: nothing else records that a mail piece was asked for, so a lost
+  // row is a piece that is never fulfilled while the caller is told "success".
+  const { error: directMailActivityError } = await service.from("activities").insert({
     brokerage_id: contact.brokerage_id,
     contact_id: contact.id,
     activity_type: "direct_mail_queued",
@@ -94,6 +127,9 @@ export async function POST(req: NextRequest) {
     status: "pending",
     created_at: new Date().toISOString(),
   })
+  if (directMailActivityError) {
+    console.error("[send-isa-email] direct_mail_queued activity REJECTED — nothing was queued for fulfillment:", directMailActivityError.message)
+  }
 
   return NextResponse.json({ success: true })
 }

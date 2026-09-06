@@ -357,20 +357,23 @@ Business Diagnosis Data:
                             {opp.reason || opp.why || "AI detected potential based on your data"}
                           </p>
                         </div>
-                        <Link
-                          href={
-                            opp.type === "referral"
-                              ? "/referrals"
-                              : opp.type === LIFETIME_CUSTOMER_TYPE
-                                ? "/lifetime-customers"
-                                : `/crm?contact=${opp.contact_id || opp.id}`
-                          }
-                        >
-                          <Button size="sm" className="gap-1">
+                        {/* asChild — the destination lives ON the control rather
+                            than on a wrapper, so the link and the button are one
+                            element. */}
+                        <Button asChild size="sm" className="gap-1">
+                          <Link
+                            href={
+                              opp.type === "referral"
+                                ? "/referrals"
+                                : opp.type === LIFETIME_CUSTOMER_TYPE
+                                  ? "/lifetime-customers"
+                                  : `/crm?contact=${opp.contact_id || opp.id}`
+                            }
+                          >
                             Act on This
                             <ArrowRight className="h-3 w-3" />
-                          </Button>
-                        </Link>
+                          </Link>
+                        </Button>
                       </div>
                     </div>
                   ))}

@@ -20,8 +20,7 @@ import {
   applyMarketingAssetRejection,
   MARKETING_TABLE_BY_KIND,
 } from "@/lib/kernel/approval-queue-aggregator"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -37,7 +36,7 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     // TIER PARITY (owner rule): a solo-tier subscriber IS their own broker —
     // their one working seat often carries user_type 'agent'/'solo_agent',
     // which locked them out of their own marketing-approvals rail. Same
@@ -66,7 +65,22 @@ export interface PendingAssetRow {
    *  distinguishes the compliance gate level. */
   audience_type?:  "in_house" | "customer_facing" | null
   /** Only set for video kinds. 'did' is the platform primary. */
-  video_provider?: "did" | "heygen" | "upload" | null
+  video_provider?: "did" | "upload" | null
+  /**
+   * WHY A PERSON IS BEING SUMMONED.
+   *
+   * A hard Fair Housing finding — or a script whose compliance could not be
+   * checked at all — HOLDS the video (lib/video/video-render-hold.ts) and files
+   * the reason on video_scripts_library.compliance_review_notes or
+   * ai_video_projects.compliance_violations. Neither column was selected here,
+   * so this queue drew the held row with its title, tone and body and NOTHING
+   * about the violation: the reviewer was being asked to approve a Fair Housing
+   * escalation without being shown the escalation. A hold nobody can see the
+   * reason for is a hold that gets rubber-stamped.
+   */
+  compliance_notes?: string[] | null
+  /** True when this row is a compliance HOLD rather than an ordinary draft. */
+  is_compliance_hold?: boolean
 }
 
 export async function listPendingMarketingAssetsAction(): Promise<
@@ -96,11 +110,13 @@ export async function listPendingMarketingAssetsAction(): Promise<
     // and video_provider so admin sees compliance-gate level + provider
     // at-a-glance.
     svc.from("ai_video_projects")
-      .select("id, title, video_metadata, script_content, created_at, is_ai_generated, audience_type, video_provider, compliance_status")
+      .select("id, title, video_metadata, script_content, created_at, is_ai_generated, audience_type, video_provider, compliance_status, compliance_violations")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     // Sprint 9 cont. v2: video scripts library
+    // compliance_review_notes carries the HOLD REASON — the red flags, or the
+    // list of what could not be checked. Without it the reviewer approves blind.
     svc.from("video_scripts_library")
-      .select("id, script_title:title, script_body:script_content, brand_voice_tone, created_at, ai_generated")
+      .select("id, script_title:title, script_body:script_content, brand_voice_tone, created_at, ai_generated, compliance_review_notes")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
   ])
 
@@ -147,8 +163,19 @@ export async function listPendingMarketingAssetsAction(): Promise<
   }
   for (const r of (vp.data ?? []) as Array<Record<string, unknown>>) {
     const meta = (r.video_metadata as Record<string, unknown> | null) ?? null
+    // compliance_violations is a jsonb/array column; anything non-array is
+    // reported as one line rather than dropped — an unreadable hold reason is
+    // still a hold reason.
+    const rawViolations = r.compliance_violations
+    const violations: string[] | null = Array.isArray(rawViolations)
+      ? (rawViolations as unknown[]).map((v) => String(v)).filter(Boolean)
+      : rawViolations
+        ? [String(rawViolations)]
+        : null
     rows.push({
       kind: "video", id: r.id as string,
+      compliance_notes: violations,
+      is_compliance_hold: r.compliance_status === "needs_review" || r.compliance_status === "failed",
       title: (r.title as string) ?? "(untitled video)",
       summary: meta && typeof meta === "object" && "description" in meta
         ? ((meta as { description?: string }).description ?? null)
@@ -157,10 +184,11 @@ export async function listPendingMarketingAssetsAction(): Promise<
       created_at: r.created_at as string,
       is_ai_generated: !!r.is_ai_generated,
       audience_type:  (r.audience_type  as "in_house" | "customer_facing" | null) ?? null,
-      video_provider: (r.video_provider as "did" | "heygen" | "upload" | null) ?? null,
+      video_provider: (r.video_provider as "did" | "upload" | null) ?? null,
     })
   }
   for (const r of (vs.data ?? []) as Array<Record<string, unknown>>) {
+    const notes = ((r.compliance_review_notes as string | null) ?? "").trim()
     rows.push({
       kind: "video_script", id: r.id as string,
       title: (r.script_title as string) ?? "(untitled script)",
@@ -168,6 +196,10 @@ export async function listPendingMarketingAssetsAction(): Promise<
       body_preview: ((r.script_body as string | null) ?? "").slice(0, 600),
       created_at: r.created_at as string,
       is_ai_generated: !!r.ai_generated,
+      compliance_notes: notes ? notes.split("\n").filter(Boolean) : null,
+      // escalateScriptToHumanReview writes this exact opening line for BOTH
+      // hold reasons (a hard Fair Housing finding, and "could not be checked").
+      is_compliance_hold: notes.startsWith("HELD FOR HUMAN REVIEW"),
     })
   }
 

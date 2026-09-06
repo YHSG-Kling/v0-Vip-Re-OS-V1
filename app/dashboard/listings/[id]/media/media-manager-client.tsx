@@ -1,14 +1,27 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useEffect, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MediaGrid } from "./components/media-grid"
+import { PhotoOrderingRulesCard } from "./components/photo-ordering-rules-card"
 import { VideoPanel } from "./components/video-panel"
 import { SocialPanel } from "./components/social-panel"
-import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2 } from "lucide-react"
-import { analyzePhoto, stageListingPhoto, twilightListingPhoto, enhancePhoto } from "@/app/actions/photo-management"
+import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2, ListOrdered, Download, ShieldCheck, AlertTriangle } from "lucide-react"
+import {
+  analyzePhoto,
+  stageListingPhoto,
+  twilightListingPhoto,
+  enhancePhoto,
+  getListingPhotoSet,
+  getPhotoEnhancementHistory,
+  processVendorPhotos,
+  optimizePhotoOrder,
+  batchEnhancePhotos,
+  validatePhotoQuality,
+  getPhotoPerformanceStats,
+} from "@/app/actions/photo-management"
 import { toast } from "sonner"
 
 interface Listing {
@@ -52,6 +65,79 @@ export function MediaManagerClient({
   const [isPending, startTransition] = useTransition()
   const [busyPhotoId, setBusyPhotoId] = useState<string | null>(null)
 
+  /**
+   * THE MLS PHOTO SET — `listing_media` rows with media_type='photo'
+   * (m368/m369 consolidation).
+   *
+   * There used to be a second table, `listing_photos`, holding the same photos
+   * under different column names (photo_url/file_url, order_index/sort_order,
+   * is_hero/is_primary). The grid held listing_media ids while every photo tool
+   * resolved listing_photos ids, so each tool answered "photo not found"
+   * against a row that was never the one on screen. One table now, so the ids
+   * on this screen and the ids the tools resolve are the SAME ids.
+   *
+   * What survives from the old two-table split is `usage_intent`
+   * (mls|public_marketing|both) — that is what now distinguishes a photo that
+   * is in the MLS set from one that is marketing-only, and the Import button
+   * below is what promotes the latter into the former.
+   */
+  const [photoSet, setPhotoSet] = useState<any[]>([])
+  const [photoSetLoading, setPhotoSetLoading] = useState(true)
+  const [photoStats, setPhotoStats] = useState<any>(null)
+  const [photoQuality, setPhotoQuality] = useState<any>(null)
+  /** The photo_enhancement_jobs ledger for this listing — before/after URLs,
+   *  status and failure reasons. `original_url` on these rows is the only
+   *  surviving copy of a photo once enhancement swaps file_url. */
+  const [enhancementJobs, setEnhancementJobs] = useState<any[]>([])
+  const [enhancementJobsError, setEnhancementJobsError] = useState<string | null>(null)
+
+  const refreshPhotoSet = async () => {
+    const [setResult, stats, quality, history] = await Promise.all([
+      getListingPhotoSet(listingId),
+      getPhotoPerformanceStats(listingId),
+      validatePhotoQuality(listingId),
+      getPhotoEnhancementHistory(listingId),
+    ])
+    setPhotoSet(setResult.success ? setResult.photos : [])
+    setPhotoStats(stats)
+    setPhotoQuality(quality)
+    setEnhancementJobs(history.success ? history.jobs : [])
+    setEnhancementJobsError(history.success ? null : (history.error ?? "Could not load enhancement history"))
+    setPhotoSetLoading(false)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [setResult, stats, quality, history] = await Promise.all([
+        getListingPhotoSet(listingId),
+        getPhotoPerformanceStats(listingId),
+        validatePhotoQuality(listingId),
+        getPhotoEnhancementHistory(listingId),
+      ])
+      if (cancelled) return
+      setPhotoSet(setResult.success ? setResult.photos : [])
+      setPhotoStats(stats)
+      setPhotoQuality(quality)
+      setEnhancementJobs(history.success ? history.jobs : [])
+      setEnhancementJobsError(history.success ? null : (history.error ?? "Could not load enhancement history"))
+      setPhotoSetLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [listingId])
+
+  /** listing_media.media_type is CHECK-constrained to photo|video|reel|story|
+   *  graphic|floorplan|virtual_tour|document. "image" is not a value that column
+   *  can ever hold, so the old filter matched nothing at all. */
+  const photoMedia = media.filter((m: any) => m.media_type === "photo" && (m.file_url || m.url))
+  /** Photos already carrying MLS usage_intent — the MLS set proper. */
+  const inMlsSetUrls = new Set(
+    photoSet
+      .filter((p: any) => p.usage_intent === "mls" || p.usage_intent === "both")
+      .map((p: any) => p.file_url),
+  )
+  const notYetImported = photoMedia.filter((m: any) => !inMlsSetUrls.has(m.file_url ?? m.url))
+
   const runPhotoTool = (photoId: string, tool: "stage" | "twilight" | "enhance") => {
     setBusyPhotoId(photoId)
     startTransition(async () => {
@@ -59,13 +145,14 @@ export function MediaManagerClient({
         const result =
           tool === "stage" ? await stageListingPhoto({ photoId })
           : tool === "twilight" ? await twilightListingPhoto({ photoId })
-          : await enhancePhoto({ photoId, enhancements: ["auto"], agentId })
+          : await enhancePhoto({ photoId, enhancements: ["auto"] })
         if (result.success) {
           toast.success(
             tool === "stage" ? "Virtually staged — saved to your marketing assets with the required disclosure"
             : tool === "twilight" ? "Twilight version saved to your marketing assets"
             : "Photo enhanced",
           )
+          await refreshPhotoSet()
         } else {
           toast.error(result.error ?? "Photo tool failed")
         }
@@ -77,21 +164,74 @@ export function MediaManagerClient({
 
   const canApprove = userRole === "admin" || userRole === "broker"
 
+  /** Bring marketing photo media into the MLS photo set — promotes
+   *  usage_intent to 'both' and runs photo intelligence over the promoted rows.
+   *  It still INGESTS URLs that have no row yet, which is how a photographer's
+   *  delivery becomes photos in the first place. Idempotent: photos already
+   *  carrying MLS intent are skipped. */
+  const handleImportToPhotoSet = () => {
+    if (notYetImported.length === 0) { toast.error("Every photo is already in the MLS set"); return }
+    startTransition(async () => {
+      const result = await processVendorPhotos({
+        listingId,
+        photoUrls: notYetImported.map((m: any) => m.file_url ?? m.url),
+      })
+      if (!result.success) { toast.error(result.error ?? "Import failed"); return }
+      const addedToSet = (result.processed ?? 0) + (result.adopted ?? 0)
+      toast.success(
+        `${addedToSet} photo${addedToSet === 1 ? "" : "s"} added to the MLS set` +
+        (result.analyzed ? ` · ${result.analyzed} analyzed` : "") +
+        (result.skipped ? ` · ${result.skipped} already present` : ""),
+      )
+      await refreshPhotoSet()
+    })
+  }
+
+  const handleOptimizeOrder = () => {
+    startTransition(async () => {
+      const result = await optimizePhotoOrder(listingId)
+      if (!result.success) { toast.error(result.error ?? "Could not reorder"); return }
+      toast.success(
+        `Reordered ${result.reordered} photo${result.reordered === 1 ? "" : "s"}` +
+        (result.ruleApplied ? ` using your "${result.ruleApplied}" rule` : " using the MLS default sequence"),
+      )
+      await refreshPhotoSet()
+    })
+  }
+
+  const handleBatchEnhance = () => {
+    startTransition(async () => {
+      const result = await batchEnhancePhotos({ listingId })
+      if (!result.success) { toast.error(result.error ?? "Batch enhance failed"); return }
+      if ((result.candidates ?? 0) === 0) {
+        toast.success("No photo scored below 80 — nothing needed enhancing")
+      } else {
+        toast.success(`Enhanced ${result.enhanced} of ${result.candidates} low-scoring photo${result.candidates === 1 ? "" : "s"}`)
+      }
+      await refreshPhotoSet()
+    })
+  }
+
   const handleAnalyzePhotos = () => {
-    const photos = media.filter((m: any) => m.media_type === "image" && (m.file_url || m.url))
-    if (photos.length === 0) { toast.error("No photos to analyze"); return }
+    const pending = photoSet.filter((p: any) => !p.ai_analysis_completed)
+    if (photoSet.length === 0) {
+      toast.error("The MLS photo set is empty — import your photos first")
+      return
+    }
+    const targets = pending.length > 0 ? pending : photoSet
     startTransition(async () => {
       const results = await Promise.allSettled(
-        photos.map((m: any) => analyzePhoto({ photoId: m.id, photoUrl: m.file_url ?? m.url ?? "" }))
+        targets.map((p: any) => analyzePhoto({ photoId: p.id, photoUrl: p.file_url }))
       )
       const scores: Record<string, any> = {}
       results.forEach((r, i) => {
         if (r.status === "fulfilled" && r.value.success) {
-          scores[photos[i].id] = r.value.data
+          scores[targets[i].id] = r.value.data
         }
       })
       setPhotoScores(scores)
       toast.success(`Analyzed ${Object.keys(scores).length} photo${Object.keys(scores).length !== 1 ? "s" : ""}`)
+      await refreshPhotoSet()
     })
   }
 
@@ -155,6 +295,114 @@ export function MediaManagerClient({
         </TabsList>
 
         <TabsContent value="media" className="mt-6">
+          {/* MLS PHOTO SET — the listing_media photo rows the MLS / hero picker /
+              readiness checks / direct mail all read. The grid below shows the
+              same table; this panel is the photo-intelligence view of it. */}
+          <div className="mb-4 rounded-lg border p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-medium flex items-center gap-1.5">
+                  <ListOrdered className="h-4 w-4 text-primary" />
+                  MLS Photo Set
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {photoSetLoading
+                    ? "Loading…"
+                    : photoSet.length === 0
+                      ? "Empty — import your delivered photos to start MLS ordering, hero selection and quality checks."
+                      : `${photoSet.length} photo${photoSet.length === 1 ? "" : "s"} in MLS order` +
+                        (photoStats?.avgQuality != null ? ` · avg quality ${Math.round(photoStats.avgQuality)}/100` : " · not analyzed yet") +
+                        (photoStats?.enhancedCount ? ` · ${photoStats.enhancedCount} enhanced` : "")}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={handleImportToPhotoSet}
+                  disabled={isPending || photoSetLoading || notYetImported.length === 0}>
+                  <Download className="h-4 w-4 mr-1.5" />
+                  Import {notYetImported.length > 0 ? `${notYetImported.length} ` : ""}photo{notYetImported.length === 1 ? "" : "s"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleOptimizeOrder}
+                  disabled={isPending || photoSet.length === 0}>
+                  <ListOrdered className="h-4 w-4 mr-1.5" /> Optimize order
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleBatchEnhance}
+                  disabled={isPending || photoSet.length === 0}>
+                  <Wand2 className="h-4 w-4 mr-1.5" /> Enhance low scores
+                </Button>
+              </div>
+            </div>
+
+            {/* The rule "Optimize order" applies — savable at last (see card). */}
+            <PhotoOrderingRulesCard />
+
+            {/* ENHANCEMENT HISTORY — the job ledger read back. Before/after
+                links (original_url is the only copy of the pre-enhancement
+                photo), what ran, who ran it, and why failures failed. */}
+            {(enhancementJobsError || enhancementJobs.length > 0) && (
+              <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">
+                <p className="font-medium flex items-center gap-1.5">
+                  <Wand2 className="h-3.5 w-3.5 text-primary" /> Enhancement history
+                </p>
+                {enhancementJobsError ? (
+                  <p className="mt-1.5 text-destructive">{enhancementJobsError}</p>
+                ) : (
+                  <ul className="mt-1.5 space-y-1">
+                    {enhancementJobs.slice(0, 8).map((job: any) => (
+                      <li key={job.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <Badge
+                          variant={job.status === "failed" ? "destructive" : "outline"}
+                          className="text-[10px] px-1.5 py-0 capitalize"
+                        >
+                          {job.status ?? "unknown"}
+                        </Badge>
+                        <span className="capitalize">{(job.enhancement_type ?? "enhancement").replace(/[_,]/g, " ")}</span>
+                        {job.ran_by && <span className="text-muted-foreground">by {job.ran_by}</span>}
+                        <span className="text-muted-foreground">
+                          {job.started_at ? new Date(job.started_at).toLocaleString() : ""}
+                          {job.completed_at ? ` → ${new Date(job.completed_at).toLocaleTimeString()}` : ""}
+                        </span>
+                        {job.original_url && (
+                          <a href={job.original_url} target="_blank" rel="noreferrer" className="underline text-muted-foreground">
+                            original
+                          </a>
+                        )}
+                        {job.enhanced_url && (
+                          <a href={job.enhanced_url} target="_blank" rel="noreferrer" className="underline text-muted-foreground">
+                            enhanced
+                          </a>
+                        )}
+                        {job.status === "failed" && job.error_message && (
+                          <span className="text-destructive w-full">{job.error_message}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {photoQuality && photoSet.length > 0 && (
+              <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">
+                <p className="font-medium flex items-center gap-1.5">
+                  {photoQuality.passed
+                    ? <><ShieldCheck className="h-3.5 w-3.5 text-emerald-600" /> Photo set passes MLS quality checks</>
+                    : <><AlertTriangle className="h-3.5 w-3.5 text-amber-600" /> {photoQuality.issues?.length ?? 0} issue{(photoQuality.issues?.length ?? 0) === 1 ? "" : "s"} to fix before this goes live</>}
+                </p>
+                {!photoQuality.passed && Array.isArray(photoQuality.issues) && (
+                  <ul className="mt-1.5 space-y-0.5 text-muted-foreground list-disc list-inside">
+                    {photoQuality.issues.map((issue: string) => <li key={issue}>{issue}</li>)}
+                  </ul>
+                )}
+                {photoStats?.roomCoverage != null && (
+                  <p className="mt-1.5 text-muted-foreground">
+                    Room coverage {Math.round(photoStats.roomCoverage)}%
+                    {photoStats.heroImageQuality != null && ` · hero quality ${Math.round(photoStats.heroImageQuality)}/100`}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {Object.keys(photoScores).length > 0 && (
             <div className="mb-4 p-3 rounded-lg border bg-muted/40 text-sm">
               <p className="font-medium mb-2 flex items-center gap-1.5">

@@ -18,6 +18,15 @@ export function isSourceOfFunds(v: unknown): v is SourceOfFunds {
   return typeof v === "string" && (SOURCE_OF_FUNDS as readonly string[]).includes(v)
 }
 
+/** Boundary narrower for TeamRole — the roster's missing half (2026-08-31). The column is
+ *  free-text historically, but the WRITE path (app/actions/admin/team-members.ts) offers and
+ *  now admits only the canonical set, so a forged request can no longer store a role the
+ *  commission waterfall and the UI have never heard of. Historical free-text rows are
+ *  unaffected — this gates new writes, not reads. */
+export function isTeamRole(v: unknown): v is TeamRole {
+  return typeof v === "string" && (TEAM_ROLES as readonly string[]).includes(v)
+}
+
 export interface TeamMemberInput {
   splitPercent: number
   sourceOfFunds: SourceOfFunds

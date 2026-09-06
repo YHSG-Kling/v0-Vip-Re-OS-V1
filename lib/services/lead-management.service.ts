@@ -1,10 +1,49 @@
 
 
 import { createClient } from "@/lib/supabase/server"
-import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
-import { LEAD_SOURCES } from "@/lib/constants"
+import { bestEffort } from "@/lib/db/best-effort"
+import { isValidUUID } from "@/lib/validations"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `validateEmail` / `validatePhone` were imported here and read by NOTHING in this
+// file. They cannot have a job here: every export of this module is a SCORER
+// (calculateLeadScore, the three bulk recalculators, getTopLeads,
+// getLeadsNeedingAttention) — none of them accepts an email or a phone, so there is
+// no value to validate. The contact-shape validation lives, and is ENFORCED, at
+// lib/services/contact-management.service.ts:200 (email) and :205 (phone), which is
+// the writer that actually takes those fields; lib/validations/index.ts:106/:116
+// remain their only definitions. Nothing moved and nothing was lost.
+// TOMBSTONE (§1.3): the `LEAD_SOURCES` import that stood here is DELETED. It was
+// never referenced anywhere in this file — a dead import that made the vocabulary
+// read as enforced by the scoring service, which writes no `source` at all (its
+// only contact with the column is the read filter in
+// bulkRecalculateScrapedLeadScores). The vocabulary now lives and is ENFORCED at
+// the two writers of contacts.source: app/actions/contacts.ts createContact and
+// lib/services/contact-management.service.ts createContact, both folding through
+// normalizeLeadSource in lib/constants/index.ts.
 import { scoreToLeadTemperature } from "@/lib/data-steward/value-normalizer"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
+import {
+  summarizeBehavioralEvents,
+  priorityTier,
+  type BehavioralSummary,
+} from "@/lib/lead-scoring/behavioral-events"
+import type { StandardTimeline } from "@/constants/crm-standards"
+import { countStrongSellerSignals } from "@/lib/lead-governance/seller-signal-strength"
+import { readPreApproval } from "@/lib/leads/pre-approval"
+// The buyer_behavior_log signal families — imported from the vocabulary owner (§6:
+// lib/behavior-learning/signal-mapping.ts), never re-spelled locally. A reader that
+// filters on one spelling family silently halves its data.
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
+
+/** Points contributed by `lead_intelligence.timeline` to the intent score (0-40). */
+const TIMELINE_INTENT_POINTS: Record<StandardTimeline, number> = {
+  immediate:     40,
+  "1-3_months":  30,
+  "3-6_months":  20,
+  "6-12_months": 10,
+  "12+_months":   0,
+  researching:    0,
+}
 
 // ============================================
 // UNIFIED LEAD MANAGEMENT SERVICE
@@ -14,7 +53,17 @@ import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 export interface LeadScoringParams {
   id: string // Can be contactId or leadId
-  agentId: string
+  /**
+   * OPTIONAL, and deliberately unused by the scoring itself.
+   *
+   * It was required, and the implementation never read it — so every caller passed
+   * an agent id that changed nothing. It stays only as caller context, because the
+   * one place ownership matters (the lead_scores snapshot's NOT NULL agent_id) must
+   * use the OWNER ON THE RECORD, not whoever asked for the score. A caller-supplied
+   * id that disagreed with contacts.agent_id would file the snapshot under the wrong
+   * agent and put the lead in the wrong person's hot-lead list.
+   */
+  agentId?: string
   recalculate?: boolean
   table?: "contacts" | "leads" // Which table to score
 }
@@ -69,38 +118,180 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
     let error: any
 
     if (table === "contacts") {
-      // lead_behavioral_data has no PostgREST FK to contacts — embedding it errors the
-      // whole query (PGRST200). It's an event log keyed by lead_id, fetched separately.
+      // TWO of the three embeds this read carried could never resolve, and ONE
+      // unresolvable embed refuses the WHOLE query (PGRST200) — so no contact has
+      // ever been scored here; every call fell through to the NotFoundError below.
+      //   · `buyer_persona(*)` — there is NO public.buyer_persona table and no such
+      //     column on contacts. A phantom; do not restore it. The real per-contact
+      //     persona is client_detailed_personas, which DOES declare
+      //     client_detailed_personas.contact_id -> contacts.id, so it is embeddable and
+      //     is embedded below — calculateFitScore genuinely consumes it.
+      //   · `lead_intelligence(*)` — keyed on lead_id, declares NO foreign key to
+      //     contacts (pg_constraint carries brokerage_id only), exactly like its
+      //     sibling lead_behavioral_data. Fetched below by the link that does exist.
+      // The `property_interactions(id, interaction_type)` embed is GONE (m598
+      // retirement): that table has ZERO writers, so views/saves/tour_request were
+      // structurally 0 for every contact ever scored. The engagement views/saves now
+      // count buyer_behavior_log and the intent viewing-request bump now counts
+      // showing_requests — both fetched below as separate queries, the same shape
+      // this branch already uses for lead_intelligence and motivated_seller_signals.
+      // Every embed names its columns — never `*` inside an embed, which
+      // hides drift from the schema guard (defect #214). Only the persona's EXISTENCE
+      // is scored, so only its key is named.
       const result = await supabase
         .from("contacts")
         .select(`
           *,
-          lead_intelligence(*),
-          property_interactions(*),
-          buyer_persona(*)
+          client_detailed_personas(id)
         `)
         .eq("id", params.id)
         .single()
       record = result.data
       error = result.error
+      // The two relations that cannot be embedded on contacts, fetched by the link that
+      // does exist. lead_behavioral_data was never fetched here either, despite the old
+      // comment saying so, so every behavioural factor was computed from `undefined`
+      // for CONTACTS while the leads branch did fetch it.
+      // lead_id is the PRE-CONVERSION id class: a contact that was never a scraped lead
+      // legitimately has no intelligence/behaviour row, and that is an absence, not an
+      // error. Same lookup app/actions/ai-predictions.ts uses for these two tables.
+      if (record) {
+        // `location_preferences` is NEW to this select and it is the fix for the
+        // dead +10 in calculateFitScore — see the note at that branch.
+        const { data: intelligence, error: intelligenceError } = await supabase
+          .from("lead_intelligence")
+          .select("id, timeline, pre_approved, location_preferences")
+          .eq("lead_id", params.id)
+        if (intelligenceError) {
+          console.error("[lead-management] lead_intelligence read failed:", intelligenceError.message)
+        }
+        record.lead_intelligence = intelligence || []
+
+        const { data: behavioral, error: behavioralError } = await supabase
+          .from("lead_behavioral_data")
+          .select("event_type, event_data, occurred_at")
+          .eq("lead_id", params.id)
+        if (behavioralError) {
+          console.error("[lead-management] lead_behavioral_data read failed:", behavioralError.message)
+        }
+        record.lead_behavioral_data = behavioral || []
+
+        // ── MOTIVATED-SELLER SIGNALS FOR A CONTACT ─────────────────────────
+        //
+        // THE HALF THAT MADE THE OWNER RULING WRITE-ONLY. Owner ruling
+        // 2026-08-21: "motivated sellers source is for leads and contacts."
+        // Both external lanes now probe contacts — but this branch never read
+        // the table at all, and the scorer's motivated-seller component lives
+        // in the `else` (leads) branch of calculateEngagementScore. So a
+        // contact scored ZERO for motivated-seller no matter how many signals
+        // existed about their address. That is the same structural-zero defect
+        // this component has now been fixed for twice (retired twin, then a
+        // word compared to a number); this is the third face of it, and the
+        // only one where the rows were unreachable because the READ was absent.
+        //
+        // `.eq("contact_id", …)`, NOT `lead_id`: `contacts.id` and `leads.id`
+        // are disjoint namespaces and m517 gives the table the column that can
+        // say so. `signal_type` is selected alongside `signal_strength` because
+        // the counter must be able to drop SUPPRESSION rows — an
+        // `active_listing` row means "this owner already has a broker", and
+        // counting it as motivation would invert its meaning.
+        const { data: contactSellerSignals, error: contactSellerSignalsError } = await supabase
+          .from("motivated_seller_signals")
+          .select("id, signal_strength, signal_type")
+          .eq("contact_id", params.id)
+        if (contactSellerSignalsError) {
+          console.error("[lead-management] motivated_seller_signals read failed:", contactSellerSignalsError.message)
+        }
+        record.motivated_seller_signals = contactSellerSignals || []
+
+        // ── BUYER BEHAVIOR FOR A CONTACT (m598 repoint) ────────────────────
+        // The views/saves engagement component read `property_interactions`, a
+        // table with ZERO writers (its only trigger is BEFORE INSERT, which
+        // never fires because nothing inserts) — so both components were
+        // structurally 0 for every contact ever scored. buyer_behavior_log is
+        // the live twin: written by the preference learner
+        // (lib/behavior-learning/preference-updater.ts) and the portal/CRM
+        // telemetry. Only signal_type is selected — the scorer classifies rows
+        // into the exported families and needs nothing else.
+        const { data: behaviorSignals, error: behaviorSignalsError } = await supabase
+          .from("buyer_behavior_log")
+          .select("signal_type")
+          .eq("contact_id", params.id)
+        if (behaviorSignalsError) {
+          console.error("[lead-management] buyer_behavior_log read failed:", behaviorSignalsError.message)
+        }
+        record.buyer_behavior_signals = behaviorSignals || []
+
+        // ── VIEWING REQUESTS FOR A CONTACT (m598 repoint) ──────────────────
+        // The intent bump read `property_interactions.interaction_type =
+        // 'tour_request'` — same dead table. buyer_behavior_log CANNOT carry
+        // this meaning: it has no tour-request value (its tour-adjacent
+        // spellings are POST-tour verdicts), and signal-mapping.ts's own
+        // doctrine says "tour_requested — logistics, not taste". The honest
+        // request record is `showing_requests` — the table requestShowing
+        // (app/actions/showings.ts:150-176) inserts with contact_id +
+        // brokerage_id on every buyer-initiated request, including the portal
+        // concierge's create_showing door (lib/portal/client-action-dispatch.ts
+        // :49-64). Count, not rows — only the number is scored.
+        const { count: showingRequestCount, error: showingRequestError } = await supabase
+          .from("showing_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("contact_id", params.id)
+        if (showingRequestError) {
+          console.error("[lead-management] showing_requests read failed:", showingRequestError.message)
+        }
+        record.showing_request_count = showingRequestCount ?? 0
+      }
     } else {
+      // Same defect on the leads side, and it was equally fatal: NEITHER
+      // lead_intelligence NOR lead_motivated_seller_signals declares a foreign key to
+      // leads (pg_constraint carries brokerage_id only for both), so this read was
+      // refused too and no scraped lead has been scored either. Fixing one sibling and
+      // not the other is how a defect class survives being found.
       const result = await supabase
         .from("leads")
-        .select(`
-          *,
-          lead_intelligence(*),
-          lead_idx_property_interactions(*),
-          lead_motivated_seller_signals(*)
-        `)
+        .select("*")
         .eq("id", params.id)
         .single()
       record = result.data
       error = result.error
-      // lead_behavioral_data has no FK to leads — fetch separately (event log).
+      // All three are keyed on lead_id and fetched by that link instead.
       if (record) {
+        const { data: intelligence } = await supabase
+          .from("lead_intelligence")
+          .select("id, timeline, pre_approved")
+          .eq("lead_id", params.id)
+        record.lead_intelligence = intelligence || []
+
+        // REPOINTED to the survivor. `lead_motivated_seller_signals` is the RETIRED
+        // twin: it has readers and NO WRITER anywhere in the tree, so this scoring
+        // component was structurally always zero — the writer-less-read sweep is what
+        // said so out loud. `motivated_seller_signals` is the live table: written by
+        // app/actions/lead-intelligence.ts:1245 and :2363, read by
+        // app/actions/ai-predictions.ts:204, and named as the target of this exact
+        // repoint in the eight-legacy-twin burn-down already recorded in
+        // scripts/doc-kernel-simulator.ts:2144. This file was the straggler.
+        //
+        // Both tables carry `lead_id` and `signal_strength`, which is all this scorer
+        // reads, so the threshold below is unchanged — it can simply now be met.
+        //
+        // `signal_type` is selected beside `signal_strength` as of 2026-08-21:
+        // the table now carries SUPPRESSION rows (`active_listing` — this owner
+        // is already represented by another broker) and the counter has to be
+        // able to tell them from motivation rows. Selecting strength alone
+        // would let "do not solicit" score as "ready to sell".
+        const { data: sellerSignals, error: sellerSignalsError } = await supabase
+          .from("motivated_seller_signals")
+          .select("id, signal_strength, signal_type")
+          .eq("lead_id", params.id)
+        if (sellerSignalsError) {
+          console.error("[lead-management] motivated_seller_signals read failed:", sellerSignalsError.message)
+        }
+        record.motivated_seller_signals = sellerSignals || []
+
         const { data: behavioral } = await supabase
           .from("lead_behavioral_data")
-          .select("*")
+          .select("event_type, event_data, occurred_at")
           .eq("lead_id", params.id)
         record.lead_behavioral_data = behavioral || []
       }
@@ -120,11 +311,18 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
     // ── Behavioral refinement (additive layer on the baseline) ─────────
     // These factors capture in-app behavior that multi-factor doesn't see.
-    const engagementScore = calculateEngagementScore(record, table)
-    const recencyScore = calculateRecencyScore(record)
-    const intentScore = calculateIntentScore(record, table)
+    //
+    // The event log is folded ONCE, by the one module that understands its shape
+    // (lib/lead-scoring/behavioral-events). It replaces reads of four columns that
+    // do not exist on lead_behavioral_data — email_open_count, site_visit_count,
+    // response_rate, avg_response_time_hours — which made 45 of engagement's 100
+    // points unreachable and pinned responsiveness at a constant 50.
+    const behavior = summarizeBehavioralEvents(record.lead_behavioral_data ?? [])
+    const engagementScore = calculateEngagementScore(record, table, behavior)
+    const recencyScore = Math.max(calculateRecencyScore(record), behavior.recency)
+    const intentScore = Math.max(calculateIntentScore(record, table), behavior.intent)
     const fitScore = calculateFitScore(record, table)
-    const responsivenessScore = calculateResponsivenessScore(record)
+    const responsivenessScore = behavior.responsiveness
     const behavioralScore = Math.round(
       engagementScore * 0.25 + recencyScore * 0.2 + intentScore * 0.3 + fitScore * 0.15 + responsivenessScore * 0.1
     )
@@ -143,17 +341,67 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
     // Update appropriate database table
     if (table === "contacts") {
-      await supabase
-        .from("contacts")
-        .update({
-          lead_score: totalScore,
-          lead_temperature: temperature,
-          last_scored_at: new Date().toISOString(),
-        })
-        .eq("id", params.id)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            lead_score: totalScore,
+            lead_temperature: temperature,
+            last_scored_at: new Date().toISOString(),
+          })
+          .eq("id", params.id),
+        "derived score mirror on the contact row; the explanation snapshot written to lead_scores immediately below is the record of fact, and the score is fully recomputed on every call",
+      )
 
-      // Score is persisted on contacts.lead_score above. lead_behavioral_data is an
-      // event-capture table keyed on lead_id with no contact-score columns — no write here.
+      // ── CONTACT-SIDE SNAPSHOT: lead_scores ────────────────────────────
+      // contacts.lead_score is the score ON the contact; lead_scores carries the
+      // EXPLANATION beside it — score_factors, ai_confidence, computed_at. Live
+      // schema: UNIQUE (contact_id), so it is one current row per contact, not a
+      // history (a nearby-looking table, lead_engagement_scores on the leads branch
+      // below, IS append-only — do not assume the two behave alike). Both are kept
+      // and synced, per the owner's ruling on the commission ledgers.
+      //
+      // Why this write has to exist: getHotLeads — the hot-lead list on the agent
+      // dashboard AND /leads — queries lead_scores where score >= 70. Nothing on the
+      // authoritative path ever wrote that table; only the deprecated
+      // ai-auto-response scorer did, and its floor(points/10) put 70 at 700 raw
+      // event points. So the surface was empty by arithmetic while the real scores
+      // sat in a column it does not read. contact-intelligence's "latest_lead_score"
+      // read the same stale table beside contacts.last_scored_at from this path —
+      // two numbers from two formulas in one panel.
+      //
+      // agent_id is NOT NULL on lead_scores, so an unowned contact is skipped rather
+      // than failing the whole scoring call: a snapshot is a bonus, never the point.
+      if (record.agent_id) {
+        // UPSERT ON contact_id, explicitly. A plain insert violates
+        // lead_scores_contact_id_key on the SECOND scoring run, so the snapshot
+        // would freeze at whatever the first run said — and PostgREST's default
+        // conflict target is the primary key (id), which never collides on an
+        // insert, so an unqualified .upsert() fails exactly the same way. The
+        // deprecated scorer this replaces did precisely that.
+        await supabase.from("lead_scores").upsert({
+          contact_id: params.id,
+          agent_id: record.agent_id,
+          brokerage_id: record.brokerage_id ?? null,
+          score: totalScore,
+          score_factors: {
+            engagement: engagementScore,
+            recency: recencyScore,
+            intent: intentScore,
+            fit: fitScore,
+            responsiveness: responsivenessScore,
+            temperature,
+            priority: priorityTier(totalScore, intentScore, engagementScore),
+            multi_factor_baseline: baselineScore,
+            behavioral_events: behavior.eventCount,
+          },
+          // The multi-factor baseline is deterministic and explainable; the
+          // behavioural layer is inference over an event log. Confidence reflects
+          // whether there was any behaviour to infer from, instead of a flat 0.8.
+          ai_confidence: behavior.eventCount > 0 ? 0.9 : 0.7,
+          computed_at: new Date().toISOString(),
+        }, { onConflict: "contact_id" })
+      }
     } else {
       // Update leads table
       await supabase
@@ -169,8 +417,29 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
       // Store scoring snapshot in lead_engagement_scores (live: overall_score + per-factor
       // int columns + score_breakdown jsonb; no score_type/score_value/factors columns).
-      await supabase.from("lead_engagement_scores").insert({
+      //
+      // ── TENANT: `record.brokerage_id`, AND NOTHING ELSE ────────────────────
+      // lead_engagement_scores carries the same live policy as the rest of this
+      // family — `FOR ALL … USING ((brokerage_id IS NULL) OR (brokerage_id =
+      // current_user_brokerage_id()))` — so an unstamped snapshot is not hidden,
+      // it is readable AND writable by every brokerage on the platform.
+      //
+      // It is taken from THE RECORD BEING SCORED, which this function already
+      // read by primary key and refused on absence above (NotFoundError). Not
+      // from the caller: `params.agentId` is explicitly documented as inert
+      // caller context, and `record.agent_id` is an owner, not a tenant —
+      // agents.id and brokerages.id are disjoint id spaces.
+      //
+      // MIRRORS RATHER THAN INVENTS. This branch scores the pre-conversion lane,
+      // where a record that has not been distributed to a brokerage genuinely has
+      // no tenant. `?? null` reproduces the parent's tenancy exactly: a
+      // distributed record's snapshot is scoped to its brokerage, an
+      // undistributed one's stays platform-level like the record it describes.
+      // Stamping anything else here would attribute a platform record to a
+      // tenant that does not own it.
+      const { error: engagementScoreError } = await supabase.from("lead_engagement_scores").insert({
         lead_id: params.id,
+        brokerage_id: record.brokerage_id ?? null,
         overall_score: totalScore,
         email_engagement_score: engagementScore,
         property_interest_score: intentScore,
@@ -184,6 +453,11 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           responsiveness: responsivenessScore,
         },
       })
+      // supabase-js RESOLVES a failed write, so `const { }` with no `error`
+      // turns a refusal into a silent no-op. Report it.
+      if (engagementScoreError) {
+        console.error("[lead-management] lead_engagement_scores insert error:", engagementScoreError)
+      }
     }
 
     return {
@@ -213,45 +487,108 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
  * Calculate engagement score (0-100)
  * Works for both contacts and leads tables
  */
-function calculateEngagementScore(record: any, table: string): number {
+function calculateEngagementScore(record: any, table: string, behavior: BehavioralSummary): number {
   let score = 0
 
   if (table === "contacts") {
-    const interactions = record.property_interactions || []
-    const behavioralData = record.lead_behavioral_data?.[0]
+    // m598 repoint: `record.property_interactions` (zero-writer table, always [])
+    // became `record.buyer_behavior_signals` — buyer_behavior_log rows fetched in
+    // calculateLeadScore. The families below are the same split the exported sets
+    // were lifted for (lib/behavior-learning/signal-mapping.ts VIEW_SIGNALS /
+    // SAVE_SIGNALS); weights and caps are unchanged, so the 100-point budget note
+    // below is unaffected — these two components can simply now be nonzero.
+    const behaviorSignals: Array<{ signal_type?: string | null }> = record.buyer_behavior_signals || []
 
-    // Property views
-    const views = interactions.filter((i: any) => i.interaction_type === "view").length
-    score += Math.min(views * 5, 30)
+    // ── THE CONTACTS BUDGET WAS REBALANCED 2026-08-21, and the reason is not
+    // cosmetic. This branch summed to exactly 100 (30 views + 25 saves + 45
+    // behaviour) before `Math.min(score, 100)`. Adding the motivated-seller
+    // component on top of a full budget would have made it contribute NOTHING
+    // for precisely the contacts that already engage most — a component that is
+    // structurally zero for the records that matter, which is the exact defect
+    // class this component has now been fixed for twice (a retired twin with no
+    // writer, then a word compared to a number). Shipping a third face of it
+    // while claiming the owner ruling was implemented would be worse than not
+    // implementing it.
+    //
+    // So room was MADE rather than borrowed: 25 + 20 + 25 + 30 = 100, with the
+    // motivated-seller component weighted identically to the leads branch below
+    // (15 per strong signal, capped at 30) so one fact cannot be worth more on
+    // one board than the other.
 
-    // Saved properties
-    const saves = interactions.filter((i: any) => i.interaction_type === "save").length
-    score += Math.min(saves * 10, 25)
+    // Property views (was 30)
+    const views = behaviorSignals.filter((i) => VIEW_SIGNALS.has(i.signal_type ?? "")).length
+    score += Math.min(views * 5, 25)
 
-    // Email opens
-    const emailOpens = behavioralData?.email_open_count || 0
-    score += Math.min(emailOpens * 2, 20)
+    // Saved properties (was 25)
+    const saves = behaviorSignals.filter((i) => SAVE_SIGNALS.has(i.signal_type ?? "")).length
+    score += Math.min(saves * 10, 20)
 
-    // Website visits
-    const siteVisits = behavioralData?.site_visit_count || 0
-    score += Math.min(siteVisits * 3, 25)
+    // Logged behaviour — opens, clicks, visits, form submits and the rest, from the
+    // EVENT LOG. This replaced `behavioralData?.email_open_count` (max 20) and
+    // `behavioralData?.site_visit_count` (max 25): 45 of these 100 points read
+    // columns lead_behavioral_data does not have, so they were always zero.
+    // (was 45)
+    score += Math.min(Math.round(behavior.engagement * 0.25), 25)
+
+    // ── MOTIVATED SELLER SIGNALS, ON THE CONTACTS BOARD ───────────────────
+    //
+    // Owner ruling 2026-08-21: "motivated sellers source is for leads and
+    // contacts." Both external lanes (lib/external/permit-signals.ts,
+    // lib/external/batchdata-seller-signals.ts) now file signals against
+    // `motivated_seller_signals.contact_id`; the read that feeds this lives in
+    // the contacts branch of calculateLeadScore above. Without THIS line the
+    // rows would be written, read, and then discarded — the ruling would ship
+    // write-only.
+    //
+    // Same counter, same weights as the leads branch: countStrongSellerSignals
+    // owns both the vocabulary and the "what counts as strong" threshold
+    // (lib/lead-governance/seller-signal-strength.ts), and it drops SUPPRESSION
+    // rows so an `active_listing` — this owner already has a broker — can never
+    // push a prospecting score up.
+    const contactSellerSignals = record.motivated_seller_signals || []
+    const strongContactSignals = countStrongSellerSignals(
+      contactSellerSignals as Array<{ signal_strength?: unknown; signal_type?: unknown }>,
+    )
+    score += Math.min(strongContactSignals * 15, 30)
   } else {
     // For leads table - use external behavior signals
-    const interactions = record.lead_idx_property_interactions || []
-    const behavioralData = record.lead_behavioral_data?.[0]
-    const sellerSignals = record.lead_motivated_seller_signals || []
+    // IDX property interactions are no longer a component of this score (wave 18).
+    // Property search is a CONTACTS capability by owner ruling; the table that
+    // carried this signal is keyed on the pre-conversion id, has no contacts
+    // column, and has no writer. Left in place it contributed a permanent ZERO
+    // out of a possible 30 — every pre-conversion record silently scored up to
+    // 30 points lower for a signal the product does not collect about them,
+    // which is worse than not scoring it at all.
+    const sellerSignals = record.motivated_seller_signals || []
 
-    // IDX property interactions
-    const views = interactions.filter((i: any) => i.interaction_type === "view").length
-    score += Math.min(views * 5, 30)
-
-    // Motivated seller signals
-    const strongSignals = sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
+    // ── MOTIVATED SELLER SIGNALS. This line used to read: ─────────────────────
+    //
+    //     sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
+    //
+    // `motivated_seller_signals.signal_strength` is a TEXT column and every
+    // writer stores a WORD in it — "weak" | "moderate" | "strong" | "urgent".
+    // `"strong" > 0.7` coerces the string to NaN, and NaN > 0.7 is false, for
+    // every value the vocabulary contains. So this component contributed exactly
+    // ZERO of its possible 30 points to every lead score ever computed: a
+    // demolition permit, a divorce filing and an absentee owner all scored the
+    // same as no signal at all.
+    //
+    // That is the SECOND time this component was structurally zero, for a second
+    // reason. The comment at the read site above records the first — it queried
+    // `lead_motivated_seller_signals`, a retired twin with no writer. Repointing
+    // it made the rows reachable; this comparison meant they still could not
+    // score. Reading from the right table does not help if the value is then
+    // compared against the wrong type.
+    //
+    // The vocabulary and the "what counts as strong" threshold now live in ONE
+    // place so the two cannot drift apart again.
+    const strongSignals = countStrongSellerSignals(sellerSignals as Array<{ signal_strength?: unknown }>)
     score += Math.min(strongSignals * 15, 30)
 
-    // External behavioral events
-    const eventCount = behavioralData?.event_type ? 1 : 0
-    score += Math.min(eventCount * 10, 20)
+    // External behavioural events. Was `event_type ? 1 : 0` — a single boolean over
+    // the whole log, so one page view and a thousand showing requests scored the
+    // same 10 points. Now weighted by event type and recency.
+    score += Math.min(Math.round(behavior.engagement * 0.2), 20)
 
     // Scraping recency (more recent = more engagement)
     if (record.scraped_at) {
@@ -291,24 +628,57 @@ function calculateIntentScore(record: any, table: string): number {
 
   const intelligence = record.lead_intelligence?.[0]
 
-  // Urgency signals
-  if (intelligence?.timeline === "immediate") score += 40
-  else if (intelligence?.timeline === "1-3_months") score += 30
-  else if (intelligence?.timeline === "3-6_months") score += 20
-  else if (intelligence?.timeline === "6-12_months") score += 10
+  // Urgency signals — `lead_intelligence.timeline`, NOT `leads.timeline`.
+  //
+  // PINNED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). This ladder was already spelled correctly and is the
+  // only reader in the system that agreed with its writer
+  // (app/actions/lead-intelligence.ts:1342), so its point values are unchanged.
+  // It is a Record over the vocabulary now so it cannot silently fall out of
+  // agreement again, and so the `researching` value that writer initialises
+  // every row to is scored explicitly (0) rather than by falling off the end.
+  score += TIMELINE_INTENT_POINTS[intelligence?.timeline as StandardTimeline] ?? 0
 
-  // Pre-approval status
-  if (intelligence?.preapproval_status === "approved") score += 30
-  else if (intelligence?.preapproval_status === "in_process") score += 20
+  // Pre-approval status. `preapproval_status` is NOT a column on lead_intelligence —
+  // the live table carries a boolean `pre_approved` (plus `pre_approval_amount` and a
+  // free-text `financial_readiness`). Both branches below were therefore unreachable,
+  // which went unnoticed because the embed above meant `intelligence` was never
+  // populated at all. Mapped onto the column that exists; the old "in_process" branch
+  // is DELETED rather than guessed at, because no column carries that state — inventing
+  // a value for it would be inventing a score.
+  //
+  // WAVE 14 — the branch could still never fire: the column's sole writer
+  // (app/actions/lead-intelligence.ts updateIntelligenceProfile) did not name it, so
+  // `pre_approved` was writerless and this +30 was 30 points the scale advertised and
+  // never awarded. The writer now derives it, and this reader now asks the SAME
+  // reading (lib/leads/pre-approval.ts) of the record's OWN financing fact —
+  // `lender_status`, which has four live writers — rather than depending solely on an
+  // enrichment row that a contact captured from a web form legitimately does not have.
+  // Two spellings of one idea are a defect (CLAUDE.md §6); this is the merge.
+  const financing = readPreApproval({
+    lenderStatus: (record as { lender_status?: string | null })?.lender_status ?? null,
+  })
+  if (financing.preApproved || intelligence?.pre_approved === true) score += 30
 
   if (table === "contacts") {
     // Budget alignment
     const hasBudget = record.budget_min && record.budget_max
     if (hasBudget) score += 20
 
-    // Viewing requests
-    const viewingRequests = record.property_interactions?.filter((i: any) => i.interaction_type === "tour_request")
-      .length
+    // Viewing requests — REPOINTED onto `showing_requests` (m598), NOT
+    // buyer_behavior_log. The old read counted property_interactions.
+    // interaction_type = 'tour_request' (zero-writer table — this ≤10-point
+    // bump has never been awarded). The MEANING — "this buyer asked to see a
+    // home" — does not survive a naïve repoint: buyer_behavior_log has NO
+    // tour-request value (its tour-adjacent spellings are post-tour verdicts,
+    // and signal-mapping.ts:29's doctrine is "tour_requested — logistics, not
+    // taste"), and silently mapping a save onto a request would invent intent.
+    // The real request record is `showing_requests`: requestShowing
+    // (app/actions/showings.ts:150-176) inserts one per buyer-initiated
+    // request — the portal concierge's create_showing door included
+    // (lib/portal/client-action-dispatch.ts:49-64). Count fetched in
+    // calculateLeadScore; same *10 weight, same 10 cap.
+    const viewingRequests = Number(record.showing_request_count ?? 0)
     score += Math.min(viewingRequests * 10, 10)
   } else {
     // For leads - use intent type and motivation score
@@ -333,20 +703,43 @@ function calculateFitScore(record: any, table: string): number {
   let score = 50 // Base score
 
   if (table === "contacts") {
-    const persona = record.buyer_persona?.[0]
+    // Was `record.buyer_persona?.[0]` — a relation that DOES NOT EXIST (no
+    // public.buyer_persona table, no such column on contacts), so this was always
+    // undefined even before the embed naming it refused the whole read. The real
+    // per-contact persona is client_detailed_personas, fetched in calculateLeadScore.
+    const persona = record.client_detailed_personas?.[0]
 
     // Has complete profile
     if (record.email && record.phone) score += 10
     if (record.budget_min && record.budget_max) score += 10
 
-    // Persona match
-    if (persona) {
-      score += 15
-      if (persona.confidence_score > 0.8) score += 15
-    }
+    // Persona match. The second 15 points hung on `persona.confidence_score > 0.8`;
+    // client_detailed_personas has NO confidence_score column (nor did the phantom it
+    // was read off). DELETED, not repaired — the same call made for
+    // calculateResponsivenessScore below. Persona PRESENCE is the signal the schema
+    // actually supports, and it is now reachable for the first time.
+    if (persona) score += 15
 
-    // Location preferences
-    if (record.preferred_cities?.length > 0) score += 10
+    // Location preferences.
+    //
+    // WAS `record.preferred_cities`. `contacts` has NO `preferred_cities` column
+    // (its only location columns are city / mailing_city / location_id), so this
+    // was permanently undefined and the +10 was UNREACHABLE — the contacts fit
+    // score could never exceed 85 of the 100 the scale implies.
+    //
+    // REPOINTED to lead_intelligence.location_preferences, which is a real column
+    // with a real writer: app/actions/lead-intelligence.ts:1341 upserts it as a
+    // de-duplicated array of location strings, and app/components/intelligence/
+    // LeadIntelligencePanel.tsx reads `.length` off it the same way. It is fetched
+    // above by `lead_id` — the pre-conversion id class this file already uses for
+    // lead_intelligence and lead_behavioral_data — so no new linkage is invented
+    // here. A contact that was never a scraped lead simply has no row, and that
+    // absence correctly scores nothing rather than erroring.
+    //
+    // It is jsonb, so guard the shape before trusting `.length`: a jsonb object or
+    // scalar would otherwise read `.length` as undefined and silently score zero.
+    const locationPrefs = record.lead_intelligence?.[0]?.location_preferences
+    if (Array.isArray(locationPrefs) && locationPrefs.length > 0) score += 10
   } else {
     // For leads - check data completeness
     if (record.email) score += 10
@@ -369,27 +762,14 @@ function calculateFitScore(record: any, table: string): number {
   return Math.min(score, 100)
 }
 
-/**
- * Calculate responsiveness score (0-100)
- */
-function calculateResponsivenessScore(contact: any): number {
-  let score = 50 // Default neutral
-
-  const behavioral = contact.lead_behavioral_data?.[0]
-
-  // Email response rate
-  const responseRate = behavioral?.response_rate || 0
-  score += responseRate * 30
-
-  // Average response time
-  const avgResponseHours = behavioral?.avg_response_time_hours || 48
-  if (avgResponseHours < 1) score += 20
-  else if (avgResponseHours < 4) score += 15
-  else if (avgResponseHours < 12) score += 10
-  else if (avgResponseHours < 24) score += 5
-
-  return Math.min(score, 100)
-}
+// calculateResponsivenessScore was DELETED, not repaired. It read
+// behavioral.response_rate and behavioral.avg_response_time_hours off
+// lead_behavioral_data; neither column exists, so it returned exactly 50 for every
+// lead and contact in the system — base 50, rate 0, and a 48h default that falls
+// through every branch. A factor that cannot vary is not a factor. Responsiveness
+// now comes from summarizeBehavioralEvents, which counts real reply events and says
+// plainly that it is a reply-presence signal rather than a rate (the log carries no
+// outbound count, so a true rate is not computable from it).
 
 /**
  * Generate actionable recommendations
@@ -550,13 +930,17 @@ export async function getTopLeads(agentId: string, limit = 20) {
 
     const supabase = await createClient()
 
+    // `buyer_persona(*)` named a relation that DOES NOT EXIST (no public.buyer_persona
+    // table, no such column on contacts), and `lead_intelligence` is keyed on lead_id
+    // with NO foreign key to contacts. Either one refuses the WHOLE query (PGRST200),
+    // so this list has never returned a lead — the catch below turned that into an
+    // empty array, i.e. "this agent has no top leads". Nothing downstream read either
+    // embed off this result, so both are dropped rather than repointed; the real
+    // per-contact persona is client_detailed_personas (contact_id -> contacts.id) and
+    // is embeddable if a consumer ever needs it.
     const { data, error } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_intelligence(*),
-        buyer_persona(*)
-      `)
+      .select("*")
       .eq("agent_id", agentId)
       .eq("status", "active")
       .order("lead_score", { ascending: false })

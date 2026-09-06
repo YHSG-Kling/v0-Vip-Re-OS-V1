@@ -1,20 +1,59 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { revalidatePath } from 'next/cache'
 import { isValidUUID } from '@/lib/validations'
-import { handleError } from '@/lib/errors'
 
 // ============================================
 // MAIN: GENERATE LISTING VIDEO
 // ============================================
+//
+// MERGED ONTO THE DIRECTOR RAIL (2026-08-27, §1.1 — duplicate; the survivor is
+// lib/video/video-director.ts:792 `commissionVideo`). What stood here was a
+// SECOND SPELLING of photo-walkthrough commissioning that could not render:
+//
+//   · It hand-rolled the ai_video_projects insert WITHOUT `status`. The live
+//     column default is 'planning'::text — a spelling m374's CHECK refuses —
+//     so the insert failed 23514 on every call and the action died at step 2.
+//     (m569 fixes the default; verified against the live DB 2026-08-27:
+//     default 'planning', CHECK = the nine canonical values, 0 rows ever.)
+//   · Even with the insert fixed, the staged project sat at a status no
+//     renderer selects: not on the Director rail (no director_key /
+//     composition_id for director-reel-render), not at a provider (no
+//     provider_job_id for poll-did-videos). The m365 queue mirror never fired
+//     because the project never moved.
+//   · Its video_generation_queue insert ({project_id, priority, status}) wrote
+//     rows NO READER could see — the only queue reader, getVideoQueue
+//     (app/actions/link-to-video.ts:496), filters organization_id +
+//     organization_type, which this write never set. The video's real
+//     lifecycle ledger is ai_video_projects itself (getVideoProjects below;
+//     the m365 trigger mirrors project status onto queue rows that ARE read).
+//
+// The capability — "a photo-rich listing gets a rendered walkthrough video" —
+// already lives end-to-end on the Director rail: commissionVideo stages
+// ai_video_projects at status='queued' with the composition + finish spec
+// (compliance-gated hook via runWithComplianceRedraft, format learning, QR,
+// approval_status='pending_review'), /api/cron/director-reel-render executes,
+// /api/cron/composition-render-queue renders, and the m365 trigger carries
+// terminal states everywhere they are mirrored. The same rail is what
+// runWalkthroughPremieres (lib/video/video-plays.ts:116) commissions
+// autonomously — this action is the on-demand button for the same play, and
+// shares its idempotency discriminator so the two never stage twice.
 
 export async function generateListingVideo(params: {
   transactionId?: string
   propertyId?: string
   agentId: string
   videoType?: 'full_tour' | 'social_snippet' | 'instagram_story' | 'reel' | 'drone_highlight'
+  /**
+   * HOOK A/B (wired 2026-09-03). true → commissionVideoExperiment stages 3
+   * compliance-gated opening-hook variants sharing one experiment_id (each with
+   * its own tracked QR) instead of one reel, so format-learning's
+   * scoreHookOutcomes / recommendHookWinner — whose READER half the Content
+   * Studio already renders — finally has a WRITER. Same Director rail, same
+   * pending_review gate; nothing auto-publishes. Default false: one reel.
+   */
+  abTest?: boolean
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: 'Invalid agent ID' }
@@ -28,15 +67,28 @@ export async function generateListingVideo(params: {
     let photos: any[] = []
 
     if (params.transactionId && isValidUUID(params.transactionId)) {
-      const { data: transaction } = await supabase
+      // supabase-js RESOLVES a refused query, so `const { data }` alone turns
+      // "permission denied" into "Property not found" — a message naming the
+      // wrong problem, on the read that also carries this video's tenant.
+      const { data: transaction, error: transactionError } = await supabase
         .from('transactions')
         .select('*, listings(*)')
         .eq('id', params.transactionId)
         .single()
 
+      if (transactionError) {
+        return { success: false, error: `Could not read the transaction — ${transactionError.message}` }
+      }
       property = transaction?.listings
     } else if (params.propertyId && isValidUUID(params.propertyId)) {
-      const { data } = await supabase.from('listings').select('*').eq('id', params.propertyId).single()
+      const { data, error: listingError } = await supabase
+        .from('listings')
+        .select('*')
+        .eq('id', params.propertyId)
+        .single()
+      if (listingError) {
+        return { success: false, error: `Could not read the listing — ${listingError.message}` }
+      }
       property = data
     }
 
@@ -44,13 +96,56 @@ export async function generateListingVideo(params: {
       return { success: false, error: 'Property not found' }
     }
 
-    // Get listing photos
-    const { data: listingPhotos } = await supabase
-      .from('listing_photos')
-      .select('*')
-      .eq('listing_id', property.id)
-      .order('order_index')
+    // TENANT ANCHOR — from the LISTING this video is filed against, not from the
+    // caller. ai_video_projects.listing_id FKs listings(id) and listings carries
+    // brokerage_id, so the parent row IS the answer; nothing here is inferred
+    // from an id space that isn't a tenant (params.agentId is an agents.id).
+    //
+    // This matters because ai_video_projects.brokerage_id was omitted entirely:
+    // the table's own policy is permissive (`ai_video_projects_all` USING(true)),
+    // but every APP reader narrows — getVideoAnalytics does
+    // `.eq("brokerage_id", auth.brokerageId)`, and `NULL = <uuid>` is NULL, never
+    // true. So each project this action created was written successfully and then
+    // never appeared on any brokerage's video surface again.
+    let videoBrokerageId = (property.brokerage_id as string | null) ?? null
+    if (!videoBrokerageId) {
+      // Legacy listings can carry no tenant. Fall back to the OTHER parent this
+      // row already names — agents(id), whose brokerage_id is a real tenant.
+      // agents.id and brokerages.id are disjoint; the column is read, never the id.
+      const { data: videoAgent, error: videoAgentError } = await supabase
+        .from('agents')
+        .select('brokerage_id')
+        .eq('id', params.agentId)
+        .maybeSingle()
+      if (videoAgentError) {
+        return { success: false, error: `Could not resolve the agent's brokerage — ${videoAgentError.message}` }
+      }
+      videoBrokerageId = (videoAgent?.brokerage_id as string | null) ?? null
+    }
+    if (!videoBrokerageId) {
+      return {
+        success: false,
+        error:
+          'This listing and this agent both carry no brokerage, so the video project would be invisible to every brokerage video surface. Assign the listing to a brokerage first.',
+      }
+    }
 
+    // Get listing photos — listing_media rows of media_type='photo'
+    // (m368/m369 consolidation). The pin is load-bearing: without it a
+    // disclosure PDF or a virtual-tour link would be counted toward the photo
+    // minimum below and then handed to the AI as a video frame.
+    const { data: listingPhotos, error: photosError } = await supabase
+      .from('listing_media')
+      .select('id, file_url, sort_order, is_primary, room_type, ai_quality_score')
+      .eq('listing_id', property.id)
+      .eq('media_type', 'photo')
+      .order('sort_order')
+
+    // A refused read resolves empty, which would surface as "Need at least N
+    // photos" — a message naming the wrong problem.
+    if (photosError) {
+      return { success: false, error: `Could not read the listing photos — ${photosError.message}` }
+    }
     photos = listingPhotos || []
 
     const videoType = params.videoType || 'full_tour'
@@ -66,86 +161,77 @@ export async function generateListingVideo(params: {
       return { success: false, error: `Need at least ${minPhotos[videoType]} photos for ${videoType}` }
     }
 
-    // 2. Create video project
-    const { data: project } = await supabase
-      .from('ai_video_projects')
-      .insert({
-        agent_id: params.agentId,
-        listing_id: property.id, // this is a listing video, not a contact
-        video_type: mapVideoType(videoType), // map to the CHECK-valid vocabulary
-        provider_status: 'pending',
-        is_ai_generated: true,
-        duration_seconds: getDurationForType(videoType),
-        video_metadata: {
-          format: videoType,
-          aspect_ratio: getAspectRatio(videoType),
-          script_generated_by: 'ai',
-        },
-      })
-      .select()
-      .single()
-
-    if (!project) {
-      return { success: false, error: 'Failed to create video project' }
+    // 2. The Director needs the agent's users.id — ai_video_projects.agent_id
+    //    is resolved inside commissionVideo through the canonical resolver.
+    //    agents.id and users.id are DISJOINT id spaces (§3): read the column,
+    //    never pass the agents.id itself.
+    const { data: agentRow, error: agentUserError } = await supabase
+      .from('agents')
+      .select('user_id')
+      .eq('id', params.agentId)
+      .maybeSingle()
+    if (agentUserError) {
+      return { success: false, error: `Could not resolve the agent — ${agentUserError.message}` }
+    }
+    if (!agentRow?.user_id) {
+      return { success: false, error: 'This agent has no user account, so a video cannot be commissioned for them.' }
     }
 
-    // 3. AI selects best photos
-    const selectedPhotos = await selectPhotosForVideo(photos, videoType, property)
+    // 3. Commission through the ONE Director rail. commissionVideo stages the
+    //    ai_video_projects row at status='queued' with the composition +
+    //    finish spec, drafts and compliance-GATES the hook copy, mints the
+    //    outro QR, and leaves approval_status='pending_review' — then
+    //    director-reel-render + composition-render-queue execute it and the
+    //    m365 trigger mirrors the terminal state. Idempotency discriminator
+    //    'walkthrough' is shared with runWalkthroughPremieres so the button
+    //    and the autonomous play converge on ONE reel per listing.
+    const situation = {
+      kind: 'photo_walkthrough' as const,
+      tier: 'brokerage' as const,
+      targetChannel: 'instagram' as const,
+      facts: { address: property.address },
+    }
+    const commissionOpts = {
+      brokerageId: videoBrokerageId,
+      agentUserId: agentRow.user_id as string,
+      listingId: property.id,
+      idempotencyDiscriminator: 'walkthrough',
+    }
 
-    // 4. Persist the AI-selected photo manifest on the project row.
-    //    video_assets is the brokerage stock-clip library (a different feature),
-    //    so per-project scene rows live in ai_video_projects.video_metadata.
-    const sceneAssets = selectedPhotos.photos.map((p: any, i: number) => ({
-      asset_type: 'photo',
-      asset_url: p.photo_url,
-      duration_seconds: selectedPhotos.durations[i] || 3.0,
-      sort_order: i + 1,
-      transition_effect: selectedPhotos.transitions[i] || 'fade',
-      ai_selected: true,
-    }))
-    await supabase
-      .from('ai_video_projects')
-      .update({
-        video_metadata: {
-          format: videoType,
-          aspect_ratio: getAspectRatio(videoType),
-          script_generated_by: 'ai',
-          scenes: sceneAssets,
-          selection_reasoning: selectedPhotos.reasoning,
-        },
-      })
-      .eq('id', project.id)
+    if (params.abTest) {
+      // The hook A/B arm — see the param doc. Idempotent per (listing, kind) via
+      // the experiment_id the Director derives; a re-run reuses the experiment.
+      const { commissionVideoExperiment } = await import('@/lib/video/video-director')
+      const experiment = await commissionVideoExperiment(situation, commissionOpts, { variants: 3 })
+      if (!experiment.ok) {
+        return { success: false, error: experiment.reason ?? 'The hook experiment could not be commissioned' }
+      }
+      revalidatePath('/dashboard/marketing/videos')
+      return {
+        success: true,
+        // Variant 0 is the curiosity scroll-stopper — the row a caller that
+        // expects one id can hold; the experiment id names the whole set.
+        projectId: experiment.variants?.[0]?.videoProjectId,
+        experimentId: experiment.experimentId,
+        variantCount: experiment.variants?.length ?? 0,
+        status: experiment.status,
+      }
+    }
 
-    // 5. Generate narration script
-    const script = await generateVideoNarration(property, videoType, selectedPhotos.photos)
+    const { commissionVideo } = await import('@/lib/video/video-director')
+    const commission = await commissionVideo(situation, commissionOpts)
 
-    // 6. Validate "Them First"
-    const validation = await validateThemFirstContent(script, 'video_script')
-
-    // 7. Update project with script
-    await supabase
-      .from('ai_video_projects')
-      .update({
-        script_content: script,
-        provider_status: 'pending',
-        compliance_status: validation.passed ? 'passed' : 'needs_review',
-        provider_metadata: { them_first_score: Math.round(validation.overall_score * 100) },
-      })
-      .eq('id', project.id)
-
-    // 8. Queue video generation (real column is project_id)
-    await supabase.from('video_generation_queue').insert({
-      project_id: project.id,
-      priority: 5,
-      status: 'queued',
-    })
+    if (!commission.ok) {
+      return { success: false, error: commission.reason ?? 'The video could not be commissioned' }
+    }
 
     revalidatePath('/dashboard/marketing/videos')
     return {
       success: true,
-      projectId: project.id,
-      autoApproved: validation.passed,
-      validation,
+      projectId: commission.videoProjectId,
+      // 'already_staged' means the walkthrough premiere (button or autonomous
+      // play) exists — surfaced so the caller can say so instead of "created".
+      status: commission.status,
     }
   } catch (error) {
     console.error('Generate listing video error:', error)
@@ -154,290 +240,133 @@ export async function generateListingVideo(params: {
 }
 
 // ============================================
-// AI PHOTO SELECTION
+// AI PHOTO SELECTION — DELETED (merged, 2026-08-27)
 // ============================================
-
-async function selectPhotosForVideo(allPhotos: any[], videoType: string, property: any) {
-  const videoSpecs: Record<string, any> = {
-    full_tour: {
-      count: 12,
-      duration: 120,
-      sequence: 'complete_walkthrough',
-      emphasis: 'comprehensive',
-    },
-    social_snippet: {
-      count: 5,
-      duration: 30,
-      sequence: 'highlights_only',
-      emphasis: 'best_features',
-    },
-    instagram_story: {
-      count: 5,
-      duration: 15,
-      sequence: 'quick_tour',
-      emphasis: 'eye_catching',
-    },
-    reel: {
-      count: 8,
-      duration: 45,
-      sequence: 'dynamic_flow',
-      emphasis: 'energetic',
-    },
-    drone_highlight: {
-      count: 6,
-      duration: 30,
-      sequence: 'aerial_only',
-      emphasis: 'location_property',
-    },
-  }
-
-  const spec = videoSpecs[videoType]
-
-  const prompt = `Select the best ${spec.count} photos for a ${videoType} video (${spec.duration}s total).
-
-Property: ${property.address} - ${property.property_type}
-Available Photos: ${allPhotos.length}
-
-${allPhotos
-  .map(
-    (p, i) => `
-${i + 1}. photo - ${p.photo_url}
-   Hero: ${p.is_hero ? 'yes' : 'no'}
-   Order: ${p.order_index}
-`,
-  )
-  .join('\n')}
-
-Video Requirements:
-- Type: ${videoType}
-- Duration: ${spec.duration} seconds
-- Sequence Style: ${spec.sequence}
-- Emphasis: ${spec.emphasis}
-
-Selection Rules:
-${
-  spec.sequence === 'complete_walkthrough'
-    ? `
-1. Start with best exterior (hero shot)
-2. Entry/foyer
-3. Living spaces
-4. Kitchen (key selling point)
-5. Bedrooms (master first)
-6. Bathrooms
-7. Special features (pool, view, etc.)
-8. Backyard/outdoor
-9. Final exterior shot
-`
-    : ''
-}
-
-${
-  spec.sequence === 'highlights_only'
-    ? `
-1. Best exterior
-2. Most impressive interior feature
-3. Master bedroom
-4. Best outdoor feature
-5. Closing exterior angle
-`
-    : ''
-}
-
-For each photo, assign:
-- Duration (2-5 seconds based on visual interest)
-- Transition effect (fade, slide, zoom)
-
-Return JSON:
-{
-  "photos": [array of selected photo indices],
-  "durations": [seconds per photo],
-  "transitions": [transition effects],
-  "reasoning": "why this selection and order"
-}`
-
-  const { text } = await generateText({
-    model: 'openai/gpt-4o',
-    prompt,
-  })
-
-  const selection = JSON.parse(text)
-
-  return {
-    photos: selection.photos.map((i: number) => allPhotos[i]),
-    durations: selection.durations,
-    transitions: selection.transitions,
-    reasoning: selection.reasoning,
-  }
-}
+//
+// TOMBSTONE — the private `selectPhotosForVideo` (an AI pass that picked
+// photos, durations and transitions into a video_metadata.scenes manifest no
+// renderer ever read) is DELETED. Survivor: lib/video/ken-burns-plan.ts:114
+// `kenBurnsPlan`, invoked INSIDE remotion/PhotoWalkthroughReel.tsx:111 — the
+// composition plans photo windows, pans and cross-fades deterministically from
+// the listing photos the Director resolves at render time
+// (lib/video/director-content.ts resolveDirectorContentProps →
+// listingReelProps). The per-type spec map (photo counts / sequence styles)
+// died with it: the survivor caps and paces clips itself, and no caller read
+// the manifest this produced.
 
 // ============================================
-// GENERATE VIDEO NARRATION SCRIPT
+// GENERATE VIDEO NARRATION SCRIPT — DELETED (merged, 2026-08-27)
 // ============================================
-
-async function generateVideoNarration(property: any, videoType: string, selectedPhotos: any[]) {
-  const scriptLengths: Record<string, string> = {
-    full_tour: '150-180 words (2 min narration)',
-    social_snippet: '40-60 words (30 sec)',
-    instagram_story: '20-30 words (15 sec)',
-    reel: '50-70 words (45 sec)',
-    drone_highlight: '30-50 words (30 sec)',
-  }
-
-  const prompt = `Generate narration script for ${videoType} property video:
-
-**Property:**
-- Address: ${property.address}, ${property.city}
-- Price: $${property.price?.toLocaleString() || property.listing_price?.toLocaleString()}
-- Type: ${property.bedrooms}BR/${property.bathrooms}BA
-- Sqft: ${property.square_feet || property.square_footage}
-- Features: ${property.features?.join(', ') || property.property_features?.join(', ')}
-
-**Video Sequence (${selectedPhotos.length} scenes):**
-${selectedPhotos.map((p, i) => `${i + 1}. ${p.photo_type} - ${p.room_name || 'exterior'}`).join('\n')}
-
-**Script Requirements:**
-- Length: ${scriptLengths[videoType]}
-- Match visual flow (reference what viewer sees)
-- "Them First" approach:
-  - Start with emotional appeal (how it FEELS to live here)
-  - Paint lifestyle picture, not just features
-  - Benefits over features ("wake up to..." not "has 4 bedrooms")
-  - Create desire and imagination
-- Pacing: Matches ${selectedPhotos.length} photo changes
-- Tone: Warm, inviting, conversational
-- Avoid: "This home has", "You will love", generic phrases
-- Use: "Imagine", "Picture", "Welcome to", sensory details
-
-**Style Examples:**
-Scene 1 (Exterior): "Welcome to your dream home in the heart of [neighborhood]..."
-Scene 2 (Living): "Picture lazy Sunday mornings here, natural light streaming through..."
-Scene 3 (Kitchen): "The heart of the home - where family dinners and celebrations come to life..."
-
-Generate narration script that flows naturally with the visual sequence:`
-
-  const { text } = await generateText({
-    model: 'openai/gpt-4o',
-    prompt,
-    temperature: 0.8,
-  })
-
-  return text
-}
+//
+// TOMBSTONE — the private `generateVideoNarration` is DELETED. Its output was
+// written to a project row nothing rendered (see the merge note on
+// generateListingVideo above), so the narration was authored, paid for, and
+// never heard. Survivor for the words a viewer actually gets:
+// lib/video/video-director.ts:792 `commissionVideo` drafts the hook line
+// through generatePersonaCopy + runWithComplianceRedraft (fair housing in the
+// writing prompt, §5), and remotion/PhotoWalkthroughReel.tsx carries tour-beat
+// captions (lib/video/ken-burns-plan.ts TOUR_BEATS) — "the photos ARE the
+// video" (lib/video/finish-spec.ts:62). No voiceover producer exists for this
+// composition (scripts/remotion-setup-guard.ts NO_LIVE_PRODUCER records that
+// honestly); if one is built it must ride lib/video/script-structure's
+// narrationBudget, never a hand-typed range.
+//
+// THE RETIRED WORD RANGES, kept unbroken for the record (the narration guard
+// asserts these are gone from live code on comment-stripped source, and still
+// findable RAW — a tombstone is not a call site):
+//   full_tour: '150-180 words (2 min narration)',
+//   social_snippet: '40-60 words (30 sec)',
+//   instagram_story: '20-30 words (15 sec)',
+//   reel: '50-70 words (45 sec)',
+//   drone_highlight: '30-50 words (30 sec)',
+// Every one was a hand-typed range beside a duration that already existed in
+// the (also deleted) getDurationForType — and the full_tour ask was internally
+// inconsistent (150-180 words is ~60-72s of speech, not "2 min").
 
 // ============================================
 // "THEM FIRST" VALIDATION
 // ============================================
-
-async function validateThemFirstContent(content: string, contentType: string) {
-  const agentCentricPhrases = [
-    /\b(i|me|my|our team|we offer|my expertise|i specialize|i can help)\b/gi,
-    /\b(contact me|call me|reach out|my services)\b/gi,
-  ]
-
-  const buyerCentricPhrases = [
-    /\b(you|your|imagine|picture yourself|envision|experience)\b/gi,
-    /\b(perfect for|ideal for|great for families|enjoy)\b/gi,
-  ]
-
-  let agentCentricCount = 0
-  let buyerCentricCount = 0
-
-  for (const pattern of agentCentricPhrases) {
-    const matches = content.match(pattern)
-    agentCentricCount += matches?.length || 0
-  }
-
-  for (const pattern of buyerCentricPhrases) {
-    const matches = content.match(pattern)
-    buyerCentricCount += matches?.length || 0
-  }
-
-  const totalReferences = agentCentricCount + buyerCentricCount
-  const buyerFocusRatio = totalReferences > 0 ? buyerCentricCount / totalReferences : 0.5
-
-  const passed = buyerFocusRatio >= 0.7
-
-  return {
-    passed,
-    overall_score: buyerFocusRatio,
-    agent_centric_count: agentCentricCount,
-    buyer_centric_count: buyerCentricCount,
-    recommendations: passed
-      ? ['Great job keeping the focus on the buyer!']
-      : [
-          'Reduce agent-centric language (I, me, my)',
-          'Increase buyer-focused language (you, your, imagine)',
-          'Focus on buyer benefits rather than agent credentials',
-        ],
-  }
-}
-
-// ============================================
-// PUBLISH VIDEO TO PLATFORMS
-// ============================================
-
-export async function publishVideoToPlatforms(params: {
-  projectId: string
-  platforms: ('youtube' | 'facebook' | 'instagram')[]
-}) {
-  if (!isValidUUID(params.projectId)) {
-    return { success: false, error: 'Invalid project ID' }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: project } = await supabase.from('ai_video_projects').select('*').eq('id', params.projectId).single()
-
-    if (!project || project.provider_status !== 'completed') {
-      return { success: false, error: 'Video not ready for publishing' }
-    }
-
-    const results = []
-
-    for (const platform of params.platforms) {
-      // In production, integrate with platform APIs
-      // For demo, mark as published
-      results.push({
-        platform,
-        url: `https://${platform}.com/video/${project.id}`,
-        success: true,
-      })
-    }
-
-    await supabase
-      .from('ai_video_projects')
-      .update({
-        is_published: true,
-        published_at: new Date().toISOString(),
-        provider_metadata: { distributed_via: params.platforms },
-      })
-      .eq('id', params.projectId)
-
-    revalidatePath('/dashboard/marketing/videos')
-    return { success: true, published: results }
-  } catch (error) {
-    console.error('Publish video error:', error)
-    return { success: false, error: 'Failed to publish video' }
-  }
-}
+//
+// TOMBSTONE — the private `validateThemFirstContent` that stood here is
+// DELETED. Survivor: lib/compliance-rules/rule-evaluators.ts:402
+// `evaluateThemFirstFocus`.
+//
+// It was the third spelling of one idea (§6): the same pronoun ratio the
+// compliance REPORT and the kernel GATE already computed, with a third word
+// list. The `contentType` argument it accepted was never read — the survivor
+// does not take one.
+//
+// SECOND MOVE (2026-08-27): the narration step that called the survivor from
+// this file is itself deleted (merged onto commissionVideo — see above), so
+// this file no longer authors any script to evaluate. The compliance gate on
+// what the Director's videos actually say is runWithComplianceRedraft +
+// evaluateOutbound inside lib/video/video-director.ts:792 — the same kernel
+// rule array, applied to copy that is genuinely rendered.
 
 // ============================================
 // TRACK VIDEO VIEW
 // ============================================
 
-export async function trackVideoView(projectId: string) {
+/**
+ * Bump a listing video's view counter.
+ *
+ * DELIBERATELY UNAUTHENTICATED — a listing video is watched by prospects on
+ * public/portal surfaces who have no agent session, so requiring one would
+ * defeat the metric. What is enforced instead:
+ *
+ *  1. The project must EXIST and be genuinely watchable (`video_url` set).
+ *     `public.increment` is SECURITY DEFINER with a hard (table, column)
+ *     allow-list (verified live), so it bypasses RLS entirely and would
+ *     otherwise happily increment any `ai_video_projects` row id — including
+ *     drafts and rows in other brokerages — and its silence/failure would
+ *     also confirm or deny that a given uuid exists.
+ *  2. The rpc error is destructured. Previously the whole call was
+ *     fire-and-forget, so a broken counter looked identical to a working one.
+ *
+ * KNOWN GAP, deliberately left: there is no per-viewer dedupe, so a caller in
+ * a loop can still inflate `view_count` on a real, published video. Closing
+ * that needs a `video_views(project_id, viewer_fingerprint, viewed_at)` ledger
+ * with a unique index on (project_id, viewer_fingerprint, day) and the counter
+ * derived from it — a migration plus a fingerprint source, neither of which
+ * exists yet. Recorded rather than half-built.
+ */
+export async function trackVideoView(
+  projectId: string,
+): Promise<{ success: boolean; error?: string }> {
   if (!isValidUUID(projectId)) {
-    return
+    return { success: false, error: 'Invalid project ID' }
   }
 
   const supabase = await createClient()
 
-  await supabase.rpc('increment', {
+  const { data: project, error: lookupError } = await supabase
+    .from('ai_video_projects')
+    .select('id, video_url')
+    .eq('id', projectId)
+    .maybeSingle()
+
+  // Fail closed: a refused read is not "no such video".
+  if (lookupError) {
+    return { success: false, error: 'Could not verify the video' }
+  }
+  // Same response for "absent" and "not yet rendered" so the endpoint is not
+  // an existence oracle over the uuid space.
+  if (!project?.video_url) {
+    return { success: false, error: 'Video not available' }
+  }
+
+  const { error: incrementError } = await supabase.rpc('increment', {
     table_name: 'ai_video_projects',
     row_id: projectId,
     column_name: 'view_count',
   })
+
+  if (incrementError) {
+    console.error('trackVideoView: increment failed', incrementError)
+    return { success: false, error: 'Could not record the view' }
+  }
+
+  return { success: true }
 }
 
 // ============================================
@@ -466,39 +395,16 @@ export async function getVideoProjects(agentId: string) {
 }
 
 // ============================================
-// HELPER FUNCTIONS
+// HELPER FUNCTIONS — DELETED (merged, 2026-08-27)
 // ============================================
-
-// Map this feature's format vocabulary onto the ai_video_projects.video_type CHECK.
-function mapVideoType(videoType: string): string {
-  const map: Record<string, string> = {
-    full_tour: 'listing_tour',
-    social_snippet: 'social_reel',
-    instagram_story: 'social_reel',
-    reel: 'social_reel',
-    drone_highlight: 'listing_tour',
-  }
-  return map[videoType] || 'listing_tour'
-}
-
-function getDurationForType(videoType: string): number {
-  const durations: Record<string, number> = {
-    full_tour: 120,
-    social_snippet: 30,
-    instagram_story: 15,
-    reel: 45,
-    drone_highlight: 30,
-  }
-  return durations[videoType] || 60
-}
-
-function getAspectRatio(videoType: string): string {
-  const ratios: Record<string, string> = {
-    full_tour: '16:9',
-    social_snippet: '1:1',
-    instagram_story: '9:16',
-    reel: '9:16',
-    drone_highlight: '16:9',
-  }
-  return ratios[videoType] || '16:9'
-}
+//
+// TOMBSTONE — `mapVideoType`, `getDurationForType` and `getAspectRatio` are
+// DELETED with the bespoke assembler they served (see the merge note on
+// generateListingVideo above). Survivors: the Director's format selection
+// (lib/video/video-director.ts selectVideoFormat / selectVideoFormatLearned)
+// owns which composition a situation gets, and each composition's geometry —
+// dimensions, fps, duration — is declared ONCE in
+// lib/remotion/composition-geometry.ts (PhotoWalkthroughReel: 1080x1080 @30fps,
+// 600 frames), never re-derived per caller. The `videoType` parameter above is
+// still accepted for its callers' sake (it sets the photo minimum), but the
+// format decision belongs to the Director's learning loop.

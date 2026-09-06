@@ -1,7 +1,6 @@
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Home, TrendingUp, TrendingDown, Minus, ArrowRight } from "lucide-react"
 
 interface MyHomeCardProps {

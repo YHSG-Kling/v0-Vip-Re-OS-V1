@@ -32,7 +32,20 @@ export type CronHealth = "healthy" | "failing" | "stale" | "unknown"
 
 /** PURE: classify a cron's health from its snapshot (last status + staleness vs its expected interval). */
 export function cronHealth(row: { last_status: string | null; last_run_at: string | null; expected_interval_hours: number | null }, now: Date): CronHealth {
-  if (row.last_status === "failure" || row.last_status === "error") return "failing"
+  // TOMBSTONE: the `|| row.last_status === "error"` disjunct that stood here is
+  // deleted. Survivor: "failure", written by lib/kernel/cron-logging.ts:415 —
+  // the ONLY failure spelling any writer of cron_health_snapshot.last_status
+  // has ever produced. "error" belongs to a DIFFERENT table's vocabulary
+  // (system_health_checks.status, widened by m371), and testing one table's
+  // word against another table's column is the defect
+  // app/actions/pl-truth-engine.ts:326 already records this repo paying for.
+  //
+  // "running" is NOT tested here on purpose. It is a live status as of
+  // lib/kernel/cron-logging.ts:createCronRunContext, but a cron that is running
+  // right now is neither failing nor healthy on its own account — the staleness
+  // arm below still judges it by when it last COMPLETED, which is the honest
+  // reading and the one that catches a run that hangs and never returns.
+  if (row.last_status === "failure") return "failing"
   if (!row.last_run_at) return "unknown"
   const age = now.getTime() - Date.parse(row.last_run_at)
   const interval = (row.expected_interval_hours ?? 24) * 3_600_000
@@ -43,7 +56,11 @@ export function cronHealth(row: { last_status: string | null; last_run_at: strin
 
 export interface ManagerThroughput { manager: string; consumed: number; published: number }
 export interface StuckSignalRow { id: string; brokerageId: string | null; fromManager: string; toManager: string; signalType: string; ageHours: number; createdAt: string }
-export interface HeldActionRow { managerKind: string; brokerageId: string | null; count: number; oldestHours: number }
+/** `stale` is computed HERE against STALE_HELD_HOURS (§1.1, 2026-08-31, lane
+ *  M4): the ai-ops console used to respell the threshold as a literal `>= 72`
+ *  in its className — a second copy of the number the constant above already
+ *  owned, free to drift. The console now reads this flag. */
+export interface HeldActionRow { managerKind: string; brokerageId: string | null; count: number; oldestHours: number; stale: boolean }
 export interface FailedSendRow { id: string; brokerageId: string | null; managerKind: string; error: string; createdAt: string }
 export interface AutomationErrorRow { id: string; brokerageId: string | null; workflow: string; severity: string; error: string; createdAt: string }
 export interface CronHealthRow { cronName: string; health: CronHealth; lastRunAt: string | null; failure7d: number; lastError: string | null }
@@ -103,7 +120,7 @@ export async function loadAiOps(client?: Svc, now: Date = new Date(), windowHour
   }
   const heldActions: HeldActionRow[] = [...heldMap.entries()].map(([key, v]) => {
     const [managerKind, brokerageId] = key.split("::")
-    return { managerKind, brokerageId: brokerageId === "null" ? null : brokerageId, count: v.count, oldestHours: v.oldest }
+    return { managerKind, brokerageId: brokerageId === "null" ? null : brokerageId, count: v.count, oldestHours: v.oldest, stale: v.oldest >= STALE_HELD_HOURS }
   }).sort((a, b) => b.oldestHours - a.oldestHours)
 
   const failedSends: FailedSendRow[] = ((failedR.data ?? []) as any[]).map((f) => ({ id: f.id, brokerageId: f.brokerage_id, managerKind: f.agent_kind, error: String(f.send_error ?? f.status ?? "failed").slice(0, 300), createdAt: f.created_at }))

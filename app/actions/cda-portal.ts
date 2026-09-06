@@ -49,9 +49,11 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
-import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
+import { bestEffort } from "@/lib/db/best-effort"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -81,7 +83,11 @@ async function recordRevision(opts: {
   actedBy: string
 }) {
   const supabase = await createClient()
-  await supabase.from("closing_disclosure_agreement_revisions").insert({
+  // supabase-js RESOLVES a failed insert — an unchecked `await` here silently
+  // drops the audit row for a money instruction. Callers treat the revision log
+  // as best-effort (the state change already happened), so this never throws,
+  // but a failure is now visible instead of invisible.
+  const { error } = await supabase.from("closing_disclosure_agreement_revisions").insert({
     cda_id: opts.cdaId,
     revision_number: opts.revisionNumber,
     status_at_snapshot: opts.status,
@@ -91,6 +97,9 @@ async function recordRevision(opts: {
     changes_requested_notes: opts.changesRequestedNotes ?? null,
     acted_by: opts.actedBy,
   })
+  if (error) {
+    console.error("[cda-portal] revision audit row NOT written", { cdaId: opts.cdaId, action: opts.action, error: error.message })
+  }
 }
 
 // ─── Contract / split compliance verdict ─────────────────────────────────────
@@ -103,13 +112,25 @@ async function recordRevision(opts: {
 // split is 100 once cap_paid_to_date ≥ cap_amount. A BLOCKER-level mismatch must be
 // resolved (or manually overridden, same as the signature gate) before approval.
 
-export interface CdaContractVerdict {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): only the private
+// loadCdaContractVerdict below names it; the export claimed an entry point no
+// file used. (Types may be exported from a "use server" file — this is about
+// the reader, not the rule.)
+interface CdaContractVerdict {
   passed: boolean
   discrepancies: CdaDiscrepancy[]
   contractSplitPct: number | null
   capReached: boolean
   /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA. */
   outstandingFees: number
+  /** The DEDUCTION LINE those fees become on the CDA (wave 26). The total above
+   *  says how much is owed; this says what it does to the agent's disbursement:
+   *  `netAfterFees` = the agent's post-split share MINUS the fees, or null when
+   *  the share is unknown. Compliance confirms this line appears on the CDA.
+   *  SURFACES, DOES NOT BLOCK — a fee deduction is not a split discrepancy, and
+   *  buildCdaFeeDeduction's own contract keeps the two apart
+   *  (lib/commission/cda-discrepancy.ts:126-129). `passed` is unaffected. */
+  feeDeduction: CdaFeeDeduction
 }
 
 type SupabaseClient = Awaited<ReturnType<typeof createClient>>
@@ -118,22 +139,28 @@ async function loadCdaContractVerdict(
   supabase: SupabaseClient,
   cda: { transaction_id: string; brokerage_id: string; agent_id: string; gross_commission: number | null; agent_net: number | null },
 ): Promise<CdaContractVerdict | null> {
+  // cda.agent_id is agents-class, the same class agent_commission_profiles,
+  // agent_cap_tracking and agent_fee_charges key on — so all three read
+  // directly off it. No agent on the CDA means no contract to check against.
+  const cdaAgentRecordId = cda.agent_id ?? null
+  if (!cdaAgentRecordId) return null
+
   const [{ data: txn }, { data: profile }, { data: cap }, { data: feeCharges }] = await Promise.all([
     supabase.from("transactions")
       .select("estimated_commission, purchase_price, commission_percentage")
       .eq("id", cda.transaction_id).maybeSingle(),
     supabase.from("agent_commission_profiles")
       .select("split_percent, cap_amount")
-      .eq("agent_id", cda.agent_id).eq("is_active", true)
+      .eq("agent_id", cdaAgentRecordId).eq("is_active", true)
       .order("effective_date", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("agent_cap_tracking")
       .select("cap_amount, cap_paid_to_date")
-      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .eq("agent_id", cdaAgentRecordId).eq("brokerage_id", cda.brokerage_id)
       .order("cap_paid_to_date", { ascending: false }).limit(1).maybeSingle(),
     // OUTSTANDING FEES — unpaid charges the agent owes the brokerage, to be deducted in the CDA.
     supabase.from("agent_fee_charges")
       .select("amount, status, paid_at")
-      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .eq("agent_id", cdaAgentRecordId).eq("brokerage_id", cda.brokerage_id)
       .in("status", ["open", "overdue"]),
   ])
 
@@ -160,7 +187,23 @@ async function loadCdaContractVerdict(
     expectedGross: expectedGrossFromTerms((txn ?? {}) as Record<string, number | null>),
     contractSplitPct: effectiveSplit,
   })
-  return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees }
+
+  // ── THE FEES BECOME A DEDUCTION LINE, NOT JUST A TOTAL (§1 wire, wave 26) ──
+  // sumOutstandingAgentFees has been wired since the fee rail landed, and the
+  // total rode the verdict and the queue row — but the half that turns it into
+  // the CDA's deduction (and the agent's post-fee disbursement) had no caller,
+  // so the fees were COUNTED and DISPLAYED and never DEDUCTED. The agent's net
+  // on the CDA read as the pre-fee split.
+  //
+  // agent_net is the post-split, PRE-fee share, which is exactly what
+  // buildCdaFeeDeduction expects as `agentCommissionShare`; it returns null for
+  // netAfterFees when the share is unknown rather than inventing one.
+  const feeDeduction = buildCdaFeeDeduction({
+    outstandingFees,
+    agentCommissionShare: cda.agent_net == null ? null : Number(cda.agent_net),
+  })
+
+  return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees, feeDeduction }
 }
 
 // The compliance review panel surfaces this verdict for every CDA in its queue via the batched
@@ -244,7 +287,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       .insert({
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
-        agent_id: txn.agent_id,
+        agent_id: agent.id,
         status: "pending",
         preliminary_cd_uploaded_at: new Date().toISOString(),
         preliminary_cd_document_id: input.documentId,
@@ -274,7 +317,9 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     channel: "in_app",
   })
 
-  await supabase.from("activities").insert({
+  // The record that the preliminary CD arrived and a CDA draft is now required.
+  // A lost row here is a compliance step nobody knows is outstanding.
+  const { error: prelimCdActivityError } = await supabase.from("activities").insert({
     transaction_id: input.transactionId,
     brokerage_id: txn.brokerage_id,
     agent_id: txn.agent_id,
@@ -286,6 +331,9 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     status: "pending",
     notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId }),
   })
+  if (prelimCdActivityError) {
+    console.error("[cdaPortal] preliminary_cd_received activity REJECTED — the CDA-required step will not appear on the transaction:", prelimCdActivityError.message)
+  }
 
   // ── Cross-party notifications + task (additive) ───────────────────────
   // Existing code above notified the AGENT. Spec calls for cross-portal
@@ -336,9 +384,10 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
   // update (when a template exists for the event), and downstream listeners
   // pick it up uniformly.
   try {
-    const { fanOutKernelEvent } = await import("@/lib/kernel/event-fanout")
-    const { KernelEvent }       = await import("@/lib/kernel/events")
-    await fanOutKernelEvent({
+    // emitKernelEvent also writes the cd_received audit row this path never had.
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent }     = await import("@/lib/kernel/events")
+    await emitKernelEvent({
       event:           KernelEvent.CD_RECEIVED,
       brokerageId:     txn.brokerage_id,
       entityType:      "transaction",
@@ -348,6 +397,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
       sellerContactId: (txnFull as any)?.seller_contact_id ?? undefined,
       contactId:       (txnFull as any)?.contact_id        ?? undefined,
       agentUserId:     auth.userId,
+      actorUserId:     auth.userId,
       metadata:        { cdaId, documentId: input.documentId },
     })
   } catch { /* fan-out is best-effort; agent + TC already notified above */ }
@@ -426,6 +476,8 @@ export async function draftOrUpdateCdaAction(input: {
         ...payload,
         transaction_id: input.transactionId,
         brokerage_id: txn.brokerage_id,
+        // The gate above already established auth.agentId === txn.agent_id, so
+        // the assigned agent's agents id is what this row is stamped with.
         agent_id: txn.agent_id,
         revision_number: 1,
       })
@@ -464,11 +516,37 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
-  if (auth.agentId !== cda.agent_id) {
+  // Both sides are agents-class now: auth.agentId is agents.id (lib/kernel/api-auth
+  // says so in capitals) and so is cda.agent_id. Comparing across the two id
+  // spaces is what used to lock the assigned agent out of their own CDA.
+  if (!auth.agentId || auth.agentId !== cda.agent_id) {
     return { success: false as const, error: "only_assigned_agent_can_submit" }
   }
   if (!["pending", "drafting", "changes_requested"].includes(cda.status)) {
     return { success: false as const, error: `cannot_submit_from_status:${cda.status}` }
+  }
+
+  // ── FULL DOCUMENT COMPLIANCE, BEFORE THE CDA CAN BE ACCEPTED ───────────────
+  // The owner's process: the preliminary HUD arrives, the agent fills the CDA
+  // from the brokerage's template, and FULL COMPLIANCE OF ALL DOCUMENTS IN THE
+  // FILE IS RUN BEFORE THE CDA IS ACCEPTED. This rail had a signature pre-scan
+  // and a contract/fee audit but never checked the deal FILE — so a CDA could
+  // reach the compliance officer with disclosures missing, documents rejected
+  // or signatures outstanding, and the first person to notice would be the
+  // closing agent holding a disbursement instruction for an incomplete deal.
+  // runFinalComplianceCheck is the canonical gate (required documents present,
+  // nothing rejected, every signature/initial complete, no open blocking
+  // compliance check) and it reuses canProceedToClosingPrep rather than
+  // re-implementing it. BLOCKING, with the blockers named so the agent knows
+  // what to fix — an unexplained refusal on a commission is worse than none.
+  const { runFinalComplianceCheck } = await import("@/lib/transactions/final-compliance-check")
+  const fileCheck = await runFinalComplianceCheck(cda.transaction_id, cda.brokerage_id)
+  if (!fileCheck.passed) {
+    return {
+      success: false as const,
+      error: "final_compliance_failed",
+      blockers: fileCheck.blockers,
+    }
   }
 
   const now = new Date().toISOString()
@@ -489,6 +567,15 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
         contract_split_pct: submitVerdict.contractSplitPct,
         cap_reached: submitVerdict.capReached,
         outstanding_fees: submitVerdict.outstandingFees,
+        // THE DEDUCTION LINE, beside the total it comes from (wave 26). This is
+        // what compliance confirms appears on the CDA, and what makes the
+        // agent's disbursement readable as share − fees rather than the raw
+        // split. Surfaced, never a blocker: `passed` above is untouched by it.
+        fee_deduction: {
+          amount:         submitVerdict.feeDeduction.amount,
+          required:       submitVerdict.feeDeduction.required,
+          net_after_fees: submitVerdict.feeDeduction.netAfterFees,
+        },
         discrepancies: submitVerdict.discrepancies,
       }
     }
@@ -562,12 +649,53 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
+  // DISCREPANCY SURFACE — carried over from the deleted cda-workflow.ts, which
+  // raised a cda_review_required activity when the computed commission disagreed
+  // with the contract. Here the same check is strictly stronger (live split, cap
+  // and outstanding fees, not just gross), so the activity now rides the verdict
+  // that actually gates approval instead of a parallel comparison.
+  if (submitVerdict && !submitVerdict.passed) {
+    await bestEffort(
+      supabase.from("activities").insert({
+        transaction_id: cda.transaction_id,
+        brokerage_id:   cda.brokerage_id,
+        entity_type:    "transaction",
+        activity_type:  "cda_review_required",
+        title:          "CDA discrepancy — review before approving",
+        description:    `The submitted CDA disagrees with the agent's contract in ${submitVerdict.discrepancies.length} place${submitVerdict.discrepancies.length === 1 ? "" : "s"}. Approval is blocked until it is resolved or manually overridden.`,
+        priority:       "urgent",
+        status:         "pending",
+        notes:          JSON.stringify({ cda_id: cda.id, discrepancies: submitVerdict.discrepancies }),
+      }),
+      "this only SURFACES the discrepancy for a human; approval is blocked by submitVerdict itself, not by this row, so losing it must not roll back a CDA the agent has already submitted — but the loss is now logged instead of silent",
+    )
+  }
+
   // Run signature/initials pre-scan so compliance sees gate status the
   // moment the CDA hits their queue. Best-effort — never blocks submission.
   // Approval-time gate is enforced separately in approveCdaAction.
   try {
     await runSignatureCheckForCdaAction({ cdaId: cda.id })
   } catch { /* informational pre-scan; approval gate still enforces */ }
+
+  // KERNEL LEDGER. Carried over from lib/transactions/cda-workflow.ts (deleted —
+  // it was a second, weaker rail on this same table). The lifecycle ledger is how
+  // the OS reconstructs what happened to a deal; losing the cda.submitted event
+  // when the duplicate went away would have left a hole in the audit trail.
+  try {
+    const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_pending",
+      toState:     "cda_submitted",
+      actorUserId: auth.userId,
+      actorRole:   "agent",
+      eventType:   "cda.submitted",
+      metadata:    { cda_id: cda.id, disposition: disposition.route },
+    })
+  } catch { /* ledger is best-effort — the CDA already moved */ }
 
   if (disposition.route === "external_form_platform") {
     // No in-app broker/compliance — the broker-side steps happen through the agent's external form
@@ -589,7 +717,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       .from("users")
       .select("id")
       .eq("brokerage_id", cda.brokerage_id)
-      .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+      .in("user_type", ["compliance_officer", "admin", "broker"])
 
     for (const u of complianceUsers ?? []) {
       await supabase.from("notifications").insert({
@@ -685,15 +813,35 @@ export async function approveCdaAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
+  // KERNEL LEDGER — carried over from the deleted lib/transactions/cda-workflow.ts.
+  // NOTE the deliberate difference from that rail: it completed the cda_delivered
+  // milestone HERE and shipped the disbursement authorization to title the instant
+  // compliance approved, skipping the broker's signature entirely. The owner's
+  // process is compliance approves → the BROKER SIGNS → it is sent to the closing
+  // agent with a record of the send, so the milestone stays with
+  // sendCdaToTitleAction where the delivery actually happens.
+  try {
+    const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_submitted",
+      toState:     "cda_approved",
+      actorUserId: auth.userId,
+      actorRole:   (auth.userType ?? "compliance_officer") as never,
+      eventType:   "cda.approved",
+      metadata:    { cda_id: cda.id, approver_role: auth.userType },
+    })
+  } catch { /* ledger is best-effort — the approval is already recorded */ }
+
   // Notify the agent that compliance cleared it — now awaiting the broker's signature.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("user_id")
-    .eq("id", cda.agent_id)
-    .maybeSingle()
-  if (agentRow?.user_id) {
+  // notifications.user_id FKs users while cda.agent_id is agents-class, so this
+  // is the one direction that genuinely has to be resolved back.
+  const notifyUserId = await resolveUserIdForAgentRecord(supabase, cda.agent_id ?? "")
+  if (notifyUserId) {
     await supabase.from("notifications").insert({
-      user_id: agentRow.user_id,
+      user_id: notifyUserId,
       brokerage_id: cda.brokerage_id,
       type: "cda_approved",
       title: "CDA approved by compliance",
@@ -710,7 +858,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
     .from("users")
     .select("id")
     .eq("brokerage_id", cda.brokerage_id)
-    .in("user_type", ["broker", "broker_admin", "admin"])
+    .in("user_type", ["broker", "admin"])
     .limit(10)
   for (const b of (brokers ?? []) as Array<{ id: string }>) {
     await supabase.from("notifications").insert({
@@ -818,6 +966,14 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     }
   } catch { /* commission auto-approval is best-effort — the broker sign-off is the authoritative gate */ }
 
+  // FINALIZATION LOCK (owner rule): a broker-signed CDA finalizes the transaction's
+  // commission — it becomes immutable from here. First-writer-wins with the CD-upload
+  // trigger; best-effort so it never blocks the sign-off.
+  try {
+    const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+    await finalizeTransactionCommission(supabase, cda.transaction_id, "cda_signed")
+  } catch { /* finalization is best-effort */ }
+
   await recordRevision({
     cdaId: cda.id,
     revisionNumber: cda.revision_number,
@@ -884,15 +1040,11 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
     actedBy: auth.userId,
   })
 
-  // Notify agent.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("user_id")
-    .eq("id", cda.agent_id)
-    .maybeSingle()
-  if (agentRow?.user_id) {
+  // Notify agent. notifications.user_id FKs users; cda.agent_id is agents-class.
+  const notifyUserId = await resolveUserIdForAgentRecord(supabase, cda.agent_id ?? "")
+  if (notifyUserId) {
     await supabase.from("notifications").insert({
-      user_id: agentRow.user_id,
+      user_id: notifyUserId,
       brokerage_id: cda.brokerage_id,
       type: "cda_changes_requested",
       title: "CDA needs changes",
@@ -916,12 +1068,24 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
+/**
+ * The whole CDA record for one transaction PLUS its revision history.
+ *
+ * closing_disclosure_agreement_revisions is written on every state change of a
+ * money instruction and this is the only reader of it in the codebase — an audit
+ * trail nobody could see is not an audit trail. Surfaced on the transaction CDA
+ * page ("CDA record & audit trail").
+ *
+ * Selects the delivery + post-close columns too, so a caller can tell whether the
+ * signed CDA actually reached the closing agent and whether the final CD and the
+ * check copy came back.
+ */
 export async function getCdaForTransactionAction(transactionId: string) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  const { data: cda } = await supabase
+  const { data: cda, error } = await supabase
     .from("closing_disclosure_agreement")
     .select(
       `id, transaction_id, brokerage_id, agent_id, status, revision_number,
@@ -929,20 +1093,32 @@ export async function getCdaForTransactionAction(transactionId: string) {
        preliminary_cd_uploaded_at, preliminary_cd_document_id,
        agent_drafted_at, agent_signed_off_at, agent_submitted_at,
        compliance_approved_at, compliance_approved_by,
+       broker_approved_at, broker_id,
+       sent_to_title_at, sent_to_title_recipient, sent_to_title_method,
+       final_cd_document_id, final_cd_uploaded_at,
+       check_copy_document_id, check_copy_uploaded_at, closed_at,
+       uses_cda, non_cda_payout_method, non_cda_payout_details,
+       signature_check_passed, manual_override_by, manual_override_reason,
        changes_requested_at, changes_requested_notes,
        created_at, updated_at`,
     )
     .eq("transaction_id", transactionId)
     .maybeSingle()
+  if (error) return { success: false as const, error: error.message }
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
-    return { success: true as const, cda: null }
+    return { success: true as const, cda: null, revisions: [] }
   }
 
-  const { data: revisions } = await supabase
+  const { data: revisions, error: revErr } = await supabase
     .from("closing_disclosure_agreement_revisions")
-    .select("id, revision_number, action, status_at_snapshot, notes, changes_requested_notes, acted_at, acted_by")
+    // commission_breakdown is the MONEY SNAPSHOT recordRevision stores at each
+    // state change — the whole point of an audit trail on a disbursement
+    // instruction — and it had no reader anywhere: the trail showed who acted
+    // and when, but never what the numbers were at that moment.
+    .select("id, revision_number, action, status_at_snapshot, commission_breakdown, notes, changes_requested_notes, acted_at, acted_by")
     .eq("cda_id", cda.id)
     .order("acted_at", { ascending: false })
+  if (revErr) return { success: false as const, error: revErr.message }
 
   return { success: true as const, cda, revisions: revisions ?? [] }
 }
@@ -1036,8 +1212,13 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
     .from("documents")
     .select("document_type, status, metadata")
     .eq("transaction_id", cda.transaction_id)
+  // documents.status live CHECK: draft | draft_ready | generating | review | complete |
+  // archived | needs_agent_input | pending_signature | signed | declined | cancelled.
+  // This used to demand "complete" alone, so a document in the terminal SIGNED state —
+  // the exact state this gate is looking for — was reported as "not finalized + signed".
+  const DOC_SIGNED_OFF = new Set(["complete", "signed"])
   for (const d of docs1 ?? []) {
-    if (d.status !== "complete") {
+    if (!DOC_SIGNED_OFF.has(d.status)) {
       missing.push({ document_type: d.document_type, reason: `Status="${d.status}" — not finalized + signed` })
       continue
     }
@@ -1054,15 +1235,20 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
     .from("transaction_documents")
     .select("doc_type, status")
     .eq("transaction_id", cda.transaction_id)
+  // transaction_documents.status live CHECK: missing | requested | uploaded |
+  // under_review | approved | rejected | pending_signature. "received", "signed" and
+  // "complete" were in this pass-list but are NOT in the constraint — no row can ever
+  // hold them, so they never matched anything. Dropped (behaviour unchanged: "approved"
+  // was and remains the only status that clears this side of the gate) so the vocabulary
+  // in the code is the vocabulary the database actually enforces.
   for (const d of docs2 ?? []) {
-    // Legacy doc rows — flag anything not in a "received"/"signed"/"complete" state
-    if (!["received", "signed", "complete", "approved"].includes((d.status ?? "").toLowerCase())) {
-      missing.push({ document_type: d.doc_type, reason: `Legacy doc status="${d.status}"` })
+    if ((d.status ?? "").toLowerCase() !== "approved") {
+      missing.push({ document_type: d.doc_type, reason: `Document status="${d.status}" — not approved` })
     }
   }
 
   const passed = missing.length === 0
-  await supabase
+  const { error: scanErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       signature_check_passed: passed,
@@ -1070,6 +1256,10 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
       updated_at:             new Date().toISOString(),
     })
     .eq("id", cda.id)
+  // The approval gate reads signature_check_passed. A silently-dropped write here
+  // leaves it NULL, which approveCdaAction treats as grandfathered — i.e. a failed
+  // scan would have opened the gate instead of closing it.
+  if (scanErr) return { success: false as const, error: scanErr.message }
 
   return { success: true as const, passed, missing }
 }
@@ -1134,11 +1324,20 @@ export async function sendCdaToTitleAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  const { data: cda } = await supabase
+  // THE MONEY COLUMNS RIDE ALONG (wave 26). This SELECT used to stop at the
+  // status columns, so the send below had nothing to say and said nothing —
+  // see the body composition note further down.
+  const { data: cda, error: cdaReadErr } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, status, broker_approved_at")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at, gross_commission, agent_net, brokerage_net")
     .eq("id", input.cdaId)
     .maybeSingle()
+  // A refused read is not "no such CDA" — supabase-js resolves refusals, and
+  // reporting one as not_found would send the agent looking for a missing row.
+  if (cdaReadErr) {
+    console.error("[cda-portal] CDA read refused in sendCdaToTitleAction:", cdaReadErr.message)
+    return { success: false as const, error: `cda_read_refused:${cdaReadErr.message}` }
+  }
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
@@ -1147,46 +1346,168 @@ export async function sendCdaToTitleAction(input: {
   const sendVerdict = canSendCdaToTitle({ status: cda.status, brokerSigned: !!cda.broker_approved_at })
   if (!sendVerdict.ok) return { success: false as const, error: sendVerdict.error }
 
+  // ── THE AUTHORIZATION NOW CARRIES THE DISBURSEMENT (§1 merge, wave 26) ─────
+  // The subject line has always said "Approved Commission Disbursement
+  // Authorization"; the body said only "The approved CDA for this transaction is
+  // ready for the closing". The closing agent was told a disbursement was
+  // authorized and never told WHAT to disburse — the figures existed only on
+  // lib/transactions/deal-vendor-notify.ts:deliverCdaToClosingAgent, which
+  // nothing called. Composed here through that module's ONE composer (§6) so the
+  // two surfaces cannot state different splits.
+  //
+  // Honest when the row is thin: a CDA whose money columns are null composes no
+  // figure block rather than a row of $0 the closing agent would have to
+  // interpret. `tcNet` is not a column on this table — the TC take lives in
+  // commission_breakdown and is not modelled here yet, so it is left absent
+  // rather than guessed (the composer omits the line entirely when it is null).
+  const grossCommission = cda.gross_commission == null ? null : Number(cda.gross_commission)
+  const agentNet        = cda.agent_net        == null ? null : Number(cda.agent_net)
+  const brokerageNet    = cda.brokerage_net    == null ? null : Number(cda.brokerage_net)
+  const figuresKnown =
+    grossCommission != null && Number.isFinite(grossCommission) &&
+    agentNet != null        && Number.isFinite(agentNet) &&
+    brokerageNet != null    && Number.isFinite(brokerageNet)
+
+  let disbursementHtml = ""
+  if (figuresKnown) {
+    const { composeCdaDisbursementLines } = await import("@/lib/transactions/deal-vendor-notify")
+    const lines = composeCdaDisbursementLines({
+      grossCommission: grossCommission as number,
+      agentNet:        agentNet as number,
+      brokerageNet:    brokerageNet as number,
+      tcNet:           null,
+    })
+    disbursementHtml =
+      `<p>Our brokerage's compliance review of this commission disbursement is complete and APPROVED. `
+      + `Please disburse at closing as follows:</p><ul>`
+      + lines.map((l) => `<li>${l}</li>`).join("")
+      + `</ul>`
+  }
+
   const method = input.method ?? "email"
+  // ── A SWALLOWED SEND IS NOT A DELIVERY (wave 26) ──────────────────────────
+  // This used to be `try { await dispatchEmail(...) } catch {}` with the result
+  // discarded, and then stamped sent_to_title_at unconditionally below. A send
+  // that threw — or that resolved with success:false, which dispatchEmail does
+  // rather than throwing — was recorded as a delivered disbursement
+  // authorization, and the compliance queue (which buckets delivery off
+  // sent_to_title_at) showed the money instruction as having reached title when
+  // it had not. On the last mile of the money rail that is the §3 swallowed
+  // refusal in its most expensive form. The result is now READ, and a failed
+  // send refuses instead of recording.
   if (method === "email") {
+    let emailOk = false
+    let emailErr: string | null = null
     try {
       const { dispatchEmail } = await import("@/lib/providers/dispatch")
-      await dispatchEmail({
+      const sendResult = await dispatchEmail({
         brokerageId:   cda.brokerage_id,
         systemSource:  "cda",
         from:          "closings@platform.com",
         to:            input.recipientEmail,
         subject:       input.subject ?? "Approved Commission Disbursement Authorization",
         html:          (input.message ?? "")
+                       + disbursementHtml
                        + `<p>The approved CDA for this transaction is ready for the closing.</p>`,
       })
-    } catch { /* best-effort — record the send anyway so the agent can fall back */ }
+      // dispatchEmail reports failure in its RESULT rather than throwing — a
+      // compliance/autonomy/fair-housing hold comes back as { success: false }.
+      // Tested for an explicit true so an unexpected shape fails CLOSED (§4):
+      // "nobody checked" must never render as "checked and fine".
+      emailOk = (sendResult as { success?: boolean } | null)?.success === true
+      if (!emailOk) {
+        emailErr = (sendResult as { error?: string } | null)?.error ?? "provider reported failure"
+      }
+    } catch (e) {
+      emailErr = e instanceof Error ? e.message : String(e)
+    }
+    if (!emailOk) {
+      console.error("[cda-portal] CDA delivery to title FAILED — nothing recorded as sent", {
+        cdaId: cda.id, transactionId: cda.transaction_id, error: emailErr,
+      })
+      return { success: false as const, error: `delivery_failed:${emailErr ?? "unknown"}` }
+    }
   }
 
   const sentNow = new Date().toISOString()
-  await supabase
+  const recipient = input.recipientName
+    ? `${input.recipientName} <${input.recipientEmail}>`
+    : input.recipientEmail
+
+  // THE RECORD OF THE SEND. This write used to also set status:"delivered" — a value the
+  // live CHECK constraint (closing_disclosure_agreement_status_check: awaiting_preliminary_cd,
+  // pending, drafting, submitted, changes_requested, approved, rejected, cancelled) REJECTS.
+  // supabase-js resolves the failed UPDATE instead of throwing and the result was never
+  // destructured, so the whole row update was a silent no-op: the CDA was emailed to the
+  // closing agent and sent_to_title_at / _recipient / _method were never written. Nothing
+  // read status "delivered" anywhere (grep: this line was its only occurrence), and the
+  // compliance queue buckets delivery off sent_to_title_at — which stayed NULL, so the
+  // signed CDA sat in "awaiting delivery" forever and could be re-sent without limit.
+  // Delivery now lives in the sent_to_title_* columns and the status stays "approved".
+  const { error: sendErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
-      status:                  "delivered",
       sent_to_title_at:        sentNow,
-      sent_to_title_recipient: input.recipientName
-        ? `${input.recipientName} <${input.recipientEmail}>`
-        : input.recipientEmail,
+      sent_to_title_recipient: recipient,
       sent_to_title_method:    method,
       updated_at:              sentNow,
     })
     .eq("id", cda.id)
+  if (sendErr) {
+    return { success: false as const, error: `delivery_not_recorded:${sendErr.message}` }
+  }
 
   // The cda_delivered milestone completes on actual DELIVERY to title — not at
   // compliance approval (it used to complete too early, before broker sign + send).
-  await supabase
+  const { error: milestoneErr } = await supabase
     .from("transaction_milestones")
     .update({ status: "completed", completed_at: sentNow })
     .eq("transaction_id", cda.transaction_id)
     .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
+  if (milestoneErr) {
+    // The delivery record above is the authoritative one; a milestone that didn't
+    // move is a reporting gap, not a money error. Surface it rather than hide it.
+    console.error("[cda-portal] cda_delivered milestone not completed", { transactionId: cda.transaction_id, error: milestoneErr.message })
+  }
+
+  // ── THE DELIVERY IS A COMPLIANCE ARTIFACT, NOT A LOG LINE (§1 merge, wave 26)
+  // Merged from lib/transactions/deal-vendor-notify.ts:deliverCdaToClosingAgent,
+  // which recorded this and was never called. The sent_to_title_* columns say
+  // THAT the authorization went out; this row is the timeline entry a compliance
+  // reviewer reads on the transaction — who received the disbursement
+  // instruction, and for what gross. activities.activity_type carries no CHECK
+  // constraint (verified against scripts/check-vocabularies.ts, which has no
+  // `activities:` entry), so this value cannot be refused by the vocabulary.
+  // Best-effort: the delivery already happened and is already recorded above, so
+  // a refused activity must not undo it — but it is LOGGED, never swallowed.
+  const { error: deliveredActivityErr } = await supabase.from("activities").insert({
+    brokerage_id:   cda.brokerage_id,
+    transaction_id: cda.transaction_id,
+    entity_type:    "transaction",
+    activity_type:  "cda_delivered_to_title",
+    title:          "CDA delivered to the closing agent",
+    description:    `Approved disbursement authorization sent to ${recipient}.`,
+    notes:          JSON.stringify({
+      cda_id: cda.id,
+      recipient,
+      method,
+      grossCommission: figuresKnown ? grossCommission : null,
+      figuresIncluded: figuresKnown,
+    }),
+    status:         "completed",
+    completed_at:   sentNow,
+    channel:        method === "email" ? "email" : method,
+  })
+  if (deliveredActivityErr) {
+    console.error(
+      "[cda-portal] cda_delivered_to_title activity REJECTED — the CDA reached title but the transaction has no timeline record of it:",
+      deliveredActivityErr.message,
+    )
+  }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
-  return { success: true as const }
+  revalidatePath(`/dashboard/compliance`)
+  return { success: true as const, sentAt: sentNow, recipient, method }
 }
 
 // ─── Non-CDA path — agent's payout preference ─────────────────────────────
@@ -1221,6 +1542,11 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
     if (!txn || txn.brokerage_id !== auth.brokerageId) {
       return { success: false as const, error: "transaction_not_found" }
     }
+    // Unlike the draft path there is no "caller is the assigned agent" gate
+    // here, so the CDA is stamped with the transaction's own assigned agent.
+    if (!txn.agent_id) {
+      return { success: false as const, error: "transaction_has_no_agent" }
+    }
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
       .insert({
@@ -1237,7 +1563,10 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
     cdaId = created.id
   }
 
-  await supabase
+  // non_cda_payout_method has a live CHECK: NULL | 'direct_deposit' | 'check'.
+  // Anything else is rejected by the database, and an unchecked update would have
+  // reported success while the agent's payout instruction went nowhere.
+  const { data: saved, error: prefErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       uses_cda:                false,
@@ -1246,11 +1575,72 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
       updated_at:              new Date().toISOString(),
     })
     .eq("id", cdaId)
+    .select("id, non_cda_payout_method, transaction_id")
+    .maybeSingle()
+  if (prefErr) return { success: false as const, error: prefErr.message }
+  if (!saved) return { success: false as const, error: "not_found" }
 
-  return { success: true as const, cdaId }
+  revalidatePath(`/dashboard/transactions/${saved.transaction_id}`)
+  return { success: true as const, cdaId, method: saved.non_cda_payout_method as "direct_deposit" | "check" }
 }
 
 // ─── Post-close artifact uploads ──────────────────────────────────────────
+
+/**
+ * Entry point for the two POST-CLOSE artifacts, mirroring uploadPreliminaryCdAction
+ * at the other end of the chain: it records the file as a transaction document and
+ * then attaches it to the CDA through the existing attach actions below, which stay
+ * the only writers of the CDA's artifact columns.
+ *
+ * Why an entry point at all: uploadFinalCdAction / uploadCdaCheckCopyAction both take
+ * a documentId, and nothing in the app created that document for either artifact — so
+ * the tail of the money rail (final CD back from title, copy of the commission check,
+ * close the file) had no way to start. The final CD is also one of the two events that
+ * FINALIZES a transaction's commission (lib/commission/finalization, source
+ * 'cd_uploaded'); with no caller, that half of the finalization lock could never fire.
+ */
+export async function recordCdaClosingArtifactAction(input: {
+  cdaId:    string
+  kind:     "final_cd" | "check_copy"
+  fileName: string
+  fileUrl:  string
+}) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda, error: cdaErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id")
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (cdaErr) return { success: false as const, error: cdaErr.message }
+  if (!cda) return { success: false as const, error: "not_found" }
+
+  // transaction_documents.status live CHECK: missing | requested | uploaded |
+  // under_review | approved | rejected | pending_signature. 'uploaded' is the state
+  // uploadPreliminaryCdAction uses for the same kind of arriving artifact.
+  const { data: doc, error: docErr } = await supabase
+    .from("transaction_documents")
+    .insert({
+      transaction_id: cda.transaction_id,
+      brokerage_id:   cda.brokerage_id,
+      doc_type:       input.kind === "final_cd" ? "final_closing_disclosure" : "cda_check_copy",
+      doc_label:      input.fileName,
+      storage_url:    input.fileUrl,
+      status:         "uploaded",
+      uploaded_by:    auth.userId,
+      uploaded_at:    new Date().toISOString(),
+    })
+    .select("id")
+    .single()
+  if (docErr || !doc) return { success: false as const, error: docErr?.message ?? "insert_failed" }
+
+  return input.kind === "final_cd"
+    ? uploadFinalCdAction({ cdaId: cda.id, documentId: doc.id })
+    : uploadCdaCheckCopyAction({ cdaId: cda.id, documentId: doc.id })
+}
 
 export async function uploadFinalCdAction(input: {
   cdaId:           string
@@ -1260,7 +1650,7 @@ export async function uploadFinalCdAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  await supabase
+  const { data: cdaRow, error: finalErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       final_cd_document_id:  input.documentId,
@@ -1270,6 +1660,24 @@ export async function uploadFinalCdAction(input: {
     })
     .eq("id", input.cdaId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("transaction_id")
+    .maybeSingle()
+  if (finalErr) return { success: false as const, error: finalErr.message }
+  // No row matched ⇒ wrong CDA or wrong tenant. Reporting success here would tell the
+  // user the final CD is on file when nothing was written, and would skip the
+  // commission finalization lock below.
+  if (!cdaRow) return { success: false as const, error: "not_found" }
+
+  // FINALIZATION LOCK (owner rule): an uploaded final CD finalizes the transaction's
+  // commission — immutable from here. First-writer-wins with the CDA-sign trigger;
+  // best-effort so it never blocks the upload.
+  const finalTxnId = (cdaRow as { transaction_id?: string | null } | null)?.transaction_id
+  if (finalTxnId) {
+    try {
+      const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+      await finalizeTransactionCommission(supabase, finalTxnId, "cd_uploaded")
+    } catch { /* finalization is best-effort */ }
+  }
 
   return { success: true as const }
 }
@@ -1282,7 +1690,7 @@ export async function uploadCdaCheckCopyAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  await supabase
+  const { data: row, error } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       check_copy_document_id:  input.documentId,
@@ -1291,23 +1699,58 @@ export async function uploadCdaCheckCopyAction(input: {
     })
     .eq("id", input.cdaId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id, transaction_id")
+    .maybeSingle()
+  if (error) return { success: false as const, error: error.message }
+  if (!row) return { success: false as const, error: "not_found" }
 
+  revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
   return { success: true as const }
 }
 
+/**
+ * Close the CDA file — the last step of the money rail. The disbursement was
+ * authorized, delivered to the closing agent, the final CD came back and the
+ * check copy is on file; closing the CDA marks the commission record complete.
+ * Idempotent (closing an already-closed CDA re-stamps the same terminal state).
+ */
 export async function closeCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  if (!COMPLIANCE_ROLES.has(auth.userType)) {
+    return { success: false as const, error: "forbidden" }
+  }
 
-  await supabase
+  const now = new Date().toISOString()
+  const { data: row, error } = await supabase
     .from("closing_disclosure_agreement")
     .update({
-      closed_at:  new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      closed_at:  now,
+      updated_at: now,
     })
     .eq("id", input.cdaId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id, transaction_id, revision_number, status")
+    .maybeSingle()
+  if (error) return { success: false as const, error: error.message }
+  if (!row) return { success: false as const, error: "not_found" }
 
-  return { success: true as const }
+  // The revision log is how the OS reconstructs what happened to a disbursement.
+  // 'cancelled' is not what this is; the closest truthful value in the live
+  // revisions action CHECK (drafted|submitted|signed_off|changes_requested|
+  // approved|rejected|cancelled) for "the authorized CDA reached its end state"
+  // is 'approved', stamped with an explicit note so the row is unambiguous.
+  await recordRevision({
+    cdaId:          row.id,
+    revisionNumber: row.revision_number ?? 1,
+    status:         row.status ?? "approved",
+    action:         "approved",
+    notes:          "CDA file closed — final CD and check copy on record.",
+    actedBy:        auth.userId,
+  })
+
+  revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
+  revalidatePath(`/dashboard/compliance`)
+  return { success: true as const, closedAt: now }
 }

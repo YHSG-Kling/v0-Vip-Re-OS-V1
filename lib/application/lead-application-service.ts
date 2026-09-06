@@ -1,9 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
-import { calculateLeadScore } from "@/lib/services/lead-management.service"
-import { NotFoundError } from "@/lib/errors"
 import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD APPLICATION SERVICE — business model
@@ -89,6 +87,41 @@ export type Lead = {
   [key: string]: any
 }
 
+/**
+ * THE ONE BROKERAGE LEAD LIST.
+ *
+ * ── MERGED IN (wave 14), BEFORE the duplicate was retired ────────────────────
+ * app/actions/leads.ts used to export a second `getLeads` over the same table,
+ * with the same session-derived brokerage scope and a DIFFERENT filter
+ * vocabulary. It had no caller — its apparent one was a comment in the deleted
+ * app/api/leads/list/route.ts, the string-literal false positive class the
+ * wired-surface guard was hardened against. Per CLAUDE.md §1 the survivor takes
+ * the capability FIRST and the duplicate goes second, so the six filters that
+ * lived only there are here now:
+ *
+ *   lifecycleState        → leads.lifecycle_state (the ISA pipeline vocabulary;
+ *                           NOT the same column as `status`, which is the lead-desk
+ *                           disposition. Both are kept because both have writers.)
+ *   urgencyLevel          → leads.urgency_level
+ *   assignedAgentId       → leads.agent_id, as an admin-view NARROWING. Under
+ *                           adminView:false the agent scope already pins the
+ *                           caller's own rows and this cannot widen it.
+ *   aiIsaOwner            → leads.ai_isa_owner
+ *   minimumViableForIsa   → leads.minimum_viable_for_isa
+ *   activeOnly            → leads.is_active
+ *
+ * `activeOnly` is OPT-IN rather than the retired function's unconditional
+ * `.eq("is_active", true)`. Silently adopting that default here would have
+ * removed rows from the live /app/leads table the moment this shipped — a
+ * behaviour change dressed as a merge. The caller asks for it.
+ *
+ * NOT merged, deliberately: the retired function's ROLE LADDER
+ * (TENANT_ADMIN_USER_TYPES + 'isa', which admits team_lead and isa but not
+ * platform staff) differs from this lane's (LEAD_DESK_ROLES + platform staff).
+ * Widening or narrowing an access roster is an owner ruling, not a merge — the
+ * same call already recorded on the getLead tombstone in
+ * app/actions/lead-management.ts.
+ */
 export async function serviceGetLeads(
   agentId: string,
   brokerageId: string,
@@ -103,6 +136,28 @@ export async function serviceGetLeads(
     sortBy?: string
     sortOrder?: "asc" | "desc"
     adminView?: boolean
+    /** ── merged from the retired app/actions/leads.ts:getLeads ── */
+    lifecycleState?: string
+    urgencyLevel?: string
+    assignedAgentId?: string
+    aiIsaOwner?: boolean
+    minimumViableForIsa?: boolean
+    activeOnly?: boolean
+    /**
+     * TEAM ROW SCOPE — the agents.id list of the caller's own team(s), supplied
+     * by lib/auth/lead-visibility.ts and NEVER by a request body.
+     *
+     * A NARROWING only, and structurally incapable of widening: it is an
+     * additional `.in("agent_id", …)` on top of the brokerage pin and (on the
+     * agent view) on top of the caller's own agent pin, so it can only
+     * intersect. It exists because the owner's ruling admits `team_lead` to the
+     * lead desk while "teams see only their own board" still holds — an
+     * admission with no row scope would hand every team lead the brokerage's
+     * whole desk. An EMPTY array means "a team with no agents", which correctly
+     * matches nothing; `undefined` means brokerage or platform scope, i.e. no
+     * team narrowing at all. The two must not be collapsed.
+     */
+    teamAgentIds?: string[]
   }
 ) {
   const supabase = await createClient()
@@ -130,6 +185,28 @@ export async function serviceGetLeads(
   if (params?.intent) query = query.eq("lead_type", params.intent)
   if (params?.status) query = query.eq("status", params.status)
   if (params?.source) query = query.eq("source", params.source)
+
+  // ── the merged filters ──────────────────────────────────────────────────────
+  if (params?.lifecycleState) query = query.eq("lifecycle_state", params.lifecycleState)
+  if (params?.urgencyLevel) query = query.eq("urgency_level", params.urgencyLevel)
+  // NARROWING ONLY. On the agent view agent_id is already pinned above to the
+  // caller's own id, so this second .eq() can only intersect with it — a caller
+  // naming somebody else's agent id gets an empty page, never their leads.
+  if (params?.assignedAgentId) query = query.eq("agent_id", params.assignedAgentId)
+  // TEAM ROW SCOPE. Applied after every other filter and never in place of one —
+  // it intersects, it cannot widen. `[]` (a team with no agents) becomes an
+  // impossible filter rather than an empty `.in()` list, whose PostgREST spelling
+  // is not a filter at all.
+  if (params?.teamAgentIds !== undefined) {
+    query = params.teamAgentIds.length > 0
+      ? query.in("agent_id", params.teamAgentIds)
+      : query.eq("agent_id", "00000000-0000-0000-0000-000000000000")
+  }
+  if (params?.aiIsaOwner !== undefined) query = query.eq("ai_isa_owner", params.aiIsaOwner)
+  if (params?.minimumViableForIsa !== undefined) {
+    query = query.eq("minimum_viable_for_isa", params.minimumViableForIsa)
+  }
+  if (params?.activeOnly) query = query.eq("is_active", true)
 
   const sortBy = params?.sortBy || "created_at"
   const sortOrder = params?.sortOrder || "desc"
@@ -253,7 +330,7 @@ export async function serviceImportLeads(
   if (!leads?.length) return { imported: 0, deduped: 0, unassigned: 0 }
 
   // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
-  // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
+  // Matches REPRESENTATION_LOCK_STATES (lib/kernel/compliance.ts authority gate).
   const RESTRICTED_STATUSES = new Set([
     "representation",
     "active_transaction",
@@ -307,6 +384,31 @@ export async function serviceImportLeads(
 
     const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+
+    // OWNER RULING, verbatim: "invitation from a lead converting to a contact makes
+    // sense for status qualified but any other new contacts coming in from forms,
+    // lead magnets, other real estate sites, etc. haven't been qualified yet."
+    //
+    // AN IMPORT IS ONE OF THOSE DOORS, and this is the door where the claim is
+    // cheapest to forge: `lead.status` is caller-supplied all the way from
+    // app/actions/lead-management.ts:209 `importLeads`, which is a "use server"
+    // export and therefore a PUBLIC HTTP ENDPOINT (CLAUDE.md §4). Before this line,
+    // an uploaded row that simply said `status: "qualified"` was believed, and a
+    // brokerage could import ten thousand contacts pre-marked as qualified.
+    //
+    // `contacts.status = 'qualified'` is EARNED by the lead→contact CONVERSION path
+    // alone, and is stamped in exactly one place —
+    // lib/portal/portal-invite-core.ts:77 stampQualifiedIfLeadConverted — off the
+    // `leads.contact_id` conversion marker, i.e. off the RECORD.
+    //
+    // NARROWED, NOT REPLACED: only the qualified spelling is refused, and only for
+    // what gets STORED. `aiIsaEnabled` above still reads the RAW incoming status on
+    // purpose — that gate is about active-relationship suppression, it does not list
+    // 'qualified', and re-pointing it here would be a silent change to a different
+    // ruling. Every other imported status is carried through untouched, and the
+    // fallback passed in is this path's OWN prior default, so nothing else moves.
+    const storedStatus = statusForNewContact(incomingStatus, "new")
+
     const sourceLabel = lead.source ?? "admin_import"
 
     // Resolve the owner agent (agents.id) per the precedence in
@@ -329,7 +431,7 @@ export async function serviceImportLeads(
       continue
     }
 
-    const { error: insertErr } = await supabase.from("contacts").insert({
+    const { data: insertedContact, error: insertErr } = await supabase.from("contacts").insert({
       brokerage_id: brokerageId,
       agent_id: assignment.agentId, // agents.id, not users.id
       first_name: lead.first_name ?? "Unknown",
@@ -340,14 +442,18 @@ export async function serviceImportLeads(
       source: sourceLabel,
       source_family: "contact_direct",
       contact_type: "lead",
-      status: incomingStatus || "new",
+      status: storedStatus,
       // Lane B: consent was captured at source. Stamp it explicitly.
       tcpa_consent: true,
       tcpa_consent_at: new Date().toISOString(),
       tcpa_consent_source: sourceLabel,
       // Auto-enroll into AI-ISA unless restricted-status.
       ai_isa_enabled: aiIsaEnabled,
-      // Enrichment runs through the existing PeopleData queue.
+      // Enrichment runs through the existing PeopleData queue — queued for real
+      // right after the insert lands (see below). This comment used to be the
+      // ONLY thing connecting this import to enrichment: nothing here wrote a
+      // queue row, so a list imported through this door was enriched only if the
+      // nightly net happened to reach it.
       enrichment_source: null,
       metadata: {
         imported_via: "serviceImportLeads",
@@ -357,11 +463,37 @@ export async function serviceImportLeads(
         original: lead as Record<string, unknown>,
       },
     })
+      .select("id")
+      .single()
 
     if (insertErr) {
       // Don't abort the batch on a single row failure — log and continue.
       console.error("[serviceImportLeads] insert failed:", insertErr.message)
       continue
+    }
+
+    // AUTOMATIC ENRICHMENT ON A LIST IMPORT (owner, wave 14): "when a list or any
+    // time there is a new contact, there is an automatic enrichment run." This door
+    // creates contacts directly instead of going through captureContact, so it did
+    // not reach the create-time lane the other import door uses.
+    //
+    // The SURVIVOR is called — lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment
+    // — never a second queue writer. It carries the freshness check, the
+    // pending-row idempotency guard, the live-deal suppression the owner ruled on,
+    // and the backlog cap that keeps a 5,000-row list from committing the tenant's
+    // whole vendor budget in one loop. Best-effort: an import row must never fail
+    // because enrichment could not be queued.
+    if (insertedContact?.id) {
+      try {
+        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+        await queueContactEnrichment({
+          contactId:   insertedContact.id,
+          brokerageId,
+          triggerType: "import",
+        })
+      } catch (err) {
+        console.error("[serviceImportLeads] enrichment enqueue failed (non-fatal):", err)
+      }
     }
 
     imported++

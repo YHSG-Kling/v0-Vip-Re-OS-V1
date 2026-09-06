@@ -29,6 +29,7 @@
 // app/components/onboarding/critical-setup-meter.tsx.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -84,7 +85,7 @@ export interface CriticalSetupFacts {
   autonomyPostureReviewed: boolean   // managed_agents.config.autonomy_tier set on ≥1 manager
   // connections
   emailProviderConfigured: boolean   // global_settings.from_email/smtp_host or brokerage email cred
-  smsProviderConfigured: boolean     // platform_credentials twilio/telnyx/bandwidth/vapi
+  smsProviderConfigured: boolean     // platform_credentials twilio/telnyx/bandwidth
   zoomConnected: boolean             // platform_credentials platform='zoom' (brokerage-owned)
   accountingConnected: boolean       // brokerage_integrations accounting or quickbooks cred
   socialConnected: boolean           // social_media_accounts active rows
@@ -100,13 +101,14 @@ export interface CriticalSetupFacts {
   agent?: {
     licenseOnFile: boolean           // agent_licenses.license_number
     voicePrefSet: boolean            // agents.assistant_voice_id / voice_preference
+    twinConfigured: boolean          // avatar + cloned voice (Twin Studio) — agent_voice_profiles / agents.voice_id+avatar_id
     calendarConnected: boolean       // platform_credentials scope='calendar' / agent_api_credentials
     pwaInstalled: boolean            // push_subscriptions row (round-41 PWA + web push)
     contactsCount: number            // contacts rows in the tenant (portal-invite readiness)
   }
   teamLead?: {
     teamConfigured: boolean          // teams row led by this user
-    splitsSet: boolean               // teams.team_split_type set
+    splitsSet: boolean               // the VALUE for the chosen branch is set — not just the defaulted type
     teamBooksConnected: boolean      // team-scoped quickbooks credential
   }
   vendor?: {
@@ -137,7 +139,7 @@ export function emptyCriticalSetupFacts(tier: CriticalTier = "brokerage"): Criti
     trialEndsAt: null,
     brokerageProfileComplete: false,
     listingsCount: 0,
-    agent: { licenseOnFile: false, voicePrefSet: false, calendarConnected: false, pwaInstalled: false, contactsCount: 0 },
+    agent: { licenseOnFile: false, voicePrefSet: false, twinConfigured: false, calendarConnected: false, pwaInstalled: false, contactsCount: 0 },
     teamLead: { teamConfigured: false, splitsSet: false, teamBooksConnected: false },
     vendor: { profileComplete: false, payoutConnected: false, booksConnected: false, w9OnFile: false },
   }
@@ -201,7 +203,7 @@ export const CRITICAL_SETUP_ITEMS: CriticalSetupItem[] = [
     checker: (f) => f.emailProviderConfigured },
   { key: "admin_sms_provider", role: "brokerage_admin", category: "connections",
     title: "Configure SMS / voice",
-    why: "Texting and the AI ISA's calls need a Twilio/Telnyx/Vapi credential — without one the calling and SMS rails are dead.",
+    why: "Texting and the AI ISA's calls need a Twilio or Telnyx credential — without one the calling and SMS rails are dead.",
     settingHref: "/settings/providers",
     checker: (f) => f.smsProviderConfigured },
   { key: "admin_social", role: "brokerage_admin", category: "connections",
@@ -251,6 +253,11 @@ export const CRITICAL_SETUP_ITEMS: CriticalSetupItem[] = [
     why: "Briefings and your AI assistant speak in a default voice until you pick one — your voice preference personalizes every readout.",
     settingHref: "/dashboard/settings/assistant",
     checker: (f) => f.agent?.voicePrefSet ?? false },
+  { key: "agent_twin", role: "agent", category: "voice",
+    title: "Set up your AI avatar & voice",
+    why: "Your on-camera videos and your AI ISA calls fall back to generic media until your avatar (D-ID) and cloned voice (ElevenLabs) exist — set them up once in Twin Studio.",
+    settingHref: "/dashboard/settings/twin-studio",
+    checker: (f) => f.agent?.twinConfigured ?? false },
   { key: "agent_calendar", role: "agent", category: "connections",
     title: "Connect your calendar",
     why: "Showings, appointments, and closings double-book blind until a calendar connection exists.",
@@ -400,7 +407,16 @@ export function composeSetupReadiness(params: {
 
 // ─── Facts loader — honest reads from the REAL tables, nothing invented ──────
 
-const SEAT_USER_TYPES = ["admin", "broker", "broker_admin", "team_lead", "agent", "tc", "isa", "compliance_officer"]
+// The seat list is NOT restated here. This file carried its own copy, and it had
+// drifted from the canonical one in three ways:
+//   · it contained "broker_admin", which users.user_type does not admit at all,
+//     so that entry could never match a row;
+//   · it omitted "broker_owner", which the column DOES admit — a brokerage owner
+//     counted as no seat anywhere;
+//   · it did not exclude SUSPENDED users, while the user-management page does.
+// The result is what the owner reported: the seat number an AGENT saw on the
+// setup meter disagreed with the one an ADMIN saw on the users page, for the same
+// tenant. One list now — lib/kernel/tier-role-matrix.ts SEAT_ROLES.
 
 export async function loadCriticalSetupFacts(
   svc: Svc,
@@ -419,7 +435,7 @@ export async function loadCriticalSetupFacts(
   const facts = emptyCriticalSetupFacts()
 
   const [brk, gs, markets, rules, brandVoice, aiIdentity, managed, smsCred, zoomCred, qbCred,
-    acctInt, social, seatUsers, sub, listings] = await Promise.all([
+    acctInt, social, sub, listings] = await Promise.all([
     svc.from("brokerages")
       .select("plan_tier, license_number, phone, email, website, logo_url, primary_color, trial_ends_at, billing_metadata")
       .eq("id", brokerageId).maybeSingle(),
@@ -434,7 +450,7 @@ export async function loadCriticalSetupFacts(
       .eq("scope_type", "brokerage").eq("scope_id", brokerageId).eq("active", true),
     svc.from("managed_agents").select("config").eq("brokerage_id", brokerageId).is("archived_at", null).limit(50),
     svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true)
-      .in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
+      .in("platform", ["twilio", "telnyx", "bandwidth"]).limit(1),
     svc.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId)
       .eq("platform", "zoom").eq("is_active", true).limit(1),
     svc.from("platform_credentials").select("id").eq("owner_type", "brokerage").eq("owner_id", brokerageId)
@@ -443,8 +459,6 @@ export async function loadCriticalSetupFacts(
       .eq("provider_type", "accounting").limit(1),
     svc.from("social_media_accounts").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("is_active", true),
-    svc.from("users").select("id", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId).in("user_type", SEAT_USER_TYPES),
     svc.from("subscriptions").select("status, stripe_customer_id").eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("listings").select("id", { count: "exact", head: true })
@@ -464,13 +478,18 @@ export async function loadCriticalSetupFacts(
   facts.autonomyPostureReviewed = ((managed.data ?? []) as any[])
     .some((m) => { const c = m?.config; return c && typeof c === "object" && !!(c as any).autonomy_tier })
   const emailCred = await svc.from("platform_credentials").select("id")
-    .eq("brokerage_id", brokerageId).eq("is_active", true).eq("scope", "email").limit(1)
+    // platform_credentials.scope is the OWNERSHIP level (brokerage|team|agent), not a
+// provider family — filtering it by "email"/"calendar"/"financial" matched nothing, so
+// this setup check could never be satisfied no matter what the tenant connected.
+    .eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["sendgrid", "resend", "postmark", "mailgun", "gmail", "outlook"]).limit(1)
   facts.emailProviderConfigured = !!(g.from_email || g.smtp_host) || ((emailCred.data ?? []) as any[]).length > 0
   facts.smsProviderConfigured = ((smsCred.data ?? []) as any[]).length > 0
   facts.zoomConnected = ((zoomCred.data ?? []) as any[]).length > 0
   facts.accountingConnected = ((acctInt.data ?? []) as any[]).length > 0 || ((qbCred.data ?? []) as any[]).length > 0
   facts.socialConnected = (social.count ?? 0) > 0
-  facts.workingSeats = seatUsers.count ?? 0
+  // Seats count PEOPLE, across both role sources. This is the same number the
+  // users page and Settings show — the three disagreed before.
+  facts.workingSeats = (await resolveSeatUsage(svc, brokerageId)).seatCount
   const s = (sub.data ?? {}) as any
   const bm = (b.billing_metadata && typeof b.billing_metadata === "object") ? b.billing_metadata : {}
   facts.billingReady = s.status === "active" || !!s.stripe_customer_id || !!(bm as any).stripe_customer_id
@@ -480,21 +499,26 @@ export async function loadCriticalSetupFacts(
 
   // ── per-user agent slice (also serves tc/compliance inbox checks) ──────────
   if (params.userId) {
-    const [agentRow, lic, agentCal, staffCal, push, contacts] = await Promise.all([
+    const [agentRow, lic, agentCal, staffCal, push, contacts, avp] = await Promise.all([
       params.agentId
-        ? svc.from("agents").select("assistant_voice_id, voice_preference").eq("id", params.agentId).maybeSingle()
+        ? svc.from("agents").select("assistant_voice_id, voice_preference, voice_id, avatar_id").eq("id", params.agentId).maybeSingle()
         : Promise.resolve({ data: null } as any),
       params.agentId
         ? svc.from("agent_licenses").select("license_number").eq("agent_id", params.agentId).limit(1)
         : Promise.resolve({ data: [] } as any),
       params.agentId
         ? svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", params.agentId)
-            .eq("is_active", true).in("scope", ["calendar", "email"]).limit(1)
+            .eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1)
         : Promise.resolve({ data: [] } as any),
       svc.from("platform_credentials").select("id").eq("agent_user_id", params.userId)
-        .eq("is_active", true).in("scope", ["calendar", "email"]).limit(1),
+        .eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1),
       svc.from("push_subscriptions").select("id").eq("user_id", params.userId).is("disabled_at", null).limit(1),
       svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId),
+      // Twin (avatar + cloned voice) — the training-output mirror; agents.voice_id/
+      // avatar_id below are the canonical use-this pointers. Either satisfies "set up".
+      params.agentId
+        ? svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id, avatar_url").eq("agent_id", params.agentId)
+        : Promise.resolve({ data: [] } as any),
     ])
     const a = (agentRow.data ?? {}) as any
     const apiCal = params.agentId
@@ -510,13 +534,21 @@ export async function loadCriticalSetupFacts(
         ((apiCal.data ?? []) as any[]).length > 0,
       pwaInstalled: ((push.data ?? []) as any[]).length > 0,
       contactsCount: contacts.count ?? 0,
+      twinConfigured: (() => {
+        const vps = (avp.data ?? []) as any[]
+        const hasVoice = vps.some((v) => !!v.elevenlabs_voice_id) || !!a.voice_id
+        // A re-hosted avatar_url (poll cron's download step) counts as "set up"
+        // too — it's the profile-facing signal; did_avatar_id is the raw D-ID id.
+        const hasAvatar = vps.some((v) => !!v.did_avatar_id || !!v.avatar_url) || !!a.avatar_id
+        return hasVoice && hasAvatar
+      })(),
     }
   }
 
   // ── team-lead slice ────────────────────────────────────────────────────────
   if (params.includeTeamLead && params.userId) {
     const { data: team } = await svc.from("teams")
-      .select("id, team_split_type")
+      .select("id, team_split_type, team_split_percent, team_split_value")
       .eq("brokerage_id", brokerageId).eq("team_lead_id", params.userId)
       .is("deleted_at", null).limit(1).maybeSingle()
     const t = (team ?? null) as any
@@ -529,7 +561,25 @@ export async function loadCriticalSetupFacts(
     }
     facts.teamLead = {
       teamConfigured: !!t,
-      splitsSet: t?.team_split_type !== null && t?.team_split_type !== undefined && !!t,
+      // A CHECKLIST THAT PASSES ON A COLUMN DEFAULT IS NOT A CHECK.
+      // This used to be `team_split_type IS NOT NULL`, but that column is
+      // `DEFAULT 'percent'` — so every team ever created satisfied the REQUIRED
+      // billing item the moment the row existed, while the value the waterfall
+      // actually reads stayed NULL. MEASURED on the live team: type='percent',
+      // percent=NULL, item "done", and lib/commission/waterfall/08-team-split.ts
+      // computing a ZERO override on every payout.
+      //
+      // The honest test is that the VALUE for the chosen branch is set, because
+      // that is what the money reads: 08-team-split.ts:47 picks its column from
+      // the type alone (NULL and anything unrecognised read as 'percent'), then
+      // takes team_split_value for 'flat' and team_split_percent otherwise.
+      // 0 is a legitimate answer — "this team takes no cut" — so the test is
+      // "not null", never "truthy".
+      splitsSet: !!t && (
+        t.team_split_type === "flat"
+          ? t.team_split_value !== null && t.team_split_value !== undefined
+          : t.team_split_percent !== null && t.team_split_percent !== undefined
+      ),
       teamBooksConnected: teamBooks,
     }
   }
@@ -539,7 +589,7 @@ export async function loadCriticalSetupFacts(
     const [{ data: v }, payout, qb, taxDoc] = await Promise.all([
       svc.from("vendors").select("category, phone, status, name").eq("id", params.vendorId).maybeSingle(),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
-        .eq("is_active", true).in("scope", ["financial"]).limit(1),
+        .eq("is_active", true).in("platform", ["stripe", "plaid", "quickbooks"]).limit(1),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
         .eq("platform", "quickbooks").eq("is_active", true).limit(1),
       svc.from("vendor_tax_documents").select("status, vendor_name_at_filing")

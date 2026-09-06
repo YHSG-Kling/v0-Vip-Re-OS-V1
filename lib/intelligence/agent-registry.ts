@@ -17,6 +17,14 @@
  * conversation-routing vocabulary is unified across all three tables by
  * migration m178 and asserted by scripts/agent-governance-simulator.ts so it
  * cannot drift again.
+ *
+ * THE ABSENT `lib` FIELD. Each entry used to carry a module path, e.g.
+ * tc_agent -> '@/app/actions/ai-transaction-coordinator'. NOTHING read it.
+ * The router uses this registry for names, capabilities and SESSION
+ * bookkeeping; it never loads a module from an entry. The field cost real
+ * time during the m373 audit, where it made an unwired action look reachable
+ * and nearly sent a fix into dead code. A registry entry is not evidence that
+ * an action is wired — so the field that implied otherwise is gone.
  */
 
 export const AGENT_REGISTRY = {
@@ -25,7 +33,6 @@ export const AGENT_REGISTRY = {
     handles: ['lead_qualification', 'outreach_scheduling', 'isa_followup', 'initial_appointment'],
     entityTypes: ['lead', 'contact'],
     triggerConditions: ['new_lead', 'isa_followup_due', 'qualification_incomplete'],
-    lib: '@/lib/ai-isa',
     color: 'blue',
     icon: 'UserCheck',
   },
@@ -34,7 +41,6 @@ export const AGENT_REGISTRY = {
     handles: ['milestone_tracking', 'task_generation', 'deadline_alerts', 'transaction_review'],
     entityTypes: ['transaction'],
     triggerConditions: ['transaction_created', 'milestone_due', 'deal_at_risk', 'stage_changed'],
-    lib: '@/app/actions/ai-transaction-coordinator',
     color: 'green',
     icon: 'ClipboardList',
   },
@@ -43,7 +49,6 @@ export const AGENT_REGISTRY = {
     handles: ['weekly_report', 'stage_playbook', 'objection_coaching', 'deal_strategy'],
     entityTypes: ['contact', 'transaction', 'listing'],
     triggerConditions: ['deal_health_low', 'coaching_requested', 'weekly_cron'],
-    lib: '@/lib/intelligence/coaching-engine',
     color: 'purple',
     icon: 'GraduationCap',
   },
@@ -52,7 +57,6 @@ export const AGENT_REGISTRY = {
     handles: ['listing_announcement', 'social_post', 'email_drip', 'video_script'],
     entityTypes: ['listing', 'contact'],
     triggerConditions: ['listing_published', 'drip_sequence_due', 'content_requested'],
-    lib: '@/lib/content-generation',
     color: 'orange',
     icon: 'Sparkles',
   },
@@ -99,7 +103,12 @@ export function getAgentColor(agentType: AgentType): string {
 export function getAgentDisplayName(agentType: AgentType): string {
   if (agentType === 'human') return 'Human Agent'
   if (agentType === 'none') return 'Unassigned'
-  return (AGENT_REGISTRY as Record<string, { name: string }>)[agentType]?.name || agentType
+  // Through getAgentConfig, not a raw index (orphan burn-down, lane O). The raw
+  // lookup could not resolve the four short aliases this type exists to admit —
+  // 'isa', 'tc', 'coach', 'coordinator' — and returned the bare enum value for
+  // each. That is exactly what the coordination dashboard was rendering before
+  // it adopted this function.
+  return getAgentConfig(agentType)?.name || agentType
 }
 
 /**

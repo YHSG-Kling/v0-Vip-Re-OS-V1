@@ -27,6 +27,15 @@ interface Props {
   token:            string
   status:           TokenStatus
   expiresAt:        string
+  /** buyer_intake_tokens.submitted_at — WHEN this buyer's intake was received.
+   *  Null on a token that has not been submitted, and null on rows written before
+   *  the stamp existed; the panel then says "on file" with no date rather than
+   *  inventing one. */
+  submittedAt?:     string | null
+  /** buyer_intake_tokens.submitted_data — the snapshot of what this buyer typed,
+   *  shown back to them as a receipt. Null before submission and on rows written
+   *  before the column was populated. */
+  submittedData?:   Record<string, unknown> | null
   contactFirstName: string | null
   contactEmail:     string | null
 }
@@ -37,7 +46,7 @@ interface UploadedDoc {
 }
 
 export default function BuyerIntakeForm({
-  token, status, expiresAt, contactFirstName, contactEmail,
+  token, status, expiresAt, submittedAt = null, submittedData = null, contactFirstName, contactEmail,
 }: Props) {
   const [step, setStep] = useState(1)
   const [busy, setBusy] = useState(false)
@@ -52,6 +61,42 @@ export default function BuyerIntakeForm({
   const [fundsMaxPurchase, setFundsMaxPurchase] = useState<string>("")
   const [preApprovalDoc, setPreApprovalDoc] = useState<UploadedDoc | null>(null)
   const [pofDoc, setPofDoc] = useState<UploadedDoc | null>(null)
+
+  // The received-on line, or null. An unparseable stamp yields null rather than
+  // "Invalid Date" on a buyer-facing confirmation.
+  const receivedDate = submittedAt ? new Date(submittedAt) : null
+  const receivedLabel =
+    receivedDate && !Number.isNaN(receivedDate.getTime())
+      ? receivedDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })
+      : null
+
+  // THE RECEIPT, read off submitted_data. Only the keys the submit route actually
+  // writes are rendered, each with the label the form used — an unknown key is
+  // ignored rather than dumped as raw JSON at a buyer.
+  const receipt: Array<{ label: string; value: string }> = (() => {
+    const d = submittedData
+    if (!d) return []
+    const out: Array<{ label: string; value: string }> = []
+    const name = [d.legalFirstName, d.legalMiddleName, d.legalLastName]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .join(" ")
+    if (name) out.push({ label: "Legal name", value: name })
+    const FUNDS_LABEL: Record<string, string> = {
+      pre_approval: "Financing (pre-approval)",
+      pof: "Cash (proof of funds)",
+      mixed: "Financing and cash",
+    }
+    if (typeof d.fundsSourceType === "string" && FUNDS_LABEL[d.fundsSourceType]) {
+      out.push({ label: "Funds source", value: FUNDS_LABEL[d.fundsSourceType] })
+    }
+    if (typeof d.fundsMaxPurchase === "number" && Number.isFinite(d.fundsMaxPurchase)) {
+      out.push({
+        label: "Maximum purchase",
+        value: `$${Math.round(d.fundsMaxPurchase).toLocaleString()}`,
+      })
+    }
+    return out
+  })()
 
   // ── Status panels ────────────────────────────────────────────────────────
   if (status === "expired" || new Date(expiresAt) < new Date()) {
@@ -83,10 +128,22 @@ export default function BuyerIntakeForm({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-sm">
-            Thanks{contactFirstName ? `, ${contactFirstName}` : ""}. Your information is on file with your agent.
+            Thanks{contactFirstName ? `, ${contactFirstName}` : ""}. Your information is on file with your agent
+            {receivedLabel ? `, received ${receivedLabel}` : ""}.
           </p>
+          {receipt.length > 0 && (
+            <dl className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              {receipt.map((r) => (
+                <div key={r.label} className="flex justify-between gap-4 py-0.5">
+                  <dt className="text-muted-foreground">{r.label}</dt>
+                  <dd className="font-medium text-right">{r.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
           <p className="text-sm text-muted-foreground">
             You can close this page. Your agent will reach out with next steps.
+            {receipt.length > 0 && " If anything above is wrong, reply to your agent and they'll correct it."}
           </p>
         </CardContent>
       </Card>

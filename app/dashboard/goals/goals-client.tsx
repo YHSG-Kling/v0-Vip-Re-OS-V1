@@ -15,15 +15,13 @@ import {
   aiCoachGoalProgress,
   syncGoalCurrentValues,
 } from "@/app/actions/ai-agent-goals"
+import { AGENT_GOAL_LABELS, isAgentGoalType, isAutoSynced } from "@/lib/goals/goal-types"
 
-const GOAL_LABELS: Record<string, string> = {
-  transactions: "Closed Transactions",
-  gci: "Gross Commission Income ($)",
-  listings_taken: "Listings Taken",
-  buyer_clients: "Buyer Clients Signed",
-  referrals_generated: "Referrals Generated",
-  reviews_requested: "Reviews Requested",
-}
+// DERIVED, not hand-written. This list used to name six goal types of which
+// FOUR were refused by agent_goals_goal_type_check — every save of those four
+// failed with 23514 while the page reported nothing wrong. The labels now come
+// from the same constant the server validates against.
+const GOAL_LABELS: Record<string, string> = AGENT_GOAL_LABELS
 
 const STATUS_CONFIG = {
   on_track: { label: "On Track", color: "bg-green-100 text-green-700" },
@@ -154,8 +152,15 @@ export function GoalsClient({ agentId, brokerageId, initialGoals, year }: GoalsC
             <Card key={goalType}>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium">
+                  <CardTitle className="text-sm font-medium flex items-center gap-1.5">
                     {GOAL_LABELS[goalType] ?? goalType.replace(/_/g, " ")}
+                    {/* isAutoSynced is the vocabulary's own verdict on whether the
+                        sync can measure this type — an unmeasurable one must say
+                        "update by hand" instead of showing a stalled zero as if
+                        the sync ran and found nothing. */}
+                    {isAgentGoalType(goalType) && !isAutoSynced(goalType) && (
+                      <Badge variant="outline" className="text-[10px] font-normal">manual tracking</Badge>
+                    )}
                   </CardTitle>
                   {goal && (
                     <span className="text-xs text-muted-foreground">

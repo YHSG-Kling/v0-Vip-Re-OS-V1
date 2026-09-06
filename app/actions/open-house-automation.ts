@@ -1,14 +1,13 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationResult } from "@/lib/services"
 import {
   sendOpenHouseInvitation,
-  sendOpenHouseReminder,
   sendWeatherAlertToAgent,
   sendFeedbackRequest,
 } from "@/lib/communications"
@@ -38,10 +37,43 @@ export async function scheduleOpenHouse(params: {
   try {
     const supabase = await createClient()
 
+    // THE TENANT IS THE LISTING'S, RESOLVED THROUGH THE RECORD — not the
+    // caller's. See the worked rationale at app/actions/open-house.ts:481-498:
+    // an open house is filed against `listing_id`, so the event belongs to
+    // whichever brokerage owns that listing, and resolving it from the record
+    // is also what the DB-side triggers compute.
+    //
+    // This insert stamped nothing at all, so it filed open_house_events rows
+    // with a NULL brokerage_id into a table every other writer stamps
+    // (open-house.ts:111, seller-open-house.ts:523,
+    // seller-listing/execution-engine.ts:854,
+    // lib/wizard-staging/content-staging.ts:192). `NULL = <uuid>` is NULL and
+    // never true, so those rows are invisible to every reader that narrows with
+    // .eq("brokerage_id", …) — including verifyEventOwnership() in
+    // seller-open-house.ts, which is what gates the RSVP and QR flows.
+    //
+    // `params.agentId` is passed through untouched: open_house_events.agent_id
+    // FKs agents(id), a disjoint id space from brokerages(id). The two must
+    // never be bridged.
+    const { data: listing, error: listingErr } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+
+    if (listingErr) throw listingErr
+    if (!listing?.brokerage_id) {
+      return {
+        success: false,
+        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
+      }
+    }
+
     const { data, error } = await supabase
       .from("open_house_events")
       .insert({
         listing_id: params.listingId,
+        brokerage_id: listing.brokerage_id,
         agent_id: params.agentId,
         event_date: params.startTime.split("T")[0],
         start_time: params.startTime,
@@ -111,10 +143,37 @@ export async function recordVisitor(params: {
 
     // If contact_id is provided, use direct insert
     if (params.contactId) {
+      // TENANT: the EVENT'S brokerage, read from the record this attendee is
+      // filed against — the same anchor `app/api/open-house/attend/route.ts` and
+      // `lib/kernel/open-house.ts` already use for this table, so there is one
+      // way an attendee gets its tenant rather than two.
+      //
+      // The event is also OWNERSHIP-CHECKED against the caller's brokerage here.
+      // `endOpenHouseEvent` reads attendees `.eq("event_id", …).eq("brokerage_id",
+      // <caller's users.brokerage_id>)`, so an attendee whose event belongs to
+      // another brokerage is unreadable however it is stamped — and stamping the
+      // caller's brokerage on another tenant's event would file the row across
+      // the boundary. Refuse instead.
+      const { data: event, error: eventErr } = await supabase
+        .from("open_house_events")
+        .select("id, brokerage_id")
+        .eq("id", params.openHouseId)
+        .maybeSingle()
+      if (eventErr) {
+        return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
+      }
+      if (!event) {
+        return { success: false, error: "Open house event not found" }
+      }
+      if (event.brokerage_id !== userRow.brokerage_id) {
+        return { success: false, error: "Forbidden: this open house belongs to another brokerage" }
+      }
+
       const { data, error } = await supabase
         .from("open_house_attendees")
         .insert({
           event_id: params.openHouseId,
+          brokerage_id: event.brokerage_id,
           contact_id: params.contactId,
           name: `${params.firstName ?? ""} ${params.lastName ?? ""}`.trim(),
           email: params.email,
@@ -283,6 +342,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (property as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -298,7 +358,18 @@ OUTPUT FORMAT (JSON):
 // MATCH SCORING
 // ============================================
 
-export async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
+/**
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+ * This one had NO auth gate and NO tenant predicate: it read `contacts` and
+ * `listings` by raw caller-supplied id and returned a number derived from both.
+ * That is a cross-tenant INFERENCE ORACLE — the score is a side channel that
+ * leaks another brokerage's contact preferences and another brokerage's listing
+ * attributes to anyone who can guess or enumerate two uuids, without ever
+ * returning a row. It was never meant to be a door: both call sites (:~486 and
+ * :~617) are in THIS file. Lowered to module-private; the callers are unchanged.
+ */
+async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
   if (!isValidUUID(contactId) || !isValidUUID(propertyId)) {
     return 0
   }
@@ -435,6 +506,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -449,6 +521,18 @@ OUTPUT FORMAT (JSON):
   }
 }
 
+/**
+ * `score` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and this string is
+ * printed straight into the prompt that writes a real invitation to a real person,
+ * one line below the match score itself (`- Match Score: ${matchScore}/100`).
+ *
+ * When none of the three specific checks fired, the old code returned the flat
+ * assertion "Good general fit" — for a 12/100 match exactly as confidently as for a
+ * 95/100 one. That is a claim about a person's fit that nothing measured, handed to a
+ * model as a FACT to build an invitation on. The score is the one thing in scope that
+ * knows better, so the no-specific-reason case now defers to it, and the model is
+ * told to be candid rather than to embellish a weak match.
+ */
 function generateMatchReasoning(contact: any, property: any, score: number): string {
   const reasons = []
 
@@ -462,7 +546,17 @@ function generateMatchReasoning(contact: any, property: any, score: number): str
     reasons.push("In preferred neighborhood")
   }
 
-  return reasons.join(", ") || "Good general fit"
+  if (reasons.length > 0) {
+    // A strong score corroborates the specific reasons; a weak one is worth saying
+    // out loud so the copy does not oversell what the data supports.
+    return score >= 70
+      ? `${reasons.join(", ")} (strong match, ${score}/100)`
+      : `${reasons.join(", ")} (partial match, ${score}/100)`
+  }
+
+  if (score >= 70) return `Strong overall fit (${score}/100), though no single stated criterion is on file`
+  if (score >= 40) return `Loose fit (${score}/100) — worth an invite, but do not claim it matches their criteria`
+  return `No recorded criteria match (${score}/100) — invite as a neighbourhood open house, not as a property match`
 }
 
 // ============================================
@@ -495,85 +589,221 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
 
       const matchScore = await calculateMatchScore(contactId, event?.listing_id)
 
-      // Create invitation record
+      // STAGED, THEN PROMOTED ON A REAL DISPATCH. This row used to be written
+      // with sent_at = now() BEFORE the send was attempted, by code whose send
+      // was an empty comment — and then results.push said "sent" regardless of
+      // what happened. Every count downstream (total_invites_sent on the event
+      // analytics reads this table) inherited the fabrication. The sibling
+      // writer in seller-open-house.ts was already corrected this way; this one
+      // was missed.
+      //
+      // contacts.preferred_contact_method has NO check constraint, but
+      // open_house_invitations.channel does — {both, email, in_app, sms}. A
+      // contact whose preference is "phone" or "text" silently FAILED the
+      // insert. Normalise to the vocabulary the column actually accepts.
+      const preference = String(contact?.preferred_contact_method ?? "").toLowerCase()
+      const channel: "email" | "sms" | "both" =
+        preference === "sms" || preference === "text" || preference === "phone"
+          ? "sms"
+          : preference === "both"
+            ? "both"
+            : "email"
+
       const { data: invitation } = await supabase
         .from("open_house_invitations")
         .insert({
           event_id: params.eventId,
           contact_id: contactId,
-          channel: contact?.preferred_contact_method || "email",
+          brokerage_id: contact?.brokerage_id ?? null,
+          channel,
           personalized_message: inviteResult.data.email_body,
           match_score: matchScore,
           match_reasoning: inviteResult.data.reasoning,
-          sent_at: new Date().toISOString(),
+          status: "queued",
+          sent_at: null,
         })
         .select()
         .maybeSingle()
 
-      // Send via email using the AI-generated content
-      if (invitation?.id) {
-        await sendOpenHouseInvitation({
-          contactId,
-          eventId: params.eventId,
-          method: contact?.preferred_contact_method ?? "email",
-          personalizedMessage: inviteResult.data.email_body,
-        })
+      if (!invitation?.id) {
+        results.push({ contactId, status: "failed", error: "Could not stage the invitation" })
+        continue
       }
 
-      results.push({ contactId, status: "sent", invitationId: invitation?.id })
+      // sendOpenHouseInvitation RETURNS { success:false, error } for a refusal
+      // (DNC, suppression, quiet hours, no address on file) — it does not throw,
+      // so the catch below would never see one. Read the result.
+      const sendRes = await sendOpenHouseInvitation({
+        contactId,
+        eventId: params.eventId,
+        method: channel,
+        personalizedMessage: inviteResult.data.email_body,
+        // generatePersonalizedInvite writes an sms_message per contact and this
+        // was the only place that could carry it to the send.
+        personalizedSms: inviteResult.data.sms_message,
+        // ── ORPHAN-ROUTE SWEEP (lane G): THE RSVP LINK'S MISSING HALF. ───────
+        // This is the only place in the tree that knows the staged invitation's
+        // id, and the RSVP page's credential is the PAIR (eventId, invitationId)
+        // — so without it `sendOpenHouseInvitation` could not build a link that
+        // resolves, and it built `/open-house/rsvp/${eventId}` instead, a route
+        // that has never existed. Consequence, not theory: `handleRSVP` (a
+        // complete, hardened writer sitting just below in this file) had no
+        // caller, and `open_house_invitations.rsvp_response` — which the
+        // listing's Marketing tab reads and reports on — was NULL for every
+        // invitee this product has ever mailed.
+        //
+        // The insert above already refuses to continue without `invitation.id`,
+        // so this is always a real row id by the time the send runs.
+        invitationId: invitation.id,
+      })
+
+      if (sendRes.success) {
+        // ── message_id IS THE CORRELATION KEY, and it was never stored ───────
+        // This row carries opened_at and clicked_at, both read by the listing's
+        // Marketing tab (app/actions/seller-open-house.ts:130) and neither ever
+        // written — because the ONLY way an open can find its way back to an
+        // invitation is the provider id, and `message_id` sat NULL on every
+        // invitation ever mailed. The SendGrid webhook now stamps those two
+        // columns by matching this exact value
+        // (lib/outcomes/provider-event-fanout.ts), so an unstamped id here is
+        // the difference between a live engagement number and a permanent zero.
+        //
+        // Email wins over SMS on a "both" send: SendGrid is the channel whose
+        // opens and clicks this OS actually receives.
+        const providerMessageId = sendRes.email?.messageId ?? sendRes.sms?.messageId ?? null
+        await supabase
+          .from("open_house_invitations")
+          .update({ status: "sent", sent_at: new Date().toISOString(), message_id: providerMessageId })
+          .eq("id", invitation.id)
+      }
+
+      results.push({
+        contactId,
+        status: sendRes.success ? "sent" : "failed",
+        error: sendRes.success ? undefined : sendRes.error,
+        invitationId: invitation.id,
+      })
     } catch (error) {
       results.push({ contactId, status: "failed", error: String(error) })
     }
   }
 
-  // Update marketing reach
+  // MARKETING REACH IS WHO WAS REACHED, not who was considered. This used to be
+  // params.contactIds.length — the size of the input list — so a run in which
+  // every single send was refused still reported full reach.
+  const delivered = results.filter((r) => r.status === "sent").length
   await supabase
     .from("open_house_events")
-    .update({ marketing_reach: params.contactIds.length })
+    .update({ marketing_reach: delivered })
     .eq("id", params.eventId)
 
   revalidatePath("/dashboard/open-house")
-  return { success: true, results }
+  // success means at least one invitation actually left the building. A run
+  // where every contact was suppressed is not a success with a nice list.
+  return {
+    success: delivered > 0,
+    delivered,
+    attempted: results.length,
+    error: delivered > 0 ? undefined : (results.find((r) => r.error)?.error ?? "No invitation was delivered"),
+    results,
+  }
 }
 
 // ============================================
 // RSVP HANDLING
 // ============================================
 
+/**
+ * RSVP from an emailed invitation link.
+ *
+ * CREDENTIAL MODEL — read this before touching the client below. The invitee is
+ * an ANONYMOUS visitor: they hold an invitation link, not a platform login, and
+ * most of them never will (they are contacts, not users). The unguessable pair
+ * (eventId, invitationId) IS the credential — both must be supplied and the
+ * invitation must actually belong to that event, which is checked below.
+ *
+ * This ran on `createClient()` (the caller's RLS session). Verified live: the
+ * `open_house_invitations` policy is
+ * `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`, and the
+ * rows `inviteContacts` writes carry the contact's real `brokerage_id` — so for
+ * an anonymous invitee `current_user_brokerage_id()` is NULL, the predicate is
+ * false, and the SELECT was REFUSED. The function's own honest error path then
+ * told every invitee "Could not look up that invitation". **No RSVP from an
+ * emailed link could ever have succeeded.** The service client is the door this
+ * lane needs; the id pair, not a session, is what authorizes it.
+ */
 export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }) {
   if (!isValidUUID(params.eventId) || !isValidUUID(params.invitationId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   try {
-    const { data: invitation } = await supabase
+    // Destructure `error` (wave 4 slice 2). supabase-js RESOLVES a refused
+    // query, so `const { data: invitation }` alone turned an RLS refusal into
+    // the same "Invitation not found" as a bad id — and this path then went on
+    // to write.
+    const { data: invitation, error: invErr } = await supabase
       .from("open_house_invitations")
       .select("*")
       .eq("id", params.invitationId)
       .maybeSingle()
 
+    if (invErr) {
+      return { success: false, error: "Could not look up that invitation — your RSVP was not recorded." }
+    }
     if (!invitation) {
       return { success: false, error: "Invitation not found" }
     }
+    // The invitation must actually belong to the event named in the link.
+    // Without this, an invitation id and an event id from two different
+    // brokerages could be combined into one tracking row.
+    if (invitation.event_id !== params.eventId) {
+      return { success: false, error: "Invitation not found" }
+    }
 
-    // Update invitation
-    await supabase
+    // Update invitation — refuse a zero-row write instead of thanking the
+    // invitee for an RSVP that was never recorded.
+    const { data: updated, error: updErr } = await supabase
       .from("open_house_invitations")
       .update({
         rsvp_response: params.response,
         rsvp_updated_at: new Date().toISOString(),
       })
       .eq("id", params.invitationId)
+      .select("id")
 
-    // Track RSVP
-    await supabase.from("open_house_rsvp_tracking").insert({
+    if (updErr) return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    if (!updated || updated.length === 0) {
+      return { success: false, error: "Your RSVP could not be saved. Please try again." }
+    }
+
+    // Track RSVP.
+    // brokerage_id is STAMPED from the invitation. It was omitted entirely, and
+    // open_house_rsvp_tracking's RLS policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` with
+    // a NULLABLE brokerage_id (both verified live) — so every row this endpoint
+    // wrote was untenanted, which under that policy means readable AND writable
+    // by every user of every tenant, and by anonymous callers. Stamping the
+    // tenant closes it; a row with no resolvable tenant is refused rather than
+    // written world-open.
+    const rsvpBrokerageId = (invitation as { brokerage_id?: string | null }).brokerage_id ?? null
+    if (!rsvpBrokerageId) {
+      return { success: false, error: "This invitation is not linked to a brokerage — your RSVP was not recorded." }
+    }
+    const { error: trackErr } = await supabase.from("open_house_rsvp_tracking").insert({
+      brokerage_id: rsvpBrokerageId,
       event_id: params.eventId,
       contact_id: invitation.contact_id,
       rsvp_status: params.response,
       rsvp_updated_at: new Date().toISOString(),
     })
+    if (trackErr) {
+      // The RSVP itself landed on the invitation above — say what did and did
+      // not happen rather than reporting a clean success or a clean failure.
+      console.error("[handleRSVP] rsvp tracking insert failed:", trackErr.message)
+    }
 
     revalidatePath("/dashboard/open-house")
 
@@ -678,6 +908,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -864,11 +1095,30 @@ export async function createOpenHouseEvent(params: {
   const supabase = await createClient()
 
   try {
+    // Tenant resolved through the RECORD (the listing this open house is on),
+    // for the reason spelled out on scheduleOpenHouse above and worked through
+    // at app/actions/open-house.ts:481-498. `params.agentId` stays as passed —
+    // agents(id) and brokerages(id) are disjoint id spaces.
+    const { data: listing, error: listingErr } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.propertyId)
+      .maybeSingle()
+
+    if (listingErr) throw listingErr
+    if (!listing?.brokerage_id) {
+      return {
+        success: false,
+        error: "Listing not found, or it has no brokerage on record — the open house was not created.",
+      }
+    }
+
     const { data: event, error } = await supabase
       .from("open_house_events")
       .insert({
         agent_id: params.agentId,
         listing_id: params.propertyId,
+        brokerage_id: listing.brokerage_id,
         event_date: params.eventDate,
         start_time: params.startTime,
         end_time: params.endTime,
@@ -997,11 +1247,18 @@ export async function fetchWeatherForEvent(eventId: string) {
     if (weather.quality_score < 50) {
       console.log(`[v0] Weather warning for event ${eventId}: score ${weather.quality_score}`)
       if (event.agent_id) {
-        await sendWeatherAlertToAgent({
+        // event.agent_id is an agents.id; the alert resolves it to the agent's
+        // users row for a mailbox. Non-fatal, but no longer silent — the result
+        // used to be discarded entirely, so a failed alert looked identical to
+        // a delivered one from here.
+        const alert = await sendWeatherAlertToAgent({
           eventId,
           agentId: event.agent_id,
-          weatherData: weather
+          weatherData: weather,
         })
+        if (!alert.success) {
+          console.error(`[open-house] Weather alert not delivered for event ${eventId}: ${alert.error}`)
+        }
       }
     }
 
@@ -1091,6 +1348,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -1137,16 +1395,27 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
       .maybeSingle()
 
     const feedbackUrl = `${process.env.NEXT_PUBLIC_APP_URL || ""}/open-house/feedback/${attendeeId}`
-  
-    // Send feedback request via email and SMS
-    if (attendee.contact_id) {
-      await sendFeedbackRequest({
-        contactId: attendee.contact_id,
-        eventId: attendee.event_id,
-        feedbackUrl
-      })
+
+    // An attendee with no linked contact has nowhere to send to. Saying so beats
+    // returning success for a request that was never addressed to anyone — the
+    // analytics tab marks the attendee "sent" and stops offering the button.
+    if (!attendee.contact_id) {
+      return { success: false, error: "This attendee has no linked contact record to reach" }
     }
-  
+
+    // sendFeedbackRequest RETURNS { success:false, error } on a refusal and does
+    // not throw. This used to return { success: true } unconditionally, so the
+    // tab reported "Feedback request sent" for a function that sent nothing.
+    const res = await sendFeedbackRequest({
+      contactId: attendee.contact_id,
+      eventId: attendee.event_id,
+      feedbackUrl,
+    })
+
+    if (!res.success) {
+      return { success: false, error: res.error ?? "The feedback request was not delivered" }
+    }
+
     return { success: true, feedbackUrl }
   } catch (error) {
     console.error("Send feedback request error:", error)
@@ -1168,17 +1437,54 @@ export async function submitFeedback(params: {
     return { success: false, error: "Invalid attendee ID" }
   }
 
-  const supabase = await createClient()
+  // CREDENTIAL MODEL: identical to handleRSVP above. The person filling this in
+  // is an open-house visitor following the link `sendFeedbackRequestToAttendee`
+  // emails them (`/open-house/feedback/<attendeeId>`); the unguessable attendee
+  // id is the credential. On the RLS session client the
+  // `open_house_attendees` policy
+  // (`brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`)
+  // refused every anonymous read, so this endpoint could only ever answer
+  // "Could not look up that visit" to the very people it was built for.
+  const supabase = createServiceClient()
 
   try {
-    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+    // Destructure `error` — a refusal must not read as "Attendee not found"
+    // and must never fall through to a write. (wave 4 slice 2)
+    const { data: attendee, error: attErr } = await supabase
+      .from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
 
+    if (attErr) {
+      return { success: false, error: "Could not look up that visit — your feedback was not saved." }
+    }
     if (!attendee) {
       return { success: false, error: "Attendee not found" }
     }
 
-    // Update attendee record
-    await supabase
+    // open_house_feedback carries a buyer's price opinion, their concerns and
+    // their contact link. Its RLS policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` and
+    // brokerage_id is NULLABLE (both verified live), so a row written with a
+    // null tenant is readable by every user of every tenant AND by anonymous
+    // callers. `attendee.brokerage_id ?? null` did exactly that whenever the
+    // attendee row had drifted untenanted. Resolve from the event as a fallback
+    // and REFUSE rather than write the feedback world-open.
+    let feedbackBrokerageId: string | null =
+      (attendee as { brokerage_id?: string | null }).brokerage_id ?? null
+    if (!feedbackBrokerageId && attendee.event_id) {
+      const { data: ev } = await supabase
+        .from("open_house_events").select("brokerage_id").eq("id", attendee.event_id).maybeSingle()
+      feedbackBrokerageId = (ev as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    if (!feedbackBrokerageId) {
+      return {
+        success: false,
+        error: "This visit is not linked to a brokerage — your feedback was not saved.",
+      }
+    }
+
+    // Update attendee record — refuse a zero-row write rather than thanking the
+    // visitor for feedback that was never stored.
+    const { data: attUpdated, error: attUpdErr } = await supabase
       .from("open_house_attendees")
       .update({
         feedback_rating: params.overallRating,
@@ -1186,13 +1492,18 @@ export async function submitFeedback(params: {
         feedback_collected_at: new Date().toISOString(),
       })
       .eq("id", params.attendeeId)
+      .select("id")
+
+    if (attUpdErr || !attUpdated || attUpdated.length === 0) {
+      return { success: false, error: "Your feedback could not be saved. Please try again." }
+    }
 
     // Store detailed feedback in the correct table with correct column names
-    await supabase.from("open_house_feedback").insert({
+    const { error: fbErr } = await supabase.from("open_house_feedback").insert({
       attendee_id: params.attendeeId,
       event_id: attendee.event_id,
       contact_id: attendee.contact_id ?? null,
-      brokerage_id: attendee.brokerage_id ?? null,
+      brokerage_id: feedbackBrokerageId,
       rating: params.overallRating,
       price_opinion: params.pricingFeedback ?? null,
       liked_most: params.whatLikedMost ?? null,
@@ -1200,6 +1511,12 @@ export async function submitFeedback(params: {
       interested_in_offer: params.wouldMakeOffer === "yes",
       has_own_agent: attendee.working_with_agent ?? false,
     })
+    if (fbErr) {
+      return {
+        success: false,
+        error: "Your rating was recorded but the detailed feedback could not be saved. Please try again.",
+      }
+    }
 
     // Update lead score based on feedback
     let scoreAdjustment = 0
@@ -1329,11 +1646,39 @@ export async function checkInAttendee(params: {
       return { success: false, error: "Already checked in" }
     }
 
-    // Create attendee record
-    const { data: attendee } = await supabase
+    // TENANT: the EVENT'S brokerage — the record this attendee is filed against.
+    // Nothing else in this function's scope carries one (it takes no caller
+    // context at all), and `endOpenHouseEvent` pairs `event_id` with the caller's
+    // brokerage when it reads attendees back, so the event is the only anchor
+    // that can make this row readable by the surface that owns it.
+    const { data: event, error: eventErr } = await supabase
+      .from("open_house_events")
+      .select("id, brokerage_id")
+      .eq("id", params.eventId)
+      .maybeSingle()
+    if (eventErr) {
+      return { success: false, error: `Could not verify the open house: ${eventErr.message}` }
+    }
+    if (!event) {
+      return { success: false, error: "Open house event not found" }
+    }
+
+    // Create attendee record.
+    //
+    // THE INSERT IS DESTRUCTURED, AND IT MATTERS MORE HERE THAN THE STAMP:
+    // `open_house_attendees.contact_id` is NOT NULL on the live schema and this
+    // writer sends no contact at all, so every call has been refused 23502 —
+    // while `const { data: attendee }` read the refusal as "no row returned" and
+    // the function returned `{ success: true, data: null }`. Resolving an email
+    // to a contact (or creating one, the way the public sign-in route does) is a
+    // product decision, so it is NAMED here rather than guessed at: this action
+    // currently has no callers in the tree, and the check-in surface uses
+    // `app/actions/seller-open-house.ts:checkInAttendee` instead.
+    const { data: attendee, error: attendeeErr } = await supabase
       .from("open_house_attendees")
       .insert({
         event_id: params.eventId,
+        brokerage_id: event.brokerage_id,
         email: params.contactEmail,
         name: params.contactName,
         phone: params.contactPhone ?? null,
@@ -1346,6 +1691,10 @@ export async function checkInAttendee(params: {
       })
       .select()
       .maybeSingle()
+
+    if (attendeeErr) {
+      return { success: false, error: attendeeErr.message }
+    }
 
     revalidatePath("/dashboard/open-house")
     return { success: true, data: attendee }

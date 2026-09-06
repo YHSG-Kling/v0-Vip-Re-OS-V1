@@ -8,7 +8,9 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getPlatformConfig, getAllPlatformConfigs, validateSnippetForPlatform } from "./video-repurposing.utils"
+// The repurposed_content_log CHECK vocabularies live in the non-"use server"
+// sibling: a top-level "use server" module may only export async functions.
+import { REPURPOSE_LOG_STATUSES, REPURPOSE_LOG_APPROVAL_STATUSES } from "./video-repurposing.utils"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -106,21 +108,39 @@ export interface RepurposedContentLog {
 }
 
 // Platform-specific configurations
+//
+// THE ONE PLATFORM VOCABULARY FOR REPURPOSING. A second `PlatformTarget` union
+// and a second `PLATFORM_CONFIGS` map lived in ./video-repurposing.utils.ts and
+// disagreed with this one on both the NAMES (`instagram_reel` vs
+// `instagram_reels`, `youtube_short` vs `youtube_shorts`, `linkedin_video` vs
+// `linkedin`) and the LIMITS (tiktok 600s/10 hashtags there, 180s/100 here).
+// Only this map reaches the database — every writer of
+// `video_snippets.platform_target` normalises against it — so this is the
+// survivor and the other is gone (tombstone at video-repurposing.utils.ts).
+//
+// `minDuration` is MERGED FORWARD from that copy: it was the one field the
+// duplicate carried that this map lacked AND that had a real enforcement site
+// (its validateSnippetForPlatform rejected a too-SHORT snippet, while this
+// file's create path only ever checked the maximum). Values follow the
+// duplicate where the platform corresponds; instagram_story and instagram_post
+// exist only here and take Instagram's 3s floor, the same floor the duplicate
+// gave instagram_reel.
 const PLATFORM_CONFIGS: Record<PlatformTarget, {
+  minDuration: number
   maxDuration: number
   aspectRatio: AspectRatio
   maxCaptionLength: number
   hashtagLimit: number
   displayName: string
 }> = {
-  instagram_reels: { maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Reels" },
-  instagram_story: { maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 0, hashtagLimit: 10, displayName: "Instagram Stories" },
-  instagram_post: { maxDuration: 60, aspectRatio: "1:1", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Post" },
-  tiktok: { maxDuration: 180, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 100, displayName: "TikTok" },
-  youtube_shorts: { maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 100, hashtagLimit: 15, displayName: "YouTube Shorts" },
-  facebook_reels: { maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Facebook Reels" },
-  linkedin: { maxDuration: 600, aspectRatio: "16:9", maxCaptionLength: 3000, hashtagLimit: 5, displayName: "LinkedIn Video" },
-  twitter: { maxDuration: 140, aspectRatio: "16:9", maxCaptionLength: 280, hashtagLimit: 10, displayName: "Twitter/X Video" },
+  instagram_reels: { minDuration: 3, maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Reels" },
+  instagram_story: { minDuration: 3, maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 0, hashtagLimit: 10, displayName: "Instagram Stories" },
+  instagram_post: { minDuration: 3, maxDuration: 60, aspectRatio: "1:1", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Post" },
+  tiktok: { minDuration: 3, maxDuration: 180, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 100, displayName: "TikTok" },
+  youtube_shorts: { minDuration: 15, maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 100, hashtagLimit: 15, displayName: "YouTube Shorts" },
+  facebook_reels: { minDuration: 3, maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Facebook Reels" },
+  linkedin: { minDuration: 3, maxDuration: 600, aspectRatio: "16:9", maxCaptionLength: 3000, hashtagLimit: 5, displayName: "LinkedIn Video" },
+  twitter: { minDuration: 1, maxDuration: 140, aspectRatio: "16:9", maxCaptionLength: 280, hashtagLimit: 10, displayName: "Twitter/X Video" },
 }
 
 // ============================================
@@ -173,6 +193,14 @@ export async function getVideoSnippets(filters?: {
   return data || []
 }
 
+/**
+ * WIRED: the snippet detail sheet on /dashboard/videos/snippets — "Details"
+ * opens the full caption, hashtags and the source project this clip was cut
+ * from. Also the ownership gate scheduleSnippetToSocial leans on.
+ *
+ * Reads through the SERVICE client (RLS bypassed) and is therefore gated by the
+ * explicit `.eq("brokerage_id", auth.brokerageId)` below, not by policy.
+ */
 export async function getSnippetById(snippetId: string) {
   if (!isValidUUID(snippetId)) return null
 
@@ -181,6 +209,9 @@ export async function getSnippetById(snippetId: string) {
 
   const supabase = createServiceClient()
 
+  // .maybeSingle(), not .single(): a snippet belonging to another brokerage is
+  // simply "not here", and .single() turned that ordinary miss into a logged
+  // PGRST116 error every time.
   const { data, error } = await supabase
     .from("video_snippets")
     .select(`
@@ -190,7 +221,7 @@ export async function getSnippetById(snippetId: string) {
     `)
     .eq("id", snippetId)
     .eq("brokerage_id", auth.brokerageId)
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[video-repurposing] Error fetching snippet:", error)
@@ -198,6 +229,62 @@ export async function getSnippetById(snippetId: string) {
   }
 
   return data
+}
+
+/** The browser-safe projection of getSnippetById for the detail sheet. */
+export interface SnippetDetail {
+  id: string
+  snippetTitle: string
+  platformTarget: string
+  aspectRatio: string | null
+  startSeconds: number
+  endSeconds: number
+  captionText: string | null
+  hashtags: string[]
+  approvalStatus: string
+  videoUrl: string | null
+  thumbnailUrl: string | null
+  createdAt: string
+  sourceTitle: string | null
+  sourceStatus: string | null
+  sourceVideoUrl: string | null
+}
+
+export async function getSnippetDetail(
+  snippetId: string
+): Promise<{ success: boolean; snippet?: SnippetDetail; error?: string }> {
+  if (!isValidUUID(snippetId)) return { success: false, error: "Invalid snippet ID" }
+
+  const row = await getSnippetById(snippetId)
+  if (!row) return { success: false, error: "Snippet not found" }
+
+  const r = row as Record<string, any>
+  const project = r.ai_video_projects ?? null
+  const asset = r.video_assets ?? null
+
+  return {
+    success: true,
+    snippet: {
+      id: r.id,
+      snippetTitle: r.snippet_title,
+      platformTarget: r.platform_target,
+      aspectRatio: r.aspect_ratio ?? null,
+      startSeconds: r.start_seconds,
+      endSeconds: r.end_seconds,
+      captionText: r.caption_text ?? null,
+      hashtags: Array.isArray(r.hashtags) ? r.hashtags : [],
+      approvalStatus: r.approval_status,
+      videoUrl: r.video_url ?? null,
+      thumbnailUrl: r.thumbnail_url ?? null,
+      createdAt: r.created_at,
+      sourceTitle: project?.title ?? asset?.title ?? null,
+      // ai_video_projects.status has no CHECK constraint and two live
+      // vocabularies; the sheet shows the raw token rather than pretending to
+      // normalise it.
+      sourceStatus: project?.status ?? null,
+      sourceVideoUrl: project?.video_url ?? asset?.video_url ?? null,
+    },
+  }
 }
 
 export async function createVideoSnippet(data: {
@@ -255,10 +342,17 @@ export async function createVideoSnippet(data: {
   // Auto-determine aspect ratio if not provided
   const aspectRatio = data.aspectRatio || PLATFORM_CONFIGS[normalizedPlatform].aspectRatio
 
-  // Validate duration against platform limits
+  // Validate duration against platform limits — BOTH ends of the range.
+  // The floor arrived with the merge from ./video-repurposing.utils.ts: a
+  // one-second "YouTube Short" or a two-second Reel is rejected by the platform
+  // on upload, and until now it was accepted here, stored, and only failed at
+  // distribution time where the agent could no longer see why.
   const duration = data.endSeconds - data.startSeconds
-  const maxDuration = PLATFORM_CONFIGS[normalizedPlatform].maxDuration
+  const { minDuration, maxDuration } = PLATFORM_CONFIGS[normalizedPlatform]
 
+  if (duration < minDuration) {
+    throw new Error(`Snippet duration (${duration}s) is below the ${normalizedPlatform} minimum of ${minDuration}s`)
+  }
   if (duration > maxDuration) {
     throw new Error(`Snippet duration (${duration}s) exceeds ${normalizedPlatform} limit of ${maxDuration}s`)
   }
@@ -367,33 +461,63 @@ export async function updateSnippetApprovalStatus(
   return snippet
 }
 
-export async function deleteSnippet(snippetId: string) {
-  if (!isValidUUID(snippetId)) throw new Error("Invalid snippet ID")
+/**
+ * WIRED: the Delete control on each row of the snippet library
+ * (/dashboard/videos/snippets).
+ */
+export async function deleteSnippet(
+  snippetId: string
+): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(snippetId)) return { success: false, error: "Invalid snippet ID" }
 
   const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
 
-  // Scope by brokerage so a hostile caller can't wipe another tenant's snippets
-  const { error } = await supabase
+  // Scope by brokerage so a hostile caller can't wipe another tenant's snippets.
+  // `count: "exact"` is what makes the refusal legible: a DELETE that matches
+  // nothing SUCCEEDS in postgrest, so without the count a cross-tenant id (or an
+  // already-deleted one) would have been reported to the user as a deletion.
+  const { error, count } = await supabase
     .from("video_snippets")
-    .delete()
+    .delete({ count: "exact" })
     .eq("id", snippetId)
     .eq("brokerage_id", auth.brokerageId)
 
   if (error) {
     console.error("[video-repurposing] Error deleting snippet:", error)
-    throw error
+    return { success: false, error: error.message }
+  }
+
+  if (!count) {
+    return { success: false, error: "Snippet not found" }
   }
 
   revalidatePath("/dashboard/videos/snippets")
+  revalidatePath("/dashboard/campaigns/repurpose")
   return { success: true }
 }
 
 // ============================================
 // AI-POWERED SNIPPET GENERATION
 // ============================================
+
+export interface SnippetSuggestion {
+  platform: PlatformTarget
+  title: string
+  startSeconds: number
+  endSeconds: number
+  captionText: string
+  hashtags: string[]
+  rationale: string
+}
+
+export interface SnippetSuggestionsResult {
+  success: boolean
+  suggestions: SnippetSuggestion[]
+  error?: string
+}
 
 export async function generateSnippetSuggestions(params: {
   videoProjectId?: string
@@ -403,10 +527,10 @@ export async function generateSnippetSuggestions(params: {
   sourceTitle?: string
   brokerageId?: string  // ignored — derived from session
   platforms: PlatformTarget[]
-}) {
+}): Promise<SnippetSuggestionsResult> {
   // Auth gate — burns paid AI inference per platform requested.
   const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
+  if (!auth.ok) return { success: false, suggestions: [], error: auth.error }
 
   const supabase = createServiceClient()
 
@@ -415,24 +539,40 @@ export async function generateSnippetSuggestions(params: {
   let scriptContent = ""
 
   if (params.videoProjectId) {
-    const { data } = await supabase
+    // NOTE: .single() RESOLVES with error (PGRST116) on zero rows rather than
+    // throwing, so the error has to be read — otherwise a missing project fell
+    // through as `data === null`, the `data && ...` tenant check below was
+    // skipped entirely, and the caller got "Video not found" for what may have
+    // been a refused read.
+    const { data, error } = await supabase
       .from("ai_video_projects")
       .select("id, title, script_content, duration_seconds, video_type, brokerage_id")
       .eq("id", params.videoProjectId)
-      .single()
-    if (data && data.brokerage_id !== auth.brokerageId) {
-      throw new Error("Forbidden: video project not in your brokerage")
+      .maybeSingle()
+    if (error) {
+      console.error("[video-repurposing] Source project read error:", error)
+      return { success: false, suggestions: [], error: error.message }
+    }
+    // brokerage_id is NULLABLE on ai_video_projects, so an untenanted row is
+    // visible to every brokerage under RLS and this read uses the SERVICE
+    // client, which bypasses RLS outright. Equality is the gate; NULL fails it.
+    if (!data || data.brokerage_id !== auth.brokerageId) {
+      return { success: false, suggestions: [], error: "Video project not found" }
     }
     videoDetails = data
     scriptContent = data?.script_content || ""
   } else if (params.sourceVideoAssetId) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("video_assets")
       .select("id, title, description, duration_seconds, brokerage_id")
       .eq("id", params.sourceVideoAssetId)
-      .single()
-    if (data && data.brokerage_id !== auth.brokerageId) {
-      throw new Error("Forbidden: video asset not in your brokerage")
+      .maybeSingle()
+    if (error) {
+      console.error("[video-repurposing] Source asset read error:", error)
+      return { success: false, suggestions: [], error: error.message }
+    }
+    if (!data || data.brokerage_id !== auth.brokerageId) {
+      return { success: false, suggestions: [], error: "Video asset not found" }
     }
     videoDetails = data
     scriptContent = data?.description || ""
@@ -447,18 +587,13 @@ export async function generateSnippetSuggestions(params: {
   }
 
   if (!videoDetails) {
-    throw new Error("Video not found")
+    return { success: false, suggestions: [], error: "Pick a source, or paste a transcript, first." }
+  }
+  if (!params.platforms?.length) {
+    return { success: false, suggestions: [], error: "Select at least one platform." }
   }
 
-  const suggestions: Array<{
-    platform: PlatformTarget
-    title: string
-    startSeconds: number
-    endSeconds: number
-    captionText: string
-    hashtags: string[]
-    rationale: string
-  }> = []
+  const suggestions: SnippetSuggestion[] = []
 
   // Generate AI suggestions for each platform
   for (const platform of params.platforms) {
@@ -536,7 +671,15 @@ Focus on:
     }
   }
 
-  return suggestions
+  return { success: true, suggestions }
+}
+
+export interface BatchCreateSnippetsResult {
+  success: boolean
+  created: VideoSnippet[]
+  snippetIds: string[]
+  failed: Array<{ platform: PlatformTarget; error: string }>
+  error?: string
 }
 
 export async function batchCreateSnippets(params: {
@@ -552,11 +695,15 @@ export async function batchCreateSnippets(params: {
     hashtags: string[]
   }>
   createdBy?: string  // ignored — derived from session
-}) {
+}): Promise<BatchCreateSnippetsResult> {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
 
   const createdSnippets: VideoSnippet[] = []
+  // Per-snippet failures used to be console.error'd and dropped, so the wizard
+  // could report "created N snippets" for a batch in which every single insert
+  // was refused. The surface reports the server's real verdict now.
+  const failed: Array<{ platform: PlatformTarget; error: string }> = []
 
   for (const snippet of params.snippets) {
     try {
@@ -572,8 +719,33 @@ export async function batchCreateSnippets(params: {
         hashtags: snippet.hashtags,
       })
       createdSnippets.push(created)
+
+      // RECORD IT WHERE THE NEXT READER LOOKS. The Omni-Presence Repurposer's
+      // History tab reads repurposed_content_log; snippets minted by the Snippet
+      // Wizard never landed there, so a whole batch could be created and the
+      // history the same dashboard shows would stay empty. One row per snippet,
+      // keyed to the source it was cut from. Non-fatal: a log failure must not
+      // discard a snippet that already exists.
+      const sourceId = params.videoProjectId || params.sourceVideoAssetId
+      if (sourceId) {
+        await logRepurposedContent({
+          sourceType: params.videoProjectId ? "video_project" : "video_asset",
+          sourceId,
+          outputType: "snippet",
+          outputRefTable: "video_snippets",
+          outputRefId: created.id,
+          platformTarget: snippet.platform,
+          notes: `Snippet Wizard — ${snippet.title}`,
+        }).catch(err =>
+          console.error("[video-repurposing] Repurpose log failed for snippet:", created.id, err)
+        )
+      }
     } catch (err) {
       console.error(`[video-repurposing] Failed to create snippet for ${snippet.platform}:`, err)
+      failed.push({
+        platform: snippet.platform,
+        error: err instanceof Error ? err.message : "Snippet creation failed",
+      })
     }
   }
 
@@ -588,7 +760,17 @@ export async function batchCreateSnippets(params: {
   }
 
   revalidatePath("/dashboard/videos/snippets")
-  return createdSnippets
+  revalidatePath("/dashboard/campaigns/repurpose")
+  return {
+    success: createdSnippets.length > 0,
+    created: createdSnippets,
+    snippetIds: createdSnippets.map(s => s.id),
+    failed,
+    error:
+      createdSnippets.length === 0
+        ? failed[0]?.error ?? "No snippets were created."
+        : undefined,
+  }
 }
 
 // ============================================
@@ -611,6 +793,18 @@ export async function logRepurposedContent(data: {
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
   const createdBy = auth.userId
+
+  // repurposed_content_log.source_id is `uuid NOT NULL`. Callers were passing
+  // `a || b || ""` for it, and postgres rejects "" as 22P02 invalid input syntax
+  // for type uuid — so the log row for a snippet with neither a project nor an
+  // asset behind it never landed, and the throw surfaced on the SCHEDULING call
+  // that had already succeeded. Refuse it here, by name.
+  if (!isValidUUID(data.sourceId)) {
+    throw new Error("logRepurposedContent: sourceId must be a uuid — repurposed_content_log.source_id is NOT NULL")
+  }
+  if (!isValidUUID(data.outputRefId)) {
+    throw new Error("logRepurposedContent: outputRefId must be a uuid")
+  }
 
   const supabase = createServiceClient()
 
@@ -648,12 +842,31 @@ export async function logRepurposedContent(data: {
   return log
 }
 
+/**
+ * WIRED: the History tab of the Omni-Presence Repurposer
+ * (/dashboard/campaigns/repurpose) — the "Refine" controls call this to filter
+ * the log by source type, output status and approval state.
+ *
+ * NOT a duplicate of lib/repurpose/actions.ts:getRepurposeHistory, which is the
+ * page's unfiltered first paint: that one takes brokerageId as an ARGUMENT and
+ * filters on it (authenticating nothing) and offers no filters at all. This one
+ * derives the tenant from the session and is the only filtered reader. The
+ * first-paint call is left where it is; this narrows what is already on screen.
+ *
+ * Status vocabulary is settled by the DB here, not by convention:
+ * repurposed_content_log_status_check = generated | scheduled | published |
+ * failed; repurposed_content_log_approval_status_check = draft | pending_review
+ * | approved | rejected. Anything else is refused before it reaches postgrest.
+ */
 export async function getRepurposedContentLogs(filters?: {
   brokerageId?: string  // ignored — derived from session
   sourceType?: string
   sourceId?: string
   status?: string
-}) {
+  approvalStatus?: string
+  platformTarget?: string
+  limit?: number
+}): Promise<RepurposedContentLog[]> {
   const auth = await requireCaller()
   if (!auth.ok) return []
 
@@ -664,15 +877,25 @@ export async function getRepurposedContentLogs(filters?: {
     .select("*")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
+    .limit(Math.min(Math.max(filters?.limit ?? 100, 1), 500))
 
   if (filters?.sourceType) {
     query = query.eq("source_type", filters.sourceType)
   }
-  if (filters?.sourceId) {
+  if (filters?.sourceId && isValidUUID(filters.sourceId)) {
     query = query.eq("source_id", filters.sourceId)
   }
-  if (filters?.status) {
+  if (filters?.status && (REPURPOSE_LOG_STATUSES as readonly string[]).includes(filters.status)) {
     query = query.eq("status", filters.status)
+  }
+  if (
+    filters?.approvalStatus &&
+    (REPURPOSE_LOG_APPROVAL_STATUSES as readonly string[]).includes(filters.approvalStatus)
+  ) {
+    query = query.eq("approval_status", filters.approvalStatus)
+  }
+  if (filters?.platformTarget) {
+    query = query.eq("platform_target", filters.platformTarget)
   }
 
   const { data, error } = await query
@@ -682,7 +905,39 @@ export async function getRepurposedContentLogs(filters?: {
     return []
   }
 
-  return data || []
+  return (data || []) as RepurposedContentLog[]
+}
+
+/**
+ * The History tab's filtered read, with the server's verdict attached so the
+ * surface can say "the filter was refused" instead of silently rendering an
+ * empty table over a failed query.
+ */
+export async function getFilteredRepurposeHistory(filters: {
+  sourceType?: string
+  status?: string
+  approvalStatus?: string
+}): Promise<{ success: boolean; history: RepurposedContentLog[]; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, history: [], error: auth.error }
+
+  if (filters.status && !(REPURPOSE_LOG_STATUSES as readonly string[]).includes(filters.status)) {
+    return { success: false, history: [], error: `Unknown status "${filters.status}".` }
+  }
+  if (
+    filters.approvalStatus &&
+    !(REPURPOSE_LOG_APPROVAL_STATUSES as readonly string[]).includes(filters.approvalStatus)
+  ) {
+    return { success: false, history: [], error: `Unknown approval status "${filters.approvalStatus}".` }
+  }
+
+  const history = await getRepurposedContentLogs({
+    sourceType: filters.sourceType,
+    status: filters.status,
+    approvalStatus: filters.approvalStatus,
+  })
+
+  return { success: true, history }
 }
 
 // ============================================
@@ -733,21 +988,36 @@ export async function scheduleSnippetToSocial(params: {
   }
 
   const platform = platformMap[snippet.platform_target as PlatformTarget]
+  if (!platform) {
+    throw new Error(`Snippet targets "${snippet.platform_target}", which is not a publishable platform.`)
+  }
 
-  // Create social post from snippet
+  // POST_TYPE IS A CHECKED COLUMN, AND THIS WAS WRITING THE WRONG VOCABULARY.
+  // social_posts_post_type_check = new_listing | coming_soon |
+  // open_house_announcement | open_house_reminder | price_reduction |
+  // just_sold | open_house_recap | market_update | custom | carousel.
+  // The snippet's platform_target ('instagram_reels', 'tiktok', …) is in NONE
+  // of them, so every "Queue to omnipresence" click failed with 23514 — the
+  // live table holds zero rows in that shape because the insert can never land.
+  // 'custom' is the CHECK's catch-all; the platform target it was trying to
+  // record survives in post_brief, which is free text.
   const { data: post, error } = await supabase
     .from("social_posts")
     .insert({
       brokerage_id: brokerageId,
       user_id: userId,
       platform,
-      post_type: snippet.platform_target,
+      post_type: "custom",
+      post_brief: `Video snippet — ${snippet.platform_target}`,
       content: snippet.caption_text || "",
       hashtags: snippet.hashtags || [],
       media_urls: snippet.video_url ? [snippet.video_url] : [],
       scheduled_for: params.scheduledFor,
-      social_account_id: params.socialAccountId,
+      social_account_id: params.socialAccountId ?? null,
       status: "scheduled",
+      // social_posts_approval_status_check = pending | approved | rejected.
+      // An unapproved snippet stays 'pending' so the existing consent-gated
+      // publisher will not send it — this action queues, it never publishes.
       approval_status: snippet.approval_status === "approved" ? "approved" : "pending",
       brand_compliance_passed: false,
     })
@@ -759,15 +1029,25 @@ export async function scheduleSnippetToSocial(params: {
     throw error
   }
 
-  // Log the repurposing (auth-gated function — derives brokerage/user itself)
-  await logRepurposedContent({
-    sourceType: snippet.video_project_id ? "video_project" : "video_asset",
-    sourceId: snippet.video_project_id || snippet.source_video_asset_id || "",
-    outputType: "social_post",
-    outputRefTable: "social_posts",
-    outputRefId: post.id,
-    platformTarget: snippet.platform_target as PlatformTarget,
-  })
+  // Log the repurposing (auth-gated function — derives brokerage/user itself).
+  // Only when the snippet actually has a source: a standalone snippet (created
+  // straight from the New Snippet sheet with no project or asset behind it) has
+  // no uuid to put in the NOT NULL source_id, and the previous `|| ""` made this
+  // throw AFTER the social_posts row was already written — the post existed, the
+  // user saw a failure, and a retry queued a duplicate.
+  const logSourceId = snippet.video_project_id || snippet.source_video_asset_id
+  if (logSourceId) {
+    await logRepurposedContent({
+      sourceType: snippet.video_project_id ? "video_project" : "video_asset",
+      sourceId: logSourceId,
+      outputType: "social_post",
+      outputRefTable: "social_posts",
+      outputRefId: post.id,
+      platformTarget: snippet.platform_target as PlatformTarget,
+    }).catch(err =>
+      console.error("[video-repurposing] Repurpose log failed for scheduled post:", post.id, err)
+    )
+  }
 
   // Fire kernel event
   await processKernelEvent({
@@ -787,15 +1067,51 @@ export async function scheduleSnippetToSocial(params: {
 // GENERATE CAPTION VARIATIONS
 // ============================================
 
+export interface CaptionVariation {
+  caption: string
+  hashtags: string[]
+  tone: string
+}
+
+export interface CaptionVariationsResult {
+  success: boolean
+  variations: CaptionVariation[]
+  error?: string
+}
+
+/**
+ * WIRED: the "New Snippet" sheet on /dashboard/videos/snippets — the agent
+ * writes a caption, asks for variations, and picks one, which then becomes the
+ * caption_text createVideoSnippet persists.
+ *
+ * Two defects fixed here:
+ *  · NO AUTH GATE. This module's own header claims every function is gated,
+ *    but this one was not — it was a browser-callable endpoint that burned paid
+ *    AI inference for anyone who could reach it, authenticated or not.
+ *    getAgentContext() below resolves identity for ROUTING, it does not refuse.
+ *  · SILENT FAILURE. On any error it returned `[{ caption: originalCaption }]`,
+ *    i.e. the input echoed back dressed as a result. The surface could not tell
+ *    "here are your variations" from "the model refused", so it would have
+ *    reported an optimistic success over a refusal. The verdict is explicit now.
+ */
 export async function generateCaptionVariations(params: {
   originalCaption: string
   platform: PlatformTarget
   tone?: "professional" | "casual" | "energetic" | "emotional"
   variationCount?: number
-}) {
+}): Promise<CaptionVariationsResult> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, variations: [], error: auth.error }
+
   const config = PLATFORM_CONFIGS[params.platform]
+  if (!config) {
+    return { success: false, variations: [], error: `Unknown platform "${params.platform}".` }
+  }
+  if (!params.originalCaption?.trim()) {
+    return { success: false, variations: [], error: "Write a caption first — there is nothing to vary." }
+  }
   const count = params.variationCount || 3
-  
+
   const prompt = `Generate ${count} different caption variations for a real estate social media post on ${config.displayName}.
 
 ORIGINAL CAPTION:
@@ -821,33 +1137,46 @@ Make each variation unique with different:
 - Hashtag strategies`
 
   try {
-    // Get agent context for AI routing
+    // Agent context is for AI ROUTING ONLY — the refusal decision was made by
+    // requireCaller above. agentContext.agentId is agents-class and stays in
+    // the routing metadata; it is never mixed with the users-class userId.
     const agentContext = await getAgentContext()
 
     const response = await generateAIResponse({
       prompt,
       metadata: {
-        userId: agentContext.userId,
-        brokerageId: agentContext.brokerageId,
+        userId: auth.userId,
+        brokerageId: auth.brokerageId,
         agentId: agentContext.agentId,
         feature: "video_script_generation",
       },
     })
 
     const cleanText = response.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
-    const variations = JSON.parse(cleanText)
+    const parsed = JSON.parse(cleanText)
+    if (!Array.isArray(parsed)) {
+      return { success: false, variations: [], error: "The model did not return a list of variations." }
+    }
 
-    return variations.map((v: any) => ({
-      caption: v.caption.substring(0, config.maxCaptionLength),
-      hashtags: (v.hashtags || []).slice(0, config.hashtagLimit),
-      tone: v.tone,
-    }))
+    const variations: CaptionVariation[] = parsed
+      .filter((v: any) => typeof v?.caption === "string" && v.caption.trim())
+      .map((v: any) => ({
+        caption: String(v.caption).substring(0, config.maxCaptionLength),
+        hashtags: (Array.isArray(v.hashtags) ? v.hashtags : []).slice(0, config.hashtagLimit).map(String),
+        tone: typeof v.tone === "string" ? v.tone : (params.tone || "professional"),
+      }))
+
+    if (variations.length === 0) {
+      return { success: false, variations: [], error: "The model returned no usable variations. Try again." }
+    }
+
+    return { success: true, variations }
   } catch (err) {
     console.error("[video-repurposing] Caption generation failed:", err)
-    return [{
-      caption: params.originalCaption,
-      hashtags: [],
-      tone: params.tone || "professional",
-    }]
+    return {
+      success: false,
+      variations: [],
+      error: err instanceof Error ? err.message : "Caption generation failed.",
+    }
   }
 }

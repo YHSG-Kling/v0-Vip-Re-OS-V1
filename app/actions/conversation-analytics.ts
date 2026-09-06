@@ -42,10 +42,36 @@ export async function logConversationMetadata(params: {
     // AI analyzes conversation for sentiment and topics
     const analysis = await analyzeConversationSentiment(params.conversationHistory)
 
+    // Tenant comes from the CONTACT the conversation is with
+    // (contacts.brokerage_id). params.agentId is an agents.id — a user-space
+    // id, not a tenant, and the id spaces are disjoint. conversation_logs
+    // holds transcript-derived sentiment, topics and insights about a client;
+    // unstamped, the row is readable AND writable by every brokerage on the
+    // platform, because the policy is
+    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`.
+    const { data: contactRow, error: contactErr } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", params.contactId)
+      .maybeSingle()
+
+    if (contactErr) {
+      console.error("[conversation-analytics] Failed to resolve tenant from contact:", contactErr)
+      return { success: false, error: contactErr.message }
+    }
+    if (!contactRow?.brokerage_id) {
+      console.error(
+        "[conversation-analytics] No tenant resolvable from contact " +
+          `${params.contactId} — refusing to write a conversation log every brokerage could read and write.`,
+      )
+      return { success: false, error: "Could not resolve brokerage for contact" }
+    }
+
     // Save conversation log
     const { data: log, error } = await supabase
       .from("conversation_logs")
       .insert({
+        brokerage_id: contactRow.brokerage_id,
         contact_id: params.contactId,
         agent_id: params.agentId,
         start_time: startTime.toISOString(),
@@ -70,7 +96,7 @@ export async function logConversationMetadata(params: {
     }
 
     // Run compliance checks
-    const complianceFlags = await checkConversationCompliance(log.id, params.conversationHistory)
+    const complianceFlags = await checkConversationCompliance(params.conversationHistory)
 
     if (complianceFlags.length > 0) {
       await supabase.from("conversation_audit_flags").insert(
@@ -228,8 +254,18 @@ function determineSentimentJourney(
 // COMPLIANCE CHECKING
 // =====================================================
 
+/**
+ * Pure text scan over one conversation's messages. No id, by design.
+ *
+ * TOMBSTONE — the `conversationId` parameter is deleted. It was accepted by
+ * both call sites and read by neither: the identity is applied by the CALLERS,
+ * which stamp `conversation_id` onto every `conversation_audit_flags` row they
+ * insert from these flags (this file, in `analyzeConversation` and in
+ * `runWeeklyAIAudit`). Threading the id through a function that only reads text
+ * gave a second, silent place for the two to disagree about which conversation
+ * a flag belongs to.
+ */
 async function checkConversationCompliance(
-  conversationId: string,
   conversationHistory: Array<{ role: string; content: string }>
 ): Promise<
   Array<{
@@ -357,7 +393,7 @@ export async function runWeeklyAIAudit() {
       }))
 
       // Run compliance check
-      const flags = await checkConversationCompliance(conv.id, conversationHistory)
+      const flags = await checkConversationCompliance(conversationHistory)
 
       if (flags.length > 0) {
         flaggedCount += flags.length
@@ -391,96 +427,25 @@ export async function runWeeklyAIAudit() {
 // GET CONVERSATION ANALYTICS
 // =====================================================
 
-export async function getConversationAnalytics(params: {
-  agentId?: string
-  contactId?: string
-  startDate?: string
-  endDate?: string
-}) {
-  try {
-    const supabase = await createClient()
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getConversationAnalytics`
+// deleted. SURVIVOR: the Communication Intelligence dashboard's server-side
+// aggregation at app/dashboard/communications/intelligence/page.tsx (KPI +
+// chart + per-agent rollups over conversation_insights, tenant-pinned to the
+// session's brokerage). This twin aggregated the same subject (conversation
+// health/sentiment) from conversation_logs with caller-supplied agent filters
+// and no tenant anchor of its own, and a stripped-source census found zero
+// callers outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero
+// importers. Nothing was merged: the survivor's conversation_insights rollup
+// is the richer read of the same capability.
 
-    let query = supabase.from("conversation_logs").select("*")
-
-    if (params.agentId) query = query.eq("agent_id", params.agentId)
-    if (params.contactId) query = query.eq("contact_id", params.contactId)
-    if (params.startDate) query = query.gte("created_at", params.startDate)
-    if (params.endDate) query = query.lte("created_at", params.endDate)
-
-    const { data, error } = await query.order("created_at", { ascending: false })
-
-    if (error) {
-      console.error("[conversation-analytics] Failed to fetch analytics:", error)
-      return { success: false, error: error.message }
-    }
-
-    // Calculate aggregates
-    const totalConversations = data?.length || 0
-    const avgDuration =
-      data && data.length > 0
-        ? data.reduce((sum, c) => sum + (c.duration_minutes || 0), 0) / data.length
-        : 0
-    const sentimentBreakdown = {
-      improved: data?.filter((c) => c.sentiment_journey === "improved").length || 0,
-      declined: data?.filter((c) => c.sentiment_journey === "declined").length || 0,
-      stable: data?.filter((c) => c.sentiment_journey === "stable").length || 0,
-    }
-
-    return {
-      success: true,
-      conversations: data,
-      analytics: {
-        total_conversations: totalConversations,
-        avg_duration_minutes: Math.round(avgDuration * 10) / 10,
-        sentiment_breakdown: sentimentBreakdown,
-      },
-    }
-  } catch (error: any) {
-    console.error("[conversation-analytics] Error fetching analytics:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-export async function getAuditFlags(params: { status?: string; riskType?: string; limit?: number }) {
-  try {
-    const supabase = await createClient()
-
-    let query = supabase
-      .from("conversation_audit_flags")
-      .select(
-        `
-        *,
-        conversation:conversation_logs(
-          contact_id,
-          agent_id,
-          start_time,
-          topics_discussed
-        )
-      `
-      )
-
-    if (params.status) query = query.eq("review_status", params.status)
-    if (params.riskType) query = query.eq("risk_type", params.riskType)
-
-    const { data, error } = await query
-      .order("risk_score", { ascending: false })
-      .limit(params.limit || 50)
-
-    if (error) {
-      console.error("[conversation-analytics] Failed to fetch audit flags:", error)
-      return { success: false, error: error.message }
-    }
-
-    return {
-      success: true,
-      flags: data,
-      total_pending: data?.filter((f) => f.review_status === "pending").length || 0,
-    }
-  } catch (error: any) {
-    console.error("[conversation-analytics] Error fetching audit flags:", error)
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAuditFlags` deleted.
+// SURVIVOR: the direct conversation_audit_flags read (same
+// `conversation:conversation_logs(...)` embed, same risk_score ordering) at
+// app/dashboard/communications/intelligence/page.tsx:115-135, rendered by
+// ComplianceTab (its never-imported twin AuditFlagsTab was deleted 2026-09-01),
+// where reviewAuditFlag (below) closes the loop.
+// A stripped-source census found zero callers outside the
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 export async function reviewAuditFlag(params: {
   flagId: string

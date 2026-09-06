@@ -30,6 +30,7 @@ import {
   markFinanciallyVerified,
   connectBuyerToLender,
   getBrokerageLenders,
+  loadMortgageBrokers,
 } from "@/app/actions/buyer-financial"
 
 type FinanceType = "conventional" | "fha" | "va" | "cash" | "other"
@@ -58,11 +59,21 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
   const [preApprovalAmount, setPreApprovalAmount] = useState<string>("")
   const [preApprovalExpiresAt, setPreApprovalExpiresAt] = useState<string>("")
   const [downPaymentPercent, setDownPaymentPercent] = useState<string>("")
+  const [downPaymentAmount, setDownPaymentAmount] = useState<string>("")
   const [agentNotes, setAgentNotes] = useState<string>("")
   const [bypassReason, setBypassReason] = useState<string>("")
 
-  // Lender intro — userId-based
+  // Lender intro — the brokerage's lender VENDOR bench (vendors.id).
   const [lenders, setLenders] = useState<LenderUser[]>([])
+  // The agent's OUTSIDE mortgage-broker referral partners. A DIFFERENT
+  // population from `lenders` above: getBrokerageLenders reads the in-house
+  // lender bench (vendors.category 'lender'/'refinance_lender'), while loadMortgageBrokers
+  // (app/actions/buyer-financial.ts:508) reads referral_partners with
+  // partner_type='mortgage_broker', scoped to the SESSION's agent. Wired in wave
+  // 26 — it had no caller, so an agent's own broker partners were never shown
+  // anywhere in the product.
+  const [brokerPartners, setBrokerPartners] = useState<Array<{ id: string; partner_name: string | null; company_name: string | null; phone: string | null; email: string | null }>>([])
+  const [brokerPartnersNote, setBrokerPartnersNote] = useState<string | null>(null)
   const [selectedLenderId, setSelectedLenderId] = useState<string>("")
   const [lenderIntroOpen, setLenderIntroOpen] = useState(false)
   const [lenderIntroText, setLenderIntroText] = useState("")
@@ -73,9 +84,10 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
   async function load() {
     setLoading(true)
     try {
-      const [profileResult, lendersResult] = await Promise.all([
+      const [profileResult, lendersResult, brokersResult] = await Promise.all([
         loadFinancialProfile({ contactId }),
-        getBrokerageLenders({ brokerageId }),
+        getBrokerageLenders(),
+        loadMortgageBrokers(),
       ])
       if (profileResult.success && profileResult.profile) {
         setProfile(profileResult.profile)
@@ -88,10 +100,18 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
         setDownPaymentPercent(
           profileResult.profile.down_payment_percent != null ? String(profileResult.profile.down_payment_percent) : ""
         )
+        setDownPaymentAmount(
+          profileResult.profile.down_payment_amount != null ? String(profileResult.profile.down_payment_amount) : ""
+        )
         setAgentNotes(profileResult.profile.agent_notes ?? "")
-        // Restore previously linked lender
-        if (profileResult.profile.lender_referred_partner_id) {
-          setSelectedLenderId(profileResult.profile.lender_referred_partner_id)
+        // Restore previously linked lender. THE VENDOR COLUMN (m605), not the
+        // referral_partners one this used to read: the picker above is
+        // getBrokerageLenders() — the brokerage's `vendors` bench — so a
+        // referral_partners id restored into it would select nothing, and the id
+        // this panel WROTE was never stored anyway (a vendors.id in a
+        // referral_partners FK is a 23503 that loses the whole statement).
+        if (profileResult.profile.lender_referred_vendor_id) {
+          setSelectedLenderId(profileResult.profile.lender_referred_vendor_id)
         }
       } else {
         setProfile(null)
@@ -99,6 +119,16 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
       }
       if (lendersResult.success) {
         setLenders(lendersResult.lenders ?? [])
+      }
+      // Read the verdict. This action refuses with a REASON for a seat that has
+      // no agent profile (referrals are kept per agent), and showing that reason
+      // is more honest than rendering an empty list as "you have no partners".
+      if (brokersResult.success) {
+        setBrokerPartners(brokersResult.partners ?? [])
+        setBrokerPartnersNote(null)
+      } else {
+        setBrokerPartners([])
+        setBrokerPartnersNote(brokersResult.error ?? null)
       }
     } finally {
       setLoading(false)
@@ -131,6 +161,7 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
         preApprovalLender: selectedLender?.full_name || undefined,
         preApprovalExpiresAt: preApprovalExpiresAt || undefined,
         downPaymentPercent: downPaymentPercent ? Number(downPaymentPercent) : undefined,
+        downPaymentAmount: downPaymentAmount ? Number(downPaymentAmount) : undefined,
       })
       if (result.success) {
         toast.success("Financial profile saved.")
@@ -217,9 +248,16 @@ ${agentName ?? "[Agent Name]"}`
         agentUserId,
         agentName: agentName ?? "Your Agent",
         buyerName: buyerName ?? "Buyer",
-        partnerId: selectedLender.id,
+        // `partnerId` is DELIBERATELY NOT PASSED (m605). It is a
+        // referral_partners id and this panel holds none — it lists the
+        // brokerage's `vendors` bench. Passing selectedLender.id there was a
+        // 23503 on every send: the buyer's profile kept no lender and the
+        // reader above restored nothing on reload.
         partnerName: selectedLender.full_name,
-        lenderUserId: selectedLender.id,
+        // vendors.id — getBrokerageLenders returns the brokerage's lender
+        // VENDOR bench (owner ruling: lender is a vendor category, not a user
+        // type). This is the id class that column now holds.
+        lenderVendorId: selectedLender.id,
       })
       if (result.success) {
         toast.success(`Introduction sent to ${selectedLender.full_name} — they'll see it in their portal.`)
@@ -360,6 +398,21 @@ ${agentName ?? "[Agent Name]"}`
                     className="h-8 mt-1"
                   />
                 </div>
+                <div>
+                  {/* A pre-approval often states a dollar figure, not a percent.
+                      This was the ONLY missing writer of
+                      buyer_financial_profiles.down_payment_amount — the buyer
+                      closing-cost estimator already read it. */}
+                  <Label className="text-xs">Down payment $</Label>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={downPaymentAmount}
+                    onChange={(e) => setDownPaymentAmount(e.target.value)}
+                    placeholder="50000"
+                    className="h-8 mt-1"
+                  />
+                </div>
               </div>
 
               {/* Lender Selection — userId-based, not free text */}
@@ -405,6 +458,34 @@ ${agentName ?? "[Agent Name]"}`
                   <Mail className="h-3.5 w-3.5" />
                   Draft Introduction
                 </Button>
+
+                {/* YOUR MORTGAGE-BROKER PARTNERS — read-only on purpose.
+                    referral_partners.id is a DIFFERENT ID CLASS from the
+                    vendors.id the picker above selects (§3): connectBuyerToLender
+                    takes `lenderVendorId`, so folding these into that <Select>
+                    would send a referral_partners id where a vendors id is
+                    expected and match nothing. They are shown as contact details
+                    the agent acts on directly. */}
+                {(brokerPartners.length > 0 || brokerPartnersNote) && (
+                  <div className="pt-2 mt-1 border-t border-blue-200 space-y-1">
+                    <p className="text-xs font-medium text-blue-800">Your mortgage-broker partners</p>
+                    {brokerPartnersNote ? (
+                      <p className="text-xs text-blue-600">{brokerPartnersNote}</p>
+                    ) : (
+                      brokerPartners.map((b) => (
+                        <div key={b.id} className="text-xs text-blue-700">
+                          <span className="font-medium">{b.partner_name ?? "Unnamed partner"}</span>
+                          {b.company_name && <span className="text-blue-600"> · {b.company_name}</span>}
+                          {(b.phone || b.email) && (
+                            <span className="text-blue-600">
+                              {" — "}{[b.phone, b.email].filter(Boolean).join(" · ")}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
             </>
           )}

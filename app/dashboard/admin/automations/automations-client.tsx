@@ -53,15 +53,64 @@ interface ActionDef {
   [key: string]: unknown
 }
 
+/**
+ * ONE RUN OF ONE AUTOMATION — the record this page could not show.
+ *
+ * `workflow_automations.execution_count` counts attempts. It cannot distinguish a
+ * run that moved a milestone from one that refused an operator-authored status
+ * and moved nothing, and until now that was the only evidence a run had ever
+ * happened. `automation_logs` holds the per-run detail; its writer
+ * (app/actions/assistant.ts:handleAutomationTriggered) shipped fully built and
+ * gated with NO caller, and nothing anywhere read the table — a pair with neither
+ * end connected. app/actions/multi-persona.ts:executeWorkflow now calls the
+ * writer and this tab is the reader.
+ */
+interface AutomationRun {
+  id: string
+  automation_id: string | null
+  workflow_name: string
+  trigger_type: string
+  actor: string
+  actions_total: number
+  actions_done: number
+  actions_refused: number
+  actions_skipped: number
+  outcomes: Array<{ type?: string; status?: string; detail?: string }>
+  executed_at: string
+}
+
 interface Props {
   automations: WorkflowAutomation[]
   recentErrors: AutomationError[]
+  recentRuns: AutomationRun[]
   brokerageId: string
   currentUserId: string
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// NOT A COPY OF THE SEQUENCES TRIGGER CATALOG — RECORDED WITH REASON, NOT MERGED.
+//
+// lib/workflow/triggers.ts:WORKFLOW_TRIGGERS is the canonical trigger catalog
+// (KernelEvent-derived), and both sequence surfaces already derive from it
+// (SequencesListClient.tsx:71, SequenceBuilderClient.tsx:158). This list was
+// checked against it before being left alone, and it is not the same vocabulary
+// wearing a different coat:
+//
+//   · ZERO overlap. Not one of these seven values appears in WORKFLOW_TRIGGERS,
+//     and none appears anywhere else in the repo — `new_lead_arrives` occurs in
+//     exactly two places, both in this file (here and TRIGGER_BADGE_COLORS).
+//     So nothing emits them and nothing dispatches on them.
+//   · Different column. These are stored on `workflow_automations.trigger_event`
+//     (no CHECK constraint), which nothing routes: executeWorkflow
+//     (app/actions/multi-persona.ts:580) runs an automation BY ID, from the
+//     Execute button. WORKFLOW_TRIGGERS feeds `campaign_sequences.trigger_event`,
+//     which does have a CHECK and is dispatched.
+//
+// Repointing this picker at WORKFLOW_TRIGGERS would therefore not merge two
+// spellings of one idea — it would silently orphan the trigger_event value on
+// every automation row a broker has already saved, which is a data migration and
+// a product decision, not a constant edit. Left as the finding.
 const TRIGGER_EVENTS = [
   { value: "new_lead_arrives",        label: "New Lead Arrives" },
   { value: "lead_qualified",          label: "Lead Qualified" },
@@ -115,10 +164,10 @@ function useToast() {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function AutomationsClient({ automations: initial, recentErrors: initialErrors, brokerageId, currentUserId }: Props) {
+export function AutomationsClient({ automations: initial, recentErrors: initialErrors, recentRuns, brokerageId, currentUserId }: Props) {
   const [automations, setAutomations] = useState<WorkflowAutomation[]>(initial)
   const [errors, setErrors] = useState<AutomationError[]>(initialErrors)
-  const [activeTab, setActiveTab] = useState<"automations" | "errors">("automations")
+  const [activeTab, setActiveTab] = useState<"automations" | "runs" | "errors">("automations")
   const [showSheet, setShowSheet] = useState(false)
   const [isPending, startTransition] = useTransition()
   const { toast, show } = useToast()
@@ -148,7 +197,18 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
     startTransition(async () => {
       const result = await executeWorkflow(id, { brokerageId })
       if (result.success) {
-        show("Workflow triggered manually")
+        // "Triggered" was true and unhelpful: a run in which every action was
+        // refused reported exactly the same words as one that did the work. The
+        // executor now returns per-action outcomes (the same detail written to the
+        // automation_logs journal and shown on the Run History tab), so the toast
+        // can say what happened instead of only that something did.
+        const outcomes = (result as { outcomes?: Array<{ status?: string }> }).outcomes ?? []
+        const done = outcomes.filter((o) => o.status === "done").length
+        const refused = outcomes.filter((o) => o.status === "refused").length
+        if (outcomes.length === 0) show("Workflow triggered — it had no actions to run")
+        else if (refused > 0) show(`Ran ${done} action(s); ${refused} refused — see Run History`, "error")
+        else if (done === 0) show("Workflow triggered, but no action in it is implemented yet", "error")
+        else show(`Workflow ran — ${done} action(s) completed`)
         setAutomations((prev) =>
           prev.map((a) => a.id === id ? { ...a, execution_count: (a.execution_count ?? 0) + 1, last_executed_at: new Date().toISOString() } : a)
         )
@@ -239,7 +299,7 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
       {/* Tabs */}
       <div className="border-b border-border bg-card px-6">
         <div className="flex gap-0">
-          {(["automations", "errors"] as const).map((tab) => (
+          {(["automations", "runs", "errors"] as const).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -250,7 +310,7 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              {tab === "errors" ? "Error Log" : "Active Automations"}
+              {tab === "errors" ? "Error Log" : tab === "runs" ? "Run History" : "Active Automations"}
               {tab === "errors" && unresolvedErrors.length > 0 && (
                 <span className="ml-2 inline-flex items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-xs font-bold text-white leading-none">
                   {unresolvedErrors.length}
@@ -271,6 +331,8 @@ export function AutomationsClient({ automations: initial, recentErrors: initialE
             onToggle={handleToggle}
             onDelete={handleDelete}
           />
+        ) : activeTab === "runs" ? (
+          <RunHistoryTab runs={recentRuns} />
         ) : (
           <ErrorLogTab
             errors={errors}
@@ -410,6 +472,103 @@ function AutomationCard({
 }
 
 // ─── Error Log Tab ────────────────────────────────────────────────────────────
+
+// ─── Run History ─────────────────────────────────────────────────────────────
+//
+// EMPTY MEANS SOMETHING SPECIFIC HERE, and the empty state says which. This
+// ledger starts empty by construction — its writer has only just been given a
+// caller — so "no runs" must not be presented as "nothing has ever run". An
+// automation with a non-zero execution_count and no rows here ran BEFORE the
+// journal existed; that is a gap in the record, not a quiet period.
+function RunHistoryTab({ runs }: { runs: AutomationRun[] }) {
+  if (runs.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-center">
+        <Play className="h-12 w-12 text-muted-foreground/40 mb-4" />
+        <h3 className="text-lg font-semibold mb-1">No runs recorded yet</h3>
+        <p className="text-sm text-muted-foreground max-w-md">
+          Every automation run from now on is journalled here with what each of its
+          actions actually did. Runs from before the journal existed are counted in
+          &ldquo;Runs&rdquo; on the Active Automations tab but have no detail to show.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border bg-muted/40">
+            {["Automation", "Trigger", "Ran by", "Actions", "Outcome", "Ran"].map((col) => (
+              <th key={col} className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.id} className="border-b border-border last:border-0 hover:bg-muted/20 align-top">
+              <td className="px-4 py-3 font-medium max-w-[200px] truncate">{run.workflow_name}</td>
+              <td className="px-4 py-3 text-muted-foreground text-xs">{run.trigger_type}</td>
+              <td className="px-4 py-3 text-muted-foreground text-xs max-w-[150px] truncate">{run.actor}</td>
+              <td className="px-4 py-3 whitespace-nowrap text-xs">
+                <span className="text-emerald-600 font-medium">{run.actions_done} done</span>
+                {run.actions_refused > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-red-600 font-medium">{run.actions_refused} refused</span>
+                  </>
+                )}
+                {run.actions_skipped > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-muted-foreground">{run.actions_skipped} skipped</span>
+                  </>
+                )}
+                <span className="text-muted-foreground"> of {run.actions_total}</span>
+              </td>
+              <td className="px-4 py-3 text-xs text-muted-foreground max-w-[320px]">
+                {run.outcomes.length === 0 ? (
+                  <span className="italic">no action detail recorded</span>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {run.outcomes.slice(0, 4).map((o, i) => (
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span
+                          className={cn(
+                            "mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full",
+                            o.status === "done"
+                              ? "bg-emerald-500"
+                              : o.status === "refused"
+                                ? "bg-red-500"
+                                : "bg-muted-foreground/40",
+                          )}
+                        />
+                        <span className="line-clamp-1">
+                          <span className="font-medium text-foreground">{o.type ?? "action"}</span>
+                          {o.detail ? ` — ${o.detail}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                    {run.outcomes.length > 4 && (
+                      <li className="pl-3 italic">+{run.outcomes.length - 4} more</li>
+                    )}
+                  </ul>
+                )}
+              </td>
+              <td className="px-4 py-3 text-muted-foreground whitespace-nowrap text-xs">
+                {new Date(run.executed_at).toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 
 function ErrorLogTab({
   errors,

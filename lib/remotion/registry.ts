@@ -25,6 +25,8 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { compositionSeconds } from "@/lib/remotion/composition-geometry"
+import { consumesVoiceover } from "@/lib/remotion/content-contract"
 
 export type CompositionTier =
   | "solo_agent"
@@ -66,6 +68,16 @@ export interface RemotionCompositionRow {
   duration_frames:          number
   fps:                      number
   requires_did_avatar:      boolean
+  /**
+   * A MIRROR, not a source (m601, 2026-09-03). True iff the composition renders
+   * `<Audio src={voiceoverUrl}>` — the set declared at
+   * lib/remotion/content-contract.ts:VOICEOVER_CONSUMING_COMPOSITIONS, which is
+   * what every decision in code reads (consumesVoiceover / stagesVoiceover).
+   * test:content-contract §15 proves the column equals the set whenever it can
+   * reach the live table. Read this field only when you already hold a live
+   * row and want the mirror's answer (a badge, a cost estimate); never branch a
+   * ledger write on it.
+   */
   requires_voiceover:       boolean
   tier_access:              CompositionTier[]
   is_active:                boolean
@@ -171,15 +183,40 @@ export function estimateCompositionCost(
   composition: RemotionCompositionRow,
 ): CompositionCostEstimate {
   // D-ID Talks API charges ~$0.30 per minute of avatar video.
-  // We compute from duration_frames + fps.
-  const minutes = composition.duration_frames / composition.fps / 60
+  // We compute from duration_frames + fps — through the ONE duration
+  // computation (lib/remotion/composition-geometry.ts compositionSeconds), which
+  // the render coordinator's narration pad and the render cache's
+  // secondsAvoided also use. Three private copies of `duration_frames / fps`
+  // were three chances to disagree (§6).
+  const seconds = compositionSeconds(composition)
+  const minutes = seconds / 60
   const did = composition.requires_did_avatar ? Math.max(0.10, minutes * 0.30) : 0
 
   // ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration
   // runs ~120 characters per second. Conservative cap at $0.10 even
   // for short clips because the API has a minimum charge.
-  const seconds = composition.duration_frames / composition.fps
-  const voice = composition.requires_voiceover
+  //
+  // WHICH compositions carry that narration is read from the ONE set
+  // (consumesVoiceover — lib/remotion/content-contract.ts), not from the row's
+  // `requires_voiceover`, which is that set's live mirror (m601). The mirror is
+  // consulted only when a caller hands a PARTIAL row with no composition_id,
+  // because a silent 0 there would understate the economics snapshot without
+  // saying so. NO LIVE CALLER IS IN THAT STATE as of 2026-09-03: the cache
+  // board used to be (it built a row from four fields and dropped the id it had
+  // already used as its map key) and now passes `composition_id`
+  // (lib/remotion/render-cache.ts loadCacheBoard), and the composition library
+  // passes the whole row (app/actions/composition-library.ts:99). The arm stays
+  // as the fail-safe for the next partial caller — it is the only branch here
+  // that can be reached without an id, and dropping it would answer "not
+  // narrated" for a row that never said.
+  // BLIND SPOT, named: narration muxed through the snake `voiceover_url` finish
+  // key (the Director's EquityReportReel / MarketUpdateReel / ExplainerAnimReel
+  // lane) is TTS spend this estimate does not see; the real ledger is
+  // ai_tool_usage, and this number was always an approximation beside it.
+  const narrated = composition.composition_id
+    ? consumesVoiceover(composition.composition_id)
+    : composition.requires_voiceover
+  const voice = narrated
     ? Math.max(0.05, (seconds * 120 / 1000) * 0.18)
     : 0
 
@@ -215,6 +252,14 @@ export async function recordRenderQueued(args: {
   scopeType?:     "agent" | "team" | "brokerage"
   scopeId?:       string | null
   requestedVia?:  "asset_manager" | "ad_creator" | "cron" | "manual" | "api"
+  /** m312 — LIVING VIDEO. Set when this render is a claim about facts that
+   *  move, so the refresh sweep can re-derive them later and tell whether the
+   *  video has started saying something untrue. See lib/video/living-video.ts. */
+  livingKind?:    string | null
+  factsKey?:      string | null
+  facts?:         Record<string, unknown> | null
+  /** The stale render this one replaces, when it was queued by the sweep. */
+  refreshedFromRenderId?: string | null
 }): Promise<{ ok: boolean; renderId?: string; error?: string }> {
   const svc = createServiceClient()
   const { data, error } = await svc
@@ -231,6 +276,10 @@ export async function recordRenderQueued(args: {
       scope_type:       args.scopeType ?? "brokerage",
       scope_id:         args.scopeId ?? args.brokerageId,
       requested_via:    args.requestedVia ?? "asset_manager",
+      living_kind:      args.livingKind ?? null,
+      facts_key:        args.factsKey ?? null,
+      facts:            args.facts ?? null,
+      refreshed_from_render_id: args.refreshedFromRenderId ?? null,
       render_status:    "queued",
     })
     .select("id")
@@ -239,8 +288,24 @@ export async function recordRenderQueued(args: {
   return { ok: true, renderId: (data as { id: string }).id }
 }
 
-/** Marks a render complete + stamps last_rendered_at on the
- *  composition row so the Asset Manager sees freshness signal. */
+/**
+ * Marks a render complete + stamps last_rendered_at on the composition row so
+ * the Asset Manager sees freshness signal.
+ *
+ * THE TERMINAL WRITE READS ITS OWN ERROR (CLAUDE.md §3). This used to return
+ * `Promise<void>` over an unchecked `.update()`, which made it the one function
+ * in the Remotion rail that could not tell you it had failed — and it is the
+ * function every render path calls to say "succeeded", "failed" or "cancelled".
+ * supabase-js RESOLVES a refusal, so a dropped/renamed column (PGRST204), a
+ * transient PostgREST 5xx or a wrong-id predicate all came back indistinguishable
+ * from a write that landed. Concretely: the render endpoint's catch block calls
+ * this with status 'failed' and then returns HTTP 500 naming the error, while the
+ * row it was talking about is still 'rendering' — so the Asset Manager never sees
+ * a failure to propose restart_failed_render on, and the video-pipeline reaper is
+ * the only thing that ever notices, minutes-to-hours later and with no reason
+ * attached. Callers that do not care still `await` it and ignore the result; the
+ * ones that can act on a refusal now can.
+ */
 export async function recordRenderCompleted(args: {
   renderId:      string
   compositionId: string
@@ -248,9 +313,9 @@ export async function recordRenderCompleted(args: {
   thumbnailUrl?: string | null
   status:        "succeeded" | "failed" | "cancelled"
   errorMessage?: string | null
-}): Promise<void> {
+}): Promise<{ ok: boolean; error?: string }> {
   const svc = createServiceClient()
-  await svc
+  const { error } = await svc
     .from("remotion_composition_renders")
     .update({
       render_status: args.status,
@@ -260,11 +325,26 @@ export async function recordRenderCompleted(args: {
       completed_at:  new Date().toISOString(),
     })
     .eq("id", args.renderId)
+  if (error) {
+    console.error(
+      `[remotion-registry] render ${args.renderId} (${args.compositionId}) could NOT be marked '${args.status}': `
+      + `${error.message}. The row is still mid-flight and nothing downstream will learn the outcome.`,
+    )
+    return { ok: false, error: error.message }
+  }
 
   if (args.status === "succeeded") {
-    await svc
+    // Freshness telemetry, not the deliverable — a refusal here is logged and
+    // does not turn a finished render into a failed one.
+    const { error: freshnessError } = await svc
       .from("remotion_compositions")
       .update({ last_rendered_at: new Date().toISOString() })
       .eq("composition_id", args.compositionId)
+    if (freshnessError) {
+      console.warn(
+        `[remotion-registry] last_rendered_at not stamped for ${args.compositionId}: ${freshnessError.message}`,
+      )
+    }
   }
+  return { ok: true }
 }

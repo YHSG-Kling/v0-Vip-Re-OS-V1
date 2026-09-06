@@ -1,8 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import {
   createEducationalResource,
-  assignResource,
-  getProgressDashboard,
 } from "@/lib/kernel/education"
 import { NextRequest, NextResponse } from "next/server"
 

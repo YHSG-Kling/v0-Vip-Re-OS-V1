@@ -42,17 +42,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // migrations). Previously this select silently failed and agent_user_id
     // came back undefined, dropping the per-agent attribution on captured
     // leads.
+    //
+    // `is_active` is NOT part of the lookup, and `expires_at` is now read: a
+    // paused code, an expired code and an id that matches nothing are three
+    // different facts. THIS IS THE REFUSAL THAT MATTERS — /api/qr/scan can only
+    // speak for scans it routes, but this endpoint is reachable directly from a
+    // bookmarked landing page, and capturing a lead through a retired code
+    // writes a contact the tenant will read as coming from a live campaign.
     const { data: qr, error: qrError } = await supabase
       .from('qr_codes')
-      .select('id, brokerage_id, agent_id, lead_count')
+      .select('id, brokerage_id, agent_id, lead_count, is_active, expires_at, marketing_campaign_id')
       .eq('id', qrCodeId)
-      .eq('is_active', true)
-      .single()
+      .maybeSingle()
 
     if (qrError || !qr) {
       return NextResponse.json(
-        { success: false, error: 'QR code not found or inactive' },
+        { success: false, error: 'QR code not found' },
         { status: 404 },
+      )
+    }
+
+    if (!qr.is_active) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code is paused — the agent who created this QR code has paused it, so it is not accepting submissions right now.',
+        },
+        { status: 403 },
+      )
+    }
+    if (qr.expires_at && new Date(qr.expires_at).getTime() <= Date.now()) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'This code has expired — this QR code was set to expire and that date has passed, so it is no longer accepting submissions.',
+        },
+        { status: 410 },
       )
     }
 
@@ -141,6 +166,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
+    // ── Step 4b: Record the CAMPAIGN TOUCHPOINT ───────────────────────────────
+    // This is the moment a QR scan stops being anonymous: the code is known, the
+    // contact is now known, and if the code belongs to a marketing campaign then
+    // that campaign has just touched that person. marketing_campaign_touchpoints
+    // is the shared ledger de-confliction (the over-messaging frequency cap),
+    // attribution and the team bullpen all read — and 'qr_scan' is a channel its
+    // live CHECK admits that NOTHING was writing, so a QR-driven touch was
+    // invisible to every one of them.
+    //
+    // Only when the code carries a marketing_campaign_id: the table's
+    // origin CHECK requires campaign_id OR sequence_id, and a QR with no campaign
+    // has no campaign to credit. external_table/external_id point back at the QR
+    // itself so the touch is traceable to the exact code that produced it.
+    //
+    // Best-effort and non-blocking — recordCampaignTouchpointSafe never throws,
+    // and an attribution write must never fail the capture the prospect is
+    // waiting on.
+    if (qr.marketing_campaign_id) {
+      try {
+        const { recordCampaignTouchpointSafe } = await import('@/lib/marketing/touchpoint-recorder')
+        void recordCampaignTouchpointSafe({
+          brokerageId:   qr.brokerage_id as string,
+          campaignId:    qr.marketing_campaign_id as string,
+          contactId,
+          channel:       'qr_scan',
+          externalTable: 'qr_codes',
+          externalId:    qr.id as string,
+          source:        'trigger',
+          status:        'converted',
+          metadata:      { slug, action },
+        })
+      } catch (err) {
+        console.error('[qr/submit] touchpoint record failed:', err)
+      }
+    }
+
     // ── Step 5: Link most recent unlinked scan event to contact ───────────────
     const { data: scanEvent } = await supabase
       .from('qr_scan_events')
@@ -173,8 +234,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     if (action === 'created') {
       try {
-        const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
-        await fanOutKernelEvent({
+        // Row already written above → skipInsert (fan-out only).
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        await emitKernelEvent({
           event:       KernelEvent.CONTACT_CAPTURED,
           brokerageId: qr.brokerage_id,
           entityType:  'contact',
@@ -182,6 +244,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           contactId,
           agentUserId: undefined,
           metadata:    { source: 'qr_scan', slug, qrCodeId, ownerAgentId },
+          skipInsert:  true,
         })
       } catch { /* non-blocking */ }
     }

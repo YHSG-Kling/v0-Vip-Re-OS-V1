@@ -11,6 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isBrokerageFinanceAdmin, resolveTenantPrincipalTeamLead } from "@/lib/auth/resolve-user-role"
 import {
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
@@ -59,11 +60,30 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
 
   if (!brokerageId) throw new Error("Missing brokerage context")
 
+  // m526 — THE TIER-CONDITIONED PRINCIPAL FACT, RESOLVED ONCE PER ACTION.
+  //
+  // Owner ruling: on TEAM/SOLO tier the tenant's money IS the team's money and
+  // its lead keeps its books; on BROKERAGE tier that same person is one of
+  // several leads in a larger office and m472/m473 stand. The kernel's eight
+  // money gates run on the SERVICE client (RLS bypassed) and are sync, so the
+  // fact is resolved HERE — once, from the SESSION's own ids, never from a
+  // request body (CLAUDE.md §4) — and carried on the context.
+  //
+  // FAILS CLOSED: `resolveTenantPrincipalTeamLead` returns ok:false when the
+  // teams or plan_tier read was REFUSED (supabase-js resolves refusals, §3), and
+  // this THROWS rather than degrading — every caller of this builder already
+  // treats a throw as "no context, refuse". It does not fall back to `false`,
+  // because "we could not check" and "checked, and no" must not be the same
+  // value; and it does not fall back to `true` for the obvious reason.
+  const principal = await resolveTenantPrincipalTeamLead(supabase, user.id, brokerageId)
+  if (!principal.ok) throw new Error(principal.reason)
+
   return {
     userId: user.id,
     agentId,
     brokerageId,
     userType: (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin",
+    isTenantPrincipal: principal.isPrincipal,
   }
 }
 
@@ -71,25 +91,88 @@ type FinancialContextResolution =
   | { success: true; ctx: FinancialActorContext }
   | { success: false; error: string; ctx?: undefined }
 
+/**
+ * 🚨 THE TENANT OVERRIDE IS REMOVED.
+ *
+ * This used to read:
+ *
+ *     brokerageId: brokerageId ?? ctx.brokerageId
+ *
+ * i.e. a **caller-supplied brokerage id silently replaced the session's own**. Its two
+ * consumers — `loadAgentFinancialDashboardSummaryAction` and
+ * `loadAgentProfitLossSummaryAction` — are `"use server"` exports taking
+ * `{ agentId, brokerageId? }` straight from the client, so any authenticated user could name
+ * another brokerage and have the kernel's one tenant filter
+ * (`loadAgentFinancialSummary`'s `.eq("brokerage_id", ctx.brokerageId)`) resolve in their
+ * favour. The session's brokerage is now the only brokerage. `brokerageId` is accepted and
+ * ignored (house pattern) — every call site already passes the caller's own.
+ */
 async function resolveFinancialContext(
-  brokerageId?: string
+  _brokerageId?: string
 ): Promise<FinancialContextResolution> {
   try {
     const ctx = await getFinancialActorContext()
-
-    return {
-      success: true,
-      ctx: {
-        ...ctx,
-        brokerageId: brokerageId ?? ctx.brokerageId,
-      },
-    }
+    return { success: true, ctx }
   } catch (error) {
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
     }
   }
+}
+
+/**
+ * 🚨 SECOND HALF OF THE SAME HOLE — the `agentId` was never checked either.
+ *
+ * `lib/kernel/financial.ts:loadAgentFinancialDashboardSummary` fans out **eight** queries on
+ * the SERVICE client (RLS bypassed) and six of them filter on `agent_id` ALONE, with no
+ * brokerage anchor: `business_expenses` (amount, description, **receipt_url**),
+ * `agent_commissions` (gross, net, split %), `commission_distributions`,
+ * `agent_commission_profiles`, and the whole `agents` row. So removing the brokerage override
+ * above is necessary but NOT sufficient — the agent id itself is the key, and it was
+ * unvalidated.
+ *
+ * This gate answers both questions the endpoint needs: is that agent in MY brokerage, and am
+ * I allowed to look at their money at all. An agent may read their own; a broker / admin /
+ * superadmin may read anyone's in their brokerage; nobody reads across brokerages.
+ *
+ * `error` is destructured — supabase-js RESOLVES a refused query, and a gate that reads a
+ * refusal as "no such agent" must fail CLOSED, which it does.
+ */
+async function authorizeAgentScope(
+  ctx: FinancialActorContext,
+  agentId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!agentId) return { ok: false, error: "Missing agent id" }
+
+  // Self is always allowed. agents.id and users.id are DISJOINT id spaces — this compares
+  // agents.id to agents.id (ctx.agentId), never to ctx.userId.
+  const isSelf = !!ctx.agentId && ctx.agentId === agentId
+  // BROKERAGE-WIDE MONEY (m472): the ONE finance roster, which excludes
+  // team_lead by the owner's ruling and admits broker_owner — the person who
+  // OWNS the brokerage, whom the old literal silently refused.
+  //
+  // ...plus m526's tier-conditioned principal: on a TEAM/SOLO-tier tenant the
+  // lead IS the tenant, so "any agent in my brokerage" is the right scope for
+  // them — and on BROKERAGE tier `isTenantPrincipal` is false and this reverts
+  // to exactly the roster above. The brokerage pin below still applies to them
+  // like everyone else, so this never reaches across tenants.
+  const isBrokerLevel = isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })
+  if (!isSelf && !isBrokerLevel) {
+    return { ok: false, error: "Forbidden — you may only view your own financials" }
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("agents")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (error) return { ok: false, error: "Could not verify the agent" }
+  if (!data || data.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "Forbidden" }
+  }
+  return { ok: true }
 }
 
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────────
@@ -103,11 +186,18 @@ export async function loadFinancialWorkspaceAction() {
   }
 }
 
+/**
+ * Kernel-canonical MTD/YTD GCI, agent net, transaction count and cap progress for one agent.
+ * Same `authorizeAgentScope` gate as the dashboard/P&L actions — it takes an `agentId` from
+ * the caller, so without it any authenticated user could name any agent.
+ */
 export async function loadAgentFinancialSummaryAction(
   input: Omit<LoadAgentFinancialSummaryInput, "ctx">
 ): Promise<KernelFinancialResult<AgentFinancialSummary>> {
   try {
     const ctx = await getFinancialActorContext()
+    const scope = await authorizeAgentScope(ctx, input.agentId)
+    if (!scope.ok) return { success: false, error: scope.error }
     return await loadAgentFinancialSummary({ ...input, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
@@ -126,6 +216,9 @@ export async function loadAgentFinancialDashboardSummaryAction(params: {
       error: ctx.error || "Failed to resolve financial context",
     }
   }
+
+  const scope = await authorizeAgentScope(ctx.ctx, params.agentId)
+  if (!scope.ok) return { success: false, error: scope.error }
 
   return await loadAgentFinancialDashboardSummary({
     ctx: ctx.ctx,
@@ -146,6 +239,9 @@ export async function loadAgentProfitLossSummaryAction(params: {
       error: ctx.error || "Failed to resolve financial context",
     }
   }
+
+  const scope = await authorizeAgentScope(ctx.ctx, params.agentId)
+  if (!scope.ok) return { success: false, error: scope.error }
 
   return await loadAgentProfitLossSummary({
     ctx: ctx.ctx,
@@ -198,12 +294,20 @@ export async function recalculateCommissionStateAction(
   }
 }
 
+/**
+ * Broker approval of a commission: pending → approved, the step the kernel REQUIRES
+ * before markCommissionPaid will disburse (COMMISSION_STATUS_TRANSITIONS rejects
+ * pending → paid outright). approvedBy defaults to the authenticated caller — the
+ * approver on a money record is who the session says it is, never a value the client
+ * chose. It stays overridable so server-side callers can attribute an approval they
+ * are performing on someone else's behalf.
+ */
 export async function markCommissionApprovedAction(
-  input: Omit<MarkCommissionApprovedInput, "ctx">
+  input: Omit<MarkCommissionApprovedInput, "ctx" | "approvedBy"> & { approvedBy?: string }
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    return await markCommissionApproved({ ...input, ctx })
+    return await markCommissionApproved({ ...input, approvedBy: input.approvedBy ?? ctx.userId, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -266,7 +370,7 @@ export async function loadMyDisputableCommissionsAction() {
 export async function loadCommissionDisputesAction() {
   try {
     const ctx = await getFinancialActorContext()
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false as const, error: "forbidden" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -295,7 +399,7 @@ export async function recordCommissionDepositReceivedAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false as const, error: "Insufficient permissions to record a deposit" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -312,11 +416,31 @@ export async function recordCommissionDepositReceivedAction(
   }
 }
 
+/**
+ * ADDED 2026-08-22 — the same `authorizeAgentScope` gate the read actions carry.
+ *
+ * This is a `"use server"` export, so `input.agentId` crosses the network from
+ * the client (app/actions/ai-financial-management.ts#createExpense passes it
+ * straight through from ITS caller), and createExpenseRecord writes on the
+ * SERVICE-ROLE client. The kernel's own check asks only whether the caller's RANK
+ * may book someone else's cost; it never asks whether that someone is in the
+ * caller's BROKERAGE. Without this line a finance admin could name an agent in
+ * another tenant and the row would be written with that agent_id under the
+ * CALLER's brokerage_id — one brokerage's cost filed onto another's books, and a
+ * WRITE version of the read defect docs/wave4-slice3.md records.
+ *
+ * Reused, not re-implemented: authorizeAgentScope already refuses a non-self
+ * target off the finance roster, refuses a target in another brokerage, refuses
+ * when the lookup itself is REFUSED (fail closed), and refuses an untenanted
+ * session because no agents row can match a null brokerage.
+ */
 export async function createExpenseRecordAction(
   input: Omit<CreateExpenseRecordInput, "ctx">
 ) {
   try {
     const ctx = await getFinancialActorContext()
+    const scope = await authorizeAgentScope(ctx, input.agentId)
+    if (!scope.ok) return { success: false, error: scope.error }
     return await createExpenseRecord({ ...input, ctx })
   } catch (error) {
     return { success: false, error: String(error) }

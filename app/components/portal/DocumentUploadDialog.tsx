@@ -15,6 +15,7 @@ import {
 import { Progress } from "@/components/ui/progress"
 import { Upload, FileText, CheckCircle2, AlertCircle, Loader2 } from "lucide-react"
 import { uploadDocument } from "@/app/actions/documents"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { useRouter } from "next/navigation"
 
 interface DocumentUploadDialogProps {
@@ -74,9 +75,18 @@ export function DocumentUploadDialog({
       return
     }
 
-    // Validate file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      setError("File size must be less than 10MB")
+    // COURTESY ONLY — uploadDocument holds the real gate. "10MB" was
+    // unreachable: the file is base64-encoded into a Server Action argument, and
+    // Vercel caps a function request body at 4.5 MB ahead of the framework, so
+    // ~3.4 MB of file is the true ceiling.
+    const gate = checkUpload({
+      bucket: "client-documents",
+      transport: "server_action_base64",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      setError(gate.reason)
       return
     }
 
@@ -90,7 +100,10 @@ export function DocumentUploadDialog({
       setProgress(30)
 
       // Upload document
-      await uploadDocument(
+      // uploadDocument reports failure BY RETURN, so the catch below — which
+      // carefully translates storage/size errors — never saw the common case.
+      // The bar filled to 100%, the dialog said uploaded, and nothing was.
+      const r = await uploadDocument(
         {
           name: file.name,
           type: file.type,
@@ -100,6 +113,11 @@ export function DocumentUploadDialog({
         contactId,
         transactionId
       )
+      if (!r?.success) {
+        setError((r as any)?.error ?? "The document was not uploaded.")
+        setProgress(0)
+        return
+      }
 
       setProgress(100)
       setSuccess(true)

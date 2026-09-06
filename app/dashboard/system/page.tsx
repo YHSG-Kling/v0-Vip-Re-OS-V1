@@ -1,15 +1,24 @@
 import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import {
   SystemCommandStrip,
   ProviderHealthPanel,
+  AgentCapabilityPanel,
+  OutcomeProofPanel,
+  RenderCachePanel,
+  LivingVideoPanel,
   ObservabilityPanel,
   AIQualityPanel,
   SyncHealthPanel,
   SystemAlertsPanel,
   OperationalImpactPanel,
+  ServiceSLAPanel,
   SchemaReadinessPanel,
+  DeconflictPanel,
 } from './components/os'
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // Force dynamic rendering - this page requires authentication
 export const dynamic = 'force-dynamic'
@@ -29,11 +38,31 @@ export default async function SystemPage() {
 
   // Role gate: broker, admin, superadmin only (NOT agents)
   // This is a broker/admin operations surface, not superadmin-only
-  if (!['admin', 'broker', 'superadmin'].includes(context.userType)) {
+  if (!isAdminOrBroker({ user_type: context.userType })) {
     redirect('/dashboard')
   }
 
   const { brokerageId } = context
+
+  // "Is superadmin" needs BOTH identity columns and AgentContext carries only
+  // user_type, so platform_role is read here. `context.userType === 'superadmin'`
+  // was FALSE for the platform's only superadmin (user_type='admin',
+  // platform_role='superadmin'), so the footer's link out to Superadmin
+  // Observability — the ONLY route to full observability offered from this page —
+  // never rendered for the one account that can use it. Same shape as
+  // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
+  const supabase = await createClient()
+  const { data: identity } = await supabase
+    .from('users')
+    .select('platform_role')
+    .eq('id', context.userId)
+    .maybeSingle()
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(
+    context.userType,
+    (identity as { platform_role?: string | null } | null)?.platform_role,
+  )
 
   return (
     <div className="min-h-screen bg-background">
@@ -56,6 +85,14 @@ export default async function SystemPage() {
           {/* Column 1: Provider & Sync Health */}
           <div className="space-y-6">
             <ProviderHealthPanel brokerageId={brokerageId} />
+            {/* Providers answer "which vendors are live"; this answers the question a
+                broker actually asks before switching autonomy on — what the agents can
+                DO. Same resolver the MCP tool list uses, so screen and tool list agree. */}
+            <AgentCapabilityPanel brokerageId={brokerageId} />
+            {/* Capabilities say what the team CAN do; this says what the providers
+                CONFIRMED it did. The gap between them is the only honest measure of
+                whether autonomy can be trusted. */}
+            <OutcomeProofPanel brokerageId={brokerageId} />
             <SyncHealthPanel brokerageId={brokerageId} />
           </div>
 
@@ -63,12 +100,37 @@ export default async function SystemPage() {
           <div className="space-y-6">
             <ObservabilityPanel brokerageId={brokerageId} />
             <AIQualityPanel brokerageId={brokerageId} />
+            {/* Video is the OS's most expensive output. This says how much of it was
+                delivered WITHOUT re-rendering, and names the compositions whose inputs
+                make reuse impossible — the same finding the Asset Manager gets on the
+                bus, put where a broker can see a fix is pending. */}
+            <RenderCachePanel brokerageId={brokerageId} />
+            {/* The cache made a render reusable by giving it an identity. The same
+                technique, pointed at a narrower set of inputs, gives a DELIVERED
+                video an identity too — and an identity you can recompute is one
+                you can check. This is what the OS is telling clients right now. */}
+            <LivingVideoPanel brokerageId={brokerageId} />
           </div>
 
           {/* Column 3: Alerts & Impact */}
           <div className="space-y-6">
             <SystemAlertsPanel brokerageId={brokerageId} />
             <OperationalImpactPanel brokerageId={brokerageId} />
+            {/* Impact says WHO is affected right now. This says what the
+                providers actually delivered and how long each service has been
+                up — and, where nothing was ever collected, says exactly that
+                instead of drawing a 100% line through an empty table. */}
+            <ServiceSLAPanel brokerageId={brokerageId} />
+            {/* THE HOME THE ENGINE PROMISED. lib/kernel/deconflict/index.ts:36 —
+                "every decision (allowed OR suppressed) writes one row to
+                deconflict_suppression_log (m113), which the broker cockpit reads"
+                — and until this panel nothing read it. This page IS the broker
+                cockpit for operational governance: it is gated to exactly the
+                audience the engine names ("Role gate: broker, admin, superadmin
+                only … a broker/admin operations surface", above), and the panel
+                sits in the alerts/impact column because a deferred outbound is an
+                operational fact about the egress, not a manager approval. */}
+            <DeconflictPanel brokerageId={brokerageId} />
           </div>
         </div>
 
@@ -79,7 +141,7 @@ export default async function SystemPage() {
         <div className="text-center text-xs text-muted-foreground pt-4 border-t border-border">
           <p>
             This dashboard shows brokerage-level system health.
-            {context.userType === 'superadmin' && (
+            {isSuperadmin && (
               <span className="ml-1">
                 For full observability access, visit{' '}
                 <a 

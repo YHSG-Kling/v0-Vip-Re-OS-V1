@@ -22,7 +22,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 type Svc = SupabaseClient<any, any, any>
 
 export const MIN_COHORT = 3          // agents per quartile side
-export const MIN_GAP_RATIO = 1.35    // top must beat rest by 35%+ to claim a behavior
+const MIN_GAP_RATIO = 1.35    // top must beat rest by 35%+ to claim a behavior
 export const WINDOW_DAYS = 180
 
 export interface AgentBehaviorStats {

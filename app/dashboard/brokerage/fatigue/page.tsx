@@ -14,6 +14,7 @@ import {
   getBrokerageFatigueAlerts,
 } from "@/app/actions/buyer-fatigue"
 import { BrokerageFatigueDashboard } from "./brokerage-fatigue-dashboard"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title:       "Buyer Fatigue Dashboard",
@@ -25,6 +26,13 @@ export default async function BrokerageFatiguePage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Validate broker/admin role
   const { data: profile } = await supabase
     .from("users")
@@ -33,7 +41,9 @@ export default async function BrokerageFatiguePage() {
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard")
-  if (!["broker", "broker_owner", "admin", "manager", "superadmin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
+  // TENANT ADMIN GATE (kept inline; platform staff pass via the platform_role
+  // clause): 'superadmin' removed — dead as users.user_type (0 live rows store it).
+  if (!["broker", "broker_owner", "broker_admin", "admin"].includes(profile.user_type ?? "") && profile.platform_role !== "superadmin") {
     redirect("/dashboard")
   }
 

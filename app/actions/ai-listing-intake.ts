@@ -8,11 +8,12 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { guardContent } from "@/lib/content-guardian"
+import { guardContent, attachApprovalSubject } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
+import { createHash } from "node:crypto"
+import { PROPERTY_TYPES } from "@/lib/constants"
 
 // ============================================
 // AI LISTING INTAKE SYSTEM
@@ -22,57 +23,14 @@ import { z } from "zod"
 // ============================================
 
 // State-specific form configurations
-const STATE_FORMS: Record<string, { required: string[]; optional: string[]; disclosures: string[] }> = {
-  TX: {
-    required: [
-      "TAR 1101 - Listing Agreement",
-      "TAR 1406 - Seller's Disclosure Notice",
-      "TAR 1407 - Lead-Based Paint Disclosure",
-      "TAR 2301 - Information About Brokerage Services",
-    ],
-    optional: ["TAR 1915 - MUD Notice", "TAR 1918 - Coastal Area Property Notice"],
-    disclosures: ["seller_disclosure", "lead_paint", "hoa_docs", "survey"],
-  },
-  CA: {
-    required: [
-      "CAR RLA - Residential Listing Agreement",
-      "CAR TDS - Transfer Disclosure Statement",
-      "CAR SPQ - Seller Property Questionnaire",
-      "CAR AD - Agency Disclosure",
-    ],
-    optional: ["CAR NHD - Natural Hazard Disclosure", "CAR MHTDS - Manufactured Home TDS"],
-    disclosures: ["transfer_disclosure", "natural_hazard", "lead_paint", "earthquake"],
-  },
-  FL: {
-    required: [
-      "FAR/BAR Listing Agreement",
-      "Seller's Property Disclosure",
-      "Lead-Based Paint Disclosure",
-      "Agency Disclosure",
-    ],
-    optional: ["HOA/COA Disclosure", "Flood Zone Disclosure"],
-    disclosures: ["seller_disclosure", "lead_paint", "hoa_docs", "flood_zone"],
-  },
-  // Add more states as needed
-  DEFAULT: {
-    required: ["Listing Agreement", "Seller's Disclosure", "Lead-Based Paint Disclosure", "Agency Disclosure"],
-    optional: [],
-    disclosures: ["seller_disclosure", "lead_paint"],
-  },
-}
+/* The local 3-state `STATE_FORMS` table went with `aiGetRequiredForms`, its only
+ * reader (tombstone below). The canonical 50-state registry — which this file
+ * already uses from `generateListingAgreement` — is
+ * lib/state-forms/registry.ts:STATE_FORMS / getStateForms. */
 
-interface ListingIntakeData {
-  agentId: string
-  brokerageId: string
-  propertyAddress: string
-  city: string
-  state: string
-  zipCode: string
-  propertyType: "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial"
-  sellerId?: string | null
-  listPrice?: number
-  propertyDetails?: any
-}
+/* `ListingIntakeData` went with the local `createListing` it typed (tombstone
+ * below). The live input shape is the inline parameter object of
+ * `createListingWithSellerContact`, app/actions/listings-kernel.ts:145. */
 
 // ============================================
 // 1. AI PROPERTY DATA ENRICHMENT
@@ -85,7 +43,15 @@ export async function aiEnrichPropertyData(address: string, _agentId?: string) {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const agentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const agentId = ctx.agentId
+    if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     const supabase = await createClient()
 
@@ -107,7 +73,7 @@ Provide realistic estimates in JSON format:
   "stories": number,
   "garage": number,
   "pool": boolean,
-  "propertyType": "single_family" | "condo" | "townhouse",
+  "propertyType": "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial" | "other",
   "style": "modern" | "traditional" | "craftsman" | "mediterranean" | "contemporary",
   "roofType": string,
   "hvac": string,
@@ -129,7 +95,11 @@ Provide realistic estimates in JSON format:
         stories: z.number(),
         garage: z.number(),
         pool: z.boolean(),
-        propertyType: z.enum(["single_family", "condo", "townhouse"]),
+        // Canonical vocabulary (lib/constants PROPERTY_TYPES). This enum used to be
+        // narrowed to three values while the surrounding types allowed six, so a
+        // multi-family, land or commercial listing was forced to one of the three and
+        // silently mis-typed. One list, used everywhere.
+        propertyType: z.enum(PROPERTY_TYPES),
         style: z.string(),
         roofType: z.string(),
         hvac: z.string(),
@@ -142,14 +112,40 @@ Provide realistic estimates in JSON format:
       prompt: enrichmentPrompt,
     })
 
-    // Log the enrichment
-    await supabase.from("ai_usage_log").insert({
+    // Log the enrichment.
+    //
+    // VERDICT: STAMP. This is the METERING ledger — tokens_used per action — and
+    // unstamped it meters to nobody: any per-brokerage cost roll-up keyed on
+    // `brokerage_id` misses the row entirely, while `ai_usage_log_select`
+    // (`is_platform_admin() OR brokerage_id IS NULL OR has_brokerage_access(...)
+    // OR (is_agent_role() AND agent_id = current_user_agent_id())`, granted to
+    // `authenticated`) lets every signed-in user of every OTHER brokerage read it
+    // through the NULL clause. The agent keeps their own rows via that last
+    // clause, so stamping costs them nothing.
+    //
+    // CONVENTION MATCHED, not invented: the sibling metering writer
+    // lib/ai/cost-tracking.ts::logAIUsage stamps `ai_tool_usage.brokerage_id`
+    // from a session-resolved tenant and console.errors a refused insert rather
+    // than swallowing it. Same shape here.
+    //
+    // TENANT SOURCE IS THE SESSION. `ctx` came from getAgentContext() at the top
+    // of this function; the `_agentId` parameter is deliberately ignored, so
+    // neither the agent nor the brokerage on this row is the caller's to name.
+    //
+    // The error is destructured because the enclosing try/catch CANNOT see it —
+    // supabase-js resolves a refused insert, so a rejected metering write was
+    // vanishing silently and the spend went unbilled.
+    const { error: usageLogError } = await supabase.from("ai_usage_log").insert({
       agent_id: agentId,
+      brokerage_id: ctx.brokerageId,
       action_type: "property_enrichment",
       input_data: { address },
       output_data: propertyData,
       tokens_used: 500,
     })
+    if (usageLogError) {
+      console.error("[AI Listing Intake] ai_usage_log insert refused (enrichment unmetered):", usageLogError.message)
+    }
 
     return { success: true, data: propertyData }
   } catch (error) {
@@ -161,81 +157,54 @@ Provide realistic estimates in JSON format:
 // ============================================
 // 2. AI STATE FORM RECOMMENDER
 // ============================================
-export async function aiGetRequiredForms(params: {
-  state: string
-  propertyType: string
-  transactionType: "standard" | "short_sale" | "foreclosure" | "new_construction"
-  hasHoa: boolean
-  hasPool: boolean
-  isHistoric: boolean
-  leadPaintYear?: number
-}) {
-  try {
-    const stateConfig = STATE_FORMS[params.state] || STATE_FORMS.DEFAULT
-
-    // Start with required forms
-    const forms = [...stateConfig.required]
-    const disclosures = [...stateConfig.disclosures]
-
-    // Add conditional forms
-    if (params.hasHoa) {
-      forms.push("HOA Disclosure Package")
-      disclosures.push("hoa_financials", "hoa_rules")
-    }
-
-    if (params.hasPool) {
-      forms.push("Pool Safety Disclosure")
-      disclosures.push("pool_inspection")
-    }
-
-    if (params.leadPaintYear && params.leadPaintYear < 1978) {
-      if (!forms.some((f) => f.toLowerCase().includes("lead"))) {
-        forms.push("Lead-Based Paint Disclosure")
-      }
-    }
-
-    if (params.transactionType === "short_sale") {
-      forms.push("Short Sale Addendum")
-      forms.push("Lender Authorization")
-    }
-
-    // AI enhancement for special circumstances
-    const { text: aiRecommendations } = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
-      prompt: `As a real estate compliance expert for ${params.state}, review this listing:
-Property Type: ${params.propertyType}
-Transaction: ${params.transactionType}
-Has HOA: ${params.hasHoa}
-Has Pool: ${params.hasPool}
-Historic Property: ${params.isHistoric}
-Built: ${params.leadPaintYear || "Unknown"}
-
-Are there any additional state-specific forms or disclosures required?
-List only the form names, one per line. If none, respond with "NONE".`,
-    })
-
-    const additionalForms =
-      aiRecommendations !== "NONE"
-        ? aiRecommendations
-            .split("\n")
-            .filter((f) => f.trim())
-            .map((f) => f.trim())
-        : []
-
-    return {
-      success: true,
-      forms: {
-        required: forms,
-        optional: stateConfig.optional,
-        aiRecommended: additionalForms,
-        disclosures,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Form recommender error:", error)
-    return handleError(error, "aiGetRequiredForms")
-  }
-}
+/* ───────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `aiGetRequiredForms` was REMOVED (orphan census, category C).
+ *
+ * SURVIVOR: `getStateForms(state, "listing")` at lib/state-forms/registry.ts:258
+ * (with `getBrokerageRepresentationForm` beside it at :277).
+ *
+ * IT BECAME AN ORPHAN IN THIS SAME CHANGE, and that is stated plainly rather
+ * than glossed: its ONLY caller was `runCompleteListingIntake`, deleted below as
+ * a duplicate. Rather than leave a stranded export, it gets its own verdict —
+ * and the verdict is that the capability already lives elsewhere, better.
+ *
+ * THE SURVIVOR IS STRICTLY BETTER, AND THIS FILE ALREADY USES IT. The registry's
+ * own header names `app/actions/ai-listing-intake.ts:generateListingAgreement()`
+ * as a consumer — so the function in this file that actually runs asks the
+ * registry the same question this one answered from a private table:
+ *   · COVERAGE: the registry defines ALL 50 STATES explicitly. This function's
+ *     local `STATE_FORMS` had THREE — TX, CA, FL — plus a `DEFAULT`.
+ *   · THE DEFAULT WAS THE DEFECT. An agent listing in Georgia got
+ *     STATE_FORMS.DEFAULT: "Listing Agreement", "Seller's Disclosure",
+ *     "Lead-Based Paint Disclosure", "Agency Disclosure" — generic names for a
+ *     state whose forms are GAR-numbered. The registry has NO default and
+ *     THROWS on an unrecognised state ("Forms unavailable — verify the property
+ *     address"), because the property address dictates the forms and a plausible
+ *     wrong answer about required disclosures is worse than a refusal.
+ *
+ * NOT MERGED, with the reason, because two things here have no home on the
+ * survivor and pretending otherwise would be the lie this tombstone exists to
+ * prevent:
+ *
+ *   1. THE CONDITIONAL ADDITIONS (HOA package, Pool Safety Disclosure, pre-1978
+ *      lead paint, short-sale addendum + lender authorization). These are REAL
+ *      product logic and the registry does not have them — StateFormBundle is
+ *      { required, addenda, brokerageRepresentation } with no conditional arm.
+ *      They are NOT carried over as-is because they were free-text English
+ *      names ("HOA Disclosure Package") against a 3-state table, while the
+ *      survivor's consumers route FORM IDS to Dotloop and the form library; a
+ *      name that is not an id resolves to nothing downstream. Recorded as an
+ *      OPEN ITEM on lib/state-forms/registry.ts — per-state conditional addenda
+ *      keyed by the same id vocabulary — not as a capability that moved.
+ *
+ *   2. THE AI "additional forms" STEP. Deliberately NOT carried over. It asked a
+ *      model to "list only the form names, one per line" as FREE TEXT, with no
+ *      schema and no validation against any form that exists, then returned the
+ *      lines as `aiRecommended`. That is the same confabulation shape already
+ *      tombstoned in this file for `aiOptimizePhotoOrder` — a model inventing
+ *      identifiers for a compliance surface. Required-disclosure lists are the
+ *      last place to accept invented names.
+ * ────────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // 3. AI LISTING DESCRIPTION GENERATOR
@@ -257,7 +226,15 @@ export async function aiGenerateListingDescription(params: {
       return { success: false, error: "Unauthorized" }
     }
     const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
+    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
+    // aiGenerateListingDescription all key agents(id). The substitution only
+    // fired when the caller had no agents row, i.e. exactly when there was
+    // nothing for those queries to match anyway; it bought a wrong-class id in
+    // place of an honest refusal. This is the spelling test:identity-fallback
+    // could not see until m358.
+    const agentId = ctx.agentId
+    if (!agentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
     const supabase = await createClient()
 
@@ -305,17 +282,37 @@ IMPORTANT RULES:
       contentType: "listing_description",
     }).catch((err) => {
       console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
-      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false, approvalItemId: null }
     })
 
     // Save generated content. listing_marketing_content is listing/brokerage-scoped
     // (no agent_id/status/target_audience columns) — the audience/style folds into
     // the content blob like the canonical ai-marketing-automation writer.
-    await supabase.from("listing_marketing_content").insert({
-      brokerage_id: brokerageId,
-      content_type: "ai_descriptions",
-      content: { ...descriptions, target_audience: params.style },
-    })
+    //
+    // The id is SELECTED now because it is the subject a flagged approval_items row
+    // points at. This path generates text before any row exists, so the scan
+    // (which must run first — see the ordering ruling in lib/content-guardian)
+    // could not name it; the link is stamped immediately after, below.
+    const { data: savedContent, error: savedContentError } = await supabase
+      .from("listing_marketing_content")
+      .insert({
+        brokerage_id: brokerageId,
+        content_type: "ai_descriptions",
+        content: { ...descriptions, target_audience: params.style },
+      })
+      .select("id")
+      .single()
+    if (savedContentError) {
+      console.error("[AI Listing Intake] listing_marketing_content insert failed:", savedContentError)
+    }
+
+    // `approval_items.item_id` — the column the reviewer opens. Called
+    // unconditionally: it is a no-op when nothing was flagged (approvalItemId is
+    // null) or when the save above was refused, and never throws.
+    await attachApprovalSubject(
+      (guardResult as { approvalItemId?: string | null }).approvalItemId,
+      (savedContent?.id as string | null) ?? null,
+    )
 
     return {
       success: true,
@@ -335,9 +332,36 @@ IMPORTANT RULES:
 // ============================================
 // 4. AI PRICING RECOMMENDATION
 // ============================================
+/**
+ * THE ONE LIST-PRICE RECOMMENDER.
+ *
+ * MERGED IN (consolidation): `app/actions/ai-market-intelligence.ts:predictPropertyPrice`
+ * was a second, caller-less model of the same subject — "what should this
+ * property be priced at" — and it has been deleted in favour of this one (see the
+ * tombstone at ai-market-intelligence.ts:169). Two things it did that this one did
+ * not, both carried over here BEFORE the delete:
+ *
+ *   1. IT FETCHED ITS OWN COMPARABLES. This action took `comparables` as an
+ *      optional parameter and its only surface — ListingIntelligenceCard — has
+ *      never supplied any, so every price recommendation the product has ever
+ *      shown an agent was generated from the literal string "No comps provided"
+ *      (see the note in app/components/dashboard/listings/lifecycle/
+ *      listing-intelligence-card.tsx, which flags exactly this). A pricing
+ *      opinion with no comps behind it is a guess wearing a number. When the
+ *      caller supplies none, the brokerage's own sold inventory in the same zip
+ *      and an adjacent-bedroom band is now read and used.
+ *   2. IT REPORTED CONFIDENCE, POSITIONING AND TIMING. `confidenceLevel`,
+ *      `marketPositioning`, `comparablesSummary` and `marketTiming` are its
+ *      output fields, folded into the schema below.
+ *
+ * `comparableCount`/`comparableSource` are returned so a surface can say WHERE the
+ * number came from — an estimate built on zero comps must be legible as one and
+ * must never be rendered with the same confidence as one built on twenty.
+ */
 export async function aiSuggestListPrice(params: {
   agentId?: string  // ignored — derived from session
   propertyData: any
+  /** Supply comps to use them verbatim; omit and the brokerage's sold inventory is read. */
   comparables?: any[]
   marketConditions?: "hot" | "balanced" | "cooling"
   motivation?: "quick_sale" | "maximize_price" | "balanced"
@@ -349,6 +373,47 @@ export async function aiSuggestListPrice(params: {
       return { success: false, error: "Unauthorized" }
     }
 
+    // ── Comparables ──────────────────────────────────────────────────────────
+    // Caller-supplied comps win. Otherwise fetch them, tenant-anchored: comps
+    // come from the caller's OWN brokerage's sold inventory and nowhere else.
+    // Columns verified live: listings.zip (text), listings.status CHECK includes
+    // 'sold', listings.bedrooms (int), listings.go_live_date (date). There is no
+    // listings.close_date, so recency orders by go_live_date.
+    let comparables: any[] = Array.isArray(params.comparables) ? params.comparables : []
+    let comparableSource: "caller" | "brokerage_sold" | "none" =
+      comparables.length > 0 ? "caller" : "none"
+
+    if (comparables.length === 0) {
+      const zip = params.propertyData?.zipCode ?? params.propertyData?.zip ?? null
+      const beds = Number(params.propertyData?.bedrooms)
+      if (typeof zip === "string" && zip.trim().length > 0) {
+        const supabase = await createClient()
+        let compQuery = supabase
+          .from("listings")
+          .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, go_live_date, sold_date")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("zip", zip.trim())
+          .eq("status", "sold")
+          .order("go_live_date", { ascending: false })
+          .limit(20)
+        if (Number.isFinite(beds)) {
+          compQuery = compQuery.gte("bedrooms", beds - 1).lte("bedrooms", beds + 1)
+        }
+        // supabase-js RESOLVES a refused query — an unread error here would be
+        // indistinguishable from "this brokerage has sold nothing in this zip",
+        // and the model would then be told there are no comps when in fact the
+        // read was blocked. Surfaced rather than silently downgraded.
+        const { data: comps, error: compsError } = await compQuery
+        if (compsError) {
+          return { success: false, error: `Could not read comparable sales: ${compsError.message}` }
+        }
+        if (comps && comps.length > 0) {
+          comparables = comps
+          comparableSource = "brokerage_sold"
+        }
+      }
+    }
+
     const { object: pricing } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: z.object({
@@ -358,6 +423,15 @@ export async function aiSuggestListPrice(params: {
         pricePerSqFt: z.number(),
         daysOnMarketEstimate: z.number(),
         competitivePosition: z.enum(["aggressive", "market", "premium"]),
+        // ── carried from predictPropertyPrice ──
+        confidenceLevel: z.enum(["high", "medium", "low"]),
+        marketPositioning: z.enum(["below_market", "at_market", "above_market"]),
+        comparablesSummary: z.string(),
+        marketTiming: z.object({
+          recommendation: z.enum(["list_now", "wait", "price_aggressively"]),
+          reasoning: z.string(),
+        }),
+        // ──────────────────────────────────────
         reasoning: z.string(),
         adjustments: z.array(
           z.object({
@@ -373,8 +447,8 @@ export async function aiSuggestListPrice(params: {
 Property:
 ${JSON.stringify(params.propertyData, null, 2)}
 
-Comparables:
-${params.comparables ? JSON.stringify(params.comparables, null, 2) : "No comps provided - estimate based on property details"}
+Comparables (${comparables.length} ${comparableSource === "brokerage_sold" ? "sold listings from this brokerage in the same zip" : comparableSource === "caller" ? "supplied by the caller" : "available"}):
+${comparables.length ? JSON.stringify(comparables, null, 2) : "NONE. State this plainly in comparablesSummary and set confidenceLevel to 'low' — do not present a comp-free estimate as if it were comp-supported."}
 
 Market Conditions: ${params.marketConditions || "balanced"}
 Seller Motivation: ${params.motivation || "balanced"}
@@ -384,10 +458,17 @@ Provide:
 2. Price range (low to high)
 3. Estimated days on market
 4. Key adjustments from comps
-5. Market positioning strategy`,
+5. Market positioning strategy
+6. Your confidence, and a one-line summary of what the comparables actually support
+7. Market timing advice`,
     })
 
-    return { success: true, pricing }
+    return {
+      success: true,
+      pricing,
+      comparableCount: comparables.length,
+      comparableSource,
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Pricing error:", error)
     return handleError(error, "aiSuggestListPrice")
@@ -397,11 +478,41 @@ Provide:
 // ============================================
 // 5. AI COMPLIANCE CHECKER
 // ============================================
+/**
+ * THE LISTING-COPY COMPLIANCE GATE.
+ *
+ * activity_type written when this action reviews a REAL listing's public copy.
+ * One spelling, used by the writer below and by getListingCopyComplianceGate —
+ * a second spelling would make the gate read nothing and report "clean".
+ */
+const LISTING_COPY_REVIEW_ACTIVITY = "listing.copy.compliance_reviewed"
+
+/**
+ * Fingerprint of the exact text that was reviewed.
+ *
+ * A finding is only about the words it was made against. Without this, editing
+ * the remarks would leave the old violation blocking a launch that no longer
+ * contains it — or, worse, a CLEAN review would keep vouching for copy the agent
+ * has since rewritten. Short sha256 over the trimmed text; not a secret, just an
+ * identity for the string.
+ */
+function listingCopyFingerprint(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex").slice(0, 32)
+}
+
 export async function aiCheckListingCompliance(params: {
   agentId?: string  // ignored — derived from session
   description: string
   photos?: string[]
   state: string
+  /**
+   * When this review is about a REAL listing, its id. Supplying it makes the
+   * review part of that listing's record (an `activities` row carrying the
+   * listing_id COLUMN, which is what every listing-scoped reader filters on)
+   * and lets the launch gate see the finding. Omitted by runCompleteListingIntake,
+   * which reviews copy for a listing that does not exist yet.
+   */
+  listingId?: string
 }) {
   try {
     // Auth gate — was previously fully open (no auth check at all).
@@ -409,6 +520,28 @@ export async function aiCheckListingCompliance(params: {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
+    }
+
+    // A listing-scoped review must be about a listing THIS caller can act on.
+    // Resolved before the model call so an out-of-tenant id cannot burn inference.
+    const supabase = await createClient()
+    let scopedListingId: string | null = null
+    if (params.listingId) {
+      if (!isValidUUID(params.listingId)) {
+        return { success: false, error: "Invalid listing ID" }
+      }
+      const { data: listing, error: listingError } = await supabase
+        .from("listings")
+        .select("id, brokerage_id")
+        .eq("id", params.listingId)
+        .maybeSingle()
+      if (listingError) {
+        return { success: false, error: `Could not load listing: ${listingError.message}` }
+      }
+      if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Forbidden" }
+      }
+      scopedListingId = listing.id as string
     }
 
     const { object: compliance } = await generateObject({
@@ -450,11 +583,149 @@ Check for:
 Be thorough - missing compliance can result in fines or license issues.`,
     })
 
-    return { success: true, compliance }
+    // RECORD IT AGAINST THE LISTING. A Fair Housing finding that lives only in
+    // the browser tab it was rendered in is not a compliance record — the broker
+    // cannot produce it, the launch gate cannot see it, and re-opening the page
+    // loses it. Written to `activities` with the listing_id COLUMN set, which is
+    // what the lifecycle page and every other listing-scoped reader filter on.
+    let recorded = false
+    if (scopedListingId) {
+      const criticalIssues = compliance.issues.filter((i) => i.severity === "critical")
+      const { error: activityError } = await supabase.from("activities").insert({
+        brokerage_id:  ctx.brokerageId,
+        // agents-class id (activities.agent_id FKs agents(id)). Null when the
+        // caller has no agents row — an honest absence, never ctx.userId.
+        agent_id:      ctx.agentId,
+        agent_user_id: ctx.userId || null,
+        listing_id:    scopedListingId,
+        entity_type:   "listing",
+        entity_id:     scopedListingId,
+        activity_type: LISTING_COPY_REVIEW_ACTIVITY,
+        title:         "Listing copy compliance review",
+        description:   compliance.isCompliant
+          ? `Public copy reviewed for ${params.state} — no blocking issues (score ${compliance.overallScore}/100)`
+          : `Public copy reviewed for ${params.state} — ${criticalIssues.length} critical, ${compliance.fairHousingCheck.flaggedPhrases.length} Fair Housing phrase(s) flagged`,
+        status:        "completed",
+        completed_at:  new Date().toISOString(),
+        notes: JSON.stringify({
+          state:              params.state,
+          overall_score:      compliance.overallScore,
+          is_compliant:       compliance.isCompliant,
+          fair_housing_passed: compliance.fairHousingCheck.passed,
+          flagged_phrases:    compliance.fairHousingCheck.flaggedPhrases,
+          mls_passed:         compliance.mlsCompliance.passed,
+          mls_issues:         compliance.mlsCompliance.issues,
+          critical_issues:    criticalIssues.map((i) => i.issue),
+          // The words this verdict is about. The gate refuses to apply a finding
+          // to copy that has since been rewritten.
+          description_fingerprint: listingCopyFingerprint(params.description),
+        }),
+      })
+      // supabase-js RESOLVES a rejected insert. Dropping this would leave the
+      // action reporting a compliance review that was never recorded.
+      if (activityError) {
+        console.error("[AI Listing Intake] compliance review NOT recorded:", activityError.message)
+      } else {
+        recorded = true
+        revalidatePath(`/dashboard/listings/${scopedListingId}/lifecycle`)
+      }
+    }
+
+    return { success: true, compliance, recorded }
   } catch (error) {
     console.error("[AI Listing Intake] Compliance error:", error)
     return handleError(error, "aiCheckListingCompliance")
   }
+}
+
+/**
+ * THE READ SIDE OF THE GATE — what the launch surface is allowed to conclude.
+ *
+ * aiCheckListingCompliance can tell an agent their public remarks contain a Fair
+ * Housing violation. Nothing consumed that: the listing could go to the MLS with
+ * the violation still in it, because the launch checklist's only compliance input
+ * was auditListingDocuments — a DOCUMENT check that never looks at the marketing
+ * copy at all.
+ *
+ * Returns blockers ONLY for a finding made against the copy as it stands now. If
+ * the remarks changed since the review, the finding is reported STALE rather than
+ * enforced — enforcing a verdict about words that are no longer there would hold
+ * a launch for a violation the agent already fixed.
+ */
+export async function getListingCopyComplianceGate(listingId: string): Promise<{
+  success: boolean
+  reviewed: boolean
+  stale: boolean
+  reviewedAt: string | null
+  blockers: string[]
+  error?: string
+}> {
+  const empty = { reviewed: false, stale: false, reviewedAt: null, blockers: [] as string[] }
+  if (!isValidUUID(listingId)) {
+    return { success: false, ...empty, error: "Invalid listing ID" }
+  }
+
+  const supabase = await createClient()
+
+  // RLS scopes both reads to the caller's brokerage. `error` is destructured on
+  // BOTH — `const { data }` on a failed read is indistinguishable from "clean",
+  // and a compliance gate that reads clean on failure is the whole defect class.
+  const [{ data: listing, error: listingError }, { data: rows, error: activityError }] =
+    await Promise.all([
+      supabase.from("listings").select("public_remarks").eq("id", listingId).maybeSingle(),
+      supabase
+        .from("activities")
+        .select("created_at, notes")
+        .eq("listing_id", listingId)
+        .eq("activity_type", LISTING_COPY_REVIEW_ACTIVITY)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ])
+
+  if (listingError || activityError) {
+    // Silence is not consent: a gate that could not run says so, and the caller
+    // surfaces it as a blocker rather than waving the launch through.
+    return {
+      success: false,
+      ...empty,
+      error: listingError?.message ?? activityError?.message ?? "Gate could not run",
+    }
+  }
+
+  const latest = (rows ?? [])[0]
+  if (!latest) return { success: true, ...empty }
+
+  let parsed: Record<string, unknown> = {}
+  try {
+    parsed = JSON.parse((latest.notes as string | null) ?? "{}") as Record<string, unknown>
+  } catch {
+    return { success: true, reviewed: true, stale: true, reviewedAt: latest.created_at as string, blockers: [] }
+  }
+
+  const currentRemarks = ((listing?.public_remarks as string | null) ?? "").trim()
+  const reviewedFingerprint = String(parsed.description_fingerprint ?? "")
+  const stale =
+    !currentRemarks ||
+    !reviewedFingerprint ||
+    listingCopyFingerprint(currentRemarks) !== reviewedFingerprint
+
+  const blockers: string[] = []
+  if (!stale) {
+    const flagged = Array.isArray(parsed.flagged_phrases) ? (parsed.flagged_phrases as string[]) : []
+    const critical = Array.isArray(parsed.critical_issues) ? (parsed.critical_issues as string[]) : []
+    if (parsed.fair_housing_passed === false || flagged.length > 0) {
+      blockers.push(
+        flagged.length > 0
+          ? `Fair Housing: listing copy still contains ${flagged.map((p) => `"${p}"`).join(", ")}`
+          : "Fair Housing: listing copy failed review",
+      )
+    }
+    for (const issue of critical) {
+      blockers.push(`Listing copy: ${issue}`)
+    }
+  }
+
+  return { success: true, reviewed: true, stale, reviewedAt: latest.created_at as string, blockers }
 }
 
 // ============================================
@@ -655,6 +926,9 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: 
 
     // AI recommendation
     const { text: recommendation } = await generateText({
+      brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a transaction coordinator, review these document statuses and provide a brief action recommendation:
 
@@ -680,265 +954,111 @@ Provide a 1-2 sentence recommendation for the agent.`,
 // ============================================
 // 8. CREATE COMPLETE LISTING
 // ============================================
-export async function createListing(params: ListingIntakeData) {
-  try {
-    // Resolve identity from session — never trust caller-supplied agentId/brokerageId
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    const supabase = await createClient()
-
-    // If the request supplies a sellerId, verify it belongs to the caller's brokerage
-    const sellerId = params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null
-    if (sellerId) {
-      const { data: sellerContact } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", sellerId)
-        .maybeSingle()
-      if (sellerContact && sellerContact.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
-    }
-
-    const ownerAgentId = ctx.agentId ?? ctx.userId
-
-    // Create the listing — use live schema column names only
-    const { data: listing, error } = await supabase
-      .from("listings")
-      .insert({
-        agent_id:          ownerAgentId,
-        brokerage_id:      ctx.brokerageId,
-        seller_contact_id: sellerId,
-        address:           params.propertyAddress,
-        city:              params.city,
-        state:             params.state,
-        zip:               params.zipCode,
-        property_type:     params.propertyType,
-        list_price:        params.listPrice ?? null,
-        bedrooms:          params.propertyDetails?.beds,
-        bathrooms:         params.propertyDetails?.baths,
-        sqft:              params.propertyDetails?.sqft,
-        // "draft" persists the partial listing row before the agreement is
-        // complete (added to the status CHECK). Becomes coming_soon when the
-        // listing agreement is signed.
-        status:            "draft",
-        lifecycle_stage:   "LEAD",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error || !listing) throw error ?? new Error("Failed to create listing")
-
-    // Create transaction record — stamped from session identity.
-    // Live schema: column is deal_type (buyer|seller|dual) and status is a fixed
-    // CHECK set; the previous transaction_type/"pre_listing" values silently
-    // failed the constraint, so no transaction row was ever created.
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id:          ownerAgentId,
-        brokerage_id:      ctx.brokerageId,
-        // contact_id is the primary in-house client; on a seller-side deal that
-        // is the seller. seller_contact_id is the same person in its role slot.
-        contact_id:        sellerId,
-        seller_contact_id: sellerId,
-        listing_id:        listing.id,
-        deal_type:         "seller",
-        status:            "qualifying",
-        deal_name:         params.propertyAddress, // NOT NULL on transactions
-        property_address:  params.propertyAddress,
-      })
-      .select()
-      .maybeSingle()
-
-    if (txError) {
-      console.error("[AI Listing Intake] Transaction insert failed:", txError)
-    }
-
-    // Provider container at intake is provider-specific. We do NOT assume dotloop:
-    // only create a Dotloop loop when the brokerage's resolved provider is dotloop.
-    // Other providers create their container later at send-for-signature time.
-    let dotloopResult: Awaited<ReturnType<typeof createOrPullDotloop>> | null = null
-    const resolvedProvider = await resolveTransactionProvider({
-      agentUserId: ctx.userId,
-      brokerageId: ctx.brokerageId,
-    })
-    if (resolvedProvider?.provider === "dotloop") {
-      dotloopResult = await createOrPullDotloop({
-        agentId: ownerAgentId,
-        listingId: listing.id,
-        propertyAddress: params.propertyAddress,
-        sellerId: sellerId ?? "",
-        transactionType: "listing",
-      })
-
-      // Update listing with loop ID
-      if (dotloopResult.success && dotloopResult.loopId) {
-        await supabase
-          .from("listings")
-          .update({ dotloop_loop_id: dotloopResult.loopId })
-          .eq("id", listing.id)
-      }
-    }
-
-    revalidatePath("/dashboard/listings")
-    revalidatePath("/dashboard/listings/[id]", "page")
-    revalidatePath("/dashboard/transactions")
-
-    return {
-      success: true,
-      listing,
-      transaction,
-      dotloop: dotloopResult,
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Create listing error:", error)
-    return handleError(error, "createListing")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `createListing(params: ListingIntakeData)` was REMOVED here.
+ *
+ * SURVIVOR: `createListingWithSellerContact` at
+ * app/actions/listings-kernel.ts:145 — the canonical listing-creation door, the
+ * one ListingCreateSheet and the FormWizard listing flow actually call.
+ *
+ * THE MERGE THAT UNBLOCKED THIS IS DONE. The previous note here (and on the
+ * orchestrator below) recorded, correctly, that this copy could NOT simply be
+ * deleted: alone among the three listing-creation paths it also opened the
+ * seller-side `transactions` row and created the transaction-provider container
+ * (the Dotloop loop, writing back `listings.dotloop_loop_id`) — so deleting it
+ * would have LOST capability rather than removed a duplicate, which is the one
+ * forbidden outcome. It named the unblocking work precisely: "fold the
+ * transaction-row + provider-container creation into
+ * `createListingWithSellerContact`". That fold is now made, at
+ * app/actions/listings-kernel.ts Step 4 of that function, corrections included
+ * (deal_type/status spelled as the live CHECK admits them, dotloop opened only
+ * when the brokerage's RESOLVED provider is dotloop, both steps non-fatal, and
+ * the loop-id write-back destructured).
+ *
+ * SO THE MERGE MOVED CAPABILITY *INTO* THE PRODUCT, not out of it. This copy had
+ * NO CALLER but `runCompleteListingIntake`, which had no caller either — meaning
+ * that for as long as both existed, EVERY listing the product actually created
+ * got a `listings` row and no deal row and no provider container. The doors that
+ * run now do all three.
+ *
+ * NOT MERGED, deliberately: this copy's `sellerId` brokerage-ownership check.
+ * The survivor does not take a caller-supplied seller id at all — it creates or
+ * attaches the seller contact itself from the caller's own tenant
+ * (createOrAttachSellerContact), so there is no foreign id to validate. A check
+ * against an input that cannot exist is not a behaviour to carry over.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
-// 9. AI PHOTO ORDERING OPTIMIZER
+// 9. AI PHOTO ORDERING OPTIMIZER — REMOVED
 // ============================================
-export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId?: string }) {
-  try {
-    // Auth gate — AI calls cost real $$$, fail fast on unauth
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify the listing belongs to the caller's brokerage
-    const supabase = await createClient()
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.listingId)
-      .maybeSingle()
-    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    const { object: optimization } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        optimizedOrder: z.array(z.number()).describe("Indices of photos in optimal order"),
-        heroPhoto: z.number().describe("Index of the best hero/cover photo"),
-        reasoning: z.string(),
-        suggestions: z.array(z.string()).describe("Suggestions for improving photos"),
-      }),
-      prompt: `You are a real estate photography expert. Analyze these ${params.photos.length} listing photos and determine the optimal order.
-
-Photo URLs: ${params.photos.join(", ")}
-
-Best practices:
-1. Hero shot should be the most appealing exterior or dramatic interior
-2. Follow a logical flow (exterior > entry > main living > kitchen > bedrooms > bathrooms > backyard)
-3. Save the best for strategic placement
-4. Group similar spaces together
-
-Provide the optimal order and reasoning.`,
-    })
-
-    return { success: true, optimization }
-  } catch (error) {
-    console.error("[AI Listing Intake] Photo optimization error:", error)
-    return handleError(error, "aiOptimizePhotoOrder")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `aiOptimizePhotoOrder` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `app/actions/photo-management.ts:optimizePhotoOrder` (declared at
+ * app/actions/photo-management.ts:336), wired to the media manager's "Optimize
+ * order" button at
+ * app/dashboard/listings/[id]/media/media-manager-client.tsx:180, with the rule
+ * editor beside it at
+ * app/dashboard/listings/[id]/media/components/photo-ordering-rules-card.tsx.
+ *
+ * NOTHING WAS MERGED, because this function had nothing the survivor lacks and
+ * one thing the survivor is right not to have:
+ *
+ *   · IT COULD NOT SEE THE PHOTOS. Its whole input was `photos: string[]` — a
+ *     list of URL STRINGS interpolated into a TEXT prompt. No image was ever
+ *     sent to a vision model, so "analyze these listing photos and determine the
+ *     optimal order" was the model ranking filenames. Its `optimizedOrder`,
+ *     `heroPhoto` and per-photo `suggestions` were confabulated from URL text.
+ *   · IT PERSISTED NOTHING. It returned indices into an array the caller passed
+ *     in. The survivor writes `listing_media.sort_order` and revalidates.
+ *   · The survivor orders by the CLASSIFIED `room_type` and `ai_quality_score`
+ *     already on each media row, honours the agent's saved
+ *     `photo_ordering_rules` sequence, and falls back to the MLS default —
+ *     facts about the actual images rather than guesses about their URLs.
+ *
+ * Per-photo quality feedback (the one output class this action gestured at)
+ * lives at `app/actions/photo-management.ts:validatePhotoQuality` (line 597) and
+ * `analyzePhoto` (line 81), both of which look at the real image.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
-// 10. COMPLETE LISTING INTAKE WORKFLOW
+// 10. COMPLETE LISTING INTAKE WORKFLOW — REMOVED
 // ============================================
-export async function runCompleteListingIntake(params: {
-  agentId: string
-  address: string
-  city: string
-  state: string
-  zipCode: string
-  sellerId: string
-  propertyType: "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial"
-  hasHoa?: boolean
-  hasPool?: boolean
-}) {
-  try {
-    const agentCtx = await getAgentContext()
-    if (!agentCtx.isAuthenticated || !agentCtx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-    const brokerageId = agentCtx.brokerageId
-    // Identity is session-derived; ignore caller-supplied agentId
-    const effectiveAgentId = agentCtx.agentId ?? agentCtx.userId
-
-    // Step 1: Enrich property data
-    const enrichResult = await aiEnrichPropertyData(params.address, effectiveAgentId)
-    if (!enrichResult.success) return enrichResult
-
-    // Step 2: Get required forms
-    const formsResult = await aiGetRequiredForms({
-      state: params.state,
-      propertyType: params.propertyType,
-      transactionType: "standard",
-      hasHoa: params.hasHoa || false,
-      hasPool: params.hasPool || false,
-      isHistoric: false,
-      leadPaintYear: enrichResult.data?.yearBuilt,
-    })
-
-    // Step 3: Generate listing description
-    const descResult = await aiGenerateListingDescription({
-      agentId: effectiveAgentId,
-      propertyData: enrichResult.data,
-      style: "family",
-    })
-
-    // Step 4: Get pricing recommendation
-    const pricingResult = await aiSuggestListPrice({
-      agentId: effectiveAgentId,
-      propertyData: enrichResult.data,
-    })
-
-    // Step 5: Check compliance
-    const complianceResult = await aiCheckListingCompliance({
-      agentId: effectiveAgentId,
-      description: descResult.success ? descResult.descriptions?.mlsDescription || "" : "",
-      state: params.state,
-    })
-
-    // Step 6: Create the listing
-    const listingResult = await createListing({
-      agentId: effectiveAgentId,
-      brokerageId,
-      propertyAddress: params.address,
-      city: params.city,
-      state: params.state,
-      zipCode: params.zipCode,
-      propertyType: params.propertyType,
-      sellerId: params.sellerId,
-      listPrice: pricingResult.success ? pricingResult.pricing?.suggestedListPrice : undefined,
-      propertyDetails: enrichResult.data,
-    })
-
-    return {
-      success: true,
-      workflow: {
-        propertyData: enrichResult.data,
-        requiredForms: formsResult.success ? formsResult.forms : null,
-        descriptions: descResult.success ? descResult.descriptions : null,
-        pricing: pricingResult.success ? pricingResult.pricing : null,
-        compliance: complianceResult.success ? complianceResult.compliance : null,
-        listing: listingResult.success ? listingResult.listing : null,
-        dotloop: listingResult.success ? listingResult.dotloop : null,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Complete workflow error:", error)
-    return handleError(error, "runCompleteListingIntake")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `runCompleteListingIntake` was REMOVED (orphan census, category C).
+ *
+ * SURVIVOR: `createListingWithSellerContact` at
+ * app/actions/listings-kernel.ts:145.
+ *
+ * THE RECORDED BLOCKER IS GONE, so the recorded verdict is executed rather than
+ * restated a third time. The note that stood here said, in as many words: "WHAT
+ * WOULD UNBLOCK IT: fold the transaction-row + provider-container creation into
+ * `createListingWithSellerContact` (the canonical door), at which point this
+ * orchestrator and the local `createListing` can both go, with that function as
+ * the named survivor." That fold is now made (listings-kernel.ts Step 4). Both
+ * are gone. The survivor is named.
+ *
+ * NOTHING IS LOST, checked step by step against what this orchestrator did:
+ *   1. aiEnrichPropertyData      — reachable: ListingIntelligenceCard
+ *      (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx)
+ *   2. aiGetRequiredForms        — DELETED IN THE SAME CHANGE, because this
+ *      orchestrator was its only caller. Survivor: lib/state-forms/registry.ts
+ *      getStateForms — all 50 states, no DEFAULT, and already the registry that
+ *      generateListingAgreement in this file uses. Its own tombstone is above.
+ *   3. aiGenerateListingDescription — reachable: ListingDescriptionComposer
+ *   4. aiSuggestListPrice        — reachable: ListingIntelligenceCard
+ *   5. aiCheckListingCompliance  — reachable: ListingIntelligenceCard
+ *   6. createListing (local)     — MERGED onto the survivor; see the tombstone above
+ * All five AI steps remain exported from this file and remain wired to the
+ * surfaces above. Only the uncalled orchestration of them is gone.
+ *
+ * AND WIRING IT WOULD HAVE BEEN WRONG, which is why it is deleted rather than
+ * given a caller: step 6 CREATES A LISTING, and the product creates listings
+ * through the FormWizard packet flow
+ * (app/dashboard/listings/listings-new-button.tsx → the survivor). Giving this a
+ * surface would have stood up a SECOND listing-creation door beside the real
+ * one — the exact duplication this burn-down exists to remove.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // WORKFLOW OS — generate listing agreement draft
@@ -1044,11 +1164,48 @@ export async function generateListingAgreement(params: {
         : "/dashboard/listings/new",
     }
 
+    // MERGE, NEVER REPLACE — the listing twin of the offer-side defect fixed in
+    // wave 9 (ai-offer-creation.ts:generateOfferDraft).
+    //
+    // The listing staging path INSERTs the document with
+    // `content = { intake, filledPacket }` and then calls this function
+    // immediately (draft-listing-from-voice.ts — the second path,
+    // api/workflow/intake/listing, was a duplicate of it and has been retired
+    // onto it).
+    // Assigning `content` wholesale replaced that with a prefill shape carrying
+    // NO `filledPacket`, and assigning `metadata` wholesale dropped whatever the
+    // stager had put there. `filledPacket` is the ONLY thing
+    // scanListingPacketCompleteness reads, so the completeness scan was left
+    // permanently unable to verify an AI-staged listing agreement — and with
+    // that scan now failing closed, an un-merged write here would refuse every
+    // AI-staged listing at markAgreementSigned instead. Load-bearing in both
+    // directions, exactly as on the offer side.
+    //
+    // The two shapes share no keys, so a top-level merge is lossless.
     if (params.documentId) {
+      const { data: existingDoc, error: existingErr } = await supabase
+        .from("documents")
+        .select("content, metadata")
+        .eq("id", params.documentId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (existingErr) {
+        console.error("[AI Listing Intake] Could not read the staged document before merging the packet — refusing to overwrite it blind:", existingErr.message)
+        return handleError(existingErr, "generateListingAgreement")
+      }
+
+      let priorContent: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse((existingDoc?.content as string | null) ?? "{}")
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorContent = parsed
+      } catch { /* unparseable prior content is replaced, not merged */ }
+      const priorMetadata = (existingDoc?.metadata ?? {}) as Record<string, unknown>
+
       const packetUpdate = {
-        content: JSON.stringify(packet, null, 2),
+        content: JSON.stringify({ ...priorContent, ...packet }, null, 2),
         status: "needs_agent_input",
         metadata: {
+          ...priorMetadata,           // keeps packet_type and anything else staged
           state,
           packet_type: "listing_agreement",
           required_forms: forms.required,
@@ -1060,12 +1217,18 @@ export async function generateListingAgreement(params: {
         },
         updated_at: new Date().toISOString(),
       }
-      await supabase
+      // CHECKED: a silently-dropped update here is what produced the unverifiable
+      // packet, and supabase-js RESOLVES a refused write.
+      const { error: packetWriteErr } = await supabase
         .from("documents")
         .update(packetUpdate)
         .eq("id", params.documentId)
         // tenant anchor (scope burn-down): document must belong to the workflow's brokerage
         .eq("brokerage_id", params.brokerageId)
+      if (packetWriteErr) {
+        console.error("[AI Listing Intake] Packet did not persist to the document row:", packetWriteErr.message)
+        return handleError(packetWriteErr, "generateListingAgreement")
+      }
     }
 
     // Notify the agent — the packet awaits their review/finalization
@@ -1116,6 +1279,26 @@ export async function generateListingLandingPage(params: {
 
     const pageSlug = params.slug ?? `listing-${Math.random().toString(36).slice(2, 9)}`
 
+    // listing_landing_pages.slug is GLOBALLY unique — correctly so, since it resolves a
+    // public URL (/listing/[slug]) and one address must mean one page. But the upsert
+    // below conflicts on that global key with a CALLER-SUPPLIED slug, so passing another
+    // brokerage's slug silently overwrote their published page: content, listing_id,
+    // contact_id and brokerage_id all rewritten to the caller's.
+    //
+    // The read staying global is right. The write must not cross tenants.
+    const { data: slugHolder } = await supabase
+      .from("listing_landing_pages")
+      .select("brokerage_id")
+      .eq("slug", pageSlug)
+      .maybeSingle()
+    const holderBrokerageId = (slugHolder as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (holderBrokerageId && holderBrokerageId !== params.brokerageId) {
+      return {
+        success: false,
+        error: `The address "${pageSlug}" already has a landing page at another brokerage. Choose a different link name.`,
+      }
+    }
+
     // Fetch listing data if linked
     let listingData: Record<string, unknown> = {}
     if (params.listingId) {
@@ -1127,11 +1310,36 @@ export async function generateListingLandingPage(params: {
       if (listing) listingData = listing as Record<string, unknown>
     }
 
+    // ── THE TEMPLATE THE COLUMN ALWAYS MEANT (owner ruling 2026-09-05) ────────
+    // Resolved agent > brokerage > global from content_templates, the table that
+    // was already live and carrying this exact shape. A refused lookup is
+    // REPORTED, not folded into "no template configured": those are different
+    // facts and an agent debugging why their template did not apply must not be
+    // told it does not exist (§3 — supabase-js resolves refusals).
+    const { resolveLandingTemplate, applyLandingTemplateToPrompt } = await import("@/lib/marketing/landing-template")
+    const templateChoice = await resolveLandingTemplate(supabase, {
+      brokerageId: params.brokerageId,
+      agentId: params.agentUserId ?? null,
+      explicitTemplateId: params.templateId ?? null,
+    })
+    if (templateChoice.lookupFailed) {
+      console.error(
+        `[listing-landing] template lookup REFUSED for brokerage ${params.brokerageId} — the page is still generated free-form, but this is NOT "no template configured":`,
+        templateChoice.reason,
+      )
+    } else if (templateChoice.reason) {
+      console.warn(`[listing-landing] ${templateChoice.reason}`)
+    }
+
     // Generate AI description for the landing page
-    const prompt = `Write a compelling property landing page headline and description.
+    const basePrompt = `Write a compelling property landing page headline and description.
 Property: ${JSON.stringify(listingData)}.
 Output a JSON object with: headline (string, max 80 chars), subheadline (string, max 120 chars), body (string, max 300 chars).
 Them-first: focus on what the buyer gains, not agent promotion.`
+    // The template STEERS the model. It is never executed or interpolated as code —
+    // these rows are tenant-authored, and a template that could execute would be a
+    // tenant-authored code path.
+    const prompt = applyLandingTemplateToPrompt(basePrompt, templateChoice.template)
 
     let pageContent: Record<string, string> = {
       headline: `Beautiful Home — ${listingData.address ?? "Available Now"}`,
@@ -1154,7 +1362,18 @@ Them-first: focus on what the buyer gains, not agent promotion.`
       .upsert({
         brokerage_id: params.brokerageId,
         contact_id: params.contactId ?? null,
-        template_id: params.templateId ?? null,
+        // RESOLVED 2026-09-05 (the note that stood here recorded this as an open
+        // owner question; the owner said templates are wanted). The column now
+        // records the template that ACTUALLY shaped this page — the resolved one,
+        // not the one that was asked for. Those differ whenever an agent names a
+        // template that is not an active listing-page template in their brokerage,
+        // and storing the request rather than the outcome would make the page claim
+        // a provenance it does not have.
+        //
+        // m606 gave the column its id class: it FKs content_templates ON DELETE SET
+        // NULL, so a published page with its own URL and lead history outlives the
+        // template that shaped it. NULL means genuinely free-form.
+        template_id: templateChoice.template?.id ?? null,
         listing_id: params.listingId ?? null,
         slug: pageSlug,
         content: pageContent,

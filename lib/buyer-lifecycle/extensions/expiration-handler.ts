@@ -163,17 +163,49 @@ export interface ExpirationGateResult {
   expiresAt?: Date
 }
 
+/**
+ * `gateName` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, so this returned
+ * the SAME verdict for all three gates — and one of those three must not be gated at
+ * all.
+ *
+ * BROWSING AND SEARCHING ARE OPEN. That is the compliance contract this codebase
+ * already states in `lib/portal/client-action-router.ts` ("browse/search is OPEN —
+ * NAR 2024 gates the tour, not the search"), and it is what the brokerage setting is
+ * literally named for: `brokerages.require_financial_verification_for_showings`
+ * (see app/actions/settings/showing-financial-gate-setting.ts) — for SHOWINGS. An
+ * unverified buyer being refused a property SEARCH is the wrong answer under both.
+ *
+ * `tour` and `offer` keep the full ladder; `search` returns allowed, with the
+ * verification state still reported so a caller can prompt without blocking.
+ */
 export async function evaluateSystemGateWithExpiration(
   contactId: string,
   gateName: "search" | "tour" | "offer"
 ): Promise<ExpirationGateResult> {
   const verificationStatus = await getEnhancedVerificationStatus(contactId)
 
+  const gatedByVerification = gateName === "tour" || gateName === "offer"
+  const gateLabel = gateName === "tour" ? "showing" : gateName
+
+  // SEARCH IS NEVER GATED on financial verification. The status still travels back so
+  // the surface can invite the buyer to verify — it just cannot refuse them.
+  if (!gatedByVerification) {
+    return {
+      allowed: true,
+      reason: verificationStatus.isVerified && !verificationStatus.isExpired
+        ? undefined
+        : "Search is open — financial verification is only required before a showing or an offer",
+      requiresRenewal: false,
+      daysUntilExpiration: verificationStatus.daysUntilExpiration,
+      expiresAt: verificationStatus.expiresAt,
+    }
+  }
+
   // Not verified
   if (!verificationStatus.isVerified) {
     return {
       allowed: false,
-      reason: "Financial verification required",
+      reason: `Financial verification required before a ${gateLabel}`,
       requiresRenewal: true,
     }
   }
@@ -182,7 +214,7 @@ export async function evaluateSystemGateWithExpiration(
   if (verificationStatus.isExpired) {
     return {
       allowed: false,
-      reason: "Financial verification expired",
+      reason: `Financial verification expired — renew it before this ${gateLabel}`,
       requiresRenewal: true,
       expiresAt: verificationStatus.expiresAt,
     }

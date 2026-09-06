@@ -1,4 +1,21 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generateTcBrief / generateComplianceBrief /
+// generateLenderBrief / generateVendorBrief({ userId, brokerageId }) as public
+// HTTP doors with no gate: a service client over a caller-supplied brokerageId —
+// section 4's named IDOR shape. Every caller is in-process server code
+// (re-verified 2026-09-03):
+//   · lib/intelligence/user-type-briefs/index.ts:17-21 (the barrel), whose value
+//     importers are app/actions/briefing-actions.ts:12 ("use server") and the
+//     server pages app/dashboard/{coordinator,brokerage,compliance}/page.tsx,
+//     app/vendor/dashboard/page.tsx, app/lender/dashboard/page.tsx; the two
+//     "use client" importers of the barrel take TYPES only (erased)
+//   · scripts/lender-in-transaction-simulator.ts:83 reads the SOURCE, not the module
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
@@ -45,6 +62,12 @@ export async function generateComplianceBrief(params: {
     supabase
       .from("compliance_checks")
       .select("id", { count: "exact", head: true })
+      // TENANT-SCOPED (2026-08-27): this count had NO brokerage filter at all,
+      // so on the service client it counted every tenant's open checks into
+      // this brokerage's brief. The `.is.null` arm stays only for legacy rows
+      // written before app/actions/documents.ts stamped the brokerage_id
+      // column (it used to live only inside the findings jsonb).
+      .or(`brokerage_id.eq.${params.brokerageId},brokerage_id.is.null`)
       .in("status", ["pending", "needs_review"]),
   ])
 
@@ -74,7 +97,7 @@ export async function generateComplianceBrief(params: {
       title: `${violations.length} compliance flag${violations.length === 1 ? "" : "s"} this week`,
       body: violations[0].blocked_reason ?? "Review violations dashboard",
       severity: "high",
-      ctas: [{ label: "Review violations", href: "/dashboard/compliance/violations" }],
+      ctas: [{ label: "Review violations", href: "/compliance/violations" }],
     })
   }
 
@@ -84,7 +107,7 @@ export async function generateComplianceBrief(params: {
     { label: "Flags 7d", value: violations.length },
   ]
 
-  const summary = await synthesize("compliance officer", priorities, metrics)
+  const summary = await synthesize("compliance officer", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -186,7 +209,7 @@ export async function generateLenderBrief(params: {
     { label: "Stalled (5d+)", value: stuckLoans.length, href: "/lender/dashboard?filter=stuck" },
   ]
 
-  const summary = await synthesize("lender", priorities, metrics)
+  const summary = await synthesize("lender", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -274,7 +297,7 @@ export async function generateVendorBrief(params: {
     { label: "Overdue", value: overdue.length, href: "/vendor/jobs?filter=overdue" },
   ]
 
-  const summary = await synthesize("vendor", priorities, metrics)
+  const summary = await synthesize("vendor", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -313,10 +336,11 @@ async function generateTcLikeBrief(params: {
       .lte("close_date", sevenDaysOut)
       .order("close_date", { ascending: true })
       .limit(10),
+    // TC column is coordinator_id (assigned_tc_id never existed — the embed failed).
     supabase
       .from("deal_health_scores")
-      .select("transaction_id, overall_score, risk_level, transactions!inner(property_address, assigned_tc_id)")
-      .eq("transactions.assigned_tc_id", params.userId)
+      .select("transaction_id, overall_score, risk_level, transactions!inner(property_address, coordinator_id)")
+      .eq("transactions.coordinator_id", params.userId)
       .in("risk_level", ["critical", "at_risk"])
       .order("overall_score", { ascending: true })
       .limit(5),
@@ -380,7 +404,7 @@ async function generateTcLikeBrief(params: {
     { label: "Open interventions", value: interventions.length },
   ]
 
-  const summary = await synthesize("transaction coordinator", priorities, metrics)
+  const summary = await synthesize("transaction coordinator", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -461,13 +485,18 @@ async function persistBrief(
 async function synthesize(
   userTypeLabel: string,
   priorities: BriefPriority[],
-  metrics: BriefMetric[]
+  metrics: BriefMetric[],
+  /** Tenant + actor for the AI cost ledger — the same `params.brokerageId` /
+   *  `params.userId` each brief already persists against (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null } = { brokerageId: null, userId: null },
 ): Promise<string> {
   if (priorities.length === 0) {
     return `Quiet day for ${userTypeLabel}. Nothing critical on the radar — good time to focus on growth work.`
   }
   try {
     const { text } = await generateTextRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       feature: "daily_briefing",
       prompt:
         `Write a one-sentence morning summary for a real estate ${userTypeLabel}. ` +

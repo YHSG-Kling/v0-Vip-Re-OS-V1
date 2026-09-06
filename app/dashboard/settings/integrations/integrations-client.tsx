@@ -69,6 +69,8 @@ const PLATFORM_LABELS: Record<string, string> = {
   rentcast:     "Rentcast (no IDX needed)",
   quickbooks:   "QuickBooks",
   xero:         "Xero",
+  wordpress:    "WordPress",
+  idxbroker:    "IDX Broker",   // the CREDENTIAL key; idx_broker above is the provider-override key
   gohighlevel:  "GoHighLevel",
   none:         "None (Disabled)",
 }
@@ -109,13 +111,18 @@ const EMPTY_OVERRIDE: OverrideForm = { provider_type: "esign", provider_key: "do
 // ── Component ──────────────────────────────────────────────────────────────
 export function IntegrationsClient({
   credentials: initialCreds,
-  overrides: initialOverrides,
+  overrides,
 }: {
   credentials: PlatformCredential[]
   overrides: ProviderOverride[]
 }) {
+  // `credentials` keeps local state on purpose: handleToggle flips is_active in
+  // place without a reload. TOMBSTONE — `const [overrides, setOverrides] =
+  // useState(initialOverrides)`: setOverrides was never called, so that copy had
+  // no writer; the prop is rendered directly. (handleSaveOverride ends in
+  // window.location.reload(), a full remount, so the list was not frozen in
+  // practice — it would have been the moment that became a router.refresh().)
   const [credentials, setCredentials] = useState(initialCreds)
-  const [overrides, setOverrides] = useState(initialOverrides)
   const [showCredDialog, setShowCredDialog] = useState(false)
   const [showOverrideDialog, setShowOverrideDialog] = useState(false)
   const [credForm, setCredForm] = useState<CredForm>(EMPTY_CRED)

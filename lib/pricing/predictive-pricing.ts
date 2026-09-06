@@ -167,12 +167,21 @@ Respond ONLY with valid JSON (no markdown):
     return { success: false, error: "Failed to save prediction" }
   }
 
+  // A fresh prediction can change the pricing rail's graded pairs (the rail takes the
+  // model's LAST pre-sale call per listing) — drop the accuracy-gate's cached verdicts
+  // so the gate reads current evidence without waiting out the TTL. Best-effort.
+  try {
+    const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+    __clearAccuracyGateCache()
+  } catch { /* cache invalidation is never load-bearing */ }
+
   // Record in pricing_history
   await supabase.from("pricing_history").insert({
     listing_id: listingId,
     brokerage_id: brokerageId,
     price: predictedPrice,
-    price_type: "ai_prediction",
+    // pricing_history.price_type says 'prediction'.
+    price_type: "prediction",
     notes: `Confidence: ${confidenceScore}% | Trend: ${trendDirection} ${trendPercentage}%`,
   })
 
@@ -186,7 +195,10 @@ Respond ONLY with valid JSON (no markdown):
       await supabase.from("price_trend_alerts").insert({
         listing_id: listingId,
         brokerage_id: brokerageId,
-        alert_type: "price_gap",
+        // price_trend_alerts has no 'price_gap'. A prediction BELOW the list
+        // price means the listing is priced too high; a prediction ABOVE it is
+        // the market having moved, and there is no "underpriced" value.
+        alert_type: direction === "below" ? "price_too_high" : "market_shift",
         severity,
         message: `AI prediction ($${predictedPrice.toLocaleString()}) is ${priceDeltaPct.toFixed(1)}% ${direction} current list price ($${currentListPrice.toLocaleString()}).`,
         recommended_action:

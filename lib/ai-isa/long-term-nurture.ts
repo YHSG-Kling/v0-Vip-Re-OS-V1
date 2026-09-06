@@ -21,6 +21,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
 
 const REACTIVATION_SCORE_THRESHOLD = 65
 
@@ -37,15 +38,25 @@ export async function runMonthlyNurtureCadence(params?: {
 
   const nowIso = new Date().toISOString()
 
-  // 1. Fetch leads currently in long-term nurture
-  const { data: leads, error } = await supabase
-    .from("leads")
-    .select(
-      "id, brokerage_id, contact_id, long_term_nurture_until, long_term_nurture_started_at, lead_score, motivation_type"
-    )
-    .eq("lifecycle_state", "long_term_nurture")
-    .eq("is_active", true)
-    .limit(limit)
+  // 1. Fetch leads currently in long-term nurture.
+  //
+  // CONVERSION FINALITY: this query already SELECTED `contact_id` — and then
+  // used it only to stamp the `sequence_enrollments` row it creates below. It
+  // never refused on it. So a converted lead sitting in long-term nurture kept
+  // being enrolled into monthly nurture sequences, kept having its
+  // `lifecycle_state` and `ai_isa_owner` rewritten, and kept having signal rows
+  // flipped — all lead-keyed updates on a person who is already a client. The
+  // sweep now cannot see them at all.
+  const { data: leads, error } = await excludeConvertedLeads(
+    supabase
+      .from("leads")
+      .select(
+        "id, brokerage_id, contact_id, long_term_nurture_until, long_term_nurture_started_at, lead_score, motivation_type"
+      )
+      .eq("lifecycle_state", "long_term_nurture")
+      .eq("is_active", true)
+      .limit(limit),
+  )
 
   if (error || !leads) {
     return { total: 0, enrolledMonthly: 0, reactivated: 0, expired: 0 }

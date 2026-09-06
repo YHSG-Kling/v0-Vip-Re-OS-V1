@@ -1,6 +1,20 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+// Financial Command runs the kernel's first two financial commands before it renders money:
+//   1. loadFinancialWorkspaceAction — proves the actor's identity against `agents`/`users`
+//      and resolves their ACCESS LEVEL (personal | team | brokerage | system).
+//   2. loadAgentFinancialSummaryAction — the canonical MTD/YTD GCI + agent net + cap
+//      progress, read from `agent_commissions`, which is the same source every other
+//      financial surface in this section uses.
+// Before this, the page derived its headline "YTD Earnings" privately from
+// `commission_splits` while /dashboard/financials/agent derived it from `agent_commissions`
+// via the kernel — two numbers for one fact, in one section. The kernel figure wins; see
+// lib/kernel/financial.ts:loadAgentFinancialSummary.
+import {
+  loadFinancialWorkspaceAction,
+  loadAgentFinancialSummaryAction,
+} from "@/app/actions/financial-kernel"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,35 +34,55 @@ import {
 
 export const dynamic = "force-dynamic"
 
+/**
+ * `brokerageId` IS THE TENANT PREDICATE — it was accepted here and read by NOTHING
+ * until 2026-08-24. All three reads below were keyed on `agent_id` alone, so every
+ * row an agent id matched came back no matter which brokerage owned it. That is the
+ * body-shaped-tenant IDOR shape CLAUDE.md §4 names, wearing a parameter it never
+ * asked. Both `commission_splits` and `transactions` carry `brokerage_id`
+ * (scripts/schema-snapshot.ts), so the predicate existed the whole time.
+ *
+ * FAIL CLOSED (§4): with no tenant this refuses rather than running the un-scoped
+ * query. `tenantResolved: false` is NOT "you earned nothing" — the caller renders it
+ * as unavailable, the same no-invented-zero rule the YTD tile already follows.
+ *
+ * Errors are DESTRUCTURED AND READ (§3): supabase-js resolves refusals, so an
+ * ignored `error` degrades a refused tenant predicate into an empty, confident page.
+ */
 async function getFinancialOverview(agentId: string, brokerageId: string) {
+  const empty = {
+    commissionSplits: [] as any[],
+    pendingPayouts: 0,
+    recentTransactions: [] as any[],
+    pendingCount: 0,
+  }
+  if (!brokerageId) return { ...empty, tenantResolved: false as const }
+
   const supabase = await createClient()
-  
+
   // Get commission splits
-  const { data: commissionSplits } = await supabase
+  const { data: commissionSplits, error: splitsError } = await supabase
     .from("commission_splits")
     .select("*")
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(10)
 
   // Get pending payouts
-  const { data: pendingPayouts } = await supabase
+  const { data: pendingPayouts, error: pendingError } = await supabase
     .from("commission_splits")
     .select("agent_amount")
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("status", "pending")
 
-  // Get YTD earnings
-  const startOfYear = new Date(new Date().getFullYear(), 0, 1).toISOString()
-  const { data: ytdEarnings } = await supabase
-    .from("commission_splits")
-    .select("agent_amount")
-    .eq("agent_id", agentId)
-    .eq("status", "paid")
-    .gte("paid_at", startOfYear)
+  // YTD earnings are NOT computed here any more. They come from
+  // loadAgentFinancialSummaryAction (kernel, reading agent_commissions) so this page and
+  // /dashboard/financials/agent report the same number. See the import comment above.
 
   // Get recent transactions with commission data
-  const { data: recentTransactions } = await supabase
+  const { data: recentTransactions, error: txError } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -62,29 +96,82 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
       )
     `)
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(5)
 
+  if (splitsError || pendingError || txError) {
+    console.error("[financials] tenant-scoped read refused", {
+      splitsError: splitsError?.message,
+      pendingError: pendingError?.message,
+      txError: txError?.message,
+    })
+    return { ...empty, tenantResolved: false as const }
+  }
+
   const totalPending = pendingPayouts?.reduce((sum, p) => sum + (p.agent_amount || 0), 0) || 0
-  const totalYTD = ytdEarnings?.reduce((sum, e) => sum + (e.agent_amount || 0), 0) || 0
 
   return {
+    tenantResolved: true as const,
     commissionSplits: commissionSplits || [],
     pendingPayouts: totalPending,
-    ytdEarnings: totalYTD,
     recentTransactions: recentTransactions || [],
     pendingCount: pendingPayouts?.length || 0,
   }
 }
 
 export default async function FinancialsPage() {
-  const context = await getAgentContext()
-  
-  if (!context?.agentId) {
-    redirect("/login")
+  // Heal an incomplete account IN PLACE — don't bounce the user off Financials.
+  const context = await ensureAgentContextInPlace()
+  if (!context.isAuthenticated) redirect("/login")
+  if (!context.agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground text-sm">
+        Finishing your account setup — refresh in a moment to view your financials.
+      </div>
+    )
   }
 
-  const financials = await getFinancialOverview(context.agentId, context.brokerageId || "")
+  // Kernel command 1 — identity verification + access level. A failure here is an identity
+  // problem, not a data problem, so it must NOT be papered over with zeroes: the page says so
+  // and stops rather than rendering money it could not attribute.
+  const workspaceResult = await loadFinancialWorkspaceAction()
+  const workspace = (workspaceResult as { success: boolean; data?: {
+    agentId: string | null; brokerageId: string; userType: string
+    accessLevel: "personal" | "team" | "brokerage" | "system"; validatedAt: string
+  }; error?: string })
+  if (!workspace.success || !workspace.data) {
+    return (
+      <div className="max-w-2xl mx-auto p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              We couldn&rsquo;t verify your financial identity
+            </CardTitle>
+            <CardDescription>
+              You&rsquo;re still signed in — your account isn&rsquo;t linked to an agent or
+              brokerage record yet, so there are no earnings to attribute to you.
+              {workspace.error ? ` (${workspace.error})` : ""}
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    )
+  }
+  const accessLevel = workspace.data.accessLevel
+  const canSeeBrokerage = accessLevel === "brokerage" || accessLevel === "system"
+  const canSeeTeam = canSeeBrokerage || accessLevel === "team"
+
+  const [financials, summaryResult] = await Promise.all([
+    // The tenant comes from the KERNEL-VALIDATED workspace above (CLAUDE.md §4 —
+    // tenant comes from the session, never from a parameter the page invented),
+    // with the in-place-healed context as the fallback spelling of the same id.
+    getFinancialOverview(context.agentId, workspace.data.brokerageId || context.brokerageId || ""),
+    // Kernel command 2 — the canonical earnings figures for THIS agent.
+    loadAgentFinancialSummaryAction({ agentId: context.agentId }),
+  ])
+  const summary = summaryResult.success ? summaryResult.data ?? null : null
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -119,6 +206,24 @@ export default async function FinancialsPage() {
         </div>
       </div>
 
+      {/* The tenant predicate could not be asked, so nothing below it was read.
+          Reported as unavailable, never as $0 — same rule as the YTD tile. */}
+      {!financials.tenantResolved && (
+        <Card className="border-amber-500/40">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              Commission detail unavailable
+            </CardTitle>
+            <CardDescription>
+              We couldn&rsquo;t confirm which brokerage owns these records, so the
+              splits, payouts and recent-deal lists below are empty on purpose
+              rather than showing figures we could not attribute.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
       {/* Financial Radar - Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
@@ -127,12 +232,27 @@ export default async function FinancialsPage() {
             <TrendingUp className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-600">
-              {formatCurrency(financials.ytdEarnings)}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Paid commissions this year
-            </p>
+            {summary ? (
+              <>
+                <div className="text-2xl font-bold text-emerald-600">
+                  {formatCurrency(summary.ytdAgentNet)}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Your net across {summary.ytdTransactionCount} closed{" "}
+                  {summary.ytdTransactionCount === 1 ? "deal" : "deals"} · GCI{" "}
+                  {formatCurrency(summary.ytdGCI)}
+                </p>
+              </>
+            ) : (
+              // No invented zero. A figure we could not load is reported as unavailable,
+              // never as $0 — a zero here reads as "you have earned nothing this year".
+              <>
+                <div className="text-2xl font-bold text-muted-foreground">—</div>
+                <p className="text-xs text-muted-foreground">
+                  Earnings unavailable right now
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -300,6 +420,58 @@ export default async function FinancialsPage() {
           </Card>
         </Link>
       </div>
+
+      {/*
+        ACCESS-LEVEL SURFACES. /dashboard/financials/team and /dashboard/financials/brokerage
+        both exist but Financial Command never linked to either, so a team lead or broker
+        landing here had no route to the view they are actually entitled to — they had to know
+        the URL. Which of these appears is decided by the kernel's accessLevel
+        (loadFinancialWorkspaceAction), not by a role string re-derived in the page. This is
+        navigation only; each destination re-authorizes on its own.
+      */}
+      {(canSeeTeam || canSeeBrokerage) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {canSeeTeam && (
+            <Link href="/dashboard/financials/team">
+              <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 rounded-lg bg-amber-500/10">
+                      <TrendingUp className="w-6 h-6 text-amber-500" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">Team Financials</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Production and splits across your team
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          )}
+
+          {canSeeBrokerage && (
+            <Link href="/dashboard/financials/brokerage">
+              <Card className="hover:border-primary/50 transition-colors cursor-pointer h-full">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 rounded-lg bg-rose-500/10">
+                      <DollarSign className="w-6 h-6 text-rose-500" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">Brokerage Financials</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Company-wide gross income, splits and net
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          )}
+        </div>
+      )}
     </div>
   )
 }

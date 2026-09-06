@@ -1,15 +1,37 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { agentIdForUser } from "@/lib/agents/agent-for-user"
+// TOMBSTONE (dead-import tranche): `agentIdForUser` (lib/agents/agent-for-user.ts:13)
+// was imported here and never called. Survivor: `resolveAgentId`
+// (lib/kernel/agent-identity.ts:43), which runs the identical query and is the
+// safer one (`.order().limit(1)` rather than `.maybeSingle()`, which ERRORS when
+// a user has more than one agents row).
+// UPDATE (wave 26): this file no longer calls `resolveAgentId` directly either —
+// its one site needed the agent profile to EXIST, so it now uses
+// `requireAgentId` (lib/kernel/agent-identity.ts:113), the throwing wrapper over
+// that same resolver, instead of re-implementing the throw inline (§6).
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { logVideoGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
+// was imported and never called — this file dispatches no provider itself. The
+// VIDEO provider is resolved by `resolveVideoProvider`
+// (lib/marketing/video-provider-resolver.ts, called from
+// app/actions/video/create-video-project.ts:669) and the AI provider is chosen
+// inside `generateAIResponse` (lib/ai). Nothing was lost.
+import { requireAgentId } from "@/lib/kernel/agent-identity"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported and never called. This file's lifecycle emission goes through
+// `logVideoGenerated` (lib/events/event-helpers.ts:145 → logEventAndTrigger:29,
+// which inserts lifecycle_events and fires the registered orchestrator
+// dispatcher, lib/orchestrator/internal.ts:1109), and its notifications are
+// written directly by handleVideoGenerated / handleVideoPublished /
+// handleHighEngagement below. Both halves already exist; a second rail here
+// would have double-notified.
+// The ONE way a notifications row gets its tenant — the recipient's
+// users.brokerage_id, the exact value badge-counts compares against.
+import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
 // =====================================================
 // VIDEO CONTENT GENERATION SERVER ACTIONS
@@ -39,9 +61,33 @@ export async function generateVideoScript(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
-  // Resolve agent ID - never use user.id for agent_id column
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+  // Resolve agent ID - never use user.id for agent_id column.
+  // ONE VOCABULARY (§6): this was `resolveAgentId` + a hand-rolled throw, which
+  // is exactly what requireAgentId (lib/kernel/agent-identity.ts:113) IS. Two
+  // spellings of "the agent profile is required here" existed and neither could
+  // be found from the other; merged onto the survivor.
+  const agentId = await requireAgentId(supabase, user.id)
+
+  // ── THE TIER GATE ──────────────────────────────────────────────────────────
+  //
+  // BUILT, not tidied. `canAccessFeature` / `incrementFeatureUsage` were
+  // imported by this file and called by NOTHING, so the only AI-spending entry
+  // in it ran with no entitlement check and left no usage row — the counter the
+  // per-tier overage projection reads. Every sibling AI action in this tree is
+  // gated this way (app/actions/ai-newsletter.ts:122,
+  // app/actions/podcast-generation.ts:72, app/actions/direct-mail.ts:118).
+  //
+  // The key is `video_generation`, the spelling already in force at
+  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904 — NOT the
+  // second `ai_video_generation` row that also exists in feature_flags, which no
+  // code names (§6: one vocabulary per function; that row is a separate finding).
+  // Verified against the live database: feature_flags.video_generation is
+  // enabled with access true and limit NULL on all four tiers, so this gate
+  // refuses nobody today and is in place for the day a tier limit is set.
+  const access = await canAccessFeature(user.id, "video_generation")
+  if (!access.allowed) {
+    throw new Error(access.reason ?? "Video generation is not available on your plan")
+  }
 
   // Generate script using AI
   const scriptResponse = await generateAIResponse({
@@ -91,6 +137,15 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
     listing_id: params.context_type === "listing" ? params.context_id : undefined,
   })
 
+  // Counted AFTER the work succeeded, never before — the same order every other
+  // gated action in this tree uses (incrementFeatureUsage's own header says so).
+  // Destructured: a refused counter write must not read as a counted use, or the
+  // per-tier overage projection under-reports.
+  const counted = await incrementFeatureUsage(user.id, "video_generation")
+  if (!counted.success) {
+    console.error("[video-content] feature_usage_tracking increment failed:", counted.error)
+  }
+
   return { success: true, video, script }
 }
 
@@ -102,16 +157,34 @@ export async function handleVideoGenerated(payload: any) {
   const supabase = await createServerClient()
   const { video_id, video_type, listing_id, user_id } = payload
 
-  // Create notification for agent to review
+  // Create notification for agent to review.
+  //
+  // TENANT — the RECIPIENT's `users.brokerage_id`, the one resolver (see
+  // lib/notifications/recipient-tenant.ts). `user_id` here is a users.id; the
+  // `agents.id` this file resolves elsewhere via requireAgentId is a DISJOINT
+  // space and is never substituted for it.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_ready",
-      title: "Video Ready for Review",
-      body: `Your ${video_type} video is ready. Review and publish when ready.`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const readyTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!readyTenant.ok) {
+      console.error(`[video-content] handleVideoGenerated: ${readyTenant.reason} — video_ready notification NOT written`)
+    } else if (!readyTenant.brokerageId) {
+      console.error(
+        `[video-content] handleVideoGenerated: recipient ${user_id} has no brokerage — video_ready notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: readyNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: readyTenant.brokerageId,
+        type: "video_ready",
+        title: "Video Ready for Review",
+        body: `Your ${video_type} video is ready. Review and publish when ready.`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (readyNotifyError) {
+        console.error("[video-content] video_ready notification insert refused:", readyNotifyError.message)
+      }
+    }
   }
 
   return { success: true }
@@ -157,16 +230,30 @@ export async function handleVideoPublished(payload: any) {
     })
     .eq("id", video_id)
 
-  // Create celebration notification
+  // Create celebration notification. TENANT: the RECIPIENT's
+  // `users.brokerage_id` — the one resolver.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_published",
-      title: "Video Published!",
-      body: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const publishedTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!publishedTenant.ok) {
+      console.error(`[video-content] handleVideoPublished: ${publishedTenant.reason} — video_published notification NOT written`)
+    } else if (!publishedTenant.brokerageId) {
+      console.error(
+        `[video-content] handleVideoPublished: recipient ${user_id} has no brokerage — video_published notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: publishedNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: publishedTenant.brokerageId,
+        type: "video_published",
+        title: "Video Published!",
+        body: `Your video has been published to ${platforms?.join(", ") || "your channels"}.`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (publishedNotifyError) {
+        console.error("[video-content] video_published notification insert refused:", publishedNotifyError.message)
+      }
+    }
   }
 
   return { success: true }
@@ -176,16 +263,32 @@ export async function handleHighEngagement(payload: any) {
   const supabase = await createServerClient()
   const { video_id, engagement_type, engagement_count, user_id } = payload
 
-  // Create notification for high engagement
+  // Create notification for high engagement. TENANT: the RECIPIENT's
+  // `users.brokerage_id` — the one resolver. Note the `agents` read further down
+  // in this same function yields an `agents.brokerage_id`; it is deliberately NOT
+  // reused here, because the badge reader compares against the users row.
   if (user_id) {
-    await supabase.from("notifications").insert({
-      user_id: user_id,
-      type: "video_engagement",
-      title: "Video Performing Well!",
-      body: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
-      entity_type: "video",
-      entity_id: video_id,
-    })
+    const engagementTenant = await resolveRecipientBrokerageId(supabase, user_id)
+    if (!engagementTenant.ok) {
+      console.error(`[video-content] handleHighEngagement: ${engagementTenant.reason} — video_engagement notification NOT written`)
+    } else if (!engagementTenant.brokerageId) {
+      console.error(
+        `[video-content] handleHighEngagement: recipient ${user_id} has no brokerage — video_engagement notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: engagementNotifyError } = await supabase.from("notifications").insert({
+        user_id: user_id,
+        brokerage_id: engagementTenant.brokerageId,
+        type: "video_engagement",
+        title: "Video Performing Well!",
+        body: `Your video has ${engagement_count} ${engagement_type}. Great job!`,
+        entity_type: "video",
+        entity_id: video_id,
+      })
+      if (engagementNotifyError) {
+        console.error("[video-content] video_engagement notification insert refused:", engagementNotifyError.message)
+      }
+    }
   }
 
   // Create task to engage with comments if applicable
@@ -208,39 +311,11 @@ export async function handleHighEngagement(payload: any) {
   return { success: true }
 }
 
-export async function createShortClip(params: {
-  long_form_video_id: string
-  clip_start_sec: number
-  clip_end_sec: number
-  caption_text?: string
-  target_platform: string
-}) {
-  const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Create short clip record
-  // Canonical video_snippets columns (matches video-repurposing.ts):
-  // long_form_video_id→video_project_id, clip_*_sec→*_seconds, target_platform→
-  // platform_target, status→approval_status ('draft'), snippet_title is NOT NULL.
-  const { data: clip, error } = await supabase
-    .from("video_snippets")
-    .insert({
-      video_project_id: params.long_form_video_id,
-      start_seconds: params.clip_start_sec,
-      end_seconds: params.clip_end_sec,
-      snippet_title: params.caption_text?.slice(0, 80) || `Clip ${params.clip_start_sec}-${params.clip_end_sec}s`,
-      caption_text: params.caption_text,
-      platform_target: params.target_platform,
-      approval_status: "draft",
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return { success: true, clip }
-}
+// TOMBSTONE (orphan tranche 3): createShortClip deleted — a video_snippets
+// writer no surface called. The live survivor is
+// app/actions/video-repurposing.ts:createVideoSnippet, wired from the snippet
+// wizard and repurpose dashboard, and strictly more complete: it stamps the
+// caller's brokerage after verifying the source project/asset belongs to it
+// (this one wrote no tenant at all), validates platform_target against
+// PLATFORM_CONFIGS, enforces end > start and per-platform duration limits,
+// and auto-derives the aspect ratio.

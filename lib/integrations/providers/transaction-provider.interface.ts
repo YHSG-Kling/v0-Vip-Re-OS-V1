@@ -34,10 +34,21 @@ export interface ProviderDocument {
   lastModified?: string
 }
 
+/**
+ * NOTE ON THE ABSENT agentId. This contract used to declare `agentId: string`.
+ * All six implementations — dotloop, skyslope, formsimplicity, brokermint,
+ * docusign, authentisign — ignored it, and every caller computed a value to
+ * satisfy the type. Each provider scopes the transaction by the account in its
+ * OWN credentials (dotloop, for instance, posts to /profile/{profileId}/loop
+ * using the profileId stored with the API key), so there is no id for the
+ * caller to supply. A required field that nothing reads is worse than no field:
+ * it reads as wiring, and the next person to add a provider will assume the
+ * agent identity arrives here when it never has. Removed rather than wired,
+ * because wiring it would invent a requirement no provider actually has.
+ */
 export interface CreateTransactionRequest {
   propertyAddress: string
   transactionType: "purchase" | "listing"
-  agentId: string
   contactId?: string
   listingId?: string
   transactionId?: string

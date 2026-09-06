@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: call } = await svc.from("voice_calls").select("id, ai_notes, transcription")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   const brief = decodeOutboundBrief((call as any)?.ai_notes)
   if (!call || !brief) {
     // No session row / foreign call — never improvise an unscripted AI call.
@@ -43,8 +43,16 @@ export async function POST(request: NextRequest) {
   }
 
   // Machine answered → honest voicemail, ledger closed as voicemail.
+  // The recording announcement in that voicemail is DERIVED from the brokerage's
+  // actual recording posture, never hardcoded: Twilio's Record parameter (armed
+  // at dial time in lib/voice/twilio-outbound.ts) captures this AMD leg too, so
+  // a fixed `recorded: false` here would be the one spoken line in the system
+  // that contradicts what is actually happening. See lib/voice/call-recording.ts.
+  const { resolveCallRecordingPolicy, disclosureCoversRecording } = await import("@/lib/voice/call-recording")
+  const recordingPolicy = await resolveCallRecordingPolicy(svc, ctx.brokerageId)
+
   if (answeredBy.startsWith("machine")) {
-    const vm = composeVoicemailMessage(brief, ctx.identity.brokerageName)
+    const vm = composeVoicemailMessage(brief, ctx.identity.brokerageName, { recorded: recordingPolicy.enabled })
     await svc.from("voice_calls").update({
       status: "completed", outcome: "voicemail", ended_at: new Date().toISOString(),
       transcription: appendTranscript(null, null, vm),
@@ -55,7 +63,16 @@ export async function POST(request: NextRequest) {
   const { firstMessage } = buildOutboundPrompt(ctx.identity, {
     objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt,
   })
-  const opener = brief.firstMessage ? appendDisclosedOpener(brief.firstMessage, firstMessage) : firstMessage
+  let opener = brief.firstMessage ? appendDisclosedOpener(brief.firstMessage, firstMessage) : firstMessage
+  // THE COUPLING INVARIANT, ENFORCED where the words meet the wire (not just stated):
+  // a recorded call whose spoken opener never announced recording is the one state
+  // lib/voice/call-recording.ts exists to make unreachable. Composition already
+  // guarantees ANNOUNCED ⊇ RECORDED today; this predicate keeps a future opener
+  // change from silently breaking that guarantee.
+  if (!disclosureCoversRecording(opener, recordingPolicy)) {
+    const { RECORDING_DISCLOSURE } = await import("@/lib/communication/call-disclosures")
+    opener = `${RECORDING_DISCLOSURE}${opener}`.slice(0, 550)
+  }
   await svc.from("voice_calls").update({
     status: "in_progress",
     transcription: appendTranscript((call as any).transcription, null, opener),

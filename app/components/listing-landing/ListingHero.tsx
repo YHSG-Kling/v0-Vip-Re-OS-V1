@@ -12,7 +12,7 @@ interface ListingHeroProps {
   photos: Array<{
     id: string
     photo_url: string
-    order_index: number
+    sort_order: number
   }>
   media: Array<{
     id: string

@@ -9,9 +9,15 @@
  *   - Broker / admin / TC / compliance_officer see all brokerage docs
  */
 
-import { createClient } from "@/lib/supabase/server"
+// TOMBSTONE (§1.3) — the `createClient` import that stood here is removed. Its
+// capability is not lost: the act-as seam merge routed this file's writes through
+// `ctx.db` from resolveWriteContextForTenant (lib/platform/acting-context.ts:212),
+// which hands back a SERVICE client under an active full grant and the caller's own
+// RLS-scoped client otherwise. A self-made cookie client here was the shape that
+// silently refused every support write under act-as. The import outlived its last
+// call site by one commit.
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { issueGovernedDocumentUrl, type AccessPurpose } from "@/lib/kernel/document-custody"
 
 export interface DocumentCenterRow {
@@ -63,16 +69,22 @@ export async function getDocumentCenterData(): Promise<{
   blockingIssuesCount: number
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, folders: [], totalCount: 0, pendingReviewCount: 0, blockingIssuesCount: 0, error: "Unauthorized" }
   }
 
-  const supabase = await createClient()
+  // ACT-AS SEAM: read THROUGH ctx.db — the cookie/RLS client for a tenant seat, the
+  // service client under an active impersonation grant. Its type is the seam's `any`,
+  // so the row callbacks below are annotated explicitly rather than inferred.
+  const supabase = ctx.db
 
   // Determine role-based filter
   const role = ctx.userType
-  const elevated = ["admin", "broker", "broker_admin", "superadmin", "tc", "transaction_coordinator", "compliance_officer"].includes(role ?? "")
+  // SCOPE LADDER (kept inline — admits tc/compliance tiers): 'superadmin'
+  // removed — dead as users.user_type (0 live rows); broker_owner added —
+  // storable seat that owns the brokerage.
+  const elevated = ["admin", "broker", "broker_owner", "broker_admin", "tc", "transaction_coordinator", "compliance_officer"].includes(role ?? "")
 
   // Build query
   let q = supabase
@@ -96,7 +108,7 @@ export async function getDocumentCenterData(): Promise<{
       .from("contacts")
       .select("id")
       .eq("agent_id", ctx.agentId)
-    const contactIds = (ownedContacts ?? []).map((c) => c.id)
+    const contactIds = (ownedContacts ?? []).map((c: any) => c.id)
     if (contactIds.length === 0) {
       return { success: true, folders: [], totalCount: 0, pendingReviewCount: 0, blockingIssuesCount: 0 }
     }
@@ -110,8 +122,8 @@ export async function getDocumentCenterData(): Promise<{
   }
 
   // Hydrate contact + transaction context in two batched queries
-  const contactIds = Array.from(new Set((docs ?? []).map((d) => d.contact_id).filter(Boolean) as string[]))
-  const transactionIds = Array.from(new Set((docs ?? []).map((d) => d.transaction_id).filter(Boolean) as string[]))
+  const contactIds = Array.from(new Set((docs ?? []).map((d: any) => d.contact_id).filter(Boolean) as string[]))
+  const transactionIds = Array.from(new Set((docs ?? []).map((d: any) => d.transaction_id).filter(Boolean) as string[]))
 
   const [{ data: contacts }, { data: transactions }] = await Promise.all([
     contactIds.length > 0
@@ -122,11 +134,11 @@ export async function getDocumentCenterData(): Promise<{
       : Promise.resolve({ data: [] as any[] }),
   ])
 
-  const contactMap = new Map((contacts ?? []).map((c) => [c.id, `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed"]))
-  const txMap = new Map((transactions ?? []).map((t) => [t.id, t.property_address]))
+  const contactMap = new Map((contacts ?? []).map((c: any) => [c.id, `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed"]))
+  const txMap = new Map((transactions ?? []).map((t: any) => [t.id, t.property_address]))
 
   // Build rows + group by folder
-  const rows: DocumentCenterRow[] = (docs ?? []).map((d) => {
+  const rows: DocumentCenterRow[] = (docs ?? []).map((d: any) => {
     const aiMeta = d.ai_metadata as any
     const sig = aiMeta?.signatureCompleteness ?? null
     return {
@@ -195,8 +207,8 @@ export async function getGovernedDocumentUrl(
   documentId: string,
   purpose: AccessPurpose = "view",
 ): Promise<{ success: boolean; url?: string; ttlSeconds?: number; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -215,8 +227,11 @@ export async function getGovernedDocumentUrl(
     {
       documentId,
       requestedBy: {
+        // `type: "agent"` names the class; the id must match it (m361). The old
+        // `?? ctx.userId` handed a governed-document authority check a users id
+        // labelled as an agent.
         type: "agent",
-        id: ctx.agentId ?? ctx.userId ?? null,
+        id: ctx.agentId ?? null,
       },
       purpose,
     },

@@ -59,7 +59,10 @@ function main() {
   console.log("\n[team roll-up is honest — behaviorally red-teamed dims + structural invariants]")
   const s = summarizeGovernance(cards)
   check("summary counts all 14 managers", s.totalManagers === 14)
-  check("every manager is currently GOVERNED (all applicable dimensions enforced)", s.governed === 13 && s.gaps === 0)
+  // governed + gaps === totalManagers by construction, so pinning governed to a
+  // literal that is one short of the team size made this unsatisfiable the moment
+  // a 14th manager was added. Assert the invariant, not the headcount.
+  check("every manager is currently GOVERNED (all applicable dimensions enforced)", s.governed === s.totalManagers && s.gaps === 0)
   check("release-blocking dimensions include scope_creep + bias + prompt_injection", ["scope_creep", "bias_fair_housing", "prompt_injection"].every((d) => s.releaseBlockingDimensions.includes(d as any)))
   check("bias/hallucination/injection/privacy are BEHAVIORALLY red-teamed (eval harness verifies them)", ["bias_fair_housing", "hallucination", "prompt_injection", "privacy_leakage"].every((d) => s.behaviorallyVerified.includes(d as any)))
   check("nothing is left un-verified — behavioralEvalPending is empty (drift fixed)", s.behavioralEvalPending.length === 0)

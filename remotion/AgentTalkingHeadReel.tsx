@@ -41,14 +41,9 @@
  * trusts what it's handed and DOES NOT redraft on its own.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { BrollLayer } from "./_BrollLayer"
 
@@ -104,7 +99,7 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, brand, brollClips,
+  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -117,6 +112,20 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* THE SEPARATE NARRATION TRACK the `voiceoverUrl` prop has always
+          promised. It was DECLARED and documented above and read by nothing:
+          buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
+          input_props.voiceoverUrl on every avatar render and stamps
+          used_voiceover, and the coordinator only muxes the DIFFERENT key
+          input_props.voiceover_url (lib/remotion/render-coordinator.ts) — so a
+          brokerage on the separate-TTS path (multi-language) got a ledger row
+          saying "narrated" over a video with no narration. §1: the capability
+          is wanted and documented, so the missing half is BUILT rather than the
+          prop deleted. Guarded, and null on the normal D-ID path, so the
+          avatar's own lip-synced audio is never doubled — exactly as the prop
+          doc says. Same shape as the 13 sibling compositions that already do
+          this (TestimonialReel, ComingSoonReel, NeighborhoodSpotlightReel, …). */}
+      {voiceoverUrl && <Audio src={voiceoverUrl} />}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
         <AbsoluteFill style={{
@@ -124,7 +133,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl ? (
-            <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1]) }} />
+            <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
           ) : (
             <div style={{
               fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
@@ -133,13 +142,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 700,
-            opacity: interpolate(frame, [5, 20], [0, 1]),
+            opacity: interpolate(frame, [5, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 72, fontWeight: 800, color: "#fff", lineHeight: 1.05, marginTop: 24,
-            opacity: interpolate(frame, [15, 35], [0, 1]),
+            opacity: interpolate(frame, [15, 35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {agentName}
           </div>
@@ -161,18 +170,18 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           )}
           {avatarVideoUrl ? (
             <Video
+              objectFit="cover"
               src={avatarVideoUrl}
-              startFrom={0}
-              endAt={BODY}
+              trimBefore={0}
+              trimAfter={BODY}
               style={{
                 ...avatarBox,
-                objectFit: "cover",
                 borderRadius: 12,
                 boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
               }}
             />
           ) : agentPhotoUrl ? (
-            <Img
+            <SafeImg
               src={agentPhotoUrl}
               style={{
                 ...avatarBox,

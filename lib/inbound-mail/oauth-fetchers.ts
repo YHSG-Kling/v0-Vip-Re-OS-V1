@@ -44,14 +44,15 @@ import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import type { ParsedInboundEmail, InboundAttachment } from "./providers"
 import type { ResolvedInboundProvider } from "./resolve-user-provider"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 // ─── Token refresh ──────────────────────────────────────────────────────────
 
 async function refreshGmailToken(credential: ResolvedInboundProvider): Promise<string | null> {
   const refreshToken = credential.refresh_token
   if (!refreshToken) return null
-  const clientId     = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string }>({
@@ -71,8 +72,7 @@ async function refreshGmailToken(credential: ResolvedInboundProvider): Promise<s
 async function refreshOutlookToken(credential: ResolvedInboundProvider): Promise<string | null> {
   const refreshToken = credential.refresh_token
   if (!refreshToken) return null
-  const clientId     = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   const tenantId     = process.env.MICROSOFT_TENANT_ID ?? "common"
   if (!clientId || !clientSecret) return null
 

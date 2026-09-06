@@ -8,7 +8,8 @@
  * if everything else fails.
  *
  * Configured providers (super-admin tier):
- *   - RentCast (per-brokerage key or RENTCAST_API_KEY) — chosen AVM provider
+ *   - RentCast (RENTCAST_API_KEY — the ONE platform key; RentCast is platform-
+ *     gated, there is no per-tenant key) — chosen AVM provider
  *   - BatchData (BATCHDATA_API_KEY) — strong property records + value
  *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
@@ -44,7 +45,15 @@ interface AvmRequest {
   zipCode?: string | null
   city?: string | null
   state?: string | null
-  /** Brokerage whose RentCast credential (or platform key) is used for the AVM pull. */
+  /**
+   * The tenant this AVM pull is ATTRIBUTED to — not a credential selector.
+   * RentCast is platform-gated (one platform key, no per-tenant key), so this
+   * decides nothing about WHICH credential is used. It is what makes the paid
+   * tier governable: `checkVendorBudget({ brokerageId })` below can only run
+   * with a tenant in hand, and lib/property/rentcast.ts meters every call
+   * against it. Absent brokerageId → the RentCast adapter is skipped entirely,
+   * because an unattributable paid call is spend nobody can see.
+   */
   brokerageId?: string | null
   /** Cached AVM if we've fetched recently — used by the cache-hit short circuit */
   cachedValue?: number | null
@@ -108,15 +117,39 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   // DOWNGRADE LADDER: if the brokerage is over its monthly vendor budget, the paid
   // tier is skipped — the caller still gets the free Perplexity/OSINT AVM computed
   // above. The cap throttles cost, not capability.
+  //
+  // THE RENTCAST HALF NOW GOES THROUGH THE ONE ELIGIBILITY GATE. This file had
+  // BUDGET gating and no IDX gating: it consulted checkVendorBudget and never
+  // asked whether the tenant had connected their own IDX Broker feed, which the
+  // owner ruling makes decisive ("rentcast is platform owned and should not be
+  // used if the tenant adds their idx broker credentials"). It asks the resolver
+  // in lib/property/rentcast-eligibility.ts instead, so the AVM cascade, the CMA
+  // comp provider and the listing search cannot hold three different opinions.
+  //
+  // THE CASCADE'S FALL-THROUGH IS PRESERVED, deliberately and in two separate
+  // ways, because "RentCast is ineligible" must mean "try the next provider" and
+  // never "fail the AVM":
+  //   · RentCast ineligible skips ONLY the RentCast adapter. BatchData and
+  //     ZenRows/Zillow still run, and the free Perplexity/OSINT tiers above have
+  //     already run regardless.
+  //   · The BUDGET verdict still governs the WHOLE paid tier exactly as before —
+  //     over budget skips all three paid providers, not just RentCast. The gate
+  //     short-circuits (a tenant with their own IDX feed never reaches the budget
+  //     question), so when it stopped early the budget is asked directly rather
+  //     than inferred from a reason that was never evaluated.
   let paidAllowed = !!req.usePaidProviders
+  let rentcastEligible = false
   if (paidAllowed && req.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const { resolveVendorAction } = await import("@/lib/vendor-governance/vendor-policy")
-    const budget = await checkVendorBudget({ brokerageId: req.brokerageId })
-    if (resolveVendorAction("rentcast", !budget.allowed) !== "allow") paidAllowed = false
+    const { resolveRentcastEligibility, rentcastBudgetBlocked } = await import("@/lib/property/rentcast-eligibility")
+    const eligibility = await resolveRentcastEligibility({ brokerageId: req.brokerageId })
+    rentcastEligible = eligibility.eligible
+    const overBudget = eligibility.budget.checked
+      ? eligibility.reason === "budget_exhausted"
+      : (await rentcastBudgetBlocked(req.brokerageId)).blocked
+    if (overBudget) paidAllowed = false
   }
   if (paidAllowed) {
-    if (!skip.has("rentcast") && req.brokerageId) {
+    if (!skip.has("rentcast") && req.brokerageId && rentcastEligible) {
       const rc = await tryRentcast(req)
       if (rc && rc.confidence >= 0.6) return rc
     }

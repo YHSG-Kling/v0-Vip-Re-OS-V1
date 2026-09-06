@@ -24,14 +24,9 @@
  * issue in some states.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -125,26 +120,26 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             color: brand.primaryColor,
             fontSize: 64, fontWeight: 900, letterSpacing: 6,
             borderRadius: 8,
-            transform: `scale(${interpolate(frame, [0, 15], [0.8, 1])})`,
-            opacity: interpolate(frame, [0, 12], [0, 1]),
+            scale: interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" }),
+            opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             SOLD
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 32, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 32, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 32, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}
           </div>
           {brand.logoUrl && (
             <div style={{ position: "absolute", top: 40, left: 40 }}>
-              <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
+              <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", opacity: 0.85 }} />
             </div>
           )}
         </AbsoluteFill>
@@ -260,14 +255,14 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
 
 const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

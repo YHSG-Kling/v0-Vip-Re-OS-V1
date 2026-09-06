@@ -37,8 +37,19 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks } from "@/lib/marketing/qr-asset-linker"
+import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
 import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
+// ★ ACT-AS SEAM — TWO ENTRY POINTS ★ resolveWriteContext mints QR rows;
+// resolveActingContext renders a preview image (renderQrImageAction).
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
+import {
+  mintTrackedQr,
+  renderQrPng,
+  isQrDestinationType,
+  isQrPurpose,
+  type QrDestinationType,
+  type QrPurpose,
+} from "@/lib/marketing/tracked-qr"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +57,51 @@ export type CampaignStatus = "draft" | "pending_approval" | "approved" | "live" 
 export type AssetApprovalStatus = "pending" | "approved" | "rejected"
 export type VisibilityScope = "agent" | "team" | "brokerage"
 
-export interface CreateCampaignParams {
+/**
+ * THE CAMPAIGN'S AUDIENCE, in the spelling the resolver actually reads.
+ *
+ * `marketing_campaigns` carries the same idea TWICE and the two halves point in
+ * opposite directions:
+ *
+ *   · `target_audience` (jsonb) — WRITTEN here and at app/crm/page.tsx:2130, and
+ *     read by NOTHING that resolves an audience. A free-form blob.
+ *   · `audience_personas` / `audience_generations` / `audience_age_segs` /
+ *     `audience_lead_source_tags` / `audience_buyer_stages` /
+ *     `audience_contact_ids` (scripts/1046-marketing-audience-and-customer-
+ *     onboarding.sql:31-38, GIN-indexed at :55-57) — READ by the launch gate
+ *     (lib/marketing/campaign-publisher.ts:47-67) and by the touchpoint recorder
+ *     (lib/kernel/marketing.ts:1141), and written by NOBODY.
+ *
+ * The typed set is the SURVIVOR: it has the readers, the index and the resolver
+ * (lib/marketing/audience-resolver.ts). `target_audience` is kept because it is
+ * still a human-readable note on the row, but it is no longer the only thing a
+ * campaign author's audience choice lands in.
+ *
+ * WHY THIS IS NOT COSMETIC. resolveCampaignAudience treats an EMPTY criteria
+ * array as "no filter" (lib/marketing/audience-resolver.ts:64) — so with all six
+ * columns writerless, every campaign resolved to EVERY CONTACT IN THE BROKERAGE,
+ * capped only by that resolver's `.limit(5000)`. publishMarketingCampaignSafe
+ * then measured deliverability against that whole book and flipped the campaign
+ * to `live`, and distributeVideoAsset recorded a touchpoint against every one of
+ * them. An audience filter nothing can write is not a dormant feature; it is a
+ * blast radius.
+ */
+export interface CampaignAudienceParams {
+  /** contacts.contact_persona */
+  audiencePersonas?: string[]
+  /** generational cohort, post-filtered from contacts.age_range */
+  audienceGenerations?: string[]
+  /** contacts.age_range */
+  audienceAgeSegs?: string[]
+  /** contacts.source_family */
+  audienceLeadSourceTags?: string[]
+  /** contacts.buyer_stage */
+  audienceBuyerStages?: string[]
+  /** Explicit pinned list — overrides every criterion above in the resolver. */
+  audienceContactIds?: string[]
+}
+
+export interface CreateCampaignParams extends CampaignAudienceParams {
   campaignName: string
   campaignType: "listing" | "brand" | "recruitment" | "event" | "seasonal"
   listingId?: string
@@ -57,13 +112,47 @@ export interface CreateCampaignParams {
   visibilityScope?: VisibilityScope
 }
 
-export interface UpdateCampaignParams {
+export interface UpdateCampaignParams extends CampaignAudienceParams {
   campaignId: string
   campaignName?: string
   targetAudience?: Record<string, unknown>
   budgetTotal?: number
   scheduledStartAt?: string
   scheduledEndAt?: string
+}
+
+/**
+ * Map the audience params onto the six live columns.
+ *
+ * `"use server"` files export only async functions (CLAUDE.md §4), so this is a
+ * module-local helper and deliberately NOT exported — an exported sync helper
+ * here would be a public HTTP endpoint that cannot be one.
+ *
+ * `mode: "insert"` writes a floor for the five text[] columns, which are
+ * `NOT NULL DEFAULT '{}'` — passing `undefined` would be fine, but writing `[]`
+ * makes the row say plainly "no criterion", which is what the resolver reads.
+ * `mode: "patch"` writes ONLY what the caller named, so an update that touches
+ * the budget cannot silently clear the audience.
+ */
+function audienceColumns(
+  params: CampaignAudienceParams,
+  mode: "insert" | "patch",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const put = (column: string, value: string[] | undefined, floor: unknown) => {
+    if (value !== undefined) out[column] = value
+    else if (mode === "insert") out[column] = floor
+  }
+  put("audience_personas", params.audiencePersonas, [])
+  put("audience_generations", params.audienceGenerations, [])
+  put("audience_age_segs", params.audienceAgeSegs, [])
+  put("audience_lead_source_tags", params.audienceLeadSourceTags, [])
+  put("audience_buyer_stages", params.audienceBuyerStages, [])
+  // audience_contact_ids is NULLABLE uuid[] and the resolver reads
+  // `?? undefined` — an empty array would read as "pinned to nobody", so the
+  // floor for this one is NULL, not [].
+  put("audience_contact_ids", params.audienceContactIds, null)
+  return out
 }
 
 export interface CreateAssetParams {
@@ -81,7 +170,10 @@ export interface CreateAssetParams {
 
 export interface CreateCalendarEventParams {
   campaignId?: string
-  eventType: "publish" | "review" | "deadline" | "meeting" | "go_live"
+  /** campaign_calendar.event_type — exactly the column's CHECK. This used to
+   *  include "meeting" and "go_live", which the column has never accepted, so
+   *  the type vouched for an INSERT that could only fail. */
+  eventType: "publish" | "send" | "launch" | "review" | "deadline" | "podcast_release" | "mail_drop"
   channel?: string
   title: string
   scheduledAt: string
@@ -138,6 +230,7 @@ export async function createCampaign(params: CreateCampaignParams) {
         campaign_type: params.campaignType,
         listing_id: params.listingId ?? null,
         target_audience: params.targetAudience ?? {},
+        ...audienceColumns(params, "insert"),
         budget_total: params.budgetTotal ?? 0,
         budget_spent: 0,
         scheduled_start_at: params.scheduledStartAt || null,
@@ -265,6 +358,7 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (params.budgetTotal !== undefined) updateData.budget_total = params.budgetTotal
   if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt || null
   if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt || null
+  Object.assign(updateData, audienceColumns(params, "patch"))
 
   const { error } = await supabase
     .from("marketing_campaigns")
@@ -587,7 +681,11 @@ export async function rejectAsset(assetId: string, reason?: string) {
 
 // ─── QR LINKING (delegated to qr-asset-linker) ────────────────────────────────
 
-export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks }
+// getQrCodePerformance was an ORPHAN EXPORT: the only reader of qr_scan_events' per-code detail
+// (unique scans + the recent-scan list) with nothing calling it. Its capability is not
+// represented anywhere else — listAvailableQrCodes returns only the rolled-up counters — so it
+// was WIRED, not deleted. The studio's QR tab now opens it per code.
+export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance }
 
 // ─── CALENDAR ACTIONS ─────────────────────────────────────────────────────────
 
@@ -732,24 +830,13 @@ export async function addCampaignComment(params: CreateCommentParams) {
   return { success: true, comment }
 }
 
-export async function getCampaignComments(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: comments, error } = await supabase
-    .from("marketing_campaign_comments")
-    .select("*, author:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: true })
-
-  if (error) {
-    console.error("[v0] Error fetching comments:", error)
-    return { success: false, error: error.message, comments: [] }
-  }
-
-  return { success: true, comments: comments ?? [] }
-}
+// getCampaignComments REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's comments, which is why the studio client reads them from there.
+// This was a "use server" export, so it was a PUBLIC HTTP ENDPOINT with no
+// caller — an unreferenced server action is reachable by anyone who knows its
+// id, not dead code. Its last importer went in the dead-import tranche; the
+// endpoint is going with it rather than being left addressable.
 
 // ─── TASK ACTIONS ─────────────────────────────────────────────────────────────
 
@@ -784,24 +871,10 @@ export async function createCampaignTask(params: CreateTaskParams) {
   return { success: true, task }
 }
 
-export async function getCampaignTasks(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: tasks, error } = await supabase
-    .from("marketing_campaign_tasks")
-    .select("*, assignee:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("due_at", { ascending: true, nullsFirst: false })
-
-  if (error) {
-    console.error("[v0] Error fetching tasks:", error)
-    return { success: false, error: error.message, tasks: [] }
-  }
-
-  return { success: true, tasks: tasks ?? [] }
-}
+// getCampaignTasks REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's tasks. Same reasoning as getCampaignComments above: a "use server"
+// export with no caller is still a live public endpoint.
 
 export async function updateTaskStatus(
   taskId: string,
@@ -958,70 +1031,142 @@ export async function generateCampaignContent(params: {
 // ─── QR CODE CREATION ────────────────────────────────────────────────────────
 
 /**
- * Creates a new QR code record in qr_codes.
- * Called from the marketing studio QR tab create dialog.
+ * createQrCodeAction — the SESSION-GATED browser door to the one QR minter.
  *
- * Input contract:
- *   brokerageId: string (required, UUID)
- *   agentId: string (required, UUID)
- *   label: string (display label)
- *   targetUrl: string (full URL the QR code points to)
- *   purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
- *   listingId?: string (optional link to a listing)
+ * MERGED-THEN-DELETED: this function's own `qr_codes` insert is gone. It was one of nine rival
+ * creation paths — NOT idempotent (every click of "Create QR Code" minted another row), and it
+ * never set destination_type, so its codes were invisible to every destination-bucketed analytic.
+ * The write now goes through lib/marketing/tracked-qr.ts:mintTrackedQr, which is idempotent per
+ * label, stamps destination_type / listing_id / marketing_campaign_id / expires_at, and is the
+ * single writer of the table. The slug recipe this function owned lives on in the survivor.
  *
- * Output contract:
- *   { success: true, qrCode: { id, slug, label, target_url, purpose } }
+ * GATE-THEN-SERVICE: mintTrackedQr writes with the SERVICE client, so this action's own gate is
+ * the ONLY gate. `brokerageId` / `agentId` used to be taken from the caller's params and written
+ * verbatim — and a "use server" export is reachable by any browser, so that let a caller mint
+ * into ANY brokerage. The tenant now comes from the session; a supplied brokerageId is only ever
+ * checked against it, never trusted.
+ *
+ * NOT CALLABLE WITHOUT A SESSION. Server-side/cron minters (workflow adapters, orchestrator
+ * handlers, kernel commands) must call mintTrackedQr directly with their own resolved tenant —
+ * see lib/workflow/qr-modifier.ts for the pattern.
+ *
+ * Output contract (unchanged for existing callers, plus the tracked fields):
+ *   { success: true, qrCode: { id, slug, label, target_url, purpose, destination_type,
+ *                             scan_url, image_url } }
  *   { success: false, error: string }
- *
- * Tables written: qr_codes
  */
 export async function createQrCodeAction(params: {
-  brokerageId: string
-  agentId: string
+  brokerageId?: string
+  agentId?: string
   label: string
-  targetUrl: string
-  purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+  /** SEMANTIC destination. Omit → the code's own public /qr/<slug> landing. */
+  targetUrl?: string
+  purpose: QrPurpose
   listingId?: string
+  destinationType?: QrDestinationType
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id — stamps qr_codes.marketing_campaign_id. */
+  campaignId?: string
+  /** qr_codes.expires_at (ISO timestamptz). */
+  expiresAt?: string
+  /** Deterministic idempotency key. Defaults to `studio:<label>` so repeat clicks reuse one code. */
+  idempotencyLabel?: string
 }) {
   try {
-    if (!params.brokerageId || !params.agentId) {
-      return { success: false, error: "brokerageId and agentId are required" }
-    }
     if (!params.label?.trim()) {
       return { success: false, error: "Label is required" }
     }
-    if (!params.targetUrl?.trim()) {
-      return { success: false, error: "Target URL is required" }
+    if (params.purpose && !isQrPurpose(params.purpose)) {
+      return { success: false, error: `Invalid purpose. Must be one of: ${["business_card","campaign","event","general","lead_capture","lead_magnet","listing","listing_inquiry","open_house"].join(", ")}` }
+    }
+    if (params.destinationType && !isQrDestinationType(params.destinationType)) {
+      return { success: false, error: "Invalid destination type." }
     }
 
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage on your account." }
+    if (params.brokerageId && params.brokerageId !== ctx.brokerageId) {
+      return { success: false, error: "That QR code belongs to another brokerage." }
+    }
 
-    // Generate a unique slug from label + timestamp
-    const slug = `${params.label.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`
+    // qr_codes.agent_id FKs agents(id). ctx.agentId IS that PK; a users id in this column is a
+    // refused insert, so never fall back to userId.
+    const agentId = params.agentId ?? ctx.agentId ?? null
 
-    const { data: qrCode, error } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId,
-        label: params.label.trim(),
-        target_url: params.targetUrl.trim(),
+    // The campaign must be one of OURS — an FK proves a campaign row exists, never that it is
+    // ours to attribute scans to.
+    let marketingCampaignId: string | null = null
+    if (params.campaignId) {
+      const gate = await createClient()
+      const { data: campaign, error: campaignError } = await gate
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("id", params.campaignId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .maybeSingle()
+      if (campaignError) return { success: false, error: campaignError.message }
+      if (!campaign) return { success: false, error: "That campaign is not on your brokerage." }
+      marketingCampaignId = campaign.id as string
+    }
+
+    const label = params.label.trim()
+    const minted = await mintTrackedQr({
+      brokerageId: ctx.brokerageId,
+      agentId,
+      label: params.idempotencyLabel?.trim() || label,
+      destinationType: params.destinationType ?? null,
+      targetUrl: params.targetUrl?.trim() || null,
+      listingId: params.listingId ?? null,
+      marketingCampaignId,
+      expiresAt: params.expiresAt ?? null,
+      purpose: params.purpose,
+    })
+
+    if (!minted) {
+      return { success: false, error: "The QR code was not created — the write was refused." }
+    }
+
+    return {
+      success: true,
+      qrCode: {
+        id: minted.qrCodeId,
+        slug: minted.slug,
+        label,
+        target_url: minted.targetUrl,
         purpose: params.purpose,
-        slug,
-        listing_id: params.listingId ?? null,
-        is_active: true,
-        scan_count: 0,
-        lead_count: 0,
-      })
-      .select("id, slug, label, target_url, purpose")
-      .maybeSingle()
-
-    if (error) throw error
-
-    return { success: true, qrCode }
+        destination_type: minted.destinationType,
+        scan_url: minted.scanUrl,
+        image_url: minted.qrCodeDataUrl,
+      },
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create QR code"
     return { success: false, error: message }
+  }
+}
+
+/**
+ * renderQrImageAction — server-side PNG for any URL, as a data: URI.
+ *
+ * Exists because the studio's asset-create dialog built its QR preview from api.qrserver.com,
+ * which shipped the (lead-bearing) target URL to a third party and put an external host inside a
+ * path that has to work offline/in print. The vendored `qrcode` package is the only QR image
+ * source in the tree now.
+ */
+export async function renderQrImageAction(url: string, size = 300) {
+  try {
+    const trimmed = (url ?? "").trim()
+    if (!trimmed) return { success: false as const, error: "A URL is required." }
+    // READ — renders a PNG in-process. No table, no row, no tenant column: the
+    // gate exists only so an unauthenticated caller cannot use the endpoint as a
+    // free QR renderer. On the WRITER seam a read_only act-as grant was refused a
+    // preview image, which is not a write and not something a grant may exceed
+    // (§5), so this rides the READER seam.
+    const ctx = await resolveActingContext()
+    if (!ctx.ok) return { success: false as const, error: ctx.error }
+    return { success: true as const, dataUrl: await renderQrPng(trimmed, size) }
+  } catch (err) {
+    return { success: false as const, error: err instanceof Error ? err.message : "Failed to render QR image" }
   }
 }
 

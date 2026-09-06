@@ -2,14 +2,41 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
+// ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
+//
+// OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
+//
+// `stripe` (the PLATFORM seam) survives here for exactly three CONNECT-PLATFORM
+// ADMIN calls — `accounts.create`, `accountLinks.create`, `accounts.retrieve`. An
+// `acct_…` is minted and onboarded ON the Connect platform that will own it, this
+// product has exactly one, and none of those three moves a cent. That is the same
+// reasoning lib/providers/payment/index.ts :: createConnectedAccount states for
+// itself.
+//
+// Every call in this file that MOVES MONEY goes through lib/providers/payment,
+// which resolves the account per call scope and refuses when the tenant has none:
+//
+//   initiateVendorPayout        → createTransfer      { side: "tenant", brokerageId }
+//   startVendorInvoiceCheckout  → createCheckoutSession       ditto
+//   confirmVendorInvoiceCheckout→ retrieveCheckoutSession     ditto (same account
+//                                 as the session's creator, or the read 404s)
+//
+// The brokerage in every one of those comes from the SESSION (CLAUDE.md §4) — from
+// `resolveWriteContext()` on the staff side, and from the session-verified contact
+// row on the portal side. Never from a parameter: a body-supplied brokerage id here
+// would select whose bank account the money leaves.
+//
+// scripts/stripe-account-scope-simulator.ts (C8/C9) holds both halves of that.
 import { stripe } from "@/lib/stripe"
+import { createTransfer, createCheckoutSession, retrieveCheckoutSession } from "@/lib/providers/payment"
 import {
   readVendorStripeConnect,
   upsertVendorStripeAccount,
   setVendorStripeOnboarding,
 } from "@/lib/connections/vendor-stripe"
+import { assertVendorChargeableForPlatformUse } from "@/lib/vendors/vendor-platform-identity"
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 //
@@ -130,6 +157,20 @@ export interface VendorEarningsSummary {
     status: string
     initiatedAt: string
     completedAt: string | null
+    /** Manual Cash App transaction reference — how the vendor matches the row
+     *  to the payment that reached them. Null for Stripe/other methods. */
+    cashAppReference: string | null
+    /** The brokerage's free-text note on this payout, written at creation
+     *  (`params.note`) and, until now, read by nobody — so a payout that
+     *  covered an unusual adjustment arrived with the explanation stranded in
+     *  the row. This is the payee's side of a money record; it belongs to them. */
+    note: string | null
+    /** How many vendor_earnings rows this payout settled. The ids themselves are
+     *  the brokerage's bookkeeping, but a lump transfer the vendor cannot tie to
+     *  a number of jobs is a number they cannot reconcile — and this is the only
+     *  place the count exists (vendor_earnings.status flips to 'paid_out' with
+     *  no back-reference to the payout that did it). */
+    coveredEarningsCount: number
   }>
 }
 
@@ -140,8 +181,8 @@ export interface VendorEarningsSummary {
 export async function createVendorInvoice(
   params: CreateInvoiceParams
 ): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -151,6 +192,27 @@ export async function createVendorInvoice(
   }
 
   const svc = createServiceClient()
+
+  // ── NO DOUBLE CHARGE FOR PLATFORM USE ──────────────────────────────────────
+  // billed_to='vendor' is the ONE tenant→vendor ledger, and every charge on it is
+  // a PLATFORM-USE charge (VENDOR_PACKAGE.isPlatformUse) — the tenant billing the
+  // vendor for access and placement in the tenant's marketplace. The owner ruling
+  // forbids raising one against a vendor already paying for platform use, whether
+  // they pay the platform directly or another brokerage.
+  //
+  // The gate sits HERE rather than only in issueVendorCharge because this is a
+  // "use server" file: createVendorInvoice is itself a public HTTP endpoint, and a
+  // caller that skipped issueVendorCharge would otherwise write the identical
+  // billed_to='vendor' row with none of its checks. billed_to='brokerage' (the
+  // vendor billing US for a job) and 'contact' are untouched — a vendor that pays
+  // for platform use must still be paid for the work it does.
+  if (params.billedTo === "vendor") {
+    const platformUse = await assertVendorChargeableForPlatformUse(svc, {
+      vendorId: params.vendorId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (!platformUse.chargeable) return { success: false, error: platformUse.reason }
+  }
 
   if (params.transactionId) {
     const { data: tx } = await svc
@@ -229,8 +291,8 @@ export async function createVendorInvoice(
 // ---------------------------------------------------------------------------
 
 export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -238,28 +300,64 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` — same rule as markInvoicePaid below: a zero-row UPDATE resolves
+  // with no error, so without counting the rows this returned success for an invoice
+  // that is still a draft (moved tenant, or cancelled, between the verify and here).
+  const { data: submitted, error } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!submitted || submitted.length === 0) {
+    return { success: false, error: "Nothing was submitted — that invoice is no longer one of your brokerage's invoices." }
+  }
   return { success: true, invoiceId }
 }
 
 // ---------------------------------------------------------------------------
-// markInvoicePaid — brokerage marks an invoice as paid
+// markInvoicePaid — brokerage marks an invoice it OWES A VENDOR as paid
 // ---------------------------------------------------------------------------
 
+/**
+ * WIRED (w4s1) — `app/dashboard/vendors/vendor-bills-panel.tsx` (the "Vendor Bills"
+ * card on the brokerage vendor directory).
+ *
+ * This closes the marketplace's core money loop, which had a live producer and no
+ * consumer. `app/actions/multi-persona.ts:submitVendorInvoice` (wired to the
+ * dashboard vendor-bookings panel) creates `billed_to='brokerage'` invoices with
+ * status 'submitted' — a vendor billing the brokerage for booked work. NOTHING on
+ * the platform could then mark one paid, so `vendor_earnings` was never minted from
+ * that lane, the vendor earnings page showed nothing, and `initiateVendorPayout`
+ * had nothing to pay out. Vendors did work, invoiced for it, and could never be
+ * paid through the product.
+ *
+ * NOT a duplicate of `markVendorChargePaid` — that one explicitly refuses
+ * `billed_to !== 'vendor'` (it settles money flowing vendor→brokerage and mints no
+ * earnings). This is the opposite direction. It is also not
+ * `markClientInvoiceCollected` (billed_to='contact', vendor-collected).
+ */
 export async function markInvoicePaid(params: {
   invoiceId: string
   paymentMethod?: string
   stripePaymentIntentId?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
+  }
+
+  // ROLE GATE. Asserting a bill is paid MINTS a `vendor_earnings` row with status
+  // 'available', which `initiateVendorPayout` wires out over Stripe Connect — this
+  // is a spend authorization, not bookkeeping. It was gated on tenancy alone, so any
+  // authenticated member of the brokerage could create a payable claim. Matches the
+  // sibling money lane `markVendorChargePaid`, minus the 'agent' branch: an agent may
+  // settle a charge THEY raised (money coming IN), but authorizing a payment OUT of
+  // brokerage funds is leadership's.
+  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
+    return { success: false, error: "Forbidden: broker, admin, or team lead only" }
   }
 
   // CRITICAL: verify invoice belongs to caller's brokerage before
@@ -269,9 +367,53 @@ export async function markInvoicePaid(params: {
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
+  // 🐛 NOT IDEMPOTENT — this minted a fresh PAYOUT CLAIM on every call.
+  //
+  // `status` was already being selected by verifyInvoiceInCallerBrokerage and then
+  // never read. It has to be read, because the insert below writes a
+  // `vendor_earnings` row with status 'available', `vendor_earnings` has NO unique
+  // index on invoice_id (verified live — only the pkey and two non-unique indexes),
+  // and `initiateVendorPayout` pays out whatever is 'available'. So calling this
+  // twice on one invoice — a double-clicked button, a retried request, or a TC
+  // marking paid an invoice the client had already paid online through
+  // confirmVendorInvoiceCheckout (which mints its own earnings row via
+  // recordDirectCollectionEarnings) — doubled the vendor's payable balance against a
+  // single collected invoice. Real money, out the door, on a duplicate row.
+  //
+  // Two guards, because they catch different paths: the status check catches the
+  // repeat of THIS action, and the earnings-existence check catches the
+  // cross-path collision with the direct-collection lane, which leaves the invoice
+  // 'paid' by a route that never touched this function.
+  if (verify.status === "paid") {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+  if (verify.status === "cancelled") {
+    return { success: false, error: "Invoice was cancelled" }
+  }
+
+  // LANE GUARD. Three billing lanes share this table and each has its OWN
+  // settlement action; only the brokerage-billed lane belongs here:
+  //   billed_to='brokerage' → this action (brokerage pays the vendor; mints earnings)
+  //   billed_to='vendor'    → markVendorChargePaid (vendor pays the brokerage)
+  //   billed_to='contact'   → markClientInvoiceCollected / confirmVendorInvoiceCheckout
+  //                           (the vendor collects DIRECTLY from the client, and
+  //                            recordDirectCollectionEarnings records those earnings
+  //                            as already paid_out because the platform never held
+  //                            the funds)
+  // Without this, a brokerage marking a CONTACT invoice paid would mint an
+  // 'available' earning — a payout claim against brokerage funds for money the
+  // brokerage never collected and does not owe. The billed_to='vendor' early return
+  // further down is kept as the second door on the same rule.
+  if (verify.billed_to === "contact") {
+    return {
+      success: false,
+      error: "This invoice is billed to a client — the vendor collects it directly. Use the vendor's invoice center to record collection.",
+    }
+  }
+
   const svc = createServiceClient()
 
-  const { error: updateErr } = await svc
+  const { data: updated, error: updateErr } = await svc
     .from("vendor_invoices")
     .update({
       status: "paid",
@@ -281,8 +423,12 @@ export async function markInvoicePaid(params: {
     })
     .eq("id", params.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (updateErr) return { success: false, error: updateErr.message }
+  // Zero rows means the invoice moved out from under us between the verify and the
+  // write. It must not report a payment it did not record.
+  if (!updated?.length) return { success: false, error: "Invoice not found" }
 
   // A tenant→vendor CHARGE (billed_to='vendor') is money flowing vendor→brokerage —
   // marking it paid must NOT mint vendor earnings (that would offer the vendor a payout
@@ -291,12 +437,33 @@ export async function markInvoicePaid(params: {
     return { success: true, invoiceId: params.invoiceId }
   }
 
+  // Never mint a second payout claim for an invoice that already has one.
+  // `error` is destructured deliberately: supabase-js resolves a refused read, and
+  // treating a refusal as "no earnings yet" here would mint the duplicate this
+  // guard exists to prevent. A refused read fails CLOSED — no earnings row.
+  const { data: existingEarnings, error: earningsReadErr } = await svc
+    .from("vendor_earnings")
+    .select("id")
+    .eq("invoice_id", params.invoiceId)
+    .limit(1)
+
+  if (earningsReadErr) {
+    return {
+      success: false,
+      error: "Invoice marked paid, but the earnings record could not be verified. Please re-check before paying out.",
+    }
+  }
+
+  if (existingEarnings?.length) {
+    return { success: true, invoiceId: params.invoiceId }
+  }
+
   // Create earnings record so the vendor sees the payment. The platform does NOT take a cut of a
   // vendor's client invoice — vendors are billed separately for platform use — so the vendor keeps the
   // full amount (platform_fee 0, net = gross).
   const gross = verify.total_amount ?? 0
 
-  await svc.from("vendor_earnings").insert({
+  const { error: earningsErr } = await svc.from("vendor_earnings").insert({
     vendor_id: verify.vendor_id,
     brokerage_id: ctx.brokerageId,
     invoice_id: params.invoiceId,
@@ -305,6 +472,15 @@ export async function markInvoicePaid(params: {
     net_amount: gross,
     status: "available",
   })
+
+  // The insert result was previously discarded entirely, so a failed earnings write
+  // reported a fully successful payment and the vendor was simply never credited.
+  if (earningsErr) {
+    return {
+      success: false,
+      error: `Invoice marked paid, but the vendor earnings record failed to save: ${earningsErr.message}`,
+    }
+  }
 
   return { success: true, invoiceId: params.invoiceId }
 }
@@ -354,10 +530,16 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+  // Return to the surface that STARTED onboarding. These used to point at
+  // /vendor/settings, which is a bare `redirect('/settings/general')` stub — it
+  // drops the query string entirely, so a vendor finishing Stripe's hosted flow
+  // landed on an unrelated page and nothing ever reconciled the account. The
+  // Connect UI lives on /vendor/earnings (stripe-connect.tsx), and that page now
+  // reads ?stripe=complete and calls completeStripeConnectOnboarding().
   const link = await stripe.accountLinks.create({
     account: accountId,
-    refresh_url: `${appUrl}/vendor/settings?stripe=refresh`,
-    return_url: `${appUrl}/vendor/settings?stripe=complete`,
+    refresh_url: `${appUrl}/vendor/earnings?stripe=refresh`,
+    return_url: `${appUrl}/vendor/earnings?stripe=complete`,
     type: "account_onboarding",
   })
 
@@ -376,8 +558,8 @@ export async function initiateVendorPayout(params: {
   cashAppReference?: string
   note?: string
 }): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -434,13 +616,40 @@ export async function initiateVendorPayout(params: {
       return { success: false, error: "Vendor Stripe account not set up" }
     }
 
-    const transfer = await stripe.transfers.create({
-      amount: Math.round(params.amount * 100), // cents
-      currency: "usd",
-      destination: connect.accountId,
-      metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
-    })
-    stripeTransferId = transfer.id
+    // ── THE BROKERAGE'S MONEY LEAVES THE BROKERAGE'S ACCOUNT ─────────────────
+    //
+    // `vendor_job_bill` (lib/billing/stripe-account-scope.ts): the payer is the
+    // BROKERAGE and the payee is the vendor. This used to be
+    // `stripe.transfers.create()` on the platform seam, so the funds left the
+    // PRODUCT's balance — a payout that succeeded, returned a transfer id and
+    // rendered a green badge while paying a vendor the product never hired, out of
+    // a balance that owes them nothing, on a 1099 issued by the wrong entity.
+    //
+    // The scope is the BROKERAGE and deliberately not `ctx.userId` / the caller's
+    // team: `vendor_payouts.brokerage_id` and `vendor_earnings.brokerage_id` name
+    // the brokerage as the party on the hook, and the rule this repo states once is
+    // that the account belongs to the PAYER/PAYEE — never to whoever clicked. An
+    // agent-scoped resolution would let WHO PRESSED THE BUTTON pick the balance.
+    //
+    // Fail-closed: a brokerage with no Stripe credential gets the resolver's
+    // sentence back as `error`, which app/vendor/earnings/payout-button.tsx renders
+    // verbatim. It never falls through to the platform's account.
+    const transfer = await createTransfer(
+      {
+        amount: params.amount,
+        destinationAccountId: connect.accountId,
+        description: `Vendor payout — ${params.vendorId}`,
+        metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
+      },
+      { side: "tenant", brokerageId: ctx.brokerageId },
+    )
+    if (!transfer.success || !transfer.transferId) {
+      // No payout row is written. A `vendor_payouts` row with no transfer would
+      // read as a pending payout nobody is going to make, and the earnings it
+      // covers would be marked paid_out against money that never moved.
+      return { success: false, error: transfer.error ?? "The payout could not be sent.", w9Warning }
+    }
+    stripeTransferId = transfer.transferId
   }
 
   const { data: payout, error } = await svc
@@ -450,6 +659,15 @@ export async function initiateVendorPayout(params: {
       brokerage_id: ctx.brokerageId,
       amount: params.amount,
       payout_method: method,
+      // `stripe_transfer_id` IS NOT WRITE-ONLY — its reader is the webhook
+      // matcher at lib/vendors/vendor-payout-events.ts:130, which finds this
+      // row by `.eq(mapping.column, …)` where `mapping.column` comes from
+      // VENDOR_PAYOUT_COMPLETION_EVENTS (:77-78). Because the column name is a
+      // VARIABLE, no static scanner can resolve the term — the opposite-missing
+      // census counts it under "unresolvable filter terms" and reports the
+      // column as read by nobody. It is the id transfer.created / transfer.reversed
+      // arrive quoting, so deleting it would strand every Stripe payout in
+      // 'processing' forever. Nothing to build and nothing to delete (§1).
       stripe_transfer_id: stripeTransferId ?? null,
       cash_app_reference: params.cashAppReference ?? null,
       status: stripeTransferId ? "processing" : "pending",
@@ -505,8 +723,8 @@ export async function getVendorEarningsSummary(
     const actor = await requireVendorActor(vendorId)
     brokerageId = actor.brokerageId
   } catch {
-    const ctx = await resolveWriteContext()
-    if (ctx.isAuthenticated && ctx.brokerageId &&
+    const ctx = await resolveActingContext()
+    if (ctx.ok && ctx.brokerageId &&
         await verifyVendorInCallerBrokerage(vendorId, ctx.brokerageId)) {
       brokerageId = ctx.brokerageId
     }
@@ -536,7 +754,14 @@ export async function getVendorEarningsSummary(
         .order("created_at", { ascending: false }),
       svc
         .from("vendor_payouts")
-        .select("id, amount, payout_method, status, initiated_at, completed_at")
+        // cash_app_reference is the manual-payout transaction ref written at
+        // payout creation and read by nobody — without it a vendor could not
+        // match a "cash_app" payout row to the payment that actually reached them.
+        // `note` and `earnings_ids` were the same shape of orphan write: the
+        // brokerage's explanation of the payout, and the set of earnings it
+        // settled. Both are written by initiateVendorPayout above and neither had
+        // a reader, so a vendor saw an amount with no account of what it covered.
+        .select("id, amount, payout_method, status, initiated_at, completed_at, cash_app_reference, note, earnings_ids")
         .eq("vendor_id", vendorId)
         .eq("brokerage_id", brokerageId)
         .order("initiated_at", { ascending: false }),
@@ -571,6 +796,11 @@ export async function getVendorEarningsSummary(
       status: p.status,
       initiatedAt: p.initiated_at,
       completedAt: p.completed_at,
+      cashAppReference: p.cash_app_reference ?? null,
+      note: p.note ?? null,
+      // The column is a uuid[] with DEFAULT '{}'. A non-array (legacy null) must
+      // read as 0 covered earnings, never as a crash on .length.
+      coveredEarningsCount: Array.isArray(p.earnings_ids) ? p.earnings_ids.length : 0,
     })),
   }
 }
@@ -579,6 +809,41 @@ export async function getVendorEarningsSummary(
 // completeStripeConnectOnboarding — called from the return URL to mark complete
 // ---------------------------------------------------------------------------
 
+/**
+ * WIRED (w4s1) — `app/vendor/earnings/page.tsx` calls this when Stripe redirects
+ * the vendor back with `?stripe=complete`. It is also the only implementation that
+ * can turn `stripe_onboarding_complete` back OFF.
+ *
+ * Survivor for the "flip the flag on" half: `app/api/billing/webhook/route.ts`,
+ * the `account.updated` branch → `lib/connections/vendor-stripe.ts:
+ * setStripeOnboardingByAccount`. That path is wired and works, so this is not the
+ * only writer and cannot simply be "wired" as the missing one.
+ *
+ * But it is NOT redundant, because the webhook branch is
+ *     if (details_submitted && charges_enabled) setStripeOnboardingByAccount(..., true)
+ * — it only ever sets TRUE. This function computes the same boolean and passes it
+ * through, so it also DEMOTES. That matters on a money path: when Stripe later
+ * restricts a connected account (expired documents, failed verification,
+ * `charges_enabled` goes false), the webhook leaves the flag true forever, and
+ * `initiateVendorPayout` hard-gates on exactly that flag before calling
+ * `stripe.transfers.create()`. So the payout lane keeps transferring to a
+ * destination that can no longer receive, on a stale flag.
+ *
+ * It is also the synchronous confirmation for a vendor returning from Stripe's
+ * hosted flow — webhooks are eventually consistent, and Connect events have to be
+ * separately enabled on the endpoint for that branch to ever fire.
+ *
+ * Correctly gated (`requireVendorActor(vendorId)` — the caller must BE this vendor),
+ * so the vendorId passed in must be a `vendors.id` (the canonical linkage is
+ * `user_role_assignments.vendor_id`; `vendors` has no user_id).
+ *
+ * DONE (was a handoff): the survivor's promote-only hole is fixed — the webhook's
+ * `account.updated` branch now passes the computed boolean instead of gating on it.
+ * DONE (was a handoff): `initiateStripeConnectOnboarding` now returns the vendor to
+ * `/vendor/earnings?stripe=complete` (it pointed at `/vendor/settings`, a bare
+ * `redirect('/settings/general')` stub that drops the query string), and that page
+ * calls this on the param.
+ */
 export async function completeStripeConnectOnboarding(vendorId: string): Promise<{
   success: boolean
   error?: string
@@ -920,10 +1185,15 @@ export async function markClientInvoiceCollected(params: {
 
 // ---------------------------------------------------------------------------
 // Contact pay-online lane — Stripe Checkout DESTINATION CHARGE on the vendor's
-// connected account. The platform key creates the session; funds settle on the
-// VENDOR's Stripe account (transfer_data.destination). 'paid' is only recorded
-// after Stripe confirms payment_status='paid' on the session (real provider
-// acceptance — never on redirect alone).
+// connected account. The BROKERAGE's Stripe account creates the session (it is the
+// merchant of record — the name on the hosted page and on the payer's statement);
+// funds settle on the VENDOR's Stripe account (transfer_data.destination). 'paid'
+// is only recorded after Stripe confirms payment_status='paid' on the session (real
+// provider acceptance — never on redirect alone).
+//
+// It was the PLATFORM's key that created the session until the ruling "no sites
+// should move tenant money on the platform key"; see the import header at the top
+// of this file for where each half went.
 // ---------------------------------------------------------------------------
 
 async function verifyContactCaller(
@@ -986,6 +1256,18 @@ export async function startVendorInvoiceCheckout(params: {
     return { success: false, error: `Invoice is not payable (status: ${invoice.status})` }
   }
 
+  // THE TENANT COMES FROM THE SESSION (CLAUDE.md §4). `gate.contact` is the row
+  // verifyContactCaller matched against the SIGNED-IN user; its brokerage_id is the
+  // only tenant claim on this request that the caller did not supply. The invoice's
+  // own brokerage_id is caller-reachable data, so it is CHECKED against the session's
+  // rather than trusted — otherwise the invoice id would be selecting which
+  // brokerage's Stripe account collects, which is the IDOR shape this repo keeps
+  // finding, pointed at a bank account.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // The vendor must have completed Stripe Connect onboarding — otherwise the portal
   // shows honest pay-the-vendor-directly instructions instead of this button.
   const connect = await readVendorStripeConnect(svc, invoice.vendor_id)
@@ -1003,38 +1285,42 @@ export async function startVendorInvoiceCheckout(params: {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
   const invoiceLabel = invoice.invoice_number ?? `INV-${invoice.id.slice(0, 8).toUpperCase()}`
 
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: amountCents,
-            product_data: { name: `Invoice ${invoiceLabel} — ${vendorName}` },
-          },
-        },
-      ],
-      // DESTINATION CHARGE: funds settle on the vendor's connected account.
-      payment_intent_data: {
-        transfer_data: { destination: connect.accountId },
-        metadata: {
-          vendor_invoice_id: invoice.id,
-          vendor_id: invoice.vendor_id,
-          brokerage_id: invoice.brokerage_id ?? "",
-        },
-      },
+  // ── THE MERCHANT OF RECORD IS THE BROKERAGE, NOT THE PRODUCT ──────────────
+  //
+  // `client_payment` (lib/billing/stripe-account-scope.ts): a contact pays; the
+  // brokerage collects. This used to be `stripe.checkout.sessions.create()` on the
+  // platform seam, which made the PRODUCT the merchant on a sale it had no part in
+  // — Stripe's hosted page carries the account's business name and support email,
+  // and the buyer's card statement carries its descriptor, so the wrong merchant was
+  // not a bookkeeping detail here but the thing the payer actually read. The refund
+  // would have come out of the product's balance too.
+  //
+  // The DESTINATION CHARGE is unchanged in intent — funds still settle on the
+  // VENDOR's connected account — but it is now made FROM the brokerage's account, so
+  // the two sides of the charge finally name the same tenant. `createCheckoutSession`
+  // refuses, with a sentence, when those two cannot address each other.
+  const checkout = await createCheckoutSession(
+    {
+      amount: Number(invoice.total_amount ?? 0),
+      currency: "usd",
+      productName: `Invoice ${invoiceLabel} — ${vendorName}`,
+      destinationAccountId: connect.accountId,
+      customerEmail: gate.contact.email ?? undefined,
       metadata: { vendor_invoice_id: invoice.id, contact_id: params.contactId },
-      customer_email: gate.contact.email ?? undefined,
-      success_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
-    })
-    if (!session.url) return { success: false, error: "Stripe did not return a checkout URL" }
-    return { success: true, url: session.url }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+      paymentIntentMetadata: {
+        vendor_invoice_id: invoice.id,
+        vendor_id: invoice.vendor_id,
+        brokerage_id: sessionBrokerageId,
+      },
+      successUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
+    },
+    { side: "tenant", brokerageId: sessionBrokerageId },
+  )
+  if (!checkout.success || !checkout.url) {
+    return { success: false, error: checkout.error ?? "Could not start checkout" }
   }
+  return { success: true, url: checkout.url }
 }
 
 export async function confirmVendorInvoiceCheckout(params: {
@@ -1058,23 +1344,32 @@ export async function confirmVendorInvoiceCheckout(params: {
   if (!invoice) return { success: false, error: "Invoice not found" }
   if (invoice.status === "paid") return { success: true, alreadyPaid: true }
 
+  // Same session-derived tenant as startVendorInvoiceCheckout, and checked the same
+  // way — the session lives on the BROKERAGE's Stripe account, so this read has to
+  // be made on that same account or Stripe answers "no such checkout session" and a
+  // genuinely paid invoice never settles.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // REAL provider acceptance: retrieve the session and require payment_status='paid'
   // for THIS invoice. A redirect with an unpaid/foreign session changes nothing.
-  let session
-  try {
-    session = await stripe.checkout.sessions.retrieve(params.sessionId)
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  const session = await retrieveCheckoutSession(params.sessionId, {
+    side: "tenant",
+    brokerageId: sessionBrokerageId,
+  })
+  if (!session.success) {
+    return { success: false, error: session.error ?? "The payment could not be verified with Stripe." }
   }
   if (session.metadata?.vendor_invoice_id !== params.invoiceId) {
     return { success: false, error: "Checkout session does not match this invoice" }
   }
-  if (session.payment_status !== "paid") {
+  if (session.paymentStatus !== "paid") {
     return { success: false, error: "Payment not completed" }
   }
 
-  const paymentIntentId =
-    typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null
+  const paymentIntentId = session.paymentIntentId
 
   const { error } = await svc
     .from("vendor_invoices")
@@ -1167,8 +1462,8 @@ export async function issueVendorCharge(params: {
   dueDate?: string
   notes?: string
 }): Promise<{ success: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const isAdminCharger = VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)
   if (!isAdminCharger && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
@@ -1230,13 +1525,23 @@ export async function issueVendorCharge(params: {
   if (!created.success || !created.invoiceId) return { success: false, error: created.error }
 
   // createVendorInvoice writes 'draft' — issue it (same transition submitVendorInvoice makes).
+  //
+  // `.select("id")` and the zero-row check are load-bearing: a supabase-js UPDATE
+  // that matches nothing resolves with `error` null (CLAUDE.md §3), so without them
+  // this reported {success:true} AND SENT THE VENDOR AN EMAIL saying an invoice had
+  // been issued, while the row sat at 'draft' — a bill announced to the payer that
+  // the ledger says was never raised. Charging nobody, loudly.
   const svc = createServiceClient()
-  const { error: issueErr } = await svc
+  const { data: issued, error: issueErr } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", created.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (issueErr) return { success: false, error: issueErr.message }
+  if (!issued || issued.length === 0) {
+    return { success: false, error: "The charge was drafted but could not be issued — it is still a draft, and the vendor has not been notified." }
+  }
 
   // Best-effort B2B transactional notification to the vendor.
   try {
@@ -1288,8 +1593,8 @@ export async function markVendorChargePaid(params: {
   invoiceId: string
   paymentMethod?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
   }

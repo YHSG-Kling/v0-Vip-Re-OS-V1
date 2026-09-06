@@ -19,10 +19,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import {
   loadParkedRetention,
   executeStaleParkedPurge,
-  type ParkedRetentionReport,
   type PurgeExecutionResult,
 } from "@/lib/lead-pipeline/parked-retention"
 
@@ -34,22 +34,18 @@ async function requireSuperadmin(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }
 
-/** The tiered retention report + the exact stale-purge preview (read-only). */
-export async function getParkedRetentionAction(): Promise<
-  | { ok: true; report: ParkedRetentionReport }
-  | { ok: false; error: string }
-> {
-  const auth = await requireSuperadmin()
-  if (!auth.ok) return auth
-  const { report, error } = await loadParkedRetention(createServiceClient() as any)
-  if (!report) return { ok: false, error: error ?? "parked retention load failed" }
-  return { ok: true, report }
-}
+// TOMBSTONE (orphan tranche 3): getParkedRetentionAction deleted — a read
+// wrapper no surface called. The live survivor is
+// app/dashboard/superadmin/platform/page.tsx, which (behind the platform
+// page's own superadmin gate) calls
+// lib/lead-pipeline/parked-retention.ts:loadParkedRetention directly and hands
+// the report to territory-coverage-board.tsx. The purge half below remains the
+// board's wired action.
 
 /**
  * Execute the stale anonymized archival (PII purge, zip-level row retained).

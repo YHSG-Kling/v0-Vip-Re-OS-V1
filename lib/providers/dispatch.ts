@@ -2,23 +2,36 @@
  * OUTBOUND DISPATCH LAYER
  * lib/providers/dispatch.ts
  *
- * Single entry point for all outbound comms: email, SMS, phone, direct mail, video.
+ * Single entry point for outbound comms: email, SMS, direct mail (+ the D-ID
+ * video RENDER-AND-DELIVER path). PHONE IS NOT HERE: an outbound voice call goes
+ * through lib/voice/twilio-outbound.ts:placeOutboundAiCall, which owns the one
+ * pre-dial gate stack (lib/voice/outbound-call-gates.ts) — see the PHONE section
+ * below for why the second one was merged into it.
  * Provider selection is always resolved via kernel/providers.ts cascade:
  *   user → team → brokerage → superadmin → system default
  * Never hardcode a provider name in feature code — use these dispatchers.
  *
- * direct_mail and video are SYSTEM_ONLY: superadmin-controlled, no per-brokerage override.
- * SMS and phone are supported via the existing Twilio messaging provider.
+ * VIDEO IS NOT A CHANNEL (owner ruling). dispatchVideo is a RENDER-AND-DELIVER
+ * dispatcher: it renders a D-ID avatar clip and delivers it over a real channel
+ * (today: email — it takes a recipientEmail). Its de-confliction therefore spends
+ * the recipient's EMAIL allowance, not a video one. "video" survives here only as
+ * a providerType (which D-ID/Remotion renderer to call), never as a lane.
+ *
+ * direct_mail and the video renderer are SYSTEM_ONLY: superadmin-controlled, no
+ * per-brokerage override.
+ * SMS is supported via the existing Twilio messaging provider.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const LobSDK = require("lob")
 
 import { resolveProvider } from "@/lib/kernel/providers"
+// placeCall is deliberately NOT imported here any more: the phone dispatcher was
+// merged into lib/voice/twilio-outbound.ts:placeOutboundAiCall (see the PHONE
+// section below). The raw TwiML dial still has its own live caller.
 import {
   sendEmail as messagingSendEmail,
   sendSMS as messagingSendSMS,
-  placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { normalizeVendorCost } from "@/lib/vendor-governance/cost-normalizer"
@@ -29,6 +42,7 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import { contentSafetyBackstop } from "@/lib/providers/content-safety"
@@ -132,7 +146,7 @@ interface DispatchResult {
 // Mirrors the outbound-voice lane (lib/voice/twilio-outbound.ts, step 2): checkVendorBudget
 // with the estimated cost of THIS send (cost-normalizer rates, kept in lockstep with the
 // post-hoc metered figure), so Twilio SMS / SendGrid email / Lob mail get the same
-// pre-spend cap that already protects D-ID / ElevenLabs / Vapi / twilio-native voice.
+// pre-spend cap that already protects D-ID / ElevenLabs / twilio-native voice.
 //
 // GOVERNANCE ORDER (deliberate): this runs AFTER every consumer-protection gate
 // (autonomy, consent/suppression/DNC/quiet-hours, de-confliction, content safety) has
@@ -145,7 +159,7 @@ interface DispatchResult {
 // communication; only an AFFIRMATIVE over-ceiling verdict blocks.
 async function vendorBudgetPreflight(args: {
   brokerageId: string
-  channel: "email" | "sms" | "phone" | "direct_mail"
+  channel: "email" | "sms" | "direct_mail"
   vendorKey: string
   /** Estimated USD cost of this send — keep in lockstep with the metered figure below. */
   addCost: number
@@ -268,7 +282,15 @@ async function deconflictGate(args: {
 // ─── EMAIL ────────────────────────────────────────────────────────────────────
 
 export interface DispatchEmailParams extends DispatchActorContext {
-  from: string
+  /**
+   * The sender. OPTIONAL on purpose: undefined means "resolve it downstream",
+   * and sendEmail then walks the tenant credential / platform env cascade and
+   * REFUSES if neither yields a real address. A caller that cannot establish a
+   * sender must pass undefined rather than a placeholder — `params.from ||
+   * SENDGRID_FROM_EMAIL` means a caller's guess would otherwise beat the
+   * brokerage's own configured, verified from-address (lib/providers/outbound-sender).
+   */
+  from?: string
   to: string
   subject: string
   html: string
@@ -279,6 +301,23 @@ export interface DispatchEmailParams extends DispatchActorContext {
    * Always set this explicitly when the caller knows the intent.
    */
   channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
+  /**
+   * SEND AS THIS AGENT (users.id) — deliver through their own connected
+   * Gmail/Outlook mailbox when one exists, so the message arrives FROM the
+   * agent and the client can simply hit reply.
+   *
+   * `lib/providers/messaging:sendEmail` has supported this since it was written
+   * (`agentUserId`, tier 1, falling through to SendGrid on `no_personal_account`)
+   * — but this dispatcher NEVER PASSED IT. So the one canonical governed egress
+   * could not produce an agent-identity send at all: every dispatchEmail landed
+   * on the tenant/platform from-address no matter whose message it was.
+   *
+   * OPT-IN, not inferred from `userId`. A newsletter or bulk campaign that
+   * happens to carry an actor's userId must NOT start leaving that person's
+   * personal mailbox; only a caller that means "this is a 1:1 message from this
+   * human" sets it.
+   */
+  sendAsAgentUserId?: string
   metadata?: Record<string, unknown>
 }
 
@@ -375,10 +414,24 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   // the signature/unsubscribe lookup keys off the contacts table.
   const recipientId = params.contactId ?? params.leadId ?? null
 
+  // IDENTITY CLASS. assembleEmail looks up `users` by this id to run the
+  // signature waterfall (user → team → brokerage). params.agentId is an
+  // AGENTS id, so passing it matched no users row: tiers 1 and 2 were skipped
+  // and every such send silently fell through to the BROKERAGE signature —
+  // exactly the fallback-to-brokerage the OS is not supposed to have. The
+  // third branch was worse still: a brokerages id passed as a users id.
+  // Nothing is lost by dropping it, because assembleEmail reaches the
+  // brokerage tier on its own from the brokerageId argument below.
+  const signatureUserId =
+    params.userId ??
+    (params.agentId
+      ? await resolveUserIdForAgentRecord(createServiceClient(), params.agentId)
+      : null)
+
   const assembled = await assembleEmail({
     bodyHtml:       params.html ?? "",
     bodyText:       params.text,
-    userId:         params.agentId ?? params.userId ?? params.brokerageId ?? "",
+    userId:         signatureUserId ?? "",
     brokerageId:    params.brokerageId,
     contactId:      recipientId,
     channelPurpose,
@@ -412,33 +465,32 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
 
   let result: DispatchResult
 
-  if (providerKey === "sendgrid") {
+  // ONE provider call for both branches. `providerKey` still records which
+  // provider the cascade selected; the SMTP-relay branch is not wired yet and
+  // falls through to the same sender, so duplicating the call only made it
+  // possible for the two copies to drift (and one of them already had).
+  //
+  // `agentUserId` is what makes an agent-identity send possible at all — see
+  // DispatchEmailParams.sendAsAgentUserId. `raw.provider` is the provider that
+  // ACTUALLY sent (gmail / outlook / sendgrid), which is not necessarily the one
+  // the cascade selected, so it wins in the reported providerKey.
+  {
     const raw = await messagingSendEmail({
-      from:    params.from,
-      to:      params.to,
-      subject: params.subject,
-      html:    assembled.html,
-      text:    assembled.text,
+      from:        params.from,
+      to:          params.to,
+      subject:     params.subject,
+      html:        assembled.html,
+      text:        assembled.text,
+      agentUserId: params.sendAsAgentUserId,
     })
     result = {
       success: raw.success,
-      providerKey,
-      error: raw.error,
-      budgetWarning: emailBudget.warning,
-    }
-  } else {
-    // Future: SMTP relay via global_settings (smtp_host / smtp_port / smtp_username / smtp_password)
-    // For now fall through to sendgrid default until SMTP relay is wired
-    const raw = await messagingSendEmail({
-      from:    params.from,
-      to:      params.to,
-      subject: params.subject,
-      html:    assembled.html,
-      text:    assembled.text,
-    })
-    result = {
-      success: raw.success,
-      providerKey,
+      providerKey: raw.provider ?? providerKey,
+      // THE EVIDENCE OF A SEND. This was dropped on the floor: the email branch
+      // returned no messageId at all, so no caller could ever record WHICH
+      // message the provider accepted — the SMS and direct-mail branches both
+      // carry their provider reference and this one did not.
+      messageId: raw.providerMessageId ?? undefined,
       error: raw.error,
       budgetWarning: emailBudget.warning,
     }
@@ -453,11 +505,21 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
-    leadId: params.leadId ?? params.contactId,
+    // NOT `?? params.contactId`. vendor_usage_tracking.lead_id FKs leads(id) —
+    // a contacts.id put here raises 23503, and logVendorUsage is fire-and-forget,
+    // so the cost row for that send was silently dropped. The contact identity
+    // has its own home in metadata.contact_id, immediately below.
+    leadId: params.leadId,
     metadata: {
       to: params.to,
       subject: params.subject,
       provider_key: providerKey,
+      // The provider that ACTUALLY carried it. When the agent's own mailbox
+      // took the send this is 'gmail'/'outlook' and no SendGrid quota was
+      // spent — the cost row above is still keyed to the resolved vendor so the
+      // ledger's vocabulary stays stable, and this records the truth beside it.
+      sending_provider: result.providerKey,
+      provider_message_id: result.messageId ?? null,
       contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },
@@ -607,6 +669,28 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     budgetWarning: smsBudget.warning,
   }
 
+  // ── OUTCOME RECONCILIATION: open a PENDING claim, not a fact ────────────────
+  // Twilio's response says "queued". Recording that as sent-and-done is what left
+  // every carrier rejection invisible. The claim is opened against the sid, and the
+  // StatusCallback (app/api/webhooks/twilio-sms-status) proves or contradicts it.
+  // Fire-and-forget: a ledger failure must never fail a send that already happened.
+  if (raw.success && raw.messageId) {
+    void (async () => {
+      const { recordOutcomeClaim } = await import("@/lib/outcomes/reconciliation-ledger")
+      await recordOutcomeClaim({
+        brokerageId: params.brokerageId,
+        channel: "sms",
+        providerRef: raw.messageId!,
+        // The provider's OWN word for where it is, not our optimistic label.
+        claimedStatus: raw.status ?? "queued",
+        entityType: "sms",
+        contactId: params.contactId ?? null,
+        leadId: params.leadId ?? null,
+        claimedByManager: "campaign_orchestrator",
+      })
+    })().catch(() => {})
+  }
+
   void logVendorUsage({
     vendorName: providerKey,
     usageType: "sms_messages",
@@ -615,10 +699,12 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
+    // leads(id) only — see the note on the email path above.
     leadId: params.leadId,
     metadata: {
       to: params.to,
       provider_key: providerKey,
+      contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },
   })
@@ -626,140 +712,35 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   return result
 }
 
-// ─── PHONE (outbound call) ────────────────────────────────────────────────────
-
-export interface DispatchPhoneParams extends DispatchActorContext {
-  to: string
-  /** TwiML URL that controls the call flow */
-  twimlUrl: string
-  metadata?: Record<string, unknown>
-}
-
-export async function dispatchPhone(params: DispatchPhoneParams): Promise<DispatchResult> {
-  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
-  const autonomyHeld = await autonomyGate(params)
-  if (autonomyHeld) return autonomyHeld
-  // ── COMPLIANCE GATE: Check if contact is eligible for phone calls ───────────
-  if (params.contactId || params.leadId) {
-    const supabase = await createServiceClient()
-    const recipientId = params.contactId || params.leadId
-    const table = params.contactId ? "contacts" : "leads"
-
-    // Final straggler gate (1/2): comprehensive suppression check — contact flags
-    // (dnc_status / call_stop_flag) AND contact_suppression_list, brokerage-scoped.
-    // The contact-flag-only gate below misses list-only entries.
-    const suppression = await checkSuppression({
-      brokerageId: params.brokerageId,
-      contactId: params.contactId ?? null,
-      email: null,
-      phone: params.to ?? null,
-      channel: "phone",
-    })
-    if (suppression.suppressed) {
-      console.warn(`[Dispatch] Phone call blocked for ${recipientId}: ${suppression.reason}`)
-      return {
-        success: false,
-        providerKey: "compliance_gate",
-        error: `Outbound blocked: ${suppression.reason}`,
-      }
-    }
-
-    const { data: recipient, error: recipientError } = await supabase
-      .from(table)
-      .select("*")
-      .eq("id", recipientId)
-      .maybeSingle()
-
-    if (!recipientError && recipient) {
-      const complianceResult = await evaluateOutboundCompliance({
-        contact: recipient,
-        channel: "phone",
-        content: "Outbound call",
-        actorContext: {
-          brokerageId: params.brokerageId,
-          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
-          userId: params.userId,
-        },
-      })
-
-      if (!complianceResult.allowed) {
-        console.warn(
-          `[Dispatch] Phone call blocked for ${recipientId}: ${complianceResult.primaryReason}`
-        )
-        return {
-          success: false,
-          providerKey: "compliance_gate",
-          error: `Outbound blocked: ${complianceResult.primaryReason}`,
-        }
-      }
-    }
-
-    // ── De-Conflict gate (over-touch suppression) ────────────────────────────
-    const deferred = await deconflictGate({
-      brokerageId:    params.brokerageId,
-      channel:        "phone",
-      contactId:      params.contactId ?? null,
-      leadId:         params.leadId ?? null,
-      recipientPhone: params.to ?? null,
-      systemSource:   params.systemSource,
-    })
-    if (deferred) return deferred
-  }
-
-  const { providerKey } = await resolveProvider({
-    providerType: "phone",
-    actorContext: {
-      userId: params.userId ?? params.brokerageId,
-      brokerageId: params.brokerageId,
-      teamId: params.teamId,
-    },
-  })
-
-  // ── VENDOR-BUDGET PRE-FLIGHT — after every consumer-protection gate, before the
-  //    provider call. NOTE: this is the generic TwiML lane only; the Twilio-native
-  //    AI call lane (lib/voice/twilio-outbound.ts) runs its OWN budget pre-flight
-  //    and never routes through dispatchPhone — no double-gating. Fail-open.
-  const phoneBudget = await vendorBudgetPreflight({
-    brokerageId: params.brokerageId,
-    channel: "phone",
-    vendorKey: "twilio_voice",
-    addCost: normalizeVendorCost("twilio_voice", 1), // ~1 min estimate
-    systemSource: params.systemSource,
-  })
-  if (phoneBudget.refusal) return phoneBudget.refusal
-
-  const raw = await messagingPlaceCall({
-    to: params.to,
-    twimlUrl: params.twimlUrl,
-  })
-
-  const result: DispatchResult = {
-    success: raw.success,
-    providerKey,
-    messageId: raw.callSid,
-    error: raw.error,
-    budgetWarning: phoneBudget.warning,
-  }
-
-  void logVendorUsage({
-    vendorName: providerKey,
-    usageType: "minutes",
-    unitCount: 1,
-    estimatedCost: 0.013, // Twilio Voice ~$0.013/min
-    systemSource: params.systemSource ?? "dispatch",
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    leadId: params.leadId,
-    metadata: {
-      to: params.to,
-      provider_key: providerKey,
-      ...(params.metadata ?? {}),
-    },
-  })
-
-  return result
-}
-
+// ─── PHONE (outbound call) — MERGED AWAY (wave 8) ─────────────────────────────
+// `dispatchPhone` used to live here. It had ZERO callers while the platform's
+// ONLY live outbound-dial path was — and remains —
+//
+//     SURVIVOR: lib/voice/twilio-outbound.ts:placeOutboundAiCall
+//
+// The two were not redundant, they were COMPLEMENTARY, which is the dangerous
+// kind of duplicate: each gate the orphan had and the survivor lacked was a hole
+// in the lane that actually dials. `enforceTCPACompliance` (the survivor's
+// consent gate) reads the contact FLAG `contacts.dnc_status` and never reads
+// `contact_suppression_list`, so a contact suppressed on the LIST alone could
+// still be dialled by the AI outbound lane. dispatchPhone's own comment named
+// that failure mode and its `checkSuppression` call was the only thing closing
+// it — on a code path nothing ever executed.
+//
+// GATES CARRIED ACROSS to the survivor, in lib/voice/outbound-call-gates.ts:
+//   · autonomyGate     → OUTBOUND_CALL_GATES[0] "autonomy"    (trust boundary)
+//   · checkSuppression → OUTBOUND_CALL_GATES[1] "suppression" (contact flags AND
+//     contact_suppression_list, brokerage-scoped, fails closed) — the fix
+//   · deconflictGate   → OUTBOUND_CALL_GATES[3] "deconflict"  (over-touch)
+// NOT carried: `evaluateOutboundCompliance` and this file's generic
+// vendorBudgetPreflight — the survivor already runs enforceTCPACompliance (a
+// stricter, logging consent chokepoint) and its own checkVendorBudget, and
+// neither was weakened by the merge.
+//
+// The generic TwiML dial itself was not deleted: lib/providers/messaging:placeCall
+// still exists behind its own TCPA gate and is used by the warm/whisper bridge
+// (app/actions/voice-call-bridge.ts), which dials the AGENT's own line.
+//
 // ─── DIRECT MAIL (superadmin-controlled, system-only) ────────────────────────
 // direct_mail is SYSTEM_ONLY in kernel/providers.ts — resolveProvider always
 // returns the system default (lob) and ignores per-brokerage overrides.
@@ -793,6 +774,123 @@ export async function dispatchDirectMail(
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
+
+  // ── SUPPRESSION GATE — "stop mailing me" is a thing this dispatcher can now hear ──
+  // dispatchEmail (:320) and dispatchSms (:539) both consult checkSuppression before
+  // they spend. This dispatcher consulted NEITHER checkSuppression NOR
+  // evaluateOutboundCompliance: it gated on address verification, CASS deliverability,
+  // de-confliction and a Fair-Housing scan — on everything except whether the recipient
+  // had asked to stop. A lead or contact who opted out of mail was still mailed, and
+  // the send looked clean at every gate it did have.
+  //
+  // Channel is "mail" because that is what the LIVE CHECK on
+  // contact_suppression_list.channel admits (email | sms | phone | mail) — verified
+  // against the database, not guessed from the dispatcher's own vocabulary.
+  //
+  // Placed BEFORE the verification and CASS gates on purpose: a suppressed recipient
+  // must not cost a Lob address-verification call to find that out.
+  //
+  // ── WHY THIS GATE NO LONGER REQUIRES AN ENTITY ID ────────────────────────
+  //
+  // It used to be `if (params.contactId || params.leadId)`, so a send that named
+  // NEITHER — the mail-only recipient of an acquisition mailer, the purchased
+  // farm list, the audience import — skipped the suppression gate entirely.
+  // That is not an edge case: it is the recipient direct mail exists to reach,
+  // and m493 prints an opt-out code on the piece we send them. We were printing
+  // a promise on paper posted to a stranger's house and then not consulting the
+  // list they had asked to be put on.
+  //
+  // The address IS the identity (m503's contact_suppression_list.mailing_address_key,
+  // read through checkSuppression's address arm), and `params.mailingAddress` +
+  // `params.zip` are on EVERY call — they are what gets printed. So the gate now
+  // runs unconditionally; the entity-keyed reads below stay behind their own id
+  // checks exactly as before.
+  {
+    const supSvc = createServiceClient()
+    let supEmail: string | null = null
+    let supPhone: string | null = null
+    if (params.leadId) {
+      // The address-keyed arm of checkSuppression is the only one that can fire for a
+      // LEAD — its flag arm reads `contacts`. Without these two values a lead's own
+      // suppression rows are unreachable and the gate would pass vacuously.
+      const { data: supLead, error: supLeadError } = await supSvc
+        .from("leads")
+        .select("email, phone, dnc_status, direct_mail_opt_out, opt_out_channels")
+        .eq("id", params.leadId)
+        .maybeSingle()
+      if (supLeadError) {
+        // FAIL CLOSED. supabase-js RESOLVES a refusal, so treating this as "no
+        // suppression" is exactly how a refused read becomes a mailed opt-out.
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: suppression precheck could not be read (${supLeadError.message})`,
+        }
+      }
+      const supRow = supLead as {
+        email?: string | null
+        phone?: string | null
+        dnc_status?: boolean | null
+        direct_mail_opt_out?: boolean | null
+        opt_out_channels?: string[] | null
+      } | null
+      supEmail = supRow?.email ?? null
+      supPhone = supRow?.phone ?? null
+
+      // THE ROW'S OWN FLAGS, read BEFORE the identifier-keyed arm — because for the
+      // lead this channel exists to reach there may be no identifier at all.
+      // checkSuppression matches suppression rows by email or phone; a MAIL-ONLY lead
+      // (address, no email, no phone) has neither, so that arm cannot fire and the gate
+      // would pass vacuously while `direct_mail_opt_out` sits true on the row. Proved
+      // live: a mail-only lead with dnc_status=t, direct_mail_opt_out=t and
+      // opt_out_channels={email,sms,phone,direct_mail} produced ZERO keyable
+      // suppression rows. The flags ARE the record for that lead, so they are read here.
+      if (supRow?.dnc_status === true || supRow?.direct_mail_opt_out === true) {
+        console.warn(`[Dispatch] direct mail blocked for lead ${params.leadId}: lead row carries a mail opt-out`)
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: "Outbound blocked: this lead has opted out of mail",
+        }
+      }
+      if (Array.isArray(supRow?.opt_out_channels) && supRow.opt_out_channels.some((c) => c === "direct_mail" || c === "mail")) {
+        // Both spellings on purpose: the lead row's channel list and
+        // contact_suppression_list.channel are DIFFERENT vocabularies for one idea
+        // ("direct_mail" vs the CHECK-admitted "mail"), and honouring only one of them
+        // is how a recorded opt-out becomes an unhonoured one.
+        console.warn(`[Dispatch] direct mail blocked for lead ${params.leadId}: mail is in opt_out_channels`)
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: "Outbound blocked: this lead has opted out of mail",
+        }
+      }
+    }
+    const mailSuppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId:   params.contactId ?? null,
+      email:       supEmail,
+      phone:       supPhone,
+      channel:     "mail",
+      // THE ADDRESS ARM. These are the values about to be handed to Lob and
+      // printed on the piece, so gating on them asks the only question that can
+      // be asked about a household with no CRM record: "did this mailbox tell us
+      // to stop?" Normalized inside the arm — a raw address cannot be compared.
+      mailingStreet: params.mailingAddress,
+      mailingZip:    params.zip,
+    })
+    if (mailSuppression.suppressed) {
+      console.warn(
+        `[Dispatch] direct mail blocked for ${params.contactId ?? params.leadId ?? `address ${params.zip}`}: ${mailSuppression.reason}`,
+      )
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${mailSuppression.reason}`,
+      }
+    }
+  }
+
   // ── Lead consent + verification gate ──────────────────────────────────────
   // Wave 36 — leads are unconsented for most channels; the only outbound
   // touches permitted to a lead row are direct_mail and email. For mail
@@ -988,6 +1086,26 @@ export async function dispatchDirectMail(
     },
   })
 
+  // ── OUTCOME RECONCILIATION: a Lob ACCEPT is not a delivery ─────────────────
+  // A physical piece takes days and can be re-routed or returned to sender. The
+  // claim opens pending against the Lob piece id; app/api/webhooks/lob-events
+  // proves or contradicts it as the piece moves.
+  void (async () => {
+    const { recordOutcomeClaim } = await import("@/lib/outcomes/reconciliation-ledger")
+    await recordOutcomeClaim({
+      brokerageId: params.brokerageId,
+      channel: "direct_mail",
+      // Lob's SDK types id as optional; a piece with no id cannot be reconciled, so
+      // the claim records that honestly rather than coercing a fake reference.
+      providerRef: data.id ?? null,
+      claimedStatus: "accepted_by_lob",
+      entityType: "direct_mail",
+      contactId: params.contactId ?? null,
+      leadId: params.leadId ?? null,
+      claimedByManager: "campaign_orchestrator",
+    })
+  })().catch(() => {})
+
   return { success: true, providerKey, messageId: data.id, budgetWarning: mailBudget.warning }
 }
 
@@ -1011,13 +1129,26 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
   // ── De-Conflict gate (over-touch suppression) ────────────────────────────
-  // D-ID renders are expensive AND avatar-video saturation hurts engagement;
-  // default policy caps 1 video / 21 days per contact.
+  // OWNER RULING: video is NOT a channel. The channels are email / phone /
+  // voicedrop / in-app / sms / blog / direct mail / ad / newsletter / podcast —
+  // a video is DELIVERED IN an sms or an email. This function takes a
+  // recipientEmail and sends over email, so the send consumes the CONTACT'S
+  // EMAIL ALLOWANCE and is counted against it. A "video" cap counted nothing:
+  // no ledger stores 'video' as a distinct budget, so it capped one imaginary
+  // lane while the real email lane stayed uncounted for this send.
+  //
+  // NOT REINVENTED HERE: the old comment claimed a "1 video / 21 days" render
+  // budget. D-ID render cost IS real, but it is a SPEND control, not an
+  // over-touch control, and the platform already meters renders (usageType:
+  // "video_renders" below). Adding a second cap shaped like a channel is how
+  // the video-as-channel drift started; a render budget belongs on the metering
+  // side and is the owner's call, not something to smuggle back in here.
   if (params.contactId) {
     const deferred = await deconflictGate({
       brokerageId:  params.brokerageId,
-      channel:      "video",
+      channel:      "email",
       contactId:    params.contactId,
+      recipientEmail: params.recipientEmail,
       systemSource: params.systemSource,
     })
     if (deferred) return deferred
@@ -1064,13 +1195,18 @@ async function dispatchVideoViaDID({
   const { createServiceClient } = await import("@/lib/supabase/service")
   const supabase = createServiceClient()
 
-  const agentUserId = params.userId ?? params.agentId
-  if (!agentUserId) {
-    return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+  // IDENTITY CLASS. params.agentId is ALREADY an agents id — feeding it to a
+  // users→agents resolver looked up `agents WHERE user_id = <an agents id>`,
+  // matched nothing, and returned the misleading "Voice clone not set up" for
+  // an agent whose clone existed. Only params.userId needs resolving.
+  let agentRecordId: string | null = params.agentId ?? null
+  if (!agentRecordId) {
+    if (!params.userId) {
+      return { success: false, providerKey, error: "Cannot generate video — agent ID missing" }
+    }
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    agentRecordId = await resolveUserIdToAgentRecord(params.userId, params.brokerageId)
   }
-
-  const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, params.brokerageId)
   if (!agentRecordId) {
     return { success: false, providerKey, error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated." }
   }
@@ -1123,7 +1259,7 @@ async function dispatchVideoViaDID({
   }
 
   // For D-ID we need a hosted audio URL — write to Supabase storage.
-  const audioPath = `isa-videos/${agentUserId}/${Date.now()}.mp3`
+  const audioPath = `isa-videos/${agentRecordId}/${Date.now()}.mp3`
   const { error: uploadError } = await supabase.storage
     .from("media")
     .upload(audioPath, new Uint8Array(ttsRes.data), { contentType: "audio/mpeg", upsert: false })

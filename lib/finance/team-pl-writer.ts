@@ -38,7 +38,7 @@ export async function runTeamPnl(svc: Svc, params: { brokerageId: string; now?: 
 
       // Canonical commissions closed this month for the team's members.
       const { data: comm } = await svc.from("agent_commissions")
-        .select("agent_id, gross_commission, agent_commission, transaction_id")
+        .select("agent_id, gross_commission, agent_commission, net_to_agent, transaction_id")
         .in("agent_id", agentIds).gte("close_date", monthStart).lte("close_date", monthEnd).limit(5000)
       const commissions = (comm ?? []) as TeamCommissionRow[]
 

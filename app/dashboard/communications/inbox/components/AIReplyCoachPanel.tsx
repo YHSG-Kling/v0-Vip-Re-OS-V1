@@ -8,7 +8,6 @@ import {
 import { Button }   from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge }    from "@/components/ui/badge"
-import { cn }       from "@/lib/utils"
 import {
   generateAIReplyDraft,
   acceptDraft,
@@ -67,10 +66,10 @@ function confidenceBadge(score: number | null) {
 }
 
 const TONE_LABELS: Record<string, string> = {
-  professional: "Professional",
-  friendly:     "Friendly",
-  empathetic:   "Empathetic",
-  assertive:    "Assertive",
+  professional:  "Professional",
+  warm:          "Warm",
+  urgent:        "Urgent",
+  informational: "Informational",
 }
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────

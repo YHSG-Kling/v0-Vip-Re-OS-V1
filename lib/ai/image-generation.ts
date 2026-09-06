@@ -21,7 +21,13 @@
  */
 
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `agent-media`, which
+// lib/storage/document-buckets.ts designates for "agent headshots, brand
+// imagery and content-studio assets shown on public agent pages" — which is
+// what a generated marketing image is.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { createServiceClient } from "@/lib/supabase/service"
 import sharp from "sharp"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
@@ -297,17 +303,22 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     }
   }
 
-  // 4. Upload to Vercel Blob — public URL won't expire
+  // 4. Store in Supabase `agent-media` — a public bucket, so the URL won't expire.
   let permanentUrl: string
   try {
-    const filename = `ai-images/${input.purpose}/${Date.now()}-${randomSlug()}.png`
-    const blob = await put(filename, finalImageBytes, {
-      access: "public",
-      contentType: "image/png",
-    })
-    permanentUrl = blob.url
+    permanentUrl = await hostRenderedMedia(
+      createServiceClient(),
+      `ai-images/${input.purpose}/${Date.now()}-${randomSlug()}.png`,
+      Buffer.from(finalImageBytes),
+      "image/png",
+      "agent-media",
+    )
   } catch (err: any) {
-    return { success: false, errorCode: "blob_failed", error: err?.message ?? "Blob upload failed" }
+    // errorCode kept as `blob_failed`: it is a stored CONTRACT with this
+    // function's callers (they branch on it) and renaming it here would be a
+    // silent behaviour change in code this lane does not own. The message now
+    // names the real store.
+    return { success: false, errorCode: "blob_failed", error: err?.message ?? "Supabase storage upload failed" }
   }
 
   return {

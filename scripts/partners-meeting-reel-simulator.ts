@@ -71,8 +71,38 @@ check("carries the earned reel props as inputProps (cards + one ask)",
 
 console.log("\n[5 · LIVE WIRING — the show actually runs (composition was orphaned before)]")
 import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
-const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+// Tolerate a missing file — every other simulator in this repo does. A file
+// that no longer EXISTS trivially satisfies an absence assertion, and throwing
+// ENOENT instead turns a legitimate deletion into a crashed sweep.
+const src = (p: string) =>
+  existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : ""
+/** Every file under app/ or lib/ that still mentions the dropped HeyGen column. */
+function heygenCloneColumnSites(): string[] {
+  const hits: string[] = []
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated DIRECTORIES,
+  // and a root-level FILE is not a directory, so `proxy.ts` — the Next 16 edge
+  // middleware, which gates auth and queries four tables with a SERVICE client on
+  // EVERY request — was outside this guard's corpus, and a file that is never opened
+  // reports green. `rootRuntimeFiles()` from the same survivor supplies it.
+  for (const rel of [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]) {
+    // USE, not mention. The manager-registry entry that DOCUMENTS the purge
+    // necessarily names the dropped column in its prose, and a doc string is
+    // not a read or a write. Match the column only where it is actually used:
+    // selected, filtered on, or assigned in an object literal.
+    const text = readFileSync(join(process.cwd(), rel), "utf8")
+    const used =
+      /heygen_voice_clone_id\s*:/.test(text) ||                    // object-literal write
+      /\.eq\(\s*["']heygen_voice_clone_id["']/.test(text) ||        // filter
+      /select\([^)]*heygen_voice_clone_id/.test(text)              // projection
+    if (used) hits.push(rel)
+  }
+  return hits
+}
+
 const pm = src("lib/intelligence/partners-meeting.ts")
 check("the weekly producer QUEUES the reel (one per brokerage per week) with the D-ID clip as the avatar PIP",
   pm.includes("queuePartnersMeetingReel") && pm.includes("avatarVideoUrl: avatarClipUrl")
@@ -257,8 +287,26 @@ import { VIDEO_FINISH_SPEC, REEL_USE_FINISH, finishForVideo } from "../lib/video
 
 console.log("\n[13 · ONE FINISH LINE + SUPABASE-HOSTED DELIVERY]")
 {
-  check("finished media is hosted on SUPABASE STORAGE (video-assets bucket), Blob only as fallback — one helper, every upload site",
-    src("lib/remotion/media-host.ts").includes('storage.from("video-assets")')
+  // Pinned to the RULE, not to a call shape. This line used to require the
+  // literal `storage.from("video-assets")` in media-host.ts, which went red the
+  // moment the helper gained a bucket PARAMETER (defaulting to the same bucket)
+  // so the audio and print lanes migrating off Vercel Blob could name their own
+  // destination. The invariant is "the default host bucket is video-assets and
+  // the bytes go through the Supabase storage API", and that is what is checked
+  // now — a hardcoded call shape is a waypoint, and CLAUDE.md §2 says not to
+  // pin an assertion to one.
+  check("finished media is hosted on SUPABASE STORAGE (video-assets by default; the Blob fallback is retired) — one helper, every upload site",
+    // NOTE the absent clause: "and media-host.ts does not import @vercel/blob"
+    // belongs here by topic but CANNOT be asserted from this file, because src()
+    // reads RAW source and media-host.ts now carries a tombstone that names
+    // @vercel/blob exactly as CLAUDE.md §1 requires. Asserting it here would go
+    // red BECAUSE the orphan doctrine was followed — the §2 failure mode, hit
+    // and backed out during this very migration. It is asserted properly, on
+    // comment-stripped source with string literals masked, by
+    // scripts/vercel-blob-retired-guard.ts (npm run test:vercel-blob-retired),
+    // which owns that question repo-wide.
+    src("lib/remotion/media-host.ts").includes('RENDER_MEDIA_BUCKET = "video-assets"')
+    && src("lib/remotion/media-host.ts").includes(".storage")
     && src("lib/remotion/render-coordinator.ts").includes("hostRenderedMedia")
     && src("app/api/internal/remotion/render-composition/route.ts").includes("hostRenderedMedia")
     && src("lib/video/reel-voiceover.ts").includes("hostRenderedMedia"))
@@ -304,12 +352,64 @@ import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "..
     isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2, 3, 4, 5] }) === true
     && isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2] }) === false
     && isWalkthroughEligible({ lifecycle_stage: "SOLD", photos: [1, 2, 3, 4, 5] }) === false)
-  check("the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILLS: flyer + door hanger)",
+  // ── THE RULE, DERIVED — not a pinned occurrence count (CLAUDE.md §2) ───────
+  // This assertion used to read `(src.match(/recordRenderQueued/g)).length <= 4`
+  // against RAW source. Two defects in one line:
+  //   · it pinned a WAYPOINT. Four was the count on the day it was written —
+  //     two imports plus two calls — so the bound encoded an accident of how the
+  //     helper happened to be imported, not the rule it meant.
+  //   · a TOMBSTONE IS NOT A CALL SITE. Reading raw source made a COMMENT that
+  //     names the helper count as a use of it, and that is exactly how it went
+  //     red: a lane documenting why the print plays queue directly tripped the
+  //     bound by explaining it. The guard punished the comment §1 asks for.
+  // The RULE is: every VIDEO play stages through the Director's commissionVideo;
+  // direct queueing is reserved for the two print STILLS. So the compositions
+  // queued directly are ENUMERATED from stripped source and compared to that
+  // set, and the number derives from the set instead of standing in for it.
+  // BLIND SPOT, published beside it: strings are deliberately NOT blanked (the
+  // composition ids ARE string literals), so a fixture containing the literal
+  // text `recordRenderQueued(` inside a quoted block would be read as a call.
+  // video-plays.ts contains no such literal; if one is ever added, this needs
+  // blankStrings and a different extractor.
+  const directlyQueuedCompositions = (source: string): string[] => {
+    const code = stripComments(source)
+    // `recordRenderQueued(` with the paren matches the CALL and not the
+    // `const { recordRenderQueued } = await import(…)` binding beside it.
+    return code.split(/\brecordRenderQueued\s*\(/).slice(1)
+      .map((seg) => seg.slice(0, 600).match(/compositionId:\s*"([^"]+)"/)?.[1] ?? "«no literal compositionId»")
+  }
+  const PRINT_STILLS = ["DoorHanger", "ListingFlyer"]
+  const queuedDirectly = [...new Set(directlyQueuedCompositions(src("lib/video/video-plays.ts")))].sort()
+  check(`the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILLS: ${PRINT_STILLS.join(" + ")})`,
     src("lib/video/video-director.ts").includes('"photo_walkthrough"')
     && src("lib/video/video-plays.ts").includes("commissionVideo")
-    && (src("lib/video/video-plays.ts").match(/recordRenderQueued/g) ?? []).length <= 4
-    && src("lib/video/video-plays.ts").includes('compositionId: "ListingFlyer"')
-    && src("lib/video/video-plays.ts").includes('compositionId: "DoorHanger"'))
+    && JSON.stringify(queuedDirectly) === JSON.stringify(PRINT_STILLS))
+  // The observed set is printed unconditionally: a bound whose actual reading is
+  // invisible cannot be audited, and this one exists precisely because a number
+  // with no denominator went unnoticed for a wave (§2).
+  console.log(`      compositions queued directly: ${queuedDirectly.join(", ") || "none"}`)
+  // POSITIVE CONTROL (§2) — a bound that always passes is not a bound. The
+  // finder must still catch the defect it was written for (a VIDEO composition
+  // queued straight past the Director), and must NOT be fooled by the two
+  // things that broke or would break it: a mention in a comment, and the import
+  // binding that produced the original count of four.
+  {
+    const poison = `
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      await recordRenderQueued({ compositionId: "PhotoWalkthroughReel", entityType: "listing" })
+    `
+    const commentOnly = `
+      // recordRenderQueued( is named here on purpose — a tombstone, not a call.
+      /* ask missingContentProps before recordRenderQueued( runs */
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      await recordRenderQueued({ compositionId: "ListingFlyer" })
+      await recordRenderQueued({ compositionId: "DoorHanger" })
+    `
+    check("POSITIVE CONTROL: the finder still catches a VIDEO composition queued past the Director",
+      directlyQueuedCompositions(poison).includes("PhotoWalkthroughReel"))
+    check("...and a COMMENT naming the helper is NOT a call site — the exact way the old pinned count went red",
+      JSON.stringify([...new Set(directlyQueuedCompositions(commentOnly))].sort()) === JSON.stringify(PRINT_STILLS))
+  }
   check("wiring: market-moment rides the rates cron tick; testimonial + walkthrough ride the daily video-plays cron (asset_manager-owned)",
     src("app/api/cron/refresh-market-rates/route.ts").includes("runMarketMomentReels")
     && src("app/api/cron/video-plays/route.ts").includes("runTestimonialReels")
@@ -321,8 +421,13 @@ console.log("\n[16 · NO HEYGEN + THE ASSISTANT'S WARDROBE (real options for fac
 import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_FACE_BRIEFS, assistantVoiceLabel } from "../lib/video/assistant-options"
 {
   check("D-ID + ElevenLabs ONLY: no live HeyGen network path; voice clones read/write the CANONICAL elevenlabs_voice_id (heygen column dropped live, l38-s01)",
-    !src("app/actions/video-voice.ts").includes("heygen_voice_clone_id")
-    && !src("app/actions/video-voice.types.ts").includes("heygen_voice_clone_id")
+    // Was a per-FILE absence check naming video-voice.types.ts. That file has
+    // since been deleted (its SampleManifest/VoiceTrainingJob types described an
+    // asynchronous voice-training pipeline this product never had — the
+    // ElevenLabs clone is synchronous), and an absence assertion against a
+    // deleted file proves nothing. Asserting the CONSTRUCT instead: the column
+    // appears NOWHERE under app/ or lib/.
+    heygenCloneColumnSites().length === 0
     && existsSync(join(process.cwd(), "scripts/l38-s01-heygen-purge.sql")))
   check("the dead HeyGen-era branding presets + zero-caller updateAgentVideoProfile are GONE (keep-one: resolveReelBrand is the brand source)",
     !src("app/actions/video-generation.ts").includes('.from("video_branding_presets")')
@@ -368,7 +473,11 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     "lib/ai-isa/isa-outreach-logger.ts", "app/actions/listing-media.ts", "app/actions/video/create-video-project.ts",
     "app/dashboard/listings/[id]/media/components/video-panel.tsx", "app/components/features/video/VideosDashboard.tsx"]
   check("ZERO heygen_* COLUMN references remain (l39-s01 dropped the five ai_video_projects columns live; canonical provider_* everywhere)",
-    sweep.every((f) => !/heygen_(avatar_id|voice_id|template_id|video_id|status)\b/.test(src(f).replace(/\/\/.*|\* .*/g, "")))
+    // `.replace(/\/\/.*|\* .*/g, "")` used to stand here. Besides being the wrong way to
+    // remove a line comment, its second alternative deleted from any `* ` to end of line —
+    // which is a multiplication in live code, not a comment. Measured over the 8 files
+    // this sweep reads, it blanked 117,663 characters across 9,111 lines that are code.
+    sweep.every((f) => !/heygen_(avatar_id|voice_id|template_id|video_id|status)\b/.test(stripComments(src(f))))
     && existsSync(join(process.cwd(), "scripts/l39-s01-heygen-columns-drop.sql")))
   check("the snapshot tracks provider_avatar_id/provider_voice_id/provider_template_id (drift guard sees the real schema)",
     ["provider_avatar_id", "provider_voice_id", "provider_template_id"].every((c) => {
@@ -382,11 +491,55 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     && src("lib/did/index.ts").includes("sentiment_id")
     && src("lib/did/index.ts").includes('includes("@avt_")')
     && src("app/api/cron/poll-did-videos/route.ts").includes('"expressives"'))
+
+  // ── THE CODE HALF OF THE PURGE (l39) ──────────────────────────────────────
+  // The schema stopped saying HeyGen; the CODE still did. app/actions/
+  // heygen-avatars.ts read agent_avatar_assets and called api.elevenlabs.io,
+  // and generateHeyGenVideo posted to api.d-id.com — the names were kept "for
+  // backward-compat with existing importers". A name is not a compatibility
+  // surface: anyone auditing which vendors this platform pays, or grepping for
+  // HeyGen before an integration decision, found a live-looking HeyGen surface
+  // that does not exist. Worse, the failure strings shipped it to users — an
+  // agent whose D-ID render failed was told "HeyGen video generation failed".
+  const RENAMED: Array<[string, string]> = [
+    ["generateHeyGenVideo",  "generateAvatarVideo"],
+    ["getHeyGenVideoStatus", "getAvatarVideoStatus"],
+    ["submitToHeyGen",       "submitAvatarVideoRender"],
+    ["getHeyGenAvatars",     "getDidAvatars"],
+    ["listHeygenVoices",     "listElevenLabsVoices"],
+    ["HeyGenAvatar",         "AvatarOption"],
+    ["HeyGenVoice",          "VoiceOption"],
+    ["heygenStatus",         "providerStatus"],
+  ]
+  const CODE = ["app/actions/avatar-voice-catalog.ts", "app/actions/external-services.ts",
+    "app/actions/video-generation.ts", "app/actions/video/create-video-project.ts",
+    "app/components/features/education/EducationEditor.tsx",
+    "app/dashboard/videos/board/page.tsx", "lib/kernel/video.ts"]
+  // Comments are stripped: these files legitimately DISCUSS the purge.
+  const code = (f: string) => stripComments(src(f))
+  for (const [old, now] of RENAMED) {
+    check(`${old} is gone from live code — it is ${now}`,
+      CODE.every((f) => !new RegExp(`\\b${old}\\b`).test(code(f))))
+  }
+  check("the file itself is renamed (it lists D-ID avatars and ElevenLabs voices)",
+    !existsSync(join(process.cwd(), "app/actions/heygen-avatars.ts"))
+    && existsSync(join(process.cwd(), "app/actions/avatar-voice-catalog.ts")))
+  check("…and no importer still points at the old path",
+    CODE.every((f) => !/heygen-avatars/.test(code(f))))
+  check("NO USER-FACING STRING blames HeyGen for a D-ID failure",
+    CODE.every((f) => !/(error|error_message)[:\s].*HeyGen/i.test(code(f))))
+
+  // The ONE deliberate survivor. Legacy training assets were rendered by HeyGen
+  // before the purge and are still hosted there — the player must keep matching
+  // the real domain or those videos stop playing.
+  check("legacy training playback still recognises heygen.com (deliberate — those assets exist)",
+    src("app/dashboard/onboarding/training/[id]/video-player-client.tsx").includes('url.includes("heygen.com")'))
 }
 
 console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")
 import { ASSISTANT_EXPRESSIVE_AVATARS } from "../lib/video/assistant-options"
 import { sentimentForSituation } from "../lib/video/video-director"
+import { stripComments } from "./strip-comments"
 {
   check("expressive presenter options exist and every id carries the @avt_ marker lib/did routes to /expressives",
     ASSISTANT_EXPRESSIVE_AVATARS.length >= 1
@@ -424,13 +577,20 @@ console.log("\n[20 · ONE PERSONA EVERYWHERE — the portal wears the AGENT'S fa
 console.log("\n[21 · THE EXPRESSIVE LOOP, CLOSED — engine recorded, never guessed]")
 {
   const did = src("lib/did/index.ts")
+  // The result field is asserted through the NAMED union, not the inline
+  // spelling: the original pin — `engine?: "talks" | "expressives"` — was a §2
+  // waypoint that went red the day lane M4 finished the §6 merge onto
+  // DidEngine (the named type had no reader while the field respelled it).
+  // Assert the rule: the field rides DidEngine, and DidEngine still carries
+  // exactly the two engines the recorders below write.
   check("generateVideo RECORDS the engine on every return path (talks = V2 photo, expressives = V4)",
-    did.includes('engine?: "talks" | "expressives"')
+    did.includes("engine?: DidEngine")
+    && did.includes('DidEngine = "talks" | "expressives"')
     && (did.match(/engine: isV4Expressive \? "expressives" : "talks"/g) ?? []).length >= 3)
   check("the director render stamps provider_metadata.mode='expressive' from the RECORDED engine; the poll cron keys off the record (prefix survives only for legacy rows)",
     src("app/api/cron/director-reel-render/route.ts").includes('r.engine === "expressives" ? "expressive"')
     && src("app/api/cron/poll-did-videos/route.ts").includes("RECORDED provider_metadata.mode"))
-  check("the persisted D-ID copy rides the SUPABASE media host (storage-first, blob fallback) — no bare blob put",
+  check("the persisted D-ID copy rides the SUPABASE media host (Supabase only; the blob fallback is retired) — no bare blob put",
     did.includes("hostRenderedMedia") && !did.includes('await put(`workflow-video/'))
   check("an expressive render with no photo is a VIDEO, not mislabeled audio (the weekly show's kind check)",
     src("lib/intelligence/partners-meeting.ts").includes('identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio"'))

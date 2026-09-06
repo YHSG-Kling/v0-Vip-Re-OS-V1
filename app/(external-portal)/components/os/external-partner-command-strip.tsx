@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   FileText,
   DollarSign,
-  MessageSquare,
   Settings,
   RefreshCw,
   Bell,
@@ -20,7 +19,6 @@ interface ExternalPartnerCommandStripProps {
   partnerId: string
   partnerName?: string
   pendingActions?: number
-  unreadMessages?: number
 }
 
 export function ExternalPartnerCommandStrip({
@@ -28,7 +26,6 @@ export function ExternalPartnerCommandStrip({
   partnerId,
   partnerName,
   pendingActions = 0,
-  unreadMessages = 0,
 }: ExternalPartnerCommandStripProps) {
   const router = useRouter()
   const [refreshing, setRefreshing] = useState(false)
@@ -132,23 +129,26 @@ export function ExternalPartnerCommandStrip({
           </Link>
         )}
 
-        <Button variant="ghost" size="sm" className="h-8 relative" title="Notifications">
-          <Bell className="h-4 w-4" />
-          {pendingActions > 0 && (
-            <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-yellow-500">
-              {pendingActions}
-            </Badge>
-          )}
-        </Button>
+        {/* /notifications is user-scoped (listNotifications keys on the signed-in
+            user id), so it is the partner's own notification centre — no partner
+            role gate to add, and it already exists. */}
+        <Link href="/notifications">
+          <Button variant="ghost" size="sm" className="h-8 relative" title="Notifications">
+            <Bell className="h-4 w-4" />
+            {pendingActions > 0 && (
+              <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-yellow-500">
+                {pendingActions}
+              </Badge>
+            )}
+          </Button>
+        </Link>
 
-        <Button variant="ghost" size="sm" className="h-8 relative" title="Messages">
-          <MessageSquare className="h-4 w-4" />
-          {unreadMessages > 0 && (
-            <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-red-500">
-              {unreadMessages}
-            </Badge>
-          )}
-        </Button>
+        {/* REMOVED: a "Messages" button with an unread badge. There is no
+            messages surface in any of the three partner portals — /vendor,
+            /lender and /title have no messages route, and the only partner
+            messaging component (ExternalCommunicationPanel) is rendered on one
+            dashboard with messages={[]} and no onSendMessage. The control
+            advertised an inbox the product does not have. */}
 
         <Button variant="ghost" size="sm" className="h-8" onClick={handleRefresh} disabled={refreshing}>
           <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />

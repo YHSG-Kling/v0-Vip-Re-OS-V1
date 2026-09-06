@@ -18,6 +18,9 @@
  *   - load contact + transaction + visible milestones (same data the portal
  *     ai-chat exposes) and inject as a SYSTEM message in front of D-ID's
  *     existing system prompt
+ *   - REFUSE (400/403) any turn whose marker is missing or whose contact/
+ *     tenant does not resolve — an unresolvable tenant is never served
+ *     uncapped (#187)
  *
  * Once contactId is known, this route mirrors /api/portal/ai-chat semantics:
  *   - same client-visible-only data gate (no internal notes)
@@ -28,25 +31,10 @@
  */
 
 import "server-only"
-import { streamText } from "ai"
-import { createGateway } from "@ai-sdk/gateway"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { selectModelForTask } from "@/lib/ai/models"
-import { resolveModel } from "@/lib/ai/resolve-model"
-
-// Map AIModel union → "provider/modelId" string the Vercel Gateway accepts.
-// Mirrors MODEL_CONFIG in lib/ai/models.ts but kept inline so this route
-// never reaches into a private map.
-const GATEWAY_MODEL_FOR: Record<string, string> = {
-  "claude-sonnet": "anthropic/claude-sonnet-4-20250514",
-  "claude-opus":   "anthropic/claude-opus-4-20250514",
-  "claude-haiku":  "anthropic/claude-haiku-4-20250514",
-  "gpt-4o":        "openai/gpt-4o",
-  "gpt-4-turbo":   "openai/gpt-4-turbo",
-  "gpt-4o-mini":   "openai/gpt-4o-mini",
-}
+import { streamTextRouted, AIFairUseError, selectModelForTask } from "@/lib/ai/models"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -146,7 +134,7 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     .from("transactions")
     .select("id, status, stage, deal_type, close_date, property_address")
     .eq("contact_id", contactId)
-    .in("status", ["under_contract", "pending", "active"])
+    .in("status", ["under_contract", "active"])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -274,70 +262,78 @@ export async function POST(request: NextRequest) {
 
   const { contactId, cleaned } = extractContactId(body.messages)
 
-  // ── Build context-aware system message ────────────────────────────────────
-  let systemPrompt = "You are a helpful real estate assistant. Keep replies short and natural for a video conversation."
-
-  if (contactId) {
-    const ctx = await loadContactContext(contactId)
-    if (ctx) {
-      // Brand voice guidance — runs the same multi-tier resolver as the rest
-      // of the kernel pipeline. Notes-only (advisory) on the live conversation.
-      const latestUserText = [...cleaned].reverse()
-        .find((m) => m.role === "user")?.content ?? ""
-
-      const brand = await applyBrandVoice({
-        brokerageId: ctx.brokerageId ?? "",
-        actorUserId: ctx.agentUserId ?? undefined,
-        actorRole: "agent",
-        journeyType: ctx.contactType === "seller" ? "seller" : "buyer",
-        persona: ctx.buyerStage ?? "other",
-        messageType: "ai",
-        content: latestUserText,
-      }).catch(() => ({ notes: [] as string[] }))
-
-      systemPrompt = buildSystemPrompt(ctx, brand.notes ?? [])
-
-      // Fire escalation if the latest user message has an urgency keyword.
-      if (latestUserText && detectsEscalation(latestUserText)) {
-        notifyAgentOfEscalation(ctx, latestUserText).catch(() => {})
-      }
-    }
+  // FAIL CLOSED (#187): a turn whose tenant cannot be resolved is refused,
+  // never served uncapped. D-ID sends no metadata of its own — the CTX marker
+  // our widget prefixes is the ONLY tenant handle in the payload, and every
+  // turn carries the full history so the marker rides along on all of them.
+  // A turn without it, or naming a contact this database does not know, or a
+  // contact with no brokerage, has nothing to cap or bill against.
+  if (!contactId) {
+    return NextResponse.json({ error: "context marker required" }, { status: 400 })
   }
 
-  // ── Resolve model via the platform routing table ────────────────────────
-  // Live conversational turns are latency-critical → gpt-4o-mini by default,
-  // claude-haiku as fallback. Both routed through the Vercel AI Gateway so
-  // costs roll up into the same per-brokerage usage meter as every other AI
-  // call on the platform.
-  const { model: routedModel, fallback } = selectModelForTask("live_avatar_conversation")
-  const gateway = createGateway({ apiKey: gatewayKey })
-  const primaryModelStr =
-    GATEWAY_MODEL_FOR[routedModel] ?? GATEWAY_MODEL_FOR["gpt-4o-mini"]
-  const fallbackModelStr =
-    GATEWAY_MODEL_FOR[fallback] ?? GATEWAY_MODEL_FOR["claude-haiku"]
-  const primaryModel = gateway(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
-  const fallbackModel = gateway(resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0]) as string)
+  const ctx = await loadContactContext(contactId)
+  if (!ctx || !ctx.brokerageId) {
+    return NextResponse.json({ error: "unresolvable tenant" }, { status: 403 })
+  }
 
-  // ── Stream — try primary, fall back on error ────────────────────────────
-  let result: ReturnType<typeof streamText>
+  // Ledger identity — resolved from the CONTACT's row (the assigned agent's
+  // user + the contact's tenant), never from anything D-ID sends. The user
+  // may be null (no assigned agent): anonymous tenant traffic — the cost
+  // still lands on the brokerage.
+  const ledgerUserId = ctx.agentUserId
+  const ledgerBrokerageId = ctx.brokerageId
+  const ledgerAgentId = ctx.agentId
+
+  // Brand voice guidance — runs the same multi-tier resolver as the rest
+  // of the kernel pipeline. Notes-only (advisory) on the live conversation.
+  const latestUserText = [...cleaned].reverse()
+    .find((m) => m.role === "user")?.content ?? ""
+
+  const brand = await applyBrandVoice({
+    brokerageId: ctx.brokerageId,
+    actorUserId: ctx.agentUserId ?? undefined,
+    actorRole: "agent",
+    journeyType: ctx.contactType === "seller" ? "seller" : "buyer",
+    persona: ctx.buyerStage ?? "other",
+    messageType: "ai",
+    content: latestUserText,
+  }).catch(() => ({ notes: [] as string[] }))
+
+  const systemPrompt = buildSystemPrompt(ctx, brand.notes ?? [])
+
+  // Fire escalation if the latest user message has an urgency keyword.
+  if (latestUserText && detectsEscalation(latestUserText)) {
+    notifyAgentOfEscalation(ctx, latestUserText).catch(() => {})
+  }
+
+  // ── Stream via the routed entry ─────────────────────────────────────────
+  // streamTextRouted owns model routing (live_avatar_conversation →
+  // gpt-4o-mini, latency-critical), the tenant fair-use PRE-FLIGHT, and the
+  // cost-ledger write on finish — this route used to route + gateway by hand
+  // and never wrote the ledger. The old try/catch fallback lane is gone with
+  // it: streamText never throws synchronously for provider errors, so that
+  // catch could not fire (see the WHY on streamTextRouted).
+  const { model: routedModel } = selectModelForTask("live_avatar_conversation")
+  let result: Awaited<ReturnType<typeof streamTextRouted>>
   try {
-    result = streamText({
-      model: primaryModel,
+    result = await streamTextRouted({
+      feature: "live_avatar_conversation",
       system: systemPrompt,
       messages: cleaned
         .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") })),
       temperature: 0.7,
+      userId: ledgerUserId,
+      brokerageId: ledgerBrokerageId,
+      agentId: ledgerAgentId,
     })
-  } catch {
-    result = streamText({
-      model: fallbackModel,
-      system: systemPrompt,
-      messages: cleaned
-        .filter((m) => m.role !== "system")
-        .map((m) => ({ role: m.role, content: String(m.content ?? "") })) as any,
-      temperature: 0.7,
-    })
+  } catch (err) {
+    // Tenant is at its monthly AI cap — refuse before any SSE bytes flow.
+    if (err instanceof AIFairUseError) {
+      return NextResponse.json({ error: err.message }, { status: 429 })
+    }
+    throw err
   }
 
   // ── Wrap AI SDK text deltas in OpenAI chat-completion SSE format ────────

@@ -26,14 +26,9 @@
  *   17–20s OUTRO CTA     — full-width CTA + agent contact + EHO
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface JustListedReelHorizontalProps {
@@ -78,7 +73,7 @@ const BrandHeader: React.FC<{
     display: "flex", alignItems: "center", justifyContent: "space-between",
   }}>
     {logoUrl ? (
-      <Img src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
+      <SafeImg src={logoUrl} style={{ height: 40, objectFit: "contain" }} />
     ) : <div />}
     <div style={{
       width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff", opacity: 0.5,
@@ -88,12 +83,12 @@ const BrandHeader: React.FC<{
 
 const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img src={url} style={{
+      <SafeImg src={url} style={{
         width: "100%", height: "100%", objectFit: "cover",
-        transform: `scale(${scale})`, transformOrigin: "center center",
+        scale, transformOrigin: "center center",
       }} />
     </AbsoluteFill>
   )
@@ -126,18 +121,18 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           <div style={{
             fontSize: 32, letterSpacing: 8, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 800,
-            opacity: interpolate(frame, [0, 18], [0, 1]),
+            opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 124, fontWeight: 900, color: "#fff", lineHeight: 1.0,
-            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85]),
+            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 20, letterSpacing: 4,
           }}>
             {cityState}

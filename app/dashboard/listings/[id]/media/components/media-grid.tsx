@@ -29,6 +29,7 @@ import {
   runComplianceCheck,
 } from "@/app/actions/listing-media"
 import { createClient } from "@/lib/supabase/client"
+import { checkUpload } from "@/lib/storage/file-limits"
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -68,12 +69,19 @@ interface MediaGridProps {
   onMediaChange: (media: MediaItem[]) => void
 }
 
+// listing_media.media_type admits: photo | video | floorplan | virtual_tour |
+// document | graphic | reel | story. This list said "floor_plan" — one
+// underscore the column does not have — so every floor plan upload was rejected,
+// and graphic / reel / story were real types nobody could choose.
 const MEDIA_TYPE_OPTIONS = [
-  { value: "photo",         label: "Photo" },
-  { value: "video",         label: "Video" },
-  { value: "floor_plan",    label: "Floor Plan" },
-  { value: "virtual_tour",  label: "Virtual Tour" },
-  { value: "document",      label: "Document" },
+  { value: "photo",        label: "Photo" },
+  { value: "video",        label: "Video" },
+  { value: "floorplan",    label: "Floor Plan" },
+  { value: "virtual_tour", label: "Virtual Tour" },
+  { value: "graphic",      label: "Graphic" },
+  { value: "reel",         label: "Reel" },
+  { value: "story",        label: "Story" },
+  { value: "document",     label: "Document" },
 ]
 
 export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaChange }: MediaGridProps) {
@@ -98,6 +106,24 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function uploadFile(file: File) {
+    // This surface had NO size or type check at all and PUTs straight to
+    // listing-media, which enforces both — 52,428,800 bytes and an image/video
+    // mime list. Without this an agent uploading a 60 MB drone clip or a PDF
+    // watched the spinner and then got a raw storage error string. COURTESY
+    // ONLY, but here the bucket is the WHOLE gate: no Vercel Function is in
+    // this path, so nothing else could have refused it earlier.
+    const gate = checkUpload({
+      bucket: "listing-media",
+      transport: "direct_to_storage",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      setFileUploadError(gate.reason)
+      toast({ title: "File upload failed", description: gate.reason, variant: "destructive" })
+      return
+    }
+
     setFileUploading(true)
     setFileUploadError(null)
     setFileUploadSuccess(false)

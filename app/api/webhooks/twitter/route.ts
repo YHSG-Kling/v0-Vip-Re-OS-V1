@@ -38,17 +38,28 @@ export async function GET(req: NextRequest) {
 
 // --- POST: Inbound DM events ---
 export async function POST(req: NextRequest) {
-  // Verify signature (Twitter sends x-twitter-webhooks-signature)
+  // Verify signature (Twitter sends x-twitter-webhooks-signature).
+  //
+  // THIS CHECK USED TO FAIL OPEN: `if (CONSUMER_SECRET && signature)` meant an
+  // unset env var OR a simply-omitted header skipped verification entirely and
+  // the body was ingested as a real DM — the exact fail-open shape
+  // lib/cron-auth.ts's docblock was written to prevent, and it is reachable by
+  // anyone who knows the URL (this handler writes into the tenant inbox via
+  // ingestMessageService). Now: no secret configured = 503 "not configured",
+  // matching the CRC handler above (line 27); missing or wrong signature = 403.
   const rawBody = await req.text()
   const signature = req.headers.get("x-twitter-webhooks-signature")
 
-  if (CONSUMER_SECRET && signature) {
-    const expected =
-      "sha256=" +
-      crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
-    if (signature !== expected) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
-    }
+  if (!CONSUMER_SECRET) {
+    return NextResponse.json({ error: "Twitter not configured" }, { status: 503 })
+  }
+  const expected =
+    "sha256=" +
+    crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
+  const sigBuf = Buffer.from(signature ?? "")
+  const expBuf = Buffer.from(expected)
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
   }
 
   let payload: any
@@ -116,13 +127,27 @@ async function handleInboundDm(params: {
     .from("contacts")
     .select("id, brokerage_id")
     .contains("metadata", { twitter_user_id: params.senderId })
-    .limit(1)
+  // AMBIGUITY IS NOT A MATCH (tenant fail-closed, CLAUDE.md §4). The tenant
+  // predicate below is CONDITIONAL — applied only when the receiving account could
+  // be mapped to a brokerage — so on the unresolved path the query ran with NO
+  // tenant boundary at all, on the SERVICE client, and `.limit(1)` handed back
+  // whichever brokerage's row happened to sort first. The same person can be a
+  // contact at two brokerages (app/api/webhooks/inbound-mail/route.ts documents
+  // exactly that), and this identity feeds a message INSERT — so the wrong first
+  // row files a client's inbound message into another tenant's CRM. limit(2) +
+  // "one distinct tenant or nothing" is the rule already in force in
+  // app/api/webhooks/sendgrid-events/route.ts; unresolved falls through to the
+  // staging insert with a null tenant, this handler's documented behaviour for an
+  // unmappable account.
+    .limit(2)
   if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
-  const { data: contacts } = await contactQuery
+  const { data: contactRows } = await contactQuery
+  const candidates = (contactRows ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  const contacts = new Set(candidates.map((c) => c.brokerage_id)).size === 1 ? candidates : []
 
   let contactId: string
 
-  if (contacts && contacts.length > 0) {
+  if (contacts.length > 0) {
     contactId = contacts[0].id
   } else {
     // tenant anchor (scope burn-down): stamp the resolved brokerage; unresolved

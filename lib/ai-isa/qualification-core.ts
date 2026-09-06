@@ -46,7 +46,13 @@ export function deriveQualificationSignals(input: {
   /** Recent messages joined to one lowercase string. */
   messageText: string
   conversationCount: number
-  /** leads.timeline (e.g. 'immediate') — secondary urgency signal. */
+  /**
+   * `leads.timeline` — secondary urgency signal. The vocabulary is
+   * constants/crm-standards.ts:STANDARD_TIMELINES, and the column now carries
+   * the matching live CHECK (m487). Typed `string | null` rather than
+   * `StandardTimeline | null` on purpose: this is the raw column value and rows
+   * written before that CHECK existed may still be free text.
+   */
   timeline?: string | null
   /** Rolling leads.lead_score — the conversation tool keeps this current. */
   leadScore?: number | null
@@ -102,12 +108,26 @@ export function voiceSignalFor(input: {
   return 'cold'
 }
 
-/**
- * Engine 2's assignment gate (assignment-engine Step 2): leads are ONLY assigned
- * after the AI ISA qualified them AND consent exists. Assignment then converts the
- * lead to a contact (handleLeadAssigned) per the canonical business process.
- */
-export function engine2GatePasses(leadStage: string | null, lifecycleState: string | null): boolean {
-  return leadStage === 'qualified' &&
-    ['consented', 'qualified', 'assigned'].includes(lifecycleState ?? '')
-}
+// ─── REMOVED — `engine2GatePasses` ──────────────────────────────────────────
+//
+// SURVIVOR: lib/lead-assignment/rule-matcher.ts evaluateAssignmentEligibility,
+// which BOTH assignment doors now call — the automatic path
+// (lib/lead-assignment/tier-routing.ts) and the admin-manual path
+// (app/actions/lead-assignment/assign-lead.ts manualAssignLead).
+//
+// This was a third copy of the gate, and it did not merely duplicate the rule —
+// it CONTRADICTED it. The owner ruled that a lead may be assigned when it has
+// been qualified **OR** carries positive intent; this copy was the pre-ruling
+// AND (`qualified` AND consented), so a lead the ruling makes assignable was
+// refused by it. It also admitted a `lifecycleState` of 'qualified', which the
+// live leads_lifecycle_state_check has never permitted — that branch could
+// never fire against a real row.
+//
+// It was safe only by accident: it had zero production callers, and the two
+// simulators that named it were the only reason it survived earlier sweeps. A
+// dormant gate that disagrees with the live one is a trap for the next person
+// who wires it, which is why this is a deletion and not a second edit.
+//
+// Nothing is lost. Everything this expressed, the survivor expresses more
+// completely and in one place, with each of the eight legal lifecycle_state
+// values classified explicitly rather than by an inclusion list.

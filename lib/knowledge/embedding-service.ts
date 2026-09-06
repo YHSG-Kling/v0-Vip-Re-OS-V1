@@ -4,7 +4,7 @@
  */
 
 import { embed, embedMany } from 'ai'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { createHash } from 'crypto'
 
 // Configuration
@@ -53,7 +53,7 @@ export function hashContent(content: string): string {
  * Update embedding for a help topic
  */
 export async function updateHelpTopicEmbedding(topicId: string): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch the topic
   const { data: topic, error: fetchError } = await supabase
@@ -94,7 +94,7 @@ export async function updateHelpTopicEmbedding(topicId: string): Promise<void> {
  * Update embedding for a knowledge article
  */
 export async function updateArticleEmbedding(articleId: string): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch the article
   const { data: article, error: fetchError } = await supabase
@@ -141,7 +141,7 @@ export async function queueForEmbedding(
   sourceId: string,
   content: string
 ): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const contentHash = hashContent(content)
 
   const { error } = await supabase
@@ -169,7 +169,7 @@ export async function processPendingEmbeddings(limit: number = 10): Promise<{
   processed: number
   failed: number
 }> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch pending items
   const { data: pending, error: fetchError } = await supabase
@@ -238,7 +238,7 @@ export async function backfillHelpTopicEmbeddings(): Promise<{
   processed: number
   failed: number
 }> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch all topics without embeddings
   const { data: topics, error } = await supabase
@@ -254,28 +254,74 @@ export async function backfillHelpTopicEmbeddings(): Promise<{
   let processed = 0
   let failed = 0
 
-  for (const topic of topics) {
+  // BATCHED (orphan burn-down, lane E). This loop used to call generateEmbedding
+  // once PER TOPIC — one HTTP round-trip to the gateway for every row, on a
+  // function whose whole job is "embed everything that has no embedding yet".
+  // generateEmbeddings (:33) existed for exactly this and had never been called.
+  //
+  // Why it matters beyond speed: a backfill over a few hundred topics is the one
+  // path here that runs long enough to hit a rate limit or a request cap
+  // mid-way, and each failure in the old loop cost a whole topic. embedMany
+  // sends the batch in one request, so the provider sees one call instead of N,
+  // and the batch either comes back aligned to its input or throws as a unit —
+  // no partial silent misalignment between text and vector.
+  //
+  // The batch is chunked because the input is unbounded: a single request
+  // carrying every topic in the table would eventually exceed the provider's
+  // payload limit, and a whole-table failure is exactly what a backfill must not
+  // do. A chunk that fails is counted and the rest still land.
+  const BATCH = 50
+  for (let i = 0; i < topics.length; i += BATCH) {
+    const chunk = topics.slice(i, i + BATCH)
+    const texts = chunk.map((topic) =>
+      [topic.title, topic.content, ...(topic.tags || [])].join('\n\n')
+    )
+
+    let embeddings: number[][]
     try {
-      const searchableText = [
-        topic.title,
-        topic.content,
-        ...(topic.tags || []),
-      ].join('\n\n')
+      embeddings = await generateEmbeddings(texts)
+    } catch (error) {
+      console.error(
+        `[EmbeddingService] Batch embed failed for topics ${i}-${i + chunk.length - 1}:`,
+        error
+      )
+      failed += chunk.length
+      continue
+    }
 
-      const embedding = await generateEmbedding(searchableText)
+    // embedMany returns one vector per input, in input order. If that invariant
+    // ever breaks, writing anyway would attach the WRONG vector to a topic —
+    // a search result that is confidently about something else — so refuse the
+    // chunk instead.
+    if (embeddings.length !== chunk.length) {
+      console.error(
+        `[EmbeddingService] Batch returned ${embeddings.length} embeddings for ${chunk.length} topics — refusing to write a possibly misaligned batch`
+      )
+      failed += chunk.length
+      continue
+    }
 
-      await supabase
+    for (let j = 0; j < chunk.length; j++) {
+      const topic = chunk[j]
+      // supabase-js RESOLVES a refused write — check the error, or a topic that
+      // was never actually updated is counted as backfilled and never retried.
+      const { error: updateError } = await supabase
         .from('help_topics_kb')
         .update({
-          content_embedding: `[${embedding.join(',')}]`,
+          content_embedding: `[${embeddings[j].join(',')}]`,
           updated_at: new Date().toISOString(),
         })
         .eq('id', topic.id)
 
-      processed++
-    } catch (error) {
-      console.error(`[EmbeddingService] Failed to embed topic ${topic.id}:`, error)
-      failed++
+      if (updateError) {
+        console.error(
+          `[EmbeddingService] Failed to store embedding for topic ${topic.id}:`,
+          updateError.message
+        )
+        failed++
+      } else {
+        processed++
+      }
     }
   }
 
@@ -302,7 +348,7 @@ export async function semanticSearchHelpTopics(
   tags: string[]
   similarity: number
 }>> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const { brokerageId, limit = 5, threshold = 0.7 } = options
 
   // Generate embedding for the query
@@ -345,7 +391,7 @@ export async function semanticSearchArticles(
   tags: string[]
   similarity: number
 }>> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const { brokerageId, category, limit = 5, threshold = 0.7 } = options
 
   // Generate embedding for the query

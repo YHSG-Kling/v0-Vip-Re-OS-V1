@@ -89,6 +89,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
     easing: Easing.bezier(0.34, 1.56, 0.64, 1),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    output: "perceptual-scale",
   })
   const fadeIn = interpolate(localFrame, [0, 6], [0, 1], {
     extrapolateLeft: "clamp",
@@ -114,7 +115,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
           alignItems: "center",
           padding: "0 8%",
           opacity,
-          transform: `scale(${enterScale})`,
+          scale: enterScale,
         }}
       >
         <div

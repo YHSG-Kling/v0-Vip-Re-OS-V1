@@ -37,6 +37,13 @@ import {
   connectionScopeForUserType,
   selfConnectableDomains,
 } from "@/lib/connections/field-spec"
+import {
+  ACCOUNTING_SCOPES,
+  accountingOfferingsForScope,
+  isAccountingConnectorOffered,
+  type AccountingConnector,
+  type AccountingScope,
+} from "@/lib/connections/accounting-scopes"
 
 /** A vendor/contact portal passes this so the center acts on their owner scope (verified server-side). */
 export type OwnerHint = { scope: "vendor" | "contact"; id: string }
@@ -50,6 +57,9 @@ export interface ProviderStatus {
   oauthStartPath: string | null
   available: boolean
   unavailableReason: string | null
+  /** For financial rows managed elsewhere (per-scope offering matrix): the surface that
+   *  actually manages the capability — rendered as a "Manage" link, never a dead button. */
+  managePath: string | null
 }
 
 export interface ConnectionCenter {
@@ -96,15 +106,25 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
   // Internal actor (agent / team / brokerage).
   const ctx = await getAgentContext().catch(() => null)
   if (!ctx?.isAuthenticated) return null
-  const { scope, isBrokerageManager } = connectionScopeForUserType(ctx.userType)
+  // BOTH identity columns decide the ownership scope (§4): AgentContext carries
+  // user_type but not platform_role, and the platform's one human staff row is
+  // (user_type='admin', platform_role='superadmin') — on user_type alone it
+  // resolved to "brokerage" and the platform could never own a connection. The
+  // row is read ONCE here (RLS: the caller's own row) for platform_role AND the
+  // team anchor that the team scope needs; a refused read leaves both null,
+  // which fails closed toward the tenant scopes and toward "no team".
+  let platformRole: string | null = null
   let teamId: string | null = null
-  if (scope === "team") {
-    try {
-      const supabase = await createClient()
-      const { data } = await supabase.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
-      teamId = (data?.team_id as string | null) ?? null
-    } catch { teamId = null }
-  }
+  try {
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("users").select("platform_role, team_id").eq("id", ctx.userId).maybeSingle()
+    if (error) console.error("[connection-center] identity read failed:", error.message)
+    platformRole = (data?.platform_role as string | null) ?? null
+    teamId = (data?.team_id as string | null) ?? null
+  } catch { platformRole = null; teamId = null }
+  const { scope, isBrokerageManager } = connectionScopeForUserType(ctx.userType, platformRole)
+  if (scope !== "team") teamId = null
   const ownerId =
     scope === "agent" ? ctx.userId
     : scope === "team" ? teamId
@@ -175,6 +195,24 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
     for (const provider of CONNECTOR_PROVIDERS[domain]) {
       const status = await isProviderConnected(actor, domain, provider)
       const support = isConnectSupported(domain, provider, caps)
+      // FINANCIAL rows additionally defer to the per-scope offering matrix
+      // (lib/connections/accounting-scopes.ts — the single source of truth for WHY and
+      // WHERE accounting connects at each level). A managed-elsewhere / not-offered row
+      // renders its documented verdict and, when one exists, the surface that manages it —
+      // instead of a Connect button that would mint a dead credential (e.g. agent Stripe).
+      const offering =
+        domain === "financial" && (ACCOUNTING_SCOPES as readonly string[]).includes(actor.scope)
+          ? accountingOfferingsForScope(actor.scope as AccountingScope)[provider as AccountingConnector]
+          : null
+      // ONE yes/no, asked of the module that owns the matrix (§6, wave 26). This
+      // used to open-code `offering.status === "connectable"` two lines after
+      // importing that matrix — a second copy of the predicate
+      // isAccountingConnectorOffered exists to be. `offering` is null for
+      // non-financial domains and non-accounting scopes, which still means
+      // "nothing gates this here", so the null branch stays.
+      const offered =
+        !offering ||
+        isAccountingConnectorOffered(actor.scope as AccountingScope, provider as AccountingConnector)
       providers.push({
         domain,
         provider,
@@ -182,8 +220,9 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
         detail: status.detail,
         auth: isOAuthConnection(domain, provider) ? "oauth" : "api_key",
         oauthStartPath: oauthStartPath(domain, provider),
-        available: support.available,
-        unavailableReason: support.reason ?? null,
+        available: support.available && offered,
+        unavailableReason: !offered ? offering!.verdict : (support.reason ?? null),
+        managePath: offering && offering.status === "managed-elsewhere" ? offering.connectPath : null,
       })
     }
     domains.push({ domain, method: spec.method, fields: spec.fields, providers })
@@ -214,6 +253,28 @@ export async function connectApiKeyProvider(params: {
   }
   if (!actor.ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
+
+  // Bring-your-own CARRIER (phone/SMS) is available on EVERY plan, but the SUBSCRIBER
+  // decides whether their MANAGED agents may BYO — otherwise the platform provisions +
+  // bills the number (docs/PHONE-SYSTEM-SETUP.md). A tenancy PRINCIPAL (a solo agent —
+  // their own shop — a team lead, or a broker/admin) may always BYO for themselves; a
+  // managed agent may only when the brokerage's allow_user_byo_carrier policy is on.
+  // Enforced server-side so a managed agent can't store carrier secrets off-UI.
+  if (params.domain === "phone" && actor.scope === "agent") {
+    const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
+    const svcGate = createServiceClient()
+    const principal = await isTenancyPrincipal(svcGate, {
+      userId: actor.userId, brokerageId: actor.brokerageId, role: actor.userType,
+    })
+    if (!principal) {
+      const { data: gs } = await svcGate
+        .from("global_settings").select("additional_settings").eq("brokerage_id", actor.brokerageId).maybeSingle()
+      const allow = !!((gs?.additional_settings as Record<string, unknown> | null)?.allow_user_byo_carrier)
+      if (!allow) {
+        return { ok: false, error: "Your brokerage hasn't enabled bring-your-own carrier — your calling/SMS number is provided by the platform." }
+      }
+    }
+  }
 
   const write = buildCredentialWrite(params.domain, params.fields)
   if (!write) return { ok: false, error: "Missing required credential fields." }

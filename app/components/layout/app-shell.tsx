@@ -7,16 +7,14 @@ import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
-import { getNavigationForRole } from '@/app/config/navigation-config'
+import { getNavigationForRole, resolvePrimaryRole } from '@/app/config/navigation-config'
 import { Loader2, X } from 'lucide-react'
-import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 import { PageContextAssistant } from '@/app/components/shared/page-context-assistant'
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { ImpersonationBanner } from './impersonation-banner'
 import { FloatingVoiceFAB } from './floating-voice-fab'
-import { FloatingChatFAB } from './floating-chat-fab'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
@@ -133,8 +131,20 @@ export function AppShell({ children }: AppShellProps) {
 
   // userContext should always be set when user is set (after useAuth fix).
   // Fallback to 'agent' role if it ever arrives null to prevent crash.
-  const primaryRole = userContext?.roles?.[0] ?? 'agent'
-  const navigation = getNavigationForRole(primaryRole)
+  // EVERY role this person holds, not the first one.
+  //
+  // This used to read `userContext?.roles?.[0]`. The roles array comes from
+  // user_role_assignments, which is UNIQUE on (user_id, role) and returns rows
+  // in no particular order — so `[0]` was an ARBITRARY pick, and the second seat
+  // of a solo tenant (the user carrying transactions, compliance, support, admin
+  // and marketing) saw exactly one of those surfaces, chosen by the planner.
+  // getNavigationForRole now merges them in a fixed precedence.
+  const heldRoles: UserContext['roles'] =
+    userContext?.roles?.length ? userContext.roles : (['agent'] as UserContext['roles'])
+  const navigation = getNavigationForRole(heldRoles)
+  // Where a surface genuinely needs ONE role name, it comes from the shared
+  // precedence — never from heldRoles[0], which is unordered.
+  const primaryRole = resolvePrimaryRole(heldRoles)
 
   // Build a safe userContext for components — if null, create a minimal one
   const safeUserContext = userContext ?? {
@@ -142,11 +152,14 @@ export function AppShell({ children }: AppShellProps) {
     email: user.email ?? '',
     firstName: '',
     lastName: '',
-    roles: [primaryRole],
+    roles: heldRoles,
   }
 
   // Only staff roles may see the Internal AI Assistant
-  const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
+  // ANY staff role qualifies. Testing only the primary role hid the assistant
+  // from a multi-role user whose precedence-winning role happened not to be on
+  // the staff-AI list, even though another role they hold is.
+  const showAIAssistant = heldRoles.some((r) => STAFF_AI_ROLES.has(String(r).toLowerCase()))
 
   return (
     <ShellProvider>
@@ -190,25 +203,28 @@ export function AppShell({ children }: AppShellProps) {
           />
         )}
 
-        {/* Cmd+K Command Palette — available to all authenticated users */}
+        {/* Cmd+K Command Palette — entries are role-filtered inside the
+            component via visiblePaletteItems (the same getNavigationForRole
+            the sidebar uses); it reads roles from useAuth itself and fails
+            closed to an empty list until they resolve. */}
         <CommandPalette />
 
         {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
         <ShellInboxOutlet />
 
-        {/* Floating voice mic on every staff page */}
+        {/* ONE floating assistant surface (consolidation 2026-07): the typed
+            InternalAIAssistant above IS the ask+voice brain (text chat + browser
+            STT), launched from its own FAB. The premium ElevenLabs voice is the
+            second, access-gated tier below. The redundant text-chat FAB
+            (FloatingChatFAB, which merely re-opened the assistant) was removed.
+            The visual D-ID avatar deliberately does NOT mount here — the agent
+            doesn't want to see/hear their own clone (uncanny valley); customers
+            see it in their portal via PortalChatLauncher. */}
+
+        {/* Premium voice tier — the ElevenLabs Conversational AI mic + overlay,
+            access-gated (getVoiceAssistantAccess); shows only when voice is enabled. */}
         {showAIAssistant && <FloatingVoiceFAB />}
-
-        {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
         {showAIAssistant && <VoiceAssistantOverlay />}
-
-        {/* Text-only AI chat FAB (Track C).
-            The visual D-ID avatar widget intentionally does NOT mount here —
-            the agent doesn't want to see/hear their own clone (uncanny valley).
-            Customers see the avatar in their portal via PortalChatLauncher.
-            The agent-side FAB toggles the existing typed InternalAIAssistant
-            panel via a window event. */}
-        {showAIAssistant && <FloatingChatFAB />}
       </div>
     </ShellProvider>
   )

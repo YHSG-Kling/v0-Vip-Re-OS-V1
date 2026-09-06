@@ -15,6 +15,12 @@ import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 // Default avg commission if not available (for ROI calculation)
 const DEFAULT_AVG_COMMISSION = 7500
 
+// ONE spelling of the newsletter lead-rate ESTIMATE (§6). It was written 0.02
+// inline in both the campaign arm and the channel rollup, which is how the two
+// silently disagree the day one of them is tuned. It is an ESTIMATE, not a
+// measurement: no newsletter ledger records leads, so this multiplies recipients.
+const NEWSLETTER_LEAD_RATE = 0.02
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. recalculateCampaignROI — Single campaign ROI calculation
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -36,6 +42,28 @@ export async function recalculateCampaignROI(
     cost_per_qualified_lead: number | null
     cost_per_conversion: number | null
     roi_percentage: number | null
+    /** Where total_spend came from — "derived" from the channel ledger (ad,
+     *  direct_mail) or "stored" from hand-entered budget_spent (channels with
+     *  no spend source). Never silent. */
+    spend_source: "derived" | "stored"
+    /** The hand-entered figure, published beside the derived one so a reader
+     *  can see the disagreement instead of inheriting it. */
+    stored_budget_spent: number
+    /** The ledger-derived figure, or null where no ledger exists. */
+    derived_channel_spend: number | null
+    /** True when a ledger exists AND the stored figure disagrees with it. */
+    spend_disagrees: boolean
+    /** Human note on the derivation (which ledger, how many rows, partial?). */
+    spend_note: string | null
+    /** direct_mail only (wave 26 columns) — the raw response-row count behind
+     *  total_leads, which now counts PEOPLE. Published so the reader can see
+     *  how many rows collapsed onto one responder instead of inheriting the
+     *  old row-count as a lead-count. Absent on other channels. */
+    mail_response_rows?: number
+    /** direct_mail only — response rows naming neither a contact nor a lead.
+     *  Each is counted as its own person because nothing can collapse them;
+     *  the blind spot beside the number. */
+    mail_anonymous_responses?: number
   }
 }> {
   try {
@@ -55,8 +83,41 @@ export async function recalculateCampaignROI(
       return { success: false, error: "Campaign not found" }
     }
 
-    const totalSpend = campaign.budget_spent ?? 0
     const campaignType = campaign.campaign_type
+
+    // ── SPEND: DERIVED WHERE A LEDGER EXISTS, STORED ONLY WHERE NONE DOES ────
+    // (§2/§6, 2026-09-02). This used to be `totalSpend = budget_spent ?? 0` for
+    // every channel — a HAND-ENTERED figure on marketing_campaigns (its only
+    // writers are the two create paths, app/actions/marketing-studio.ts:235 and
+    // lib/kernel/marketing.ts:1534, both writing a literal 0; nothing in the
+    // tree ever updates it from a ledger) — while the channel rollup below
+    // DERIVES cost for the same money: ad = Σ ad_performance.spend, direct_mail
+    // = Σ per_piece_cost × pieces_mailed. So a campaign's own row and the
+    // channel it belongs to could disagree about what it cost and nothing said
+    // so: cost_per_lead and roi_percentage were computed over a number the
+    // ledger contradicted.
+    //
+    // THE CHOICE, with the consumer as evidence: campaign_roi.total_spend is
+    // rendered as "Spend" per row and summed into the "Total Spend" card on
+    // app/dashboard/campaigns/roi/roi-dashboard-client.tsx:266,:524 — ONE
+    // figure, unlabelled as to source — and lib/kernel/reporting.ts:614-639
+    // already renders total_spend and budget_spent SIDE BY SIDE as two fields
+    // (plus budget_utilization off the stored one). So the dashboard gets the
+    // derived figure where one exists, and the report is the surface that shows
+    // both, each under its own name. Rule:
+    //   · ad, direct_mail → DERIVED from the same ledgers the channel rollup
+    //     reads (spendSource "derived"); the stored budget_spent is compared
+    //     against it and a disagreement is LOGGED and RETURNED, never hidden.
+    //   · social, newsletter, podcast, video → STORED budget_spent, because no
+    //     spend source exists for them in the live schema (adjudicated at the
+    //     channel rollup's revenue step below — a MISSING LEDGER, not a bug
+    //     here). spendSource "stored" says so. No spend is invented for them.
+    // campaign_roi has no column for the source or the disagreement
+    // (scripts/schema-snapshot.ts:176), so both ride the return value and the
+    // log; persisting them is a migration this lane does not write.
+    const storedSpend = Number(campaign.budget_spent ?? 0)
+    let derivedSpend: number | null = null
+    let derivedSpendNote: string | null = null
 
     // ══════════════════════════════════════════════════════════════════════════
     // STEP 2: Aggregate performance data by campaign type
@@ -64,15 +125,40 @@ export async function recalculateCampaignROI(
     let totalLeads = 0
     let qualifiedLeads = 0
     let totalConversions = 0
+    let mailResponseRows: number | undefined
+    let mailAnonymousResponses: number | undefined
 
     // === SOCIAL campaigns ===
     if (campaignType === "social") {
-      // Get social posts linked to this campaign
-      const { data: socialPosts } = await supabase
+      // Get social posts linked to this campaign.
+      //
+      // §1 repoint (2026-09-01): this branch used to demand
+      // social_posts.kernel_event_id non-null — a column NO writer stamps
+      // (lib/ads/ad-creator.ts:610 writes a literal null on ad_campaigns
+      // "will be set by kernel event", and no kernel event ever sets either
+      // table's copy) — so every social campaign structurally reported 0.
+      // It also never filtered by campaign at all: any stamped post in the
+      // brokerage would have counted toward every social campaign. The join
+      // key that EXISTS is marketing_campaign_id — written by the video
+      // distributor (lib/kernel/video.ts:916) and already read by the
+      // sibling ROI rollup (lib/marketing/campaign-measurer.ts:60) and the
+      // ad branch below (ad_campaigns.marketing_campaign_id). kernel_event_id
+      // is no longer an open item — it RETIRED (m597, 2026-09-01): no
+      // kernel_events table ever existed, no FK, no reader anywhere after this
+      // repoint, and the one writer wrote a literal null. The durable event
+      // link that DOES exist is lifecycle_events, written beside every publish
+      // (app/actions/social-media-automation.ts:431, lib/ads/ad-creator.ts:625)
+      // — a per-row stamp would just be a second spelling of that (§6). See
+      // supabase/migrations/m597-kernel-event-id-five-copies-of-a-link-to-a-
+      // table-that-does-not-exist.sql.
+      const { data: socialPosts, error: socialPostsError } = await supabase
         .from("social_posts")
         .select("id")
         .eq("brokerage_id", brokerageId)
-        .not("kernel_event_id", "is", null)
+        .eq("marketing_campaign_id", marketingCampaignId)
+      if (socialPostsError) {
+        console.error("[ROI Calculator] social_posts read failed:", socialPostsError.message)
+      }
 
       if (socialPosts && socialPosts.length > 0) {
         const postIds = socialPosts.map((p) => p.id)
@@ -94,100 +180,350 @@ export async function recalculateCampaignROI(
 
     // === AD campaigns ===
     if (campaignType === "ad") {
-      // Get ad campaigns linked to this marketing campaign
-      const { data: adCampaigns } = await supabase
+      // Get ad campaigns linked to this marketing campaign. Both errors are now
+      // READ (§3) — they were discarded, so a refused resolve was an honest-
+      // looking zero. FAIL CLOSED like the other arms: the previous campaign_roi
+      // row survives rather than a number nobody can stand behind.
+      const { data: adCampaigns, error: adCampaignsError } = await supabase
         .from("ad_campaigns")
         .select("id")
         .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
+      if (adCampaignsError) {
+        console.error("[ROI Calculator] ad campaign resolve refused:", adCampaignsError.message)
+        return { success: false, error: `ad campaign resolve refused: ${adCampaignsError.message}` }
+      }
+
       if (adCampaigns && adCampaigns.length > 0) {
         const adCampaignIds = adCampaigns.map((a) => a.id)
 
-        // Sum ad performance
-        const { data: adPerf } = await supabase
+        // Sum ad performance. `spend` was ALREADY SELECTED here and thrown
+        // away while total_spend came from the hand-entered budget_spent — the
+        // ledger was in hand and unused. It is the derived spend now, the same
+        // Σ ad_performance.spend the channel rollup uses.
+        const { data: adPerf, error: adPerfError } = await supabase
           .from("ad_performance")
           .select("spend, leads, conversions")
           .in("ad_campaign_id", adCampaignIds)
           .eq("brokerage_id", brokerageId)
 
-        if (adPerf) {
-          for (const p of adPerf) {
-            totalLeads += p.leads ?? 0
-            totalConversions += p.conversions ?? 0
-          }
+        if (adPerfError) {
+          console.error("[ROI Calculator] ad_performance read refused:", adPerfError.message)
+          return { success: false, error: `ad_performance read refused: ${adPerfError.message}` }
         }
+
+        let adSpend = 0
+        for (const p of adPerf ?? []) {
+          adSpend += Number(p.spend ?? 0)
+          totalLeads += p.leads ?? 0
+          totalConversions += p.conversions ?? 0
+        }
+        derivedSpend = adSpend
+        derivedSpendNote = `Σ ad_performance.spend over ${adPerf?.length ?? 0} row(s) of ${adCampaignIds.length} ad campaign(s)`
+      } else {
+        // No ad_campaigns child → the ledger exists but holds nothing for this
+        // campaign: an HONEST ZERO, not "unknown". Stored budget_spent is not
+        // consulted — a hand-typed figure for an ad campaign no ad ran under
+        // is exactly the disagreement this block exists to surface.
+        derivedSpend = 0
+        derivedSpendNote = "no ad_campaigns rows under this campaign"
       }
     }
 
     // === DIRECT_MAIL campaigns ===
     if (campaignType === "direct_mail") {
-      // Count responses that indicate conversion
-      const { data: mailResponses } = await supabase
-        .from("mail_response_tracking")
-        .select("response_type")
+      // THE FABRICATED NUMBER (fixed 2026-09-01). Every other arm scopes to the
+      // campaign it claims to measure — social on marketing_campaign_id, ad on
+      // ad_campaign_id — but this one read mail_response_tracking with NOTHING
+      // but `.eq("brokerage_id", …)`. No campaign predicate at all. So EVERY
+      // direct-mail campaign in a brokerage reported the SAME lead and
+      // conversion count, cost_per_lead was total_spend divided by a
+      // brokerage-wide response count, and any spend decision made on it was
+      // made on a number that could not vary between campaigns.
+      //
+      // The join path is real and confirmed against scripts/schema-fk-map.ts:
+      //   mail_response_tracking.campaign_id      → direct_mail_campaigns.id
+      //   direct_mail_campaigns.marketing_campaign_id → marketing_campaigns.id
+      // Resolved in TWO reads, not a bare embed: the resolve is tenant-anchored
+      // on its own row, and both errors are DESTRUCTURED AND READ (§3 —
+      // supabase-js RESOLVES refusals, so a discarded error degrades silently).
+      const { data: mailCampaigns, error: mailCampaignsError } = await supabase
+        .from("direct_mail_campaigns")
+        // per_piece_cost / pieces_mailed: the SAME derivation the channel
+        // rollup makes (spend = Σ per_piece_cost × pieces_mailed), now made at
+        // campaign altitude too, so the two cannot disagree about this money.
+        .select("id, per_piece_cost, pieces_mailed")
+        .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
-      if (mailResponses) {
-        for (const r of mailResponses) {
-          totalLeads++
-          if (["call", "form_submit", "appointment"].includes(r.response_type)) {
-            totalConversions++
+      if (mailCampaignsError) {
+        // FAIL CLOSED (§4). A refused resolve must NEVER degrade back to the
+        // brokerage-wide count — that is the exact defect this fix removes, and
+        // "nobody checked" must not render as "checked and fine". Refusing here
+        // also means the UPSERT below never lands a number nobody can stand
+        // behind: the previous campaign_roi row survives, stale but honest.
+        console.error(
+          "[ROI Calculator] direct_mail campaign resolve refused:",
+          mailCampaignsError.message
+        )
+        return {
+          success: false,
+          error: `direct_mail campaign resolve refused: ${mailCampaignsError.message}`,
+        }
+      }
+
+      const mailCampaignIds = (mailCampaigns ?? []).map((c) => c.id)
+
+      // ── DERIVE THE SPEND (same rule as the channel rollup) ─────────────────
+      // A NULL per_piece_cost or pieces_mailed is "SPEND NOT RECORDED", never
+      // $0. Costed children sum; uncosted ones are counted and published. If
+      // NO child is costed the ledger has nothing to say and derivedSpend stays
+      // null, so the stored budget_spent is used AND LABELLED as stored.
+      {
+        let mailSpend = 0
+        let costed = 0
+        let uncosted = 0
+        for (const c of mailCampaigns ?? []) {
+          const perPiece = c.per_piece_cost == null ? null : Number(c.per_piece_cost)
+          const pieces = c.pieces_mailed == null ? null : Number(c.pieces_mailed)
+          if (perPiece == null || pieces == null || !Number.isFinite(perPiece) || !Number.isFinite(pieces)) {
+            uncosted++
+            continue
           }
+          mailSpend += perPiece * pieces
+          costed++
+        }
+        if (costed > 0) {
+          derivedSpend = mailSpend
+          derivedSpendNote =
+            `Σ per_piece_cost × pieces_mailed over ${costed} costed direct_mail campaign(s)` +
+            (uncosted > 0 ? `; ${uncosted} uncosted (spend NOT RECORDED, excluded — PARTIAL spend, ROI overstated)` : "")
+        } else if (mailCampaignIds.length === 0) {
+          derivedSpend = 0
+          derivedSpendNote = "no direct_mail_campaigns rows under this campaign"
+        } else {
+          derivedSpendNote = `${uncosted} direct_mail campaign(s), none costed — spend NOT RECORDED, stored budget_spent used`
+        }
+      }
+
+      // No direct-mail children → an HONEST ZERO. Not a brokerage-wide total.
+      // (Skipping the read also avoids `.in("campaign_id", [])`, whose PostgREST
+      // rendering is not worth relying on.)
+      if (mailCampaignIds.length > 0) {
+        const { data: mailResponses, error: mailResponsesError } = await supabase
+          .from("mail_response_tracking")
+          .select("id, response_type, contact_id, lead_id")
+          .eq("brokerage_id", brokerageId)
+          .in("campaign_id", mailCampaignIds)
+
+        if (mailResponsesError) {
+          console.error(
+            "[ROI Calculator] mail_response_tracking read refused:",
+            mailResponsesError.message
+          )
+          return {
+            success: false,
+            error: `mail_response_tracking read refused: ${mailResponsesError.message}`,
+          }
+        }
+
+        // PER-PERSON, not per-row (wave 26 columns). Both writers —
+        // app/actions/direct-mail.ts:652 and app/api/qr/scan/route.ts:170 —
+        // stamp contact_id / lead_id on every response, and nothing read
+        // them: this loop counted ROWS as LEADS, so one person who scanned a
+        // postcard three times was three "leads" and cost_per_lead was a
+        // third of the truth. A lead is a PERSON; the rows collapse onto the
+        // person they name. The row count and the anonymous remainder are
+        // published beside the number rather than folded into it.
+        const { persons, converters, rows, anonymous } = collapseMailResponsesToPersons(mailResponses ?? [])
+        totalLeads += persons
+        totalConversions += converters
+        mailResponseRows = rows
+        mailAnonymousResponses = anonymous
+        if (rows !== persons) {
+          console.warn(
+            `[ROI Calculator] campaign ${marketingCampaignId}: ${rows} mail response row(s) collapse onto ${persons} person(s) (${anonymous} anonymous, each counted once) — total_leads counts people.`
+          )
         }
       }
     }
 
     // === NEWSLETTER campaigns ===
     if (campaignType === "newsletter") {
-      // Get newsletter sends for this campaign
-      const { data: newsletters } = await supabase
+      // SAME DEFECT AS DIRECT MAIL, one channel over (fixed 2026-09-01):
+      // newsletter_campaigns was filtered on brokerage_id ONLY, so every
+      // newsletter campaign in a brokerage reported the identical estimated
+      // lead count. The join key exists and is the same shape as everywhere
+      // else — newsletter_campaigns.marketing_campaign_id (schema-fk-map :518).
+      //   newsletter_scheduled_sends.newsletter_id → newsletter_campaigns.id
+      //   newsletter_campaigns.marketing_campaign_id → marketing_campaigns.id
+      const { data: newsletters, error: newslettersError } = await supabase
         .from("newsletter_campaigns")
         .select("id")
+        .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
-      if (newsletters && newsletters.length > 0) {
-        const newsletterIds = newsletters.map((n) => n.id)
+      if (newslettersError) {
+        // FAIL CLOSED — a refused resolve must not degrade back to the
+        // every-newsletter count this fix removes.
+        console.error(
+          "[ROI Calculator] newsletter campaign resolve refused:",
+          newslettersError.message
+        )
+        return {
+          success: false,
+          error: `newsletter campaign resolve refused: ${newslettersError.message}`,
+        }
+      }
 
-        const { data: sends } = await supabase
+      const newsletterIds = (newsletters ?? []).map((n) => n.id)
+
+      // No newsletters under this campaign → an HONEST ZERO.
+      if (newsletterIds.length > 0) {
+        const { data: sends, error: sendsError } = await supabase
           .from("newsletter_scheduled_sends")
           .select("recipient_count")
+          // The tenant predicate was MISSING here entirely — the column exists
+          // (schema-snapshot :441) and went unused, so the read leaned wholly on
+          // the id list for its scoping.
+          .eq("brokerage_id", brokerageId)
           .in("newsletter_id", newsletterIds)
 
-        if (sends) {
-          for (const s of sends) {
-            totalLeads += Math.floor((s.recipient_count ?? 0) * 0.02) // Estimate 2% lead rate
+        if (sendsError) {
+          console.error(
+            "[ROI Calculator] newsletter_scheduled_sends read refused:",
+            sendsError.message
+          )
+          return {
+            success: false,
+            error: `newsletter_scheduled_sends read refused: ${sendsError.message}`,
           }
+        }
+
+        for (const s of sends ?? []) {
+          totalLeads += Math.floor((s.recipient_count ?? 0) * NEWSLETTER_LEAD_RATE)
         }
       }
     }
 
     // === PODCAST campaigns ===
     if (campaignType === "podcast") {
-      // Count CTA clicks from podcast analytics
-      const { data: podcastClicks } = await supabase
-        .from("podcast_analytics_events")
+      // THE JOIN KEY DOES EXIST — an earlier pass of this lane reported "no
+      // campaign column on podcast_analytics_events, so no path", having looked
+      // only at that one table. The path is two hops, exactly like direct mail:
+      //   podcast_analytics_events.episode_id → podcast_episodes.id  (fk-map :577)
+      //   podcast_episodes.marketing_campaign_id → marketing_campaigns.id (:582)
+      // Before this, every podcast campaign in a brokerage reported the same
+      // brokerage-wide CTA-click count.
+      const { data: episodes, error: episodesError } = await supabase
+        .from("podcast_episodes")
         .select("id")
+        .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
-        .eq("event_type", "cta_click")
 
-      if (podcastClicks) {
-        totalLeads += podcastClicks.length
+      if (episodesError) {
+        console.error("[ROI Calculator] podcast episode resolve refused:", episodesError.message)
+        return {
+          success: false,
+          error: `podcast episode resolve refused: ${episodesError.message}`,
+        }
+      }
+
+      const episodeIds = (episodes ?? []).map((e) => e.id)
+
+      // No episodes under this campaign → an HONEST ZERO.
+      if (episodeIds.length > 0) {
+        const { data: podcastClicks, error: podcastClicksError } = await supabase
+          .from("podcast_analytics_events")
+          .select("id")
+          .eq("brokerage_id", brokerageId)
+          .eq("event_type", "cta_click")
+          .in("episode_id", episodeIds)
+
+        if (podcastClicksError) {
+          console.error(
+            "[ROI Calculator] podcast_analytics_events read refused:",
+            podcastClicksError.message
+          )
+          return {
+            success: false,
+            error: `podcast_analytics_events read refused: ${podcastClicksError.message}`,
+          }
+        }
+
+        totalLeads += (podcastClicks ?? []).length
       }
     }
 
     // === VIDEO campaigns ===
     if (campaignType === "video") {
-      const { data: videoPerf } = await supabase
-        .from("video_performance_tracking")
-        .select("lead_conversions, unique_views")
+      // THE JOIN KEY DOES EXIST, and it is better than the one an earlier pass
+      // of this lane guessed at. That pass proposed
+      // marketing_campaigns.source_video_project_id and called it
+      // one-project-per-campaign; the real key runs the other way and is
+      // many-to-one, so a campaign with several videos is measured whole:
+      //   video_performance_tracking.video_project_id → ai_video_projects.id (fk-map :788)
+      //   ai_video_projects.marketing_campaign_id → marketing_campaigns.id   (:188)
+      // Only reads, and only tables this file already owns the ROI meaning of —
+      // nothing under lib/video/** or remotion/** is touched.
+      const { data: videoProjects, error: videoProjectsError } = await supabase
+        .from("ai_video_projects")
+        .select("id")
+        .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
-      if (videoPerf) {
-        for (const v of videoPerf) {
+      if (videoProjectsError) {
+        console.error("[ROI Calculator] video project resolve refused:", videoProjectsError.message)
+        return {
+          success: false,
+          error: `video project resolve refused: ${videoProjectsError.message}`,
+        }
+      }
+
+      const videoProjectIds = (videoProjects ?? []).map((p) => p.id)
+
+      // No video projects under this campaign → an HONEST ZERO.
+      if (videoProjectIds.length > 0) {
+        const { data: videoPerf, error: videoPerfError } = await supabase
+          .from("video_performance_tracking")
+          .select("lead_conversions, unique_views")
+          .eq("brokerage_id", brokerageId)
+          .in("video_project_id", videoProjectIds)
+
+        if (videoPerfError) {
+          console.error(
+            "[ROI Calculator] video_performance_tracking read refused:",
+            videoPerfError.message
+          )
+          return {
+            success: false,
+            error: `video_performance_tracking read refused: ${videoPerfError.message}`,
+          }
+        }
+
+        for (const v of videoPerf ?? []) {
           totalLeads += v.lead_conversions ?? 0
         }
       }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STEP 2b: Resolve the spend and SAY where it came from
+    // ══════════════════════════════════════════════════════════════════════════
+    const spendSource: "derived" | "stored" = derivedSpend != null ? "derived" : "stored"
+    const totalSpend = derivedSpend ?? storedSpend
+    // A stored figure that disagrees with its own ledger is the finding this
+    // block exists for. It is a WARNING, not a refusal: the ledger wins, and the
+    // person who typed budget_spent is told — the cron's success count does not
+    // read this log, which is why it also rides the return value below.
+    const spendDisagrees = derivedSpend != null && storedSpend !== derivedSpend
+    if (spendDisagrees) {
+      console.warn(
+        `[ROI Calculator] campaign ${marketingCampaignId} (${campaignType}): stored marketing_campaigns.budget_spent=${storedSpend} ` +
+        `≠ derived channel spend ${derivedSpend} (${derivedSpendNote}). total_spend uses the DERIVED figure; ` +
+        `budget_spent is hand-entered and stale.`
+      )
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -259,12 +595,53 @@ export async function recalculateCampaignROI(
         cost_per_qualified_lead: costPerQualifiedLead,
         cost_per_conversion: costPerConversion,
         roi_percentage: roiPercentage,
+        spend_source: spendSource,
+        stored_budget_spent: storedSpend,
+        derived_channel_spend: derivedSpend,
+        spend_disagrees: spendDisagrees,
+        spend_note: derivedSpendNote,
+        ...(mailResponseRows !== undefined
+          ? { mail_response_rows: mailResponseRows, mail_anonymous_responses: mailAnonymousResponses ?? 0 }
+          : {}),
       },
     }
   } catch (error: any) {
     console.error("[ROI Calculator] recalculateCampaignROI error:", error)
     return { success: false, error: error.message }
   }
+}
+
+/** The response types that mean a person RAISED A HAND, not merely looked.
+ *  One spelling (§6) for both the campaign arm and the channel rollup. */
+const MAIL_CONVERTING_RESPONSE_TYPES = new Set(["call", "form_submit", "appointment"])
+
+/**
+ * PURE (wave 26 columns) — collapse mail_response_tracking rows onto the
+ * PEOPLE they name. A person is a contact_id, else a lead_id, else — when the
+ * row names nobody — the row itself (nothing can merge two anonymous rows, so
+ * each counts once and the count is returned as the blind spot).
+ *
+ *   persons    — distinct responders
+ *   converters — distinct responders with at least one converting response
+ *   rows       — the raw row count the old code reported as "leads"
+ *   anonymous  — rows naming neither id (each is one of `persons`)
+ */
+export function collapseMailResponsesToPersons(
+  rows: Array<{ id?: string | null; response_type: string | null; contact_id?: string | null; lead_id?: string | null }>
+): { persons: number; converters: number; rows: number; anonymous: number } {
+  const seen = new Set<string>()
+  const converted = new Set<string>()
+  let anonymous = 0
+  let anonIndex = 0
+  for (const r of rows) {
+    let key: string
+    if (r.contact_id) key = `c:${r.contact_id}`
+    else if (r.lead_id) key = `l:${r.lead_id}`
+    else { key = `anon:${r.id ?? anonIndex++}`; anonymous++ }
+    seen.add(key)
+    if (r.response_type && MAIL_CONVERTING_RESPONSE_TYPES.has(r.response_type)) converted.add(key)
+  }
+  return { persons: seen.size, converters: converted.size, rows: rows.length, anonymous }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -311,17 +688,23 @@ export async function recalculateChannelPerformance(
       // ════════════════════════════════════════════════════════════════════════
 
       if (channelType === "social") {
-        const { data: engagement } = await supabase
+        // NO SPEND SOURCE EXISTS: social_posts and social_engagement_tracking
+        // carry no cost/spend/budget column (paid social lives on the `ad`
+        // channel via ad_performance.spend). spend stays 0 → roi_percentage
+        // stays null.
+        const { data: engagement, error: engagementError } = await supabase
           .from("social_engagement_tracking")
           .select("clicks_count, leads_generated")
           .eq("brokerage_id", brokerageId)
           .gte("captured_at", windowStart)
           .lte("captured_at", windowEnd)
 
-        if (engagement) {
-          for (const e of engagement) {
-            leads += e.leads_generated ?? 0
-          }
+        if (engagementError) {
+          console.error("[ROI Calculator] social_engagement_tracking read refused:", engagementError.message)
+          return { success: false, error: `social_engagement_tracking read refused: ${engagementError.message}` }
+        }
+        for (const e of engagement ?? []) {
+          leads += e.leads_generated ?? 0
         }
       }
 
@@ -343,37 +726,165 @@ export async function recalculateChannelPerformance(
       }
 
       if (channelType === "direct_mail") {
-        const { data: mailResponses } = await supabase
+        // Same unscoped SHAPE as the campaign arm above, at a different
+        // altitude. Here brokerage-wide IS the right denominator — this is a
+        // CHANNEL rollup, not a campaign one — so the fix is not a campaign
+        // predicate. It is the other two halves the campaign arm was missing:
+        //   (a) ANCHOR ACROSS THE JOIN. A response row is counted only when its
+        //       campaign_id resolves to a direct_mail_campaigns row owned by
+        //       THIS brokerage, so a mis-stamped or cross-tenant
+        //       mail_response_tracking.brokerage_id cannot inflate the channel.
+        //   (b) READ THE ERRORS. Both reads used to discard theirs, and a
+        //       refused read is byte-identical to a real zero — the channel
+        //       would have reported "0 direct-mail leads" as a fact.
+        // Blind spot published beside the number (§2): responses whose
+        // campaign_id names no campaign of this brokerage are EXCLUDED and
+        // counted. Both live writers (app/actions/direct-mail.ts:652,
+        // app/api/qr/scan/route.ts:170) always stamp a real campaign_id, so
+        // this count is expected to be 0 — a non-zero one is a finding.
+        //
+        // THE MISSING SPEND HALF (built 2026-09-01). Only the `ad` channel ever
+        // accumulated spend, so direct_mail — like four other channels — always
+        // computed `roi_percentage: null`: an ROI dashboard that structurally
+        // could not show ROI. Direct mail is the one channel whose cost IS
+        // recorded today, on the campaign row itself:
+        //     spend = Σ per_piece_cost × pieces_mailed
+        // DERIVED, never stored a second time (§6) — channel_performance.spend
+        // is a rollup of the campaign rows, not a rival ledger.
+        // A NULL per_piece_cost or pieces_mailed is "SPEND NOT RECORDED", NOT
+        // zero: a zero denominator would mint an infinite or fabricated ROI out
+        // of a campaign nobody costed. Those campaigns are excluded from spend
+        // and COUNTED, and the count is published beside the number — a spend
+        // that covers only part of the channel overstates its ROI, and the
+        // reader has to be told which case they are looking at.
+        // Placed in the window by `mailing_date` (when the money was spent);
+        // a campaign with no mailing_date cannot be placed and is counted too.
+        const { data: mailCampaigns, error: mailCampaignsError } = await supabase
+          .from("direct_mail_campaigns")
+          .select("id, per_piece_cost, pieces_mailed, mailing_date")
+          .eq("brokerage_id", brokerageId)
+
+        if (mailCampaignsError) {
+          // FAIL CLOSED (§4): refuse rather than upsert a channel row derived
+          // from an unanchored count. Channels already written this pass are
+          // independent rows and stay correct.
+          console.error(
+            "[ROI Calculator] direct_mail campaign resolve refused:",
+            mailCampaignsError.message
+          )
+          return {
+            success: false,
+            error: `direct_mail campaign resolve refused: ${mailCampaignsError.message}`,
+          }
+        }
+
+        const ownedMailCampaigns = mailCampaigns ?? []
+        const ownedMailCampaignIds = new Set(ownedMailCampaigns.map((c) => c.id as string))
+
+        // ── DERIVE THE SPEND ────────────────────────────────────────────────
+        let costedCampaigns = 0
+        let uncostedInWindow = 0
+        let undatedCampaigns = 0
+        for (const c of ownedMailCampaigns) {
+          const mailingDate = c.mailing_date as string | null
+          if (!mailingDate) { undatedCampaigns++; continue }
+          if (mailingDate < windowStart || mailingDate > windowEnd) continue
+          const perPiece = c.per_piece_cost == null ? null : Number(c.per_piece_cost)
+          const pieces = c.pieces_mailed == null ? null : Number(c.pieces_mailed)
+          if (perPiece == null || pieces == null || !Number.isFinite(perPiece) || !Number.isFinite(pieces)) {
+            uncostedInWindow++ // spend NOT RECORDED — never counted as 0
+            continue
+          }
+          spend += perPiece * pieces
+          costedCampaigns++
+        }
+        if (uncostedInWindow > 0 || undatedCampaigns > 0) {
+          console.warn(
+            `[ROI Calculator] direct_mail channel spend ${windowStart}..${windowEnd}: derived from ${costedCampaigns} campaign(s); ` +
+            `${uncostedInWindow} in-window campaign(s) record no per_piece_cost/pieces_mailed (spend NOT RECORDED, excluded — not counted as $0), ` +
+            `${undatedCampaigns} campaign(s) carry no mailing_date and could not be placed in the window. ` +
+            `roi_percentage below is therefore computed over PARTIAL spend and overstates ROI for this channel.`
+          )
+        }
+
+        const { data: mailResponses, error: mailResponsesError } = await supabase
           .from("mail_response_tracking")
-          .select("response_type")
+          .select("id, response_type, campaign_id, contact_id, lead_id")
           .eq("brokerage_id", brokerageId)
           .gte("created_at", windowStart)
           .lte("created_at", windowEnd)
 
-        if (mailResponses) {
-          leads += mailResponses.length
-          conversions += mailResponses.filter((r) =>
-            ["call", "form_submit", "appointment"].includes(r.response_type)
-          ).length
+        if (mailResponsesError) {
+          console.error(
+            "[ROI Calculator] mail_response_tracking read refused:",
+            mailResponsesError.message
+          )
+          return {
+            success: false,
+            error: `mail_response_tracking read refused: ${mailResponsesError.message}`,
+          }
+        }
+
+        const rows = mailResponses ?? []
+        const owned = rows.filter(
+          (r) => r.campaign_id != null && ownedMailCampaignIds.has(r.campaign_id as string)
+        )
+        const orphaned = rows.length - owned.length
+        if (orphaned > 0) {
+          console.warn(
+            `[ROI Calculator] direct_mail channel: ${orphaned} of ${rows.length} response rows in ${windowStart}..${windowEnd} name no direct_mail_campaigns row of brokerage ${brokerageId} — EXCLUDED from the channel count.`
+          )
+        }
+
+        // PER-PERSON (wave 26 columns) — same collapse as the campaign arm:
+        // channel_performance.leads is people who responded, not rows filed.
+        // A person who responded to two campaigns in the window is one lead
+        // of the CHANNEL (this is the channel rollup), and the row count is
+        // published beside it.
+        const collapsed = collapseMailResponsesToPersons(owned)
+        leads += collapsed.persons
+        conversions += collapsed.converters
+        if (collapsed.rows !== collapsed.persons) {
+          console.warn(
+            `[ROI Calculator] direct_mail channel ${windowStart}..${windowEnd}: ${collapsed.rows} response row(s) collapse onto ${collapsed.persons} person(s) (${collapsed.anonymous} anonymous, each counted once) — leads counts people.`
+          )
         }
       }
 
       if (channelType === "newsletter") {
-        const { data: sends } = await supabase
+        // THIS READ HAD NO TENANT PREDICATE AT ALL — not a campaign one, a
+        // BROKERAGE one. Every other brokerage's scheduled sends were counted
+        // into this brokerage's newsletter channel. The column exists
+        // (schema-snapshot :441); it simply went unused. Fixed 2026-09-01.
+        // NO SPEND SOURCE EXISTS for this channel: neither newsletter_campaigns
+        // nor newsletter_scheduled_sends carries a cost/spend/budget column, so
+        // spend stays 0 and roi_percentage stays null — honestly unknown, not
+        // zero-cost. Building it needs a cost column, which is a migration.
+        const { data: sends, error: sendsError } = await supabase
           .from("newsletter_scheduled_sends")
           .select("recipient_count")
+          .eq("brokerage_id", brokerageId)
           .gte("scheduled_time", windowStart)
           .lte("scheduled_time", windowEnd)
 
-        if (sends) {
-          for (const s of sends) {
-            leads += Math.floor((s.recipient_count ?? 0) * 0.02)
+        if (sendsError) {
+          console.error("[ROI Calculator] newsletter_scheduled_sends read refused:", sendsError.message)
+          return {
+            success: false,
+            error: `newsletter_scheduled_sends read refused: ${sendsError.message}`,
           }
+        }
+
+        for (const s of sends ?? []) {
+          leads += Math.floor((s.recipient_count ?? 0) * NEWSLETTER_LEAD_RATE)
         }
       }
 
       if (channelType === "podcast") {
-        const { data: events } = await supabase
+        // NO SPEND SOURCE EXISTS: podcast_analytics_events and podcast_episodes
+        // carry no cost/spend/budget column. spend stays 0 → roi_percentage
+        // stays null. Unknown, not free.
+        const { data: events, error: eventsError } = await supabase
           .from("podcast_analytics_events")
           .select("id")
           .eq("brokerage_id", brokerageId)
@@ -381,27 +892,55 @@ export async function recalculateChannelPerformance(
           .gte("created_at", windowStart)
           .lte("created_at", windowEnd)
 
-        if (events) {
-          leads += events.length
+        if (eventsError) {
+          console.error("[ROI Calculator] podcast_analytics_events read refused:", eventsError.message)
+          return { success: false, error: `podcast_analytics_events read refused: ${eventsError.message}` }
         }
+        leads += (events ?? []).length
       }
 
       if (channelType === "video") {
-        const { data: videoPerf } = await supabase
+        // NO SPEND SOURCE EXISTS: video_performance_tracking and
+        // ai_video_projects carry no cost/spend/budget column.
+        //
+        // RECONCILED (§6, 2026-09-02): video_performance_tracking.estimated_roi
+        // WAS a second spelling of video ROI — not "no writer feeds it", as an
+        // earlier note here said (true of this file, false tree-wide): it was
+        // written at app/actions/video-generation.ts and
+        // app/api/video/engagement/route.ts as a flat `lead_conversions × $500`
+        // and summed onto /dashboard/videos/analytics as "Est. ROI". That is
+        // not an ROI — no cost is subtracted, and the column carried nothing
+        // `lead_conversions` did not (always exactly ×500). THIS FILE IS THE
+        // SURVIVOR of the word: roi_percentage = (revenue − spend) / spend, and
+        // NULL when spend is unknown, which for video it is. The column is no
+        // longer written or read anywhere (tombstones at both writers and the
+        // reader); the analytics figure is now derived at read time from
+        // lead_conversions and documented as an estimated lead VALUE.
+        const { data: videoPerf, error: videoPerfError } = await supabase
           .from("video_performance_tracking")
           .select("lead_conversions")
           .eq("brokerage_id", brokerageId)
           .gte("created_at", windowStart)
           .lte("created_at", windowEnd)
 
-        if (videoPerf) {
-          for (const v of videoPerf) {
-            leads += v.lead_conversions ?? 0
-          }
+        if (videoPerfError) {
+          console.error("[ROI Calculator] video_performance_tracking read refused:", videoPerfError.message)
+          return { success: false, error: `video_performance_tracking read refused: ${videoPerfError.message}` }
+        }
+        for (const v of videoPerf ?? []) {
+          leads += v.lead_conversions ?? 0
         }
       }
 
-      // Calculate revenue and ROI
+      // Calculate revenue and ROI.
+      // `spend > 0 ? … : null` is the honest half that was already here: a
+      // channel whose cost is not recorded reports roi_percentage NULL, never a
+      // number. Of the six channels only `ad` (ad_performance.spend) and now
+      // `direct_mail` (per_piece_cost × pieces_mailed) have a spend source in
+      // the live schema at all — social, newsletter, podcast and video have no
+      // cost column on any table this rollup reads, so their ROI stays null by
+      // construction until one is added. That is a MISSING LEDGER, not a bug in
+      // this file.
       const revenue = conversions * DEFAULT_AVG_COMMISSION
       const roiPercentage = spend > 0 ? ((revenue - spend) / spend) * 100 : null
 

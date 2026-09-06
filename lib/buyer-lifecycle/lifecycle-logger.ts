@@ -28,22 +28,56 @@ export interface LifecycleTransitionEvent {
 }
 
 /**
- * Maps buyer lifecycle toState values to the canonical KernelEvent string.
- * Prevents loose string interpolation that won't match the kernel event map.
+ * Maps buyer lifecycle toState values to the canonical KernelEvent.
+ *
+ * THIS FUNCTION WAS THE THING ITS OWN DOCSTRING WARNED ABOUT. It said it
+ * "prevents loose string interpolation that won't match the kernel event map",
+ * and it returned HAND-TYPED STRINGS — `"TOUR_ELIGIBLE"`, `"CONTRACT_SIGNED"`,
+ * `"DEAL_CLOSED"`, `"LIFETIME_CUSTOMER"`, `"BUYER_STATE_CHANGED"` — which are the
+ * MEMBER NAMES of `KernelEvent`, not its VALUES. `KernelEvent` was imported into
+ * this file and never used, which is how the census found it.
+ *
+ * The consequence was not cosmetic. `transitionLifecycle` resolves the fan-out
+ * with `LIFECYCLE_TO_KERNEL_EVENT[eventType]` (lib/kernel/lifecycle.ts), whose
+ * keys are lifecycle STATE names and canonical event VALUES — never member
+ * names. So five of the nine milestones this map exists to raise resolved to
+ * `undefined` and called `processKernelEvent` NOT AT ALL:
+ *
+ *     BUYER_TOUR_ELIGIBLE   → "TOUR_ELIGIBLE"      → no key → no event
+ *     BUYER_OFFER_ELIGIBLE  → "OFFER_ELIGIBLE"     → no key → no event
+ *     BUYER_UNDER_CONTRACT  → "CONTRACT_SIGNED"    → no key → no event, and the
+ *                             transaction milestone CALENDAR BRIDGE, which fires
+ *                             only on KernelEvent.CONTRACT_SIGNED, never ran
+ *     BUYER_CLOSED          → "DEAL_CLOSED"        → no key → no event
+ *     (fallback)            → "BUYER_STATE_CHANGED"→ no key → no event
+ *
+ * and the ledger row was stamped `lifecycle.CONTRACT_SIGNED`, which no reader
+ * matches either — lib/platform/tenant-webhooks-core.ts:87 subscribes to
+ * `lifecycle.contract_signed`. Verified against the live database
+ * (hrvaqgvukzxfskkcrwbt): 0 of 284 `lifecycle_events` rows carry an
+ * upper-case event_type, so every consumer in this system reads lower_snake and
+ * these five were writing into a vocabulary of one.
+ *
+ * Returning `KernelEvent` fixes both halves at once — the value IS the canonical
+ * spelling, the ledger string becomes `lifecycle.contract_signed`, and the map's
+ * identity arm (lib/kernel/lifecycle.ts) resolves it. The return TYPE is what
+ * keeps it fixed: a future member-name typo is now a compile error, which is
+ * exactly what the original docstring was promising and could not deliver.
+ *
  * Unmapped states fall back to BUYER_STATE_CHANGED (catch-all added in B00 Edit 1).
  */
-function resolveBuyerKernelEvent(toState: BuyerState): string {
-  const milestones: Record<string, string> = {
-    BUYER_FINANCIALLY_VERIFIED: "BUYER_FINANCIALLY_VERIFIED",
-    BUYER_SEARCH_CONFIGURED:    "BUYER_SEARCH_CONFIGURED",
-    BUYER_TOUR_ELIGIBLE:        "TOUR_ELIGIBLE",
-    BUYER_OFFER_ELIGIBLE:       "OFFER_ELIGIBLE",
-    BUYER_UNDER_CONTRACT:       "CONTRACT_SIGNED",
-    BUYER_CLOSED:               "DEAL_CLOSED",
-    BUYER_LIFETIME:             "LIFETIME_CUSTOMER",
-    BUYER_DISENGAGED:           "BUYER_DISENGAGED",
+function resolveBuyerKernelEvent(toState: BuyerState): KernelEvent {
+  const milestones: Partial<Record<BuyerState, KernelEvent>> = {
+    BUYER_FINANCIALLY_VERIFIED: KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+    BUYER_SEARCH_CONFIGURED:    KernelEvent.BUYER_SEARCH_CONFIGURED,
+    BUYER_TOUR_ELIGIBLE:        KernelEvent.TOUR_ELIGIBLE,
+    BUYER_OFFER_ELIGIBLE:       KernelEvent.OFFER_ELIGIBLE,
+    BUYER_UNDER_CONTRACT:       KernelEvent.CONTRACT_SIGNED,
+    BUYER_CLOSED:               KernelEvent.DEAL_CLOSED,
+    BUYER_LIFETIME:             KernelEvent.LIFETIME_CUSTOMER,
+    BUYER_DISENGAGED:           KernelEvent.BUYER_DISENGAGED,
   }
-  return milestones[toState] ?? "BUYER_STATE_CHANGED"
+  return milestones[toState] ?? KernelEvent.BUYER_STATE_CHANGED
 }
 
 /**
@@ -194,45 +228,53 @@ export async function getLifecycleStatistics(
 ): Promise<LifecycleStatistics> {
   const { startDate, endDate } = options || {}
   const supabase = createServiceClient()
-  
-  // Get all buyers for brokerage
-  let contactQuery = supabase
+
+  // TWO queries, not N+1. This used to fetch every contact in the brokerage — with no
+  // limit — and then call getCurrentBuyerState(contactId) in a loop, each one its own
+  // SELECT on lifecycle_events. A brokerage with 5,000 contacts issued 5,001 round trips
+  // to render one panel. "Latest row per group" is a set operation; m367's
+  // buyer_lifecycle_current_states does it in a single DISTINCT ON pass.
+  //
+  // The two counts are deliberately separate reads because they answer different
+  // questions: totalBuyers counts every contact in the window INCLUDING those that have
+  // never transitioned, while byState can only count contacts that have a state. Deriving
+  // the total from the state rows would silently drop every never-transitioned buyer.
+  let totalQuery = supabase
     .from("contacts")
-    .select("id")
+    .select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)
-  
-  if (startDate) {
-    contactQuery = contactQuery.gte("created_at", startDate.toISOString())
-  }
-  
-  if (endDate) {
-    contactQuery = contactQuery.lte("created_at", endDate.toISOString())
-  }
-  
-  const { data: contacts, error: contactError } = await contactQuery
-  
-  if (contactError || !contacts) {
-    console.error("[buyer-lifecycle] Error fetching contacts:", contactError)
+
+  if (startDate) totalQuery = totalQuery.gte("created_at", startDate.toISOString())
+  if (endDate)   totalQuery = totalQuery.lte("created_at", endDate.toISOString())
+
+  const [{ count: totalBuyers, error: countError }, { data: stateRows, error: stateError }] =
+    await Promise.all([
+      totalQuery,
+      supabase.rpc("buyer_lifecycle_current_states", {
+        p_brokerage_id: brokerageId,
+        p_start: startDate ? startDate.toISOString() : null,
+        p_end:   endDate   ? endDate.toISOString()   : null,
+      }),
+    ])
+
+  if (countError || stateError) {
+    // Report the real failure. The old loop swallowed a contacts error into a zeroed
+    // result, so a broken read and a brokerage with no buyers looked identical.
+    console.error("[buyer-lifecycle] statistics read failed:", countError?.message ?? stateError?.message)
     return {
       totalBuyers: 0,
       byState: {} as Record<BuyerState, number>,
     }
   }
-  
-  const contactIds = contacts.map((c) => c.id)
-  
-  // Get current states for all buyers
+
   const byState: Record<string, number> = {}
-  
-  for (const contactId of contactIds) {
-    const currentState = await getCurrentBuyerState(contactId)
-    if (currentState) {
-      byState[currentState] = (byState[currentState] || 0) + 1
-    }
+  for (const row of (stateRows ?? []) as Array<{ current_state: string | null }>) {
+    const state = row.current_state
+    if (state) byState[state] = (byState[state] || 0) + 1
   }
-  
+
   return {
-    totalBuyers: contactIds.length,
+    totalBuyers: totalBuyers ?? 0,
     byState: byState as Record<BuyerState, number>,
     // TODO: Calculate timing metrics from history
   }
@@ -250,29 +292,31 @@ export async function getBuyersInState(
 ): Promise<string[]> {
   const { limit = 100 } = options || {}
   const supabase = createServiceClient()
-  
-  // Get all contacts for brokerage
-  const { data: contacts, error } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .limit(limit)
-  
-  if (error || !contacts) {
+
+  // ONE query. This was the same N+1 as the statistics reader — every contact fetched,
+  // then one lifecycle_events SELECT per contact to test its state.
+  //
+  // It also mis-read its own `limit`. The old code applied it to the CONTACTS fetched and
+  // then filtered by state afterwards, so `limit` capped how many contacts were LOOKED AT,
+  // not how many buyers came back: a brokerage with 500 contacts of which 20 are touring
+  // would ask for 100 and receive however many of the first 100 contacts happened to be
+  // touring — often a handful, sometimes zero, and never the same answer twice as contacts
+  // were added. The limit now bounds the RESULT, which is what every caller assumed.
+  const { data: stateRows, error } = await supabase.rpc("buyer_lifecycle_current_states", {
+    p_brokerage_id: brokerageId,
+    p_start: null,
+    p_end:   null,
+  })
+
+  if (error) {
+    console.error("[buyer-lifecycle] buyers-in-state read failed:", error.message)
     return []
   }
-  
-  // Filter by current state
-  const buyersInState: string[] = []
-  
-  for (const contact of contacts) {
-    const currentState = await getCurrentBuyerState(contact.id)
-    if (currentState === state) {
-      buyersInState.push(contact.id)
-    }
-  }
-  
-  return buyersInState
+
+  return ((stateRows ?? []) as Array<{ contact_id: string; current_state: string | null }>)
+    .filter((r) => r.current_state === state)
+    .slice(0, limit)
+    .map((r) => r.contact_id)
 }
 
 /**

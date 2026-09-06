@@ -109,68 +109,41 @@ export function canViewFinancials(
   return { allowed: true }
 }
 
-/**
- * Check if user can act as an external party (lender / title updating specific milestones).
- */
-export async function canActAsExternalParty(
-  context: RoleContext,
-  milestoneType: string,
-): Promise<{ allowed: boolean; reason?: string }> {
-  const role = resolveRole(context)
-  const { transactionId, userId, brokerageId } = context
-
-  if (!transactionId) {
-    return { allowed: false, reason: 'Transaction ID required' }
-  }
-
-  if (role === 'lender') {
-    const allowedMilestones = ['clear_to_close_received', 'financing_deadline', 'conditional_approval']
-    if (!allowedMilestones.includes(milestoneType)) {
-      return { allowed: false, reason: 'Lender can only update financing milestones' }
-    }
-
-    const supabase = createServiceClient()
-    const { data: member } = await supabase
-      .from('deal_team_members')
-      .select('id')
-      .eq('transaction_id', transactionId)
-      .eq('brokerage_id', brokerageId)
-      .eq('member_id', userId)
-      .eq('member_type', 'lender')
-      .single()
-
-    if (!member) {
-      return { allowed: false, reason: 'Not assigned as lender for this transaction' }
-    }
-
-    return { allowed: true }
-  }
-
-  if (role === 'title_agent') {
-    const allowedMilestones = ['funding_confirmed', 'cda_delivered', 'cd_uploaded']
-    if (!allowedMilestones.includes(milestoneType)) {
-      return { allowed: false, reason: 'Title agent can only update closing milestones' }
-    }
-
-    const supabase = createServiceClient()
-    const { data: member } = await supabase
-      .from('deal_team_members')
-      .select('id')
-      .eq('transaction_id', transactionId)
-      .eq('brokerage_id', brokerageId)
-      .eq('member_id', userId)
-      .eq('member_type', 'title')
-      .single()
-
-    if (!member) {
-      return { allowed: false, reason: 'Not assigned as title agent for this transaction' }
-    }
-
-    return { allowed: true }
-  }
-
-  return { allowed: false, reason: 'Not an external party' }
-}
+// ─── TOMBSTONE: canActAsExternalParty — DELETED, FUNCTIONALITY LIVES ELSEWHERE ─
+//
+// It gated a lender / title agent updating a milestone, on a
+// `deal_team_members` row matched by `member_id` + member_type 'lender'/'title'.
+// It was a DOUBLE orphan and the two halves proved each other dead:
+//
+//  · NO CALLER. The only reference in the tree was the barrel re-export at
+//    lib/transactions/index.ts:39. Nothing ever invoked it.
+//  · NO DATA, AND NO WRITER FOR THE DATA. `deal_team_members.member_id` is
+//    written by nothing in the repository — the table's sole writer
+//    (lib/transactions/vendor-quote-workflow.ts:approveQuote) only ever creates
+//    'inspector' / 'insurance_provider' rows and never sets member_id. Measured
+//    2026-08-22 on hrvaqgvukzxfskkcrwbt: deal_team_members holds 0 rows, and
+//    the column carries no DEFAULT and no trigger. Every arm of this function
+//    therefore evaluated to `{ allowed: false }` for its whole life.
+//
+// THE SURVIVOR is the external-party rail that runs on identities that actually
+// exist and is called by the live portals:
+//
+//   lib/kernel/portal-auth.ts:61   requireLenderVendorActor(transactionId)
+//        lender identity via user_role_assignments → vendors (lender category),
+//        assignment proven through vendor_assignments for THIS transaction.
+//   lib/kernel/portal-auth.ts:111  requireTitleActor(claimedTitleUserId)
+//        title identity via title_company_users owned by the session user.
+//
+// THE MILESTONE ALLOW-LIST IS NOT LOST — it was made unnecessary rather than
+// dropped. This function existed to keep an external party away from milestones
+// that are not theirs, by filtering a caller-supplied `milestoneType`. The
+// surviving actions accept NO milestone parameter at all, which is the stronger
+// form of the same rule: app/actions/lender-portal-actions.ts:161
+// issueClearToClose writes only `clear_to_close_received`, and
+// app/actions/title-portal.ts:332 updateTitleStatus writes only
+// `closing_scheduled` / `closed`. The read-side visibility vocabularies are
+// app/actions/lender-portal.ts:4 LENDER_VISIBLE_MILESTONES and
+// lib/title-portal/constants.ts:8 TITLE_VISIBLE_MILESTONES.
 
 /**
  * Assert that the user holds one of the required roles; throws if not.

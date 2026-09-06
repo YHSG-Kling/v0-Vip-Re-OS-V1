@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
@@ -9,7 +10,6 @@ import { DollarSign, Users, TrendingUp, Award, Target, AlertTriangle } from "luc
 import { TeamRevenueChart } from "./team-revenue-chart"
 import {
   FinancialCommandStrip,
-  MarginBreakdownPanel,
   FinancialActionStack,
   type FinancialPriority,
   type FinancialAction,
@@ -20,6 +20,8 @@ import { ACCOUNTING_OFFERINGS, readScopedAccounting, type ScopedAccountingStatus
 import { defaultQbReconciliationPeriod, loadTeamQbReconciliation, type ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
+import { QbScopedExportButton } from "../components/qb-scoped-export-button"
+import { pushTeamPnlToQuickBooksAction } from "@/app/actions/accounting-sync"
 
 export const dynamic = "force-dynamic"
 
@@ -37,20 +39,41 @@ export default async function TeamFinancialsPage() {
   const agentId = agentIdRaw!
   const brokerageId = brokerageIdRaw!
 
-  // Check user role - only team_lead and broker allowed
+  // Who may see TEAM financials — and it is not a label.
+  //
+  // Owner ruling: "a team lead is an agent that runs their own team." Leading is
+  // a FACT recorded in teams.team_lead_id, and on live data the label is not just
+  // a weaker proxy for it, it is UNCORRELATED: teamlead@vip.demo runs a team and
+  // carries user_type='agent', while the one account carrying user_type='team_lead'
+  // runs no team at all. So the old roster gate bounced the real team lead to
+  // /dashboard/financials/agent and would have admitted somebody with no team.
+  //
+  // m444 fixed exactly this in RLS (public.current_user_led_team_id()). This is
+  // the same rule on the same side of the wire: resolveLedTeamId() is that
+  // function's app-side twin, so the page and the database cannot disagree about
+  // who runs a team.
+  //
+  // broker / admin keep their seat on the ROLE, because their claim to the team's
+  // books is the brokerage's book, not a team they run.
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type")
+    .select("user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
   const userRole = profile?.user_type || "agent"
+  const isSuperadmin =
+    userRole === "superadmin" ||
+    (profile as { platform_role?: string | null } | null)?.platform_role === "superadmin"
 
-  // Role gate: redirect non-team_lead/broker users
-  if (!["team_lead", "broker", "admin", "superadmin"].includes(userRole)) {
+  // The FACT first: resolved once here and reused as the team id below, so the
+  // gate and the data can never be answered differently.
+  const ledTeamId = await resolveLedTeamId(supabase, user.id)
+
+  if (!ledTeamId && !isSuperadmin && !["broker", "admin"].includes(userRole)) {
     redirect("/dashboard/financials/agent")
   }
 
@@ -58,16 +81,61 @@ export default async function TeamFinancialsPage() {
   // The TEAM's own QuickBooks — owner (owner_type='team', owner_id=team_id),
   // exact match, never the brokerage's connection. Only the team lead's login
   // maps to team scope in the OAuth route, so only they get the connect button.
-  const { data: teamRow } = await supabase
-    .from("users")
-    .select("team_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  const teamId = (teamRow?.team_id as string | null) ?? null
+  // The team id comes from the SAME resolution as the gate above — the lead link
+  // — not from users.team_id. That column is one of the four places a team can be
+  // recorded on this schema and it is NULL for all 23 live users, so reading it
+  // here meant the team's own QuickBooks/Zoom panels silently rendered as "not
+  // connected" even for the person who runs the team. m431 made resolve_team_id()
+  // the one rule; this page now defers to its lead-link entry point rather than
+  // holding a fifth answer.
+  const teamId = ledTeamId
   let teamBooks: ScopedAccountingStatus | null = null
   let teamLastSyncedAt: string | null = null
   let teamReconciliation: ScopeQbReconciliation | null = null
   let teamZoom: Awaited<ReturnType<typeof import("@/lib/connections/zoom").readScopedZoom>> | null = null
+
+  // ── TEAM CAP LEDGER (m461) — what the TEAM has collected from each agent ────
+  // team_cap_tracking is written by the commission waterfall (stage 08 charges
+  // against it, stage 11 advances cap_paid_to_date/is_capped after every final
+  // calc) and by the settings seeder — and until this card NOTHING rendered it:
+  // the team lead's own ceiling ledger was money tracked in the dark. One row
+  // per (team, agent, anniversary window); only the window containing TODAY is
+  // the live one, exactly the row stage 08 charges against.
+  //
+  // §3 discipline: supabase-js RESOLVES refusals, so the error is read and kept
+  // — a refused read renders as "ledger unreadable", never as "no caps
+  // configured". Those are different facts and the team lead must see which
+  // one is true.
+  type TeamCapLedgerRow = {
+    id: string
+    agent_id: string
+    cap_amount: number
+    cap_paid_to_date: number
+    is_capped: boolean
+    anniversary_start: string
+    anniversary_end: string
+    agent_name: string
+  }
+  let teamCapLedger: TeamCapLedgerRow[] = []
+  let teamCapError: string | null = null
+
+  // ── TEAM P&L ROLLUP READ-BACK — the columns the nightly rollup computes ─────
+  // lib/finance/team-pl-writer.ts has upserted team_earnings.top_agent_id /
+  // computed_at and team_performance.avg_days_to_close / conversion_rate /
+  // computed_at every night since the rollup was built, and NOTHING rendered
+  // them (opposite-missing census, category 1a — written by code, read by
+  // nobody). This is their surface: the team lead sees the rollup's own
+  // numbers, WITH the freshness stamp, for the period the writer keyed them
+  // under (period_label = the writer's own monthLabel, so the read can never
+  // pick up a different month's row than the one the cron wrote).
+  type TeamPnlRollup = {
+    conversionRate: number | null
+    avgDaysToClose: number | null
+    topAgentName: string | null
+    computedAt: string | null
+    periodLabel: string
+  }
+  let teamPnlRollup: TeamPnlRollup | null = null
   if (teamId) {
     const svc = createServiceClient()
     teamBooks = await readScopedAccounting(svc, "team", teamId).catch(() => null)
@@ -92,6 +160,103 @@ export default async function TeamFinancialsPage() {
       .limit(1)
       .maybeSingle()
     teamLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
+
+    // The live cap window: anniversary_start <= today <= anniversary_end — the
+    // same inclusive filter stages 08/11 use, so this card and the cheque can
+    // never disagree about which row is live. SERVICE CLIENT after the gate
+    // above (ledTeamId resolved from teams.team_lead_id — the same rule m444
+    // put in RLS), with the team AND tenant pinned in the predicate.
+    const svcCap = createServiceClient()
+    const todayDate = new Date().toISOString().slice(0, 10)
+    const { data: capRows, error: capReadError } = await svcCap
+      .from("team_cap_tracking")
+      .select("id, agent_id, cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
+      .eq("team_id", teamId)
+      .eq("brokerage_id", brokerageId)
+      .lte("anniversary_start", todayDate)
+      .gte("anniversary_end", todayDate)
+      .order("cap_paid_to_date", { ascending: false })
+
+    if (capReadError) {
+      teamCapError = capReadError.message
+    } else if (capRows && capRows.length > 0) {
+      // Names in two hops — agents.id and users.id are DISJOINT id classes
+      // (§3, 23503); the crossing is agents.user_id.
+      const agentIds = capRows.map((r: any) => r.agent_id).filter(Boolean)
+      const { data: agentRows } = await svcCap
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+      const userIds = (agentRows ?? []).map((a: any) => a.user_id).filter(Boolean)
+      const { data: userRows } = userIds.length > 0
+        ? await svcCap.from("users").select("id, first_name, last_name").in("id", userIds)
+        : { data: [] as any[] }
+      const userById = new Map((userRows ?? []).map((u: any) => [u.id, u]))
+      const agentById = new Map((agentRows ?? []).map((a: any) => [a.id, a]))
+      teamCapLedger = capRows.map((r: any) => {
+        const u = userById.get(agentById.get(r.agent_id)?.user_id)
+        const name = u ? `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() : ""
+        return {
+          id: r.id,
+          agent_id: r.agent_id,
+          cap_amount: Number(r.cap_amount ?? 0),
+          cap_paid_to_date: Number(r.cap_paid_to_date ?? 0),
+          is_capped: Boolean(r.is_capped),
+          anniversary_start: r.anniversary_start,
+          anniversary_end: r.anniversary_end,
+          agent_name: name || "Unknown agent",
+        }
+      })
+    }
+
+    // The rollup's own period key — the same monthLabel the writer stamps
+    // (lib/finance/team-pl.ts:monthLabel), so reader and writer agree on which
+    // row is "this month" by construction.
+    const { monthLabel } = await import("@/lib/finance/team-pl")
+    const rollupPeriod = monthLabel(new Date())
+    const [{ data: perfRow }, { data: earnRow }] = await Promise.all([
+      svcCap
+        .from("team_performance")
+        .select("conversion_rate, avg_days_to_close, computed_at")
+        .eq("team_id", teamId)
+        .eq("brokerage_id", brokerageId)
+        .eq("period_label", rollupPeriod)
+        .maybeSingle(),
+      svcCap
+        .from("team_earnings")
+        .select("top_agent_id, computed_at")
+        .eq("team_id", teamId)
+        .eq("brokerage_id", brokerageId)
+        .eq("period_type", "mtd")
+        .eq("period_label", rollupPeriod)
+        .maybeSingle(),
+    ])
+    if (perfRow || earnRow) {
+      // Top agent name — agents.id → agents.user_id → users (§3: the two id
+      // classes are disjoint; never compare them directly).
+      let topAgentName: string | null = null
+      const topAgentId = (earnRow as { top_agent_id?: string | null } | null)?.top_agent_id ?? null
+      if (topAgentId) {
+        const { data: topAgent } = await svcCap.from("agents").select("user_id").eq("id", topAgentId).maybeSingle()
+        if ((topAgent as { user_id?: string | null } | null)?.user_id) {
+          const { data: topUser } = await svcCap
+            .from("users")
+            .select("first_name, last_name")
+            .eq("id", (topAgent as { user_id: string }).user_id)
+            .maybeSingle()
+          if (topUser) {
+            topAgentName = `${(topUser as any).first_name ?? ""} ${(topUser as any).last_name ?? ""}`.trim() || null
+          }
+        }
+      }
+      teamPnlRollup = {
+        conversionRate: (perfRow as any)?.conversion_rate != null ? Number((perfRow as any).conversion_rate) : null,
+        avgDaysToClose: (perfRow as any)?.avg_days_to_close != null ? Number((perfRow as any).avg_days_to_close) : null,
+        topAgentName,
+        computedAt: (perfRow as any)?.computed_at ?? (earnRow as any)?.computed_at ?? null,
+        periodLabel: rollupPeriod,
+      }
+    }
   }
 
   // Load brokerage financial summary via kernel command
@@ -346,7 +511,7 @@ export default async function TeamFinancialsPage() {
             <p className="text-muted-foreground text-center py-4">No leaderboard data for this period</p>
           )}
           <div className="mt-4 text-center">
-            <Link href="/dashboard/leaderboard" className="text-blue-600 hover:underline text-sm">
+            <Link href="/dashboard/motivation" className="text-blue-600 hover:underline text-sm">
               View Full Leaderboard
             </Link>
           </div>
@@ -428,6 +593,122 @@ export default async function TeamFinancialsPage() {
         </CardContent>
       </Card>
 
+      {/* Section 4a: Team P&L rollup read-back — the nightly rollup's own
+          numbers (lib/finance/team-pl-writer.ts), rendered for the first time:
+          conversion rate, cycle time, top producer, and WHEN they were
+          computed. Absent row = the rollup has not run for this period yet —
+          shown as "not computed", never as zero. */}
+      {teamId && teamPnlRollup && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5" />
+              Team P&amp;L Rollup — {teamPnlRollup.periodLabel}
+            </CardTitle>
+            <CardDescription>
+              {teamPnlRollup.computedAt
+                ? `Computed ${new Date(teamPnlRollup.computedAt).toLocaleString()} by the nightly rollup`
+                : "This period's rollup has not recorded a computation time"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <p className="text-sm text-muted-foreground">Conversion Rate</p>
+                <p className="text-xl font-bold">
+                  {teamPnlRollup.conversionRate != null
+                    ? `${(teamPnlRollup.conversionRate * 100).toFixed(1)}%`
+                    : "Not computed"}
+                </p>
+                <p className="text-xs text-muted-foreground">Closed vs open pipeline</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Avg Days to Close</p>
+                <p className="text-xl font-bold">
+                  {teamPnlRollup.avgDaysToClose != null
+                    ? Math.round(teamPnlRollup.avgDaysToClose)
+                    : "Not computed"}
+                </p>
+                <p className="text-xs text-muted-foreground">Contract to close, this month&apos;s deals</p>
+              </div>
+              <div>
+                <p className="text-sm text-muted-foreground">Top Producer</p>
+                <p className="text-xl font-bold">{teamPnlRollup.topAgentName ?? "—"}</p>
+                <p className="text-xs text-muted-foreground">By gross commission this month</p>
+              </div>
+            </div>
+            {/* SCOPED BOOKS EXPORT (wave 26): push THIS period's rollup into the
+                TEAM's own QuickBooks company. The lane existed with no caller.
+                The period is the rollup's own label, so the button can only
+                export the row shown above; the action re-resolves the team from
+                the session and refuses anyone who does not lead it. */}
+            <div className="mt-4 pt-4 border-t">
+              <QbScopedExportButton
+                label="Sync this P&L to QuickBooks"
+                run={pushTeamPnlToQuickBooksAction.bind(null, teamPnlRollup.periodLabel)}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Section 4b: Team Cap Ledger — the team's take-ceiling per agent (m461).
+          The waterfall writes this ledger (stage 08 charges against it, stage 11
+          advances it); this card is where the team lead finally SEES it. */}
+      {teamId && (teamCapError || teamCapLedger.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Target className="h-5 w-5" />
+              Team Cap Ledger
+            </CardTitle>
+            <CardDescription>
+              What the team has collected from each agent this anniversary year — once an
+              agent reaches the team cap, the team stops taking its cut from their deals.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {teamCapError ? (
+              // A refused read is NOT "no caps configured" — say which one happened.
+              <p className="text-sm text-red-600 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                The cap ledger could not be read ({teamCapError}). Numbers here are
+                unavailable, not zero.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {teamCapLedger.map((row) => {
+                  const pct = row.cap_amount > 0
+                    ? Math.min(100, (row.cap_paid_to_date / row.cap_amount) * 100)
+                    : 0
+                  const remaining = Math.max(0, row.cap_amount - row.cap_paid_to_date)
+                  return (
+                    <div key={row.id} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium flex items-center gap-2">
+                          {row.agent_name}
+                          {row.is_capped && (
+                            <Badge className="text-xs">Capped — team takes $0</Badge>
+                          )}
+                        </span>
+                        <span className="text-muted-foreground">
+                          ${row.cap_paid_to_date.toLocaleString()} of ${row.cap_amount.toLocaleString()}
+                          {!row.is_capped && ` · $${remaining.toLocaleString()} to cap`}
+                        </span>
+                      </div>
+                      <Progress value={pct} className={row.is_capped ? "bg-green-200" : undefined} />
+                      <p className="text-xs text-muted-foreground">
+                        Anniversary window {row.anniversary_start} → {row.anniversary_end}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Section 5: Team Recruiting ROI Summary */}
       <Card>
         <CardHeader>
@@ -491,8 +772,8 @@ export default async function TeamFinancialsPage() {
               lastSyncedAt={teamLastSyncedAt}
               connectPath={teamBooks.quickbooks.offering.connectPath}
               note={teamBooks.quickbooks.offering.verdict}
-              canConnect={userRole === "team_lead"}
-              connectDisabledReason="Only the team lead's login connects the team's QuickBooks (the connection is owned by the team, resolved from the team lead's role)."
+              canConnect={Boolean(ledTeamId)}
+              connectDisabledReason="Only the team lead's login connects the team's QuickBooks — the connection is owned by the team, and 'team lead' is resolved from teams.team_lead_id, not from a role label."
             />
             <ProviderConnectionCard
               provider="stripe"

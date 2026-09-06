@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { notFound, redirect } from "next/navigation"
 import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
@@ -8,8 +9,10 @@ import { TasksPanel }           from "@/app/components/dashboard/listings/lifecy
 import { StageTimeline }        from "@/app/components/dashboard/listings/lifecycle/stage-timeline"
 import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
 import { ListingHealthRadarPanel } from "@/app/components/features/listings/listing-health-radar-panel"
+import { RESOLVED_HISTORY_LIMIT, RESOLVED_HISTORY_WINDOW_DAYS } from "@/lib/listing-health/resolved-history-bounds"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
-import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
+import { getListingTasks } from "@/app/actions/listing-lifecycle"
+import { getOpenHouseDashboard, getPostEventIntelligence } from "@/app/actions/seller-open-house"
 import {
   LaunchReadinessChecklist,
   LaunchActionsPanel,
@@ -17,18 +20,28 @@ import {
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
+import { VendorCoordinationPanel } from "@/app/components/dashboard/listings/lifecycle/vendor-coordination-panel"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
+import { RecordEventCard } from "@/app/components/dashboard/listings/lifecycle/record-event-card"
+import { ListingIntelligenceCard } from "@/app/components/dashboard/listings/lifecycle/listing-intelligence-card"
+import { getListingCopyComplianceGate } from "@/app/actions/ai-listing-intake"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
+import { DescriptionApprovalCard } from "@/app/components/dashboard/listings/lifecycle/description-approval-card"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { AiOptimizationPanel, type AiListingOptimizationRow } from "../components/ai-optimization-panel"
+import { MlsCheckPanel } from "../components/mls-check-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
+import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -41,9 +54,16 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .single()
 
@@ -53,12 +73,23 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Default to the restrictive ("agent") path when user_type is absent.
   let listingQuery = supabase
     .from("listings")
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status")
+    // The trailing columns feed the listing-intelligence card: public_remarks is
+    // the copy the Fair Housing / MLS review reads, the property facts are what
+    // the pricing model prices, and dotloop_loop_id is written by two paths and
+    // was read by NOTHING for document status.
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status, mls_number, mls_link, public_remarks, property_type, bedrooms, bathrooms, sqft, year_built, lot_size, has_pool, dotloop_loop_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
   if ((userRow.user_type ?? "agent") === "agent") {
-    listingQuery = listingQuery.eq("agent_id", user.id)
+    // IDENTITY CLASS. listings.agent_id FKs AGENTS, and user.id is a USERS id —
+    // filtering one by the other matches nothing, so an agent could never open
+    // the lifecycle page for their own listing. Resolved through the canonical
+    // resolver; a caller with no agents row keeps the restrictive path and is
+    // given an id that matches nothing on purpose rather than being widened to
+    // the whole brokerage.
+    const agentRecordId = await resolveUserIdToAgentRecord(user.id, userRow.brokerage_id)
+    listingQuery = listingQuery.eq("agent_id", agentRecordId ?? "00000000-0000-0000-0000-000000000000")
   }
 
   const { data: listing } = await listingQuery.single()
@@ -82,31 +113,84 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .eq("entity_id", listingId)
     .order("created_at", { ascending: true })
 
-  // Load tasks
-  const { data: tasks } = await supabase
-    .from("tasks")
-    .select("id, title, description, status, priority, due_date, owner_role:assignee_type, auto_generated, completed_at")
-    .eq("listing_id", listingId)
-    .eq("auto_generated", true)
-    .order("due_date", { ascending: true })
+  // Load tasks.
+  //
+  // Through the server action rather than inline. The inline read this replaces
+  // carried NO brokerage predicate — it selected `tasks` by listing_id alone and
+  // leaned entirely on RLS — and it destructured only `data`, so a refused read
+  // rendered as "this listing has no tasks". getListingTasks delegates to
+  // getListingTasksService, which resolves the caller's brokerage and filters on
+  // it explicitly, and returns the refusal instead of swallowing it. The
+  // auto_generated narrowing and the owner_role naming the panel expects are
+  // applied here, where they belong — the service is the shared reader.
+  const listingTasksResult = (await getListingTasks(listingId)) as {
+    tasks?: any[]
+    error?: string
+  }
+  if (listingTasksResult.error) {
+    console.error("[listing-lifecycle] task read failed:", listingTasksResult.error)
+  }
+  const tasks = (listingTasksResult.tasks ?? [])
+    .filter((t: any) => t.auto_generated === true)
+    .map((t: any) => ({
+      id:             t.id,
+      title:          t.title,
+      description:    t.description ?? null,
+      status:         t.status,
+      priority:       t.priority ?? null,
+      due_date:       t.due_date ?? null,
+      owner_role:     t.assignee_type ?? null,
+      auto_generated: t.auto_generated,
+      completed_at:   t.completed_at ?? null,
+    }))
 
   // Fetch listing agreement esign status (most recent agreement for this listing)
-  const { data: listingAgreement } = await supabase
+  //
+  // The error is READ (§3). Destructuring `{ data }` alone made a REFUSED query
+  // byte-identical to "this listing has no agreement", and the checklist then
+  // stated "Not yet sent" about a legal document it had simply failed to read.
+  // A refusal now renders as an honest unknown on the checklist row
+  // (agreementReadFailed below) instead of a false negative. NOTE: it is not
+  // promoted to a launch blocker — agreement state has never gated launch here
+  // (see `blockers` below: media, fields, MLS number, compliance, tier), and
+  // inventing a new stop condition is the broker's call, not this read's.
+  const { data: listingAgreement, error: listingAgreementError } = await supabase
     .from("listing_agreements")
-    .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date")
+    // compliance_passed is only ever written TRUE after the execution engine's
+    // real document/signature audit (execution-engine.ts §2.5 gate) — it was
+    // written on every executed agreement and read by nobody, so the checklist
+    // could not distinguish "executed through the gate" from a legacy row.
+    // document_name / effective_date are OPTIONAL intake on the
+    // markAgreementSigned card (wired 2026-09-01, orphan tranche X4) — NULL on
+    // every agreement recorded before that, and on any where the agent left the
+    // fields blank: NULL means "not recorded", never a default.
+    .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date, compliance_passed")
     .eq("listing_id", listingId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  const agreementReadFailed = !!listingAgreementError
+  if (listingAgreementError) {
+    console.error("[listing lifecycle] listing_agreements read failed:", listingAgreementError.message)
+  }
 
   // Coming soon state — media approved gate + transaction ID for email campaigns
-  const [mediaApprovedResult, transactionResult] = await Promise.all([
+  const [mediaApprovedResult, recordedEventsResult, transactionResult] = await Promise.all([
     supabase
       .from("activities")
       .select("id")
       .eq("listing_id", listingId)
       .eq("activity_type", "seller.media.approved")
       .maybeSingle(),
+    // RECORDED lifecycle facts — what the agent actually told the OS happened.
+    // The workflow panel used to infer two of its steps from vendor service_type
+    // and task-title keywords; a recorded fact now wins over the guess.
+    supabase
+      .from("activities")
+      .select("activity_type")
+      .eq("listing_id", listingId)
+      .like("activity_type", "seller.%")
+      .limit(200),
     supabase
       .from("transactions")
       .select("id")
@@ -115,6 +199,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   ])
 
   const mediaApproved = !!mediaApprovedResult.data
+  const recordedEvents = Array.from(
+    new Set(((recordedEventsResult.data ?? []) as Array<{ activity_type: string | null }>)
+      .map((a) => a.activity_type)
+      .filter((t): t is string => !!t)),
+  )
   const transactionId = transactionResult.data?.id ?? null
 
   // AI listing optimization recommendations — written one row per category by
@@ -135,8 +224,23 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   }
 
   // Listing Health Radar data — runs in parallel with the launch-readiness
-  // fetches below. All three queries are gated by RLS to this brokerage.
-  const [healthScoreRes, openInterventionsRes, scoreHistoryRes] = await Promise.all([
+  // fetches below. All four queries are gated by RLS to this brokerage.
+  //
+  // RESOLVED HISTORY (4th query). resolveListingInterventionAction stamps
+  // resolved / resolved_at / resolved_by / resolution_note
+  // (app/actions/listing-health-actions.ts:88) and EVERY reader in the product
+  // filtered those rows out with `.eq("resolved", false)` — here, on
+  // /dashboard/listings/health, and in the risk agent. So a broker could never
+  // audit who cleared a seller_impacted flag. The open list below is deliberately
+  // left open-only; this is a SECOND, bounded read beside it.
+  //
+  // BOUNDS: RESOLVED_HISTORY_LIMIT / RESOLVED_HISTORY_WINDOW_DAYS, imported from
+  // lib/listing-health/resolved-history-bounds.ts, which carries the rationale.
+  // They stood here as function-local consts (and were restated verbatim in
+  // app/dashboard/listings/health/actions.ts) until the hoist on 2026-09-03.
+  // The panel prints both numbers beside the list.
+  const resolvedSince = new Date(Date.now() - RESOLVED_HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
+  const [healthScoreRes, openInterventionsRes, scoreHistoryRes, resolvedInterventionsRes] = await Promise.all([
     supabase
       .from("listing_health_scores")
       .select("id, overall_score, risk_level, flags, ai_narrative, previous_score, score_delta, days_on_market, scored_at, recommended_actions")
@@ -157,10 +261,60 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
       .eq("listing_id", listingId)
       .order("scored_at", { ascending: false })
       .limit(7),
+    supabase
+      .from("listing_health_interventions")
+      .select("id, issue_detected, severity, ai_recommendation, category, created_at, seller_impacted, resolved_at, resolved_by, resolution_note")
+      .eq("listing_id", listingId)
+      .eq("resolved", true)
+      .gte("resolved_at", resolvedSince)
+      .order("resolved_at", { ascending: false })
+      .limit(RESOLVED_HISTORY_LIMIT),
   ])
   const healthScore = healthScoreRes.data ?? null
   const openInterventions = openInterventionsRes.data ?? []
   const scoreHistory = scoreHistoryRes.data ?? []
+  if (resolvedInterventionsRes.error) {
+    // §3: supabase-js RESOLVES refusals. A swallowed error here would render the
+    // audit trail as "nothing has ever been cleared", which is the opposite of
+    // the truth this section exists to tell.
+    console.error("[listing lifecycle] resolved-intervention history read failed:", resolvedInterventionsRes.error.message)
+  }
+  const resolvedInterventionRows = (resolvedInterventionsRes.data ?? []) as Array<{
+    id: string; issue_detected: string; severity: string; ai_recommendation: string | null
+    category: string | null; created_at: string; seller_impacted: boolean | null
+    resolved_at: string | null; resolved_by: string | null; resolution_note: string | null
+  }>
+
+  // WHO CLEARED IT. `listing_health_interventions.resolved_by` FKs users(id)
+  // (scripts/schema-fk-map.ts:458) — a USERS-class id; agents.id and users.id are
+  // disjoint, so this never resolves against `agents`. One batched `.in()`,
+  // anchored to the caller's brokerage (resolved from the SESSION above, §4), so
+  // a foreign id stays unresolved rather than borrowing a name from another
+  // tenant. Gate first, service client second: the listing was already proven to
+  // belong to userRow.brokerage_id by the query at :80-94.
+  const resolverNames = new Map<string, string>()
+  const resolverIds = Array.from(new Set(
+    resolvedInterventionRows.map((r) => r.resolved_by).filter((v): v is string => !!v),
+  ))
+  if (resolverIds.length > 0) {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data: resolvers, error: resolverErr } = await createServiceClient()
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", resolverIds)
+      .eq("brokerage_id", userRow.brokerage_id)
+    if (resolverErr) {
+      console.error("[listing lifecycle] resolver name lookup failed:", resolverErr.message)
+    }
+    for (const u of (resolvers ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) {
+      const full = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+      resolverNames.set(u.id, full || u.email || "Teammate")
+    }
+  }
+  const resolvedInterventions = resolvedInterventionRows.map((r) => ({
+    ...r,
+    resolvedByName: r.resolved_by ? (resolverNames.get(r.resolved_by) ?? null) : null,
+  }))
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -224,18 +378,71 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const openHouseData = openHouseResult
   const scheduledEvent = openHouseData?.events?.[0]
 
-  // Past/completed open houses with their attendees attached
-  const allOpenHouseAttendees = openHouseData?.attendees ?? []
-  const pastOpenHouses = (openHouseData?.events ?? [])
-    .filter((e: any) => e.status === "completed")
-    .map((e: any) => ({
-      ...e,
-      attendees: allOpenHouseAttendees.filter((a: any) => a.event_id === e.id),
-    }))
+  // Past/completed open houses with their attendees attached.
+  //
+  // Sourced from getPostEventIntelligence rather than re-derived from the
+  // dashboard payload. Two reasons, both defects the inline derivation caused:
+  //   · the dashboard's attendee select omits feedback_collected_at, so the panel's
+  //     "awaiting feedback" list counted EVERY attendee forever;
+  //   · getPostEventIntelligence returns attendees ordered by ai_lead_score, which
+  //     is the order the hot-prospect section is meant to be read in.
+  // It was a complete, tenant-scoped action with no caller.
+  const postEvent = await getPostEventIntelligence(listingId)
+  const postEventAttendees = postEvent?.attendees ?? []
+  const pastOpenHouses = (postEvent?.events ?? []).map((e: any) => ({
+    ...e,
+    attendees: postEventAttendees.filter((a: any) => a.event_id === e.id),
+  }))
   const openHousePromotionStatus: "not_started" | "scheduled" | "published" =
     openHouseData?.socialPosts?.some((p: any) => p.status === "published") ? "published" :
     openHouseData?.socialPosts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
+
+// Eligible buyer/lead contacts for the single-buyer fit check — the SAME filter
+// the bulk matcher applies server-side, so the picker offers exactly the pool
+// scoreSingleBuyerForListing will accept. Names only; scoring stays on demand.
+const { data: buyerContacts } = await supabase
+  .from("contacts")
+  .select("id, first_name, last_name")
+  .eq("brokerage_id", userRow.brokerage_id)
+  .in("contact_type", ["buyer", "lead"])
+  .in("status", ["active", "qualified", "nurture"])
+  .is("deleted_at", null)
+  .order("first_name", { ascending: true })
+  .limit(200)
+const buyerOptions = (buyerContacts ?? []).map((c: any) => ({
+  id: c.id as string,
+  name: [c.first_name, c.last_name].filter(Boolean).join(" ") || "(unnamed)",
+}))
+
+// The newest unapproved AI-drafted listing description, if the content engine
+// has produced one for this listing (ai_generated_content, property_id-keyed).
+// generated_content is the parsed model JSON; medium_description is the
+// MLS-length cut, with the longer/shorter cuts as fallbacks.
+const { data: pendingDescRow } = await supabase
+  .from("ai_generated_content")
+  .select("id, generated_content, compliance_status, created_at")
+  .eq("property_id", listingId)
+  .eq("content_type", "listing_description")
+  .eq("compliance_approved", false)
+  .order("created_at", { ascending: false })
+  .limit(1)
+  .maybeSingle()
+const pendingDescContent = (pendingDescRow?.generated_content ?? null) as Record<string, unknown> | null
+const pendingDescText = [
+  pendingDescContent?.medium_description,
+  pendingDescContent?.long_description,
+  pendingDescContent?.description,
+  pendingDescContent?.short_description,
+].find((v): v is string => typeof v === "string" && v.trim().length > 0) ?? null
+const pendingDescription = pendingDescRow && pendingDescText
+  ? {
+      id: pendingDescRow.id as string,
+      text: pendingDescText,
+      createdAt: (pendingDescRow.created_at as string | null) ?? null,
+      complianceStatus: (pendingDescRow.compliance_status as string | null) ?? null,
+    }
+  : null
 
 // Fetch vendors for the "Assign Vendor" modal
 const { data: listingVendors } = await supabase
@@ -253,13 +460,96 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
-  const canOverride = ["broker", "broker_owner", "admin", "team_lead", "superadmin"].includes(userRow.user_type ?? "")
-  const isSuperAdmin = userRow.user_type === "superadmin"
+  const canOverride = isAdminOrBroker({ user_type: userRow.user_type ?? "" })
+  // BOTH identity columns. `userRow.user_type === "superadmin"` was FALSE for the
+  // platform's only superadmin (user_type='admin', platform_role='superadmin'),
+  // and this flag is the SOLE route to the marketing-tier controls: the tier
+  // selector on the readiness card, the tier row in the launch checklist
+  // (`hidden: !isSuperAdmin`) and the tier action in the launch panel were all
+  // invisible to the only account allowed to set a tier — while the launch gate
+  // still required `marketingReady`, so the listing was blocked by a control
+  // nobody could see. Same shape as public.is_platform_admin() in RLS; see
+  // app/actions/vendor-budget.ts:136-147.
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperAdmin = isPlatformSuperadminIdentity(userRow.user_type, (userRow as any).platform_role)
+
+  // MLS NUMBER — the kernel's launch gate blocks on it (validateListingLaunchReadiness),
+  // but this page never read the column, so the checklist showed "ready to launch"
+  // while the kernel refused. The blocker the agent hits was invisible until they
+  // hit it. It is readable from three places, in this order of authority:
+  //   1. listings.mls_number — entered by the agent or stamped by launchListing.
+  //   2. a RentCast property search that matched this address (mlsNumber/mlsName).
+  //   3. an IDX feed the brokerage connected (raw field mlsID).
+  // Only (1) is stored. (2) and (3) are SUGGESTIONS surfaced at launch time —
+  // never auto-written, because matching an address to a feed row is a fuzzy
+  // key and syndicating the wrong MLS number is not a recoverable mistake.
+  const mlsNumber = ((listing as any).mls_number as string | null)?.trim() || null
+  const mlsLink = ((listing as any).mls_link as string | null)?.trim() || null
+  const hasMlsNumber = !!mlsNumber
+
+  // ── COMPLIANCE BLOCKERS ────────────────────────────────────────────────────
+  //
+  // This was `complianceBlockers={[]}` — a hardcoded empty array — so the launch
+  // checklist ALWAYS reported "0 compliance issues" and the compliance gate could
+  // never block a launch. The capability was already there: auditListingDocuments
+  // resolves the seller-side required-document checklist for the brokerage/team/
+  // state and reports what is missing, splitting BLOCKING from warning.
+  //
+  // Only `missing_blocking` becomes a launch blocker. A `missing_warning` is a
+  // document the brokerage wants but has explicitly not made a stop condition —
+  // promoting it to a blocker here would be the OS inventing a rule the broker
+  // did not set.
+  //
+  // A brokerage with no required-document config produces zero required docs and
+  // therefore zero blockers, which is correct rather than a silent pass: it means
+  // nothing has been declared required, not that everything is present.
+  let complianceBlockers: string[] = []
+  try {
+    const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
+    const audit = await auditListingDocuments(supabase, {
+      brokerageId:     userRow.brokerage_id,
+      sellerContactId: listing.seller_contact_id ?? null,
+      agentUserId:     user.id,
+      stateCode:       listing.state ?? null,
+      listingId:       listingId,
+    })
+    complianceBlockers = audit.missing_blocking.map(
+      (c) => `Missing required document: ${String(c).replace(/_/g, " ")}`,
+    )
+  } catch (err) {
+    // A failed audit must NOT read as "compliant". Surface it as a blocker so a
+    // launch is held rather than waved through on an error — the whole point of
+    // the gate is that silence is not consent.
+    console.error("[listing lifecycle] compliance audit failed:", err)
+    complianceBlockers = ["Compliance check could not run — resolve before launching"]
+  }
+
+  // ── THE COPY GATE ─────────────────────────────────────────────────────────
+  //
+  // auditListingDocuments above checks DOCUMENTS. Nothing in the product ever
+  // read the listing's MARKETING COPY for Fair Housing or MLS violations, so a
+  // listing could be syndicated with discriminatory language in its public
+  // remarks and no surface would have said a word. aiCheckListingCompliance
+  // could do exactly that and had no caller anywhere.
+  //
+  // The verdict is recorded against the listing, and only a verdict made against
+  // the copy AS IT STANDS NOW becomes a blocker — rewriting the remarks marks the
+  // old finding stale rather than holding a launch for a violation already fixed.
+  const copyGate = await getListingCopyComplianceGate(listingId)
+  if (!copyGate.success) {
+    // Same rule as the document audit: a gate that could not run is not a pass.
+    complianceBlockers.push("Listing copy review could not run — resolve before launching")
+  } else {
+    complianceBlockers.push(...copyGate.blockers)
+  }
 
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
+  if (!hasMlsNumber) blockers.push("No MLS number entered")
+  blockers.push(...complianceBlockers)
   // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
   if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
@@ -309,6 +599,40 @@ const { data: listingVendorBookings } = await supabase
           </p>
         </div>
 
+        {/* ── LISTING SUB-ROUTE BAR (orphan-route sweep, lane G) ───────────────
+            /dashboard/listings/[id] REDIRECTS here, so this page is the listing's
+            detail hub — and it linked to none of its own siblings. Two of them
+            were outright orphans on test:orphan-routes:
+
+              · /offers    — the seller's decision room: the multi-offer matrix,
+                             the interactive net sheet, `presentOffersToSeller`.
+                             Its only "references" were two revalidatePath calls,
+                             which the sweep no longer counts as reachability.
+              · /showings  — the showing request queue, feedback cards, AI showing
+                             insights and the seller sentiment panel.
+
+            The rest are listed with them because a hub that links two of its nine
+            children is how the next one goes dark. Every href below was checked
+            against app/dashboard/listings/[id]/ — no invented routes. */}
+        <nav className="mb-6 flex flex-wrap gap-2 border-b border-border pb-3">
+          {[
+            { href: `/dashboard/listings/${listingId}/lifecycle`,           label: "Lifecycle" },
+            { href: `/dashboard/listings/${listingId}/offers`,              label: "Offers" },
+            { href: `/dashboard/listings/${listingId}/showings`,            label: "Showings" },
+            { href: `/dashboard/listings/${listingId}/media`,               label: "Media" },
+            { href: `/dashboard/listings/${listingId}/cma`,                 label: "CMA" },
+            { href: `/dashboard/listings/${listingId}/open-house`,          label: "Open House" },
+            { href: `/dashboard/listings/${listingId}/marketing-tier`,      label: "Marketing Tier" },
+            { href: `/dashboard/listings/${listingId}/neighborhood-report`, label: "Neighborhood" },
+            { href: `/dashboard/listings/${listingId}/seller-updates`,      label: "Seller Updates" },
+            { href: `/dashboard/listings/${listingId}/share`,               label: "Share" },
+          ].map((tab) => (
+            <Button key={tab.href} size="sm" variant="outline" asChild>
+              <Link href={tab.href}>{tab.label}</Link>
+            </Button>
+          ))}
+        </nav>
+
         {/* Closed: Seller-to-Lifetime Celebration Card */}
         {currentStage === "CLOSED" && (
           <div className="rounded-lg border border-green-300 bg-green-50 p-4 mb-6">
@@ -339,8 +663,15 @@ const { data: listingVendorBookings } = await supabase
 
         {/* Matching Buyers — on-demand listing→buyer smart match (System 5.1A) */}
         <div className="mb-4">
-          <MatchingBuyersPanel listingId={listingId} />
+          <MatchingBuyersPanel listingId={listingId} buyerOptions={buyerOptions} />
         </div>
+
+        {/* AI-drafted description awaiting the agent's Approve & Publish
+            (saveDescriptionToListing over ai_generated_content — the composer
+            in the intelligence card below covers only the public_remarks half). */}
+        {pendingDescription && (
+          <DescriptionApprovalCard listingId={listingId} draft={pendingDescription} />
+        )}
 
         {/* Listing Health Radar — daily-scored health for this active listing */}
         <div className="mb-4">
@@ -349,18 +680,59 @@ const { data: listingVendorBookings } = await supabase
             healthScore={healthScore as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["healthScore"]}
             openInterventions={openInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["openInterventions"]}
             scoreHistory={scoreHistory as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["scoreHistory"]}
+            resolvedInterventions={resolvedInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["resolvedInterventions"]}
+            resolvedWindowDays={RESOLVED_HISTORY_WINDOW_DAYS}
+            resolvedLimit={RESOLVED_HISTORY_LIMIT}
           />
         </div>
 
-        {/* AI optimization recommendations — generated by the marketing
-            package automation; hidden when none exist for this listing */}
-        {aiOptimizations.length > 0 && (
+        {/* AI optimization recommendations. The panel owns its own generate
+            control (it needs the transaction id — the table keys on it), and
+            hides itself when there is neither a transaction nor a row. */}
+        {(aiOptimizations.length > 0 || transactionId) && (
           <div className="mb-4">
-            <AiOptimizationPanel optimizations={aiOptimizations} />
+            <AiOptimizationPanel optimizations={aiOptimizations} transactionId={transactionId} />
           </div>
         )}
 
-        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
+        {/* MLS pre-submission check — runs lib/listings/mls-rule-check.ts on
+            demand and renders the per-rule fixHints the validator has always
+            returned. Lives beside the launch checklist because this is the
+            pre-submission surface: the agent fixes rule violations here BEFORE
+            the listing goes to the MLS. */}
+        <div className="mb-4">
+          <MlsCheckPanel listingId={listingId} />
+        </div>
+
+        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards).
+
+            CARRIED LOOP CLOSED (orphan tranche X4 → W2). The listing_agreements
+            select at :152 projects TWELVE columns and only three ever reached a
+            prop — existence, fully_executed_at, compliance_passed. document_name
+            and effective_date are written end-to-end by the markAgreementSigned
+            intake and surfaced NOWHERE, so the checklist said "Fully executed"
+            about a document it could not name. document_url makes the executed
+            row link to the document itself rather than back to /forms ("go send
+            it", on a row already complete); seller_signed_at / agent_signed_at
+            turn the generic "awaiting signatures" into which side is holding it
+            up. All of these are NULL on pre-intake rows and wherever the agent
+            left the field blank: the checklist renders NULL as ABSENCE and never
+            manufactures a filename or a date.
+
+            STILL NOT SURFACED, deliberately, and why (an inert projection is
+            noise, so each one is accounted for rather than left dangling):
+              · id            — the row key; used to fetch, never displayed.
+              · agreement_type— the checklist row is already labelled "Listing
+                                Agreement"; this page only ever loads the listing's
+                                own agreement, so the type would restate the label.
+              · esign_status  — the provider's internal state string. The signature
+                                stamps now passed down say the same thing in the
+                                agent's vocabulary (§6: one spelling per idea);
+                                showing both invites the two to disagree on screen.
+              · provider_name /
+                provider_ref  — vendor plumbing for support, not agent-facing
+                                readiness. They belong on a support surface, not on
+                                the "can I launch?" checklist. */}
         <div className="mb-6">
           <LaunchReadinessChecklist
             listingId={listingId}
@@ -370,7 +742,7 @@ const { data: listingVendorBookings } = await supabase
             hasBranded={media.some((m: any) => m.is_branded)}
             hasUnbranded={media.some((m: any) => !m.is_branded)}
             requiredFields={requiredFields}
-            complianceBlockers={[]}
+            complianceBlockers={complianceBlockers}
             packetReady={packetReady}
             currentTier={currentTier}
             isSuperAdmin={isSuperAdmin}
@@ -383,6 +755,16 @@ const { data: listingVendorBookings } = await supabase
             pricingNarrativeReady={pricingNarrativeReady}
             hasListingAgreement={!!listingAgreement}
             agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
+            agreementCompliancePassed={listingAgreement ? listingAgreement.compliance_passed === true : null}
+            agreementDocumentName={listingAgreement?.document_name ?? null}
+            agreementEffectiveDate={listingAgreement?.effective_date ?? null}
+            agreementDocumentUrl={listingAgreement?.document_url ?? null}
+            agreementSellerSignedAt={listingAgreement?.seller_signed_at ?? null}
+            agreementAgentSignedAt={listingAgreement?.agent_signed_at ?? null}
+            agreementReadFailed={agreementReadFailed}
+            mlsNumber={mlsNumber}
+            mlsLink={mlsLink}
+            listingAddress={`${listing.address}${listing.city ? `, ${listing.city}` : ""}`}
             mediaReady={mediaReady}
             publishReady={publishReady}
             marketingReady={marketingReady}
@@ -402,6 +784,18 @@ const { data: listingVendorBookings } = await supabase
           />
         </div>
 
+        {/* The inbound side of the same file: completed paperwork coming BACK.
+            ListingFormsPanel above sends forms out for signature; this is where
+            the signed copies land, get classified, and — when the agreement is
+            fully executed and the required documents are all in — take the
+            listing on. */}
+        <div className="mb-6">
+          <CompletedDocumentsPanel
+            listingId={listingId}
+            listingStatus={listing.status ?? undefined}
+          />
+        </div>
+
         {/* Post-event action centers for completed open houses */}
         {pastOpenHouses.length > 0 && (
           <div className="space-y-4 mb-6">
@@ -410,6 +804,7 @@ const { data: listingVendorBookings } = await supabase
                 key={event.id}
                 event={event}
                 attendees={event.attendees ?? []}
+                listingId={listingId}
               />
             ))}
           </div>
@@ -430,6 +825,17 @@ const { data: listingVendorBookings } = await supabase
           {(listingVendorBookings ?? []).length > 0 && (
             <VendorBookingsPanel bookings={(listingVendorBookings ?? []) as any} />
           )}
+
+          {/* COORDINATION, REACHABLE. app/actions/ai-vendor-management.ts holds a
+              vendor coordination planner — ordering constraints, critical path,
+              conflicts, per-vendor outreach — that had no caller anywhere, so
+              sequencing four vendors on one listing was left to the agent's
+              memory. It plans; VendorBookingButton above still owns the booking. */}
+          <VendorCoordinationPanel
+            listingId={listingId}
+            agentId={listing.agent_id as string}
+            vendors={(listingVendors ?? []) as { id: string; name: string | null; category: string | null }[]}
+          />
         </div>
 
         {(currentStage === "COMING_SOON_PREP" ||
@@ -451,6 +857,45 @@ const { data: listingVendorBookings } = await supabase
           </div>
         )}
 
+        {/* RECORD WHAT ACTUALLY HAPPENED. Twelve governed recorders — the repair
+            loop, the media shoot, showing feedback, the seller's decision, MLS
+            readiness, and all three ways a listing ends — had no caller anywhere,
+            so the agent could see the listing's progress but never tell the OS
+            what had occurred. The controls are derived from the current stage. */}
+        <RecordEventCard listingId={listingId} currentStage={currentStage} />
+
+        {/* THE INTAKE ENGINE, REACHABLE. app/actions/ai-listing-intake.ts holds a
+            Fair Housing / MLS review of the public copy, a list-price
+            recommendation and the loop's document status — all complete, all
+            called from nowhere. The copy review's findings feed the launch
+            blockers computed above. */}
+        <ListingIntelligenceCard
+          listingId={listingId}
+          publicRemarks={(listing as any).public_remarks ?? null}
+          dotloopLoopId={(listing as any).dotloop_loop_id ?? null}
+          lastReview={{
+            reviewed:   copyGate.reviewed,
+            stale:      copyGate.stale,
+            reviewedAt: copyGate.reviewedAt,
+            blockers:   copyGate.blockers,
+            error:      copyGate.success ? undefined : (copyGate.error ?? "gate unavailable"),
+          }}
+          property={{
+            address:      listing.address,
+            city:         listing.city ?? null,
+            state:        listing.state ?? null,
+            zip:          listing.zip ?? null,
+            propertyType: (listing as any).property_type ?? null,
+            bedrooms:     (listing as any).bedrooms ?? null,
+            bathrooms:    (listing as any).bathrooms ?? null,
+            sqft:         (listing as any).sqft ?? null,
+            yearBuilt:    (listing as any).year_built ?? null,
+            lotSize:      (listing as any).lot_size ?? null,
+            hasPool:      (listing as any).has_pool ?? null,
+            listPrice:    listing.list_price ?? null,
+          }}
+        />
+
         {/* Pre-listing workflow panel — shown for pre-active stages */}
         <PreListingWorkflowPanel
           listingId={listingId}
@@ -460,6 +905,7 @@ const { data: listingVendorBookings } = await supabase
             status: b.status,
           }))}
           tasks={(tasks ?? []).map((t: any) => ({ title: t.title, status: t.status }))}
+          recordedEvents={recordedEvents}
           goLiveDate={listing.go_live_date ?? null}
         />
 
@@ -489,7 +935,7 @@ const { data: listingVendorBookings } = await supabase
           listingId={listingId}
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
-          canLaunch={mediaReady && publishReady && marketingReady}
+          canLaunch={mediaReady && publishReady && marketingReady && hasMlsNumber && complianceBlockers.length === 0}
           blockers={blockers}
           isSuperAdmin={isSuperAdmin}
         />

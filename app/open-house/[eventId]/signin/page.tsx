@@ -1,6 +1,33 @@
 import { notFound } from "next/navigation"
-import { createServiceClient } from "@/lib/supabase/service"
+import { getOpenHouseEventPublic } from "@/app/actions/seller-open-house"
 import { SignInKiosk } from "./sign-in-kiosk"
+
+/**
+ * The public open-house sign-in kiosk.
+ *
+ * This page used to assemble its own payload from three raw service-client
+ * queries. Every one of them was a duplicate of
+ * app/actions/seller-open-house.ts:getOpenHouseEventPublic, which was complete
+ * and called from nowhere — so the merge went the other way round: the two
+ * things the page did that the action did not (resolve the agent for the
+ * header, load brokerage branding) were MOVED ONTO the action first, and only
+ * then was the inline copy deleted. Three defects went with it:
+ *
+ *  1. IDENTITY CLASS. `from("users").eq("id", event.agent_id)` — but
+ *     open_house_events.agent_id FKs agents(id), a different id space. It
+ *     matched nothing on every event, so the kiosk has never shown an agent's
+ *     name. The action resolves agents -> agents.user_id -> users.
+ *  2. PUBLIC PAYLOAD. The raw listing row (brokerage_id, agent_id) plus the
+ *     agent's users.id and email address were serialised into a page anyone at
+ *     the open house can view source on. The action returns display fields only.
+ *  3. BRANDING SCOPE. Branding is looked up by the EVENT's brokerage_id inside
+ *     the action, so a kiosk cannot render another tenant's logo.
+ *
+ * The action also decides which events may be signed into at all
+ * (scheduled | marketing | active — matching what checkInAttendee accepts), so
+ * a completed or cancelled event 404s here instead of collecting names for an
+ * event that is over.
+ */
 
 interface Props {
   params: Promise<{ eventId: string }>
@@ -8,70 +35,9 @@ interface Props {
 
 export default async function OpenHouseSignInPage({ params }: Props) {
   const { eventId } = await params
-  const supabase = createServiceClient()
 
-  const { data: event } = await supabase
-    .from("open_house_events")
-    .select(`
-      id,
-      event_date,
-      start_time,
-      end_time,
-      status,
-      listing_id,
-      agent_id,
-      listings (
-        address,
-        city,
-        state,
-        zip,
-        list_price,
-        agent_id,
-        brokerage_id
-      )
-    `)
-    .eq("id", eventId)
-    .maybeSingle()
+  const event = await getOpenHouseEventPublic(eventId)
+  if (!event) notFound()
 
-  if (!event || event.status === "cancelled") notFound()
-
-  // Load agent info — users table has first_name, last_name (no full_name)
-  const { data: agentUser } = await supabase
-    .from("users")
-    .select("id, first_name, last_name, email")
-    .eq("id", event.agent_id)
-    .maybeSingle()
-
-  const agent = agentUser
-    ? {
-        id: agentUser.id,
-        full_name: [agentUser.first_name, agentUser.last_name].filter(Boolean).join(" ") || null,
-        avatar_url: null as string | null,
-        email: agentUser.email,
-      }
-    : null
-
-  // Load brokerage branding from global_settings
-  const listing = event.listings as any
-  const { data: settings } = listing?.brokerage_id
-    ? await supabase
-        .from("global_settings")
-        .select("app_name, app_logo_url, primary_color, from_name")
-        .eq("brokerage_id", listing.brokerage_id)
-        .maybeSingle()
-    : { data: null }
-
-  return (
-    <SignInKiosk
-      event={{
-        id: event.id,
-        eventDate: event.event_date,
-        startTime: event.start_time,
-        endTime: event.end_time,
-        listing: listing ?? null,
-      }}
-      agent={agent ?? null}
-      branding={settings ?? null}
-    />
-  )
+  return <SignInKiosk event={event} />
 }

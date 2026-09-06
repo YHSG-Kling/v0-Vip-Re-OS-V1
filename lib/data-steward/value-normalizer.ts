@@ -26,6 +26,8 @@
 // buyer_stage / status / lifecycle_state are intentionally NOT importable — they
 // are kernel-managed state machines a foreign CRM's labels must not fight.
 
+import { CONTACT_TYPES, LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+
 export interface EnumVocabulary {
   /** The canonical values — must mirror the live check constraint exactly. */
   canonical: readonly string[]
@@ -36,15 +38,34 @@ export interface EnumVocabulary {
 export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
   contact_type: {
     canonical: [
-      'lead', 'prospect', 'client', 'lifetime', 'lifetime_customer', 'past_client',
-      'sphere', 'vendor', 'referral_partner', 'investor', 'buyer', 'seller', 'both', 'other',
+      // m539 collapsed lifetime / lifetime_customer / past_client onto one survivor.
+      // m563 REMOVED 'client' entirely (owner: "client isn't a type").
+      // This list is the WRITE side: a value outside the live CHECK is refused (23514)
+      // and supabase-js resolves the refusal, so the whole imported row is lost silently.
+      ...CONTACT_TYPES,
     ],
     synonyms: {
       'new lead': 'lead', 'cold lead': 'lead', 'web lead': 'lead', 'internet lead': 'lead',
       'potential client': 'prospect', 'potential': 'prospect', 'possible client': 'prospect',
-      'active client': 'client', 'current client': 'client', 'customer': 'client',
-      'past customer': 'past_client', 'previous client': 'past_client', 'closed client': 'past_client',
-      'sold': 'past_client',
+      // TOMBSTONE (§1). `'active client' | 'current client' | 'customer' → 'client'`
+      // stood here. m563 removed 'client' from contacts_contact_type_check, so all
+      // three had become synonyms pointing at a value the DATABASE REFUSES (23514) —
+      // and PGRST/postgres refuses the ENTIRE row, so an import row carrying
+      // "Active Client" would have been dropped wholesale, silently.
+      //
+      // THEY ARE NOT RE-POINTED, and that is the same measured decision m563 itself
+      // made about the backfill: the correct target depends on the row (a represented
+      // buyer is 'buyer', a seller 'seller', a dual-sided move 'both', a closed deal
+      // 'lifetime_customer') and this table cannot see the row. Deleting them makes
+      // normalizeEnumValue return { value: null, method: null }, which puts the raw
+      // string on `unresolved` for the tier-2 matcher and the operator — the vocabulary
+      // "we could not read this", which is the fact worth surfacing. Guessing 'buyer'
+      // would file a seller under the wrong desk and never be noticed.
+      // SURVIVOR of the representation fact: contacts.status / contacts.lifecycle_state.
+      'past customer': LIFETIME_CUSTOMER_TYPE, 'previous client': LIFETIME_CUSTOMER_TYPE,
+      'closed client': LIFETIME_CUSTOMER_TYPE, 'past client': LIFETIME_CUSTOMER_TYPE,
+      'sold': LIFETIME_CUSTOMER_TYPE, 'lifetime': LIFETIME_CUSTOMER_TYPE,
+      'lifetime customer': LIFETIME_CUSTOMER_TYPE,
       'soi': 'sphere', 'sphere of influence': 'sphere', 'friend': 'sphere', 'family': 'sphere',
       'personal': 'sphere',
       'home buyer': 'buyer', 'homebuyer': 'buyer', 'purchaser': 'buyer', 'buying': 'buyer',
@@ -52,9 +73,47 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
       'home seller': 'seller', 'homeowner selling': 'seller', 'selling': 'seller',
       'listing client': 'seller', 'fsbo': 'seller',
       'buyer and seller': 'both', 'buyer/seller': 'both', 'buy and sell': 'both',
-      'real estate investor': 'investor', 'flipper': 'investor', 'landlord': 'investor',
+      // RE-POINTED 2026-08-31 (owner ruling: "investor is a persona and not a
+      // contact type"; m593 retired 'investor' from contacts_contact_type_check,
+      // so these three had become synonyms pointing at a value the DATABASE
+      // REFUSES — the same silent-row-drop shape the 'client' tombstone above
+      // records). Unlike the 'client' trio, the ruling gives these determinate
+      // targets, so they are re-pointed rather than deleted: an investor BUYS
+      // (side = buyer; m593's own backfill maps investor→buyer), and a landlord
+      // is an owner sourced as a potential SELLER of their rental
+      // (lib/lead-pipeline/source-intent-map.ts, quoted at
+      // lib/contact-promotion/contact-creator.ts:motivationToContactType).
+      // RESIDUAL, recorded: the investing FACT survives on
+      // contact_persona='investor' (m589), which a single-field contact_type
+      // synonym cannot set — an import path that wants the persona carried must
+      // map it separately.
+      'real estate investor': 'buyer', 'flipper': 'buyer', 'landlord': 'seller',
       'referral': 'referral_partner', 'referral source': 'referral_partner', 'partner': 'referral_partner',
+      // ADDED 2026-09-01: an external real-estate agent in a contact book is a
+      // referral partner (the roster's own concept for "agent as a contact").
+      // CAVEAT, recorded: an INTERNAL agent must never arrive through a CSV
+      // import — those are agents-table rows, not contacts. If one is
+      // mislabelled in an import it lands as a harmless referral_partner
+      // contact, which beats a silent unresolved.
+      'agent': 'referral_partner', 'realtor': 'referral_partner',
+      'broker': 'referral_partner', 'real estate agent': 'referral_partner',
       'contractor': 'vendor', 'service provider': 'vendor',
+      // DELIBERATELY NO SYNONYMS for three spellings the old dead mapper
+      // (services/aiMappingService.ts STANDARD_CONTACT_TYPES, deleted — survivor
+      // lib/contact-types.ts CONTACT_TYPES) used to admit. Each refuses for the
+      // same reason the 'client' tombstone above records — the honest outcome is
+      // normalizeEnumValue → {value:null} → unresolved + notes:
+      //   'lender'     — a settlement-service counterparty the RESPA gate
+      //                  classifies on the vendor/partner ledgers
+      //                  (vendors.category='lender' /
+      //                  referral_partners.partner_type='mortgage_broker');
+      //                  folding onto 'vendor' would lose that distinction.
+      //   'commercial' — a property attribute, belongs on
+      //                  contacts.property_type='commercial'; a single-field
+      //                  contact_type mapping cannot set a second column — the
+      //                  same residual the investor re-point above records.
+      //   'tc'         — a staff role: users.user_type='tc' +
+      //                  contacts.tc_user_id, never a contact_type.
     },
   },
   lead_temperature: {

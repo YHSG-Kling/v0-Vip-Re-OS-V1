@@ -128,6 +128,14 @@ export async function runCurriculumAuthor(svc: Svc, params: { brokerageId: strin
     let curriculum: Curriculum
     try { curriculum = await authorCurriculum(gap) } catch { continue /* model unavailable — try again next run */ }
 
+    // Cross-path dedup: the chatter/gap path names topics dynamically, so a topic
+    // another subsystem already covered (under a different gap_tag) would slip past
+    // the per-tag guard above. Skip if a near-duplicate title already exists for an
+    // overlapping audience — no duplicates across paths.
+    const audience = gap.source === "compliance" ? ["agent", "broker"] : ["agent"]
+    const { hasNearDuplicateModule } = await import("@/lib/education/dedup-guard")
+    if (await hasNearDuplicateModule(svc, params.brokerageId, curriculum.title, audience)) continue
+
     const ok = await persistCurriculumDraft(svc, params.brokerageId, gap, curriculum)
     if (ok) out.authored++
   }

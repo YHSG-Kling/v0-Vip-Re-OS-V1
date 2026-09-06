@@ -3,15 +3,15 @@
  * scripts/fatigue-simulator.ts
  * ─────────────────────────────────────────────────────────────────────────────
  * Proves the REACH-OUT FATIGUE GUARD shown on the contact detail surface
- * (app/components/contact/ContactFatigueGuard.tsx, fed by @/app/actions/fatigue).
+ * (app/components/contact/ContactFatigueGuard.tsx, fed by @/app/actions/buyer-fatigue).
  *
  * The guard's verdict — level / "safe to reach out" / reason — is computed by the
  * pure, I/O-free lib/fatigue/fatigue-display helper. This harness exercises that
  * helper directly with no Supabase, no React, no mocks: real function, real inputs,
  * real assertions. It pins down the contract the badge relies on:
  *
- *   - score thresholds agree with the scorer (watch>=35, warning>=60, critical>=80)
- *   - "safe to reach out" is true ONLY at fresh / watch (false at warning / critical)
+ *   - score thresholds agree with calculateFatigue (moderate>=25, high>=50, critical>=75)
+ *   - "safe to reach out" is true ONLY at fresh / moderate (false at high / critical)
  *   - a missing score → "Not scored", safe-by-default (never block on no data)
  *   - an active alert's own message wins as the reason (most specific signal)
  *   - a junk stored risk_level falls back to the numeric thresholds (no disagreement)
@@ -20,11 +20,19 @@
  * Run:  npx tsx scripts/fatigue-simulator.ts
  */
 
+import { readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   buildReachoutGuard,
   deriveRiskLevel,
   type FatigueRiskLevel,
 } from "../lib/fatigue/fatigue-display"
+
+/** Source read with comments stripped — these files quote the dead literals they retired. */
+const src = (p: string) =>
+  stripComments(readFileSync(join(process.cwd(), p), "utf8"))
+const exists = (p: string) => existsSync(join(process.cwd(), p))
 
 let passed = 0
 let failed = 0
@@ -41,15 +49,15 @@ function check(name: string, cond: boolean, detail?: string) {
 
 console.log("\nFATIGUE REACH-OUT GUARD SIMULATOR\n")
 
-// ── 1. deriveRiskLevel cut points match the scorer ──────────────────────────
+// ── 1. deriveRiskLevel cut points match calculateFatigue ────────────────────
 console.log("deriveRiskLevel thresholds")
 const levelCases: Array<[number, FatigueRiskLevel]> = [
   [0, "fresh"],
-  [34, "fresh"],
-  [35, "watch"],
-  [59, "watch"],
-  [60, "warning"],
-  [79, "warning"],
+  [24, "fresh"],
+  [25, "moderate"],
+  [49, "moderate"],
+  [50, "high"],
+  [74, "high"],
   [80, "critical"],
   [100, "critical"],
 ]
@@ -72,19 +80,19 @@ console.log("\nno score yet")
   check("null fatigue_score field → not scored", g2.hasScore === false && g2.safeToReachOut === true)
 }
 
-// ── 3. safeToReachOut is true ONLY at fresh / watch ─────────────────────────
+// ── 3. safeToReachOut is true ONLY at fresh / moderate ──────────────────────
 console.log("\nsafe-to-reach-out boundary")
 {
   const fresh = buildReachoutGuard(
     { fatigue_score: 10, risk_level: "fresh", offers_rejected: 0, engagement_trend: "stable" },
     null,
   )
-  const watch = buildReachoutGuard(
-    { fatigue_score: 40, risk_level: "watch", offers_rejected: 0, engagement_trend: "slowing" },
+  const moderate = buildReachoutGuard(
+    { fatigue_score: 40, risk_level: "moderate", offers_rejected: 0, engagement_trend: "stable" },
     null,
   )
-  const warning = buildReachoutGuard(
-    { fatigue_score: 65, risk_level: "warning", offers_rejected: 1, engagement_trend: "declining" },
+  const high = buildReachoutGuard(
+    { fatigue_score: 65, risk_level: "high", offers_rejected: 1, engagement_trend: "declining" },
     null,
   )
   const critical = buildReachoutGuard(
@@ -92,10 +100,10 @@ console.log("\nsafe-to-reach-out boundary")
     null,
   )
   check("fresh → safe", fresh.safeToReachOut === true && fresh.level === "fresh")
-  check("watch → safe", watch.safeToReachOut === true && watch.level === "watch")
-  check("warning → NOT safe", warning.safeToReachOut === false && warning.level === "warning")
+  check("moderate → safe", moderate.safeToReachOut === true && moderate.level === "moderate")
+  check("high → NOT safe", high.safeToReachOut === false && high.level === "high")
   check("critical → NOT safe", critical.safeToReachOut === false && critical.level === "critical")
-  check("warning label is 'Over-contacted'", warning.label === "Over-contacted")
+  check("high label is 'Over-contacted'", high.label === "Over-contacted")
   check("critical label is 'Critical fatigue'", critical.label === "Critical fatigue")
 }
 
@@ -103,7 +111,7 @@ console.log("\nsafe-to-reach-out boundary")
 console.log("\nalert message precedence")
 {
   const g = buildReachoutGuard(
-    { fatigue_score: 72, risk_level: "warning", offers_rejected: 2, engagement_trend: "declining" },
+    { fatigue_score: 72, risk_level: "high", offers_rejected: 2, engagement_trend: "declining" },
     { alert_type: "fatigue_warning", message: "Buyer fatigue score is 72/100 (warning). 2 rejected offers." },
   )
   check("alert message used verbatim as reason", g.reason === "Buyer fatigue score is 72/100 (warning). 2 rejected offers.")
@@ -111,7 +119,7 @@ console.log("\nalert message precedence")
 
   // Empty/whitespace alert message → fall back to computed reason
   const g2 = buildReachoutGuard(
-    { fatigue_score: 65, risk_level: "warning", offers_rejected: 1, engagement_trend: "declining" },
+    { fatigue_score: 65, risk_level: "high", offers_rejected: 1, engagement_trend: "declining" },
     { alert_type: "fatigue_warning", message: "   " },
   )
   check("blank alert message falls back to computed reason", g2.reason.includes("Fatigue 65/100"))
@@ -122,7 +130,7 @@ console.log("\nalert message precedence")
 console.log("\ncomputed reason content")
 {
   const g = buildReachoutGuard(
-    { fatigue_score: 50, risk_level: "watch", offers_rejected: 1, engagement_trend: "declining" },
+    { fatigue_score: 50, risk_level: "moderate", offers_rejected: 1, engagement_trend: "declining" },
     null,
   )
   check("mentions 1 rejected offer (singular)", g.reason.includes("1 rejected offer.") && !g.reason.includes("offers"))
@@ -158,6 +166,82 @@ console.log("\nrobustness")
     null,
   )
   check("score <0 clamps to 0 → fresh + safe", gNeg.level === "fresh" && gNeg.safeToReachOut === true)
+}
+
+// ── ONE scorer, speaking the vocabulary the DATABASE admits ─────────────────
+//
+// lib/fatigue/fatigue-scorer.ts was a SECOND implementation of calculateFatigue,
+// writing the same two tables with its own thresholds and its own words. All
+// three of its vocabularies were rejected by live CHECK constraints, proven
+// against production:
+//
+//   buyer_fatigue_scores.risk_level     fresh moderate high critical  ✓
+//                                       watch warning                 ✗ 23514
+//   buyer_fatigue_scores.engagement_trend  increasing stable declining stopped
+//                                       'slowing'                     ✗
+//   fatigue_alerts.alert_type           fatigue_threshold_crossed …
+//                                       'fatigue_warning'/'fatigue_critical' ✗
+//
+// So every score in the 35–79 band, every 'slowing' trend and every alert it
+// raised was silently lost — while two UI surfaces filtered on watch/warning and
+// showed permanently empty columns.
+console.log("\nvocabulary the live CHECKs admit")
+{
+  check("the duplicate scorer is gone", !exists("lib/fatigue/fatigue-scorer.ts"))
+  check("its duplicate action module is gone too", !exists("app/actions/fatigue.ts"))
+
+  const FATIGUE_SOURCES = [
+    "lib/fatigue/fatigue-calculator.ts",
+    "lib/fatigue/fatigue-display.ts",
+    "lib/fatigue/recovery-generator.ts",
+    "app/actions/buyer-fatigue.ts",
+    "app/api/fatigue/cron/route.ts",
+    "app/dashboard/brokerage/fatigue/brokerage-fatigue-dashboard.tsx",
+    "app/crm/contacts/[contactId]/components/fatigue-widget.tsx",
+    "app/crm/contacts/[contactId]/components/fatigue-panel.tsx",
+    "app/components/contact/ContactFatigueGuard.tsx",
+  ]
+  const DEAD = [
+    /["']watch["']/,
+    /["']warning["']/,
+    /["']slowing["']/,
+    /["']fatigue_warning["']/,
+    /["']fatigue_critical["']/,
+  ]
+  for (const f of FATIGUE_SOURCES) {
+    const body = src(f)
+    const hit = DEAD.find((re) => re.test(body))
+    check(`${f} carries no CHECK-rejected literal`, !hit, hit ? `found ${hit}` : undefined)
+  }
+
+  // RETARGETED 2026-09-03. This pinned the `return "critical" … return "fresh"`
+  // ladder INSIDE the calculator — which was `toRiskLevel`'s body, a byte-identical
+  // second spelling of the cut points that wave 26 DELETED onto
+  // fatigue-display.ts:deriveRiskLevel (§6). Pinning a duplicate's body means the
+  // check can only pass while the duplicate exists, so finishing the merge turned
+  // it red: §2's forbidden waypoint.
+  //
+  // The RULE is what matters — only the four values the live CHECK admits are ever
+  // written — so it is asserted BEHAVIOURALLY across the whole score range rather
+  // than by matching a ladder's text, plus the structural half: the calculator must
+  // consult the survivor instead of growing the ladder back.
+  {
+    const ADMITTED = new Set(["critical", "high", "moderate", "fresh"])
+    const produced = new Set<string>()
+    for (let s = -20; s <= 120; s++) produced.add(deriveRiskLevel(s))
+    check("the risk scorer yields ONLY the four admitted levels, across every score (-20…120)",
+      [...produced].every((r) => ADMITTED.has(r)),
+      [...produced].filter((r) => !ADMITTED.has(r)).join(", ") || undefined)
+    check("…and it actually reaches all four (an always-'fresh' scorer would pass the line above)",
+      produced.size === 4, `produced ${[...produced].sort().join(", ")}`)
+    const calc = src("lib/fatigue/fatigue-calculator.ts")
+    check("the calculator consults the survivor rather than re-declaring the ladder",
+      /import\s*\{[^}]*\bderiveRiskLevel\b[^}]*\}\s*from\s*["']\.\/fatigue-display["']/.test(calc) &&
+      !/function\s+toRiskLevel\s*\(/.test(calc))
+  }
+  check("the badge helper derives from the SAME cut points (75/50/25)",
+    deriveRiskLevel(75) === "critical" && deriveRiskLevel(50) === "high" &&
+    deriveRiskLevel(25) === "moderate" && deriveRiskLevel(24) === "fresh")
 }
 
 // ── Summary ─────────────────────────────────────────────────────────────────

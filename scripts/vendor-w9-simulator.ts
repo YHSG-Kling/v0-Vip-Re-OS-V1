@@ -128,8 +128,47 @@ console.log("\n[4 · capture — existing client-documents rail, portal-gated]")
   const action = src("app/actions/vendor-w9.ts")
   check("upload is portal-gated (requireVendorActor — the caller must BE the vendor)",
     action.includes("requireVendorActor(input.vendorId)"))
+  // The BUCKET is the property, not the call shape that reaches it. Wave 12
+  // moved every upload-then-sign pair onto lib/storage/put-and-sign.ts, which
+  // takes the bucket as a parameter and undoes the upload when the URL cannot be
+  // minted — so the old `.storage.from("client-documents").upload(` spelling is
+  // gone while the thing this check exists to protect (a certified W-9 landing
+  // in the non-public tenant bucket, and no second storage path appearing
+  // beside it) is unchanged and now strictly better.
+  // EVERY bucket named in this file must be that one. Asserting merely that the
+  // name APPEARS is satisfied by the compensating-delete call further down, so
+  // the upload itself could be repointed at another bucket with the check still
+  // green — verified by reintroducing exactly that bug. The property is "this
+  // action touches one bucket and it is the tenant's private one".
+  // RESOLVED THROUGH THE FILE'S OWN CONSTANTS, because pinning to the literal
+  // spelling made this fail for an improvement. The action used to write
+  // `bucket: "client-documents"` at three call sites; the upload-ceiling work
+  // hoisted it to `const W9_BUCKET = "client-documents"` and passes the constant
+  // — one name for one idea (§6) — and this matcher, looking only for a quoted
+  // string after `bucket:`, then found NOTHING and reported "no bucket is named
+  // at all" about a file that names it three times.
+  //
+  // The property above is unchanged and still strict: every bucket this action
+  // touches must be the tenant's private one. Only the resolution step is new —
+  // a `bucket:` value that is an identifier is looked up among the file's own
+  // top-level string constants. An identifier that does NOT resolve is kept as
+  // its raw text so it can never silently vanish from the list the way the
+  // hoisted constant just did; an unresolvable name fails the every() below
+  // rather than being skipped.
+  const constBindings = new Map<string, string>()
+  for (const m of action.matchAll(/(?:^|\n)\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]+)"/g)) {
+    constBindings.set(m[1], m[2])
+  }
+  const bucketsNamed = [...action.matchAll(/bucket:\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))/g)]
+    .map(m => m[1] ?? constBindings.get(m[2]!) ?? `UNRESOLVED:${m[2]}`)
   check("PDF lands in the EXISTING 'client-documents' storage bucket (no new storage path)",
-    action.includes('.from("client-documents")') && action.includes(".upload("))
+    bucketsNamed.length >= 1
+    && bucketsNamed.every(b => b === "client-documents")
+    && !/\.storage\s*\n?\s*\.from\("(?!client-documents)[^"]+"\)/.test(action),
+    bucketsNamed.length ? `buckets named here: ${[...new Set(bucketsNamed)].join(", ")}` : "no bucket is named at all")
+  check("…and a failed URL does not leave the W-9 orphaned in that bucket",
+    /putAndSign\(/.test(action) && /removeOrRecordOrphan|!stored\.ok/.test(action),
+    "the bytes are a vendor's certified tax document; an upload with no row pointing at it is the worst kind to strand")
   check("a client_documents row records the doc (document_type 'vendor_w9')",
     action.includes('from("client_documents")') && action.includes('"vendor_w9"'))
   check("structured basics upsert onto vendor_tax_documents (one row per vendor)",

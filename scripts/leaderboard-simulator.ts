@@ -14,7 +14,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
-import { rankPoints, isoWeekLabel, monthLabel, type LedgerRow } from "../lib/recruiting/leaderboard"
+import { rankPoints, partitionByTeam, isoWeekLabel, monthLabel, POPULATED_METRICS, CLOSED_STATES_ARE_REAL, type LedgerRow } from "../lib/recruiting/leaderboard"
+import { LEADERBOARD_SCOPES, LEADERBOARD_METRICS, periodWindows, isCanonicalPeriodLabel } from "../lib/gamification/leaderboard-vocabulary"
+import { tierForPoints, nextTierForPoints } from "../lib/gamification/tiers"
 import { computeRetentionScore, type RetentionSignals } from "../lib/recruiting/retention-score"
 
 let pass = 0, fail = 0
@@ -35,9 +37,40 @@ function pureLayer() {
   check("rank_position is 1-indexed + contiguous", allTime[0].rank_position === 1 && allTime[1].rank_position === 2)
   check("deterministic tie-break by agent_id", JSON.stringify(rankPoints([row("z", 10, 1), row("a", 10, 1)], null).map((r) => r.agent_id)) === JSON.stringify(["a", "z"]))
 
+  console.log("\n[team partition · pure]")
+  const teamRows = [row("a", 100, 1), row("b", 200, 1), row("c", 50, 1)]
+  const teams = new Map<string, string | null>([["a", "t1"], ["b", "t1"], ["c", null]])
+  const parted = partitionByTeam(teamRows, teams)
+  check("rows are grouped by their agent's team", parted.get("t1")?.length === 2)
+  check("an agent with no team produces no team board", !parted.has("null") && parted.size === 1)
+  const t1 = rankPoints(parted.get("t1") ?? [], null)
+  check("team ranks restart at 1 inside the team", t1[0].agent_id === "b" && t1[0].rank_position === 1)
+
   console.log("\n[period labels · pure]")
   check("isoWeekLabel formats YYYY-Www", /^\d{4}-W\d{2}$/.test(isoWeekLabel(NOW)))
   check("monthLabel formats YYYY-MM", monthLabel(NOW) === "2026-07")
+
+  console.log("\n[one vocabulary · pure]")
+  check("scope is the comparison group — brokerage/team, never the row grain 'agent'",
+    JSON.stringify([...LEADERBOARD_SCOPES]) === JSON.stringify(["brokerage", "team"]))
+  check("no revenue metric on a peer-visible board",
+    !(LEADERBOARD_METRICS as readonly string[]).includes("revenue") && LEADERBOARD_METRICS.length === 3)
+  check("every period the UI may offer is one the populator writes",
+    periodWindows(NOW).every((w) => isCanonicalPeriodLabel(w.value, NOW)) && periodWindows(NOW).length === 3)
+  check("a display label is never a stored value", !isCanonicalPeriodLabel("This Month", NOW))
+  // §2: these two invariants were computed and exported by the populator but asserted by
+  // NOBODY — a proof nobody runs. This guard is their reader (wired 2026-08-31, lane M4).
+  check("every metric the vocabulary admits is one the populator writes (POPULATED_METRICS)",
+    LEADERBOARD_METRICS.every((m) => POPULATED_METRICS.includes(m)) &&
+    POPULATED_METRICS.every((m) => (LEADERBOARD_METRICS as readonly string[]).includes(m)))
+  check("CLOSED_STATES_ARE_REAL — every closed state is in the live transactions.status vocabulary",
+    CLOSED_STATES_ARE_REAL === true)
+
+  console.log("\n[one tier ladder · pure]")
+  check("the server ladder wins: 500/2500/10000/25000",
+    tierForPoints(499) === "unranked" && tierForPoints(500) === "bronze" &&
+    tierForPoints(2500) === "silver" && tierForPoints(10000) === "gold" && tierForPoints(25000) === "platinum")
+  check("the top of the threshold ladder has no next rung to promise", nextTierForPoints(25000) === null)
 
   console.log("\n[retention gamification feed · pure]")
   const base = (o: Partial<RetentionSignals> = {}): RetentionSignals => ({ daysSinceActivity: 10, daysSinceClosing: 120, activePipeline: 1, onboardingPct: 100, tenureDays: 400, ...o })
@@ -52,7 +85,21 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — ledger consolidation, radar feed, cron]")
   const gam = src("app/actions/gamification.ts")
-  check("addPoints writes the canonical ledger (agent_points_log)", /from\("agent_points_log"\)\.insert\(\{[\s\S]*?points: pointsToAdd/.test(gam))
+  check("gamification.ts is a real server-action module (three client components import it)", /^"use server"/.test(gam))
+  check("addPoints rides the ONE atomic award path, not read-modify-write", /awardAgentPoints\(/.test(gam) && !/gamification_points: newPoints/.test(gam))
+  check("every reader validates against the shared vocabulary", /leaderboard-vocabulary/.test(gam) && /isLeaderboardScope/.test(gam))
+  const awardLib = src("lib/gamification/award-points.ts")
+  check("the award wrapper calls the atomic RPC", /rpc\("award_agent_points"/.test(awardLib))
+  const board = src("lib/recruiting/leaderboard.ts")
+  check("the populator writes TEAM scope, not just brokerage", /scope: "team"/.test(board) && /team_id: teamId/.test(board))
+  check("the populator builds all three metrics from real rows", /from\("transactions"\)/.test(board) && /referring_agent_id/.test(board))
+  const readers = ["app/actions/gamification.ts", "app/actions/agents.ts", "app/dashboard/intelligence/page.tsx", "app/dashboard/motivation/motivation-client.tsx"]
+  check("no reader asks for the scope nothing writes", readers.every((f) => !/scope:\s*"agent"/.test(src(f))))
+  check("the motivation board no longer offers revenue", !/"revenue"/.test(src("app/dashboard/motivation/motivation-client.tsx")))
+  const mig = src("supabase/migrations/m484-a-board-read-in-one-vocabulary-and-written-in-another-can-never-show-a-row.sql")
+  check("the migration closes the point-forging door", /agent_points_log_insert/.test(mig) && /is_tenant_staff_seat\(\)/.test(mig))
+  check("the migration defines the atomic award function", /create or replace function public\.award_agent_points/.test(mig))
+  check("the migration seeds a badge catalog awards can land on", /insert into public\.gamification_badges/.test(mig))
   const radar = src("lib/recruiting/retention-radar.ts")
   check("the retention radar gathers gamification points (30d)", /from\("agent_points_log"\)\.select\("points"\)[\s\S]*?gamificationPoints30d: points30d/.test(radar))
   const cron = src("app/api/cron/recruit-outreach/route.ts")
@@ -91,7 +138,7 @@ async function liveLayer() {
   } finally {
     // Remove our seeded ledger rows, then re-snapshot to restore the board to its real state.
     for (const id of cleanupLedger) await svc.from("agent_points_log").delete().eq("id", id)
-    await svc.from("leaderboard_rankings").delete().eq("brokerage_id", brokerageId).in("period_label", [isoWeekLabel(new Date()), monthLabel(new Date()), "all_time"]).eq("metric_type", "points").eq("scope", "brokerage")
+    await svc.from("leaderboard_rankings").delete().eq("brokerage_id", brokerageId).in("period_label", [isoWeekLabel(new Date()), monthLabel(new Date()), "all_time"]).in("metric_type", ["points", "transactions", "referrals"]).in("scope", ["brokerage", "team"])
     try { await runLeaderboardSnapshot(svc as any, { brokerageId }) } catch { /* best-effort restore */ }
     let left = 0
     for (const id of cleanupLedger) { const { count } = await svc.from("agent_points_log").select("id", { count: "exact", head: true }).eq("id", id); left += count ?? 0 }

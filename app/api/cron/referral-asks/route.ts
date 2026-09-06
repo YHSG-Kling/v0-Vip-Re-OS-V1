@@ -41,7 +41,10 @@ export async function GET(req: NextRequest) {
 
     const { data: transactions, error } = await supabase
       .from("transactions")
-      .select("id, agent_id, contact_id, property_address, close_date")
+      // `brokerage_id` added to the projection for the stamp below — the
+      // transaction is the record each ask is filed against, and it is the only
+      // anchor on this row that cannot be null-by-data.
+      .select("id, agent_id, contact_id, property_address, close_date, brokerage_id")
       .eq("status", "closed")
       .gte("close_date", thirtyDaysAgo.split("T")[0])
       .lte("close_date", fourteenDaysAgo.split("T")[0])
@@ -51,21 +54,42 @@ export async function GET(req: NextRequest) {
       errors.push(`Transactions query failed: ${error.message}`)
     } else {
       for (const tx of transactions ?? []) {
-        try {
-          await supabase.from("activities").insert({
-            agent_id: tx.agent_id,
-            contact_id: tx.contact_id,
-            activity_type: "referral_ask_due",
-            title: `Request a referral from your recent closing`,
-            description: `${tx.property_address} closed recently. Great time to ask for referrals.`,
-            status: "pending",
-            priority: "medium",
-            metadata: { transaction_id: tx.id },
-          })
-          processed++
-        } catch (err: any) {
+        // TENANT: the closed transaction this ask is filed against.
+        //
+        // `activities` is trigger-covered (`activities_set_brokerage`, BEFORE
+        // INSERT), and on the service client this cron uses the trigger DOES
+        // resolve — but only through `contact_id` or `agent_id`, and BOTH are
+        // nullable on `transactions`. A closed deal carrying neither leaves the
+        // trigger with nothing to match, and `activities.brokerage_id` is NOT
+        // NULL, so that ask is **refused, 23502** rather than written untenanted.
+        // The transaction's own brokerage is the anchor that cannot go missing,
+        // and an explicit stamp wins over the trigger (it only fires `IF
+        // NEW.brokerage_id IS NULL`), so this is strictly compatible with the
+        // rows the trigger was already handling.
+        if (!tx.brokerage_id) {
           skipped++
-          errors.push(`Tx ${tx.id}: ${err.message}`)
+          errors.push(`Tx ${tx.id}: transaction carries no brokerage_id — referral ask not written (activities.brokerage_id is NOT NULL)`)
+          continue
+        }
+        // NOT try/catch: supabase-js RESOLVES a refused insert rather than
+        // throwing, so the `catch` this replaced could never fire and every
+        // refusal was counted as `processed++`.
+        const { error: askError } = await supabase.from("activities").insert({
+          brokerage_id: tx.brokerage_id,
+          agent_id: tx.agent_id,
+          contact_id: tx.contact_id,
+          activity_type: "referral_ask_due",
+          title: `Request a referral from your recent closing`,
+          description: `${tx.property_address} closed recently. Great time to ask for referrals.`,
+          status: "pending",
+          priority: "medium",
+          metadata: { transaction_id: tx.id },
+        })
+        if (askError) {
+          skipped++
+          errors.push(`Tx ${tx.id}: ${askError.message}`)
+        } else {
+          processed++
         }
       }
     }
@@ -91,9 +115,37 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Referral asks cron failed: ${err.message}`)
-    void supabase
+    // PLATFORM-WIDE FAILURE, WRITTEN DELIBERATELY UNTENANTED — the one place in
+    // this wave where no tenant is the honest answer, and it is defended rather
+    // than assumed.
+    //
+    // This catch is the OUTER catch of a sweep that runs across EVERY brokerage
+    // (the per-item failures are caught inside the loop and pushed to `errors`).
+    // What failed is the job, not one tenant's work, so there is no record to
+    // resolve a tenant through and inventing one would attribute a platform
+    // outage to whichever brokerage happened to be first.
+    //
+    // Writing it untenanted is not "a row nobody can read", which is the rule
+    // this wave otherwise follows. Measured, not assumed: `lib/platform/ai-ops.ts:73`
+    // reads `automation_errors` CROSS-TENANT on the service client with NO
+    // brokerage predicate (`.not("status","in","(resolved,dismissed)")`), its row
+    // type carries `brokerageId: string | null` explicitly, and
+    // `app/actions/superadmin/ai-ops.ts:resolveAutomationErrorAction` resolves by
+    // id with no brokerage predicate either. So this row IS visible and IS
+    // resolvable — on the platform AI-ops console, which is exactly the audience
+    // a platform-wide cron failure belongs to, and is invisible to tenants, which
+    // is exactly right for a failure that is not theirs.
+    //
+    // The `void` fire-and-forget it replaces discarded the insert's own outcome,
+    // so a refused error-log looked identical to a filed one.
+    const { error: referral_asks_log_error } = await supabase
       .from("automation_errors")
-      .insert({ workflow_name: "referral-asks", error_message: err.message, severity: "error", created_at: ranAt })
+      .insert({ brokerage_id: null, workflow_name: "referral-asks", error_message: err.message, severity: "error", created_at: ranAt })
+    if (referral_asks_log_error) {
+      // The ORIGINAL failure is already in `errors` and in the response body, so a
+      // failure to FILE it is reported beside it and never replaces it.
+      console.error("[ReferralAsks] automation_errors insert refused:", referral_asks_log_error.message)
+    }
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

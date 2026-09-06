@@ -101,12 +101,16 @@ export async function GET(request: NextRequest) {
     if (lastActivityDate < stalledThreshold) {
       stalledAgents.push(onboarding.agent_id)
 
-      // Get agent name for personalized suggestion
+      // Get agent name for personalized suggestion.
+      // IDENTITY CLASS. onboarding.agent_id is agent_onboarding.agent_id,
+      // which FKs agents(id) — reading `users` by it matched nothing, so the
+      // "personalized" nudge went out with an empty name every time.
       const { data: agent } = await supabase
-        .from('users')
-        .select('first_name, last_name')
+        .from('agents')
+        .select('users(first_name, last_name)')
         .eq('id', onboarding.agent_id)
         .single()
+        .then((r) => ({ data: (r.data as { users?: { first_name?: string; last_name?: string } } | null)?.users ?? null }))
 
       const agentName = agent 
         ? `${agent.first_name || ''} ${agent.last_name || ''}`.trim() 

@@ -4,11 +4,12 @@ import { useState, useEffect } from "react"
 import { useSearchParams } from "next/navigation"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { Plus, Mail, Users, Truck, MessageSquare } from "lucide-react"
+import { Plus, Mail, Users, Truck, MessageSquare, BarChart3 } from "lucide-react"
 import { CampaignsTab } from "./components/campaigns-tab"
 import { RecipientsTab } from "./components/recipients-tab"
 import { TrackingTab } from "./components/tracking-tab"
 import { ResponsesTab } from "./components/responses-tab"
+import { AnalyticsTab } from "./components/analytics-tab"
 import { CreateCampaignDialog } from "./components/create-campaign-dialog"
 import {
   getMailCampaigns,
@@ -234,6 +235,13 @@ export function MailDashboard({ brokerageId }: MailDashboardProps) {
                 <MessageSquare className="h-4 w-4" />
                 Responses
               </TabsTrigger>
+              {/* Outcome, not activity — spend / responses / cost-per-response.
+                  Every other tab reports what was sent; this one reports whether
+                  it paid. */}
+              <TabsTrigger value="analytics" className="gap-2">
+                <BarChart3 className="h-4 w-4" />
+                Analytics
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -276,7 +284,12 @@ export function MailDashboard({ brokerageId }: MailDashboardProps) {
                 selectedCampaignId={selectedCampaignId}
                 onSelectCampaign={handleCampaignSelect}
                 loading={loading}
+                onResponseLogged={handleRefresh}
               />
+            </TabsContent>
+
+            <TabsContent value="analytics" className="mt-0 h-full">
+              <AnalyticsTab selectedCampaignId={selectedCampaignId} />
             </TabsContent>
           </div>
         </Tabs>

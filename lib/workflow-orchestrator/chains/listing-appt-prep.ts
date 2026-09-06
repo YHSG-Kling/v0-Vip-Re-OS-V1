@@ -55,9 +55,87 @@ const realExecutors: ListingApptPrepExecutors = {
     const { generateAICMA } = await import("@/app/actions/ai-cma")
     return generateAICMA(args)
   },
+  // The SERVER-ONLY core, not the "use server" action wrapping it. This chain is
+  // started unattended by lib/ai-isa/book-seller-appointment.ts (a webhook lane
+  // with no session), and the action's supabase.auth.getUser() gate returned
+  // "Unauthorized" there — step 2 failed before it did any work. The core takes
+  // the tenant explicitly from the run's context instead of from a session.
+  // ── THE ARTIFACT SET THE OWNER NAMED (ruling 2026-09-05) ────────────────────
+  // "the original autonomous should be cma + marketing plan + presentation/slide
+  //  deck (packet is for printouts) turned into chapter reels"
+  //
+  // This called generateAiListingPresentation, which writes a listing_presentations
+  // row carrying ONLY the AI narrative. It populates NONE of the typed columns the
+  // readers actually read — cma_low_value / cma_mid_value / cma_high_value /
+  // cma_narrative / marketing_plan / slide_deck / net_sheet are all left NULL — and
+  // three separate surfaces read exactly those columns:
+  //     app/dashboard/listings/presentations/[id]/page.tsx   (the agent's viewer,
+  //       which coerces with `Number(pres.cma_low_value ?? 0)`, so the agent saw $0)
+  //     app/portal/listing-plan/[id]/page.tsx                (the seller's plan)
+  //     lib/listing-presentation/section-drip.ts             (the drip sections)
+  //
+  // AND IT SILENTLY BLOCKED THE REPAIR. The listing-presentation-prep cron is
+  // idempotent by design — it SKIPS any appointment that already has a
+  // listing_presentations row (route.ts:149). So whichever producer ran first won,
+  // and when this chain won, the complete builder never ran for that seller at all:
+  // a presentation with a $0 range, no marketing plan and no slide deck, permanently.
+  //
+  // THE SURVIVOR (§1.1) is lib/workflow/intelligence/listing-presentation-builder.ts
+  // ::buildListingPresentation — the same producer the cron and the on-demand
+  // workflow route already use. It writes the owner's set exactly: the CMA snapshot
+  // columns, the 3-price net sheet, the marketing plan, the slide deck, and the
+  // listing-agreement packet (which stays what the owner says it is — the printout,
+  // not part of what becomes reels). Pointing this chain at it makes ALL THREE
+  // autonomous entry points one producer, so "which ran first" stops mattering.
+  //
+  // NOT A DELETION, AND NOT A REVERSAL OF THE EARLIER RULING.
+  // generateAiListingPresentation survives on its own authenticated door
+  // (app/actions/ai-listing-presentation.ts, reached from the CMA → Presentation
+  // tab), where it was already adjudicated the survivor of a DIFFERENT pair — see
+  // the tombstone at app/actions/cma-presentation/presentation-assembler.ts:28. The
+  // two are not duplicates of each other: that door is an agent ASKING for an AI
+  // narrative in their own words, and its update arm attaches that narrative to the
+  // existing row rather than creating a second one, so the two now compose on ONE
+  // row per appointment instead of racing to define it.
   generatePresentation: async (args) => {
-    const { generateListingPresentation } = await import("@/app/actions/ai-listing-presentation")
-    return generateListingPresentation(args)
+    const { buildListingPresentation } = await import("@/lib/workflow/intelligence/listing-presentation-builder")
+    const p = args.propertyData ?? {}
+    const built = await buildListingPresentation({
+      brokerageId:     args.brokerageId,
+      // The builder takes agentUserId (users.id); this chain resolved an agents.id
+      // for the CMA step. agents.id and users.id are DISJOINT (CLAUDE.md §3), so the
+      // run's own agentUserId is passed rather than the agent row's id.
+      agentUserId:     args.agentUserId ?? null,
+      contactId:       args.contactId ?? null,
+      appointmentId:   args.appointmentId ?? null,
+      appointmentAt:   args.appointmentAt ?? null,
+      listingId:       args.listingId ?? null,
+      propertyAddress: p.address,
+      state:           p.state,
+      city:            p.city ?? null,
+      zip:             p.zipCode ?? p.zip ?? null,
+      bedrooms:        p.bedrooms ?? null,
+      bathrooms:       p.bathrooms ?? null,
+      sqft:            p.sqft ?? null,
+      yearBuilt:       p.yearBuilt ?? null,
+      // THE CMA STEP 1 ALREADY PAID FOR. Without this the builder runs the SAME
+      // engine again (lib/cma/ai-cma-orchestrator::runAiCma), buying a second set
+      // of comps for the same house — and producing a second, independent number
+      // that can disagree with the cma_reports row the agent opens.
+      cma:             args.cma ?? undefined,
+    })
+    if (!built.success || !built.result) {
+      return { success: false, error: built.error ?? "Listing presentation build failed" }
+    }
+    // Shape-adapt to what step 2's handler already returns, so the chapter-video and
+    // drip steps downstream are untouched. `chapters` comes from the slide deck —
+    // the deck IS the chapter list the owner is describing.
+    return {
+      success: true,
+      presentationId: built.result.presentationId,
+      chapters: (built.result.slideDeck ?? []).map((s: { title: string }) => ({ title: s.title })),
+      content: built.result,
+    }
   },
   // Lazily import the D-ID + ElevenLabs chapter-video pipeline so merely loading
   // this chain module (e.g. in a tsx simulator) does NOT eagerly pull the video/
@@ -84,7 +162,9 @@ export function listingApptPrepDedupeKey(listingId: string): string {
 }
 
 
-/** Override the money-spending leaf executors (tests only). Pass null to reset to real. */
+/** Override the money-spending leaf executors (tests only). Pass null to reset to real.
+ *  CENSUS NOTE: a test seam by design — readers are scripts/listing-appt-prep-simulator.ts:181,
+ *  buyer-intent-conversion-simulator.ts:113, seller-appt-conversion-simulator.ts:96. */
 export function setListingApptPrepExecutors(next: Partial<ListingApptPrepExecutors> | null): void {
   activeExecutors = next ? { ...realExecutors, ...next } : realExecutors
 }
@@ -160,20 +240,35 @@ export const listingApptPrepChain: WorkflowChain = {
         // Use the canonical CMA generator via the injectable executor seam.
         // Real path lazily imports the server action (avoids bundling it into
         // the lib layer at edge); tests inject a fake so no AVM spend in CI.
+        //
+        // PARAMETER NAMES. This object used `address`/`city`/`state`/`zipCode`/
+        // `sqft` — NOT ONE of which is a key on generateAICMA's CMAParams, which
+        // reads propertyAddress / propertyCity / propertyState / propertyZip /
+        // squareFeet. The `as any` on the call is what let it compile. So every
+        // CMA generated from a listing appointment ran with an EMPTY address and
+        // ZERO square feet: the comps provider was handed ", , " to search on and
+        // the subject was valued as a 0-sqft home. It never failed loudly — it
+        // returned a CMA built on nothing. `listingType` was missing too, which
+        // the pricing strategy branches on.
         const cma = await activeExecutors.generateCMA({
           agentId: agent.id,
           contactId: ctx.contactId,
-          address: propertyData.address,
-          city: propertyData.city,
-          state: propertyData.state,
-          zipCode: propertyData.zip ?? propertyData.zipCode,
-          bedrooms: propertyData.bedrooms,
-          bathrooms: propertyData.bathrooms,
-          sqft: propertyData.sqft,
+          propertyAddress: propertyData.address,
+          propertyCity: propertyData.city ?? "",
+          propertyState: propertyData.state ?? "",
+          propertyZip: propertyData.zip ?? propertyData.zipCode ?? "",
+          bedrooms: propertyData.bedrooms ?? 0,
+          bathrooms: propertyData.bathrooms ?? 0,
+          squareFeet: propertyData.sqft ?? 0,
           lotSize: propertyData.lotSize,
           yearBuilt: propertyData.yearBuilt,
           propertyType: propertyData.propertyType ?? "single_family",
-          condition: propertyData.condition ?? "average",
+          // Left unset unless the appointment actually recorded one. The old
+          // `?? "average"` is not a member of the condition vocabulary
+          // (excellent|good|fair|poor), so it graded as unknown anyway — but it
+          // read on the record as though the property had been assessed.
+          condition: propertyData.condition,
+          listingType: "seller",
         } as any)
 
         if (!cma.success) {
@@ -221,8 +316,66 @@ export const listingApptPrepChain: WorkflowChain = {
           sellerName = [c?.first_name, c?.last_name].filter(Boolean).join(" ") || undefined
         }
 
+        // The APPOINTMENT this prep is for. It is what keeps the presentation to
+        // ONE row per meeting: the listing-presentation-prep cron keys its build
+        // on appointment_id, so passing it here makes step 2 write onto that same
+        // row instead of creating a second one — and a second one would mean a
+        // second seller drip (materializePresentationSections runs per row).
+        const appointmentId = await resolveAppointmentEventId(svc, {
+          metadataAppointmentId: ctx.metadata.appointment_id,
+          listingId: ctx.listingId ?? null,
+        })
+
         const result: any = await activeExecutors.generatePresentation({
+          // TENANT ANCHOR — the run's brokerage, not a session. The chain is
+          // started unattended by the AI-ISA and by the kernel event lane.
+          brokerageId: ctx.brokerageId,
           agentId: agent.id,
+          // BOTH ID CLASSES, DELIBERATELY. `agentId` is an agents.id (what the CMA
+          // step resolved); `agentUserId` is a users.id. They are DISJOINT (§3), and
+          // the presentation builder wants the users.id — passing the agents.id
+          // there would be a 23503 that loses the whole row. Both travel so the
+          // executor picks the one its producer takes rather than converting.
+          agentUserId: ctx.agentUserId ?? null,
+          // The listing this appointment is for, when there is one. The builder uses
+          // it to load the seller's recorded improvements so the CMA narrative
+          // accounts for what they have done to the home — the last clause of the
+          // owner's CMA ruling. A prospect with no listing yet passes null.
+          listingId: ctx.listingId ?? null,
+          contactId: ctx.contactId ?? null,
+          // ── STEP 1'S CMA, REUSED RATHER THAN RE-BOUGHT ──────────────────────
+          // The comment introducing this step has said "(uses CMA output)" since it
+          // was written, and until now it did not: generate_cma's output was never
+          // read by anything, so the builder ran the engine a second time. Mapped
+          // into the builder's narrow shape here.
+          //
+          // UNITS: confidenceScore is the engine's native 0..1. `valuation` also
+          // carries confidenceLevel (0..100) for display — passing THAT would look
+          // correct to every type check and render an 8500% confidence.
+          //
+          // Absent or malformed (a gated/skipped step 1, an older run replayed) it
+          // stays undefined and the builder values the property itself, exactly as
+          // before. Reuse is an optimisation, never a precondition.
+          cma: (() => {
+            const v = ctx.previousStepOutputs.generate_cma?.valuation as
+              | { estimatedValueLow?: number; estimatedValue?: number; estimatedValueHigh?: number; confidenceScore?: number; narrative?: string }
+              | undefined
+            if (
+              typeof v?.estimatedValueLow !== "number" ||
+              typeof v?.estimatedValue !== "number" ||
+              typeof v?.estimatedValueHigh !== "number" ||
+              typeof v?.confidenceScore !== "number"
+            ) return undefined
+            return {
+              estimatedValueLow:  v.estimatedValueLow,
+              estimatedValueMid:  v.estimatedValue,
+              estimatedValueHigh: v.estimatedValueHigh,
+              confidenceScore:    v.confidenceScore,
+              aiNarrative:        v.narrative ?? "",
+            }
+          })(),
+          appointmentId,
+          appointmentAt: ctx.metadata.appointment_date ?? null,
           propertyData: {
             address: propertyData.address,
             city: propertyData.city,
@@ -271,14 +424,16 @@ export const listingApptPrepChain: WorkflowChain = {
           return { success: false, error: "No presentation in previous step output" }
         }
 
+        const chapters = presentation.chapters?.length
+          ? presentation.chapters
+          : DEFAULT_CHAPTERS
+
         const result = await activeExecutors.generateChapterVideos({
           brokerageId: ctx.brokerageId,
           agentUserId: ctx.agentUserId ?? null,
           contactId: ctx.contactId ?? null,
           presentationId: presentation.presentationId,
-          chapters: presentation.chapters?.length
-            ? presentation.chapters
-            : DEFAULT_CHAPTERS,
+          chapters,
           presentationContent: presentation.content,
           propertyData: ctx.metadata.property_data,
         })
@@ -291,7 +446,14 @@ export const listingApptPrepChain: WorkflowChain = {
           success: true,
           output: {
             videoIds: result.videoIds,
+            // chapterTitles is index-aligned with videoIds (succeededTitles in
+            // chapter-video-generator) — a partial run reports the chapters that
+            // actually reached the provider, not the first N requested.
             chapterTitles: result.chapterTitles,
+            // The chapters AS SENT, so enroll_drip can read each reel's `focus`
+            // and land it on the section it is the on-camera version of. The
+            // generator's return carries titles only.
+            chapters,
           },
         }
       },
@@ -299,7 +461,20 @@ export const listingApptPrepChain: WorkflowChain = {
     },
 
     // -----------------------------------------------------------------------
-    // 4. Enroll contact in pre-appointment drip — one chapter per touchpoint
+    // 4. Enroll the chapter reels in the pre-appointment SECTION DRIP.
+    //
+    //    This step used to write one activities row per chapter with
+    //    activity_type='scheduled_video_touchpoint' and its own hand-rolled
+    //    "spread evenly between now and the appointment" arithmetic. NOTHING
+    //    consumed those rows — no cron, no reactor, no dispatcher — so the
+    //    seller never received a single chapter reel, and the schedule was a
+    //    second, competing timetable next to the one that actually delivers.
+    //
+    //    There is now exactly ONE scheduler (planPresentationSections) and ONE
+    //    delivery path (deliverDueSections → dispatchEmail): each reel is linked
+    //    to a section of the seller's pre-listing drip and goes out as its own
+    //    email with the reel embedded as a clickable thumbnail, spaced across
+    //    the window that ends before the listing appointment.
     // -----------------------------------------------------------------------
     {
       key: "enroll_drip",
@@ -319,52 +494,60 @@ export const listingApptPrepChain: WorkflowChain = {
 
         const svc = createServiceClient()
 
-        // Distribute video touchpoints evenly between now and appointment date
-        const apptTime = new Date(apptDate).getTime()
-        const now = Date.now()
-        const totalSpan = Math.max(apptTime - now, 24 * 60 * 60 * 1000) // min 24h
-        const count = videos.videoIds.length
-        const interval = totalSpan / (count + 1) // leave a gap before appt
+        // The presentation the reels belong to. Prefer the one this run just
+        // produced; fall back to the newest presentation already on file for
+        // this seller (the listing-presentation-prep cron builds one too). A
+        // RESOLVE, never a substitution — if neither yields a real row there is
+        // nothing to attach to and the step says so.
+        const presentationId = await resolveDripPresentation(svc, {
+          candidateId: ctx.previousStepOutputs.generate_presentation?.presentationId,
+          brokerageId: ctx.brokerageId,
+          contactId:   ctx.contactId,
+          agentUserId: ctx.agentUserId ?? null,
+          appointmentAt: apptDate,
+        })
+        if (!presentationId) {
+          return {
+            success: false,
+            error:
+              "No listing_presentations row to drip against — the presentation step returned no persisted id and this seller has none on file",
+          }
+        }
 
-        const touchpoints = videos.videoIds.map((videoId: string, i: number) => ({
-          contact_id: ctx.contactId,
-          brokerage_id: ctx.brokerageId,
-          touchpoint_type: "video",
-          subject: videos.chapterTitles?.[i] ?? `Chapter ${i + 1}`,
-          metadata: {
-            video_id: videoId,
-            chapter_index: i,
-            chapter_title: videos.chapterTitles?.[i],
-            chain_run_id: ctx.runId,
-          },
-          scheduled_for: new Date(now + interval * (i + 1)).toISOString(),
-          status: "scheduled",
-        }))
+        // Idempotent: creates the seller-safe section set + its schedule if the
+        // presentation does not have one yet, no-ops if it does.
+        const { materializePresentationSections, attachChapterReelsToSections } =
+          await import("@/lib/listing-presentation/section-drip")
+        const materialized = await materializePresentationSections(presentationId, svc)
+        if (!materialized.ok) {
+          return { success: false, error: `Could not materialize drip sections: ${materialized.error}` }
+        }
 
-        // Use the activities table as the touchpoint store — every activity
-        // shows on the contact's CRM timeline automatically.
-        const { error } = await svc.from("activities").insert(
-          touchpoints.map((t: typeof touchpoints[number]) => ({
-            contact_id: t.contact_id,
-            brokerage_id: t.brokerage_id,
-            agent_user_id: ctx.agentUserId,
-            activity_type: "scheduled_video_touchpoint",
-            description: `Pre-listing chapter video: ${t.subject}`,
-            metadata: t.metadata,
-            scheduled_for: t.scheduled_for,
-          }))
-        )
+        // Carry each chapter's focus through so a reel lands on the section it
+        // is the on-camera version of (credibility → credibility, and so on).
+        const chapters: Array<{ title: string; focus?: string }> = videos.chapters ?? []
+        const focusByTitle = new Map<string, string | undefined>()
+        for (const c of chapters) if (!focusByTitle.has(c.title)) focusByTitle.set(c.title, c.focus)
 
-        if (error) {
-          return { success: false, error: error.message }
+        const reels = (videos.videoIds as string[]).map((videoId, i) => {
+          const title = videos.chapterTitles?.[i] ?? `Chapter ${i + 1}`
+          return { videoId, title, focus: focusByTitle.get(title) ?? null, chapterIndex: i }
+        })
+
+        const attached = await attachChapterReelsToSections(presentationId, reels, svc)
+        if (!attached.ok) {
+          return { success: false, error: `Could not attach chapter reels to the drip: ${attached.error}` }
         }
 
         return {
           success: true,
           output: {
-            touchpointsScheduled: touchpoints.length,
-            firstTouchAt: touchpoints[0].scheduled_for,
-            lastTouchAt: touchpoints[touchpoints.length - 1].scheduled_for,
+            presentationId,
+            sectionsMaterialized: materialized.inserted,
+            reelsAttached:        attached.attached,
+            newSectionsCreated:   attached.newSections,
+            // Never silently dropped — an unplaced reel is reported on the step.
+            reelsUnattached:      attached.unattached,
           },
         }
       },
@@ -518,9 +701,18 @@ export const listingApptPrepChain: WorkflowChain = {
           // approval_status reflects the render path: 'auto_approved'
           // when AI-drafted copy passed the gate, 'fell_back' when we
           // dropped to the static template (admin can audit drift).
+          // direct_mail_campaigns.agent_id is agents-class — the USERS id was
+          // FK-rejected, so the pre-listing-kit cohort this row exists to feed
+          // was permanently empty and the ROI split could never be computed.
+          let kitAgentId: string | null = null
+          if (ctx.agentUserId) {
+            const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+            kitAgentId = await resolveUserIdToAgentRecord(ctx.agentUserId, ctx.brokerageId)
+          }
+
           await svc.from("direct_mail_campaigns").insert({
             brokerage_id:    ctx.brokerageId,
-            agent_id:        ctx.agentUserId ?? null,
+            agent_id:        kitAgentId,
             contact_id:      ctx.contactId,
             campaign_name:   `Pre-Listing Kit (${piece}) - ${recipientName}`,
             target_audience: "pre_listing_kit",
@@ -551,6 +743,131 @@ export const listingApptPrepChain: WorkflowChain = {
       },
     },
   ],
+}
+
+/**
+ * The calendar_events row this prep run is for.
+ *
+ * Two sources, because the three booking paths do not all carry it the same way:
+ *   1. metadata.appointment_id — set by lib/ai-isa/book-seller-appointment.ts.
+ *   2. listings.appointment_event_id — written by
+ *      lib/application/listing-lifecycle.ts::scheduleListingAppointmentService
+ *      when an agent books a consult on a listing.
+ * Returns null when neither yields one; the presentation is still built, it just
+ * cannot be keyed to an appointment.
+ */
+async function resolveAppointmentEventId(
+  svc: ReturnType<typeof createServiceClient>,
+  args: { metadataAppointmentId?: unknown; listingId: string | null },
+): Promise<string | null> {
+  const { isValidUUID } = await import("@/lib/validations")
+  if (typeof args.metadataAppointmentId === "string" && isValidUUID(args.metadataAppointmentId)) {
+    return args.metadataAppointmentId
+  }
+  if (!args.listingId) return null
+  const { data, error } = await svc
+    .from("listings")
+    .select("appointment_event_id")
+    .eq("id", args.listingId)
+    .maybeSingle()
+  if (error) {
+    // Not fatal — a presentation without an appointment_id is still a
+    // presentation. But a refused read is never passed off as "no appointment".
+    console.error(`[listing-appt-prep] appointment_event_id lookup for listing ${args.listingId} failed: ${error.message}`)
+    return null
+  }
+  const id = (data as { appointment_event_id?: string | null } | null)?.appointment_event_id ?? null
+  return id && isValidUUID(id) ? id : null
+}
+
+/**
+ * Resolve the listing_presentations row the chapter reels drip against, and make
+ * sure it carries what the drip needs (contact, appointment time, sending agent).
+ *
+ * Two sources, in order:
+ *   1. the id this run's generate_presentation step returned, and
+ *   2. the newest presentation already on file for this seller.
+ *
+ * WHY (2) STILL EARNS ITS PLACE now that step 2 genuinely persists. It is no
+ * longer covering for a step that always returned undefined — step 2 fails the
+ * run outright if it cannot save, so a run that REACHES here has a real id. What
+ * it still covers is a run started before that fix whose step_outputs already
+ * recorded presentationId: undefined, and the ordinary case where the
+ * listing-presentation-prep cron got to this appointment first. It is no longer
+ * masking a failure, because a failure can no longer arrive here dressed as a
+ * success.
+ *
+ * It prefers the presentation for THIS appointment's date rather than simply the
+ * newest for the contact: a seller who has had a previous listing appointment has
+ * more than one presentation on file, and attaching this run's reels to the old
+ * one would drip them against a timetable that has already run.
+ *
+ * Both paths are scoped to the run's brokerage. Returns null rather than
+ * inventing a row: with no presentation there is no section timetable to attach
+ * reels to.
+ */
+async function resolveDripPresentation(
+  svc: ReturnType<typeof createServiceClient>,
+  args: {
+    candidateId?: unknown
+    brokerageId: string
+    contactId: string
+    agentUserId: string | null
+    appointmentAt: string
+  },
+): Promise<string | null> {
+  const { isValidUUID } = await import("@/lib/validations")
+  type PresRow = { id: string; contact_id: string | null; appointment_at: string | null; agent_user_id: string | null }
+  let row: PresRow | null = null
+
+  if (typeof args.candidateId === "string" && isValidUUID(args.candidateId)) {
+    const { data, error } = await svc
+      .from("listing_presentations")
+      .select("id, contact_id, appointment_at, agent_user_id")
+      .eq("id", args.candidateId)
+      .eq("brokerage_id", args.brokerageId)
+      .maybeSingle()
+    if (error) console.error(`[listing-appt-prep] presentation ${args.candidateId} unreadable: ${error.message}`)
+    row = (data as PresRow | null) ?? null
+  }
+
+  if (!row) {
+    const { data, error } = await svc
+      .from("listing_presentations")
+      .select("id, contact_id, appointment_at, agent_user_id")
+      .eq("brokerage_id", args.brokerageId)
+      .eq("contact_id", args.contactId)
+      .order("created_at", { ascending: false })
+      .limit(10)
+    if (error) console.error(`[listing-appt-prep] presentation lookup for contact ${args.contactId} failed: ${error.message}`)
+    const rows = (data as PresRow[] | null) ?? []
+    // This appointment's presentation first (same calendar day), then the newest.
+    const wanted = new Date(args.appointmentAt)
+    const wantDay = Number.isNaN(wanted.getTime()) ? null : wanted.toISOString().slice(0, 10)
+    const sameDay = wantDay
+      ? rows.find((r) => {
+          if (!r.appointment_at) return false
+          const at = new Date(r.appointment_at)
+          return !Number.isNaN(at.getTime()) && at.toISOString().slice(0, 10) === wantDay
+        })
+      : undefined
+    row = sameDay ?? rows[0] ?? null
+  }
+  if (!row) return null
+
+  // Fill only what is MISSING. contact_id/appointment_at drive the drip's
+  // recipient and its timetable; agent_user_id (users class — the column FKs
+  // users.id) is the from-address the section emails send as.
+  const patch: Record<string, unknown> = {}
+  if (!row.contact_id) patch.contact_id = args.contactId
+  if (!row.appointment_at) patch.appointment_at = new Date(args.appointmentAt).toISOString()
+  if (!row.agent_user_id && args.agentUserId) patch.agent_user_id = args.agentUserId
+  if (Object.keys(patch).length > 0) {
+    const { error } = await svc.from("listing_presentations").update(patch).eq("id", row.id)
+    if (error) console.error(`[listing-appt-prep] could not complete presentation ${row.id}: ${error.message}`)
+  }
+
+  return row.id
 }
 
 const DEFAULT_CHAPTERS = [

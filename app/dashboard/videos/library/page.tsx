@@ -2,15 +2,15 @@
 
 import { useState, useEffect, Suspense } from "react"
 import { useRouter } from "next/navigation"
+import { useLocalStorage } from "@/hooks/use-local-storage"
 import { useSearchParams } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -30,14 +30,12 @@ import {
   Copy,
   Trash2,
   GitBranch,
-  Shield,
   Home,
   User,
   TrendingUp,
   Users,
   PresentationIcon,
   Sparkles,
-  Filter,
   Share2,
   Kanban,
   BarChart3,
@@ -46,44 +44,32 @@ import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import {
+  getVideoScriptLibrary,
+  getVideoScriptById,
+  getScriptVariations,
+  createScriptVariation,
+  updateScriptApprovalStatus,
+  recordVideoEngagementEvent,
+} from "@/app/actions/video-generation"
+import { VideoGenerationButtons } from "@/app/components/video/VideoGenerationButtons"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
-
-interface VideoScript {
-  id: string
-  brokerage_id: string
-  agent_id: string | null
-  listing_id: string | null
-  contact_id: string | null
-  template_id: string | null
-  script_type: string
-  title: string
-  script_content: string
-  duration_target_seconds: number | null
-  brand_voice_tone: string | null
-  approval_status: "draft" | "pending_review" | "approved" | "rejected"
-  compliance_review_notes: string | null
-  required_brand_assets: Record<string, any> | null
-  ai_generated: boolean
-  is_active: boolean
-  created_at: string
-  updated_at: string
-  variation_count?: number
-  template?: { id: string; template_name: string; category: string } | null
-  script_variations?: ScriptVariation[]
-}
-
-interface ScriptVariation {
-  id: string
-  script_library_id: string
-  variation_label: string
-  variation_goal: string | null
-  script_content: string
-  call_to_action: string | null
-  audience_segment: string | null
-  is_ab_test: boolean
-  created_at: string
-}
+//
+// TOMBSTONE: the local `VideoScript` and `ScriptVariation` interfaces that stood
+// here are deleted. Survivor: app/types/video-generation.ts:46 / :81, which
+// app/actions/video-generation.ts — the module every read on this page comes
+// from — imports and now declares as its return types. The three fields only
+// this copy carried (`variation_count`, `template`, `script_variations`) were
+// merged onto the survivor FIRST; nothing was lost, and the double casts that
+// existed only to bridge the two shapes are gone with them.
+//
+// Only `VideoScript` is named here. `ScriptVariation` reaches this file through
+// it — `VideoScript.script_variations` (app/types/video-generation.ts:81) and
+// `getScriptVariations`'s declared return type carry it, so every variation on
+// this page is typed without a second import. Naming it as well would be a dead
+// import, which is the census category this edit came out of.
+import type { VideoScript } from "@/app/types/video-generation"
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -122,7 +108,20 @@ function VideoLibraryContent() {
   // State
   const [scripts, setScripts] = useState<VideoScript[]>([])
   const [loading, setLoading] = useState(true)
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
+  // PERSISTED (orphan burn-down, lane E). This was `useState("grid")`, so the
+  // library reset to grid on every visit and an agent who works in list view
+  // re-picked it every single time. hooks/use-local-storage.ts:18 was written
+  // for exactly this — its own header scopes it to "user preferences and
+  // non-critical data ... for data persistence, use a proper database
+  // integration" — and had no caller anywhere in the tree.
+  //
+  // A view toggle is the correct side of that line: it is worth nothing to
+  // anyone but this browser, so it must NOT become a users-table column or a
+  // round-trip. The hook seeds from `initialValue` and only reads storage in a
+  // mount effect, so the server and the first client render agree and there is
+  // no hydration mismatch; a private-mode browser that throws on localStorage
+  // is caught inside the hook and just keeps the default.
+  const [viewMode, setViewMode] = useLocalStorage<"grid" | "list">("videos-library-view", "grid")
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<string>("all")
@@ -143,6 +142,21 @@ function VideoLibraryContent() {
   const [variationIsAbTest, setVariationIsAbTest] = useState(false)
   const [creatingVariation, setCreatingVariation] = useState(false)
 
+  // Approval decision state — the library showed approval badges with no way to
+  // move a script through them.
+  const [approvingScriptId, setApprovingScriptId] = useState<string | null>(null)
+
+  // Distribution performance for the video a script produced.
+  const [performance, setPerformance] = useState<{
+    title: string
+    projectId: string
+    views: number
+    engagement: number
+    comments: number
+    shares: number
+    generatedAt: string
+  } | null>(null)
+
   // ─── Load Scripts ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -154,12 +168,11 @@ function VideoLibraryContent() {
 
     setLoading(true)
     try {
-      const response = await fetch("/api/video-scripts")
-      const data = await response.json()
-
-      if (data.scripts) {
-        setScripts(data.scripts)
-      }
+      // Server action rather than the /api/video-scripts fetch: it derives the
+      // brokerage from the session instead of trusting the URL, and it is the
+      // same reader the rest of the video surface uses.
+      const rows = await getVideoScriptLibrary()
+      setScripts(rows)
     } catch (error) {
       console.error("Error loading scripts:", error)
     } finally {
@@ -194,13 +207,15 @@ function VideoLibraryContent() {
   // ─── Open Script Detail ────────────────────────────────────────────────────
 
   async function openScriptDetail(script: VideoScript) {
-    // Fetch full details including variations
-    const response = await fetch(`/api/video-scripts?id=${script.id}`)
-    const data = await response.json()
+    // Full details including variations, brokerage-scoped from the session.
+    const full = await getVideoScriptById(script.id)
 
-    if (data.script) {
-      setSelectedScript(data.script)
+    if (full) {
+      setSelectedScript(full)
       setDrawerOpen(true)
+    } else {
+      const { toast } = await import("sonner")
+      toast.error("Could not load this script.")
     }
   }
 
@@ -220,38 +235,126 @@ function VideoLibraryContent() {
   async function handleCreateVariation() {
     if (!variationScript || !variationLabel || !variationContent || !brokerage?.id) return
 
+    const { toast } = await import("sonner")
     setCreatingVariation(true)
     try {
-      const { data, error } = await supabase.from("script_variations").insert({
-        script_library_id: variationScript.id,
-        brokerage_id: brokerage.id,
-        variation_label: variationLabel,
-        variation_goal: variationGoal || null,
-        script_content: variationContent,
-        call_to_action: variationCta || null,
-        audience_segment: variationAudience || null,
-        is_ab_test: variationIsAbTest,
-        created_by: user?.id,
+      // Server action, not a raw insert: it verifies the parent script belongs to
+      // the caller's brokerage and writes the lifecycle event + kernel event the
+      // client-side insert silently skipped, so a variation now actually shows up
+      // as SCRIPT_VARIATION_CREATED in the OS.
+      await createScriptVariation({
+        scriptLibraryId: variationScript.id,
+        variationLabel,
+        variationGoal: variationGoal || undefined,
+        scriptContent: variationContent,
+        callToAction: variationCta || undefined,
+        audienceSegment: variationAudience || undefined,
+        isAbTest: variationIsAbTest,
       })
 
-      if (error) throw error
-
       setVariationDialogOpen(false)
+
+      // Refresh the open drawer's variation list in place if it is the same script.
+      if (selectedScript?.id === variationScript.id) {
+        const variations = await getScriptVariations(variationScript.id)
+        setSelectedScript((prev) =>
+          prev ? { ...prev, script_variations: variations } : prev
+        )
+      }
+
       loadScripts()
-    } catch (error) {
+      toast.success("Variation created")
+    } catch (error: any) {
       console.error("Error creating variation:", error)
+      toast.error(error?.message ?? "Could not create variation")
     } finally {
       setCreatingVariation(false)
     }
   }
 
-  // ─── Distribute Script ─────────────────────────────────────────────────────
+  // ─── Approval Decision ─────────────────────────────────────────────────────
 
-  async function handleDistribute(script: VideoScript) {
+  async function handleApprovalDecision(
+    script: VideoScript,
+    approvalStatus: "approved" | "rejected" | "pending_review"
+  ) {
+    const { toast } = await import("sonner")
+    setApprovingScriptId(script.id)
+    try {
+      let notes: string | undefined
+      if (approvalStatus === "rejected") {
+        const entered = window.prompt("Why is this script being rejected? (shown to the author)")
+        if (entered === null) return
+        notes = entered.trim() || undefined
+      }
+
+      const updated = await updateScriptApprovalStatus(
+        script.id,
+        brokerage?.id ?? "",
+        approvalStatus,
+        notes
+      )
+
+      setScripts((prev) =>
+        prev.map((s) =>
+          s.id === script.id
+            ? { ...s, approval_status: approvalStatus, compliance_review_notes: notes ?? null }
+            : s
+        )
+      )
+      if (selectedScript?.id === script.id) {
+        setSelectedScript((prev) =>
+          prev ? { ...prev, approval_status: approvalStatus, compliance_review_notes: notes ?? null } : prev
+        )
+      }
+      toast.success(
+        approvalStatus === "approved"
+          ? "Script approved — it can now be used to generate a video"
+          : approvalStatus === "rejected"
+          ? "Script rejected"
+          : "Script sent for review"
+      )
+      void updated
+    } catch (error: any) {
+      console.error("Error updating approval status:", error)
+      toast.error(error?.message ?? "Could not update approval status")
+    } finally {
+      setApprovingScriptId(null)
+    }
+  }
+
+  // ─── Video Performance ─────────────────────────────────────────────────────
+
+  /**
+   * The distribution numbers for the video this script produced — views,
+   * engagement, comments and shares aggregated from the social posts carrying
+   * its video_url. loadVideoPerformanceAction is the only path to these; there
+   * is no API route for it, so before this the aggregate was computed for
+   * nobody.
+   */
+  async function handleShowPerformance(script: VideoScript) {
     const { toast } = await import("sonner")
 
-    // Look up the ai_video_projects record linked to this script-library entry
-    const { data: project, error: projectError } = await supabase
+    const projectId = await resolveProjectIdForScript(script)
+    if (!projectId) {
+      toast.error("No video project found for this script. Generate a video first.")
+      return
+    }
+
+    const { loadVideoPerformanceAction } = await import("@/app/actions/video")
+    const result = await loadVideoPerformanceAction({ projectId })
+    if (!result.success || !result.data) {
+      toast.error(result.error ?? "Could not load performance")
+      return
+    }
+
+    const p = result.data
+    setPerformance({ title: script.title, ...p })
+  }
+
+  /** The ai_video_projects row this script-library entry produced. */
+  async function resolveProjectIdForScript(script: VideoScript): Promise<string | null> {
+    const { data: project, error } = await supabase
       .from("ai_video_projects")
       .select("id")
       // source_type/source_id live inside the video_metadata jsonb (no real columns)
@@ -260,11 +363,22 @@ function VideoLibraryContent() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (error || !project) return null
+    return project.id as string
+  }
 
-    if (projectError || !project) {
+  // ─── Distribute Script ─────────────────────────────────────────────────────
+
+  async function handleDistribute(script: VideoScript) {
+    const { toast } = await import("sonner")
+
+    // Look up the ai_video_projects record linked to this script-library entry
+    const projectId = await resolveProjectIdForScript(script)
+    if (!projectId) {
       toast.error("No video project found for this script. Generate a video first.")
       return
     }
+    const project = { id: projectId }
 
     const { distributeVideoProjectAction } = await import("@/app/actions/video")
     const result = await distributeVideoProjectAction({
@@ -282,6 +396,25 @@ function VideoLibraryContent() {
     const distributions = result.data?.distributions ?? []
     const failed = distributions.filter(d => d.status === "failed")
     const succeeded = distributions.filter(d => d.status !== "failed")
+
+    // A successful distribution IS a share of this video project. Recording it
+    // is what feeds video_performance_tracking.share_rate — the number
+    // /dashboard/videos/analytics already renders and which, with no writer
+    // anywhere, could only ever read 0.
+    if (succeeded.length > 0) {
+      try {
+        await recordVideoEngagementEvent({
+          videoProjectId: project.id,
+          // Same id space: contact-details.ts joins video_asset_id against
+          // ai_video_projects.id, so this is the project's id in both columns.
+          videoAssetId: project.id,
+          eventType: "share",
+          metadata: { channels: succeeded.map((d) => d.channel) },
+        })
+      } catch (err) {
+        console.error("[videos/library] Could not record share engagement:", err)
+      }
+    }
 
     if (failed.length === 0) {
       toast.success("Video queued for distribution")
@@ -549,6 +682,10 @@ function VideoLibraryContent() {
                               Distribute
                             </DropdownMenuItem>
                           )}
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>
+                            <BarChart3 className="h-4 w-4 mr-2" />
+                            Video Performance
+                          </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-red-600"
@@ -660,6 +797,10 @@ function VideoLibraryContent() {
                             Distribute
                           </DropdownMenuItem>
                         )}
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleShowPerformance(script) }}>
+                          <BarChart3 className="h-4 w-4 mr-2" />
+                          Video Performance
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-red-600"
@@ -745,6 +886,29 @@ function VideoLibraryContent() {
                   </div>
                 </div>
 
+                {/* Render this script.
+                    `scriptId` is passed, so the action reads the script text and
+                    tenant from the STORED row and does not mint a duplicate
+                    library entry for a script that is already in the library.
+                    Gated on `approved` for the same reason the approval control
+                    below exists — an unapproved script must not reach a paid
+                    provider render. */}
+                <div className="space-y-2 pt-4 border-t">
+                  <Label>Generate video</Label>
+                  {selectedScript.approval_status === "approved" ? (
+                    <VideoGenerationButtons
+                      scriptId={selectedScript.id}
+                      script={selectedScript.script_content}
+                      title={selectedScript.title}
+                      size="sm"
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Approve this script first — rendering spends provider credits.
+                    </p>
+                  )}
+                </div>
+
                 {/* Variations */}
                 {selectedScript.script_variations && selectedScript.script_variations.length > 0 && (
                   <div className="space-y-3">
@@ -795,6 +959,52 @@ function VideoLibraryContent() {
                     </div>
                   </div>
                 )}
+
+                {/* Approval decision — a script must be `approved` before the
+                    create wizard will offer it, so this is the gate that was
+                    missing between the badge and the video. */}
+                <div className="space-y-2 pt-4 border-t">
+                  <Label>Approval</Label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {selectedScript.approval_status !== "approved" && (
+                      <Button
+                        size="sm"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "approved")}
+                      >
+                        {approvingScriptId === selectedScript.id ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4 mr-2" />
+                        )}
+                        Approve
+                      </Button>
+                    )}
+                    {selectedScript.approval_status !== "pending_review" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "pending_review")}
+                      >
+                        <Clock className="h-4 w-4 mr-2" />
+                        Send for Review
+                      </Button>
+                    )}
+                    {selectedScript.approval_status !== "rejected" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-600 border-red-200 hover:bg-red-50"
+                        disabled={approvingScriptId === selectedScript.id}
+                        onClick={() => handleApprovalDecision(selectedScript, "rejected")}
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Reject
+                      </Button>
+                    )}
+                  </div>
+                </div>
 
                 {/* Actions */}
                 <div className="flex items-center gap-2 pt-4 border-t">
@@ -914,6 +1124,39 @@ function VideoLibraryContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* VIDEO PERFORMANCE — real aggregate from the social posts carrying this
+          project's video_url. Zeroes are shown as zeroes, not hidden. */}
+      <Dialog open={!!performance} onOpenChange={(open) => { if (!open) setPerformance(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Video Performance</DialogTitle>
+            <DialogDescription>{performance?.title}</DialogDescription>
+          </DialogHeader>
+          {performance && (
+            <div className="space-y-3 py-2">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Views", value: performance.views },
+                  { label: "Engagement", value: performance.engagement },
+                  { label: "Comments", value: performance.comments },
+                  { label: "Shares", value: performance.shares },
+                ].map((stat) => (
+                  <div key={stat.label} className="rounded-md border p-3">
+                    <p className="text-xs text-muted-foreground">{stat.label}</p>
+                    <p className="text-xl font-semibold">{stat.value.toLocaleString()}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Aggregated from published social posts carrying this video. All zeroes means it
+                has not been distributed yet, or no platform has reported metrics back.
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
     </div>
   )
 }

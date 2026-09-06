@@ -40,7 +40,6 @@ import {
   AlertTriangle,
   ClipboardList,
   MapPin,
-  Users,
 } from "lucide-react"
 import {
   createTransactionCoordinator,
@@ -270,8 +269,9 @@ export function TCSettingsClient({
                 <div className="space-y-2">
                   <Label htmlFor="userId">Link to User (Optional)</Label>
                   <Select
-                    value={formData.userId}
-                    onValueChange={(value) => {
+                    value={formData.userId || "__none__"}
+                    onValueChange={(raw) => {
+                      const value = raw === "__none__" ? "" : raw
                       setFormData((prev) => ({ ...prev, userId: value }))
                       if (value) {
                         const user = users.find((u) => u.id === value)
@@ -288,7 +288,7 @@ export function TCSettingsClient({
                       <SelectValue placeholder="Select a user or leave blank" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">No linked user</SelectItem>
+                      <SelectItem value="__none__">No linked user</SelectItem>
                       {users.map((user) => (
                         <SelectItem key={user.id} value={user.id}>
                           {user.first_name || user.last_name

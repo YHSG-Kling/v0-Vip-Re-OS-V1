@@ -6,7 +6,14 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
-import { Button } from "@/app/components/ui/button"
+// TOMBSTONE (orphan doctrine §1.3): `Button` was imported here and rendered NOWHERE.
+// This workspace is READ-ONLY by construction — its whole body is one GET
+// (billing-dashboard.tsx:47) rendered into Cards and Badges; it holds no handler and
+// mutates nothing, so there is no action for a button to fire. Every billing MUTATION
+// a superadmin can make already lives on the SURVIVORS with their own buttons:
+// app/actions/superadmin/brokerage-management.ts::changeBrokerageTierAction (tier),
+// ::suspendBrokerageAction / ::cancelBrokerageAction (state), surfaced by
+// app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx:95.
 import { AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react"
 
 interface BillingDashboardProps {
@@ -44,6 +51,29 @@ export function BillingDashboard({ brokerageId }: BillingDashboardProps) {
   useEffect(() => {
     const fetchBillingData = async () => {
       try {
+        // ── THE `?brokerageId=` ON THIS READ: RESEARCHED, KEPT, AUTHORIZED SERVER-SIDE ──
+        //
+        // A query-supplied tenant on a billing read is the IDOR shape, so it was
+        // researched before being touched (owner ruling, 2026-08-26). VERDICT: a real
+        // capability, not a defect. This workspace is where PLATFORM STAFF inspect any
+        // tenant's subscription, and §4 says platform sees all tenants; the page that
+        // renders this component resolves the prop server-side and pins a tenant admin
+        // to their own brokerage (app/dashboard/admin/billing/page.tsx:73).
+        //
+        // A browser can of course call the endpoint with any id, so the value is
+        // authorized where authority lives, not here: /api/admin/billing/dashboard
+        // gates on requireSuperadminAuth (BOTH identity columns), and
+        // lib/kernel/billing.ts:loadBillingWorkspace now independently confines a
+        // non-platform actor to their own session-resolved brokerage and refuses an
+        // actor whose tenant is unknown. Nothing this component sends is trusted.
+        //
+        // UNRESOLVED, and deliberately not changed by this lane: the page ALSO admits
+        // the tenant's own billing admins (the paywall lands them here), and this
+        // endpoint is superadmin-only — so for that seat the fetch 403s and the card
+        // renders "Error: Failed to load billing data". That is a product decision
+        // about what a tenant admin may see, not a tenancy hole, and it is reported
+        // rather than silently widened: widening the route would hand a tenant admin a
+        // command whose gate is the platform roster.
         const response = await fetch(
           `/api/admin/billing/dashboard?brokerageId=${brokerageId}`,
           { method: "GET" }

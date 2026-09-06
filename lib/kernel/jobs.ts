@@ -16,6 +16,7 @@
  *     fire-and-forget "started!".
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -182,15 +183,18 @@ export async function runJob(
   }
 
   // Audit — the job run is a first-class, attributable event.
-  await svc.from("activities").insert({
-    brokerage_id: input.brokerageId,
-    agent_user_id: input.agentUserId,
-    listing_id: input.listingId ?? null,
-    activity_type: "job_run",
-    title: `Job: ${spec.title}`,
-    description: results.join(" | ").slice(0, 900),
-    metadata: { job: input.job, results },
-  }).then(undefined, () => {})
+  await bestEffort(
+    svc.from("activities").insert({
+      brokerage_id: input.brokerageId,
+      agent_user_id: input.agentUserId,
+      listing_id: input.listingId ?? null,
+      activity_type: "job_run",
+      title: `Job: ${spec.title}`,
+      description: results.join(" | ").slice(0, 900),
+      metadata: { job: input.job, results },
+    }),
+    "the job has already RUN and its own failures are returned above; losing the audit echo must not report a job that did work as having failed",
+  )
 
   return { ok: true, job: input.job, results }
 }

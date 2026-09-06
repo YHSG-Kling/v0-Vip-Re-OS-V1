@@ -27,8 +27,11 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { ACTIVE_DEAL_STATUSES } from "@/lib/agents/agent-deactivation"
 import { revalidatePath } from "next/cache"
 
-/** Same manager set the bulk deactivation flow admits. */
-const MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
+/** Same manager set the bulk deactivation flow admits.
+ *  SCOPE LADDER (kept inline — team leads come through the tenancy-principal
+ *  branch, not this set): 'superadmin' removed — dead as users.user_type
+ *  (0 live rows store it). */
+const MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -175,13 +178,26 @@ export async function reassignContactAction(input: {
   const result: ReassignContactResult = { ...empty, ok: false }
 
   // ── 1. The contact row ──
+  //
+  // COUNTED, MERGED IN WAVE 27 from app/actions/agents.ts:assignAgentToContact
+  // before that duplicate was retired onto this action. §3: an UPDATE that
+  // matches NOTHING also resolves with `error: null` and is byte-identical to
+  // one that worked. The tenancy read above has already proved this contact is
+  // in `auth.brokerageId`, so zero rows here means the predicate refused between
+  // the read and the write — and reporting that as `contactMoved: true` tells an
+  // agent a client is theirs when the row never moved. Whether zero rows is a
+  // failure is the caller's call, and here it is: this is the ONE move the other
+  // five steps are bookkeeping for.
   {
-    const { error } = await svc
+    const { error, count } = await svc
       .from("contacts")
-      .update({ agent_id: input.toAgentId, updated_at: nowIso })
+      .update({ agent_id: input.toAgentId, updated_at: nowIso }, { count: "exact" })
       .eq("id", input.contactId)
       .eq("brokerage_id", auth.brokerageId)
     if (error) return { ...empty, error: `Contact move failed: ${error.message}` }
+    if (!count) {
+      return { ...empty, error: "That contact was not found in your brokerage — nothing was changed." }
+    }
     result.contactMoved = true
   }
 
@@ -278,6 +294,57 @@ export async function reassignContactAction(input: {
         is_read: false,
       })
       .then(() => {}, () => {})
+  }
+
+  // ── GAMIFICATION AWARD, PORTED ONTO THE SURVIVOR (§1 merge, wave 26) ───────
+  // The ONE thing app/actions/agents.ts:assignAgentToContact did that this
+  // action did not. That function is the never-surfaced duplicate of this one
+  // (it only re-pointed contacts.agent_id and left every downstream row with the
+  // previous agent); this action is strictly more complete on every other axis,
+  // so the award moves HERE rather than the duplicate staying alive to carry it.
+  //
+  // The receiving agent is credited — `input.toAgentId` is an agents.id, which is
+  // the id class awardPoints keys on (agents.id and users.id are DISJOINT).
+  //
+  // A REFUSED AWARD MUST NOT ROLL BACK THE REASSIGNMENT. The contact and all its
+  // downstream work have already moved and are already audited above; points are
+  // a motivational ledger, not the record of the move. So this is best-effort —
+  // but it is LOGGED, never swallowed: a silently missing award is how a
+  // gamification ledger drifts out of agreement with the events it scores.
+  // Goes straight to the canonical awarder (the atomic award_agent_points RPC),
+  // not through app/actions/agents.ts's module-private wrapper: that wrapper's
+  // one extra job is proving the target agent is in the caller's tenant, and
+  // this action already proved exactly that above ("Target agent not found in
+  // this brokerage" / "Target agent is not active") before moving anything.
+  try {
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    const awarded = await awardAgentPoints(svc, {
+      agentId:       input.toAgentId,
+      points:        POINT_VALUES.CONTACT_ASSIGNED,
+      reason:        "CONTACT_ASSIGNED",
+      referenceType: "contact",
+      referenceId:   input.contactId,
+    })
+    if (!awarded.ok) {
+      console.error("[reassignContact] CONTACT_ASSIGNED points award refused — the contact DID move; only the award is missing:", awarded.error)
+    } else {
+      // Badges are threshold-awarded against the total the database now holds,
+      // never against locally-recomputed arithmetic.
+      try {
+        const { checkAndAwardBadges } = await import("@/app/actions/gamification")
+        await checkAndAwardBadges(input.toAgentId, awarded.newTotal)
+      } catch (badgeError) {
+        console.error(
+          "[reassignContact] points landed but the badge check failed:",
+          badgeError instanceof Error ? badgeError.message : badgeError,
+        )
+      }
+    }
+  } catch (awardError) {
+    console.error(
+      "[reassignContact] CONTACT_ASSIGNED points award failed — the contact DID move; only the award is missing:",
+      awardError instanceof Error ? awardError.message : awardError,
+    )
   }
 
   revalidatePath("/crm")

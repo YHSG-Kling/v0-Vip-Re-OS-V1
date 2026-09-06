@@ -21,8 +21,13 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { createReferral, createPartner, deletePartner } from "@/app/actions/referrals/referral-actions"
+import { createReferral } from "@/app/actions/referrals/referral-actions"
 import { format } from "date-fns"
+import {
+  REFERRAL_STATUSES,
+  referralStatusBadgeClass,
+  type ReferralStatus,
+} from "@/lib/referrals/referral-status"
 
 interface Referral {
   id: string
@@ -36,21 +41,32 @@ interface Referral {
 
 interface ReferralPipelinePanelProps {
   referrals: Referral[]
-  onUpdateStatus: (referralId: string, status: string) => Promise<void>
+  onUpdateStatus: (referralId: string, status: ReferralStatus) => Promise<void>
   onSendThankYou: (referralId: string) => Promise<void>
   onCreateReferral: () => void
   agentId: string
   brokerageId: string
+  /**
+   * The create dialog lives HERE, but "Create Referral" also exists on the
+   * command strip and the quick-action grid, and those two called
+   * `router.push("/referrals?action=create")` — a URL nothing read. The
+   * parameter was dropped and the dialog never opened, so two of the three
+   * create buttons in the OS did nothing at all. Pass these to let the parent
+   * open the same dialog those buttons already promise.
+   * Uncontrolled (both omitted) keeps the panel's own local behaviour.
+   */
+  createOpen?: boolean
+  onCreateOpenChange?: (open: boolean) => void
+  /** Fired after a referral is actually stored, so the board can re-read. */
+  onCreated?: () => void
 }
 
-const STATUSES = ["new", "contacted", "qualified", "converted", "closed"]
-const statusColors: Record<string, string> = {
-  new: "bg-blue-100 text-blue-700",
-  contacted: "bg-purple-100 text-purple-700",
-  qualified: "bg-emerald-100 text-emerald-700",
-  converted: "bg-amber-100 text-amber-700",
-  closed: "bg-green-100 text-green-700",
-}
+// This board used to define its own five stages: "new", "contacted",
+// "qualified", "converted", "closed". `new` and `converted` are in NO check
+// constraint on referrals.status — picking either sent an UPDATE the database
+// refused, and neither caller caught it, so those two stage changes silently
+// did nothing. "assigned", "under_contract" and "lost" had no column at all, so
+// referrals in those states rendered nowhere. See lib/referrals/referral-status.ts.
 
 export function ReferralPipelinePanel({
   referrals,
@@ -59,9 +75,17 @@ export function ReferralPipelinePanel({
   onCreateReferral,
   agentId,
   brokerageId,
+  createOpen: controlledCreateOpen,
+  onCreateOpenChange,
+  onCreated,
 }: ReferralPipelinePanelProps) {
   const [isPending, startTransition] = useTransition()
-  const [createOpen, setCreateOpen] = useState(false)
+  const [uncontrolledCreateOpen, setUncontrolledCreateOpen] = useState(false)
+  const createOpen = controlledCreateOpen ?? uncontrolledCreateOpen
+  const setCreateOpen = onCreateOpenChange ?? setUncontrolledCreateOpen
+  // The create flow used to swallow every failure in a bare `catch {}` — the
+  // dialog just sat there and the agent had no idea the referral was not saved.
+  const [error, setError] = useState<string | null>(null)
   const [formData, setFormData] = useState({
     referred_name: "",
     referred_email: "",
@@ -70,53 +94,61 @@ export function ReferralPipelinePanel({
     potential_value: "",
   })
 
-  const handleStatusChange = (referralId: string, newStatus: string) => {
+  const handleStatusChange = (referralId: string, newStatus: ReferralStatus) => {
+    setError(null)
     startTransition(() => {
-      onUpdateStatus(referralId, newStatus)
+      onUpdateStatus(referralId, newStatus).catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to update status"),
+      )
     })
   }
 
   const handleThankYou = (referralId: string) => {
+    setError(null)
     startTransition(() => {
-      onSendThankYou(referralId)
+      onSendThankYou(referralId).catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Failed to send thank you"),
+      )
     })
   }
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    // createReferral requires a partnerId — create a partner record from the
-    // referred person's name first, then attach the contact details.
-    // If createReferral fails after createPartner succeeds, delete the orphan
-    // partner as a compensating transaction to maintain atomicity.
-    let partnerId: string | null = null
-    try {
-      const partner = await createPartner({
-        partnerName: formData.referred_name,
-        partnerType: "individual",
-        agreementType: "referral",
-      })
-      partnerId = partner.id
+    setError(null)
 
+    // This used to CREATE A REFERRAL PARTNER named after the REFERRED person
+    // purely because createReferral demanded a partnerId — then delete it again
+    // as a compensating transaction when the referral insert failed. That put a
+    // row in the agent's partner directory for every person who was referred TO
+    // them, which is backwards: a partner is who SENT the referral.
+    //
+    // referrals.partner_id is nullable and partnerId is now optional, so a
+    // referral that arrives without a partner is simply recorded without one.
+    //
+    // The name itself was also being dropped on the floor — the field is
+    // required in this dialog and went nowhere. It now feeds referredPerson,
+    // which is what captureContact() and referrals.referral_name are fed from.
+    const trimmedName = formData.referred_name.trim()
+    const [firstName, ...restName] = trimmedName.split(/\s+/)
+
+    try {
       await createReferral({
-        partnerId: partner.id,
         referredPerson: {
+          firstName: firstName || undefined,
+          lastName: restName.length ? restName.join(" ") : undefined,
           email: formData.referred_email || undefined,
           phone: formData.referred_phone || undefined,
         },
-        referralSource: formData.notes || undefined,
-        commissionAmount: formData.potential_value ? Number(formData.potential_value) : undefined,
+        notes: formData.notes || undefined,
+        valueEstimate: formData.potential_value ? Number(formData.potential_value) : undefined,
       })
       setCreateOpen(false)
       setFormData({ referred_name: "", referred_email: "", referred_phone: "", notes: "", potential_value: "" })
-    } catch {
-      // If partner was created but referral failed, delete the orphan partner
-      if (partnerId) {
-        try {
-          await deletePartner(partnerId)
-        } catch {
-          console.error("Failed to clean up orphan partner after referral creation error", partnerId)
-        }
-      }
+      // The row was written and the board kept showing the pre-create list until
+      // the agent reloaded by hand, which reads as "it didn't save".
+      onCreated?.()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create referral")
     }
   }
 
@@ -127,21 +159,30 @@ export function ReferralPipelinePanel({
           <GitBranch className="h-5 w-5" />
           Referral Pipeline
         </CardTitle>
-        <Button size="sm" onClick={() => setCreateOpen(true)} className="gap-1">
+        {/* onCreateReferral was destructured and never called — the panel opened
+            its own local dialog and the parent's handler was dead. Both callers
+            now own the dialog state (see createOpen), so the one handler serves
+            this button and the parent's own Create Referral buttons alike. */}
+        <Button size="sm" onClick={onCreateReferral} className="gap-1">
           <PlusCircle className="h-4 w-4" />
           Create Referral
         </Button>
       </CardHeader>
       <CardContent>
+        {error && (
+          <p className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <ScrollArea className="w-full pb-4">
-          <div className="flex gap-4 min-w-[900px]">
-            {STATUSES.map((status) => {
+          <div className="flex gap-4 min-w-[1260px]">
+            {REFERRAL_STATUSES.map(({ value: status, label }) => {
               const columnReferrals = referrals.filter((r) => r.status === status)
               return (
                 <div key={status} className="w-[180px] flex-shrink-0">
                   <div className="flex items-center justify-between mb-2">
-                    <Badge variant="outline" className={statusColors[status]}>
-                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                    <Badge variant="outline" className={referralStatusBadgeClass(status)}>
+                      {label}
                     </Badge>
                     <span className="text-xs text-muted-foreground">{columnReferrals.length}</span>
                   </div>
@@ -170,18 +211,22 @@ export function ReferralPipelinePanel({
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              {STATUSES.map((s) => (
+                              {REFERRAL_STATUSES.map((s) => (
                                 <DropdownMenuItem
-                                  key={s}
-                                  onClick={() => handleStatusChange(referral.id, s)}
-                                  disabled={s === status}
+                                  key={s.value}
+                                  onClick={() => handleStatusChange(referral.id, s.value)}
+                                  disabled={s.value === status}
                                 >
-                                  {s.charAt(0).toUpperCase() + s.slice(1)}
+                                  {s.label}
                                 </DropdownMenuItem>
                               ))}
                             </DropdownMenuContent>
                           </DropdownMenu>
-                          {(status === "converted" || status === "closed") && (
+                          {/* "converted" is not a storable status, so this gift button
+                              was gated on a state no referral could ever be in — it
+                              only ever appeared on Closed. under_contract is the point
+                              at which the referral has actually produced business. */}
+                          {(status === "under_contract" || status === "closed") && (
                             <Button
                               variant="ghost"
                               size="sm"

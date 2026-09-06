@@ -22,6 +22,9 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+// ONE SPELLING FOR THE PUBLIC EVENT LABEL (§6) — the caption's hook and the
+// reel's cover frame are the same words seen by the same audience.
+import { promoEventLabel } from "@/lib/video/promo-composition"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -150,12 +153,15 @@ export async function GET(req: NextRequest) {
     const address  = r.listing?.address ?? ""
     const cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
     const price    = usd(r.listing?.list_price)
-    const hookByEvent: Record<string, string> = {
-      just_listed:   "Just Listed",
-      just_sold:     "Just Sold",
-      price_changed: "Price Update",
-    }
-    const hook = hookByEvent[r.event_type] ?? "New Listing"
+    // TOMBSTONE (§1/§6): the private `hookByEvent` map that stood here — three
+    // entries plus a "New Listing" default — was a SECOND spelling of
+    // lib/video/promo-composition.ts:promoEventLabel, which already carries the
+    // same three events, the same default, and the rest of the lifecycle set.
+    // Both write PUBLIC copy (that one the reel's cover frame, this one the
+    // social caption), so they could not be allowed to disagree; the local one
+    // still said "Price Update" after the owner ruled the public word is a price
+    // improvement. SURVIVOR: lib/video/promo-composition.ts:162 promoEventLabel.
+    const hook = promoEventLabel(r.event_type)
 
     const postIds: string[] = []
     let inserted = 0
@@ -169,17 +175,20 @@ export async function GET(req: NextRequest) {
       : r.event_type === "price_changed" ? "price_reduction"
       : "custom"
 
-    // FK gotcha: listing_promo_videos.agent_id stores users.id (m124), but
-    // social_posts.agent_id FKs to agents.id (the legacy column convention).
-    // Resolve via the canonical resolver (cached at module scope).
-    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-    const socialAgentId = await resolveUserIdToAgentRecord(r.agent_id, r.brokerage_id)
-    if (!socialAgentId) {
+    // Since m366 listing_promo_videos.agent_id is agents-class — the SAME class
+    // social_posts.agent_id FKs, so that one is a straight carry. The users→agents
+    // resolve that used to sit here would now convert an agents id a second time
+    // and come back empty. social_posts.user_id is the column that still needs the
+    // other direction, so resolve agents→users once, here.
+    const socialAgentId = r.agent_id
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const socialUserId = await resolveAgentRecordToUserId(r.agent_id)
+    if (!socialUserId) {
       await svc.from("listing_promo_videos").update({
         status:        "failed",
-        error_message: "social-publish: agents.id lookup failed for users.id " + r.agent_id,
+        error_message: "social-publish: users.id lookup failed for agents.id " + r.agent_id,
       }).eq("id", r.id)
-      results.push({ id: r.id, outcome: "failed", reason: "agents_id_lookup_failed" })
+      results.push({ id: r.id, outcome: "failed", reason: "users_id_lookup_failed" })
       continue
     }
 
@@ -190,8 +199,8 @@ export async function GET(req: NextRequest) {
           .from("social_posts")
           .insert({
             brokerage_id:     r.brokerage_id,
-            agent_id:         socialAgentId, // agents.id (resolved above)
-            user_id:          r.agent_id,    // users.id (legacy column on social_posts)
+            agent_id:         socialAgentId,  // agents.id (carried from the promo row)
+            user_id:          socialUserId,   // users.id (legacy column on social_posts)
             listing_id:       r.listing_id,
             platform,
             post_type:        postType,

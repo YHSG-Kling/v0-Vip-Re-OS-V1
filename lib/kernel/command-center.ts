@@ -18,8 +18,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { describeOutreachReason } from "@/lib/kernel/outreach-reasons"
 import { lintSpamRisk } from "@/lib/kernel/email-deliverability"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
+import { applyTenantScope, resolveTenantScope } from "./tenant-scope"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
-import { resolveActionManager, type ManagerKey } from "./manager-registry"
+import { resolveActionManager, resolveCronManager, type ManagerKey } from "./manager-registry"
 import { compliancePreflight } from "./manager-dissent"
 import type { EgressScope } from "./egress-scope"
 
@@ -28,6 +29,16 @@ export { evaluateApprovalSla }
 export type { ApprovalSlaLevel }
 
 export type ManagerSessionStatus = "running" | "idle" | "terminated" | "error"
+
+// Mirrors the managed_agent_sessions.status CHECK (scripts/check-vocabularies.ts:901).
+const MANAGER_SESSION_STATUSES: readonly ManagerSessionStatus[] = ["running", "idle", "terminated", "error"]
+
+/** Boundary narrower for ManagerSessionStatus — the door a DB-row status walks through before it
+ *  may sit on a CommandCenterSession. The CHECK guarantees membership; a miss means the cache and
+ *  database have drifted. */
+export function isManagerSessionStatus(v: unknown): v is ManagerSessionStatus {
+  return typeof v === "string" && (MANAGER_SESSION_STATUSES as readonly string[]).includes(v)
+}
 
 /** Outbound CLIENT-FACING copy queues — broadcast/message content the Compliance Officer
  *  pre-flights for Fair Housing (no single-recipient consent to block on, so advisory-only).
@@ -51,10 +62,50 @@ export interface CommandCenterSession {
   agentKind:   string | null
   entityType:  string
   entityId:    string
-  status:      string
+  /** Tightened string → ManagerSessionStatus (2026-08-31): the vocabulary sat unused directly
+   *  above while this field took anything. DB rows narrow through isManagerSessionStatus.
+   *  (`entityId` above was dropped by accident in the same edit — the loader
+   *  maps it at :428 and the session row renders it; the full tsc caught what
+   *  the lane's scoped config could not, because the CLIENT is the importer.) */
+  status:      ManagerSessionStatus
   createdAt:   string
   lastEventAt: string | null
   endedAt:     string | null
+  /** 240-char preview of the manager's last message — merged from the retired
+   *  /api/admin/agents/sessions list mode (§1.1, lane N3b 2026-09-01) so the
+   *  operator sees WHAT the session last said, not just that it exists. */
+  lastAgentMessage: string | null
+}
+
+/** One rubric evaluation row for a session — the outcome-grading trail written by
+ *  app/api/webhooks/anthropic-agent into agent_outcome_evaluations. */
+export interface ManagerSessionEvaluation {
+  iteration:   number
+  result:      string
+  explanation: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  evaluatedAt: string | null
+}
+
+/** Single-session drill-down — the detail mode /api/admin/agents/sessions?session_id=
+ *  offered and the cockpit lacked. Loaded on demand by the session drawer. */
+export interface ManagerSessionDetail {
+  id:          string
+  brokerageId: string
+  agentKind:   string | null
+  model:       string | null
+  anthropicAgentId: string | null
+  entityType:  string
+  entityId:    string
+  status:      ManagerSessionStatus
+  stopReason:  string | null
+  lastAgentMessage: string | null
+  createdAt:   string
+  lastEventAt: string | null
+  endedAt:     string | null
+  evaluations: ManagerSessionEvaluation[]
 }
 
 export interface CommandCenterAction {
@@ -105,11 +156,29 @@ export const CLIENT_DECISION_SOURCES = [
   "lender_condition",
 ] as const
 
+/** One scheduled loop's latest run, stamped with the manager that RUNS it (resolveCronManager). */
+export interface CronOwnerLine {
+  cronName:         string
+  cronPath:         string
+  status:           string | null
+  startedAt:        string | null
+  completedAt:      string | null
+  recordsProcessed: number | null
+  errorMessage:     string | null
+  managerKey:       ManagerKey
+  managerLabel:     string
+}
+
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
   /** Per-manager pending load — proves every activity has an accountable owner. */
   managerBreakdown: ManagerBreakdownEntry[]
+  /** HEARTBEAT — the latest run of each scheduled loop in the last 24h, each stamped with
+   *  its accountable manager through resolveCronManager (the registry's cron-ownership
+   *  resolver, which had no product reader before this). Tenant-scoped rows only — a
+   *  brokerage sees the loops that ran FOR it; platform scope sees every loop. */
+  cronOwners:      CronOwnerLine[]
   /** Manager Daily Standup — each manager's 24h activity + what needs a human.
    *  The morning roll-call that heads the Command Center. */
   standup:         import("@/lib/intelligence/manager-standup").ManagerStandupLine[]
@@ -148,6 +217,7 @@ export interface CommandCenterData {
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
    *  addressed manager did about it). The bus made visible. */
   managerTalk:     import("@/lib/kernel/manager-signals").ManagerTalkLine[]
+  managerActivity: import("@/lib/kernel/manager-activity").ManagerActivityEntry[]
   /** CLIENT & DEAL-PARTY DECISIONS AWAITING EXECUTION — the decision-signal rail made
    *  top-of-fold: a seller hit Accept on an offer, a lender posted doc conditions, a
    *  vendor filed a request. Response-speed-to-a-client's-accept is the most
@@ -166,9 +236,34 @@ export interface CommandCenterData {
 }
 
 export interface CommandCenterParams {
-  /** Scope to one brokerage; omit (superadmin) for platform-wide. */
+  /**
+   * Scope to one brokerage. OMITTING THIS IS NO LONGER HOW YOU ASK FOR PLATFORM —
+   * see `platform` below and lib/kernel/tenant-scope.ts. A call with neither is
+   * REFUSED (TenantScopeRefusal) rather than reading every tenant.
+   */
   brokerageId?: string
+  /**
+   * Platform-wide, deliberately. The reason is required and is not decoration: it
+   * is the sentence a reviewer reads to decide whether this cross-tenant read was
+   * authorised, written at the call site.
+   *
+   * WHY THIS FIELD EXISTS. `brokerageId` was optional and every one of the seven
+   * queries below applied its tenant predicate as `if (brokerageId) q.eq(...)` on a
+   * SERVICE-ROLE client. The page computed `brokerageId: isSuperadmin ? undefined :
+   * brokerageId` while its entry gate is `isAdminOrBroker(user_type)`, which does
+   * not consult brokerage_id at all — so a NON-superadmin broker/admin whose
+   * users.brokerage_id is NULL produced the SAME undefined as the superadmin and
+   * read every brokerage's approval queue, proposed client messages and ad-spend
+   * proposals. Identical to the compliance-ledger defect; same fix.
+   */
+  platform?: { reason: string }
   limit?:       number
+  /**
+   * Session-status filter (merged from /api/admin/agents/sessions ?status=, §1.1):
+   * "active" keeps running+idle (the actionable cases), "all" (default — the
+   * cockpit's existing behavior) keeps everything, or pass one specific status.
+   */
+  sessionStatus?: "all" | "active" | ManagerSessionStatus
   /**
    * EGRESS SCOPE — restrict every actionable surface to what THIS user oversees,
    * so a team lead sees only their team's work and a solo agent sees only their own
@@ -238,6 +333,14 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const scope = params.scope
   // scope.brokerageId is authoritative when a scope is supplied.
   const brokerageId = scope?.brokerageId ?? params.brokerageId
+  // ONE discriminator for all seven queries below. A missing brokerage id can no
+  // longer decay into "every tenant": platform has to be ASKED for.
+  const tenant = resolveTenantScope({
+    brokerageId,
+    platformAuthorized: !!params.platform,
+    platformReason: params.platform?.reason,
+    where: "loadCommandCenter",
+  })
 
   // location / team / agent scope restrict to the entities (contacts/listings) owned by that
   // location / team / agent (resolved through the entity — the egress tables carry only brokerage_id).
@@ -267,11 +370,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const sessionsQuery = supabase
     .from("managed_agent_sessions")
-    .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
+    .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, last_agent_message, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
     .order("created_at", { ascending: false })
     .limit(limit)
-  if (brokerageId) sessionsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(sessionsQuery, tenant)
   if (sessionIdFilter) sessionsQuery.in("id", sessionIdFilter)
+  // Status filter (merged from the retired admin sessions route). Default stays
+  // "all" — the cockpit has always shown every status in its window.
+  const statusFilter = params.sessionStatus ?? "all"
+  if (statusFilter === "active") sessionsQuery.in("status", ["running", "idle"])
+  else if (statusFilter !== "all") sessionsQuery.eq("status", statusFilter)
 
   const marketingQuery = supabase
     .from("marketing_agent_actions")
@@ -279,7 +387,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) marketingQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(marketingQuery, tenant)
   if (sessionIdFilter) marketingQuery.in("managed_agent_session_id", sessionIdFilter)
 
   const assetQuery = supabase
@@ -288,7 +396,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) assetQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(assetQuery, tenant)
   if (sessionIdFilter) assetQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Ads Manager — paid-ad spend actions awaiting a human (launch/pause/budget/scale).
@@ -298,7 +406,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) adsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(adsQuery, tenant)
   if (sessionIdFilter) adsQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Customer-facing content awaiting human RELEASE — social posts (incl. avatar/
@@ -311,7 +419,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // Content approvals (social / email / direct-mail) are brokerage-level marketing,
   // not tied to one agent's book — withheld from a team/agent scope.
   const contentPromise = brokerageWide
-    ? loadContentApprovalActions(supabase, { brokerageId, limit, now })
+    ? loadContentApprovalActions(supabase, { scope: tenant, limit, now })
     : Promise.resolve([] as Awaited<ReturnType<typeof loadContentApprovalActions>>)
 
   // Deal-critical managers' proposed client messages (seller/buyer updates) awaiting
@@ -322,9 +430,32 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) clientMsgQuery.eq("brokerage_id", brokerageId)
-  // A team/agent scope sees only messages to its own clients.
-  if (contactIdFilter) clientMsgQuery.in("recipient_contact_id", contactIdFilter)
+  applyTenantScope(clientMsgQuery, tenant)
+  // A team/agent scope sees its own work — BY CLIENT **OR** BY SESSION.
+  //
+  // THE HALF THAT WAS MISSING (w26 lane C8). agent_client_messages.managed_agent_session_id is
+  // written on every proposal (lib/agents/agent-client-messages.ts:40) and was read by NOTHING,
+  // while the three sibling egress tables in this same feed — marketing_agent_actions,
+  // asset_manager_actions, ad_manager_actions — are all scoped by exactly that column above
+  // (:391, :400, :410). This query scoped on recipient_contact_id ALONE, so a team/agent scope
+  // dropped every proposal its own manager session produced for a PRE-CONVERSION LEAD:
+  // proposeClientMessage's `recipientLeadId` arm (the approved pre-consent channels) leaves
+  // recipient_contact_id NULL, and `.in("recipient_contact_id", …)` never matches NULL. The
+  // Deal Coordinator could draft a lead update, the team lead's Command Center would show
+  // nothing, and nobody would learn the message was waiting.
+  //
+  // OR, not AND: a message is this scope's if it is addressed to one of its contacts, or if the
+  // manager session that drafted it is one of its sessions. Both id lists are resolved THROUGH
+  // the entities this scope owns (resolveScopedEntities above), and both carry the NO_MATCH_UUID
+  // sentinel when the scope owns nothing — so an empty scope still matches zero rows and the
+  // widening cannot decay into "every tenant" (§4 fail closed). The ids are uuids, so the
+  // PostgREST or() filter string cannot be broken by their content.
+  if (contactIdFilter || sessionIdFilter) {
+    const scopeClauses: string[] = []
+    if (contactIdFilter) scopeClauses.push(`recipient_contact_id.in.(${contactIdFilter.join(",")})`)
+    if (sessionIdFilter) scopeClauses.push(`managed_agent_session_id.in.(${sessionIdFilter.join(",")})`)
+    clientMsgQuery.or(scopeClauses.join(","))
+  }
 
   // CLIENT & DEAL-PARTY DECISIONS — the decision-signal tasks (a seller hit Accept,
   // a lender posted conditions, a vendor filed a request). Oldest first: the longest-
@@ -336,7 +467,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) decisionsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(decisionsQuery, tenant)
   if (contactIdFilter) decisionsQuery.in("contact_id", contactIdFilter)
 
   const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions, decisionsRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise, decisionsQuery])
@@ -386,10 +517,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     agentKind:   s.managed_agents?.agent_kind ?? null,
     entityType:  s.entity_type,
     entityId:    s.entity_id,
-    status:      s.status,
+    // The CHECK admits exactly the four ManagerSessionStatus values; a row outside them can only
+    // mean vocabulary drift, and a session whose state cannot be read IS in an error state —
+    // shown as such rather than dropped from the board or crashing it.
+    status:      isManagerSessionStatus(s.status) ? s.status : "error",
     createdAt:   s.created_at,
     lastEventAt: s.last_event_at ?? null,
     endedAt:     s.ended_at ?? null,
+    lastAgentMessage: typeof s.last_agent_message === "string"
+      ? (s.last_agent_message as string).slice(0, 240)
+      : null,
   }))
 
   // Built without the manager fields; resolveActionManager attaches them in one pass below.
@@ -527,6 +664,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
   let dialBatches: CommandCenterData["dialBatches"] = []
   let managerTalk: import("@/lib/kernel/manager-signals").ManagerTalkLine[] = []
+  let managerActivity: import("@/lib/kernel/manager-activity").ManagerActivityEntry[] = []
   if (brokerageWide && brokerageId) {
     try {
       const { loadRecentManagerTalk } = await import("@/lib/kernel/manager-signals")
@@ -534,6 +672,61 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     } catch (err) {
       console.error("[command-center] manager talk failed:", err)
     }
+    try {
+      const { loadManagerActivity } = await import("@/lib/kernel/manager-activity")
+      managerActivity = await loadManagerActivity(brokerageId, 40, supabase)
+    } catch (err) {
+      console.error("[command-center] manager activity failed:", err)
+    }
+  }
+
+  // HEARTBEAT — the latest run of every scheduled loop (24h), each stamped with the
+  // manager that RUNS it. resolveCronManager is the registry's cron-ownership
+  // resolver; until this reader it was exercised only by the ownership simulator.
+  // Same tenant discriminator as every other read here (§4): a tenant sees the
+  // runs recorded against it, platform scope sees the fleet. Best-effort.
+  let cronOwners: CronOwnerLine[] = []
+  try {
+    const since = new Date(now.getTime() - 24 * 3600_000).toISOString()
+    const cronQuery = supabase
+      .from("cron_execution_logs")
+      .select("cron_name, cron_path, status, started_at, completed_at, records_processed, error_message")
+      .gte("started_at", since)
+      .order("started_at", { ascending: false })
+      .limit(300)
+    applyTenantScope(cronQuery, tenant)
+    const { data: cronRows, error: cronErr } = await cronQuery
+    if (cronErr) {
+      console.error("[command-center] cron_execution_logs read refused:", cronErr.message)
+    } else {
+      const seen = new Set<string>()
+      for (const r of (cronRows ?? []) as Array<Record<string, unknown>>) {
+        // cron_path is stored as the route FILE path ("/app/api/cron/x/route.ts");
+        // CRON_MANAGER is keyed on the URL path ("/api/cron/x"). Normalise once.
+        const raw = String(r.cron_path ?? "")
+        const urlPath = raw.replace(/^\/app/, "").replace(/\/route\.tsx?$/, "").split("?")[0]
+        const key = urlPath || String(r.cron_name ?? "")
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        const mgr = resolveCronManager(urlPath)
+        cronOwners.push({
+          cronName:         String(r.cron_name ?? key),
+          cronPath:         urlPath,
+          status:           (r.status as string | null) ?? null,
+          startedAt:        (r.started_at as string | null) ?? null,
+          completedAt:      (r.completed_at as string | null) ?? null,
+          recordsProcessed: typeof r.records_processed === "number" ? r.records_processed : null,
+          errorMessage:     (r.error_message as string | null) ?? null,
+          managerKey:       mgr.key,
+          managerLabel:     mgr.label,
+        })
+      }
+    }
+  } catch (err) {
+    console.error("[command-center] heartbeat (cron owners) failed:", err)
+  }
+
+  if (brokerageWide && brokerageId) {
     const { data: db } = await supabase
       .from("ai_isa_call_batches")
       .select("id, proposed_count, proposed_at")
@@ -563,6 +756,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     sessions,
     pendingActions,
     managerBreakdown,
+    cronOwners,
     standup,
     weeklyPnl,
     deliverables,
@@ -575,6 +769,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyExecPlan,
     dialBatches,
     managerTalk,
+    managerActivity,
     clientDecisions,
     decisionVelocity,
     summary: {
@@ -583,6 +778,100 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       erroredSessions:   sessions.filter((s) => s.status === "error").length,
       pendingApprovals:  pendingActions.length,
       breachedApprovals: pendingActions.filter((a) => a.slaLevel === "breached").length,
+    },
+  }
+}
+
+/**
+ * SINGLE-SESSION DRILL-DOWN — merged onto the cockpit side from
+ * app/api/admin/agents/sessions (?session_id= mode) per §1.1 (lane N3b,
+ * 2026-09-01). One session's full record: agent identity (agent_kind / model /
+ * anthropic_agent_id from managed_agents), stop_reason, the untruncated-ish
+ * last_agent_message, and EVERY agent_outcome_evaluations rubric row
+ * (iteration / result / explanation / tokens / evaluated_at), newest first.
+ *
+ * Tenanted through the SAME discriminator as loadCommandCenter: a tenant scope
+ * pins the session row to that brokerage; the platform scope (platform staff
+ * only — the caller proves it, see getManagerSessionDetail) reads cross-tenant
+ * with its reason recorded at the call site. A caller with neither refuses
+ * (TenantScopeRefusal) rather than widening — §4.
+ *
+ * Every read destructures { error } and a refused read returns the refusal:
+ * "could not read the session" must never render as "session not found".
+ */
+export async function loadManagerSessionDetail(params: {
+  sessionId: string
+  brokerageId?: string
+  platform?: { reason: string }
+}): Promise<{ ok: true; detail: ManagerSessionDetail } | { ok: false; error: string }> {
+  const supabase = createServiceClient()
+  const tenant = resolveTenantScope({
+    brokerageId: params.brokerageId,
+    platformAuthorized: !!params.platform,
+    platformReason: params.platform?.reason,
+    where: "loadManagerSessionDetail",
+  })
+
+  const sessionQuery = supabase
+    .from("managed_agent_sessions")
+    .select("id, anthropic_session_id, brokerage_id, entity_type, entity_id, status, stop_reason, last_agent_message, last_event_at, created_at, ended_at, managed_agent_id")
+    .eq("id", params.sessionId)
+  applyTenantScope(sessionQuery, tenant)
+  const { data: session, error: sessionErr } = await sessionQuery.maybeSingle()
+  if (sessionErr) return { ok: false, error: `Session read was refused: ${sessionErr.message}` }
+  if (!session) return { ok: false, error: "Session not found" }
+
+  // Agent identity. Best-effort ONLY in the sense that an absent managed_agents
+  // row leaves the fields null; a REFUSED read is still reported.
+  let agentKind: string | null = null
+  let model: string | null = null
+  let anthropicAgentId: string | null = null
+  if (session.managed_agent_id) {
+    const { data: agent, error: agentErr } = await supabase
+      .from("managed_agents")
+      .select("agent_kind, anthropic_agent_id, model")
+      .eq("id", session.managed_agent_id as string)
+      .maybeSingle()
+    if (agentErr) return { ok: false, error: `Agent read was refused: ${agentErr.message}` }
+    agentKind = (agent?.agent_kind as string | null) ?? null
+    model = (agent?.model as string | null) ?? null
+    anthropicAgentId = (agent?.anthropic_agent_id as string | null) ?? null
+  }
+
+  const { data: evals, error: evalsErr } = await supabase
+    .from("agent_outcome_evaluations")
+    .select("iteration, result, explanation, input_tokens, output_tokens, cache_read_input_tokens, evaluated_at")
+    .eq("managed_agent_session_id", session.id as string)
+    .order("iteration", { ascending: false })
+  if (evalsErr) return { ok: false, error: `Evaluation read was refused: ${evalsErr.message}` }
+
+  return {
+    ok: true,
+    detail: {
+      id:          session.id as string,
+      brokerageId: session.brokerage_id as string,
+      agentKind,
+      model,
+      anthropicAgentId,
+      entityType:  session.entity_type as string,
+      entityId:    session.entity_id as string,
+      status:      isManagerSessionStatus(session.status) ? session.status : "error",
+      stopReason:  (session.stop_reason as string | null) ?? null,
+      lastAgentMessage: typeof session.last_agent_message === "string"
+        ? (session.last_agent_message as string)
+        : null,
+      createdAt:   session.created_at as string,
+      lastEventAt: (session.last_event_at as string | null) ?? null,
+      endedAt:     (session.ended_at as string | null) ?? null,
+      evaluations: ((evals ?? []) as Array<Record<string, unknown>>).map((e) => ({
+        iteration:   (e.iteration as number) ?? 0,
+        result:      String(e.result ?? ""),
+        explanation: (e.explanation as string | null) ?? null,
+        inputTokens: (e.input_tokens as number | null) ?? 0,
+        outputTokens: (e.output_tokens as number | null) ?? 0,
+        cacheReadInputTokens: (e.cache_read_input_tokens as number | null) ?? 0,
+        evaluatedAt: (e.evaluated_at as string | null) ?? null,
+      })),
     },
   }
 }

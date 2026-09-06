@@ -3,7 +3,11 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getConversations, prioritizeInbox } from "@/app/actions/ai-communication-hub"
+// Lane E2 2026-08-28: getCommunicationStats WIRED — 30-day outbound volume
+// for the OS header strip (session-tenanted inside the action).
+import { getCommunicationStats } from "@/app/actions/communications"
 import { CommunicationsOSClient } from "./communications-os-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title: "Communications OS",
@@ -31,6 +35,13 @@ export default async function CommunicationsOSPage() {
 
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
 
   // Resolve user profile
@@ -64,6 +75,7 @@ export default async function CommunicationsOSPage() {
     unreadCountRes,
     socialAccountsRes,
     socialMessagesRes,
+    commStatsResult,
   ] = await Promise.all([
     // All conversations
     getConversations({ brokerageId, limit: 100 }),
@@ -113,6 +125,8 @@ export default async function CommunicationsOSPage() {
       .eq("brokerage_id", brokerageId)
       .in("type", ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business", "social_dm"])
       .gt("unread_count", 0),
+    // 30-day outbound message volume (session-tenanted inside the action)
+    getCommunicationStats({ startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() }),
   ])
 
   // Process conversations
@@ -247,6 +261,16 @@ export default async function CommunicationsOSPage() {
         platform: a.platform,
         accountName: a.account_name,
       }))}
+      outboundStats={
+        commStatsResult.success && "stats" in commStatsResult && commStatsResult.stats
+          ? {
+              total: commStatsResult.stats.total,
+              sms: commStatsResult.stats.sms,
+              email: commStatsResult.stats.email,
+              call: commStatsResult.stats.call,
+            }
+          : null
+      }
     />
   )
 }

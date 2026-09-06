@@ -1,0 +1,4172 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/opposite-missing-census.ts  (npm run test:opposite-missing)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE OPPOSITE-HALF CENSUS — six pair classes that this repo already measures at
+ * the WRONG GRAIN, or does not measure at all.
+ *
+ * Owner's ask, verbatim: "we need to include any other hidden issues identifying
+ * functions/imports and/or exports and/or writers and/or readers that don't have
+ * the opposite in files that can be considered orphaned or missing... any
+ * orphaned wire/absent that needs a wire and/or build needs to get it done."
+ *
+ * WHAT ALREADY EXISTS, AND WHY THIS IS NOT A FOURTH COPY OF IT
+ *
+ *   scripts/orphan-export-guard.ts  — exported FUNCTIONS with no importer.
+ *   scripts/writerless-read-sweep.ts — TABLES read but never written. Reports 0.
+ *   scripts/orphan-write-sweep.ts    — TABLES written but never read. Reports 0.
+ *   scripts/orphan-route-sweep.ts    — PAGES nothing links to (it explicitly
+ *                                      skips every /api/ path — see its line 236).
+ *
+ * Those four are all correct and all coarse. A table can have a writer and a
+ * reader — so both sweeps go green — while a dozen of its COLUMNS are written by
+ * nobody or read by nobody. A file can be imported while a symbol imported INTO
+ * it is never used. A function can be exported and referenced while one of its
+ * PARAMETERS is inert. `orphan-export-guard` counts `export function` and
+ * `export const x = (` only, so every exported TYPE, INTERFACE, ENUM, CLASS and
+ * VALUE CONST in the tree has never been counted at all. And nothing anywhere
+ * checks that an `await import("…")` resolves, or that an `app/api/**` route
+ * anyone fetches actually exists.
+ *
+ * So the six classes below are chosen to sit exactly in the gaps, and each one
+ * DEFERS to the coarse sweep that already owns its table/file:
+ *
+ *   1. COLUMN-level one-sided I/O — only on tables the table-level sweeps have
+ *      already cleared (a table with at least one writer AND at least one
+ *      reader). A table with no writer at all belongs to writerless-read-sweep;
+ *      a table with no reader belongs to orphan-write-sweep. No overlap.
+ *   2. DEAD IMPORT — a symbol imported into a file and never used in that file.
+ *   3. ORPHANED NON-FUNCTION EXPORT — type / interface / enum / class / value
+ *      const with no importer. Disjoint from orphan-export-guard by
+ *      construction: anything that guard's two regexes match is excluded here.
+ *   4. INERT PARAMETER — accepted and never read in the body.
+ *   5. BROKEN DYNAMIC IMPORT — `await import("…")` of a path that does not
+ *      exist, or destructuring a named export the target does not have.
+ *   6. ROUTE/FETCH PAIRING — a `fetch("/api/…")` whose route file does not
+ *      exist (a guaranteed 404), and the mirror: an `app/api/**` route handler
+ *      no string in the tree ever addresses.
+ *
+ * ── SOUNDNESS RULES THIS FILE IS HELD TO ────────────────────────────────────
+ *
+ * COMMENTS ARE BLANKED FIRST, with scripts/strip-comments.ts, never with a
+ * hand-rolled regex pair. Doing it block-comments-first is a recurring defect
+ * here that has twice made an analyzer go blind and ACCUSE LIVE CODE — read that
+ * file's header. blankComments() is used (not stripComments) because several
+ * scans below compute a line number from a match index.
+ *
+ * EVERY "X IS ABSENT" ASSERTION IS PAIRED WITH A POSITIVE CONTROL. A broken
+ * regex and a clean tree both report zero, and the difference is the whole
+ * value of the instrument. Each category therefore asserts, on a synthetic
+ * fixture, that the scanner still SEES the shape it is counting the absence of —
+ * and, where the direction matters, that it does NOT see a correct shape. If a
+ * control fails the census exits non-zero and reports NOTHING, because a blind
+ * scanner's zero is a lie, not a pass.
+ *
+ * WHAT CANNOT BE RESOLVED IS COUNTED, NOT DROPPED. Opaque write objects,
+ * unresolvable embeds, non-literal import specifiers, destructured parameters,
+ * interpolated fetch paths — each has a counter, and the coverage line prints
+ * the denominator next to every numerator. A coverage number that hides its own
+ * exclusions is a number that rounds up.
+ *
+ * FALSE NEGATIVE OVER FALSE ACCUSATION, every time. Where a shape cannot be
+ * decided the finding is suppressed and counted as unresolved. That is why
+ * `select("*")` marks a table fully-read for the write-orphan direction (it
+ * really does read every column) but contributes NOTHING to the read-orphan
+ * direction (it does not prove any particular column is wanted).
+ *
+ * ── THIS IS A WIRE LIST, NOT A DELETE LIST ──────────────────────────────────
+ * Same standing rule as orphan-export-guard: everything here is a half that was
+ * built without its opposite. The correct response is to BUILD THE MISSING HALF.
+ * Deletion requires a NAMED DUPLICATE — file.ts:line that does the same job more
+ * completely — established by reading both. Never delete to move a number.
+ *
+ * Run:      npx tsx scripts/opposite-missing-census.ts   (npm run test:opposite-missing)
+ * Enumerate: … --list           (prints every finding, asserts nothing, exits 0)
+ * Baseline: OPPOSITE_MISSING_BASELINE=1 npx tsx scripts/opposite-missing-census.ts
+ */
+import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from "node:fs"
+import { join, relative, dirname, resolve } from "node:path"
+import { blankComments, blankStrings, stringLiterals } from "./strip-comments"
+import { stripSqlComments } from "./strip-sql-comments"
+import { runtimeFiles, walkTs } from "./runtime-roots"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+
+// The parsers below are imported, never re-implemented. schema-drift-guard.ts owns
+// the only correct reader of a PostgREST call chain in this repo; a second copy
+// would be a second opinion, and two parsers that disagree is the defect this
+// repo's doctrine exists to prevent. The env flag suppresses that file's main()
+// so the import yields the parsers without running the guard — see its footer.
+process.env.SCHEMA_DRIFT_AS_LIBRARY = "1"
+const sd = await import("./schema-drift-guard")
+
+const root = process.cwd()
+const rel = (p: string) => relative(root, p).replace(/\\/g, "/")
+
+const BASELINE_PATH = join(root, "scripts", "opposite-missing-baseline.json")
+const LIST = process.argv.includes("--list")
+
+// ── CORPUS ──────────────────────────────────────────────────────────────────
+// runtimeRoots() derives the reach from the tree rather than from a typed list —
+// four separate guards in this repo were once narrowed to ["app","lib"] and were
+// blind to services/, hooks/, remotion/, constants/, contexts/, workflows/ and
+// types/ as a result. NON_RUNTIME_ROOTS excludes scripts/ and e2e/, which is
+// right for "what ships"; both are read back in below as a REFERENCE corpus,
+// because a proof that names a symbol is evidence about that symbol even though
+// it is not a product surface.
+const productFiles = runtimeFiles(root).map(rel).sort()
+const proofFiles = [...walkTs(join(root, "scripts")), ...walkTs(join(root, "e2e"))].map(rel).sort()
+
+/** Stage timings, printed with OPPOSITE_MISSING_VERBOSE=1 — a census nobody can
+ *  profile is a census that quietly becomes unrunnable. */
+const t0 = Date.now()
+const stages: Array<[string, number]> = []
+const stage = (name: string) => {
+  stages.push([name, Date.now() - t0])
+  // Every console.log in this file is in the report at the bottom, so a slow scan
+  // is indistinguishable from a hung one unless progress goes out as it happens.
+  if (process.env.OPPOSITE_MISSING_VERBOSE === "1") process.stderr.write(`  … ${name} @${Date.now() - t0}ms\n`)
+}
+
+const rawOf = new Map<string, string>()
+for (const f of [...productFiles, ...proofFiles]) {
+  try { rawOf.set(f, readFileSync(join(root, f), "utf8")) } catch { rawOf.set(f, "") }
+}
+
+/** Comments blanked to spaces: line numbers AND character offsets both survive. */
+const codeOf = new Map<string, string>()
+for (const f of rawOf.keys()) codeOf.set(f, blankComments(rawOf.get(f)!))
+stage("blankComments")
+
+/**
+ * String CONTENTS blanked, quotes kept — so a name inside a string literal is not
+ * counted as a reference to the symbol of that name. orphan-export-guard learned
+ * this the expensive way: 240 exports were classed "referenced" purely because
+ * lib/kernel/manager-registry.ts's narrative `what:` fields mention them, i.e.
+ * documentation masquerading as wiring.
+ */
+// blankStrings() — the SCANNER, not the three-regex idiom every other analyzer
+// here grew privately. That idiom mis-pairs on a lone backtick inside a quoted
+// string and blanks the code between it and the next backtick; measured on
+// lib/agents/generate-client-message.ts it deleted `export async function
+// generateClientMessage`, and this census's first run duly reported all twenty
+// of that module's `await import(…)` call sites as importing a name it does not
+// export. Twenty false accusations against working code. See strip-comments.ts.
+const maskStrings = (src: string) => blankStrings(src)
+const maskOf = new Map<string, string>()
+for (const f of rawOf.keys()) maskOf.set(f, blankStrings(rawOf.get(f)!))
+stage("blankStrings")
+
+/**
+ * Line number for a character offset — via a per-string index of newline offsets,
+ * binary-searched, not by counting from zero on every call.
+ *
+ * The naive count is O(offset), and this census asks the question once per
+ * `.from()` site (13,591 of them) plus once per import, per function and per
+ * string literal. Counting from the top of the file each time made the scan
+ * quadratic in file size, which on the largest modules in this tree is the
+ * difference between a census that runs in CI and one nobody ever runs twice.
+ */
+const lineIndexCache = new WeakMap<object, number[]>()
+const lineIndexByString = new Map<string, number[]>()
+function lineStarts(src: string): number[] {
+  let idx = lineIndexByString.get(src)
+  if (idx) return idx
+  idx = [0]
+  for (let i = 0; i < src.length; i++) if (src[i] === "\n") idx.push(i + 1)
+  // Only the corpus strings are worth remembering; control fixtures are tiny and
+  // transient, and caching them would grow this map without bound.
+  if (src.length > 4096) lineIndexByString.set(src, idx)
+  void lineIndexCache
+  return idx
+}
+function lineOf(src: string, idx: number): number {
+  const starts = lineStarts(src)
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (starts[mid] <= idx) lo = mid
+    else hi = mid - 1
+  }
+  return lo + 1
+}
+
+// ── FINDINGS ────────────────────────────────────────────────────────────────
+interface Finding { cat: string; key: string; where: string; detail: string }
+const findings: Finding[] = []
+const add = (cat: string, key: string, where: string, detail: string) =>
+  findings.push({ cat, key, where, detail })
+
+// ── POSITIVE CONTROLS ───────────────────────────────────────────────────────
+// A scanner that cannot see the shape reports zero of it, and so does a clean
+// tree. These make the two distinguishable. Every one runs BEFORE any finding is
+// believed; a single failure aborts with no report at all.
+const controls: Array<{ name: string; ok: boolean; note?: string }> = []
+const control = (name: string, ok: boolean, note?: string) => controls.push({ name, ok, note })
+
+// ── CONTROL ZERO: THE MASKER ITSELF ─────────────────────────────────────────
+// Everything downstream reads either codeOf (comments blanked) or maskOf
+// (comments AND string contents blanked). If either is wrong the whole census is
+// wrong in the confident direction, so both are checked before anything else on
+// the exact shape that broke the first run: a lone BACKTICK inside a quoted
+// string. The three-regex masking idiom pairs it with the next backtick in the
+// file and blanks every line between — which is how twenty correct `await
+// import(…)` sites got reported as importing a name their target does not export.
+{
+  const trap = 'const tick = "a ` backtick in a string"\nexport async function survivesTheMask() {}\nconst t2 = `real template`\n'
+  const masked = blankStrings(trap)
+  control("C0 a stray backtick inside a string does not blank the code below it",
+    masked.includes("export async function survivesTheMask"),
+    masked.replace(/\n/g, "⏎").slice(0, 90))
+  control("C0 masking preserves character offsets exactly",
+    blankStrings(trap).length === trap.length)
+  control("C0 string CONTENT really is blanked (a name in a string is not a use)",
+    !blankStrings('const s = "mentionsSomeSymbolName"').includes("mentionsSomeSymbolName"))
+  control("C0 a ${…} interpolation stays CODE (a name inside one IS a use)",
+    blankStrings("const s = `x ${realReference} y`").includes("realReference"))
+  control("C0 comment blanking preserves offsets", (() => {
+    const withComment = "const a = 1 // note\nconst b = 2\n"
+    return blankComments(withComment).length === withComment.length
+  })())
+}
+
+// ── CONTROL ZERO-B: THE CORPUS ──────────────────────────────────────────────
+// A control on the MASKER answers "can this scanner read a file correctly". It
+// does not answer "is the file in the pile at all", and that second question went
+// unasked until 2026-08-25, when this census accused `PUBLIC_ROUTES` and
+// `PROTECTED_ROUTES` of having no importer. Their importer is `proxy.ts:38` — the
+// edge middleware, at the repository ROOT. `runtimeFiles()` walked top-level
+// DIRECTORIES, and a root-level file is not a directory, so proxy.ts (the auth
+// gate) and types.ts (1865 lines of vocabulary) were in no guard's corpus at all.
+//
+// An unseen file is a false accusation generator in BOTH directions: every defect
+// inside it is missed, and every export it is the sole consumer of is reported
+// orphaned. So the corpus now asserts its own reach, on the two shapes that
+// decide it — a root file that ships must be IN, and a root file that is
+// toolchain configuration must be OUT. Pinned to the RULE (root .ts that is not
+// *.config.ts), not to a filename count that any new root file would move.
+{
+  const rootsSeen = productFiles.filter((f) => !f.includes("/"))
+  control("C0b the corpus reaches root-level runtime files (proxy.ts is the edge auth gate)",
+    rootsSeen.includes("proxy.ts"), rootsSeen.join(", ") || "none")
+  control("C0b the corpus excludes root-level *.config.ts (toolchain, not runtime)",
+    !rootsSeen.some((f) => /\.config\.[cm]?tsx?$/.test(f)),
+    rootsSeen.filter((f) => /\.config\./.test(f)).join(", ") || "none present")
+  control("C0b root files are actually READ, not just listed",
+    (rawOf.get("proxy.ts") ?? "").length > 0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 1 — COLUMN-LEVEL ONE-SIDED I/O
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The two table-level sweeps both report zero, and both are telling the truth at
+// their grain. This asks the same question one level down: on a table that IS
+// written and IS read, is there a COLUMN that only one side ever touches?
+//
+// Two directions, and they need opposite treatments of `select("*")`:
+//
+//   WRITTEN-NEVER-READ — a write whose value nobody consumes. Here `select("*")`
+//     really does read every column, so a table selected with `*` anywhere is
+//     removed from this direction entirely. Same for any read this scanner could
+//     not fully parse.
+//   READ-NEVER-WRITTEN — a read that can only ever return NULL/default. Here
+//     `select("*")` proves nothing about any particular column, so it contributes
+//     nothing. The candidate must be named explicitly in a select/filter.
+//
+// SUPPRESSIONS, each of which is a real way a column gets written or read outside
+// this scanner's sight — counted, never guessed at:
+//   · a table whose write object is OPAQUE (a spread `{...base}`, or an
+//     `.insert(variable)` whose variable could not be resolved) is dropped from
+//     the read-never-written direction: its true key set is unknown.
+//   · DB-managed columns (id / created_at / updated_at / …) are written by
+//     DEFAULT and by trigger, never by app code, so a "no writer" finding on
+//     them would be pure noise.
+//   · a table touched by `.rpc(` anywhere loses both directions for that table —
+//     a database function reads and writes columns no static scan can attribute.
+const readCols = new Map<string, Set<string>>()
+const writeCols = new Map<string, Set<string>>()
+const starRead = new Set<string>()          // select("*") — reads everything
+const opaqueWrite = new Set<string>()       // write key set not statically knowable
+const tablesRead = new Set<string>()
+const tablesWritten = new Set<string>()
+const colSites = new Map<string, string>()  // "table.col" → first file:line that names it
+let unresolvedEmbeds = 0
+let unresolvedWriteObjects = 0
+let unresolvedFilterTerms = 0
+let sqlSeeded = 0                            // 1b findings withheld because an applied .sql writes the column
+let selectSitesParsed = 0
+// ── EMBED JOIN COLUMNS (FIX A, 2026-09-01) ──────────────────────────────────
+// PostgREST resolves an embed THROUGH a joining column on the parent —
+// `insight:brokerage_intelligence_insights(…)` off pattern_adoptions reads
+// pattern_adoptions.insight_id on every request. Until resolveEmbeddedSelects
+// grew its joinRefs channel those reads were invisible, and all three of
+// pattern_adoptions' join columns (insight_id/agent_id/adopted_by) sat in 1a as
+// "written, read by NOBODY" while app/dashboard/admin/intelligence-mesh/page.tsx
+// read them on every render. Resolved and unresolved are both counted, printed
+// beside selectSitesParsed in the coverage block.
+let embedJoinColumnsResolved = 0
+let embedJoinColumnsUnresolved = 0
+
+/** Columns the database fills in on its own. A missing app WRITER is expected. */
+const DB_MANAGED = new Set([
+  "id", "created_at", "updated_at", "inserted_at", "deleted_at", "modified_at",
+  "created_by", "search_vector", "tsv", "fts",
+])
+
+/**
+ * Columns whose READER IS THE DATABASE, not the application — so "written and
+ * never read by code" is the correct state for them, not a finding.
+ *
+ * `brokerage_id` is the load-bearing case and it is not a technicality: every
+ * tenant policy in this schema is written against `current_user_brokerage_id()`,
+ * so the column is consumed by RLS on every single query. App code that never
+ * selects it is behaving correctly, and stamping it is MANDATORY. Reporting 34
+ * of those as one-sided writes would have made the honest findings in this
+ * category unreadable and taught people to stop reading it — the failure mode
+ * that ends with a guard being switched off.
+ *
+ * The audit stamps are the same shape one level down: `updated_at` is read by
+ * ordering and by humans reading a row, `created_by`/`updated_by` are provenance
+ * for an audit export. None of them is a wire waiting to be finished.
+ */
+const POLICY_OR_AUDIT_CONSUMED = new Set([
+  "brokerage_id", "tenant_id",
+  "created_at", "updated_at", "inserted_at", "modified_at",
+  "created_by", "updated_by", "deleted_at", "deleted_by",
+
+  // ── QUALIFIED `table.column` ENTRIES ──────────────────────────────────────
+  //
+  // The bare names above are schema-wide: `brokerage_id` is consumed by RLS on
+  // EVERY table, so exempting it everywhere is right. The entries below are
+  // NOT schema-wide — `admin_user_id` on some other table would be a real
+  // finding — so they are qualified, and isPolicyConsumed() checks both forms.
+  //
+  // WHY THESE THREE. `ai_subscription_tier` has one writer
+  // (app/actions/superadmin/brokerage-management.ts:270, the tier-change
+  // entitlement sync) and, since the four zero-caller subscription-admin gates
+  // were deleted (tombstone: lib/security/authorization.ts:39), no TypeScript
+  // reader at all. It is NOT readerless. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-23 from pg_policy — the SELECT policy
+  // `ai_usage_monthly_view` on `public.ai_usage_monthly` reads all three:
+  //
+  //     brokerage_id IN (SELECT brokerage_id FROM ai_subscription_tier
+  //                      WHERE admin_user_id = auth.uid() AND is_active = true)
+  //
+  // and `tier_name` is the entitlement value the row exists to carry beside
+  // them. CLAUDE.md §3 records the trap in the writer direction — a column
+  // written only by a trigger, an .rpc() or a backfill reads as writerless
+  // without being writerless. This is its MIRROR, and the census had no name
+  // for it until now: a column read only by an RLS policy reads as readerless
+  // without being readerless. Reporting these three as "write-only" would send
+  // the next lane to delete a write that a live tenancy policy depends on.
+  "ai_subscription_tier.admin_user_id",
+  "ai_subscription_tier.is_active",
+  "ai_subscription_tier.tier_name",
+
+  // WHY THIS ONE. `usage_counters.period_end` is written by both counter
+  // writers (lib/usage.ts:65, lib/usage/log-media-usage.ts:103) and its READER
+  // IS THE DATABASE: it is part of the row's identity —
+  // UNIQUE(brokerage_id, period_start, period_end, metric),
+  // scripts/120-create-usage-tracking-billing.sql:51 — which is exactly what
+  // the 23505 insert-race handler at lib/usage.ts:70 depends on to fold a lost
+  // race into the winner's row instead of dropping the count. An APP reader is
+  // not merely absent, it is FORBIDDEN by this repo's own period doctrine:
+  // lib/usage/period.ts and app/actions/usage-overview.ts:102-111 record that
+  // keying reads on period_end is how a whole month of AI-token rows became
+  // unreachable before m474 ("readers filter on period_start ALONE"). Reporting
+  // the column as a one-sided write invites the next lane to build the reader
+  // the doctrine exists to prevent.
+  "usage_counters.period_end",
+
+  // WHY THIS ONE. `vendor_subscriptions.billing_direction` is written by the one
+  // enrolment writer (app/actions/vendors/vendor-plan-subscriptions.ts:350,
+  // deliberately explicit — its comment says the direction "is the fact this
+  // whole lane exists to state") and its READER IS THE DATABASE: m497's CHECK
+  // admits exactly ONE literal — verified live against hrvaqgvukzxfskkcrwbt on
+  // 2026-08-28, pg_constraint: CHECK (billing_direction = 'vendor_pays_brokerage')
+  // — so the column exists to make the historically-inverted money direction
+  // (vendor packages once modelled as the brokerage paying the vendor monthly;
+  // see manager-registry `vendor_package_direction`) UNWRITABLE by any future
+  // writer, webhook or backfill. An app reader would be reading a constant the
+  // constraint already guarantees; reporting the column as a one-sided write
+  // invites either deleting the explicit write (losing the stated fact) or
+  // building a reader of a value that cannot vary. Same class as
+  // usage_counters.period_end: written by app code, consumed by a constraint.
+  "vendor_subscriptions.billing_direction",
+
+  // WHY THIS ONE. `platform_sentinel_actions.dedupe_key` is written by the one
+  // proposal writer (app/api/cron/platform-sentinel/route.ts:110, weekly-
+  // bucketed keys) and its READER IS THE DATABASE: the same write is an
+  // `.upsert(rows, { onConflict: "dedupe_key", ignoreDuplicates: true })`, so
+  // the UNIQUE index IS the consumer — it is what makes the daily cron
+  // idempotent and, more importantly, what stops a re-proposal from
+  // RESURRECTING an action a staff member already dismissed. Verified live
+  // against hrvaqgvukzxfskkcrwbt on 2026-08-28, pg_constraint:
+  // platform_sentinel_actions_dedupe_key_key UNIQUE (dedupe_key). An app
+  // reader would be reading a key whose only meaning is collision; reporting
+  // it as a one-sided write invites deleting the write and letting every
+  // dismissed proposal come back tomorrow. Same class as
+  // usage_counters.period_end and vendor_subscriptions.billing_direction:
+  // written by app code, consumed by a constraint.
+  "platform_sentinel_actions.dedupe_key",
+
+  // WHY THESE TWO. `closing_cost_accuracy_observations.transaction_id` and
+  // `.document_id` are written by BOTH accuracy writers
+  // (lib/offers/closing-cost-accuracy.ts:493 buyer side, :622 seller side) and
+  // their READER IS THE DATABASE: they are two thirds of the idempotency key
+  // both writers upsert against — `onConflict: "transaction_id,document_id,side"`
+  // — which is what lets the recorder run from BOTH of its trigger paths (the
+  // CLOSED branch of stage-progression and the post-scan hook) without
+  // double-counting a deal into the accuracy rail. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-28, pg_indexes: ccao_txn_doc_side_key
+  // UNIQUE (transaction_id, document_id, side) — created by m1105, which also
+  // dropped m1104's 2-column unique. Note the SIDE discriminator is genuinely
+  // read (lib/analytics/prediction-accuracy.ts, the buyer/seller breakdown);
+  // only the two identity columns have no app reader, and building one would
+  // mean inventing a per-observation drill-down nobody asked for. Reporting
+  // them as one-sided writes invites dropping the columns and re-grading the
+  // same closed deal on every scan.
+  "closing_cost_accuracy_observations.transaction_id",
+  "closing_cost_accuracy_observations.document_id",
+
+  // WHY THIS ONE. `vendor_review_flags.flagged_by` is written by the one flag
+  // writer (app/actions/vendor-marketplace.ts:1042) and its READER IS THE
+  // DATABASE: the same insert relies on the UNIQUE to make a repeat flag a
+  // no-op, and the code says so and then PROVES it by swallowing the
+  // unique-violation — `if (flagErr && !/duplicate key|unique/i.test(...)) throw`.
+  // Verified live against hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
+  // vendor_review_flags_review_id_flagged_by_key UNIQUE (review_id, flagged_by).
+  // The moderation escalation counts DISTINCT flag rows
+  // (moderationAfterFlag(flag_count)), so "one flag per reviewer per review" is
+  // not a nicety — without it a single user could brigade a vendor's review off
+  // the marketplace by clicking twice. An app reader would be reading a key
+  // whose only meaning is collision; reporting it as a one-sided write invites
+  // dropping the column and with it the whole dedupe. Same class as
+  // usage_counters.period_end and platform_sentinel_actions.dedupe_key.
+  "vendor_review_flags.flagged_by",
+
+  // WHY THIS ONE. `podcast_auto_runs.iso_week` is written by the one weekly
+  // producer (lib/podcast/auto-producer.ts) and its READER IS THE DATABASE:
+  // the insert IS the idempotency ledger, and the producer's very next branch
+  // reads the constraint's refusal by SQLSTATE — `if (error.code === "23505")
+  // return { status: "already_run" }`. Verified live against hrvaqgvukzxfskkcrwbt,
+  // re-measured 2026-08-31 after m588, pg_indexes:
+  // uq_podcast_auto_runs_brokerage_week UNIQUE (brokerage_id, iso_week)
+  // WHERE (status <> 'failed') — PARTIAL since m588, so a completed, queued or
+  // skipped run holds the week while a FAILED one releases the slot and the
+  // retry's insert succeeds (before m588 the unique was plain and a failed row
+  // blocked its week forever, every retry told "already_run"). A re-run of the
+  // weekly cron is caught by the index and by nothing else; an app reader would
+  // be a second, racier opinion about a question the database already answers
+  // atomically. Reporting it as a one-sided write invites deleting the column
+  // and producing the same episode every time the cron retries.
+  "podcast_auto_runs.iso_week",
+
+  // WHY THIS ONE. `ai_search_landing_citation_observations.platform` is written
+  // by the one citation monitor (lib/kernel/ai-search-citation-monitor.ts:707)
+  // and its READER IS THE DATABASE: the write is an
+  // `.upsert(…, { onConflict: "form_id,platform,observed_on" })` — the column is
+  // one third of the conflict target, which is what makes a re-scan of the same
+  // landing page on the same day UPDATE the day's observation instead of
+  // stacking a duplicate into the visibility score. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
+  // ai_search_landing_citation_uniq UNIQUE (form_id, platform, observed_on).
+  // NOTE the sibling `outcome` IS genuinely read (scoreCitationVisibility over
+  // the observations) — only the identity third of the key has no app reader,
+  // and building one would mean inventing a per-platform drill-down nobody
+  // asked for. Same class as closing_cost_accuracy_observations' two identity
+  // columns: written by app code, consumed by the conflict target.
+  "ai_search_landing_citation_observations.platform",
+])
+
+/**
+ * A column is policy-consumed if its BARE name is exempt schema-wide, or if
+ * this exact `table.column` is. Kept as one function so the two forms cannot
+ * drift apart, and so a future qualified entry needs no second lookup site.
+ */
+function isPolicyConsumed(table: string, column: string): boolean {
+  return POLICY_OR_AUDIT_CONSUMED.has(column) || POLICY_OR_AUDIT_CONSUMED.has(`${table}.${column}`)
+}
+
+/**
+ * TOP-LEVEL SHORTHAND PROPERTIES — `{ automation_id, user_id, result }`.
+ *
+ * schema-drift-guard's parseObjectTopLevelKeys only recognises `name:` because it
+ * hunts for PHANTOM columns, where missing a key is a harmless false negative.
+ * Here a missed key is a FALSE ACCUSATION: the key is a real write, and not
+ * seeing it makes the column look read-only. Measured — the first run of the
+ * automation-log wiring reported `automation_logs.automation_id`, `.result` and
+ * `.trigger_type` as "read by code, written by nobody" while the writer three
+ * files away sets all three, in shorthand.
+ *
+ * This SUPPLEMENTS that parser rather than replacing it: shorthand keys are
+ * unioned in, and everything else still comes from the shared implementation, so
+ * the two analyzers cannot drift apart on the shapes they both understand.
+ */
+function shorthandObjectKeys(objText: string): string[] {
+  const keys: string[] = []
+  const stack: string[] = []
+  let lastSig = ""
+  let q: string | null = null
+  let i = 0
+  while (i < objText.length) {
+    const ch = objText[i]
+    if (q) { if (ch === q && objText[i - 1] !== "\\") q = null; i++; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; lastSig = ch; i++; continue }
+    if (ch === "{" || ch === "(" || ch === "[") { stack.push(ch); lastSig = ch; i++; continue }
+    if (ch === "}" || ch === ")" || ch === "]") { stack.pop(); lastSig = ch; i++; continue }
+    if (stack.length === 1 && /[a-z_]/i.test(ch) && (lastSig === "{" || lastSig === ",")) {
+      // A shorthand property is an identifier followed by `,` or the closing `}`
+      // — anything else (`:`, `(`, `.`, an operator) means it is a key with a
+      // value, or an expression, and the shared parser already owns those.
+      const m = objText.slice(i).match(/^([a-z_][a-z0-9_]*)\s*(,|\})/i)
+      if (m) { keys.push(m[1]); lastSig = ","; i += m[1].length; continue }
+    }
+    if (!/\s/.test(ch)) lastSig = ch
+    i++
+  }
+  return keys
+}
+/**
+ * THE PATCH-OBJECT BUILDER — `const update: Record<string, any> = { updated_at }`
+ * followed by `if (p.x !== undefined) update.allowed_domains = …`.
+ *
+ * This is how every partial-update action in this repo is written, and the
+ * shared resolver cannot see it: resolveVariableInsertKeys understands an object
+ * literal, an array literal, a `.map()` and `.push({…})` (schema-drift-guard.ts:
+ * 357-416), so a builder like the one above resolves to exactly ONE key — the
+ * `updated_at` in its initialiser. One key is not zero, so the table is not even
+ * marked opaque, and every column assigned afterwards is reported as written by
+ * NOBODY. Measured: all ten `embed_widgets` columns, including
+ * `allowed_domains` — the ORIGIN ALLOWLIST the embed loader enforces
+ * (app/api/embed/script/route.ts:35). Accusing a live security control of being
+ * dead is the most expensive thing this census can do.
+ *
+ * Same NEAREST-declaration rule the shared resolver uses, so a same-named `update`
+ * in another function cannot bleed its columns in. Only `VAR.key =` counts:
+ * `==`, `>=`, `+=` and `=>` are all excluded by the lookahead and by requiring
+ * the key to sit directly against the `=`.
+ */
+function assignedKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  let declIdx = -1
+  for (const d of src.matchAll(new RegExp(`(?:const|let|var)\\s+${varName}\\b`, "g"))) {
+    if (d.index! >= beforeIdx) break
+    declIdx = d.index!
+  }
+  if (declIdx < 0) return []
+  const keys: string[] = []
+  for (const a of src.slice(declIdx, beforeIdx).matchAll(new RegExp(`\\b${varName}\\.([a-z_][a-z0-9_]*)\\s*=(?!=)`, "gi"))) {
+    if (!keys.includes(a[1])) keys.push(a[1])
+  }
+  return keys
+}
+/**
+ * SHORTHAND KEYS IN A VARIABLE-DECLARED ROW — `const row = { total_count, status }`
+ * followed by `.update(row)`.
+ *
+ * The shorthand supplement above is applied to INLINE write objects only. The
+ * `.insert(VAR)` path goes through the shared resolveVariableInsertKeys, which
+ * composes parseObjectTopLevelKeys and therefore has exactly the blindness this
+ * file's shorthandObjectKeys comment describes — one level further out, where
+ * nobody had looked. Measured: `document_checklist.status`, written in shorthand
+ * by lib/documents/auto-filer.ts:126 and read by the CLIENT PORTAL's documents
+ * view (app/portal/[contactId]/documents/page.tsx:79) to decide whether a
+ * transaction's paperwork is complete. Every sibling key of that same object was
+ * seen; only the shorthand one was reported as written by nobody.
+ *
+ * Same NEAREST-declaration rule as everywhere else in this file.
+ */
+function declaredShorthandKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  let best: RegExpMatchArray | null = null
+  for (const d of src.matchAll(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))) {
+    if (d.index! >= beforeIdx) break
+    best = d
+  }
+  if (!best) return []
+  const open = best.index! + best[0].length - 1
+  const close = sd.matchBrace(src, open)
+  if (close <= open) return []
+  return shorthandObjectKeys(src.slice(open, close + 1))
+}
+/**
+ * SHORTHAND KEYS IN A ROW *COLLECTION* — `rows.push({ lead_count, roi })` and
+ * `const rows = [{ lead_count }]`.
+ *
+ * `declaredShorthandKeysOf` above covers ONE shape, `const row = { … }`. The
+ * shared resolver also understands an array literal and `VAR.push({…})`, and it
+ * composes parseObjectTopLevelKeys — so for those two shapes the shorthand
+ * blindness reappears exactly one level further out. Measured the moment the
+ * two-argument write anchor started seeing these sites at all:
+ * `lib/territory/metrics-aggregator.ts:129` pushes a territory row whose
+ * `lead_count`, `qualified_lead_count`, `conversion_rate`, `avg_score`,
+ * `total_cost`, `roi` and `agent_saturation` are ALL shorthand, and every one of
+ * them was reported as read-by-code-written-by-nobody while the aggregator
+ * writes the lot on one line each.
+ *
+ * A partially-resolved write object is the dangerous case, not the harmless one:
+ * the explicit `brokerage_id:` keys make the table look resolved (not opaque),
+ * so the missed shorthand columns become confident false accusations rather than
+ * an honest "not knowable". Same nearest-declaration rule as everywhere else.
+ */
+function collectionShorthandKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  const keys: string[] = []
+  const addObj = (openIdx: number) => {
+    const close = sd.matchBrace(src, openIdx)
+    if (close > openIdx) for (const k of shorthandObjectKeys(src.slice(openIdx, close + 1))) {
+      if (!keys.includes(k)) keys.push(k)
+    }
+  }
+  const nearest = (re: RegExp): RegExpMatchArray | null => {
+    let best: RegExpMatchArray | null = null
+    for (const m of src.matchAll(re)) {
+      if (m.index! >= beforeIdx) break
+      best = m
+    }
+    return best
+  }
+  const arrDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\[`, "g"))
+  const objDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))
+  const decl = [arrDef, objDef].filter((m): m is RegExpMatchArray => !!m)
+    .sort((a, b) => b.index! - a.index!)[0] ?? null
+  if (!decl) return keys
+  if (decl === arrDef) {
+    let d = 0
+    for (let i = decl.index! + decl[0].length - 1; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === "[") d++
+      else if (ch === "]") { d--; if (d === 0) break }
+      else if (ch === "{" && d === 1) { const bc = sd.matchBrace(src, i); if (bc > i) { addObj(i); i = bc } }
+    }
+  }
+  // Only pushes BETWEEN the chosen declaration and the write — the same window
+  // the shared resolver uses, so a same-named collection in another function
+  // cannot bleed its columns in.
+  for (const m of src.matchAll(new RegExp(`${varName}\\.push\\(\\s*\\{`, "g"))) {
+    if (m.index! > decl.index! && m.index! < beforeIdx) addObj(m.index! + m[0].length - 1)
+  }
+  return keys
+}
+const writeKeysOf = (objText: string): string[] => [
+  ...sd.parseObjectTopLevelKeys(objText),
+  ...shorthandObjectKeys(objText),
+]
+
+/**
+ * COLUMNS THE DATABASE WRITES FOR YOU, read out of the migrations rather than
+ * guessed from their names.
+ *
+ * `automation_logs.brokerage_id` has no app writer and never should have one:
+ * migration 052 installs a BEFORE INSERT trigger that denormalises it from
+ * `user_id`, and a second app-side write of the same value would be a second
+ * opinion about the tenant. A name-based exemption list cannot express that — it
+ * would have to exempt `brokerage_id` EVERYWHERE, which would blind this census
+ * to the genuinely serious case of a tenant column nothing stamps at all.
+ *
+ * So the evidence is read from the source: every `NEW.<column> :=` (or
+ * `SELECT … INTO NEW.<column>`) inside a trigger function, attributed to the
+ * tables that `CREATE TRIGGER … ON <table> … EXECUTE … <function>` attaches it
+ * to. Only those pairs are exempt, and only in the read-never-written direction.
+ */
+function triggerWrittenColumns(): Map<string, Set<string>> {
+  const byTable = new Map<string, Set<string>>()
+  const dir = join(root, "supabase", "migrations")
+  if (!existsSync(dir)) return byTable
+  const fnCols = new Map<string, Set<string>>()
+  const attach = new Map<string, Set<string>>()   // function name → tables
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".sql")) continue
+    let sql = ""
+    try { sql = readFileSync(join(dir, name), "utf8") } catch { continue }
+    // Trigger function bodies: `CREATE [OR REPLACE] FUNCTION <fn>() RETURNS TRIGGER … $$`
+    for (const m of sql.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?([a-z0-9_]+)\s*\([^)]*\)\s+RETURNS\s+TRIGGER\b([\s\S]*?)(?:\$\$|\$function\$)\s*LANGUAGE/gi)) {
+      const fn = m[1].toLowerCase()
+      const body = m[2]
+      const cols = fnCols.get(fn) ?? new Set<string>()
+      for (const a of body.matchAll(/\bNEW\.([a-z0-9_]+)\s*(?::=|=[^=])/gi)) cols.add(a[1].toLowerCase())
+      for (const a of body.matchAll(/\bINTO\s+NEW\.([a-z0-9_]+)/gi)) cols.add(a[1].toLowerCase())
+      fnCols.set(fn, cols)
+    }
+    for (const m of sql.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+[a-z0-9_]+\s+(?:BEFORE|AFTER|INSTEAD\s+OF)[\s\S]{0,200}?\bON\s+(?:public\.)?([a-z0-9_]+)[\s\S]{0,200}?EXECUTE\s+(?:PROCEDURE|FUNCTION)\s+(?:public\.)?([a-z0-9_]+)/gi)) {
+      const table = m[1].toLowerCase()
+      const fn = m[2].toLowerCase()
+      const set = attach.get(fn) ?? new Set<string>()
+      set.add(table)
+      attach.set(fn, set)
+    }
+  }
+  for (const [fn, cols] of fnCols) {
+    for (const table of attach.get(fn) ?? []) {
+      const set = byTable.get(table) ?? new Set<string>()
+      for (const c of cols) set.add(c)
+      byTable.set(table, set)
+    }
+  }
+  return byTable
+}
+const TRIGGER_WRITTEN = triggerWrittenColumns()
+
+/**
+ * COLUMNS WHOSE WRITER IS AN APPLIED .sql FILE, not TypeScript.
+ *
+ * A trigger is not the only DB-side writer this repo has. The CATALOGUE tables —
+ * `feature_flags`, `plan_limits`, `remotion_compositions`, `service_status`,
+ * `video_templates` — are populated by seed INSERTs in migrations, and their
+ * per-tier LIMITS are the values a gate reads. Counting those as "written by
+ * NOBODY" was measurably wrong: the live database (project hrvaqgvukzxfskkcrwbt)
+ * answers 68/68 non-null for every `plan_limits` column this census accused,
+ * 10/68 for `feature_flags.solo_agent_limit` (null there means UNLIMITED, which
+ * is a value, not an absence) and 33/33 for every accused `remotion_compositions`
+ * column. Thirty accusations, all false, all against gate/limit columns — the
+ * exact place a reader must be able to trust the list.
+ *
+ * Both SQL roots are read: `supabase/migrations` and `scripts/*.sql` (this repo
+ * applies numbered seeds from both — `scripts/930-seed-content-predictor-
+ * feature-flag.sql` writes four `feature_flags` limit columns and nothing in
+ * `supabase/migrations` does).
+ *
+ * Only the READ-never-written direction is exempted. The mirror direction still
+ * reports a seeded column no code reads, because THAT is a real orphan.
+ */
+// The SQL comment scanner is IMPORTED (scripts/strip-sql-comments.ts), not
+// restated here. What stood in this spot was the block-comments-FIRST pair, in
+// its SQL dialect:
+//
+//     sql.replace(BLOCK, " ").replace(LINE, " ")
+//
+// which is the exact defect scripts/strip-comments.ts exists to end — a block
+// opener appearing inside a `--` comment, or inside a quoted literal, starts a
+// phantom block for the first pass, which then runs to the next closer anywhere
+// below and blanks every statement in between. The census then reports the
+// columns those statements write as WRITTEN BY NOBODY, which is an accusation
+// against live SQL. strip-sql-comments.ts is one left-to-right scan that also
+// knows about `$$ … $$` dollar quoting, which every `do $$` migration here uses.
+function sqlWrittenColumnsFrom(sqlTexts: string[]): Map<string, Set<string>> {
+  const byTable = new Map<string, Set<string>>()
+  const add = (table: string, col: string) => {
+    const t = table.toLowerCase(), c = col.toLowerCase()
+    let s = byTable.get(t)
+    if (!s) { s = new Set(); byTable.set(t, s) }
+    s.add(c)
+  }
+  for (const sql of sqlTexts) {
+      // INSERT INTO <table> ( col, col, … )  — the column list only. A bare
+      // `INSERT INTO t VALUES (…)` names no columns and is deliberately skipped
+      // rather than guessed at from the table's column order.
+      for (const m of sql.matchAll(/INSERT\s+INTO\s+(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)/gi)) {
+        for (const raw of m[2].split(",")) {
+          const c = raw.trim().replace(/^"|"$/g, "")
+          if (/^[a-z0-9_]+$/i.test(c)) add(m[1], c)
+        }
+      }
+      // UPDATE <table> SET col = …, col = …  — a backfill. Terminated at the
+      // first WHERE/FROM/RETURNING/; so a predicate's columns are not counted as
+      // writes.
+      for (const m of sql.matchAll(/UPDATE\s+(?:public\.)?([a-z0-9_]+)\s+SET\s+([\s\S]*?)(?:\bWHERE\b|\bFROM\b|\bRETURNING\b|;)/gi)) {
+        for (const a of m[2].matchAll(/(?:^|,)\s*([a-z0-9_]+)\s*=/gi)) add(m[1], a[1])
+      }
+    // An `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` needs no separate pass:
+    // every column it sets is already in the INSERT's column list above.
+  }
+  return byTable
+}
+function readAppliedSql(): string[] {
+  const out: string[] = []
+  for (const dirName of [["supabase", "migrations"], ["scripts"]]) {
+    const dir = join(root, ...dirName)
+    if (!existsSync(dir)) continue
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".sql")) continue
+      // COMMENTS ARE BLANKED FIRST — the same rule the TypeScript side is held
+      // to by this file's header. A migration's prose routinely QUOTES the
+      // statement it is about, and a scanner that reads prose as evidence would
+      // exempt a gate column on the strength of a sentence.
+      try { out.push(stripSqlComments(readFileSync(join(dir, name), "utf8"))) } catch { /* unreadable — counted as no evidence */ }
+    }
+  }
+  return out
+}
+const APPLIED_SQL = readAppliedSql()
+const SQL_WRITTEN = sqlWrittenColumnsFrom(APPLIED_SQL)
+
+/**
+ * THE FOURTH DB-SIDE WRITER: a column DEFAULT.
+ *
+ * CLAUDE.md §3 names three ways a column gets written without TypeScript writing
+ * it — "a migration backfill, an `.rpc()`, or a DB trigger" — and this census
+ * already models all three (SQL_WRITTEN, rpcTouched, TRIGGER_WRITTEN). There is
+ * a fourth, and it was the largest false-accusation source left in category 1b.
+ *
+ * MEASURED against the live database (project hrvaqgvukzxfskkcrwbt,
+ * information_schema.columns.column_default): 87 of the 230 columns this
+ * category reported as "read by code, written by NOBODY" — 38% of the whole
+ * direction — carry a DEFAULT. The database writes every one of them on INSERT.
+ *
+ *     embed_widgets.public_id
+ *       DEFAULT substr(md5(random()::text || clock_timestamp()::text), 1, 16)
+ *
+ * is the clearest case: four separate readers look a widget up BY that column
+ * (app/api/embed/script/route.ts:37, app/api/embed/capture/route.ts:54,
+ * app/api/embed/session/route.ts:44, app/embed/[publicId]/page.tsx:34) and no
+ * TypeScript anywhere assigns it, because assigning it would be wrong — the
+ * non-guessable public id is generated by the database (scripts/1019-embed-
+ * widgets.sql:17). Reporting the embed widget's public handle as writerless is
+ * an accusation against a live, correct security design.
+ *
+ * ── WHY ONLY *EXPRESSION* DEFAULTS ARE EXEMPTED ─────────────────────────────
+ *
+ * A default is not automatically a writer, and blanket-exempting every defaulted
+ * column would have been the mirror mistake — a false ACQUITTAL that hides the
+ * best findings this category has. The two kinds are not alike:
+ *
+ *   EXPRESSION default — `now()`, `CURRENT_DATE`, `gen_random_uuid()`,
+ *     `substr(md5(…))`, `now() + interval '45 days'`. The database computes a
+ *     REAL PER-ROW VALUE. There is nothing for app code to write and nothing
+ *     missing. Exempted, and counted in the coverage block.
+ *
+ *   CONSTANT default — `0`, `1`, `true`, `false`, `'pending'`, `'{}'::jsonb`.
+ *     This writes an INITIAL value, not information. A reader that only ever
+ *     sees the initial value is precisely the dead-counter / dead-status defect
+ *     this direction exists to surface, and the default does not cure it. So
+ *     these KEEP their findings: `open_houses.total_check_ins DEFAULT 0` read by
+ *     lib/listing-health/health-scorer.ts:217, `content_templates.usage_count
+ *     DEFAULT 0`, `podcast_templates.use_count DEFAULT 0`,
+ *     `team_performance.goal_amount DEFAULT 0`, `email_campaigns.open_rate
+ *     DEFAULT 0` — counters with a reader, a floor, and no incrementer.
+ *
+ * Read from the applied `.sql`, both roots, exactly like sqlWrittenColumnsFrom —
+ * offline, so CI (which holds no database credentials) sees the same evidence a
+ * developer does. The coverage block prints how many live expression-defaults
+ * this scan CANNOT see, because a coverage number that hides its own denominator
+ * is a number that rounds up.
+ */
+function matchParenIn(s: string, open: number): number {
+  let d = 0, q: string | null = null
+  for (let i = open; i < s.length; i++) {
+    const ch = s[i]
+    if (q) { if (ch === q && s[i - 1] !== "\\") q = null; continue }
+    if (ch === "'" || ch === '"') { q = ch; continue }
+    if (ch === "(") d++
+    else if (ch === ")") { d--; if (d === 0) return i }
+  }
+  return -1
+}
+/** Split a CREATE TABLE body on the commas that separate column definitions. */
+function splitDdlColumns(body: string): string[] {
+  const parts: string[] = []
+  let d = 0, q: string | null = null, start = 0
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i]
+    if (q) { if (ch === q && body[i - 1] !== "\\") q = null; continue }
+    if (ch === "'" || ch === '"') { q = ch; continue }
+    if (ch === "(" || ch === "[") d++
+    else if (ch === ")" || ch === "]") d--
+    else if (ch === "," && d === 0) { parts.push(body.slice(start, i)); start = i + 1 }
+  }
+  parts.push(body.slice(start))
+  return parts
+}
+/** A TABLE-level constraint is not a column definition; its name would be a phantom column. */
+const DDL_TABLE_CONSTRAINT = /^\s*(?:CONSTRAINT\b|PRIMARY\s+KEY\b|UNIQUE\b|FOREIGN\s+KEY\b|CHECK\b|EXCLUDE\b|LIKE\b)/i
+/**
+ * Is this DEFAULT clause a computed expression rather than a literal constant?
+ *
+ * The text after DEFAULT is taken up to the next column-level keyword. A cast
+ * (`'pending'::text`, `'{}'::jsonb`, `ARRAY[]::text[]`) is NOT a computation —
+ * it is a literal wearing a type — so `::` alone must not qualify, or every
+ * constant default in this schema would be misread as a writer.
+ */
+function isExpressionDefault(defaultText: string): boolean {
+  const t = defaultText.trim()
+  if (!t) return false
+  // `now()`, `gen_random_uuid()`, `substr(md5(…), 1, 16)`, `nextval('…')` — any
+  // call whose callee is an identifier. `ARRAY[…]` is a literal, not a call.
+  if (/\b[a-z_][a-z0-9_]*\s*\(/i.test(t.replace(/'[^']*'/g, "''"))) return true
+  // The bare-keyword now()s.
+  if (/\b(CURRENT_DATE|CURRENT_TIME|CURRENT_TIMESTAMP|LOCALTIME|LOCALTIMESTAMP|CURRENT_USER|SESSION_USER)\b/i.test(t)) return true
+  return false
+}
+function defaultWrittenColumnsFrom(sqlTexts: string[]): Map<string, Set<string>> {
+  const byTable = new Map<string, Set<string>>()
+  const add = (table: string, col: string) => {
+    const t = table.toLowerCase(), c = col.toLowerCase()
+    let s = byTable.get(t)
+    if (!s) { s = new Set(); byTable.set(t, s) }
+    s.add(c)
+  }
+  // Everything after DEFAULT until the next column-level keyword or end of the
+  // column definition. `NOT NULL` may precede or follow the DEFAULT clause.
+  const defaultClause = (colDef: string): string | null => {
+    const m = colDef.match(/\bDEFAULT\b([\s\S]*)$/i)
+    if (!m) return null
+    return m[1].split(/\b(?:NOT\s+NULL|NULL|PRIMARY\s+KEY|UNIQUE|REFERENCES|CHECK|GENERATED|COLLATE|CONSTRAINT)\b/i)[0]
+  }
+  for (const sql of sqlTexts) {
+    // CREATE TABLE t ( col type DEFAULT …, … )
+    for (const m of sql.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?"?([a-z0-9_]+)"?\s*\(/gi)) {
+      const open = m.index! + m[0].length - 1
+      const close = matchParenIn(sql, open)
+      if (close < 0) continue
+      for (const colDef of splitDdlColumns(sql.slice(open + 1, close))) {
+        if (DDL_TABLE_CONSTRAINT.test(colDef)) continue
+        const nameM = colDef.match(/^\s*"?([a-z0-9_]+)"?\s+/i)
+        if (!nameM) continue
+        // A GENERATED ALWAYS AS column is computed by the database on every row.
+        if (/\bGENERATED\s+ALWAYS\s+AS\b/i.test(colDef)) { add(m[1], nameM[1]); continue }
+        const d = defaultClause(colDef)
+        if (d !== null && isExpressionDefault(d)) add(m[1], nameM[1])
+      }
+    }
+    // ALTER TABLE t ADD COLUMN c type DEFAULT …
+    for (const m of sql.matchAll(/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?"?([a-z0-9_]+)"?\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([a-z0-9_]+)"?([^;]*)/gi)) {
+      if (/\bGENERATED\s+ALWAYS\s+AS\b/i.test(m[3])) { add(m[1], m[2]); continue }
+      const d = defaultClause(m[3])
+      if (d !== null && isExpressionDefault(d)) add(m[1], m[2])
+    }
+    // ALTER TABLE t ALTER COLUMN c SET DEFAULT …
+    for (const m of sql.matchAll(/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?"?([a-z0-9_]+)"?\s+ALTER\s+(?:COLUMN\s+)?"?([a-z0-9_]+)"?\s+SET\s+DEFAULT\b([^;]*)/gi)) {
+      if (isExpressionDefault(m[3])) add(m[1], m[2])
+    }
+  }
+  return byTable
+}
+const DEFAULT_WRITTEN = defaultWrittenColumnsFrom(APPLIED_SQL)
+let defaultWritten = 0                       // 1b findings withheld because a DB DEFAULT computes the column
+
+/** A top-level `...spread` in a write object means the real key set is unknown. */
+function hasTopLevelSpread(objText: string): boolean {
+  let depth = 0, q: string | null = null
+  for (let i = 0; i < objText.length; i++) {
+    const ch = objText[i]
+    if (q) { if (ch === q && objText[i - 1] !== "\\") q = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; continue }
+    if (ch === "{" || ch === "(" || ch === "[") { depth++; continue }
+    if (ch === "}" || ch === ")" || ch === "]") { depth--; continue }
+    if (depth === 1 && objText.startsWith("...", i)) {
+      let j = i + 3
+      while (j < objText.length && /\s/.test(objText[j])) j++
+      // `...(cond && { col: v })` IS parsed by parseObjectTopLevelKeys; only an
+      // opaque spread of an identifier (`...base`, `...fn()`) hides keys.
+      if (objText[j] !== "(") return true
+    }
+  }
+  return false
+}
+
+/**
+ * A COMPUTED KEY is exactly as unknowable as a spread — `{ [column]: total }`
+ * writes a column whose NAME is a runtime value.
+ *
+ * lib/kernel/billing.ts:592 is the measured case: recordUsage maps a metric onto
+ * one of five counter columns and writes `{ [column]: newTotal, recorded_at }`.
+ * The literal parser sees `recorded_at` and nothing else, so the table looked
+ * fully parsed while five money columns — ai_calls_count, video_minutes,
+ * storage_bytes, scraper_calls, active_agents, every one of them read by the
+ * overage projection at lib/kernel/billing.ts:759 — were reported as written by
+ * NOBODY. The whole point of that file's header is that billing_usage FINALLY
+ * got a writer; the census was accusing it of not having one.
+ *
+ * Key position is established the same way shorthandObjectKeys establishes it:
+ * a `[` that follows `{` or `,` at depth 1 opens a computed key, while a `[` in
+ * value position (`col: [1, 2]`) does not.
+ */
+function hasTopLevelComputedKey(objText: string): boolean {
+  const stack: string[] = []
+  let lastSig = ""
+  let q: string | null = null
+  for (let i = 0; i < objText.length; i++) {
+    const ch = objText[i]
+    if (q) { if (ch === q && objText[i - 1] !== "\\") q = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; lastSig = ch; continue }
+    if (ch === "[" && stack.length === 1 && (lastSig === "{" || lastSig === ",")) return true
+    if (ch === "{" || ch === "(" || ch === "[") { stack.push(ch); lastSig = ch; continue }
+    if (ch === "}" || ch === ")" || ch === "]") { stack.pop(); lastSig = ch; continue }
+    if (!/\s/.test(ch)) lastSig = ch
+  }
+  return false
+}
+/** Either unknowable shape means the write object's key set is not statically knowable. */
+const hasUnknowableKeys = (objText: string): boolean =>
+  hasTopLevelSpread(objText) || hasTopLevelComputedKey(objText)
+
+const noteCol = (map: Map<string, Set<string>>, table: string, col: string, site: string) => {
+  let s = map.get(table)
+  if (!s) { s = new Set(); map.set(table, s) }
+  s.add(col)
+  const k = `${table}.${col}`
+  if (!colSites.has(k)) colSites.set(k, site)
+}
+
+const rpcTouched = new Set<string>()
+
+function scanColumns(file: string, src: string) {
+  if (/\.rpc\s*\(/.test(src)) {
+    // The function NAME is often the table name or close to it; rather than guess,
+    // every table this FILE touches is exempted from both directions.
+    for (const fm of src.matchAll(/\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g)) rpcTouched.add(fm[1])
+  }
+  const fromRe = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
+  let m: RegExpExecArray | null
+  while ((m = fromRe.exec(src))) {
+    const table = m[1]
+    const known = SCHEMA_SNAPSHOT[table]
+    if (!known) continue                       // not a live table — schema-drift-guard's problem
+    const cols = new Set(known)
+    const site = `${file}:${lineOf(src, m.index)}`
+    const chainStart = m.index + m[0].length
+    // ── WHY A WINDOW AND NOT THE WHOLE FILE ─────────────────────────────────
+    // contiguousChain() and collectSelectArg() both work by slicing the REST OF
+    // THE STRING from the current position, once per chained method. Handed the
+    // whole file at each of this tree's 13,591 `.from()` sites, that is quadratic
+    // in file size and the census does not finish. A PostgREST chain is a local
+    // construct — the longest in this repo is a few hundred characters — so the
+    // parsers are handed a window instead, and the answer is identical for every
+    // chain that fits. A chain that does NOT fit is detected below and counted
+    // as unresolved rather than silently truncated, which is the one way this
+    // optimisation could have turned into a false accusation.
+    const CHAIN_WINDOW = 12000
+    const w = src.slice(m.index, Math.min(src.length, m.index + CHAIN_WINDOW))
+    const chain = sd.contiguousChain(w, m[0].length)
+    const windowTruncated = m[0].length + chain.length >= CHAIN_WINDOW - 1 && m.index + CHAIN_WINDOW < src.length
+
+    // ── THE WRITE CHAIN IS ONE CALL LONGER THAN THE READ CHAIN ───────────────
+    // contiguousChain STOPS at the first call whose argument contains `=>`
+    // (schema-drift-guard.ts:351) — deliberately, because a callback opens a
+    // different table scope and its inner `.eq()` must not be read as this
+    // table's filter. Correct for READS, and silently fatal for WRITES: a row
+    // object built by a callback — `.insert(rows.map((r) => ({ … })))` — ends
+    // the chain BEFORE the write, so the write was never seen at all. Not
+    // "opaque": INVISIBLE, which reads as "this table's columns are written by
+    // NOBODY" and accuses every one of them.
+    //
+    // So the write branches get their own chain, extended by EXACTLY ONE call
+    // and only when that next call IS the write, matched ANCHORED at the point
+    // the read chain stopped. Anchoring is what keeps a later `.from()`'s write
+    // from being attributed to this table. Reads keep the shorter chain.
+    let writeChain = chain
+    {
+      const restM = w.slice(m[0].length + chain.length).match(/^\s*\.(insert|upsert|update)\s*\(/)
+      if (restM) {
+        const parenOpen = m[0].length + chain.length + restM[0].length - 1
+        const close = sd.matchParen(w, parenOpen)
+        if (close > parenOpen) writeChain = w.slice(m[0].length, close + 1)
+        else { tablesWritten.add(table); opaqueWrite.add(table); unresolvedWriteObjects++ }
+      }
+    }
+
+    // ── READ SIDE ───────────────────────────────────────────────────────────
+    const selArg = sd.collectSelectArg(w, 0)
+    if (selArg !== null) {
+      selectSitesParsed++
+      tablesRead.add(table)
+      const parts = selArg.split(",").map((s) => s.trim())
+      if (selArg.trim() === "" || parts.some((p) => p === "*" || p.endsWith(".*"))) starRead.add(table)
+      for (const c of sd.parseSelectColumns(selArg)) if (cols.has(c)) noteCol(readCols, table, c, site)
+      const emb = sd.resolveEmbeddedSelects(selArg, table)
+      unresolvedEmbeds += emb.unresolved.length
+      // ── EMBED JOIN COLUMNS (FIX A — see the counter declarations) ────────
+      // A join column the resolver could name WITHOUT guessing is a read of the
+      // PARENT-side column; one it could not (the PGRST201 bare multi-FK pair,
+      // an unrecognisable !hint) is counted, never guessed — a guessed column
+      // would acquit a real finding. joinRefs only ever carries columns proved
+      // live against the generated caches, but the snapshot check stays as belt
+      // and braces (the same rule emb.refs consumption follows below).
+      embedJoinColumnsResolved += emb.joinRefs.length
+      embedJoinColumnsUnresolved += emb.joinUnresolved
+      for (const e of emb.joinRefs) {
+        if (!SCHEMA_SNAPSHOT[e.table]?.includes(e.column)) continue
+        tablesRead.add(e.table)
+        noteCol(readCols, e.table, e.column, site)
+      }
+      for (const e of emb.refs) {
+        if (!SCHEMA_SNAPSHOT[e.table]) continue
+        tablesRead.add(e.table)
+        if (e.column === "*") { starRead.add(e.table); continue }
+        if (SCHEMA_SNAPSHOT[e.table].includes(e.column)) noteCol(readCols, e.table, e.column, site)
+      }
+      // AN EMBED WILDCARD READS EVERY COLUMN OF THE EMBEDDED TABLE, and until
+      // this loop it was only counted when the resolver handed back a `*`
+      // column. It does not do that for every spelling: PostgREST embeds are
+      // routinely written with an ALIAS — `tasks:marketing_campaign_tasks(*)`,
+      // `comments:marketing_campaign_comments(*, author:users(id, …))` — and an
+      // aliased wildcard slipped past, so the embedded table never entered
+      // `starRead`.
+      //
+      // The consequence was not a missed finding, it was a FABRICATED one. A
+      // top-level `select("*")` marks a table fully-read (line above), so while
+      // some other function happened to select the table with a bare star, its
+      // columns looked read. Delete that function — even correctly, onto a
+      // survivor that reads the same rows through an aliased embed — and every
+      // column of that table instantly becomes "written by code, read by
+      // NOBODY". That is exactly what happened when getCampaignComments and
+      // getCampaignTasks were consolidated onto getCampaignById: six columns on
+      // marketing_campaign_comments / marketing_campaign_tasks were reported as
+      // new one-sided pairs while the survivor was reading all of them, through
+      // `tasks:marketing_campaign_tasks(*)`, at runtime.
+      //
+      // Accepting those six into the baseline would have been the worse move of
+      // the two available: it records a defect that does not exist and teaches
+      // the next reader that the columns need a reader built. So the finder is
+      // fixed instead. Scanned on the RAW select argument rather than the
+      // resolver's output, because the point is to catch the spellings the
+      // resolver does not model.
+      for (const wm of selArg.matchAll(/(?:^|[,\s{])(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:!\s*[A-Za-z_][A-Za-z0-9_]*\s*)?\(\s*\*/g)) {
+        const embTable = wm[1]
+        if (SCHEMA_SNAPSHOT[embTable]) { tablesRead.add(embTable); starRead.add(embTable) }
+      }
+      // An embed whose target could not be named may read ANY column of ANY table;
+      // rather than guess, the PARENT keeps its findings and the unresolved count
+      // carries the doubt (printed in the coverage block).
+    }
+    // Filter / order arguments read a column just as a select list does.
+    for (const fm of chain.matchAll(/\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|overlaps|order|not|match)\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_.]*)["'`]/g)) {
+      const col = fm[2].split("->")[0]
+      if (col.includes(".")) continue
+      if (cols.has(col)) { tablesRead.add(table); noteCol(readCols, table, col, site) }
+    }
+    // The `.or()` / `.filter()` DSL names columns inside a string; parsed with the
+    // guard's own DSL reader so this scanner and that one agree about what a term is.
+    for (const call of sd.topLevelChainCalls(chain)) {
+      if (call.name !== "or" && call.name !== "filter") continue
+      const lit = sd.staticFilterString(call.args) ?? sd.staticJoinedArray(call.args)
+      if (lit === null) { unresolvedFilterTerms++; continue }
+      const parsed = sd.parseFilterDsl(lit)
+      unresolvedFilterTerms += parsed.skipped.length
+      for (const r of parsed.refs) {
+        if (r.relation) continue               // embedded relation — resolved elsewhere or not at all
+        if (cols.has(r.column)) { tablesRead.add(table); noteCol(readCols, table, r.column, site) }
+      }
+    }
+
+    // ── WRITE SIDE ──────────────────────────────────────────────────────────
+    // Offsets below are WINDOW-relative (`w`), and every brace walk that runs off
+    // the end of the window falls back to the full source rather than guessing.
+    const opM = writeChain.match(/\.(insert|upsert|update)\(\s*\{/)
+    if (opM && opM.index != null) {
+      tablesWritten.add(table)
+      const braceOpenW = m[0].length + opM.index + opM[0].length - 1
+      let obj: string | null = null
+      const closeW = sd.matchBrace(w, braceOpenW)
+      if (closeW > braceOpenW) obj = w.slice(braceOpenW, closeW + 1)
+      else {
+        const abs = m.index + braceOpenW
+        const closeAbs = sd.matchBrace(src, abs)
+        if (closeAbs > abs) obj = src.slice(abs, closeAbs + 1)
+      }
+      if (obj === null) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+      else {
+        if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+        for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
+      }
+    }
+    // ── INLINE ROW MAPPER — `.insert(rows.map((r) => ({ … })))` ──────────────
+    // The three shapes above cover an object literal, an array literal and a
+    // bare identifier. They do NOT cover the fourth shape this repo writes rows
+    // with, and until this branch existed that shape produced NO write record
+    // AND NO opacity mark — the worst of both, because a silent zero reads as
+    // "written by NOBODY" rather than "not knowable". Measured on the tree it
+    // was FALSELY ACCUSING the money columns of an entire P&L: all seven of
+    // brokerage_earnings' (lib/finance/brokerage-earnings-writer.ts:76), ten of
+    // property_alert_results' (lib/property-alerts/alert-engine.ts:118),
+    // eighteen of brokerage_intelligence_insights'
+    // (app/api/cron/brokerage-intelligence-mine/route.ts:101), and sixteen of
+    // income_gap_recommended_actions' (app/actions/income-engine.ts:164).
+    //
+    // The callback is read ANCHORED — the object literal must be what this
+    // `.map(` callback returns, `(r) => ({ … })`, and nothing else counts. A
+    // 200-character sniff for the next `=> ({` would eventually find SOME object
+    // literal further down the file and attribute its keys to this table, which
+    // is a false ACQUITTAL — the mirror defect, and the one that hides a real
+    // missing writer. A mapper whose body is not a returned literal
+    // (`.map((b) => b.payload)`) is therefore opaque, not empty.
+    const mapM = writeChain.match(/\.(insert|upsert)\(\s*[A-Za-z_$][\w$.[\]]*\s*\.map\(/)
+    if (mapM && mapM.index != null) {
+      tablesWritten.add(table)
+      const afterMap = m.index + m[0].length + mapM.index + mapM[0].length
+      const cb = src.slice(afterMap).match(/^\s*(?:async\s+)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\(\s*\{/)
+      if (!cb) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+      else {
+        const braceAbs = afterMap + cb[0].length - 1
+        const closeAbs = sd.matchBrace(src, braceAbs)
+        if (closeAbs <= braceAbs) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+        else {
+          const obj = src.slice(braceAbs, closeAbs + 1)
+          if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+          for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
+        }
+      }
+    }
+    const arrM = writeChain.match(/\.(insert|upsert)\(\s*\[/)
+    if (arrM && arrM.index != null) {
+      tablesWritten.add(table)
+      const bracketOpen = m.index + m[0].length + arrM.index + arrM[0].length - 1
+      let d = 0
+      for (let i = bracketOpen; i < src.length; i++) {
+        const ch = src[i]
+        if (ch === "[") d++
+        else if (ch === "]") { d--; if (d === 0) break }
+        else if (ch === "{" && d === 1) {
+          const bc = sd.matchBrace(src, i)
+          if (bc <= i) { opaqueWrite.add(table); unresolvedWriteObjects++; break }
+          const obj = src.slice(i, bc + 1)
+          if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+          for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
+          i = bc
+        }
+      }
+    }
+    // `\s*[,)]` — NOT `\s*\)`. A supabase upsert names its conflict target in a
+    // SECOND argument (`.upsert(row, { onConflict: "user_id" })`), which is the
+    // shape every idempotent writer in this repo uses, and the closing-paren
+    // anchor matched none of them. That was not a missed write recorded as
+    // opacity: the branch never fired at all, so the site produced NO write
+    // record AND NO opacity mark — a silent zero, which reads downstream as
+    // "written by NOBODY". Measured on the tree, it was falsely accusing live
+    // writers, among them app/actions/superadmin/platform-staff.ts:223
+    // (`platform_staff_profiles.user_id` and the HR record's
+    // `employment_agreement_text`, both plainly written three lines above) and
+    // app/api/cron/platform-sentinel/route.ts:111 (every column of the platform
+    // sentinel's action queue). Same class as the inline-row-mapper branch above
+    // and fixed the same way — by teaching the finder the shape, never by
+    // exempting the columns.
+    const varM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*[,)]/)
+    if (varM && varM.index != null && !["true", "false", "null"].includes(varM[2])) {
+      tablesWritten.add(table)
+      const keys = [
+        ...sd.resolveVariableInsertKeys(src, varM[2], chainStart + varM.index),
+        ...declaredShorthandKeysOf(src, varM[2], chainStart + varM.index),
+        ...collectionShorthandKeysOf(src, varM[2], chainStart + varM.index),
+        ...assignedKeysOf(src, varM[2], chainStart + varM.index),
+      ]
+      // ZERO keys back from a variable means "could not resolve", not "writes
+      // nothing" — resolveVariableInsertKeys returns [] for an opaque helper
+      // result by design. Treating that as an empty key set would invent a
+      // read-never-written finding for every column the helper really writes.
+      if (keys.length === 0) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+      for (const k of keys) if (cols.has(k)) noteCol(writeCols, table, k, site)
+    }
+    // ── MEMBER-EXPRESSION WRITE OBJECT — `.insert(v.value)` (FIX B, 2026-09-01) ──
+    // The varM branch above matches a BARE identifier only ([\w$]* admits no dot),
+    // so a write whose object is a member expression — `.insert(v.value)` in
+    // app/actions/superadmin/platform-brand.ts (v from validateTopic in
+    // lib/platform/product-brand.ts), `.insert(row.payload)` in
+    // lib/platform/tenant-import.ts — produced NO write record AND NO opacity
+    // mark: the silent-zero failure the `[,)]` comment above documents, and it
+    // read downstream as "written by NOBODY" (platform_content_topics.competitor
+    // was filed in 1b with a live writer). A SEPARATE branch, tried after varM
+    // and never replacing it (the patterns are disjoint — one forbids the dot,
+    // the other requires it). NO key resolution is attempted:
+    // resolveVariableInsertKeys is keyed on const/let/var declarations
+    // (schema-drift-guard.ts) and cannot follow a cross-module property; a wrong
+    // resolution would accuse a real column, which that file's own rules refuse.
+    // Straight to opaque — "not knowable", never "writes nothing". Scoping to
+    // PostgREST is by construction (writeChain is anchored to a resolved
+    // `.from("<live table>")` chain, so `stripe.subscriptions.update(sub.id,…)`
+    // can never reach here) — and proved by control, not just asserted.
+    const memberM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)+)\s*[,)]/)
+    if (memberM && memberM.index != null) {
+      tablesWritten.add(table)
+      opaqueWrite.add(table)
+      unresolvedWriteObjects++
+    }
+    if (/\.delete\s*\(/.test(writeChain)) tablesWritten.add(table)
+    // A chain that filled the window was READ INCOMPLETELY. Both directions lose
+    // this table rather than report a half-read chain as a whole one.
+    if (windowTruncated) { opaqueWrite.add(table); starRead.add(table); unresolvedWriteObjects++ }
+  }
+}
+
+for (const f of productFiles) scanColumns(f, codeOf.get(f)!)
+stage("C1 columns")
+
+// EMBED-WILDCARD CONTROLS. The regex added to the select-parsing loop above
+// exists because an ALIASED embed wildcard was invisible, which turned a correct
+// consolidation into six fabricated "written, never read" findings. A fix to a
+// blind spot needs both arms proved or it is just a different blindness: the
+// spellings that DO read everything must be caught, and the ones that read only
+// named columns must NOT be, or every embed would mark its table fully-read and
+// this whole direction of the census would go quiet.
+{
+  const EMB = /(?:^|[,\s{])(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:!\s*[A-Za-z_][A-Za-z0-9_]*\s*)?\(\s*\*/g
+  const hits = (s: string) => { EMB.lastIndex = 0; return [...s.matchAll(EMB)].map((m) => m[1]) }
+
+  // CAUGHT — every spelling that really does read the embedded table whole.
+  control("embed wildcard: bare `table(*)` marks the embedded table fully-read",
+    hits("*, marketing_campaign_tasks(*)").includes("marketing_campaign_tasks"))
+  control("embed wildcard: ALIASED `alias:table(*)` — the spelling that was invisible",
+    hits("*, tasks:marketing_campaign_tasks(*)").includes("marketing_campaign_tasks"))
+  control("embed wildcard: aliased star WITH trailing named columns and a nested embed",
+    hits("*, comments:marketing_campaign_comments(*, author:users(id, first_name))")
+      .includes("marketing_campaign_comments"))
+  control("embed wildcard: hint syntax `alias:table!fk(*)` is still a full read",
+    hits("*, t:transactions!buyer_contact_id(*)").includes("transactions"))
+  control("embed wildcard: survives newlines and indentation (template-literal selects)",
+    hits("\n      *,\n      tasks:marketing_campaign_tasks(*),\n    ").includes("marketing_campaign_tasks"))
+
+  // NOT CAUGHT — an embed naming its columns proves nothing about the others,
+  // and must keep contributing findings.
+  control("embed wildcard: an embed with NAMED columns is NOT a full read",
+    !hits("*, author:users(id, first_name, last_name)").includes("users"))
+  control("embed wildcard: a plain function call is not an embed",
+    hits("count(id)").length === 0 || !hits("count(id)").includes("count"))
+
+  // THE REGRESSION ITSELF, stated as a control: the two tables whose consolidation
+  // exposed this must now be seen as fully-read from getCampaignById's select.
+  const real = "\n      *,\n      tasks:marketing_campaign_tasks(*),\n      comments:marketing_campaign_comments(*, author:users(id, first_name, last_name)),\n    "
+  control("embed wildcard: the real getCampaignById select marks BOTH campaign child tables read",
+    hits(real).includes("marketing_campaign_tasks") && hits(real).includes("marketing_campaign_comments"),
+    hits(real).join(","))
+}
+
+// POSITIVE CONTROLS — the scanner must SEE a column read and a column write, and
+// must NOT see one that only exists in a comment.
+{
+  const probe = (text: string) => {
+    const before = { r: readCols.get("contacts")?.size ?? 0 }
+    void before
+    const rc = new Map<string, Set<string>>(), wc = new Map<string, Set<string>>()
+    const saveR = readCols.get("contacts"), saveW = writeCols.get("contacts")
+    // OPACITY IS PART OF THE ANSWER, so the probe reports it — and RESTORES it.
+    // opaqueWrite is a Set the real scan already filled; the spread control below
+    // marks `contacts` opaque, and leaving that mark behind SUPPRESSED every
+    // read-never-written finding on the widest table in the schema. A control
+    // that quietly blinds the instrument to one table is the same defect this
+    // file exists to catch, one level up.
+    const saveO = opaqueWrite.has("contacts")
+    readCols.delete("contacts"); writeCols.delete("contacts"); opaqueWrite.delete("contacts")
+    scanColumns("<control>", blankComments(text))
+    const out = {
+      read: [...(readCols.get("contacts") ?? [])],
+      write: [...(writeCols.get("contacts") ?? [])],
+      opaque: opaqueWrite.has("contacts"),
+    }
+    readCols.delete("contacts"); writeCols.delete("contacts"); opaqueWrite.delete("contacts")
+    if (saveR) readCols.set("contacts", saveR)
+    if (saveW) writeCols.set("contacts", saveW)
+    if (saveO) opaqueWrite.add("contacts")
+    void rc; void wc
+    return out
+  }
+  const seen = probe(`await supabase.from("contacts").select("id, first_name").eq("last_name", x)`)
+  control("C1 sees a column READ (select list + filter arg)",
+    seen.read.includes("first_name") && seen.read.includes("last_name"), seen.read.join(","))
+  const wrote = probe(`await supabase.from("contacts").insert({ first_name: a, phone: b })`)
+  control("C1 sees a column WRITE (insert object keys)",
+    wrote.write.includes("first_name") && wrote.write.includes("phone"), wrote.write.join(","))
+  // THE QUALIFIED POLICY EXEMPTION. Two directions, because an exemption that
+  // is too wide is the same defect as a scanner that is too narrow — it hides a
+  // real finding instead of inventing one. The bare-name arm is asserted too, so
+  // a refactor of isPolicyConsumed cannot silently drop either form.
+  control("C1 a QUALIFIED policy exemption applies to its own table only",
+    isPolicyConsumed("ai_subscription_tier", "admin_user_id")
+    && !isPolicyConsumed("some_other_table", "admin_user_id"))
+  control("C1 a BARE policy exemption still applies schema-wide",
+    isPolicyConsumed("any_table_at_all", "brokerage_id"))
+  control("C1 the exemption does NOT blanket a column nobody exempted",
+    !isPolicyConsumed("ai_subscription_tier", "monthly_budget_cents"))
+
+  const commented = probe(`// await supabase.from("contacts").select("id, first_name")\nconst x = 1`)
+  control("C1 does NOT read a query that only exists in a comment",
+    commented.read.length === 0 && commented.write.length === 0)
+
+  // ── THE `function_name` CHAIN BREAK (2026-08-31) ──────────────────────────
+  // contiguousChain ended a chain when a call argument contained the bare
+  // substring "function" — so a select list naming a COLUMN that contains the
+  // word (`function_name` on error_stack_traces) ended the chain AT the select,
+  // and every .eq()/.order() after it went unread. Measured in the wild: a
+  // reader filtered .eq("error_id", …) and this census still accused
+  // error_stack_traces.error_id of being read-by-nobody, forcing the lane to
+  // name error_id in the select as a workaround. The keyword now needs a word
+  // boundary. BOTH directions pinned, because widening the break test and
+  // blinding it are one edit apart:
+  const fnColChain = probe(
+    `await supabase.from("contacts").select("stack_trace, function_name, error_hash").eq("last_name", g).order("created_at")`,
+  )
+  control("C1 a select naming a column CONTAINING 'function' does not end the chain — the filter after it is still a read",
+    fnColChain.read.includes("last_name") && fnColChain.read.includes("created_at"), fnColChain.read.join(","))
+  const realFnCallback = probe(
+    `await supabase.from("contacts").select("id").then(function (r) { return r.data.map((z) => q.from("leads").order("first_name")) })`,
+  )
+  control("C1 …and a REAL `function () {}` callback still breaks the chain — its inner order is not attributed here",
+    !realFnCallback.read.includes("first_name"), realFnCallback.read.join(","))
+  const opaque = probe(`await supabase.from("contacts").update({ ...base, phone: b })`)
+  control("C1 marks a spread write object OPAQUE rather than assuming its key set",
+    opaque.write.includes("phone") && opaque.opaque)
+  // INLINE ROW MAPPER — the fourth write shape. Both directions are asserted:
+  // the keys of a returned literal are SEEN, and a mapper whose body is not a
+  // literal is marked opaque instead of counting as "writes nothing".
+  const mapped = probe(`await supabase.from("contacts").insert(rows.map((r) => ({ first_name: r.a, phone })))`)
+  control("C1 sees an INLINE ROW MAPPER's write keys (.insert(xs.map(x => ({…}))))",
+    mapped.write.includes("first_name") && mapped.write.includes("phone") && !mapped.opaque,
+    mapped.write.join(","))
+  // COMPUTED KEYS — a column named by a runtime value.
+  const computed = probe(`await supabase.from("contacts").update({ [column]: total, phone: b })`)
+  control("C1 marks a COMPUTED-KEY write object opaque rather than assuming its key set",
+    computed.opaque && computed.write.includes("phone"), computed.write.join(","))
+  control("C1 does not mistake an ARRAY VALUE for a computed key",
+    !probe(`await supabase.from("contacts").update({ tags: ["a"], phone: b })`).opaque)
+  // SHORTHAND IN A VARIABLE-DECLARED ROW — the shape the shared resolver misses.
+  const declShorthand = probe(`const row = { first_name, phone, email: e }\nawait supabase.from("contacts").insert(row)`)
+  control("C1 sees SHORTHAND keys in a variable-declared row object",
+    ["first_name", "phone", "email"].every((k) => declShorthand.write.includes(k)), declShorthand.write.join(","))
+  // THE PATCH-OBJECT BUILDER — the shape every partial-update action uses.
+  const built = probe(`const patch: Record<string, any> = { updated_at: now }\nif (a) patch.first_name = a\nif (b) patch.phone = b\nawait supabase.from("contacts").update(patch).eq("id", id)`)
+  control("C1 sees columns assigned onto a PATCH OBJECT after its declaration",
+    built.write.includes("first_name") && built.write.includes("phone"), built.write.join(","))
+  control("C1 does not read a COMPARISON as an assignment onto the patch object",
+    !probe(`const patch: Record<string, any> = { updated_at: now }\nif (patch.first_name === x) {}\nawait supabase.from("contacts").update(patch)`).write.includes("first_name"))
+  // THE SECOND ARGUMENT. `.upsert(row, { onConflict })` is the idempotent-writer
+  // shape; before the `[,)]` anchor the variable branch skipped it entirely and
+  // every column it wrote read as writerless. Both directions are asserted: the
+  // two-argument form is SEEN, and a call that is not a write must still not be.
+  const upsertOpts = probe(`const row = { first_name, phone }\nawait supabase.from("contacts").upsert(row, { onConflict: "id" })`)
+  control("C1 sees a variable write object passed with a SECOND argument (.upsert(row, { onConflict }))",
+    upsertOpts.write.includes("first_name") && upsertOpts.write.includes("phone") && !upsertOpts.opaque,
+    upsertOpts.write.join(","))
+  const updateOpts = probe(`const patch: Record<string, any> = {}\npatch.phone = b\nawait supabase.from("contacts").update(patch, { count: "exact" }).eq("id", id)`)
+  control("C1 sees a two-argument .update(patch, { count }) as a write",
+    updateOpts.write.includes("phone"), updateOpts.write.join(","))
+  // The widened anchor must not start CLAIMING keys off a call expression: the
+  // identifier has to be the whole argument, `foo,` or `foo)`, never `foo(`.
+  const varCall = probe(`const buildRow = { first_name }\nawait supabase.from("contacts").upsert(buildRow(x), { onConflict: "id" })`)
+  control("C1 does not treat a CALL EXPRESSION argument as a resolvable row variable",
+    varCall.write.length === 0, varCall.write.join(","))
+  // SHORTHAND IN A PUSHED ROW — the collection shape. Asserted in both
+  // directions: the pushed shorthand keys are SEEN, and a push in an unrelated
+  // block before the declaration still contributes nothing.
+  const pushedShorthand = probe(`const rows: any[] = []\nrows.push({ first_name, phone, email: e })\nawait supabase.from("contacts").upsert(rows, { onConflict: "id" })`)
+  control("C1 sees SHORTHAND keys in a PUSHED row object (.upsert(rows, { onConflict }))",
+    ["first_name", "phone", "email"].every((k) => pushedShorthand.write.includes(k)), pushedShorthand.write.join(","))
+  const arrayShorthand = probe(`const rows = [{ first_name, phone }]\nawait supabase.from("contacts").insert(rows)`)
+  control("C1 sees SHORTHAND keys in an ARRAY-LITERAL row collection",
+    arrayShorthand.write.includes("first_name") && arrayShorthand.write.includes("phone"),
+    arrayShorthand.write.join(","))
+  const mapperOpaque = probe(`await supabase.from("contacts").insert(rows.map((r) => r.payload))`)
+  control("C1 marks a NON-LITERAL row mapper opaque rather than 'writes nothing'",
+    mapperOpaque.opaque && mapperOpaque.write.length === 0)
+  const mapperAnchored = probe(`await supabase.from("contacts").insert(rows.map((r) => r.payload))\nconst other = xs.map((x) => ({ first_name: x }))`)
+  control("C1 does NOT reach past an unreadable mapper to claim a later object literal",
+    mapperAnchored.opaque && mapperAnchored.write.length === 0,
+    mapperAnchored.write.join(","))
+  // SHORTHAND KEYS. `{ first_name, phone }` is a write of both columns, and a
+  // parser that only knows `name:` reports the columns as read-only — the exact
+  // false accusation the automation-log wiring produced on its first run.
+  const shorthand = probe(`await supabase.from("contacts").insert({ first_name, phone, email: e })`)
+  control("C1 sees SHORTHAND object keys as writes",
+    ["first_name", "phone", "email"].every((k) => shorthand.write.includes(k)),
+    shorthand.write.join(","))
+  control("C1 does not mistake a nested key or a value expression for a shorthand key",
+    shorthandObjectKeys(`{ a, meta: { b }, c: fn(d), e }`).sort().join(",") === "a,e",
+    shorthandObjectKeys(`{ a, meta: { b }, c: fn(d), e }`).sort().join(","))
+  // ── MEMBER-EXPRESSION WRITE OBJECT (FIX B) — both arms ────────────────────
+  // `.insert(v.value)` used to produce NO write record AND NO opacity mark (the
+  // varM recogniser admits no dot), the silent zero that filed
+  // platform_content_topics.competitor in 1b over a live writer. All three verbs
+  // are probed; the second-argument arm is probed on upsert because
+  // `.upsert(row.payload, { onConflict })` is the `[,)]` bug class one shape over.
+  {
+    const savedOpaqueSites = unresolvedWriteObjects
+    const memberInsert = probe(`await supabase.from("contacts").insert(v.value)`)
+    control("C1 marks a MEMBER-EXPRESSION write object opaque rather than 'writes nothing' (.insert(v.value))",
+      memberInsert.opaque && memberInsert.write.length === 0, memberInsert.write.join(","))
+    const memberUpdate = probe(`await supabase.from("contacts").update(params.updates).eq("id", id)`)
+    control("C1 marks .update(params.updates) opaque rather than 'writes nothing'",
+      memberUpdate.opaque && memberUpdate.write.length === 0, memberUpdate.write.join(","))
+    const memberUpsert = probe(`await supabase.from("contacts").upsert(row.payload, { onConflict: "id" })`)
+    control("C1 marks .upsert(row.payload, { onConflict }) opaque — the second-argument arm of the member-expression shape",
+      memberUpsert.opaque && memberUpsert.write.length === 0, memberUpsert.write.join(","))
+    // MUST NOT REGRESS: a resolvable BARE identifier still resolves to real keys
+    // (the member branch requires the dot, so it can never fire on this shape).
+    const bareVar = probe(`const row = { first_name, phone }\nawait supabase.from("contacts").insert(row)`)
+    control("C1 a resolvable BARE-IDENTIFIER row variable still yields real keys, never opacity",
+      bareVar.write.includes("first_name") && bareVar.write.includes("phone") && !bareVar.opaque,
+      bareVar.write.join(","))
+    // MUST NOT WIDEN: a member-expression write on a NON-PostgREST chain records
+    // nothing — scoping is by the `.from("<live table>")` anchor, proved here.
+    const stripeChain = probe(`await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true })`)
+    control("C1 a non-PostgREST member call (stripe.subscriptions.update) records NOTHING — no write, no opacity",
+      !stripeChain.opaque && stripeChain.write.length === 0 && stripeChain.read.length === 0)
+    // The probes above marked contacts opaque 3 times; probe() restores the SET,
+    // this restores the site COUNTER so the coverage line still describes the tree.
+    unresolvedWriteObjects = savedOpaqueSites
+  }
+  // ── EMBED JOIN COLUMNS (FIX A) — both arms, end-to-end through scanColumns ─
+  // An embed is resolved THROUGH a parent-side column on every request; a scan
+  // that cannot see that read files the column as written-never-read (the
+  // pattern_adoptions false 1a). The probes touch tables beyond contacts
+  // (brokerages/transactions get embed-target reads), so everything they touch
+  // is snapshotted and RESTORED — a control that adjudicates a live finding is
+  // the same defect this file exists to catch, one level up (see the probe()
+  // comment on opacity restoration).
+  {
+    const touchedTables = ["brokerages", "transactions"]
+    // COPIES, not references — noteCol mutates the live Set in place, so saving
+    // the reference would save the pollution along with it.
+    const savedReads = touchedTables.map((t) => [t, readCols.has(t) ? new Set(readCols.get(t)) : undefined] as const)
+    const savedTablesRead = touchedTables.map((t) => [t, tablesRead.has(t)] as const)
+    const savedColSites = new Map(colSites)
+    const saved = {
+      selectSitesParsed, unresolvedEmbeds,
+      embedJoinColumnsResolved, embedJoinColumnsUnresolved,
+    }
+    const joinFk = probe(`await supabase.from("contacts").select("id, brokerage:brokerage_id(name)")`)
+    control("C1 an FK-COLUMN embed reads the parent join column (brokerage:brokerage_id → contacts.brokerage_id)",
+      joinFk.read.includes("brokerage_id"), joinFk.read.join(","))
+    const joinHint = probe(`await supabase.from("contacts").select("id, brokerages!contacts_brokerage_id_fkey(name)")`)
+    control("C1 a CONSTRAINT-HINT embed reads the parent join column through the counted fallback (brokerages!contacts_brokerage_id_fkey)",
+      joinHint.read.includes("brokerage_id"), joinHint.read.join(","))
+    const joinBare = probe(`await supabase.from("contacts").select("id, brokerages(name)")`)
+    control("C1 a BARE table-name embed on a unique-FK pair reads the inverted parent join column (brokerages(…) → contacts.brokerage_id)",
+      joinBare.read.includes("brokerage_id"), joinBare.read.join(","))
+    // NEGATIVE — the PGRST201 pair: contacts↔transactions carries THREE FKs, so
+    // NO parent column may be recorded (guessing one of three would acquit a
+    // real finding) and the doubt must be COUNTED where the coverage line prints.
+    const unresolvedBefore = embedJoinColumnsUnresolved
+    const joinAmbig = probe(`await supabase.from("contacts").select("id, transactions(closing_date)")`)
+    control("C1 NEGATIVE — a bare MULTI-FK embed records NO parent join column and increments the unresolved counter",
+      !joinAmbig.read.some((c) => c.includes("contact_id")) &&
+      embedJoinColumnsUnresolved === unresolvedBefore + 1,
+      `read=${joinAmbig.read.join(",")} unresolved ${unresolvedBefore}→${embedJoinColumnsUnresolved}`)
+    // Restore everything the probes touched outside contacts, counters included.
+    for (const [t, s] of savedReads) { if (s) readCols.set(t, s); else readCols.delete(t) }
+    for (const [t, had] of savedTablesRead) if (!had) tablesRead.delete(t)
+    colSites.clear(); for (const [k, v] of savedColSites) colSites.set(k, v)
+    selectSitesParsed = saved.selectSitesParsed
+    unresolvedEmbeds = saved.unresolvedEmbeds
+    embedJoinColumnsResolved = saved.embedJoinColumnsResolved
+    embedJoinColumnsUnresolved = saved.embedJoinColumnsUnresolved
+  }
+  // DB-TRIGGER WRITES, read out of the migrations rather than assumed.
+  control("C1 read trigger-written columns out of supabase/migrations at all",
+    TRIGGER_WRITTEN.size > 0, `${TRIGGER_WRITTEN.size} tables`)
+  control("C1 knows automation_logs.brokerage_id is written by migration 052's trigger",
+    TRIGGER_WRITTEN.get("automation_logs")?.has("brokerage_id") === true,
+    [...(TRIGGER_WRITTEN.get("automation_logs") ?? [])].join(","))
+  control("C1 does NOT blanket-exempt brokerage_id on a table with no such trigger",
+    TRIGGER_WRITTEN.get("contacts")?.has("brokerage_id") !== true)
+  // SQL-SEEDED COLUMNS, read out of the applied .sql the same way. Verified
+  // against the live database before being trusted: plan_limits answers 68/68
+  // non-null on every column below, feature_flags 10/68 on its tier limits.
+  control("C1 read seed/backfill-written columns out of the applied .sql at all",
+    SQL_WRITTEN.size > 0, `${SQL_WRITTEN.size} tables`)
+  control("C1 knows plan_limits' gate columns are seeded by a migration",
+    ["limit_value", "metric", "plan_tier"].every((c) => SQL_WRITTEN.get("plan_limits")?.has(c) === true),
+    [...(SQL_WRITTEN.get("plan_limits") ?? [])].join(","))
+  control("C1 knows feature_flags' per-tier LIMITS are seeded (scripts/*.sql, not only supabase/migrations)",
+    SQL_WRITTEN.get("feature_flags")?.has("solo_agent_limit") === true)
+  {
+    // The parser is exercised on a fixture, not just on the tree: a clean tree
+    // and a broken regex both produce "no seed writers", and the difference is
+    // the whole point of a control.
+    const fx = sqlWrittenColumnsFrom([
+      `INSERT INTO public.plan_limits (plan_tier, metric, limit_value) VALUES ('team','ai_calls',100);`,
+      `UPDATE feature_flags SET solo_agent_limit = 5, team_limit = 20 WHERE feature_key = 'podcast_generation';`,
+      `INSERT INTO t_novals VALUES (1, 2);`,
+    ])
+    control("C1's seed reader sees an INSERT column list and an UPDATE … SET backfill",
+      ["plan_tier", "metric", "limit_value"].every((c) => fx.get("plan_limits")?.has(c)) &&
+      fx.get("feature_flags")?.has("solo_agent_limit") === true && fx.get("feature_flags")?.has("team_limit") === true,
+      [...(fx.get("plan_limits") ?? [])].join(",") + " | " + [...(fx.get("feature_flags") ?? [])].join(","))
+    control("C1's seed reader does NOT count a WHERE predicate's column as a write",
+      fx.get("feature_flags")?.has("feature_key") !== true)
+    control("C1's seed reader does not invent columns for a VALUES-only INSERT",
+      fx.get("t_novals") === undefined)
+    control("C1's seed reader ignores a statement that only exists in a SQL COMMENT",
+      sqlWrittenColumnsFrom([stripSqlComments("-- insert into ghost_table (ghost_col) values (1);\n/* update ghost_table set other_col = 1; */")]).size === 0)
+  }
+  // ── DB COLUMN DEFAULTS — the fourth DB-side writer, BOTH ARMS ─────────────
+  // An exemption that only ever exempts is indistinguishable from a scan that
+  // stopped working, and a defaults reader that exempts EVERY defaulted column
+  // would silently acquit every dead counter in the schema. So the fixture
+  // carries one of each and both verdicts are asserted.
+  {
+    const fx = defaultWrittenColumnsFrom([
+      `CREATE TABLE IF NOT EXISTS public.fx_widgets (
+         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+         public_id text UNIQUE NOT NULL DEFAULT substr(md5(random()::text || clock_timestamp()::text), 1, 16),
+         made_at timestamptz NOT NULL DEFAULT now(),
+         due_at timestamptz DEFAULT (now() + '45 days'::interval),
+         as_of date DEFAULT CURRENT_DATE,
+         use_count integer NOT NULL DEFAULT 0,
+         is_active boolean NOT NULL DEFAULT true,
+         status text NOT NULL DEFAULT 'pending'::text,
+         tags text[] NOT NULL DEFAULT ARRAY[]::text[],
+         meta jsonb NOT NULL DEFAULT '{}'::jsonb,
+         plain_col text,
+         CONSTRAINT fx_widgets_status_ck CHECK (status IN ('pending','done'))
+       );`,
+      `ALTER TABLE public.fx_widgets ADD COLUMN IF NOT EXISTS added_at timestamptz DEFAULT now();`,
+      `ALTER TABLE public.fx_widgets ADD COLUMN IF NOT EXISTS score integer DEFAULT 0;`,
+      `ALTER TABLE public.fx_widgets ALTER COLUMN made_at SET DEFAULT clock_timestamp();`,
+    ])
+    const got = [...(fx.get("fx_widgets") ?? [])].sort()
+    control("C1's DEFAULT reader EXEMPTS every expression default (now(), uuid, substr(md5), interval, CURRENT_DATE, ADD COLUMN)",
+      ["added_at", "as_of", "due_at", "id", "made_at", "public_id"].every((c) => got.includes(c)), got.join(","))
+    control("C1's DEFAULT reader does NOT exempt a CONSTANT default — a dead counter must keep its finding",
+      !["use_count", "is_active", "status", "tags", "meta", "score"].some((c) => got.includes(c)), got.join(","))
+    control("C1's DEFAULT reader does not invent a column from a TABLE-level CONSTRAINT",
+      !got.includes("fx_widgets_status_ck") && !got.includes("CONSTRAINT"))
+    control("C1's DEFAULT reader leaves an undefaulted column alone",
+      !got.includes("plain_col"))
+    control("C1's DEFAULT reader ignores DDL that only exists in a SQL COMMENT",
+      defaultWrittenColumnsFrom([stripSqlComments("-- create table ghost_t (ghost_c timestamptz default now());")]).size === 0)
+    control("C1 read expression-DEFAULT columns out of the applied .sql at all",
+      DEFAULT_WRITTEN.size > 0, `${DEFAULT_WRITTEN.size} tables`)
+    control("C1 knows embed_widgets.public_id is generated by its column DEFAULT (scripts/1019-embed-widgets.sql:17)",
+      DEFAULT_WRITTEN.get("embed_widgets")?.has("public_id") === true,
+      [...(DEFAULT_WRITTEN.get("embed_widgets") ?? [])].join(","))
+    control("C1 does NOT exempt open_houses.total_check_ins — DEFAULT 0 is a floor, not a writer",
+      DEFAULT_WRITTEN.get("open_houses")?.has("total_check_ins") !== true)
+  }
+}
+
+/**
+ * A table qualifies for the COLUMN question only when the TABLE question is
+ * already answered green — at least one runtime writer and at least one runtime
+ * reader. That is not a convenience: it is what keeps this census disjoint from
+ * writerless-read-sweep (tables with no writer) and orphan-write-sweep (tables
+ * with no reader). Those two own their populations; this one owns what is left.
+ */
+const pairedTables = [...tablesRead].filter((t) => tablesWritten.has(t) && !rpcTouched.has(t)).sort()
+
+const colWrittenNeverRead: string[] = []
+const colReadNeverWritten: string[] = []
+for (const t of pairedTables) {
+  const r = readCols.get(t) ?? new Set<string>()
+  const w = writeCols.get(t) ?? new Set<string>()
+  if (!starRead.has(t)) {
+    for (const c of [...w].sort()) if (!r.has(c) && !isPolicyConsumed(t, c)) colWrittenNeverRead.push(`${t}.${c}`)
+  }
+  if (!opaqueWrite.has(t)) {
+    const dbWritten = TRIGGER_WRITTEN.get(t)
+    const sqlWritten = SQL_WRITTEN.get(t)
+    const defWritten = DEFAULT_WRITTEN.get(t)
+    for (const c of [...r].sort()) {
+      if (w.has(c) || DB_MANAGED.has(c)) continue
+      if (dbWritten?.has(c)) continue          // a trigger fills this in — see triggerWrittenColumns()
+      if (defWritten?.has(c)) { defaultWritten++; continue }  // a DB DEFAULT computes it — see defaultWrittenColumnsFrom()
+      if (sqlWritten?.has(c)) { sqlSeeded++; continue }  // an applied .sql seeds/backfills it — see sqlWrittenColumns()
+      colReadNeverWritten.push(`${t}.${c}`)
+    }
+  }
+}
+for (const k of colWrittenNeverRead) add("col-write-no-read", k, colSites.get(k) ?? "?", "column written by code, read by none")
+for (const k of colReadNeverWritten) add("col-read-no-write", k, colSites.get(k) ?? "?", "column read by code, written by none")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 2 — DEAD IMPORT (a symbol imported and never used in that file)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The import statements themselves are blanked out before the usage search, so a
+// name is never counted as "used" by its own import clause. Strings are NOT
+// masked here: `<Foo />` in JSX, `Foo` in a type position and `${Foo}` in a
+// template are all real uses, and a name that merely appears inside a quoted
+// string produces a FALSE NEGATIVE — the safe direction.
+interface ImportBinding { file: string; local: string; from: string; line: number }
+const importBindings: ImportBinding[] = []
+const deadImports: ImportBinding[] = []
+let importStatements = 0
+let sideEffectImports = 0
+
+/**
+ * THE IMPORT CLAUSE CANNOT CONTAIN A QUOTE OR A SEMICOLON.
+ *
+ * This was `([\s\S]*?)` and it made the scanner ACCUSE LIVE CODE — the exact
+ * failure mode this file's header is about, one category down from where it was
+ * being watched for.
+ *
+ * A SIDE-EFFECT IMPORT has no `from`:
+ *
+ *     import "server-only"
+ *     export { KernelEvent } from "./events"
+ *
+ * With `[\s\S]*?` the match that STARTS at `import "server-only"` runs on until
+ * the first `from` anywhere below it — here, the one belonging to the RE-EXPORT
+ * on the next line. So the census read those two statements as a single import
+ * of `KernelEvent` from "./events", blanked BOTH lines (spans are blanked so a
+ * name cannot vouch for itself), and then reported `lib/kernel/index.ts::
+ * KernelEvent` as a symbol imported and never used — in a file that does not
+ * import it at all and whose only mention of it is the re-export the scanner had
+ * just erased. A phantom binding and a real statement destroyed, from one
+ * greedy-across-statements clause.
+ *
+ * Restricting the clause to `[^"'`;]*?` fixes both halves at once, because no
+ * legal import clause contains a quote or a semicolon: `{ a, b as c }`,
+ * `Def, { a }`, `* as N`, `type { T }` and every multi-line spelling of them are
+ * quote-free, while `import "x"` has a quote at offset zero and now fails to
+ * match at all — which is correct, since a side-effect import binds no name.
+ * (It is still COUNTED, by the separate side-effect scan below.)
+ *
+ * Both directions are asserted in this category's controls: the shape must stop
+ * being seen (C2 fixture) AND every real clause shape must still be seen.
+ */
+const IMPORT_RE = /^[ \t]*import\s+(?!type\s*\()([^"'`;]*?)\bfrom\s*["'`]([^"'`]+)["'`]/gm
+
+function importClauseNames(clause: string): string[] {
+  const names: string[] = []
+  let c = clause.trim()
+  if (c.startsWith("type ")) c = c.slice(5).trim()      // `import type { A } from` — still a binding
+  // namespace: * as N
+  const ns = c.match(/\*\s*as\s+([A-Za-z_$][\w$]*)/)
+  if (ns) names.push(ns[1])
+  // named block { a, b as c, type D }
+  const braceOpen = c.indexOf("{")
+  if (braceOpen >= 0) {
+    const braceClose = c.indexOf("}", braceOpen)
+    if (braceClose > braceOpen) {
+      for (const piece of c.slice(braceOpen + 1, braceClose).split(",")) {
+        const p = piece.trim().replace(/^type\s+/, "")
+        if (!p) continue
+        const asM = p.match(/^[\w$]+\s+as\s+([A-Za-z_$][\w$]*)$/)
+        names.push(asM ? asM[1] : (p.match(/^[A-Za-z_$][\w$]*$/) ? p : ""))
+      }
+    }
+  }
+  // default binding: the leading bare identifier before `,` or `{` or end
+  const head = (braceOpen >= 0 ? c.slice(0, braceOpen) : c).replace(/\*\s*as\s+[\w$]+/, "").trim()
+  const defM = head.replace(/,\s*$/, "").trim().match(/^([A-Za-z_$][\w$]*)$/)
+  if (defM) names.push(defM[1])
+  return names.filter(Boolean)
+}
+
+function scanDeadImports(file: string, src: string): ImportBinding[] {
+  const out: ImportBinding[] = []
+  const spans: Array<[number, number]> = []
+  const local: ImportBinding[] = []
+  let m: RegExpExecArray | null
+  IMPORT_RE.lastIndex = 0
+  while ((m = IMPORT_RE.exec(src))) {
+    importStatements++
+    spans.push([m.index, m.index + m[0].length])
+    const line = lineOf(src, m.index)
+    for (const name of importClauseNames(m[1])) local.push({ file, local: name, from: m[2], line })
+  }
+  for (const s of src.matchAll(/^[ \t]*import\s*["'`][^"'`]+["'`]/gm)) { sideEffectImports++; void s }
+  // Blank every import statement so a name cannot vouch for itself.
+  let body = src
+  for (const [a, b] of spans) body = body.slice(0, a) + " ".repeat(b - a) + body.slice(b)
+  for (const b of local) {
+    importBindings.push(b)
+    if (!new RegExp(`\\b${b.local.replace(/\$/g, "\\$")}\\b`).test(body)) out.push(b)
+  }
+  return out
+}
+
+for (const f of productFiles) for (const d of scanDeadImports(f, codeOf.get(f)!)) deadImports.push(d)
+stage("C2 imports")
+
+{
+  const fixture = `import { used, dead } from "./x"\nimport type { UsedType } from "./y"\nimport Def from "./z"\nconst a: UsedType = used(Def)\n`
+  const got = scanDeadImports("<control>", blankComments(fixture)).map((d) => d.local).sort()
+  control("C2 sees a DEAD import and only the dead one", got.join(",") === "dead", got.join(","))
+  const jsx = `import { Card } from "./ui"\nexport const P = () => <Card />\n`
+  control("C2 counts JSX element usage as a use",
+    scanDeadImports("<control>", blankComments(jsx)).length === 0)
+  const tmpl = `import { NAME } from "./c"\nexport const s = \`hi \${NAME}\`\n`
+  control("C2 counts a template interpolation as a use",
+    scanDeadImports("<control>", blankComments(tmpl)).length === 0)
+  const cmt = `import { onlyInAComment } from "./c"\n// onlyInAComment is nice\n`
+  control("C2 does NOT let a COMMENT vouch for an import",
+    scanDeadImports("<control>", blankComments(cmt)).length === 1)
+  control("C2 saw imports at all across the tree", importStatements > 500, `${importStatements} import statements`)
+
+  // ── THE SIDE-EFFECT-IMPORT SWALLOW, in both directions ────────────────────
+  // This is the shape that made this category accuse lib/kernel/index.ts of a
+  // dead `KernelEvent` import when that file's only mention of the name is a
+  // RE-EXPORT the old clause pattern had blanked. Asserted as a NEGATIVE (the
+  // phantom must not be seen) AND as a POSITIVE (the fix must not have blinded
+  // the scanner to the real import that follows one), because a pattern that
+  // matches nothing would pass the negative half on its own.
+  const sideEffectThenReexport = `import "server-only"\nexport { KernelEvent } from "./events"\nexport const usesNothing = 1\n`
+  control("C2 a side-effect import does NOT swallow the RE-EXPORT below it (no phantom binding)",
+    scanDeadImports("<control>", blankComments(sideEffectThenReexport)).length === 0,
+    scanDeadImports("<control>", blankComments(sideEffectThenReexport)).map((d) => d.local).join(","))
+  const sideEffectThenImport = `import "server-only"\nimport { reallyDead } from "./y"\nconst x = 1\n`
+  control("C2 a side-effect import does NOT hide the real import below it (still sees the dead one)",
+    scanDeadImports("<control>", blankComments(sideEffectThenImport)).map((d) => d.local).join(",") === "reallyDead",
+    scanDeadImports("<control>", blankComments(sideEffectThenImport)).map((d) => d.local).join(","))
+  // Every clause spelling still parses — the restricted character class must not
+  // have cost the scanner a shape it used to understand.
+  for (const [label, fixture, expected] of [
+    ["multi-line named", `import {\n  usedOne,\n  deadOne,\n} from "./y"\nconst a = usedOne\n`, "deadOne"],
+    ["default + named", `import Def, { deadOne } from "./y"\nconst a = Def\n`, "deadOne"],
+    ["namespace", `import * as DeadNs from "./y"\nconst a = 1\n`, "DeadNs"],
+    ["type-only", `import type { DeadType } from "./y"\nconst a = 1\n`, "DeadType"],
+    ["semicoloned side-effect first", `import "server-only";\nimport { deadOne } from "./y"\nconst a = 1\n`, "deadOne"],
+  ] as Array<[string, string, string]>) {
+    const got = scanDeadImports("<control>", blankComments(fixture)).map((d) => d.local).join(",")
+    control(`C2 still parses a ${label} import clause`, got === expected, got)
+  }
+}
+for (const d of deadImports) add("dead-import", `${d.file}::${d.local}`, `${d.file}:${d.line}`, `imported from "${d.from}", never used in this file`)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE MODULE REACHABILITY GRAPH — who can actually see whom
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// WHY THIS EXISTS (2026-08-29). Category 3 decided "is this export referenced"
+// with a bare-token test: does the identifier occur in ANY other file. It never
+// asked whether that other file can REACH the module that declares it, so a
+// same-named export anywhere in the tree acquitted an orphan permanently and
+// silently.
+//
+// The decisive specimen, measured: `lib/kernel/adapters/content-generation.ts`
+// and `lib/kernel/content-generation-boundary.ts` both declare
+// `KernelContentRequest`, are near-byte-identical, and NOTHING imports either.
+// Each cleared the other. A MUTUAL ACQUITTAL — two copies of one wrapper hiding
+// each other from the only instrument that looks for them. Within one file the
+// same defect picks winners by how common the token is: `lib/routes.ts` had
+// `AppRoute` reported and `ROUTES` not, purely because something else in the
+// tree also says `ROUTES`.
+//
+// A false ACQUITTAL is worse than a false accusation, which is why this is worth
+// a graph. A false accusation is loud and someone argues with it; a false
+// acquittal hides work, and nothing downstream can ever notice it happened.
+//
+// So reachability is resolved for real. The graph is also what category 5 needs,
+// so resolveModule lives here now rather than 500 lines below.
+
+/**
+ * THE PATH ALIASES, READ FROM tsconfig.json — never re-typed here.
+ *
+ * The old resolver mapped `@/x` to `<root>/x` and stopped. This repo's tsconfig
+ * carries SEVEN mappings and one of them is not the identity: `@/components/*`
+ * resolves to `./app/components/*`, not `./components/*` (there is no
+ * `components/` directory at the root at all). Hardcoding `@/` therefore made
+ * every `@/components/…` import invisible — and `app/components/**` is 54 of the
+ * files this graph would otherwise have called unimported, including
+ * `CollaborativeSearchDashboard.tsx`, which `app/portal/[contactId]/search/page.tsx:6`
+ * imports by that exact spelling. Reading the mappings from the compiler's own
+ * config is the only version of this that cannot drift: add a path there and the
+ * graph follows, with nobody remembering to edit a list. Longest prefix first,
+ * which is how TypeScript itself picks among overlapping mappings.
+ */
+const TS_PATH_ALIASES: Array<[string, string]> = (() => {
+  try {
+    const raw = readFileSync(join(root, "tsconfig.json"), "utf8")
+    const cfg = JSON.parse(blankComments(raw)) as { compilerOptions?: { paths?: Record<string, string[]> } }
+    return Object.entries(cfg.compilerOptions?.paths ?? {})
+      .map(([k, v]) => [k.replace(/\*$/, ""), String(v[0]).replace(/\*$/, "")] as [string, string])
+      .sort((a, b) => b[0].length - a[0].length)
+  } catch { return [["@/", "./"]] }
+})()
+
+function resolveModule(fromFile: string, spec: string): string | null {
+  let base: string | null = null
+  if (spec.startsWith("./") || spec.startsWith("../")) base = resolve(root, dirname(fromFile), spec)
+  else for (const [prefix, target] of TS_PATH_ALIASES) {
+    if (spec.startsWith(prefix)) { base = resolve(root, target, spec.slice(prefix.length)); break }
+  }
+  if (base === null) return null                          // bare package specifier
+  const cands = [
+    base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.mjs`, `${base}.json`,
+    join(base, "index.ts"), join(base, "index.tsx"), join(base, "index.js"),
+  ]
+  for (const c of cands) {
+    try { if (statSync(c).isFile()) return rel(c) } catch { /* keep looking */ }
+  }
+  return null
+}
+
+/**
+ * SPECIFIERS ARE COLLECTED THROUGH THE TOKENIZER, not by a regex over source.
+ *
+ * §2 names strip-comments.ts as the one correct scanner, and this is the exact
+ * place the shortcut would bite: a `from "./y"` written INSIDE a control fixture
+ * — a template literal in this very file — is text, not an import. A regex over
+ * comment-blanked source read 22 such phantom specifiers out of scripts/, all of
+ * them fixture text in guards and simulators, six of them from the C2 controls a
+ * hundred lines above. `stringLiterals()` reports a nested literal only when it
+ * sits inside a `${…}` interpolation, i.e. only when it is really CODE, so
+ * fixture text cannot manufacture an edge.
+ */
+const IMPORT_PREFIX = /(?:\bfrom|\bimport\s*\(|\brequire\s*\()\s*$/
+const REEXPORT_PREFIX = /\bexport\s+(?:\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^}]*\}|type\s*\{[^}]*\})\s*from\s*$/
+const AMBIENT_RE = /\.d\.ts$/
+/** Next's app-router file contract — the framework loads these; nothing imports them. */
+const NEXT_ENTRY_RE = /(?:^|\/)(?:page|layout|route|loading|error|global-error|not-found|template|default|sitemap|robots|manifest|opengraph-image|twitter-image|icon|apple-icon|middleware|instrumentation)\.[jt]sx?$/
+const TEST_ENTRY_RE = /\.(?:test|spec)\.[jt]sx?$/
+
+const directImports = new Map<string, Set<string>>()
+const reexportsFrom = new Map<string, Set<string>>()
+const importersOf = new Map<string, Set<string>>()
+/**
+ * Files whose reach CANNOT BE DECIDED, so they are treated as reaching
+ * everything. An `await import(`${…}`)` builds its target at runtime; four
+ * guards in scripts/ load a module under test that way. Counting them as
+ * omniscient keeps this graph on the false-NEGATIVE side of its own rule — the
+ * standing preference of this file — and the number is published beside the
+ * count rather than left implicit.
+ */
+const wildcardReachers = new Set<string>()
+let graphEdges = 0
+let graphUnresolvedInRepo = 0
+
+for (const f of [...productFiles, ...proofFiles]) {
+  const code = codeOf.get(f) ?? ""
+  const di = new Set<string>()
+  const re = new Set<string>()
+  for (const lit of stringLiterals(code)) {
+    const before = code.slice(Math.max(0, lit.start - 64), lit.start)
+    if (!IMPORT_PREFIX.test(before)) continue
+    if (lit.kind === "template" && lit.text.includes("${")) { wildcardReachers.add(f); continue }
+    const target = resolveModule(f, lit.text)
+    if (target === null) {
+      if (lit.text.startsWith(".") || TS_PATH_ALIASES.some(([p]) => lit.text.startsWith(p))) graphUnresolvedInRepo++
+      continue
+    }
+    di.add(target)
+    graphEdges++
+    let s = importersOf.get(target)
+    if (!s) { s = new Set(); importersOf.set(target, s) }
+    s.add(f)
+    if (REEXPORT_PREFIX.test(before)) re.add(target)
+  }
+  directImports.set(f, di)
+  reexportsFrom.set(f, re)
+}
+stage("C3 graph")
+
+/**
+ * A BARREL FORWARDS REACH. `export { X } from "./m"` means a file importing the
+ * barrel can name `m`'s `X` without ever naming `m`, so the closure of re-export
+ * edges is part of what a direct import buys. Cycle-guarded, memoised, and
+ * finite by construction — the visited set only ever grows.
+ */
+const reexportClosureCache = new Map<string, Set<string>>()
+function reexportClosure(mod: string): Set<string> {
+  const hit = reexportClosureCache.get(mod)
+  if (hit) return hit
+  const out = new Set<string>([mod])
+  reexportClosureCache.set(mod, out)                      // seed first: a cycle sees a partial set, never recurses forever
+  const queue = [mod]
+  while (queue.length) {
+    const cur = queue.pop()!
+    for (const next of reexportsFrom.get(cur) ?? []) if (!out.has(next)) { out.add(next); queue.push(next) }
+  }
+  return out
+}
+
+const reachCache = new Map<string, Set<string>>()
+function reachSetOf(from: string): Set<string> {
+  const hit = reachCache.get(from)
+  if (hit) return hit
+  const out = new Set<string>()
+  for (const d of directImports.get(from) ?? []) for (const m of reexportClosure(d)) out.add(m)
+  reachCache.set(from, out)
+  return out
+}
+
+/** Can `from` see the module `target` at all? */
+function reachesModule(from: string, target: string): boolean {
+  if (from === target) return true
+  if (AMBIENT_RE.test(target)) return true                // a .d.ts is ambient: its types need no import
+  if (wildcardReachers.has(from)) return true             // undecidable specifier — never used as evidence AGAINST
+  return reachSetOf(from).has(target)
+}
+
+/**
+ * IS ANYTHING AT ALL ON THE OTHER END OF THIS MODULE?
+ *
+ * The structural-reachability exclusion below says "a consumer reaches this type
+ * through another export of the same module". That sentence has a premise: that
+ * a consumer exists. In a module NOTHING imports there is no consumer, so the
+ * exclusion was clearing types on the strength of a reader who is not there —
+ * which is precisely how `KernelContentRequest` stayed invisible in both of its
+ * two copies.
+ *
+ * "Unreferenced is not dead" (§1) is the reason this is not simply
+ * `importersOf.has(file)`. A Next app-router file is loaded BY THE FRAMEWORK and
+ * is unimported by design; so is a root-level runtime file (proxy.ts, the edge
+ * auth gate — see the C0b control), a `.d.ts`, a test file the runner loads, and
+ * a Remotion root. Each of those is DERIVED, not listed: the app-router names are
+ * Next's published contract, a root file is one with no `/` in its path, and a
+ * Remotion entry is recognised by the `registerRoot(` call that makes it one.
+ */
+function frameworkLoads(file: string): boolean {
+  if (AMBIENT_RE.test(file)) return true
+  if (!file.includes("/")) return true                    // root-level runtime file
+  if (NEXT_ENTRY_RE.test(file)) return true
+  if (TEST_ENTRY_RE.test(file)) return true
+  if (/\bregisterRoot\s*\(/.test(codeOf.get(file) ?? "")) return true   // Remotion bundle entry
+  return false
+}
+function moduleIsAddressable(file: string): boolean {
+  if ((importersOf.get(file)?.size ?? 0) > 0) return true
+  return frameworkLoads(file)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 3 — ORPHANED NON-FUNCTION EXPORT (type / interface / enum / class / const)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// orphan-export-guard matches exactly two shapes — `export function NAME` and
+// `export const NAME … = (` — so the entire type surface of this repo has never
+// been counted. Anything those two regexes match is EXCLUDED here, so the two
+// censuses partition the export space instead of overlapping.
+//
+// Same three-way classification as that guard, for the same reason: an export
+// named only by a proof is a different KIND of work from one named nowhere at
+// all, and collapsing them produces a burn-down list that gets people deleting
+// proven capability.
+interface ExportRef { file: string; name: string; kind: string; line: number }
+const typeExports: ExportRef[] = []
+const FN_EXPORT_RE = /export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g
+const FN_CONST_RE = /export\s+const\s+([A-Za-z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?\(/g
+
+/**
+ * NEXT'S ROUTE SEGMENT CONFIG — exported TO THE FRAMEWORK, never to an importer.
+ *
+ * `export const dynamic = "force-dynamic"` is not a symbol anyone imports; it is
+ * a value Next reads off the module it just loaded. Until the reachability graph
+ * arrived these were cleared by accident, because 213 route files all say
+ * `dynamic` and the old bare-token test counted any of them as vouching for all
+ * the others. Once a reference had to actually REACH the declaring module, all
+ * 394 of them arrived on the list at once — a false-accusation flood that would
+ * have buried the 17 real arrivals it came in with. The list below is Next's
+ * published segment-config contract, and the exclusion applies only where that
+ * contract is in force: a module the FRAMEWORK loads rather than an importer.
+ * That includes the edge middleware at the repository root — in this repo it is
+ * `proxy.ts` (Next 16's name for it; see scripts/runtime-roots.ts), whose
+ * `export const config = { matcher: … }` is read by the runtime and by nobody
+ * else, and which no app-router filename pattern would ever match.
+ */
+const NEXT_SEGMENT_CONFIG = new Set([
+  "dynamic", "dynamicParams", "revalidate", "fetchCache", "runtime", "preferredRegion",
+  "maxDuration", "experimental_ppr", "metadata", "viewport", "alt", "size", "contentType", "config",
+])
+
+function scanTypeExports(file: string, src: string): ExportRef[] {
+  const out: ExportRef[] = []
+  const isFrameworkLoaded = file !== "<control>" && frameworkLoads(file)
+  // The two shapes orphan-export-guard ALREADY owns. Collected first and used as
+  // an exclusion set so the two censuses partition the export space rather than
+  // both counting the same symbol — a double count would make the combined
+  // "unwired export" figure wrong in the alarming direction.
+  const alreadyCounted = new Set<string>()
+  for (const m of src.matchAll(new RegExp(FN_EXPORT_RE.source, "g"))) alreadyCounted.add(m[1])
+  for (const m of src.matchAll(new RegExp(FN_CONST_RE.source, "g"))) alreadyCounted.add(m[1])
+  const push = (name: string, kind: string, idx: number) => {
+    if (alreadyCounted.has(name)) return
+    if (isFrameworkLoaded && NEXT_SEGMENT_CONFIG.has(name)) return
+    out.push({ file, name, kind, line: lineOf(src, idx) })
+  }
+  for (const m of src.matchAll(/export\s+(?:declare\s+)?interface\s+([A-Za-z0-9_$]+)/g)) push(m[1], "interface", m.index!)
+  for (const m of src.matchAll(/export\s+(?:declare\s+)?type\s+([A-Za-z0-9_$]+)/g)) push(m[1], "type", m.index!)
+  for (const m of src.matchAll(/export\s+(?:declare\s+)?(?:const\s+)?enum\s+([A-Za-z0-9_$]+)/g)) push(m[1], "enum", m.index!)
+  for (const m of src.matchAll(/export\s+(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)/g)) push(m[1], "class", m.index!)
+  for (const m of src.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*(?::[^=\n]+)?=/g)) push(m[1], "const", m.index!)
+  return out
+}
+for (const f of productFiles) for (const e of scanTypeExports(f, maskOf.get(f)!)) typeExports.push(e)
+
+/**
+ * An INVERTED INDEX, not a regex sweep.
+ *
+ * The naive shape — for each export, test every file — is |exports| × |files|
+ * regex runs over multi-megabyte strings, which on this tree is tens of millions
+ * of scans and does not finish in a useful time. Every file is tokenised ONCE
+ * into the identifiers it names, and the question "does any OTHER file name X"
+ * becomes a set lookup. The answer is identical: `\b…\b` on masked source and
+ * "appears as an identifier token in masked source" pick out the same
+ * occurrences, because the token pattern IS the word-boundary rule.
+ */
+function identifierIndex(corpus: string[]): Map<string, Set<string>> {
+  const idx = new Map<string, Set<string>>()
+  for (const f of corpus) {
+    const src = maskOf.get(f)!
+    for (const m of src.matchAll(/[A-Za-z_$][\w$]*/g)) {
+      let s = idx.get(m[0])
+      if (!s) { s = new Set(); idx.set(m[0], s) }
+      s.add(f)
+    }
+  }
+  return idx
+}
+const productIndex = identifierIndex(productFiles)
+const proofIndex = identifierIndex(proofFiles)
+stage("C3 index")
+
+/**
+ * A REFERENCE, NOT A COINCIDENCE — the false-ACQUITTAL class this closes.
+ *
+ * This used to return true the moment the identifier occurred in any OTHER file,
+ * whatever that file was. TypeScript does not work that way: naming an exported
+ * type from module M requires an import that reaches M. So a bare token in an
+ * unrelated file is not weak evidence, it is NO evidence — and it was the only
+ * evidence clearing 17 measured exports, including both copies of
+ * `KernelContentRequest`, which acquitted each other.
+ *
+ * `requireReach = false` reproduces the retired rule EXACTLY, and exists so the
+ * control below can show the two answers differ on the same input. A fix nobody
+ * can watch discriminate is a fix nobody can tell from a scan that stopped
+ * working (§2).
+ */
+const refIn = (name: string, from: string, idx: Map<string, Set<string>>, requireReach = true) => {
+  const hits = idx.get(name)
+  if (!hits) return false
+  for (const f of hits) {
+    if (f === from) continue
+    if (!requireReach || reachesModule(f, from)) return true
+  }
+  return false
+}
+/**
+ * REACHABLE THROUGH ANOTHER EXPORT OF THE SAME MODULE — the false-accusation
+ * class this category had, measured on its own first ratcheted run.
+ *
+ * "No OTHER FILE names this identifier" is the right question for a value, and
+ * the wrong one for a TYPE, because TypeScript resolves types structurally. A
+ * caller writing
+ *
+ *     const est = await estimateMonthlyRentFromComps({ address, zip, … })
+ *
+ * never imports `RentEstimateRequest`, and never needs to: it is the parameter
+ * type of an EXPORTED function, so it is part of that module's public surface
+ * whether or not any importer spells its name. The same holds for a field type
+ * of an exported interface — `ProviderRentEstimate.comps: ProviderRentComp[]`
+ * hands every consumer `ProviderRentComp` without a single named import.
+ *
+ * Measured, not theorised: the first run of this ratchet reported 17 NEW
+ * orphans, and all seventeen were this shape — `RentEstimateRequest`,
+ * `ProviderRentComp`, `RentUnavailableReason`, `ExternalListingType`,
+ * `PhraseCatalogueState`, `RoutedUsage` and the rest, each named in an exported
+ * declaration a few lines below its own. Deleting any of them would have broken
+ * the module that declares it. A ratchet that fires on correct code does not
+ * merely waste a verdict; it teaches whoever meets it to reach for the baseline,
+ * which is how a real finding gets waved through later.
+ *
+ * So the question asked here is the one that decides the matter: is this name
+ * used inside the DECLARATION OF ANOTHER EXPORT of the same file? If it is, a
+ * consumer reaches it through that export and the pair is not one-sided. If it
+ * appears only inside a private helper, or nowhere, it stays a finding — that is
+ * still the wire-or-build question this category exists to ask.
+ *
+ * ── THE CONTINUATION BUG THIS CLOSES (2026-08-29) ───────────────────────────
+ *
+ * The walk ended a declaration at the first line whose bracket depth returned to
+ * zero and which did not end in an OPENING bracket. A multi-line union does
+ * neither — it ends the first line on the `=` and carries the arms below it:
+ *
+ *     export interface NormalizedPlanTier { … }
+ *     export type ValidationResult =
+ *       | { ok: true; value: NormalizedPlanTier }
+ *       | { ok: false; error: string }
+ *
+ * `export type ValidationResult =` closes at depth 0 with a trailing `=`, so
+ * `inExport` went false immediately and the two arms were never examined. The
+ * type named in them — reachable by every consumer of ValidationResult, and
+ * deletable by nobody — was reported as referenced by no other file. Measured on
+ * this tree, and the shape is everywhere here because the repo's whole result
+ * idiom is a multi-line discriminated union.
+ *
+ * So a declaration now also CONTINUES when the line ends in an operator that
+ * cannot end a declaration (`= | & ? :`) or when the NEXT line opens with a
+ * union/intersection arm or an `extends` clause. The risk of a sticky
+ * `inExport` is the mirror defect — a false ACQUITTAL that swallows the private
+ * helper below and hides a real finding — so that exact shape is pinned by its
+ * own control beside the reachability one.
+ *
+ * ── THE PRIVATE-`Props` HOP THIS CLOSES (2026-08-29) ────────────────────────
+ *
+ * The walk above asked ONE question and stopped: is the name used inside another
+ * EXPORTED declaration? It never asked whether the declaration that names it is
+ * itself reachable. Every React component in this repo types its props with a
+ * PRIVATE interface, so the real chain has a hop in the middle:
+ *
+ *     export interface SavedPropertyOption { … }        ← reported as an orphan
+ *     interface CollaborativeSearchDashboardProps {     ← private, so invisible
+ *       savedProperties?: SavedPropertyOption[]
+ *     }
+ *     export function CollaborativeSearchDashboard(     ← the real public surface
+ *       props: CollaborativeSearchDashboardProps) { … }
+ *
+ * `app/portal/[contactId]/search/page.tsx:436` renders that component and gets
+ * `SavedPropertyOption` by inference, never by import. Ten measured exports were
+ * accused this way — ComplianceReportPayload, ListingIntelligenceProperty,
+ * MailPreviewColors, BrollSelection and the rest — all of them the same shape,
+ * all of them live.
+ *
+ * So the walk is now TRANSITIVE, and the hop is deliberately narrow: it follows
+ * a reachable declaration into a PRIVATE TYPE it names, and into nothing else.
+ * That is the rule the type system actually enforces — you cannot name a private
+ * TYPE in an exported signature without exposing its structure to every caller,
+ * so a private type named by a reachable declaration IS public surface. A
+ * private FUNCTION named by an export is a CALL, not a surface, and following
+ * that edge would turn this exclusion into the blanket acquittal its mirror
+ * control exists to forbid. `export const VALUE = helper()` must not clear the
+ * private type `helper` happens to take.
+ *
+ * The walk is a fixpoint over a finite set of declarations, so it terminates on
+ * its own; the round cap is there so that a future defect in the closing rule
+ * cannot turn "terminates" into "eventually".
+ */
+type DeclKind = "type" | "interface" | "enum" | "class" | "value" | "function"
+interface DeclSpan { name: string; kind: DeclKind; exported: boolean; start: number; end: number; names: Set<string> }
+/** Only these carry TYPE surface — see the hop rule above. */
+const TYPE_DECL_KINDS = new Set<DeclKind>(["type", "interface", "enum", "class"])
+const DECL_START_RE = /^(export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(type|interface|enum|class|const|let|var|async\s+function|function)\s+([A-Za-z0-9_$]+)/
+const kindOf = (kw: string): DeclKind =>
+  kw === "type" || kw === "interface" || kw === "enum" || kw === "class" ? kw : kw.endsWith("function") ? "function" : "value"
+
+const declSpanCache = new Map<string, DeclSpan[]>()
+function declarationSpans(src: string): DeclSpan[] {
+  const hit = declSpanCache.get(src)
+  if (hit) return hit
+  const lines = src.split("\n")
+  const spans: DeclSpan[] = []
+  let cur: { span: DeclSpan; text: string[] } | null = null
+  let depth = 0
+  const close = () => {
+    if (!cur) return
+    for (const m of cur.text.join("\n").matchAll(/[A-Za-z_$][\w$]*/g)) cur.span.names.add(m[0])
+    spans.push(cur.span)
+    cur = null
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i]
+    const m = DECL_START_RE.exec(ln)
+    // A column-0 `export` is always a NEW top-level declaration — the TS grammar
+    // has no other place to put one — so it closes whatever was open. Without
+    // that, one mis-closed private span could swallow an exported neighbour and
+    // remove it from the seed set, which is a false-accusation generator.
+    if (m && (m[1] || !cur)) {
+      close()
+      cur = {
+        span: { name: m[3], kind: kindOf(m[2]), exported: !!m[1], start: i + 1, end: i + 1, names: new Set() },
+        text: [],
+      }
+      depth = 0
+    }
+    if (!cur) continue
+    cur.text.push(ln)
+    cur.span.end = i + 1
+    // ANGLE BRACKETS ARE NOT BRACKETS IN A .tsx BODY, and counting them as such
+    // closed a component's span 400 lines early. `=>` is a bare `>`, so is every
+    // `a > b`, and a JSX body is full of both — depth went NEGATIVE inside
+    // app/dashboard/admin/lead-lineage/lead-lineage-client.tsx and the walk
+    // stopped before line 641, where the exported component reads its own
+    // exported `STAGES`. Only `{}`, `()` and `[]` actually nest here.
+    for (const ch of ln) {
+      if (ch === "{" || ch === "(" || ch === "[") depth++
+      else if (ch === "}" || ch === ")" || ch === "]") depth--
+    }
+    // A one-line declaration (`export type X = "a" | "b"`) closes immediately —
+    // but one left OPEN by a trailing operator, or continued by a
+    // union/intersection arm on the next line, has not ended yet.
+    const trimmed = ln.trimEnd()
+    const opensBelow = /[,{([<=|&?:]\s*$/.test(trimmed)
+    // …and a line that OPENS with `>` is closing a generic argument list that
+    // began on an earlier line — `): Promise<` / `  {…} | {…}` / `> {`. With
+    // angle brackets out of the depth count that middle line looks finished, and
+    // the walk stopped one line short of every such function's body.
+    const continuesBelow = /^\s*(?:[|&?:>]|extends\b)/.test(lines[i + 1] ?? "")
+    if (depth <= 0 && !opensBelow && !continuesBelow) close()
+  }
+  close()
+  declSpanCache.set(src, spans)
+  return spans
+}
+
+/** The declarations a consumer of this module can actually reach, by fixpoint. */
+const reachDeclCache = new Map<string, Map<boolean, DeclSpan[]>>()
+function reachableDeclarations(src: string, transitive: boolean): DeclSpan[] {
+  let perMode = reachDeclCache.get(src)
+  if (!perMode) { perMode = new Map(); reachDeclCache.set(src, perMode) }
+  const hit = perMode.get(transitive)
+  if (hit) return hit
+  const spans = declarationSpans(src)
+  const reached = new Set<number>()
+  spans.forEach((s, i) => { if (s.exported) reached.add(i) })
+  if (transitive) {
+    for (let round = 0; round < 16; round++) {
+      let grew = false
+      for (let i = 0; i < spans.length; i++) {
+        if (reached.has(i) || !TYPE_DECL_KINDS.has(spans[i].kind) || !spans[i].name) continue
+        for (const j of [...reached]) {
+          if (spans[j].names.has(spans[i].name)) { reached.add(i); grew = true; break }
+        }
+      }
+      if (!grew) break
+    }
+  }
+  const out = [...reached].sort((a, b) => a - b).map((i) => spans[i])
+  perMode.set(transitive, out)
+  return out
+}
+
+/**
+ * Is `name` named by any declaration a consumer of this module can reach?
+ * `transitive = false` is the retired one-level rule, kept only so the controls
+ * can show the two disagreeing on the same specimen.
+ */
+function namedInReachableDeclaration(src: string, name: string, ownLine: number, transitive = true): boolean {
+  for (const s of reachableDeclarations(src, transitive)) {
+    // Its OWN declaration proves nothing — a type referencing itself, on any line
+    // of its own body, is not a consumer.
+    if (ownLine >= s.start && ownLine <= s.end) continue
+    if (s.names.has(name)) return true
+  }
+  return false
+}
+
+const typeOrphans: ExportRef[] = []
+const typeProofOnly: ExportRef[] = []
+let typeStructurallyReachable = 0
+let typeInUnaddressedModule = 0
+for (const e of typeExports) {
+  if (refIn(e.name, e.file, productIndex)) continue
+  // THE PREMISE OF THE STRUCTURAL EXCLUSION IS A CONSUMER. "Reachable through
+  // another export of this module" clears nothing in a module NOTHING can reach:
+  // there is no consumer to do the reaching. Both copies of
+  // `KernelContentRequest` hid here — each is the parameter type of an exported
+  // `generateKernelContent` that no file, and no framework, ever loads.
+  const addressable = moduleIsAddressable(e.file)
+  if (!addressable) typeInUnaddressedModule++
+  if (addressable && namedInReachableDeclaration(maskOf.get(e.file) ?? "", e.name, e.line)) { typeStructurallyReachable++; continue }
+  if (refIn(e.name, e.file, proofIndex)) { typeProofOnly.push(e); continue }
+  typeOrphans.push(e)
+}
+
+stage("C3 exports")
+
+/**
+ * ── GENERATED-FILE EXEMPTION, path-scoped and SELF-REPORTING (2026-09-01) ────
+ * lib/external/_generated/** is MACHINE-WRITTEN (scripts/codegen-rentcast.sh
+ * regenerates rentcast-openapi.ts from the upstream OpenAPI spec — the file says
+ * so in its own header). Its orphan type exports ($defs/components/webhooks —
+ * spec sections the consumer, lib/external/rentcast-typed.ts, imports `paths`
+ * around) are codegen scaffolding: pruning them means HAND-EDITING A GENERATED
+ * FILE, which is §3-wrong the same way hand-editing schema-snapshot.ts is —
+ * the next regeneration silently restores them and the "fix" reads as drift.
+ * So the path is exempted BY RULING, on the QUALIFIED_EXTERNAL_ROUTES model:
+ *   · exact-prefix scoped — nothing outside lib/external/_generated/ is touched
+ *     (lib/property/rentcast-eligibility.ts keeps its finding);
+ *   · SELF-REPORTING — the match count prints in the coverage block, and the
+ *     control below goes RED if the prefix matches no file in the corpus, so a
+ *     stale exemption can never sit here reading as enforced (§2).
+ */
+const GENERATED_EXPORT_EXEMPT_PREFIX = "lib/external/_generated/"
+const generatedCorpusFiles = productFiles.filter((f) => f.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
+let generatedExemptExports = 0
+
+/**
+ * ── FRAMEWORK-CONSUMED TYPE EXPORTS, name-scoped and SELF-REPORTING (2026-09-03) ──
+ * An export whose only importer is BUILD OUTPUT this corpus never contains.
+ * types/next-augment.d.ts::PrefetchForTypeCheckInternal is consumed by the
+ * `.next/types/app/**\/page.ts` wrappers Next 16.1.6 generates (the file's own
+ * header, lines 1-18, records the upstream name mismatch it papers over); no
+ * runtime file names it, so the orphan-type-export scan resurfaced it every
+ * wave as a burn-down item that cannot be burned down without breaking
+ * `next build`. Exempted BY NAME — one file::name key, not a prefix, not a
+ * directory — on the GENERATED_EXPORT_EXEMPT_PREFIX model: every key must still
+ * name a live export (a stale entry goes red instead of sitting here reading as
+ * enforced, §2), and a sibling orphan in the same file is still reported.
+ * Remove the entry when the augmentation file itself is deleted (Next 16.1.7+).
+ */
+const FRAMEWORK_CONSUMED_TYPE_EXPORTS = new Map<string, string>([
+  ["types/next-augment.d.ts::PrefetchForTypeCheckInternal",
+    "imported only by Next's generated .next/types/** page wrappers (types/next-augment.d.ts:1-18) — build output, never in this corpus"],
+])
+let frameworkConsumedExemptExports = 0
+const frameworkConsumedExempt = (e: ExportRef) => FRAMEWORK_CONSUMED_TYPE_EXPORTS.has(`${e.file}::${e.name}`)
+for (const e of typeOrphans) {
+  if (e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) { generatedExemptExports++; continue }
+  if (frameworkConsumedExempt(e)) { frameworkConsumedExemptExports++; continue }
+  add("orphan-type-export", `${e.file}::${e.name}`, `${e.file}:${e.line}`, `exported ${e.kind}, referenced by no other file`)
+}
+// Both arms of the name-scoped exemption, proved — an exemption that only ever
+// exempts is indistinguishable from a scan that stopped working.
+control("C3 every framework-consumed exemption still names a LIVE orphan export (a stale entry = red)",
+  [...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].every((key) => typeOrphans.some((e) => `${e.file}::${e.name}` === key)),
+  [...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].join(","))
+control("C3 the framework-consumed exemption is NAME-EXACT — a sibling orphan in the same file, and the same name in another file, are still findings",
+  !frameworkConsumedExempt({ file: "types/next-augment.d.ts", name: "PrefetchForTypeCheckInternalSibling", kind: "type", line: 1 }) &&
+  !frameworkConsumedExempt({ file: "types/other-augment.d.ts", name: "PrefetchForTypeCheckInternal", kind: "type", line: 1 }) &&
+  frameworkConsumedExempt({ file: "types/next-augment.d.ts", name: "PrefetchForTypeCheckInternal", kind: "type", line: 1 }))
+control("C3 the framework-consumed exemption swallowed exactly one finding per key",
+  frameworkConsumedExemptExports === FRAMEWORK_CONSUMED_TYPE_EXPORTS.size,
+  `${frameworkConsumedExemptExports} exempted for ${FRAMEWORK_CONSUMED_TYPE_EXPORTS.size} key(s)`)
+control("C3 the generated-file exemption still matches at least one corpus file (a stale exemption = red)",
+  generatedCorpusFiles.length > 0, generatedCorpusFiles.join(",") || "NO FILE under " + GENERATED_EXPORT_EXEMPT_PREFIX)
+control("C3 the generated-file exemption is prefix-EXACT — a sibling outside _generated/ is not exempt",
+  !"lib/external/rentcast-typed.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX) &&
+  !"lib/property/rentcast-eligibility.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
+control("C3 no finding under the exempted prefix survives, and none outside it (or the name-scoped list) was swallowed",
+  !findings.some((f) => f.cat === "orphan-type-export" && f.where.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) &&
+  typeOrphans.filter((e) => !e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX) && !frameworkConsumedExempt(e)).length ===
+    findings.filter((f) => f.cat === "orphan-type-export").length,
+  `${generatedExemptExports} exempted by prefix, ${frameworkConsumedExemptExports} by name`)
+
+control("C3 counted non-function exports at all", typeExports.length > 200, `${typeExports.length} scanned`)
+{
+  // The partition control, on a fixture that carries one of each shape. The two
+  // FUNCTION shapes must NOT appear (orphan-export-guard owns them); the five
+  // non-function shapes must ALL appear (nobody has ever counted them).
+  const fixture = [
+    `export function fnDecl() {}`,
+    `export const fnArrow = (x: number) => x`,
+    `export const fnTyped: Handler = async (req) => req`,
+    `export type TAlias = string`,
+    `export interface IFace { a: string }`,
+    `export enum EKind { A }`,
+    `export class CThing {}`,
+    `export const VALUE_MAP = { a: 1 }`,
+  ].join("\n")
+  const got = scanTypeExports("<control>", maskStrings(blankComments(fixture)))
+  const names = got.map((g) => g.name).sort().join(",")
+  control("C3 counts every NON-function export shape and no function shape",
+    names === "CThing,EKind,IFace,TAlias,VALUE_MAP", names)
+
+  // THE SEGMENT-CONFIG EXCLUSION, BOTH DIRECTIONS. It must drop `dynamic` in a
+  // route file and keep the SAME NAME in an ordinary module, where it really is
+  // an export with an audience — otherwise it is a blanket name filter.
+  const segment = `export const dynamic = "force-dynamic"\nexport const maxDuration = 60\nexport interface Kept { a: string }\n`
+  const inRoute = scanTypeExports("app/api/x/route.ts", maskStrings(blankComments(segment))).map((g) => g.name).sort().join(",")
+  const inLib = scanTypeExports("lib/x/helpers.ts", maskStrings(blankComments(segment))).map((g) => g.name).sort().join(",")
+  control("C3 drops Next's route SEGMENT CONFIG in an entry file (the framework is its reader)", inRoute === "Kept", inRoute)
+  control("C3 …and keeps the same names in an ordinary module (not a blanket name filter)",
+    inLib === "Kept,dynamic,maxDuration", inLib)
+  // The middleware's matcher, on the real file rather than a fixture — the one
+  // segment-config site no app-router filename pattern reaches.
+  control("C3 the edge middleware's `export const config` is framework-read, not an orphan",
+    !typeExports.some((e) => e.file === "proxy.ts" && e.name === "config"),
+    typeExports.filter((e) => e.file === "proxy.ts").map((e) => e.name).join(",") || "none")
+}
+{
+  // A type that IS imported elsewhere must not be reported. `SCHEMA_SNAPSHOT` is
+  // imported by this very file and by schema-drift-guard.
+  control("C3 sees a REFERENCED export as referenced (no false accusation)",
+    !typeOrphans.some((e) => e.name === "SCHEMA_SNAPSHOT"))
+}
+{
+  // ── THE GRAPH ITSELF ──────────────────────────────────────────────────────
+  // Everything category 3 now decides rests on this resolver, so it is checked
+  // on the two shapes that decide it: an alias that IS the identity, and the one
+  // that is NOT. `@/components/*` → `./app/components/*` is the mapping the old
+  // resolver could not do, and 54 files under app/components/ hung on it.
+  control("C3 the resolver reads tsconfig `paths` (more than the bare `@/` identity)",
+    TS_PATH_ALIASES.length > 1 && TS_PATH_ALIASES.some(([p, t]) => p !== t.replace(/^\.\//, "@/")),
+    TS_PATH_ALIASES.map(([p, t]) => `${p}→${t}`).join(" "))
+  control("C3 resolves the NON-identity alias `@/components/…` to app/components/…",
+    resolveModule("app/portal/x/page.tsx", "@/components/portal/CollaborativeSearchDashboard")
+      === "app/components/portal/CollaborativeSearchDashboard.tsx",
+    String(resolveModule("app/portal/x/page.tsx", "@/components/portal/CollaborativeSearchDashboard")))
+  control("C3 the graph has real edges and a direction",
+    reachesModule("scripts/opposite-missing-census.ts", "scripts/strip-comments.ts")
+      && !reachesModule("scripts/strip-comments.ts", "scripts/opposite-missing-census.ts"),
+    `${graphEdges} resolved edges`)
+  // A fixture `from "./y"` inside a template literal is TEXT. If specifiers were
+  // read with a regex over source instead of through the tokenizer, this file's
+  // own C2 controls would forge edges out of scripts/ — measured at 22 of them.
+  control("C3 fixture text inside a template literal forges no import edge",
+    !(directImports.get("scripts/opposite-missing-census.ts") ?? new Set()).has("scripts/y.ts"),
+    [...(directImports.get("scripts/opposite-missing-census.ts") ?? [])].length + " real edges out of this file")
+
+  // ── DEFECT B, BOTH DIRECTIONS ─────────────────────────────────────────────
+  // The discrimination check: the SAME index, the SAME name, the two rules
+  // disagreeing. `Widget` is declared in a module the naming file cannot see.
+  const fakeIdx = new Map<string, Set<string>>([["Widget", new Set(["lib/kernel/marketing.ts"])]])
+  control("C3 a bare token in an UNREACHING file is no longer evidence (defect B fixed)",
+    !refIn("Widget", "lib/routes.ts", fakeIdx, true))
+  control("C3 …and the retired rule gives the OTHER answer on that same input (the control discriminates)",
+    refIn("Widget", "lib/routes.ts", fakeIdx, false))
+  // The mirror: B must not have become a blanket accusation. Derived from the
+  // RULE — every export some other file imports BY NAME from this exact module
+  // must be absent from the list — never pinned to one specimen that a later
+  // wave could delete.
+  {
+    const orphanKeys = new Set(typeOrphans.map((e) => `${e.file}::${e.name}`))
+    let namedImportPairs = 0
+    const violations: string[] = []
+    for (const f of [...productFiles, ...proofFiles]) {
+      const code = codeOf.get(f) ?? ""
+      for (const m of code.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*(["'])([^"'\n]+)\2/g)) {
+        const target = resolveModule(f, m[3])
+        if (!target || target === f) continue
+        for (const piece of m[1].split(",")) {
+          const p = piece.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim()
+          if (!/^[A-Za-z_$][\w$]*$/.test(p)) continue
+          namedImportPairs++
+          if (orphanKeys.has(`${target}::${p}`)) violations.push(`${target}::${p} ← ${f}`)
+        }
+      }
+    }
+    control("C3 an export something imports BY NAME is never on the list (B is no blanket accusation)",
+      violations.length === 0 && namedImportPairs > 1000,
+      `${namedImportPairs} named-import pairs resolved · ${violations.length} violation(s)${violations.length ? `: ${violations.slice(0, 5).join(", ")}` : ""}`)
+  }
+  // The positive: a module NOTHING reaches and no framework loads must have its
+  // non-function exports REPORTED, not cleared by its own signature.
+  //
+  // NOT PINNED TO A LIVE SPECIMEN (§2, lane N3a 2026-09-01). This control used
+  // to demand `unaddressed.length > 0` — at least one unreached module still
+  // EXISTING in the tree — which is the waypoint defect this file's own rules
+  // name: the wave that deleted the last two such modules
+  // (BackgroundPicker.tsx, communication-compliance-helpers.ts — a tree
+  // IMPROVEMENT) turned the control red. The finder is now proven on a FIXTURE
+  // pushed through the same helpers the live classification uses
+  // (moduleIsAddressable must refuse the path; the exports must then survive
+  // every clearing rule and be reported), while the live arm still requires
+  // that any specimens that DO exist are all reported.
+  {
+    const unaddressed = [...new Set(typeExports.map((e) => e.file))].filter((f) => !moduleIsAddressable(f))
+    const reportedFrom = new Set(typeOrphans.map((e) => e.file))
+    const missed = unaddressed.filter((f) => !reportedFrom.has(f))
+    // The path carries a "/" so the root-level-runtime clearing in
+    // frameworkLoads cannot apply; nothing imports it, no Next/test/Remotion
+    // pattern matches it, so moduleIsAddressable must say NO.
+    const fixtureFile = "lib/<control>/unreached-fixture.ts"
+    const fixtureSrc = maskStrings(blankComments([
+      `export interface N3aControlUnreachedShape { a: string }`,
+      `export type N3aControlUnreachedAlias = N3aControlUnreachedShape`,
+    ].join("\n")))
+    const fixtureExports = scanTypeExports(fixtureFile, fixtureSrc)
+    const fixtureAddressable = moduleIsAddressable(fixtureFile)
+    // The SAME decision chain the live loop applies (product refs → structural
+    // reachability, which an unaddressed module never gets → proof refs).
+    const fixtureReported = fixtureExports.filter((e) =>
+      !refIn(e.name, e.file, productIndex) &&
+      (fixtureAddressable ? !namedInReachableDeclaration(fixtureSrc, e.name, e.line) : true) &&
+      !refIn(e.name, e.file, proofIndex))
+    control("C3 every non-function export of an UNREACHED module is reported (defect B, positive side)",
+      !fixtureAddressable && fixtureExports.length === 2 && fixtureReported.length === 2 && missed.length === 0,
+      `fixture: addressable=${fixtureAddressable}, ${fixtureReported.length}/2 reported · live: ${unaddressed.length} unreached module(s), ${missed.length} still cleared${missed.length ? `: ${missed.slice(0, 5).join(", ")}` : ""}`)
+  }
+}
+{
+  // THE STRUCTURAL-REACHABILITY EXCLUSION, BOTH DIRECTIONS. An exclusion that
+  // only ever excludes is indistinguishable from a scan that stopped working, so
+  // it is pinned against a fixture that contains one of each.
+  const reachable = [
+    `export interface ReqShape { a: string }`,
+    `export async function doIt(req: ReqShape): Promise<number> { return 1 }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type named in another export's declaration",
+    namedInReachableDeclaration(reachable, "ReqShape", 1))
+
+  const privateOnly = [
+    `export interface OnlyPrivate { a: string }`,
+    `function helper(x: OnlyPrivate) { return x }`,
+    `export const VALUE = 1`,
+  ].join("\n")
+  control("C3 STILL REPORTS a type used only by a PRIVATE helper — the exclusion is not a blanket pass",
+    !namedInReachableDeclaration(privateOnly, "OnlyPrivate", 1))
+
+  const selfOnly = [
+    `export type Alone = "a" | "b"`,
+    `export const OTHER = 2`,
+  ].join("\n")
+  control("C3 does not count a type's OWN declaration as a consumer of itself",
+    !namedInReachableDeclaration(selfOnly, "Alone", 1))
+
+  // ── DEFECT A: THE PRIVATE-`Props` HOP, BOTH DIRECTIONS ────────────────────
+  // The real chain from app/components/portal/CollaborativeSearchDashboard.tsx,
+  // reduced to its bones: exported type → PRIVATE props interface → exported
+  // component. A caller writing <Comp savedProperties={…}/> gets the type by
+  // inference and never imports it.
+  const privatePropsHop = [
+    `export interface SavedPropertyOption { listing_id: string }`,
+    `interface DashboardProps {`,
+    `  savedProperties?: SavedPropertyOption[]`,
+    `}`,
+    `export function Dashboard({ savedProperties }: DashboardProps) { return savedProperties }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type reached only through a PRIVATE props interface (defect A fixed)",
+    namedInReachableDeclaration(privatePropsHop, "SavedPropertyOption", 1))
+  control("C3 …and the retired one-level rule gives the OTHER answer on that same specimen (the control discriminates)",
+    !namedInReachableDeclaration(privatePropsHop, "SavedPropertyOption", 1, false))
+
+  // The mirror. A private type NO export names is not surface, and the type it
+  // carries stays a finding — otherwise the hop is a blanket acquittal and this
+  // category has simply stopped reporting.
+  const privateTypeNobodyNames = [
+    `export interface OnlyPrivate { a: string }`,
+    `interface UnreachedProps { p: OnlyPrivate }`,
+    `export const VALUE = 1`,
+  ].join("\n")
+  control("C3 STILL REPORTS a type behind a private type that NO export names (the hop is not a blanket pass)",
+    !namedInReachableDeclaration(privateTypeNobodyNames, "OnlyPrivate", 1))
+  // …and the hop refuses to follow a private FUNCTION. Calling a helper is not
+  // exposing its parameter type, so `export const VALUE = helper()` must not
+  // clear `OnlyPrivate`.
+  const privateFunctionCalledByExport = [
+    `export interface OnlyPrivate { a: string }`,
+    `function helper(x: OnlyPrivate) { return x }`,
+    `export const VALUE = helper({ a: "x" })`,
+  ].join("\n")
+  control("C3 the hop follows a private TYPE and never a private FUNCTION an export merely calls",
+    !namedInReachableDeclaration(privateFunctionCalledByExport, "OnlyPrivate", 1))
+
+  // A .tsx BODY MUST NOT CLOSE ITS OWN DECLARATION. `=>` and `a > b` are bare
+  // `>` characters; counting them as closing brackets drove the walk's depth
+  // negative and ended an exported component's span before the line that reads
+  // the const under test. Pinned on both halves: the arrow-laden body must still
+  // be INSIDE the span, and a real `}` after it must still CLOSE it.
+  const tsxBody = [
+    `export const STAGES = [{ key: "a" }]`,
+    `export default function Board({ rows }: { rows: string[] }) {`,
+    `  const pick = (k: string) => STAGES.find((s) => s.key === k)`,
+    `  return rows.length > 0 ? pick("a") : null`,
+    `}`,
+    `interface AfterTheBody { z: string }`,
+  ].join("\n")
+  control("C3 an arrow-and-comparison body does not close its own declaration early",
+    namedInReachableDeclaration(tsxBody, "STAGES", 1))
+  control("C3 …and the `}` that really ends it still closes the span (no runaway swallow)",
+    declarationSpans(tsxBody).some((s) => s.name === "AfterTheBody" && s.start === 6),
+    declarationSpans(tsxBody).map((s) => `${s.name}@${s.start}-${s.end}`).join(" "))
+
+  // The mirror of the angle-bracket fix: a generic return type that CLOSES on
+  // its own line. `): Promise<` … `> {` reads as finished at the middle line
+  // once `<`/`>` are out of the depth count, and the body below it was lost.
+  const genericReturn = [
+    `export const CORE_TABLES = ["contacts"] as const`,
+    `export async function load(svc: Client): Promise<`,
+    `  { ok: true } | { ok: false }`,
+    `> {`,
+    `  return CORE_TABLES.length > 0 ? { ok: true } : { ok: false }`,
+    `}`,
+  ].join("\n")
+  control("C3 a generic return type closing on its own line does not cut the body off",
+    namedInReachableDeclaration(genericReturn, "CORE_TABLES", 1),
+    declarationSpans(genericReturn).map((s) => `${s.name}@${s.start}-${s.end}`).join(" "))
+
+  // ── THE CONTINUATION PAIR ─────────────────────────────────────────────────
+  // A fix that only ever EXCLUDES more is indistinguishable from a scanner that
+  // stopped reporting, so the two directions are pinned together: the union arm
+  // below a trailing `=` must be SEEN, and the private helper that follows the
+  // union must still CLOSE the declaration rather than being swallowed by it.
+  const multilineUnion = [
+    `export interface NormalizedPlanTier { tierName: string }`,
+    `export type ValidationResult =`,
+    `  | { ok: true; value: NormalizedPlanTier }`,
+    `  | { ok: false; error: string }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type named only in a MULTI-LINE union arm of another export",
+    namedInReachableDeclaration(multilineUnion, "NormalizedPlanTier", 1))
+
+  const unionThenPrivate = [
+    `export interface OnlyPrivate { a: string }`,
+    `export type Verdict =`,
+    `  | { ok: true }`,
+    `  | { ok: false }`,
+    `function helper(x: OnlyPrivate) { return x }`,
+    `export const VALUE = 1`,
+  ].join("\n")
+  control("C3 the continuation rule CLOSES: a private helper after a multi-line union is not swallowed",
+    !namedInReachableDeclaration(unionThenPrivate, "OnlyPrivate", 1))
+
+  const extendsArm = [
+    `export interface BaseShape { a: string }`,
+    `export interface Wider`,
+    `  extends BaseShape { b: string }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type reached through an `extends` clause on the following line",
+    namedInReachableDeclaration(extendsArm, "BaseShape", 1))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 4 — INERT PARAMETER (accepted, never read)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Deliberately the NARROWEST scan in this file, because the false-accusation cost
+// is highest: a parameter can be required by an interface the function must
+// satisfy, and "unused here" is then correct code. So only the shape that cannot
+// be anything else is examined:
+//   · a `function` DECLARATION (not a callback, not a method, not an arrow) whose
+//   · parameters are all plain identifiers with optional type annotations — a
+//     destructured, defaulted or rest parameter is counted UNRESOLVED, not judged;
+//   · with a real `{ … }` body (an overload signature is unresolved, not inert);
+//   · no `arguments` object in the body;
+//   · and a parameter name (not `_`-prefixed) that appears NOWHERE in that body.
+// Strings are not masked: a parameter used only inside a template literal is a
+// real use, and one named inside a plain string is a false negative — safe.
+interface InertParam { file: string; fn: string; param: string; line: number }
+const inertParams: InertParam[] = []
+let paramsExamined = 0
+let paramsUnresolved = 0
+let functionsExamined = 0
+
+/**
+ * WHERE THE BODY ACTUALLY STARTS — the single hardest thing in this category, and
+ * the source of its only measured false-accusation class.
+ *
+ * "The first `{` after the parameter list" is wrong, and wrong in the expensive
+ * direction. A return type annotation puts braces between `)` and the body:
+ *
+ *     async function logActivity(data: { … }): Promise<{ success: boolean }> {
+ *
+ * The first `{` after `)` belongs to `Promise<…>`, so the "body" became the
+ * RETURN TYPE, `data` did not appear in it, and this census's first run accused
+ * `logActivity`, `resolveOwnAgentId` and hundreds of other correct functions of
+ * ignoring parameters they use on the very next line.
+ *
+ * So the type expression is walked properly instead: angle-bracket groups and
+ * parenthesised function types are skipped whole, and a `{ … }` object return
+ * type is recognised by what FOLLOWS it — if the next thing after its closing
+ * brace is another `{`, the one just closed was a type and the next is the body.
+ * Anything this cannot decide returns null and is COUNTED as unresolved, never
+ * judged.
+ */
+/**
+ * WORDS THAT CANNOT APPEAR IN A RETURN TYPE — so meeting one means the declaration
+ * being parsed ENDED WITHOUT A BODY and the walk has wandered into the next one.
+ *
+ * THE FALSE-ACCUSATION CLASS THIS CLOSES (2026-08-24). An AMBIENT declaration has
+ * no body at all:
+ *
+ *     declare module 'qrcode' {
+ *       function toDataURL(text: string, options?: Opts): Promise<string>
+ *       function toString(text: string, options?: Opts): Promise<string>
+ *       export { toDataURL, toString }
+ *     }
+ *
+ * The walker terminated on `;` and `=` but on nothing else, so from `toDataURL`'s
+ * `)` it skipped `Promise<string>`, consumed the whole `toString` line as "ordinary
+ * type text" (its parameter list swallowed by the `(` branch), and stopped at the
+ * first `{` it could match — the EXPORT CLAUSE five lines below. That clause became
+ * the "body", the parameter names naturally did not appear in it, and eleven
+ * parameters of two type-declaration files were reported as accepted-and-never-read.
+ * They are not read because there is nothing to read them WITH; a declaration that
+ * has no body cannot have an inert parameter.
+ *
+ * `import` is deliberately ABSENT from this set: `import("./x").Y` is a legal type.
+ * `abstract` is absent too: `abstract new () => T` is a legal constructor type.
+ */
+const BODYLESS_DECLARATION_STARTERS = new Set([
+  "function", "interface", "class", "enum", "namespace", "module",
+  "declare", "export", "const", "let", "var", "type",
+])
+
+function findFunctionBody(src: string, parenClose: number): { start: number; end: number } | null {
+  let i = parenClose + 1
+  const limit = Math.min(src.length, parenClose + 8000)
+  while (i < limit) {
+    const c = src[i]
+    if (/\s/.test(c)) { i++; continue }
+    if (c === ";" || c === "=") return null            // overload signature, or not a declaration
+    if (/[A-Za-z_$]/.test(c)) {
+      // An identifier in the type region. If it can only START A DECLARATION, the
+      // one we were parsing had no body — unresolved, never judged.
+      const word = /^[A-Za-z_$][\w$]*/.exec(src.slice(i))![0]
+      if (BODYLESS_DECLARATION_STARTERS.has(word)) return null
+      i += word.length
+      continue
+    }
+    if (c === "{") {
+      const close = sd.matchBrace(src, i)
+      if (close < 0) return null
+      let j = close + 1
+      while (j < src.length && /\s/.test(src[j])) j++
+      // An object RETURN TYPE is followed by the body brace; a body is not.
+      if (src[j] === "{") { i = j; continue }
+      // …or by a type OPERATOR, when the return type is a bare union or an array
+      // of object types: `): { ok: true; … } | { ok: false; … } {`. The
+      // parseModelJson / resolveOwnAgentId shape — and without this branch the
+      // FIRST arm of the union is mistaken for the body, which is the same false
+      // accusation as the Promise<…> trap wearing different punctuation.
+      if (src[j] === "|" || src[j] === "&" || src[j] === "," || src[j] === "[") { i = j + 1; continue }
+      return { start: i, end: close }
+    }
+    if (c === "<") {
+      let depth = 0
+      let k = i
+      while (k < limit) {
+        if (src[k] === "<") depth++
+        else if (src[k] === ">") { depth--; if (depth === 0) { k++; break } }
+        else if (src[k] === "{") { const e = sd.matchBrace(src, k); if (e < 0) return null; k = e }
+        k++
+      }
+      if (depth !== 0) return null
+      i = k
+      continue
+    }
+    if (c === "(") { const e = sd.matchParen(src, i); if (e < 0) return null; i = e + 1; continue }
+    if (c === "[") { let d = 0, k = i; while (k < limit) { if (src[k] === "[") d++; else if (src[k] === "]") { d--; if (d === 0) { k++; break } } k++ } if (d !== 0) return null; i = k; continue }
+    i++                                                 // ordinary type text: identifiers, `:`, `|`, `&`, `=>`
+  }
+  return null
+}
+
+
+/**
+ * Split a PARAMETER LIST on top-level commas.
+ *
+ * NOT `sd.splitTopLevel`: that helper tracks only `(` and `)`, so a parameter
+ * typed with a generic — `supabase: SupabaseClient<any, any, any>` — split into
+ * THREE pieces and the last two parsed as parameters literally named `any`,
+ * which were then reported inert because no body mentions `any`. A parameter
+ * that does not exist cannot be inert; that is a false accusation of live code.
+ *
+ * It is deliberately a LOCAL helper rather than a fix to sd.splitTopLevel,
+ * because that one also splits PostgREST select-lists, and those contain `->>`
+ * JSON operators — teaching it to count `<` and `>` as depth would corrupt every
+ * embed it parses. Same reasoning as the strip-comments split: the right scanner
+ * depends on what is being scanned.
+ */
+function splitParamList(s: string): string[] {
+  const parts: string[] = []
+  let depth = 0, start = 0, quote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) { if (ch === quote && s[i - 1] !== "\\") quote = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue }
+    if (ch === "(" || ch === "[" || ch === "{" || ch === "<") depth++
+    else if (ch === ")" || ch === "]" || ch === "}" || ch === ">") depth--
+    else if (ch === "," && depth === 0) { parts.push(s.slice(start, i)); start = i + 1 }
+  }
+  parts.push(s.slice(start))
+  return parts
+}
+
+function scanInertParams(file: string, src: string): InertParam[] {
+  const out: InertParam[] = []
+  for (const m of src.matchAll(/(?:^|\n)[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*(?:<[^(]*>)?\s*\(/g)) {
+    const parenOpen = m.index! + m[0].length - 1
+    const parenClose = sd.matchParen(src, parenOpen)
+    if (parenClose < 0) { paramsUnresolved++; continue }
+    const paramText = src.slice(parenOpen + 1, parenClose)
+    const bodySpan = findFunctionBody(src, parenClose)
+    if (!bodySpan) { paramsUnresolved++; continue }
+    const b = bodySpan.start
+    const bodyEnd = sd.matchBrace(src, b)
+    if (bodyEnd < 0) { paramsUnresolved++; continue }
+    const body = src.slice(b, bodyEnd + 1)
+    functionsExamined++
+    if (/\barguments\b/.test(body)) { paramsUnresolved++; continue }
+    if (paramText.trim() === "") continue
+    for (const raw of splitParamList(paramText)) {
+      const p = raw.trim()
+      if (!p) continue
+      if (/^[{[]/.test(p) || p.startsWith("...") || p.includes("=")) { paramsUnresolved++; continue }
+      const idm = p.match(/^(?:readonly\s+|public\s+|private\s+|protected\s+)?([A-Za-z_$][\w$]*)\s*\??\s*(?::|$)/)
+      if (!idm) { paramsUnresolved++; continue }
+      const name = idm[1]
+      if (name.startsWith("_") || name === "this") continue
+      paramsExamined++
+      if (!new RegExp(`\\b${name.replace(/\$/g, "\\$")}\\b`).test(body)) {
+        out.push({ file, fn: m[1], param: name, line: lineOf(src, m.index!) })
+      }
+    }
+  }
+  return out
+}
+
+for (const f of productFiles) for (const p of scanInertParams(f, codeOf.get(f)!)) inertParams.push(p)
+stage("C4 params")
+
+{
+  const inert = `export function f(used: string, ignored: number) {\n  return used.length\n}\n`
+  const got = scanInertParams("<control>", blankComments(inert))
+  control("C4 sees an INERT parameter and only the inert one",
+    got.length === 1 && got[0].param === "ignored", got.map((g) => g.param).join(","))
+  const usedOnly = `export function g(a: number, b: number) { return a + b }\n`
+  control("C4 does NOT accuse a parameter that IS read",
+    scanInertParams("<control>", blankComments(usedOnly)).length === 0)
+  // THE RETURN-TYPE TRAP, in the exact shape that produced the first run's false
+  // accusations (app/actions/activities.ts:logActivity). If the body finder ever
+  // regresses to "the first `{` after `)`", this control fails instead of the
+  // census quietly accusing hundreds of correct functions again.
+  const returnTyped =
+    `export async function logIt(data: {\n  a: string\n  b?: string\n}): Promise<{ success: boolean; error?: string }> {\n` +
+    `  const row = { a: data.a, b: data.b ?? null }\n  return { success: !!row }\n}\n`
+  control("C4 finds the BODY past a Promise<{…}> return type (the logActivity trap)",
+    scanInertParams("<control>", blankComments(returnTyped)).length === 0,
+    scanInertParams("<control>", blankComments(returnTyped)).map((g) => g.param).join(","))
+  const objectReturnType =
+    `export function shape(x: number): { n: number } {\n  return { n: x }\n}\n`
+  control("C4 finds the BODY past a bare object return type",
+    scanInertParams("<control>", blankComments(objectReturnType)).length === 0)
+  const multiLineUnion =
+    `async function decide(\n  requestedId: string,\n): Promise<{ ok: true; id: string } | { ok: false; error: string }> {\n` +
+    `  if (!requestedId) return { ok: false, error: "no" }\n  return { ok: true, id: requestedId }\n}\n`
+  control("C4 finds the BODY past a multi-line UNION return type (the resolveOwnAgentId trap)",
+    scanInertParams("<control>", blankComments(multiLineUnion)).length === 0)
+  const bareUnion =
+    `function parseIt<T>(text: string): { ok: true; value: T } | { ok: false; error: string } {\n` +
+    `  try { return { ok: true, value: JSON.parse(text) as T } } catch { return { ok: false, error: "x" } }\n}\n`
+  control("C4 finds the BODY past a BARE UNION return type (the parseModelJson trap)",
+    scanInertParams("<control>", blankComments(bareUnion)).length === 0,
+    scanInertParams("<control>", blankComments(bareUnion)).map((g) => g.param).join(","))
+  const overload = `export function over(a: string): void\nexport function over(a: string) { return a }\n`
+  control("C4 treats an overload SIGNATURE as unresolved, not inert",
+    scanInertParams("<control>", blankComments(overload)).length === 0)
+  const tmplUse = `export function h(name: string) { return \`hi \${name}\` }\n`
+  control("C4 counts a template-literal use as a use",
+    scanInertParams("<control>", blankComments(tmplUse)).length === 0)
+  const underscore = `export function i(_unused: number, b: number) { return b }\n`
+  control("C4 treats a _-prefixed parameter as deliberately unused",
+    scanInertParams("<control>", blankComments(underscore)).length === 0)
+  const destructured = `export function j({ a, b }: Props) { return 1 }\n`
+  control("C4 counts a DESTRUCTURED parameter as unresolved, never as inert",
+    scanInertParams("<control>", blankComments(destructured)).length === 0)
+  // THE AMBIENT-DECLARATION TRAP, in the exact shape of types/qrcode.d.ts. Before
+  // 2026-08-24 the body-finder walked off the end of a bodyless declaration and
+  // adopted the `export { … }` clause below it as the body, so every parameter of
+  // every ambient signature was reported inert.
+  const ambient =
+    `declare module 'thing' {\n` +
+    `  function toDataURL(text: string, options?: Opts): Promise<string>\n` +
+    `  function toStr(text: string, options?: Opts): Promise<string>\n\n` +
+    `  export { toDataURL, toStr }\n` +
+    `}\n`
+  control("C4 treats an AMBIENT declaration (no body) as unresolved, never as inert",
+    scanInertParams("<control>", blankComments(ambient)).length === 0,
+    scanInertParams("<control>", blankComments(ambient)).map((g) => `${g.fn}::${g.param}`).join(","))
+  // POSITIVE CONTROL for the line above (§2): the stop-word set must not have blinded
+  // the scan. Give the SAME ambient block a real implementation and the inert
+  // parameter must still be found — a fix that reports zero because it stopped
+  // looking is worse than the defect it replaced.
+  const ambientWithBody =
+    `declare module 'thing' {\n` +
+    `  function toDataURL(text: string, options?: Opts): Promise<string>\n` +
+    `}\n` +
+    `export function realOne(used: string, ignored: number): Promise<string> {\n` +
+    `  return Promise.resolve(used)\n` +
+    `}\n`
+  {
+    const got2 = scanInertParams("<control>", blankComments(ambientWithBody))
+    control("C4 still finds a REAL inert parameter beside an ambient declaration",
+      got2.length === 1 && got2[0].param === "ignored",
+      got2.map((g) => `${g.fn}::${g.param}`).join(","))
+  }
+  // …and the return-type walker must still cross a type that merely CONTAINS one of
+  // the stop words as part of a longer identifier.
+  const typeofReturn =
+    `export function pick(source: string, dropped: number): typeof globalThis.JSON {\n` +
+    `  return JSON.parse(source)\n` +
+    `}\n`
+  {
+    const got3 = scanInertParams("<control>", blankComments(typeofReturn))
+    control("C4 does not mistake `typeof` for the stop-word `type`",
+      got3.length === 1 && got3[0].param === "dropped",
+      got3.map((g) => `${g.fn}::${g.param}`).join(","))
+  }
+  control("C4 examined a real population", functionsExamined > 500 && paramsExamined > 500,
+    `${functionsExamined} functions / ${paramsExamined} plain params`)
+}
+for (const p of inertParams) add("inert-param", `${p.file}::${p.fn}::${p.param}`, `${p.file}:${p.line}`, `${p.fn}() accepts \`${p.param}\` and never reads it`)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 5 — BROKEN DYNAMIC IMPORT
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `await import("…")` is the one import shape TypeScript checks LAST and bundlers
+// resolve at runtime, and this repo leans on it hard (server actions pulled into
+// client components, kernel modules pulled into route handlers). A typo'd path or
+// a renamed export fails at the moment the feature is used, not at build.
+//
+// Only STATIC string specifiers are decidable; an interpolated one is counted
+// unresolved. Bare package specifiers are checked for presence in node_modules
+// and otherwise counted unresolved rather than accused — a subpath export map is
+// not something a file-existence test can adjudicate.
+let dynImports = 0
+let dynUnresolvedSpecifier = 0
+let dynExternal = 0
+let dynNamedChecked = 0
+let dynNamedUnresolvable = 0
+
+// resolveModule() USED TO LIVE HERE, knowing only `@/x → <root>/x`. It moved up
+// to the module-reachability graph (this file, "THE MODULE REACHABILITY GRAPH"
+// section above resolveModule) because category 3 needs the same answer, and it
+// gained the tsconfig `paths` table on the way — the old copy could not resolve
+// `@/components/…`, which this repo maps to `./app/components/…`. This category
+// is a caller of the survivor now, not a second copy of it.
+
+/** The names a module exports, as far as a static read can tell. */
+const exportNamesCache = new Map<string, Set<string> | null>()
+function exportNamesOf(file: string): Set<string> | null {
+  if (exportNamesCache.has(file)) return exportNamesCache.get(file)!
+  const src = maskOf.get(file) ?? maskStrings(blankComments(readFileSync(join(root, file), "utf8")))
+  // `export * from "…"` re-exports an unknown set — refuse to judge this module.
+  if (/export\s+\*\s+from/.test(src)) { exportNamesCache.set(file, null); return null }
+  const names = new Set<string>()
+  for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g)) names.add(m[1])
+  for (const m of src.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)/g)) names.add(m[1])
+  for (const m of src.matchAll(/export\s+(?:declare\s+)?(?:abstract\s+)?(?:class|interface|type|enum)\s+([A-Za-z0-9_$]+)/g)) names.add(m[1])
+  for (const m of src.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const piece of m[1].split(",")) {
+      const p = piece.trim().replace(/^type\s+/, "")
+      if (!p) continue
+      const asM = p.match(/\bas\s+([A-Za-z_$][\w$]*)$/)
+      names.add(asM ? asM[1] : p)
+    }
+  }
+  if (/export\s+default\b/.test(src)) names.add("default")
+  exportNamesCache.set(file, names)
+  return names
+}
+
+for (const f of productFiles) {
+  const src = codeOf.get(f)!
+  for (const m of src.matchAll(/\bimport\s*\(\s*(["'`])([^"'`]*)\1\s*\)/g)) {
+    dynImports++
+    const spec = m[2]
+    const line = lineOf(src, m.index!)
+    if (spec.includes("${")) { dynUnresolvedSpecifier++; continue }
+    const target = resolveModule(f, spec)
+    if (target === null) {
+      if (spec.startsWith("@/") || spec.startsWith(".")) {
+        add("broken-dynamic-import", `${f}::${spec}`, `${f}:${line}`, `await import("${spec}") resolves to no file`)
+        continue
+      }
+      dynExternal++
+      continue
+    }
+    // Which named exports does the call site pull off the module?
+    const pre = src.slice(Math.max(0, m.index! - 200), m.index!)
+    const post = src.slice(m.index! + m[0].length, m.index! + m[0].length + 200)
+    const wanted = new Set<string>()
+    const destructure = pre.match(/(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?$/)
+    if (destructure) for (const piece of destructure[1].split(",")) {
+      const p = piece.trim().split(":")[0].trim()
+      if (/^[A-Za-z_$][\w$]*$/.test(p)) wanted.add(p)
+    }
+    // `import(…)` RETURNS A PROMISE, so `.then` / `.catch` / `.finally` after it
+    // are Promise methods, not module exports. Reading them as exports is not a
+    // small error: this census's first run reported 40 sites as "imports `then`,
+    // which the target does not export", every one of them ordinary correct code.
+    const PROMISE_METHODS = new Set(["then", "catch", "finally"])
+    const propAccess = post.match(/^\s*\)?\s*\.\s*([A-Za-z_$][\w$]*)/)
+    if (propAccess && !PROMISE_METHODS.has(propAccess[1])) wanted.add(propAccess[1])
+    // …but `.then((m) => m.NAME)` DOES name an export, one level in.
+    const thenAccess = post.match(/^\s*\.then\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*\1\s*\.\s*([A-Za-z_$][\w$]*)/)
+    if (thenAccess) wanted.add(thenAccess[2])
+    if (wanted.size === 0) continue
+    const have = exportNamesOf(target)
+    if (have === null) { dynNamedUnresolvable += wanted.size; continue }
+    for (const w of wanted) {
+      dynNamedChecked++
+      if (!have.has(w)) {
+        add("dynamic-import-missing-export", `${f}::${spec}::${w}`, `${f}:${line}`,
+          `await import("${spec}") destructures \`${w}\`, which ${target} does not export`)
+      }
+    }
+  }
+}
+
+stage("C5 dynimports")
+{
+  control("C5 found dynamic imports at all", dynImports > 10, `${dynImports} await import() sites`)
+  control("C5 resolves a path that DOES exist",
+    resolveModule("scripts/opposite-missing-census.ts", "./strip-comments") === "scripts/strip-comments.ts",
+    String(resolveModule("scripts/opposite-missing-census.ts", "./strip-comments")))
+  control("C5 reports a path that does NOT exist as unresolved",
+    resolveModule("scripts/opposite-missing-census.ts", "./definitely-not-a-real-module") === null)
+  const names = exportNamesOf("scripts/strip-comments.ts")
+  control("C5 reads a module's export names",
+    !!names && names.has("blankComments") && names.has("stripComments") && !names.has("scan"),
+    names ? [...names].join(",") : "null")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CATEGORY 6 — ROUTE ↔ FETCH PAIRING
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// orphan-route-sweep deliberately returns null for anything starting `/api/`
+// (its line 236), so the entire API surface — 438 route files — has never been
+// paired against its callers in either direction.
+//
+//   B → A (a fetch with no route) is a guaranteed runtime 404 and is a DEFECT.
+//   A → B (a route no string in the tree addresses) is a WIRE QUESTION, not a
+//     defect: cron targets, provider webhooks, OAuth callbacks and embed
+//     endpoints are all addressed from OUTSIDE the repo by design. Those are
+//     classified and reported separately so the honest list stays readable.
+interface RouteDef { path: string; file: string; methods: string[] }
+const routeDefs: RouteDef[] = []
+const apiDir = join(root, "app", "api")
+if (existsSync(apiDir)) {
+  for (const abs of walkTs(apiDir)) {
+    if (!/\/route\.tsx?$/.test(abs.replace(/\\/g, "/"))) continue
+    const file = rel(abs)
+    const path = "/" + file.replace(/^app\//, "").replace(/\/route\.tsx?$/, "")
+    const src = maskOf.get(file) ?? maskStrings(blankComments(readFileSync(abs, "utf8")))
+    const methods: string[] = []
+    for (const m of src.matchAll(/export\s+(?:async\s+)?(?:function|const)\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/g)) methods.push(m[1])
+    if (methods.length > 0) routeDefs.push({ path, file, methods })
+  }
+}
+
+/** Every `/api/...` STRING LITERAL in the tree, normalised: `${…}` → `*`. */
+interface FetchRef { path: string; file: string; line: number; isRequest: boolean }
+const fetchRefs: FetchRef[] = []
+const extraRefCorpus: string[] = []
+for (const name of ["vercel.json", "next.config.mjs", "next.config.js", "middleware.ts"]) {
+  const p = join(root, name)
+  if (existsSync(p)) { try { extraRefCorpus.push(readFileSync(p, "utf8")) } catch { /* unreadable */ } }
+}
+
+/**
+ * A literal that is the ARGUMENT OF A REQUEST, not merely a literal that looks
+ * like a path.
+ *
+ * The two directions of category 6 need different evidence, and conflating them
+ * was this census's second false-accusation source. `fetchRefs` (any `/api/…`
+ * literal anywhere) is the right evidence for direction 6b — a route mentioned
+ * by ANY string is a route something plausibly addresses, and being generous
+ * there suppresses findings rather than inventing them. Direction 6a is an
+ * accusation ("this call 404s"), so it needs the literal to actually be handed
+ * to a request: `app/constants/auth.ts`'s middleware PREFIX table and
+ * `app/robots.ts`'s `/api` disallow rule are neither fetches nor routes, and
+ * reporting 25 of them as runtime 404s is exactly the noise that gets an
+ * instrument switched off.
+ */
+const REQUEST_OPENERS = [
+  "fetch(", "Request(", "redirect(", "revalidatePath(", "EventSource(",
+  // SWR takes the URL as its KEY and hands it to the fetcher — a dashboard polling
+  // a nonexistent path every 30 seconds is exactly the defect 6a exists to find,
+  // and the live example (app/dashboard/coordination) is spelled this way, not
+  // with a bare fetch. A caller list that only knows `fetch(` reports zero and
+  // looks clean.
+  "useSWR(", "useSWRImmutable(", "useSWRMutation(", "useSWRSubscription(",
+  "axios(", "axios.get(", "axios.post(", "axios.put(", "axios.patch(", "axios.delete(",
+]
+function isRequestArgument(src: string, litStart: number): boolean {
+  const back = src.slice(Math.max(0, litStart - 160), litStart)
+  let opener = -1
+  for (const o of REQUEST_OPENERS) opener = Math.max(opener, back.lastIndexOf(o))
+  if (opener < 0) return false
+  // Nothing may CLOSE that call before the literal — otherwise the opener found is
+  // a previous, unrelated call sitting earlier on the same line.
+  return !back.slice(opener).includes(")")
+}
+
+/**
+ * THE ONE TOKENIZER, NOT THREE REGEXES (lane K1, 2026-08-29).
+ *
+ * This function used to pair quotes with three global regexes — one per quote
+ * style, run independently over the file. That is the idiom scripts/strip-comments.ts
+ * exists to end, wearing its third hat: it collects rather than strips or masks,
+ * and it fails the identical way, because the backtick regex pairs LEFT TO RIGHT
+ * and cannot see nesting. ONE desynchronising backtick shifts every pairing after
+ * it, and the scan then reads real literals as being inside a template and template
+ * text as being a literal — silently, with no error, reporting fewer call sites
+ * than the file contains.
+ *
+ * MEASURED, not theorised. lib/elevenlabs/conv-ai.ts:403 registers this app's own
+ * webhook with ElevenLabs as `${appUrl}/api/agent-assistant/tool-call` — a
+ * same-origin self-call, CLAUDE.md §1's named reachability evidence, and exactly the
+ * shape the admission below was deliberately taught to accept. 25 backticks precede
+ * it; the regex match before it opened at line 388 and CLOSED on this literal's
+ * OPENING backtick, so the URL landed in no match at all and category 6b accused a
+ * live provider webhook of having no caller. Five more were missed the same way —
+ * app/actions/{brokerage-intelligence,lifetime-npv,portal-stream,revenue-protection,
+ * tenant-safety-actions}.ts each build a cron self-call as
+ * `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…`, a template
+ * NESTED inside an interpolation, which is precisely the shape strip-comments.ts's
+ * header records desynchronising lib/kernel/marketing.ts.
+ *
+ * WHY THE WORKLIST. A template's TEXT can itself be a program: the blog view
+ * tracker, the embed loader and the visitor-tracking pixel all ship generated
+ * client-side JS inside a template literal, and those snippets call
+ * `/api/blog/track-view`, `/api/embed/script`, `/api/track/pixel` and
+ * `/api/track/identify` with an ordinary quoted string. To the tokenizer those
+ * quotes are template TEXT, not literals — correct as tokenization, and a loss as
+ * evidence. MEASURED: a tokenizer swap WITHOUT the worklist dropped 6 literals and
+ * left three route paths with no caller at all — /api/track/pixel and
+ * /api/track/identify into 6b, /api/embed/script into 6c — three fresh false
+ * accusations bought with a fix. The three-regex idiom saw them by
+ * accident (each regex ran over the whole file independently), so the fix keeps
+ * that reach ON PURPOSE — every template's raw inner span is re-tokenized, to any
+ * depth, and a literal is admitted once per ABSOLUTE OFFSET so an interpolation's
+ * contents (already emitted by the enclosing scan) are never counted twice.
+ *
+ * Measured across the 4,619-file corpus: 669 → 675 literals, 125 handed to a
+ * request in both, ZERO lost. §2 — a count that moves is the finding, and this one
+ * moves in the direction that means the finder had been blind.
+ *
+ * KEPT FROM THE RETIRED COMMENT, because the hazard it named is real: the compact
+ * `(["'`])…\1` form backtracks catastrophically on a file with an unterminated
+ * quote, and a hang in a repo-wide scan looks exactly like a slow census rather
+ * than like a bug. Three separate regexes avoided the backreference; a single
+ * left-to-right scan has no backtracking to avoid, so the hazard is gone rather
+ * than worked around.
+ */
+function collectFetchRefs(file: string, src: string) {
+  // Absolute offsets already admitted. The outer scan emits interpolation-interior
+  // literals with their true offsets, so re-tokenizing a template's raw span
+  // rediscovers them at the same offset and this set drops the duplicate.
+  const seenLiteral = new Set<number>()
+  // `jsx` is on for the MODULE (a .tsx file's elements must be tracked or a quote
+  // in element text desynchronises the scan) and OFF for every re-entered
+  // template body: that body is HTML-with-script, not TSX, and read as TSX its
+  // `<script>` opens an element that turns the quoted route inside it into
+  // element text — C6 below measured exactly that (160/160 → 159/160 the day the
+  // JSX modes landed in strip-comments.ts). See ScanOptions there.
+  const spans: Array<{ text: string; base: number; jsx: boolean }> = [{ text: src, base: 0, jsx: true }]
+  while (spans.length > 0) {
+    const { text: span, base, jsx } = spans.pop()!
+    for (const lit of stringLiterals(span, { jsx })) {
+      const at = base + lit.start
+      if (seenLiteral.has(at)) continue
+      seenLiteral.add(at)
+      // Every template is re-entered as a span of its own: generated JS inside one
+      // is a program, and each recursion is strictly shorter, so this terminates.
+      if (lit.kind === "template") spans.push({ text: span.slice(lit.start + 1, lit.end - 1), base: at + 1, jsx: false })
+      let text = lit.text
+      // Must START with /api/ — that rules out `https://other.host/api/x`, which
+      // is somebody else's server and not a route this repo is expected to own.
+      //
+      // …EXCEPT FOR THE ONE SHAPE CLAUDE.md §1 NAMES AS REACHABILITY EVIDENCE.
+      // The rule above also threw away every SAME-ORIGIN SELF-CALL, because those
+      // are written `${baseUrl}/api/…` and so start with the interpolation. §1 is
+      // explicit that a same-origin self-call spelled that way is proof a route is
+      // live — and this scan was discarding all 33 of them in the tree, so
+      // category 6b accused routes that a cron calls on every run. Three were
+      // provably live and carried their own vercel.json function config:
+      //   app/api/cron/composition-render-queue/route.ts:77 →
+      //     `${baseUrl}/api/internal/remotion/render-composition`
+      //   app/api/cron/listing-promo-render/route.ts:57     → …/render-just-listed
+      //   app/api/cron/newsletter-video-render/route.ts:88  → …/render-newsletter-video
+      // all three named under vercel.json "functions" with a 3008 MB / 300 s
+      // budget, which is not something a dead endpoint carries. §2: this is the
+      // accusing direction of "a guard that cannot see the code it judges".
+      //
+      // THE ASYMMETRY IS PRESERVED, and it is the whole reason this is safe. A
+      // self-origin-prefixed literal is admitted as EVIDENCE (direction 6b, where
+      // being generous suppresses findings) and is FORCED to isRequest:false, so
+      // it can never become a 6a accusation. That keeps the protection the old
+      // comment was really about: `${API_BASE}/api/v1/…` pointing at somebody
+      // else's host still cannot be reported as a runtime 404 here — it lands in
+      // unroutedNonRequestLiterals, counted and never accused.
+      //
+      // The tokenizer hands every `${…}` back as the canonical `${}` — its interior
+      // is CODE, not text, and may hold a whole nested template. That is what makes
+      // `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…` legible
+      // as ONE leading interpolation; the old regex saw its inner backtick as the
+      // template's closing one. Both tests below read the same `${…}` shape they
+      // always did, so nothing about which literals qualify has changed.
+      let selfOriginPrefixed = false
+      if (!text.startsWith("/api/")) {
+        // Exactly ONE leading interpolation, immediately followed by /api/.
+        // `${a}${b}/api/x` and `https://h.example/api/x` do not match.
+        const selfOrigin = /^\$\{[^}]*\}(\/api\/[^\s]*)$/.exec(text)
+        if (!selfOrigin) continue
+        text = selfOrigin[1]
+        selfOriginPrefixed = true
+      }
+      const path = text.split("?")[0].split("#")[0].replace(/\$\{[^}]*\}/g, "*").replace(/\/+$/, "")
+      fetchRefs.push({
+        path, file, line: lineOf(src, at),
+        isRequest: selfOriginPrefixed ? false : isRequestArgument(src, at),
+      })
+    }
+  }
+}
+for (const f of productFiles) collectFetchRefs(f, codeOf.get(f)!)
+for (const [i, text] of extraRefCorpus.entries()) collectFetchRefs(`<config#${i}>`, text)
+stage("C6 routes")
+
+function segsOf(p: string): string[] { return p.split("/").filter(Boolean) }
+function routeMatches(routePath: string, refPath: string): boolean {
+  const r = segsOf(routePath), c = segsOf(refPath)
+  for (let i = 0; i < r.length; i++) {
+    if (r[i].startsWith("[...") || r[i].startsWith("[[...")) return c.length >= i   // catch-all eats the tail
+    if (i >= c.length) return false
+    if (r[i].startsWith("[")) continue                    // dynamic segment: anything
+    if (c[i] === "*") continue                            // interpolated caller segment: anything
+    if (r[i] !== c[i]) return false
+  }
+  return c.length === r.length
+}
+
+const routesWithNoCaller: RouteDef[] = []
+for (const r of routeDefs) if (!fetchRefs.some((f) => routeMatches(r.path, f.path))) routesWithNoCaller.push(r)
+
+const fetchesWithNoRoute: FetchRef[] = []
+const seenBadFetch = new Set<string>()
+let unroutedNonRequestLiterals = 0
+for (const f of fetchRefs) {
+  if (f.path.includes("*") && segsOf(f.path).length <= 2) continue   // `/api/${x}` — addresses nothing decidable
+  if (routeDefs.some((r) => routeMatches(r.path, f.path))) continue
+  // Only an actual request argument can 404. Everything else — middleware prefix
+  // tables, robots.txt disallow rules, documentation constants — is counted and
+  // reported as coverage, never as a defect.
+  if (!f.isRequest) { unroutedNonRequestLiterals++; continue }
+  if (seenBadFetch.has(f.path)) continue
+  seenBadFetch.add(f.path)
+  fetchesWithNoRoute.push(f)
+}
+
+/** Addressed from outside the repo BY DESIGN — a caller in the tree is not expected. */
+const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rss|sitemap|robots|embed|public|inbound|twilio|stripe|vapi|retell|resend|sendgrid|did|elevenlabs|apify|zenrows|clerk|mls|idx|widget)(\/|$)/i
+
+/**
+ * THE QUALIFIED EXTERNAL EXEMPTION — one route path at a time, each naming the
+ * ruling that keeps it.
+ *
+ * EXTERNALLY_ADDRESSED above is a NAME test: a path segment that reads as a
+ * cron/webhook/provider callback. That shape cannot express "this route carries
+ * an ordinary product name AND is deliberately kept as the second, HTTP door
+ * onto an implementation the app itself reaches by server action". Those routes
+ * are not orphans — retiring them is already refused in writing — yet 6b
+ * accused all five of them on every run, which is the accusing direction of
+ * §2's "a guard that cannot see the code it judges".
+ *
+ * This is EXACTLY the video-generation lane and nothing else. The ruling lives
+ * at app/actions/video.ts (the "NOT ORPHANS. DO NOT RETIRE THEM." block) and is
+ * load-bearing twice over:
+ *   · scripts/video-generation-lane-simulator.ts and
+ *     scripts/video-project-consolidation-simulator.ts read these five files BY
+ *     PATH and assert their shape — deleting one turns those guards red.
+ *   · app/api/video/projects/[projectId]/video-action-http.ts records that the
+ *     doors were kept so "any external consumer sees no change" in status codes.
+ *     Nothing in this repo can prove no such consumer exists — CLAUDE.md §1's
+ *     "unresolved means leave it".
+ *
+ * NOT A BLANKET. Exact paths only, so a NEW unaddressed route under
+ * /api/video/** still lands in 6b (controlled below), and an entry naming a
+ * route that no longer exists is itself reported rather than sitting there
+ * reading as enforced (§2 — do not pin an assertion to a waypoint).
+ */
+const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
+  // ── Ops poller door (lane W8, integrator 2026-09-01) ──
+  ["/api/admin/health-status", "external ops poller: a token CAN now get in — x-internal-api-secret (INTERNAL_API_SECRET) is checked AHEAD of the session fallback (route.ts:63-66, mirroring /api/errors/collect's shape); the secret path reads the platform catalogue only (brokerage_id IS NULL) and rolls up through the ONE shared rollup (lib/platform/service-catalogue-scope.ts:rollupServiceStatuses), so no tenant row reaches an infrastructure monitor"],
+  // ── Lead-magnet public doors (qualified by lane N3b's evidence, integrator 2026-09-01) ──
+  ["/api/lead-magnets/qr/[magnetId]",  "external QR-scan door: the anonymous-scan arm is deliberately ungated (a scan comes from a stranger's phone — route.ts:104's split gates the RECORD behind a session whose users.brokerage_id must equal the brokerage asked about, fail-closed on a refused users read) and an out-of-tree scan reporter cannot be disproved from this repo — §1 unresolved means leave it"],
+  ["/api/lead-magnets/submissions",    "public form-submission intake (Auth: NOT required — the submitter is the lead): enforces TCPA consent on valuation forms (:23-29) and stamps real IP/UA from request headers (:32-36) before the ONE kernel command captureFormSubmission; the in-repo twin app/actions/lead-magnet-capture.ts:22 calls the same kernel command for /lm/[slug], so this door exists for embeds OUTSIDE the app"],
+  ["/api/video/projects",                       "second HTTP door onto app/actions/video/create-video-project.ts; app/actions/video.ts:68 + scripts/video-project-consolidation-simulator.ts"],
+  ["/api/video/projects/[projectId]/script",    "second HTTP door onto app/actions/video.ts:generateVideoScriptAction; app/actions/video.ts:51-69 + scripts/video-generation-lane-simulator.ts"],
+  ["/api/video/projects/[projectId]/generate",  "second HTTP door onto app/actions/video.ts:submitVideoGenerationJobAction/loadVideoGenerationStateAction; same ruling"],
+  ["/api/video/projects/[projectId]/preview",   "second HTTP door onto app/actions/video.ts:previewVideoProjectAction; same ruling"],
+  ["/api/video/projects/[projectId]/publish",   "second HTTP door onto app/actions/video.ts:distributeVideoProjectAction/repurposeVideoOutputAction; same ruling"],
+  // ── Service-to-service intake (lane G5 2026-08-28) ────────────────────────
+  // Not the video lane's shape — this one is a REMOTE INTAKE door. Its handler
+  // authorizes on the `x-internal-api-secret` header (INTERNAL_API_SECRET)
+  // BEFORE falling back to a session (app/api/errors/collect/route.ts:13-27),
+  // which is the same service-to-service shape as /api/intelligence/*. The
+  // ruling that kept it is written at app/actions/error-handler.ts:21-25:
+  // collectError() is called in-process by four modules already, so the HTTP
+  // door exists precisely for callers that are NOT in this process, and nothing
+  // in this repo can prove none exists — CLAUDE.md §1's "unresolved means leave
+  // it". Its two siblings are deliberately NOT here: /api/errors/retry and
+  // /api/errors/escalate are operator doors, and lane G5 gave them their
+  // missing caller (app/components/admin/errors/ErrorDetailsPanel.tsx) rather
+  // than an exemption, so they must stay subject to 6b.
+  ["/api/errors/collect", "service-to-service intake authorized by x-internal-api-secret (route.ts:13-27); ruling at app/actions/error-handler.ts:21-25 — out-of-process callers cannot be disproved from this repo"],
+
+  // ── THE AGENTIC-API / MCP SPINE, and one webhook (lane G2 2026-08-28) ─────
+  // A STRONGER CLASS OF EVIDENCE THAN THE VIDEO FIVE, and worth saying why: those
+  // are second doors onto something the app also reaches by server action, so "no
+  // in-tree caller" is a judgement call. These four are the OS's PUBLISHED MACHINE
+  // SURFACE. They authenticate on a `vos_…` AGENT BEARER TOKEN through
+  // resolveAgenticCaller — credentials minted for third parties at
+  // app/dashboard/superadmin/api-tokens and documented to tenants at
+  // app/settings/developers/developers-client.tsx:326 ("Scoped Bearer credentials
+  // (vos_…) for the Agentic-OS API (/api/agentic-os/*)"). A caller in this tree
+  // would be the anomaly; somebody else's agent calling them is the product.
+  //
+  // THE TEST THAT SEPARATES A DOOR FROM AN ORPHAN HERE — applied one route at a
+  // time, never to the /api/agentic-os/** prefix: CAN A TOKEN GET IN? Two routes in
+  // that same directory FAIL it and are deliberately absent from this map.
+  // /api/agentic-os/voice refuses `caller.via === "token"` outright (every dispatched
+  // step records a users.id as `spoken_by`, and a credential has no human behind it);
+  // /api/agentic-os/resolve-capability is gated by requirePlatformStaffAuth →
+  // requireAuth, which reads a Supabase session a bearer token never mints. Both were
+  // session-only endpoints with NO session-bearing caller — loops, not doors — and
+  // lane G2 closed them with real callers
+  // (app/components/dashboard/voice/KernelPlanCard.tsx and
+  // app/dashboard/superadmin/connectors/capability-resolver-card.tsx) instead of
+  // exempting them. Same directory, opposite verdicts, decided on the auth path.
+  ["/api/agentic-os/actions",              "Agentic-API DISCOVER (agenticapi.com ACTION model) — the vendor-anonymous action manifest an EXTERNAL agent reads first. Auth: vos_ bearer token via resolveAgenticCaller; credentials minted at app/dashboard/superadmin/api-tokens, documented at app/settings/developers/developers-client.tsx:326"],
+  ["/api/agentic-os/actions/[capability]", "Agentic-API DESCRIBE — the typed input spec an external agent must satisfy before INVOKE; same bearer-token auth. Its sibling …/invoke is NOT listed because it is genuinely addressed: this route and the MCP server both hand callers the literal `/api/agentic-os/actions/${…}/invoke`"],
+  ["/api/agentic-os/connectivity",         "Connectivity API Agent — an external agent reads connector health here BEFORE planning, so it never invokes a capability whose OAuth token has lapsed. Gated by the connectivity:read scope on a bearer token"],
+  ["/api/agentic-os/mcp",                  "MCP server (Streamable-HTTP / JSON-RPC 2.0). The caller is an MCP CLIENT outside this repo — initialize / tools/list / tools/call — scope-gated per call by the same bearer token and audit-logged through lib/agentic-os/invocation-log.ts"],
+  ["/api/workflow/trigger",                "Universal webhook entry point for the workflow trigger fabric (GHL / IDX / Zapier / QR scans / email-provider open+click). Auth is Bearer WORKFLOW_WEBHOOK_SECRET, never a session, so an in-tree caller is impossible; named at lib/workflow/triggers.ts:19. The path carries no cron/webhook segment, which is precisely why the NAME test above cannot see it"],
+
+  // ── A PROVIDER CALLBACK THE NAME TEST MISSES BY ONE HYPHEN (lane H5) ──────
+  // EXTERNALLY_ADDRESSED requires a path SEGMENT that IS "webhook"; this one is
+  // named `showingtime-webhook`, so the word is a suffix inside the segment and
+  // the regex — correctly, since it must not match `/api/webhooks-admin-ui` —
+  // does not fire. The regex is left alone and the route is qualified by name
+  // instead, which is what this map exists for.
+  //
+  // THE EVIDENCE, and it is the strongest kind in this map: the handler
+  // authenticates on an HMAC-SHA256 of the RAW BODY against
+  // SHOWINGTIME_WEBHOOK_SECRET, compared with crypto.timingSafeEqual
+  // (app/api/showings/showingtime-webhook/route.ts:59-76), and FAILS CLOSED
+  // both ways — 503 when the secret is unset, 401 on any mismatch. No session
+  // is read anywhere in the file, so an in-tree caller is not merely absent, it
+  // is impossible: nothing in this repo can mint that signature.
+  // The outbound half is live and in-tree — app/actions/dispatch-showing.ts:138
+  // dispatches a stop with channel='showingtime' through the resolved
+  // ShowingTime connection — and this route is the return leg ShowingTime makes
+  // for appointment.requested / appointment.confirmed. Deleting it would
+  // silently strand every confirmation for showings the product already sends.
+  // ── TOMBSTONE: /api/agent-assistant/tool-call, REMOVED 2026-08-29 (lane K1) ──
+  // The ElevenLabs Conv-AI tool webhook was qualified BY NAME here by lane J5,
+  // for one reason only: its in-tree caller — lib/elevenlabs/conv-ai.ts:403,
+  // `${appUrl}/api/agent-assistant/tool-call`, a same-origin self-call and
+  // CLAUDE.md §1's own reachability evidence — was INVISIBLE to the collector,
+  // which paired backticks with three global regexes that cannot see nesting.
+  // J5 wrote that down as "a standing question about the finder" rather than a
+  // property of the route, and it was right: collectFetchRefs() now runs through
+  // scan() in scripts/strip-comments.ts and SEES that literal, so the route has a
+  // named caller and leaves category 6 on its own evidence.
+  //
+  // The entry is gone rather than kept "just in case" because §2 forbids pinning
+  // an assertion to a WAYPOINT: an exemption whose only justification was a blind
+  // finder becomes, the moment the finder can see, a line that reads as enforced
+  // while asserting nothing. The route's door-ness is unchanged and still true
+  // (constant-time x-elevenlabs-tool-secret vs AGENT_ASSISTANT_TOOL_SECRET,
+  // fails closed 403 on mismatch AND on unset, app/api/agent-assistant/tool-call/route.ts:62-67,
+  // no session read anywhere in the file) — it simply no longer needs saying HERE.
+  // If that caller is ever deleted the route reappears in 6b, which is the correct
+  // signal and the one an exemption would have suppressed.
+
+  ["/api/showings/showingtime-webhook", "ShowingTime provider callback — HMAC-SHA256 over the raw body vs SHOWINGTIME_WEBHOOK_SECRET, timing-safe, fails closed 503/401 (route.ts:59-76); no getUser() anywhere in the file, so an in-tree caller cannot exist. Outbound leg: app/actions/dispatch-showing.ts:138 (channel='showingtime')"],
+
+  // ── THE VOICE LANE'S TWO OUT-OF-PROCESS DOORS (lane M3 2026-08-31) ────────
+  // Both authenticate on RELAY_SHARED_SECRET with crypto.timingSafeEqual and
+  // FAIL CLOSED when it is unset — no session is read in either file, so an
+  // in-tree caller is impossible, not merely absent.
+  ["/api/voice/relay/plan", "ConversationRelay PLAN — the brain endpoint the out-of-process relay companion POSTs every caller utterance to. The outbound leg IS IN THE TREE but outside the runtime corpus: tools/relay-companion/server.mjs:52 fetches `${APP_URL}/api/voice/relay/plan` with the x-relay-secret header (tools/ is a deploy-elsewhere host — docs/PHONE-SYSTEM-SETUP.md:102-109 — which is exactly why 6b cannot see the caller). Auth: RELAY_SHARED_SECRET, timing-safe, fails closed 401 when unset (route.ts:23-27). Wire-shape held by scripts/voice-lane-simulator.ts:381, which asserts the companion carries the header, the path, and NO Twilio credentials"],
+  ["/api/voice/twilio/intelligence", "Twilio Conversational Intelligence transcript webhook — registered in the TWILIO CONSOLE with ?token=<RELAY_SHARED_SECRET> (runbook docs/PHONE-SYSTEM-SETUP.md:153-155 names the exact URL). Timing-safe token gate, fails closed 404-silent on unset or mismatch (route.ts:23-27). Outbound leg: app/api/voice/twilio/inbound/route.ts:17 attaches TWILIO_INTELLIGENCE_SERVICE_SID to the relay TwiML, which is what makes Twilio transcribe and then call back here"],
+
+  // ── THE INTERNAL_API_SECRET INTAKE FAMILY (lane M3 2026-08-31) ────────────
+  // Same class as /api/errors/collect above, whose entry records the ruling:
+  // these authorize on INTERNAL_API_SECRET — a server-side secret no browser
+  // holds — so the expected caller is OUT OF PROCESS, and nothing in this repo
+  // can disprove one (CLAUDE.md §1's "unresolved means leave it"). Each entry
+  // names its fail-closed shape and its in-process sibling where one exists;
+  // none reads a session, so none can be a loop.
+  ["/api/intelligence/classify",     "service-to-service intent classification onto lib/intelligence/intent-classifier.ts:classifyIntent (no other door: the classifier has no in-process caller). Auth: x-internal-secret vs INTERNAL_API_SECRET; an unset secret can never equal a header string, so it fails closed (route.ts:6-9)"],
+  ["/api/intelligence/coordinate",   "service-to-service agent coordination onto lib/intelligence/multi-agent-router.ts (routeToAgent/escalateToHuman/endAgentSession) — the same implementation the coordination dashboard and agent-health-check cron reach in-process, kept as the out-of-process door. Auth: Bearer INTERNAL_API_SECRET, now failing CLOSED when unset (route.ts:16-25; the old template-interpolated compare accepted the literal 'Bearer undefined')"],
+  ["/api/intelligence/memory/update", "service-to-service door onto lib/intelligence/conversation-insights.ts:updateConversationMemory. The IN-TREE trigger for the same writer is app/api/cron/conversation-insights-refresh (its header records the adjudication: 'one code path, two doors'). Auth: Bearer INTERNAL_API_SECRET, explicit 500 when unset (route.ts:12-26)"],
+  ["/api/intelligence/kb/embed",     "service-to-service KB embedding onto lib/intelligence/kb-search.ts:embedAndStore — the admin UI embeds IN-PROCESS through app/actions/knowledge/search.ts:embedNow (its header records the repoint away from this route, which a browser could never authenticate to), leaving this as the out-of-process bulk/backfill door. Auth: Bearer INTERNAL_API_SECRET, fails closed 401 when unset (route.ts:6-10)"],
+
+  // ── THE WIDGET'S PUBLIC CAPTURE TWIN (lane M3 2026-08-31) ─────────────────
+  // Adjudicated, NOT deleted, and the difference from the five session-authed
+  // loops deleted this wave is the CREDENTIAL: this door takes a server-minted
+  // widget_session_token, not a Supabase session, and /api/widget/session mints
+  // that token to ANY visitor of a public slug — so an off-repo integration
+  // POSTing here cannot be disproved from this repo (§1: public endpoints are
+  // unreferenced by design; unresolved means leave it). The in-repo widget
+  // clients use the sibling /api/widget/capture-lead (app/widget/[brokerageSlug]/
+  // widget-chat-client.tsx:138), and per §1.1 the halves this twin had that the
+  // WIRED sibling lacked — the consent audit row, the CONTACT_CAPTURED
+  // lifecycle event, the fail-closed session read — were MERGED ONTO
+  // capture-lead first (app/api/widget/capture-lead/route.ts), so whichever
+  // door a caller enters, the ledger comes out the same.
+  ["/api/widget/capture", "public widget capture intake gated by a server-minted widget_session_token proven against the slug's own brokerage (route.ts:74-93, fails closed 503 on a refused read); no Supabase session anywhere in the file, and the token is minted to anonymous visitors by /api/widget/session — an off-repo caller cannot be disproved. In-repo widget clients use /api/widget/capture-lead, onto which this twin's missing halves were merged (§1.1) before this entry was written"],
+])
+
+// ─── TOMBSTONES: five session-authed loops DELETED (lane M3, 2026-08-31) ─────
+// Census category 6b listed each of these as "route handler nothing in the tree
+// addresses". All five authenticated on a Supabase SESSION (getUser/requireAuth/
+// getAgentContext) — so no out-of-tree caller could exist (the "loop, not a
+// door" test recorded above for /api/agentic-os/voice) — and each duplicated a
+// WIRED survivor that was compared end-to-end before deletion (§1.1/§1.3;
+// owner's methodology ruling: capability compared, not names):
+//   · /api/onboarding/integrations/test → app/api/integrations/test/[provider]/
+//     route.ts:15 (wired at app/dashboard/onboarding/tech-stack/tech-stack-client.tsx:239).
+//     Byte-similar twin: same testIntegration(), same two status writes, same
+//     kernel events; the survivor's optional-brokerage shape is a superset.
+//     Tombstone in the survivor's header.
+//   · /api/behavior/signal → lib/kernel/forms.ts:914 + app/actions/smart-insights.ts:807
+//     (signal ingestion) and app/actions/buyer-insights.ts:152 (prediction
+//     regen). Tombstone at lib/behavior-learning/preference-updater.ts:5.
+//   · /api/listings/create → app/actions/listings-kernel.ts:143
+//     createListingWithSellerContact (the canonical creation door, wired at
+//     app/components/form-wizard/FormWizard.tsx:510; three earlier createListing
+//     variants were already folded onto it — see the tombstones at
+//     app/actions/ai-listing-intake.ts:958). The route's only unshared behavior
+//     was an unvalidated `...body` spread into the insert.
+//   · /api/open-house/request-feedback → app/actions/seller-open-house.ts:936
+//     requestFeedbackFromAttendee, wired at app/dashboard/listings/[id]/
+//     components/open-house-post-event-panel.tsx:118, whose comment records the
+//     repoint AND the reason: the route never proved the attendee belonged to
+//     the caller's tenant; the survivor does, then delegates to the same sender.
+//   · /api/vendor-costs → app/actions/vendor-budget.ts (getBrokerageBudgetWarning
+//     :59 for the tenant-redacted branch, wired at app/components/shell/
+//     budget-warning-banner.tsx; getPlatformVendorBudget :89 +
+//     getPlatformVendorSpendOverview :107 for the platform-staff branch, wired
+//     at app/dashboard/support/page.tsx). Both of the route's audiences read
+//     the same checkVendorBudget + redactBudgetForActor pair there.
+
+// ─── TOMBSTONES: ten superseded/insecure routes DELETED (lane N3a, 2026-09-01) ─
+// All ten sat in census 6b ("route handler nothing in the tree addresses").
+// The deleted files, by path (the spelling orphan-export-guard's
+// tombstoneNaming() resolves a deleted ambiguous export against). Each line
+// says "deleted" ITSELF because the deletion-audit classifies a path by its
+// own line before its context — a bare path mid-list near the "survivor …
+// merged onto" sentence below was read as a survivor claim and accused of rot:
+//   app/api/generate/newsletter/route.ts — deleted
+//   app/api/generate/social/route.ts — deleted
+//   app/api/referrals/thank-you-draft/route.ts — deleted
+//   app/api/admin/seed-feature-flags/route.ts — deleted
+//   app/api/financial/expenses/route.ts — deleted
+//   app/api/ai/generate-content/route.ts — deleted
+//   app/api/ai/insider-edit-generate/route.ts — deleted
+//   app/api/ai/insider-edit-rewrite-section/route.ts — deleted
+//   app/api/ai/insider-edit-save/route.ts — deleted
+//   app/api/ai/content-suggestions/route.ts — deleted
+// Each was compared capability-by-capability against its survivor; anything the
+// survivor lacked was MERGED ONTO IT FIRST (§1.1), then the route deleted:
+//   · /api/generate/newsletter → app/actions/ai-newsletter.ts:229
+//     aiWriteNewsletterContent. THE AUTH HOLE that made this urgent: the route
+//     had NO gate — getAgentContext's result was used only optionally, AI spend
+//     proceeded with userId:"" and the ai_generated_content row was inserted
+//     with NULL identity, so an anonymous caller could burn platform AI budget
+//     and write unattributed ledger rows. The survivor session-gates, feature-
+//     gates (newsletter_engine), brand-voices and audience-shapes; the route's
+//     two unique halves — analyzeContentQuality scoring (lib/quality-checker.ts)
+//     and the ai_generated_content artifact row — were merged onto it (see the
+//     MERGED block before its return). doc-kernel-simulator ROUND 9's clause
+//     followed the ai_generated_content write to the survivor (§2).
+//   · /api/generate/social → app/actions/social/generate-social-post.ts:152
+//     generateSocialPostContent (brand-voice hierarchy, evaluateOutbound,
+//     price-improvement boundary, per-platform char limits — all absent from
+//     the route). Merged first: them-first quality scoring + the
+//     ai_generated_content artifact row with quality metrics (content_type
+//     folded to canonical "social_post"; the route wrote retired "social", §6).
+//     After this pair, lib/quality-checker.ts has exactly its two survivors as
+//     callers.
+//   · /api/referrals/thank-you-draft → app/actions/referrals/referral-actions.ts
+//     draftReferralThankYou, BUILT for it (§1.2) and wired at
+//     app/referrals/pipeline/draft-thank-you-button.tsx beside "Mark Thank-You
+//     Sent". The route bypassed BOTH AI rails: raw generateText (spend never
+//     booked, prompt never Data-Guard-scrubbed — it was pinned in
+//     ai-spend-booked-baseline.json as raw:generateText and in
+//     data-guard-baseline.json) with unscrubbed contact notes, and a
+//     body-supplied contactId read with no tenancy. The action anchors the
+//     referral to the session agent+brokerage and rides generateAIResponse.
+//   · /api/admin/seed-feature-flags → scripts/seed-all-missing-feature-flags.sql
+//     (the idempotent catalogue seed — every one of the route's 16 feature_keys
+//     is already in it, verified by key diff, so nothing to merge) and
+//     app/actions/superadmin/tenant-entitlements.ts:316 (the FK-safe in-app
+//     flag insert pattern). The route's platform-staff gate was correct but its
+//     upsert ran on the CALLER'S RLS client against the global feature_flags
+//     catalogue, so the write was refused live and masked as a generic 500 — a
+//     cockpit door that never opened, with no UI or script addressing it.
+//   · /api/financial/expenses → POST: app/actions/financials.ts:751
+//     logScopedExpense, a strict superset (identical validation clauses plus
+//     the agent/team/brokerage scope model and finance-admin gate); GET:
+//     app/dashboard/financials/expenses/page.tsx:27 reads business_expenses
+//     directly. Nothing merged. supabaseService.createBusinessExpense went with
+//     it (tombstone in services/supabaseService.ts).
+//   · /api/ai/generate-content → app/actions/ai-content-generation.tsx
+//     (generateEmail :1287, generateSocialPost :1158, generateBlogPost :1413,
+//     riding lib/services/content-generation.service.ts). Merged first: brand
+//     voice assembled INTO the writing prompt incl. the never-use list (§5
+//     compliance-first — landed on the LIVE columns preferred_words/
+//     prohibited_words; the route read `keywords`/`avoid_words`, which are not
+//     brand_voice_profile columns, so its avoid-list was always undefined), and
+//     hashtag harvesting from the body when the model skips the JSON field.
+//     Already present on the survivors, verified not re-merged: agentId in the
+//     AI metadata (runPipelineSimple resolves and stamps it; generateBlogPost
+//     passes it explicitly). RECORDED DIFFERENCES, not merged: the route's
+//     free-form propertyDetails object (survivors take propertyId and read the
+//     listing — the safer shape); its free-form topic rides customPrompt/
+//     targetAudience (audienceDirection) on the service; the "SEO echo" was the
+//     caller's own keywords array returned back verbatim — no capability.
+//   · /api/ai/insider-edit-generate + /api/ai/insider-edit-rewrite-section +
+//     /api/ai/insider-edit-save (a trio, no UI anywhere) → the newsletter lane.
+//     Merged first: the curator system prompt + forbidden-word list and the
+//     tone-validation pass (they existed NOWHERE else) into
+//     lib/newsletter/insider-edit.ts, wired as the selectable "insider"
+//     template of aiWriteNewsletterContent (which runs the tone pass in place
+//     of generic brand-voice rewriting for that template); the save half's
+//     upsert-by-id edit semantics into app/actions/ai-newsletter.ts
+//     createNewsletterCampaign (campaignId param, ownership-verified), whose
+//     create path already stamped created_by. The InsiderEdit* types the trio
+//     alone consumed are tombstoned in types.ts.
+//   · /api/ai/content-suggestions → the live per-contact suggestion lane:
+//     smart_assistant_suggestions (writer app/actions/assistant.ts:217
+//     generateSmartSuggestion, reader app/actions/contact-details.ts:189). §6:
+//     one suggestion lane. NOTHING carried from its hard-coded rule table, on
+//     evidence: the table keyed on lifecycle_stage/stage/buyer_type/price_range/
+//     preferred_locations — NONE of which are live contacts columns (schema-
+//     snapshot.ts:239) — so on real rows every branch but the "awareness"
+//     default was dead and the two suggestions that could ever fire were
+//     generic boilerplate. It called no model and wrote nothing.
+// STILL 6b BY DESIGN, fixed not deleted the same day: /api/credit/status keeps
+// its entry — it is the only reader of the credit lane and now resolves its
+// tenant from the session (see the route header and services/supabaseService.ts).
+
+// ─── TOMBSTONES: three routes superseded by BUILT surfaces (integrator, 2026-09-01)
+// Lane N3b built the missing halves these routes were waiting for, comparing
+// capability-by-capability first (§1.1); the integrator merged each remainder
+// and deleted the files:
+//   app/api/admin/deconflict/route.ts → app/actions/deconflict-cockpit.ts
+//     getDeconflictActivity, rendered by app/dashboard/system/components/os/
+//     deconflict-panel.tsx (the broker cockpit the engine promised at
+//     lib/kernel/deconflict/index.ts:36). The route's one extra — the
+//     platform-staff cross-tenant view — was merged onto the action (both
+//     identity columns via isPlatformStaffIdentity; refused identity read
+//     fails closed to tenant scope) before deletion. Its ?outcome/?channel
+//     server filters were NOT carried: the action returns the full window and
+//     the panel rolls up client-side over the same 500-row cap.
+//   app/api/listings/mls-check/route.ts → app/actions/mls-check.ts
+//     runMlsRuleCheck, rendered by the MLS-check panel on the listing
+//     lifecycle page — the fixHint UI lib/listings/mls-rule-check.ts:19-21
+//     promised. The action reads public_remarks/property_type/year_built from
+//     the real listings columns instead of caller-supplied overrides.
+//   app/api/admin/agents/sessions/route.ts → lib/kernel/command-center.ts
+//     loadManagerSessionDetail + app/actions/admin/manager-evals.ts
+//     getManagerSessionDetail, rendered by the command-center session drawer.
+//     All five route-only capabilities merged: last-message preview, rubric
+//     rows, single-session detail, status filter, and the platform-staff
+//     cross-tenant view (resolveTenantScope/platformScope with a written
+//     reason).
+
+/**
+ * PROVEN ADDRESSED FROM OUTSIDE, versus MERELY UNRESOLVED (lane W3, 2026-09-01).
+ *
+ * Until now every route this census could not find an in-tree caller for, but
+ * which the name test or the qualified map kept, was reported under ONE label:
+ * "6c. route handler addressed only from OUTSIDE (cron/webhook/callback)". That
+ * sentence states a FACT — somebody outside calls this — and for eight of the
+ * twenty-two doors nobody had established it. Five of them are the video lane,
+ * whose own ruling says the opposite in its own words
+ * (app/actions/video.ts:65-67):
+ *
+ *     "any external consumer sees no change" … "Nothing in this repo can prove
+ *      no such consumer exists. UNRESOLVED, and unresolved means leave it."
+ *
+ * A census that upgrades "unresolved" to "addressed from OUTSIDE" is asserting
+ * more than its evidence supports, in the direction that reads as settled — the
+ * same class of defect as a guard that cannot see the code it judges (§2).
+ *
+ * THE TEST, DERIVED FROM THE HANDLER, NOT HAND-TAGGED. A door is proven only
+ * when its handler admits a caller a browser SESSION cannot be: a shared secret,
+ * a bearer credential, an HMAC over the raw body. That is the one property this
+ * repo can establish offline, it is exactly the distinction the two buckets are
+ * about, and deriving it means an entry cannot sit in the strong bucket on the
+ * strength of its own prose. Everything else — public/anonymous intake, a
+ * session-authed second door, a widget token any visitor can mint — is
+ * UNRESOLVED: no caller found, and no proof either way.
+ *
+ * Nothing is exempted or suppressed by this split. Both buckets are findings,
+ * both are on the wire list, and the ratchet diffs every route category as ONE
+ * key set (see ROUTE_CATS), so reclassifying a door is a move, never an arrival
+ * and never a burn-down.
+ */
+type DoorEvidence = "non_session_credential" | "unresolved"
+
+/**
+ * The credential MECHANISMS a browser session cannot produce, as they are
+ * actually spelled in this tree's handlers. A hardcoded list of names is exactly
+ * what §2 warns about, so it is self-checked below: every mechanism here must be
+ * used by at least one route file, or the control goes red rather than the entry
+ * sitting there reading as enforced.
+ */
+const NON_SESSION_CREDENTIALS: Array<{ mechanism: string; re: RegExp }> = [
+  // A named shared secret read from the server environment: INTERNAL_API_SECRET,
+  // RELAY_SHARED_SECRET, WORKFLOW_WEBHOOK_SECRET, SHOWINGTIME_WEBHOOK_SECRET.
+  { mechanism: "*_SECRET env credential", re: /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_SECRET\b/ },
+  // An HMAC/secret comparison — the shape a provider callback authenticates with.
+  { mechanism: "crypto.timingSafeEqual", re: /\btimingSafeEqual\b/ },
+  // The service-to-service header, read off the request by name.
+  { mechanism: "x-internal[-api]-secret header", re: /x-internal(?:-api)?-secret/ },
+  // The agentic-OS bearer resolver (vos_… tokens minted for third parties).
+  { mechanism: "resolveAgenticCaller (vos_ bearer)", re: /\bresolveAgenticCaller\b/ },
+]
+
+/**
+ * The handler's own source, COMMENTS BLANKED (§2 — a tombstone is not a call
+ * site, and every one of these files explains its auth in prose above the code
+ * that performs it). String CONTENTS are deliberately kept: `headers.get(
+ * "x-internal-api-secret")` is the credential read, and masking it would blind
+ * this classifier to the very evidence it exists to find.
+ */
+function handlerCode(file: string): string {
+  const cached = codeOf.get(file)
+  if (cached !== undefined) return cached
+  try { return blankComments(readFileSync(join(root, file), "utf8")) } catch { return "" }
+}
+
+function doorEvidenceOf(file: string): { kind: DoorEvidence; mechanism: string | null } {
+  const src = handlerCode(file)
+  for (const c of NON_SESSION_CREDENTIALS) {
+    if (c.re.test(src)) return { kind: "non_session_credential", mechanism: c.mechanism }
+  }
+  return { kind: "unresolved", mechanism: null }
+}
+
+let doorsProvenExternal = 0
+let doorsUnresolved = 0
+for (const r of routesWithNoCaller) {
+  const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)
+  const kept = qualified !== undefined || EXTERNALLY_ADDRESSED.test(r.path)
+  if (!kept) {
+    add("route-no-caller", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it`)
+    continue
+  }
+  const evidence = doorEvidenceOf(r.file)
+  const why = qualified !== undefined
+    ? ` (door kept BY RULING — ${qualified})`
+    : " (external caller expected from the path NAME — a name is not proof; classify, do not delete)"
+  if (evidence.kind === "non_session_credential") {
+    doorsProvenExternal++
+    add("route-external-caller", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it, and the handler admits a NON-SESSION credential (${evidence.mechanism}) — an out-of-process caller is the only caller it can have${why}`)
+  } else {
+    doorsUnresolved++
+    add("route-unresolved-door", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it AND no non-session credential gates it — UNRESOLVED: nothing here proves an external caller exists, and nothing disproves one (§1 — leave it)${why}`)
+  }
+}
+// A qualified entry that no longer names a live route is a stale exemption, and a
+// stale exemption is indistinguishable from an enforced one until it is reported.
+for (const [p, why] of QUALIFIED_EXTERNAL_ROUTES) {
+  if (!routeDefs.some((r) => r.path === p)) {
+    add("route-no-caller", p, "scripts/opposite-missing-census.ts:1",
+      `STALE EXEMPTION: no route file defines this path any more — remove the entry (${why})`)
+  }
+}
+for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f.line}`, `addressed, but no app/api route file exists`)
+
+{
+  control("C6 found route handlers at all", routeDefs.length > 100, `${routeDefs.length} route files with a method export`)
+  control("C6 found /api/ call sites at all", fetchRefs.length > 100, `${fetchRefs.length} literals`)
+  control("C6 matches a dynamic segment", routeMatches("/api/listings/[id]/offers", "/api/listings/*/offers"))
+  control("C6 matches a catch-all", routeMatches("/api/auth/[...nextauth]", "/api/auth/signin/x"))
+  control("C6 refuses a length mismatch", !routeMatches("/api/a/b", "/api/a"))
+  control("C6 refuses a segment mismatch", !routeMatches("/api/a/b", "/api/a/c"))
+  // ── THE QUALIFIED EXTERNAL EXEMPTION, both arms ───────────────────────────
+  // An exemption that only ever exempts is indistinguishable from a scan that
+  // stopped working, so both directions are proved, not just the exempting one.
+  // PER PATH, not all-or-nothing. Written as two whole-set `every`s ORed together,
+  // this control failed the moment ONE named door gained an in-tree caller while
+  // the rest had not — which is §2's waypoint defect in a control: it could only
+  // pass while every door was in the same state, so ADJUDICATING one turned it
+  // red. Lane K1 hit exactly that when the tokenizer swap gave
+  // /api/agent-assistant/tool-call its caller back. The RULE is per route: each
+  // named door is either reclassified as 6c, or has left C6 altogether because
+  // something in the tree now addresses it. Both are correct outcomes; neither
+  // depends on what the OTHER twelve are doing.
+  control("C6 the qualified exemption reclassifies ONLY the paths it names",
+    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) =>
+      findings.some((f) => (f.cat === "route-external-caller" || f.cat === "route-unresolved-door") && f.key === p) ||
+      !routesWithNoCaller.some((r) => r.path === p)),
+    `${QUALIFIED_EXTERNAL_ROUTES.size} qualified door(s); a named door that gains an in-tree caller drops out of C6 entirely, which also satisfies this — per path, so one door being adjudicated cannot fail the others`)
+  control("C6 NEGATIVE — an unnamed sibling under the SAME prefix is still a 6b finding",
+    !QUALIFIED_EXTERNAL_ROUTES.has("/api/video/projects/[projectId]/control-probe") &&
+    (QUALIFIED_EXTERNAL_ROUTES.get("/api/video/projects/[projectId]/control-probe") ?? null) === null,
+    "exact-path map, not a prefix — /api/video/** is not blanket-exempt")
+  control("C6 NEGATIVE — every qualified entry names a route file that still exists",
+    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) => routeDefs.some((r) => r.path === p)),
+    "a stale entry would otherwise sit here reading as enforced (§2)")
+  control("C6 ignores an ABSOLUTE url on another host", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", `const u = "https://other.example.com/api/whatever"`)
+    const grew = fetchRefs.length - before
+    fetchRefs.length = before
+    return grew === 0
+  })())
+  control("C6 DOES see a same-origin literal", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", `await fetch("/api/control/probe")`)
+    const grew = fetchRefs.length - before
+    const wasRequest = fetchRefs[fetchRefs.length - 1]?.isRequest === true
+    fetchRefs.length = before
+    return grew === 1 && wasRequest
+  })())
+  // ── SAME-ORIGIN SELF-CALL: the §1 reachability shape, both arms ────────────
+  control("C6 SEES a same-origin self-call written `${base}/api/…` (§1's own evidence shape)", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "await fetch(`${baseUrl}/api/control/self-called`, { method: \"POST\" })")
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const seen = fetchRefs.length - before === 1 && probe?.path === "/api/control/self-called"
+    fetchRefs.length = before
+    return seen
+  })())
+  control("C6 NEGATIVE — that self-call can never become a 6a 404 accusation (isRequest forced false)", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "await fetch(`${API_BASE}/api/v1/somebody-elses-host`)")
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const safe = !!probe && probe.isRequest === false
+    fetchRefs.length = before
+    return safe
+  })())
+  control("C6 NEGATIVE — a base with TWO interpolations before /api/ is still refused", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "const u = `${proto}${host}/api/control/two-interps`")
+    const grew = fetchRefs.length - before
+    fetchRefs.length = before
+    return grew === 0
+  })())
+  control("C6 END-TO-END: the three remotion render routes ARE addressed (vercel.json budgets them)", (() =>
+    ["/api/internal/remotion/render-composition",
+     "/api/internal/remotion/render-just-listed",
+     "/api/internal/remotion/render-newsletter-video",
+    ].every((p) => fetchRefs.some((f) => f.path === p)))())
+  control("C6 sees an SWR key as a request (the coordination-dashboard shape)", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "const { data } = useSWR(`/api/control/sessions?x=${id}`, fetcher)")
+    const ok = fetchRefs.slice(before).some((f) => f.isRequest)
+    fetchRefs.length = before
+    return ok
+  })())
+  // END-TO-END: a request to a path with no route file MUST come out as a finding.
+  // Without this, 6a reporting zero is indistinguishable from a scanner that
+  // cannot form the accusation at all.
+  control("C6 END-TO-END: an unrouted request IS classified as a 404", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", `await fetch("/api/definitely-not-a-route/probe")`)
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const flagged = !!probe && probe.isRequest && !routeDefs.some((r) => routeMatches(r.path, probe.path))
+    fetchRefs.length = before
+    return flagged
+  })())
+  control("C6 END-TO-END: a request to a REAL route is NOT classified as a 404", (() => {
+    const real = routeDefs.find((r) => !r.path.includes("["))
+    if (!real) return false
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", `await fetch("${real.path}")`)
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const clean = !!probe && routeDefs.some((r) => routeMatches(r.path, probe.path))
+    fetchRefs.length = before
+    return clean
+  })())
+  // ── THE TOKENIZER, PROVED ON THE SHAPES THAT BROKE THE REGEX (lane K1) ─────
+  // Category 6 collected `/api/…` literals with three global regexes until
+  // 2026-08-29. Swapping that for scan() in strip-comments.ts is a change to
+  // MEASUREMENT MACHINERY, so it is pinned on the exact shapes the old idiom got
+  // wrong — and, in the last control of this group, on the shape it must still
+  // get right, because a fix that only ever EXCLUDES more is indistinguishable
+  // from a finder that stopped finding (§2).
+  const probeRefs = (src: string) => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", src)
+    const got = fetchRefs.slice(before)
+    fetchRefs.length = before
+    return got
+  }
+  control("C6 TOKENIZER — a `${base}/api/…` self-call after an ODD number of backticks is STILL collected", (() => {
+    // The desync shape itself, constructed rather than asserted on the real file:
+    // a lone backtick inside a QUOTED STRING. The three-regex idiom pairs it with
+    // the next backtick in the file — which is the target literal's OPENING one —
+    // so the URL falls inside no match at all and the census reads the file as
+    // naming zero /api/ literals. This is what hid lib/elevenlabs/conv-ai.ts:403.
+    const src = [
+      "const a = `a plain template`",
+      'const b = "a stray ` backtick inside a quoted string"',
+      "await fetch(`${appUrl}/api/control/after-a-desync`)",
+    ].join("\n")
+    const target = src.indexOf("`${appUrl}")
+    const backticksBefore = (src.slice(0, target).match(/`/g) ?? []).length
+    const got = probeRefs(src)
+    // Oddness is DERIVED from the specimen, so editing the specimen cannot leave
+    // this control passing while no longer testing a desync.
+    return backticksBefore % 2 === 1 &&
+      got.length === 1 && got[0].path === "/api/control/after-a-desync"
+  })(), "the exact defect: one backtick inside a string desynchronises every regex pairing after it")
+  control("C6 TOKENIZER — a NESTED template still yields its `/api/…` (the cron self-call shape)", (() => {
+    // `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…` — five
+    // live cron self-calls in app/actions/ are written exactly this way, and the
+    // regex read the inner backtick as the outer template's closing one.
+    const got = probeRefs("const u = `${a(`${b}/api/control/nested-inner`)}/api/control/nested-outer`")
+    const paths = got.map((g) => g.path).sort()
+    return paths.join(",") === "/api/control/nested-inner,/api/control/nested-outer"
+  })(), "both the inner literal and the outer template's own path are collected, each once")
+  control("C6 TOKENIZER — an /api/ path inside a COMMENT is NOT collected", (() => {
+    const line = probeRefs('// the tracker posts to "/api/control/in-a-line-comment"\nconst x = 1')
+    const block = probeRefs('/* see "/api/control/in-a-block-comment" */\nconst y = 2')
+    // …and the same text OUTSIDE a comment must still be collected, or this
+    // control passes merely because the collector is broken.
+    const live = probeRefs('const z = "/api/control/in-a-line-comment"')
+    return line.length === 0 && block.length === 0 && live.length === 1
+  })(), "the tokenizer knows it is in a comment; a tombstone or a note is never a call site (§2)")
+  control("C6 TOKENIZER — generated JS INSIDE a template still counts as a caller", (() => {
+    // The blog view tracker, the embed loader and the visitor-tracking pixel ship
+    // client-side JS inside a template literal. To a tokenizer those quotes are
+    // template TEXT; dropping them retired three route paths' only caller
+    // (/api/track/pixel and /api/track/identify into 6b, /api/embed/script into
+    // 6c), so every template is re-entered as a span of its own.
+    const got = probeRefs('const script = `<script>fetch("/api/control/inside-generated-js")</script>`')
+    return got.length === 1 && got[0].path === "/api/control/inside-generated-js"
+  })(), "re-entering template text is deliberate reach, not sloppiness — it is what the three regexes did by accident")
+  control("C6 NEGATIVE — a route NOTHING addresses is still reported by the 6b predicate", (() => {
+    // The negative control the tokenizer swap needs most. Every other control here
+    // proves the finder SEES more; this one proves it can still ACCUSE, so a
+    // change that only ever suppressed findings could not pass unnoticed.
+    const phantom = "/api/control/nobody-addresses-this"
+    const unaddressed = !fetchRefs.some((f) => routeMatches(phantom, f.path))
+    const unexempt = !QUALIFIED_EXTERNAL_ROUTES.has(phantom) && !EXTERNALLY_ADDRESSED.test(phantom)
+    // …and the predicate is the SAME one 6b runs, re-applied to the real corpus:
+    // every route it reported must genuinely have no matching literal.
+    const consistent = routesWithNoCaller.every((r) => !fetchRefs.some((f) => routeMatches(r.path, f.path)))
+    return unaddressed && unexempt && consistent
+  })(), "6b would still form the accusation — and every route it did report is re-derived here")
+  // ── THE DOOR CLASSIFIER (lane W3): proven-external vs UNRESOLVED ───────────
+  // A classifier that answered "credential" for everything would silently restore
+  // the very over-claim this split exists to end, and one that answered
+  // "unresolved" for everything would throw away real evidence. Both directions
+  // are proved, on synthetic handlers, plus the comment blindness §2 requires.
+  {
+    const classify = (src: string) => {
+      const key = "<control-door>"
+      codeOf.set(key, blankComments(src))
+      const got = doorEvidenceOf(key)
+      codeOf.delete(key)
+      return got
+    }
+    control("C6d classifier SEES a shared-secret gate (proven: a session cannot mint it)",
+      classify('const ok = req.headers.get("authorization") === `Bearer ${process.env.CONTROL_PROBE_SECRET}`').kind === "non_session_credential")
+    control("C6d classifier SEES an HMAC compare", classify("if (!timingSafeEqual(a, b)) return new Response(null, { status: 401 })").kind === "non_session_credential")
+    control("C6d NEGATIVE — a SESSION-only handler is UNRESOLVED, never 'addressed from OUTSIDE'",
+      classify("const ctx = await getAgentContext()\nif (!ctx.isAuthenticated) return json401()").kind === "unresolved")
+    control("C6d NEGATIVE — a secret named only in a COMMENT does not make a door proven (§2: a tombstone is not a call site)",
+      classify("// authenticated with CONTROL_PROBE_SECRET, once upon a time\nconst ctx = await getAgentContext()").kind === "unresolved",
+      "comments are blanked before the classifier reads a byte")
+    // Every mechanism in the list must still be used by a real handler. A stale
+    // entry would sit here reading as enforced while matching nothing (§2).
+    const unusedMechanisms = NON_SESSION_CREDENTIALS
+      .filter((c) => !routeDefs.some((r) => c.re.test(handlerCode(r.file))))
+      .map((c) => c.mechanism)
+    control("C6d every credential MECHANISM in the list is used by at least one route handler",
+      unusedMechanisms.length === 0, unusedMechanisms.join(", ") || "all in use")
+    // The two buckets must account for every kept door — a third state would
+    // vanish silently.
+    control("C6d the two door buckets sum to every kept door (no route falls between them)",
+      doorsProvenExternal + doorsUnresolved ===
+        routesWithNoCaller.filter((r) => QUALIFIED_EXTERNAL_ROUTES.has(r.path) || EXTERNALLY_ADDRESSED.test(r.path)).length,
+      `${doorsProvenExternal} proven + ${doorsUnresolved} unresolved`)
+  }
+  control("C6 does NOT read a middleware PREFIX table entry as a request", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", `const PUBLIC_PREFIXES = ["/api/auth", "/api/public"]`)
+    const anyRequest = fetchRefs.slice(before).some((f) => f.isRequest)
+    const seen = fetchRefs.length - before
+    fetchRefs.length = before
+    return seen === 2 && !anyRequest
+  })())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REPORT
+// ═══════════════════════════════════════════════════════════════════════════
+const CATEGORIES = [
+  ["col-write-no-read", "1a. COLUMN written by code, read by NOBODY"],
+  ["col-read-no-write", "1b. COLUMN read by code, written by NOBODY"],
+  ["dead-import", "2.  DEAD IMPORT — symbol imported, never used in that file"],
+  ["orphan-type-export", "3.  ORPHANED type/interface/enum/class/const export"],
+  ["inert-param", "4.  INERT PARAMETER — accepted, never read"],
+  ["broken-dynamic-import", "5a. await import() of a path that does not exist"],
+  ["dynamic-import-missing-export", "5b. await import() of a name the target does not export"],
+  ["fetch-no-route", "6a. fetch(\"/api/…\") with NO route file — a runtime 404"],
+  ["route-no-caller", "6b. route handler nothing in the tree addresses"],
+  ["route-external-caller", "6c. route handler PROVEN external — no in-tree caller, gated by a NON-SESSION credential"],
+  ["route-unresolved-door", "6d. route handler UNRESOLVED — no in-tree caller, no non-session credential, no proof either way"],
+] as const
+
+const counts: Record<string, number> = {}
+for (const [c] of CATEGORIES) counts[c] = findings.filter((f) => f.cat === c).length
+
+/**
+ * THE TWO ROUTE CATEGORIES ARE TWO ANSWERS TO ONE QUESTION (lane H5).
+ *
+ * 6b ("nothing in the tree addresses it") and 6c ("addressed only from OUTSIDE")
+ * are not two defects — they are the unclassified and the classified state of
+ * the SAME finding: "no in-tree caller". The baseline is keyed per category, so
+ * giving an already-listed 6b route its correct 6c classification made the
+ * ratchet report a NEW one-sided pair while simultaneously reporting the very
+ * same path as burned down. That is the accusing direction of §2: the guard
+ * went red BECAUSE a route was adjudicated, which teaches the next lane not to
+ * adjudicate one.
+ *
+ * So the two route categories are diffed as ONE key set. This cannot hide a
+ * real regression: a route in NEITHER baseline key is still fresh, which is
+ * what the control below proves by construction. It only stops a MOVE between
+ * the two from counting as an arrival.
+ *
+ * Deliberately narrow — the column categories (1a/1b) are NOT merged this way.
+ * A column moving from written-never-read to read-never-written means its
+ * writer disappeared, which is a real event and must stay visible.
+ *
+ * 6d (lane W3) joins the same key set for the same reason and one more: it exists
+ * SO THAT a door can be honestly downgraded from "proven external" to
+ * "unresolved". If that move counted as an arrival, the ratchet would go red
+ * because somebody told the truth about the evidence — §2's accusing direction
+ * again. A control below asserts that EVERY `route-*` category is in this set, so
+ * a future sixth route bucket cannot quietly diff on its own and re-create the
+ * reclassification-reads-as-an-arrival defect this ruling exists to end.
+ */
+const ROUTE_CATS = new Set(["route-no-caller", "route-external-caller", "route-unresolved-door"])
+function diffKeySets(had: Set<string>, now: Set<string>): { fresh: string[]; burned: string[] } {
+  const fresh: string[] = []
+  const burned: string[] = []
+  for (const k of now) if (!had.has(k)) fresh.push(k)
+  for (const k of had) if (!now.has(k)) burned.push(k)
+  return { fresh, burned }
+}
+control("C6c a route present under EITHER route baseline key is a reclassification, not an arrival",
+  diffKeySets(new Set(["/api/a"]), new Set(["/api/a"])).fresh.length === 0)
+control("C6c CONTROL — a route in NEITHER route baseline key is still reported as NEW",
+  diffKeySets(new Set(["/api/a"]), new Set(["/api/a", "/api/brand-new"])).fresh.join() === "/api/brand-new",
+  "the merge must not swallow a genuinely new unaddressed route")
+control("C6c every route category is diffed as ONE key set (a reclassification is not an arrival)",
+  CATEGORIES.filter(([c]) => c.startsWith("route-")).every(([c]) => ROUTE_CATS.has(c)),
+  `${[...ROUTE_CATS].join(", ")} — derived check over the category list, so a future 6e cannot diff on its own`)
+
+console.log("══════════════════════════════════════════════════")
+console.log(" OPPOSITE-MISSING CENSUS — halves built without their other half")
+console.log("══════════════════════════════════════════════════")
+console.log(` corpus: ${productFiles.length} runtime files · ${proofFiles.length} proof files`)
+
+// ── CONTROLS FIRST. A zero from a blind scanner is worth nothing. ────────────
+const failedControls = controls.filter((c) => !c.ok)
+console.log(`\n[positive controls] ${controls.length - failedControls.length}/${controls.length} passing`)
+for (const c of controls) if (!c.ok) console.log(`  ✗ ${c.name}${c.note ? ` — ${c.note}` : ""}`)
+if (failedControls.length > 0) {
+  console.log("\n  A FAILED CONTROL MEANS THE SCANNER IS BLIND, NOT THAT THE TREE IS CLEAN.")
+  console.log("  No counts are reported and no baseline is written.")
+  console.log(" ❌ OPPOSITE_MISSING_FAIL — positive control failed")
+  process.exit(1)
+}
+if (process.env.OPPOSITE_MISSING_VERBOSE === "1") {
+  for (const c of controls) console.log(`  ✓ ${c.name}${c.note ? ` — ${c.note}` : ""}`)
+  console.log("\n[stage timings, ms]")
+  for (const [n, ms] of stages) console.log(`  ${String(ms).padStart(7)}  ${n}`)
+}
+
+console.log("\n[coverage — the denominators, printed next to every numerator]")
+console.log(`  C1 columns   · ${pairedTables.length} tables both written AND read (the only ones asked)`)
+console.log(`               · ${selectSitesParsed} select sites parsed · ${embedJoinColumnsResolved} embed JOIN column read(s) resolved parent-side · ${embedJoinColumnsUnresolved} join column(s) unresolved (counted, never guessed) · ${starRead.size} tables read with select("*") (excluded from 1a)`)
+console.log(`               · ${opaqueWrite.size} tables with an OPAQUE write object (excluded from 1b) · ${unresolvedWriteObjects} opaque write sites`)
+console.log(`               · ${TRIGGER_WRITTEN.size} table(s) with DB-trigger-written columns read from supabase/migrations (exempt from 1b)`)
+console.log(`               · ${sqlSeeded} column read(s) written by an applied .sql seed/backfill across ${SQL_WRITTEN.size} table(s) (exempt from 1b)`)
+console.log(`               · ${defaultWritten} column read(s) computed by a DB expression DEFAULT across ${DEFAULT_WRITTEN.size} table(s) (exempt from 1b) — CONSTANT defaults are NOT exempt`)
+// BLIND SPOT, printed beside its number, and DERIVED rather than pinned. This
+// scan reads DDL out of the repo's .sql; the live database
+// (hrvaqgvukzxfskkcrwbt) carries DEFAULTs for tables whose CREATE TABLE is not
+// in supabase/migrations or scripts/*.sql at all.
+//
+// MEASURED 2026-08-22 against information_schema.columns: 85 of the 230 columns
+// then in 1b carried a default; 43 of those were EXPRESSION defaults, and 13 of
+// THOSE were invisible here because their DDL never landed in the repo. Those
+// thirteen were ACCUSED, and the accusation was wrong.
+//
+// ALL THIRTEEN ARE NOW RECORDED, by the remedy the doctrine prescribes — bring
+// the DDL into the repo so the offline scan can see the writer, never exempt the
+// column by hand:
+//   · data_subject_requests.due_at — m582 (a trigger, not a default).
+//   · transaction_health_factors.scored_at — the analysis writer now stamps it
+//     explicitly (lib/application/transactions.ts), so the value is visible to
+//     this scan instead of resting on a default no file records.
+//   · the other ELEVEN — m583, one `ALTER COLUMN … SET DEFAULT` apiece,
+//     re-measured live on 2026-08-28 and no-ops against production.
+//
+// The COUNT below is derived from that list rather than hardcoded, so this line
+// cannot go stale the way a pinned "≥13" would: it counts how many of the named
+// columns this run still reports in 1b. A future table whose DDL never lands in
+// the repo will not be in the list — that is the standing residual, and closing
+// it for good needs a fifth generated schema cache (column defaults, alongside
+// schema-snapshot/fk-map/check-vocabularies/live-tables) fed by a service-role
+// RPC, the same shape as m485's live_check_constraints_json, because CI holds no
+// database credentials.
+const KNOWN_OFFLINE_INVISIBLE_DEFAULTS = [
+  "agent_outcome_evaluations.evaluated_at", "approval_items.submitted_at",
+  "call_whisper_logs.delivered_at", "collaborative_search_properties.added_at",
+  "data_subject_requests.due_at", "home_value_estimates.generated_at",
+  "market_insights.generated_at", "platform_coupon_redemptions.redeemed_at",
+  "prediction_accuracy_log.logged_at", "price_predictions.prediction_date",
+  "pricing_history.recorded_at", "transaction_assignments.assigned_at",
+  "transaction_health_factors.scored_at",
+]
+const stillInvisible = KNOWN_OFFLINE_INVISIBLE_DEFAULTS.filter((k) => colReadNeverWritten.includes(k))
+console.log(`               · ${stillInvisible.length} of ${KNOWN_OFFLINE_INVISIBLE_DEFAULTS.length} known live-only EXPRESSION defaults are still invisible to this scan${stillInvisible.length ? ` (${stillInvisible.join(", ")})` : " — all recorded in-repo (m582, m583)"}; a table whose DDL never lands in the repo is the standing residual — see the blind-spot note at this line`)
+console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
+console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
+console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)
+console.log(`               · ${generatedExemptExports} orphan export(s) in ${generatedCorpusFiles.length} GENERATED file(s) under ${GENERATED_EXPORT_EXEMPT_PREFIX} exempt BY RULING (codegen scaffolding — hand-pruning a generated file is §3-wrong; self-reporting, red when the prefix matches nothing)`)
+console.log(`               · ${frameworkConsumedExemptExports} orphan type export(s) exempt BY NAME as FRAMEWORK-CONSUMED (${[...FRAMEWORK_CONSUMED_TYPE_EXPORTS.keys()].join(", ")} — imported only by Next's generated .next/types/** build output; self-reporting, red when the key names no live orphan)`)
+console.log(`               · ${typeStructurallyReachable} reachable through another declaration of the same module, private props interfaces included (a type in an exported signature needs no named import)`)
+console.log(`               · ${typeInUnaddressedModule} declared in a module NOTHING imports and no framework loads — the structural exclusion does not apply there, because it has no consumer to apply through`)
+console.log(`  C3 graph     · ${graphEdges} resolved import edges over ${TS_PATH_ALIASES.length} tsconfig path alias(es) · ${importersOf.size} modules with at least one importer`)
+console.log(`               · BLIND SPOTS: ${graphUnresolvedInRepo} in-repo specifier(s) that resolve to no file · ${wildcardReachers.size} file(s) whose \`import(\\\`\${…}\\\`)\` target is built at runtime (treated as reaching EVERYTHING, never as evidence against) · a mock registrar (jest.mock/vi.mock) and a specifier assembled outside an import position are not edges this graph can see`)
+console.log(`  C4 params    · ${paramsExamined} plain params in ${functionsExamined} function declarations · ${paramsUnresolved} unresolved (destructured/defaulted/rest/overload)`)
+console.log(`  C5 dynimport · ${dynImports} sites · ${dynNamedChecked} named-export checks · ${dynExternal} bare package specifiers skipped · ${dynUnresolvedSpecifier} interpolated · ${dynNamedUnresolvable} behind an \`export *\``)
+console.log(`  C6 routes    · ${routeDefs.length} route files with a method export · ${fetchRefs.length} /api/ literals (${fetchRefs.filter((f) => f.isRequest).length} handed to a request)`)
+console.log(`               · ${unroutedNonRequestLiterals} unrouted /api/ literal(s) that are NOT requests (middleware prefix tables, robots rules) — counted, never accused`)
+// THE TWO NUMBERS PRINTED SIDE BY SIDE (lane W3), because "addressed from
+// OUTSIDE" and "no caller found, no proof either way" are opposite epistemic
+// states and one label used to cover both. The denominator is every door the
+// name test or the qualified map keeps out of 6b; the split is DERIVED from each
+// handler's own auth, not from the entry's prose.
+console.log(`               · ${doorsProvenExternal + doorsUnresolved} route(s) with NO in-tree caller kept as doors: ${doorsProvenExternal} PROVEN external (a non-session credential — bearer/shared secret/HMAC — so an out-of-process caller is the only caller it can have) · ${doorsUnresolved} UNRESOLVED (session-authed, public/anonymous, or a visitor-mintable token: no proof of an external caller and none against one)`)
+console.log(`               · BLIND SPOT: "proven" here means the handler ADMITS a caller a session cannot be — it is not a sighting of one. A door with a credential and no live consumer is indistinguishable from one with a hundred, and neither bucket is a delete list (§1)`)
+
+console.log("\n[findings]")
+for (const [cat, label] of CATEGORIES) console.log(`  ${String(counts[cat]).padStart(5)}  ${label}`)
+console.log(`  ${String(findings.length).padStart(5)}  TOTAL`)
+
+if (LIST) {
+  for (const [cat, label] of CATEGORIES) {
+    const rows = findings.filter((f) => f.cat === cat)
+    if (rows.length === 0) continue
+    console.log(`\n── ${label} (${rows.length}) ──`)
+    for (const r of rows.slice(0, 400)) console.log(`   ${r.where}  ${r.key}\n        ${r.detail}`)
+    if (rows.length > 400) console.log(`   … and ${rows.length - 400} more`)
+  }
+  console.log("\nNOT AN ASSERTION — this is the wire list, not a verdict. Build the missing")
+  console.log("half; delete only against a NAMED duplicate at file:line.")
+  process.exit(0)
+}
+
+// ── BASELINE — a fail-on-new ratchet, not a one-shot report ──────────────────
+//
+// Keys, not counts. A count-only baseline cannot tell a fix from a swap: burn one
+// dead import down and add another and the number is unchanged while a new defect
+// shipped. It also cannot tell a fix from a DELETION, which is how a ratchet ends
+// up rewarding the removal of capability — the failure mode orphan-export-guard's
+// header documents at length.
+interface BaselineShape { generated: string; counts: Record<string, number>; keys: Record<string, string[]> }
+const keysByCat: Record<string, string[]> = {}
+for (const [cat] of CATEGORIES) keysByCat[cat] = findings.filter((f) => f.cat === cat).map((f) => f.key).sort()
+
+if (process.env.OPPOSITE_MISSING_BASELINE === "1") {
+  const next: BaselineShape = { generated: new Date().toISOString().slice(0, 10), counts, keys: keysByCat }
+  writeFileSync(BASELINE_PATH, `${JSON.stringify(next, null, 2)}\n`)
+  console.log(`\n⚙ baseline written: ${findings.length} findings across ${CATEGORIES.length} categories`)
+  process.exit(0)
+}
+
+if (!existsSync(BASELINE_PATH)) {
+  console.log(`\n  no baseline yet — write one with OPPOSITE_MISSING_BASELINE=1`)
+  console.log(" ✅ OPPOSITE_MISSING_PASS (unratcheted)")
+  process.exit(0)
+}
+
+const base = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineShape
+const fresh: string[] = []
+const burned: string[] = []
+for (const [cat, label] of CATEGORIES) {
+  if (ROUTE_CATS.has(cat)) continue           // diffed together, just below
+  const d = diffKeySets(new Set(base.keys?.[cat] ?? []), new Set(keysByCat[cat]))
+  for (const k of d.fresh) fresh.push(`${label.slice(0, 3)} ${k}`)
+  for (const k of d.burned) burned.push(`${label.slice(0, 3)} ${k}`)
+}
+// The route pair, as ONE set — see the ruling above diffKeySets.
+{
+  // Derived from ROUTE_CATS, never re-spelled: a new route bucket joins the union
+  // by being declared, not by somebody remembering to add it here too.
+  const unionOf = (src: Record<string, string[]> | undefined) =>
+    new Set([...ROUTE_CATS].flatMap((c) => src?.[c] ?? []))
+  const d = diffKeySets(unionOf(base.keys), unionOf(keysByCat))
+  for (const k of d.fresh) fresh.push(`6b/6c ${k}`)
+  for (const k of d.burned) burned.push(`6b/6c ${k}`)
+}
+
+if (burned.length > 0) {
+  console.log(`\n  ↓ ${burned.length} baseline entr(ies) no longer present — tighten with OPPOSITE_MISSING_BASELINE=1`)
+  for (const b of burned.slice(0, 25)) console.log(`     ${b}`)
+  if (burned.length > 25) console.log(`     … and ${burned.length - 25} more`)
+}
+
+console.log("\n──────────────────────────────────────────────────")
+if (fresh.length > 0) {
+  console.log(`  ✗ ${fresh.length} NEW one-sided pair(s):`)
+  for (const f of fresh.slice(0, 40)) console.log(`     - ${f}`)
+  if (fresh.length > 40) console.log(`     … and ${fresh.length - 40} more`)
+  console.log("\n  Each needs a verdict under the standing doctrine:")
+  console.log("    · a NAMED duplicate at file:line → merge onto the survivor, delete with a tombstone")
+  console.log("    · no duplicate → BUILD the missing half (the wire, the writer, the reader, the surface)")
+  console.log("  Never delete to move this number.")
+  console.log(" ❌ OPPOSITE_MISSING_FAIL")
+  process.exit(1)
+}
+console.log(` ✅ OPPOSITE_MISSING_PASS — no NEW one-sided pair (${findings.length} on the wire list, burn-down)`)

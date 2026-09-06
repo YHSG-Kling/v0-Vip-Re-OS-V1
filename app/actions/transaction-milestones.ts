@@ -159,6 +159,31 @@ export async function markAppraisalCompleteAction(
     return { success: false, error: err instanceof Error ? err.message : "Milestone complete failed" }
   }
 
+  // THE PRODUCER OF KernelEvent.APPRAISAL_COMPLETED. Its portal template ("Appraisal
+  // complete — your agent will review the value with you") existed with no emitter:
+  // completeMilestone above emits the GENERIC MILESTONE_COMPLETED, whose template is
+  // inspection-worded. The appraisal-specific event fires here, at the fact-point,
+  // through the same canonical transaction emitter as APPRAISAL_ORDERED / _GAP below.
+  // Best-effort — the milestone completion above is the record.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.APPRAISAL_COMPLETED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: user.id,
+      metadata: {
+        appraisal_completed_date: updatePayload.appraisal_completed_date,
+        appraisal_value:          params.appraisalValue ?? null,
+        appraiser_name:           params.appraiserName ?? null,
+        appraisal_report_url:     params.appraisalReportUrl ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[markAppraisalCompleteAction] APPRAISAL_COMPLETED emit failed (non-blocking):", err)
+  }
+
   // ── Appraisal-came-in-low detector (silent-risk close) ─────────────────────
   // Recording the value used to be the END of the story — nothing ever compared
   // it to the contract price. Compare here, and when it's short: emit the real

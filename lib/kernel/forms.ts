@@ -34,6 +34,7 @@
 //  - recordBuyerPropertyAction       → upserts property_interests row for contact
 //  - loadBuyerSavedProperties        → returns paginated saved/favorited interests
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { KernelEvent } from "./events"
@@ -212,23 +213,52 @@ export async function loadAvailableTransactionForms(input: {
       query = query.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
     }
 
-    const { data: brokerageForms } = await query
+    // ALSO read brokerage_form_library — the PDF form library the broker/admin
+    // UPLOADS to (app/api/admin/transaction-forms) and the AI form-fill engine
+    // consults. It was invisible to the agent Forms Library because this loader
+    // only read brokerage_forms (whose transaction rows nothing populates), so an
+    // agent never saw the forms their broker uploaded. Merge both so the agent
+    // can see + fill them; its category is packet_type, matched to the context.
+    let libQuery = supabase
+      .from("brokerage_form_library")
+      .select("id, name, description, state, packet_type, pdf_url, is_active")
+      .eq("brokerage_id", input.brokerage_id)
+      .eq("is_active", true)
+      .in("packet_type", contextCategories[input.context_type])
+      .order("name")
+      .limit(50)
+    if (input.state) {
+      libQuery = libQuery.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
+    }
 
-    if (brokerageForms && brokerageForms.length > 0) {
-      return {
-        success: true,
-        data: {
-          forms: brokerageForms.map((f: any) => ({
-            id:          f.id,
-            name:        f.form_name,
-            category:    f.form_category,
-            form_type:   f.form_type ?? f.form_category,
-            is_required: f.is_required ?? false,
-            description: f.document_url ? "Brokerage library form" : undefined,
-            state:       f.state ?? undefined,
-          })),
-        },
-      }
+    const [{ data: brokerageForms }, { data: libraryForms }] = await Promise.all([
+      query,
+      libQuery.then((r: any) => r, () => ({ data: [] })),
+    ])
+
+    const merged: FormTemplate[] = [
+      ...((brokerageForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.form_name,
+        category:    f.form_category,
+        form_type:   f.form_type ?? f.form_category,
+        is_required: f.is_required ?? false,
+        description: f.document_url ? "Brokerage library form" : undefined,
+        state:       f.state ?? undefined,
+      })),
+      ...((libraryForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.name,
+        category:    f.packet_type ?? input.context_type,
+        form_type:   f.packet_type ?? input.context_type,
+        is_required: false,
+        description: f.description ?? (f.pdf_url ? "Brokerage form library (PDF)" : undefined),
+        state:       f.state ?? undefined,
+      })),
+    ]
+
+    if (merged.length > 0) {
+      return { success: true, data: { forms: merged } }
     }
 
     // Fallback: return context-appropriate defaults so the UI is never empty
@@ -314,6 +344,58 @@ export async function prefillFormWithContext(input: {
           seller_last_name:  seller?.last_name ?? null,
           seller_email:      seller?.email ?? null,
           seller_phone:      seller?.phone ?? null,
+        }
+
+        // ── THE HALF THAT WAS MISSING ────────────────────────────────────────
+        // A listing agreement and a seller disclosure are contracts issued under
+        // a LICENCE, and state advertising law requires the brokerage's name and
+        // licence to appear on them. The block above resolves the property and
+        // the seller and stops — so every listing form prefilled for the e-sign
+        // flow went out with the agent's licence number and the entire brokerage
+        // block blank.
+        //
+        // The listing-forms panel already READS this block to warn a human
+        // before sending (see listing-forms-panel.tsx), but a warning on screen
+        // does not fill the field: the document itself still left the licence
+        // empty, and the agent found out after the seller had signed it.
+        //
+        // prefillListingFormFromRecord already resolves exactly that block —
+        // listings → agents → users, and agents → brokerages. It is joined in
+        // here rather than duplicated, so the two cannot disagree about which
+        // agent or which brokerage a listing belongs to.
+        //
+        // TENANT SAFETY: it reads by listing id alone, which is why it is called
+        // only from inside this branch — the query above has already refused any
+        // listing outside input.brokerage_id, so the id is proven in-tenant
+        // before it is handed over.
+        //
+        // ADDITIVE BY DESIGN: it uses the RLS client rather than this function's
+        // service client, so a caller with no session (a background job) simply
+        // gets nothing back. That is logged and the property/seller fields above
+        // are left exactly as they are — a missing licence block must never cost
+        // the agent the rest of the prefill.
+        try {
+          const { prefillListingFormFromRecord } = await import("./listings")
+          const ctx = await prefillListingFormFromRecord({ listingId: input.context_id })
+          if (ctx.success) {
+            const p = ctx.prefillData
+            fields = {
+              ...fields,
+              agent_first_name:     p.agentFirstName ?? null,
+              agent_last_name:      p.agentLastName ?? null,
+              agent_email:          p.agentEmail ?? null,
+              agent_license_number: p.agentLicenseNumber ?? null,
+              agent_license_state:  p.agentLicenseState ?? null,
+              brokerage_name:       p.brokerageName ?? null,
+              brokerage_address:    p.brokerageAddress ?? null,
+              brokerage_phone:      p.brokeragePhone ?? null,
+              brokerage_license:    p.brokerageLicense ?? null,
+            }
+          } else {
+            console.error("[prefillFormWithContext] agent/brokerage prefill unavailable:", ctx.error)
+          }
+        } catch (err) {
+          console.error("[prefillFormWithContext] agent/brokerage prefill failed:", err)
         }
       }
     } else if (input.context_type === "offer") {
@@ -604,21 +686,20 @@ export async function launchEsignEnvelope(input: {
       .eq("id", input.form_submission_id)
 
     // Emit event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type:  "form_submission",
-        entity_id:    input.form_submission_id,
-        event_type:   KernelEvent.ESIGN_ENVELOPE_REQUESTED,
-        brokerage_id: input.brokerage_id,
-        metadata: {
-          agent_id:                 input.agent_id,
-          external_transaction_id:  input.external_transaction_id,
-          provider:                 providerName,
-          signer_count:             input.signers.length,
-        },
-        created_at: new Date().toISOString(),
-      })
+    // Audit row + reactor (integrator, 2026-09-03 — was a bare insert).
+    const { error: emitErr } = await emitKernelEvent({
+      entityType:  "form_submission",
+      entityId:    input.form_submission_id,
+      event:       KernelEvent.ESIGN_ENVELOPE_REQUESTED,
+      brokerageId: input.brokerage_id,
+      metadata: {
+        agent_id:                 input.agent_id,
+        external_transaction_id:  input.external_transaction_id,
+        provider:                 providerName,
+        signer_count:             input.signers.length,
+      },
+    })
+    if (emitErr) console.error(`[forms] ESIGN_ENVELOPE_REQUESTED emit refused for submission ${input.form_submission_id}: ${emitErr}`)
 
     return { success: true, data: { envelope_launched: true } }
   } catch (error: any) {
@@ -813,11 +894,14 @@ export async function recordBuyerPropertyAction(input: {
     }
     const event = eventMap[input.interest_level]
     if (event && !isExternal) {
-      await supabase.from("lifecycle_events").insert({
-        entity_type: "contact", entity_id: input.contact_id, event_type: event, brokerage_id: input.brokerage_id,
+      // Audit row + reactor (integrator, 2026-09-03 — was a bare insert, so the
+      // buyer's own portal reaction never reached sequences or the staff bell).
+      const { error: emitErr } = await emitKernelEvent({
+        entityType: "contact", entityId: input.contact_id, event, brokerageId: input.brokerage_id,
+        contactId: input.contact_id, listingId: input.listing_id ?? undefined,
         metadata: { listing_id: input.listing_id, interest_level: input.interest_level, agent_id: input.agent_id },
-        created_at: new Date().toISOString(),
       })
+      if (emitErr) console.error(`[forms] ${event} emit refused for contact ${input.contact_id}: ${emitErr}`)
     }
 
     // BUYER GRAPH LOOP — the buyer's own portal action (favorite/dismiss) now TEACHES the system

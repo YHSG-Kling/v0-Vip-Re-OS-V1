@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { FileText, Clock, CheckCircle, AlertTriangle, ArrowRight } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
+import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
 
 interface TitlePipelinePanelProps {
   brokerageId: string
@@ -28,12 +29,13 @@ export function TitlePipelinePanel({ brokerageId }: TitlePipelinePanelProps) {
     async function loadMetrics() {
       const supabase = createClient()
 
-      // Get active title companies (vendors with category = 'title')
+      // vendors.category is 'Title Company' in the CHECK — two words, Title
+      // Case. This asked for 'title', so the panel showed 0 title companies.
       const { count: titleCompanyCount } = await supabase
         .from("vendors")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
-        .eq("category", "title")
+        .eq("category", VENDOR_CATEGORY_TITLE)
         .eq("status", "active")
 
       // Get title orders from title_orders table

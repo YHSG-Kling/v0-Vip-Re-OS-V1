@@ -5,12 +5,24 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle, Sparkles } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle, Sparkles, Trash2 } from "lucide-react"
 import { toast } from "sonner"
-import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app/actions/data-health"
+import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs, purgeInvalidContacts } from "@/app/actions/data-health"
 import { refreshStalePredictions } from "@/app/actions/ai-predictions"
 import { loadSelfAuditRollup } from "@/app/actions/self-audit-rollup"
 import type { SelfAuditRollup } from "@/lib/platform/self-audit-rollup"
+import { EnrichmentBacklogPanel } from "./enrichment-backlog-panel"
 
 export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
@@ -19,6 +31,8 @@ export default function DataHealthPage() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [selfAudit, setSelfAudit] = useState<SelfAuditRollup | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [purgeOpen, setPurgeOpen] = useState(false)
+  const [isPurging, setIsPurging] = useState(false)
 
   const loadData = async () => {
     setFetchError(null)
@@ -68,9 +82,42 @@ export default function DataHealthPage() {
         toast.success(`Scan complete — ${(result as any).invalidCount ?? 0} issues found`)
         await loadData()
       } else {
-        toast.error("Scan failed")
+        // Surface the reason verbatim — the scan now refuses honestly
+        // (unauthenticated / no brokerage on the session / contacts unreadable)
+        // and a bare "Scan failed" would hide which of those happened.
+        toast.error((result as any).error ?? "Scan failed")
       }
     })
+  }
+
+  // purgeInvalidContacts (wave 4 slice 2) — the page showed an "Invalid" count
+  // with no lever to act on it, and the action that clears them had no caller
+  // anywhere. It is broker/admin-only and refuses a read-only act-as grant; both
+  // refusals are surfaced verbatim rather than being reported as a clean run.
+  const handlePurge = async () => {
+    setIsPurging(true)
+    try {
+      const result = await purgeInvalidContacts()
+      if (result.success) {
+        const n = result.deletedCount ?? 0
+        // Report what was PROVEN purged, plus any partial-purge note.
+        toast.success(
+          (result as any).message ??
+            (n === 0
+              ? "Nothing to purge — no contacts are flagged Invalid"
+              : `Purged ${n} invalid contact${n === 1 ? "" : "s"}`)
+        )
+        setPurgeOpen(false)
+        setLoading(true)
+        await loadData()
+      } else {
+        toast.error(result.error ?? "Purge failed")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Purge failed")
+    } finally {
+      setIsPurging(false)
+    }
   }
 
   const handleRefreshPredictions = () => {
@@ -116,6 +163,12 @@ export default function DataHealthPage() {
           </Button>
         </div>
       </div>
+
+      {/* Enrichment backlog — who is eligible for enrichment right now, and the
+          manual lever for it. Both counts already exclude contacts in a live
+          listing or transaction (the owner's before-or-after rule), so this is a
+          list of work that CAN be done, not a list of what has been forgotten. */}
+      <EnrichmentBacklogPanel />
 
       {/* FIRST-WEEK TELEMETRY — what the OS caught itself doing wrong, by rail and
           tenant (self-audit findings + signature-chase escalations, trailing 7d).
@@ -195,6 +248,46 @@ export default function DataHealthPage() {
                 <p className="text-xs text-muted-foreground">Invalid</p>
               </div>
               <p className="text-2xl font-bold text-red-600">{stats.invalid}</p>
+              {stats.invalid > 0 && (
+                <AlertDialog open={purgeOpen} onOpenChange={(o) => !isPurging && setPurgeOpen(o)}>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-2 h-7 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+                      disabled={isPending || isPurging}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-1" />
+                      Purge invalid
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Purge every contact flagged Invalid?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This marks all {stats.invalid} contacts your last hygiene scan flagged
+                        Invalid as deleted across this brokerage, and clears their entries from
+                        the health log. Contacts are soft-deleted (<code>deleted_at</code> is
+                        stamped), so they disappear from every list but the rows remain for
+                        audit. Broker or admin only.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel disabled={isPurging}>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={(e) => { e.preventDefault(); void handlePurge() }}
+                        disabled={isPurging}
+                      >
+                        {isPurging ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Purging…</>
+                        ) : (
+                          "Purge invalid contacts"
+                        )}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
             </CardContent>
           </Card>
         </div>

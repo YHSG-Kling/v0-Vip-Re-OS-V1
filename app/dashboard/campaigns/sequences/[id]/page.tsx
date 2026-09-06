@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getCampaignSequence } from "@/app/actions/campaign-sequences"
 import SequenceBuilderClient from "./SequenceBuilderClient"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 interface Props {
   params: Promise<{ id: string }>
@@ -26,6 +27,13 @@ export default async function SequenceBuilderPage({ params, searchParams }: Prop
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const service = createServiceClient()
 
   // User profile → role + brokerage
@@ -67,13 +75,28 @@ export default async function SequenceBuilderPage({ params, searchParams }: Prop
     flagMap[f.feature_key] = f.enabled === true && f.superadmin_only !== true
   }
 
-  // Step executions for analytics (last 30 days)
+  // Step executions for analytics (last 30 days).
+  //
+  // The m302 one-ledger merge moved workflow_step_runs' timing (started_at /
+  // finished_at / duration_ms), the carrying provider (provider_key), the
+  // enrollment linkage and the step's named output (step_output under
+  // output_variable_name) onto this table — but only the merge's WRITE half
+  // landed; no reader ever selected those columns until this page did. The
+  // analytics tab renders them: dispatch latency per step, which provider
+  // actually carried each send, and what an output-producing step produced.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: executions } = await service
+  const { data: executions, error: executionsError } = await service
     .from("sequence_step_executions")
-    .select("step_id, status, channel, sent_at")
+    .select("step_id, enrollment_id, status, channel, sent_at, provider_key, started_at, finished_at, duration_ms, step_output, output_variable_name")
     .eq("sequence_id", id)
-    .gte("sent_at", thirtyDaysAgo)
+    .gte("created_at", thirtyDaysAgo)
+    .order("created_at", { ascending: false })
+    .limit(2000)
+  // supabase-js RESOLVES a refused read; an RLS refusal must not render as
+  // "this sequence never ran".
+  if (executionsError) {
+    console.error("[sequence-builder] step execution read failed:", executionsError.message)
+  }
 
   return (
     <SequenceBuilderClient

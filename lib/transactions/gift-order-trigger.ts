@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
@@ -64,10 +65,13 @@ export async function checkAndTriggerGiftOrder(params: {
     .eq("brokerage_id", params.brokerageId)
     .single()
 
-  await supabase.from("activities").insert({
+  // THIS ROW IS THE TC TASK — nothing else asks anyone to order the gift.
+  const { error: giftTaskActivityError } = await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
-    agent_id: transaction?.agent_id || params.userId,
+    // transactions.agent_id IS an agents.id; params.userId is a users.id (it is
+    // written to user_id below), so the old fallback was the wrong class.
+    agent_id: transaction?.agent_id || (await resolveAgentId(supabase, params.userId)),
     activity_type: 'tc.gift.order',
     title: 'Order Closing Gift',
     description: 'Financing conditional approval received. Order and coordinate closing gift for client.',
@@ -76,6 +80,9 @@ export async function checkAndTriggerGiftOrder(params: {
     status: 'pending',
     metadata: { assigned_to: params.userId }, // TC who completed milestone
   })
+  if (giftTaskActivityError) {
+    console.error("[gift-order-trigger] tc.gift.order activity REJECTED — no one was asked to order the closing gift:", giftTaskActivityError.message)
+  }
 
   // Log lifecycle event via kernel
   await transitionLifecycle({

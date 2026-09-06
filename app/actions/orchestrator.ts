@@ -107,7 +107,13 @@ export async function emitEvent(
 // ORCHESTRATE BY EVENT ID — admin-only replay
 // =====================================================
 
-const REPLAY_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner"]
+// TRUE ADMIN GATE that also named the platform ('superadmin'/'super_admin' —
+// both dead as users.user_type, 0 live rows) — repointed to
+// isTenantAdminOrPlatformStaff: tenant admins via the ONE roster, platform
+// staff via the dual-column identity the row's platform_role (selected below)
+// actually carries.
+import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export async function orchestrateEventById(eventId: string) {
   const supabase = await createClient()
@@ -116,13 +122,25 @@ export async function orchestrateEventById(eventId: string) {
 
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { success: false, error: "Unauthorized" }
-  if (!REPLAY_ROLES.includes(u.user_type ?? "")) {
+  if (!isTenantAdminOrPlatformStaff({ user_type: u.user_type, platform_role: (u as any).platform_role })) {
     return { success: false, error: "Forbidden" }
   }
+
+  // "Is superadmin" is not answerable from user_type. The platform's only
+  // superadmin is (user_type='admin', platform_role='superadmin'), so BOTH
+  // columns are read — the same shape as public.is_platform_admin() in RLS and
+  // requireSuperadmin() in lib/auth/platform-guard.ts. See
+  // app/actions/vendor-budget.ts:136-147.
+  // ONE DEFINITION (ruling 1, 2026-08-24) — survivor:
+  // lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  // The dropped `user_type === "super_admin"` arm was INERT: users_user_type_check
+  // admits fourteen values and \super_admin is not one of them, so no live row
+  // could ever match it. Removing it changes no answer.
+  const isSuperadmin = isPlatformSuperadminIdentity(u.user_type, (u as any).platform_role)
 
   try {
     const { data: event, error: fetchError } = await supabase
@@ -137,11 +155,15 @@ export async function orchestrateEventById(eventId: string) {
 
     // Superadmins can replay across brokerages; everyone else must be in the
     // same brokerage as the event.
-    if (
-      u.user_type !== "superadmin" &&
-      u.user_type !== "super_admin" &&
-      event.brokerage_id !== u.brokerage_id
-    ) {
+    //
+    // This is a NEGATIVE test ANDed into a DENIAL, so the dead literal failed
+    // CLOSED, not open: `u.user_type !== "superadmin"` was always true for the
+    // real superadmin, which collapsed the condition to the plain tenant check
+    // and denied the one account the exemption exists for. The gate it guards is
+    // the cross-tenant replay of a lifecycle_event — nothing was ever let through
+    // that should not have been; the platform owner was locked out of replaying
+    // any event outside their own brokerage_id.
+    if (!isSuperadmin && event.brokerage_id !== u.brokerage_id) {
       return { success: false, error: "Forbidden" }
     }
 

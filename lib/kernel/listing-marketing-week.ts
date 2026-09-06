@@ -46,8 +46,17 @@ export interface MarketingWeekFacts {
   videosCompleted: number
 }
 
-/** Pure: "Facebook, Instagram and LinkedIn". */
-export function listPlatforms(platforms: string[]): string {
+/**
+ * Pure: "Facebook, Instagram and LinkedIn".
+ *
+ * MODULE-LOCAL (orphan burn-down, lane E): this was `export`ed with no importer
+ * anywhere. Nothing is deleted — composeMarketingWeekCard below still calls it,
+ * on the line that builds the "across …" clause — only the export keyword is
+ * gone, so the function stops being reachable from outside the one card it
+ * phrases. Keeping it private is also what stops a second surface from
+ * re-wording the platform list independently of PLATFORM_LABELS.
+ */
+function listPlatforms(platforms: string[]): string {
   const labels = [...new Set(platforms)].map((p) => PLATFORM_LABELS[p] ?? p)
   if (labels.length === 0) return ""
   if (labels.length === 1) return labels[0]

@@ -64,6 +64,60 @@ function formatDateShort(iso: string | null | undefined): string {
 export function ListingApptCoPilotPanel({ prep }: Props) {
   const router = useRouter()
   const [marking, setMarking] = useState(false)
+  const [building, setBuilding] = useState(false)
+
+  /**
+   * "PREPARE FOR APPOINTMENT NOW" — the on-demand half of the presentation lane.
+   *
+   * /api/workflow/listing-presentation exists precisely for this ("Agent presses
+   * 'Prepare for appointment now' and gets the same artifact the daily cron would
+   * produce"), and NOTHING IN THE TREE ADDRESSED IT: it is session-authed, so it was
+   * not an external door either — the button its own header describes was never built.
+   * It is here now, on the surface that shows what the prep produced, because this is
+   * where an agent discovers the presentation is missing or that a step failed.
+   *
+   * It requires propertyAddress + state and 400s without them; the subject property is
+   * read off the run the chain already wrote (see ListingApptPrepDetail.propertyState),
+   * and when the state is genuinely absent the control is disabled with the reason
+   * rather than firing a request that can only be refused.
+   *
+   * buildListingPresentation is IDEMPOTENT per appointment on the cron path; here the
+   * agent is explicitly asking for a rebuild, so the outcome — id or error — is shown
+   * either way. A silent rebuild would be indistinguishable from a no-op.
+   */
+  const canBuildNow = Boolean(prep.propertyAddress && prep.propertyState)
+
+  async function handleBuildNow() {
+    if (building || !canBuildNow) return
+    setBuilding(true)
+    try {
+      const res = await fetch("/api/workflow/listing-presentation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyAddress: prep.propertyAddress,
+          state:           prep.propertyState,
+          city:            prep.propertyCity,
+          zip:             prep.propertyZip,
+          // Not proof of tenancy and not treated as such by the route — the read is
+          // anchored on the caller's own resolved brokerageId.
+          listingId:       prep.listingId,
+          contactId:       prep.contactId,
+        }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        toast.error((json && json.error) || `Build refused (HTTP ${res.status})`)
+        return
+      }
+      toast.success("Listing presentation rebuilt")
+      router.refresh()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not build the presentation")
+    } finally {
+      setBuilding(false)
+    }
+  }
 
   async function handleMarkReady() {
     if (marking) return
@@ -164,10 +218,14 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             <p className="text-xs font-semibold text-indigo-900 flex items-center gap-1.5">
               <TrendingUp className="h-3.5 w-3.5" /> CMA & Pricing
             </p>
+            {/* Restored 2026-09-03: the "Open CMA" link that was tombstoned here
+                (no page rendered a cma_reports row by id) now has its route —
+                app/dashboard/cma/[cmaId]/page.tsx, read by loadCMAReportById in
+                app/actions/seller-cma.ts, brokerage-gated from the session. */}
             {prep.cma.cmaId && (
               <Link
-                href={`/crm/contacts/${prep.contactId ?? ""}/cma/${prep.cma.cmaId}`}
-                className="text-[11px] text-indigo-700 hover:underline"
+                href={`/dashboard/cma/${prep.cma.cmaId}`}
+                className="text-[11px] font-medium text-indigo-700 hover:underline whitespace-nowrap"
               >
                 Open CMA →
               </Link>
@@ -206,8 +264,12 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
               <FileText className="h-3.5 w-3.5" /> Listing Presentation
             </p>
             {prep.presentation.presentationId && (
+              // REPOINTED (dangling-link sweep, 2026-09-02): was
+              // `/dashboard/presentations/${id}` — no such route. The
+              // listing_presentations viewer by id is
+              // app/dashboard/listings/presentations/[id]/page.tsx.
               <Link
-                href={`/dashboard/presentations/${prep.presentation.presentationId}`}
+                href={`/dashboard/listings/presentations/${prep.presentation.presentationId}`}
                 className="text-[11px] text-indigo-700 hover:underline"
               >
                 Review & edit →
@@ -263,6 +325,21 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
           <p className="text-[11px] text-muted-foreground">
             First lands {formatDateShort(prep.drip.firstTouchAt)} · last {formatDateShort(prep.drip.lastTouchAt)}
           </p>
+          {/* WHAT THE SELLER OPENED. The line above is the PLAN — what we scheduled.
+              This is the outcome, read from presentation_sections.viewed_at, which the
+              seller's own /portal/listing-plan/[id] stamps. The agent is about to walk
+              into this appointment; "watched 5 of 7" and "opened nothing" are different
+              rooms to walk into.
+              `null` means NOT MEASURED (no presentation, or a refused read) and renders
+              as nothing at all — never as a zero, which would accuse the seller of
+              ignoring a plan we may simply have failed to read. */}
+          {prep.drip.sectionsViewed !== null && prep.drip.sectionsDelivered !== null && (
+            <p className="text-[11px] text-muted-foreground">
+              {prep.drip.sectionsViewed === 0
+                ? `Seller has not opened the plan yet (${prep.drip.sectionsDelivered} section${prep.drip.sectionsDelivered === 1 ? "" : "s"} delivered)`
+                : `Seller viewed ${prep.drip.sectionsViewed} of ${prep.drip.sectionsDelivered} section${prep.drip.sectionsDelivered === 1 ? "" : "s"}${prep.drip.lastViewedAt ? ` · last ${formatDateShort(prep.drip.lastViewedAt)}` : ""}`}
+            </p>
+          )}
         </div>
       )}
 
@@ -285,6 +362,22 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             <span>Prep in progress · {prep.steps.filter((s) => s.status === "done").length}/{prep.steps.length} complete</span>
           )}
         </div>
+        <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs gap-1.5"
+          disabled={building || !canBuildNow}
+          onClick={handleBuildNow}
+          title={
+            canBuildNow
+              ? "Rebuild the CMA, net sheet, marketing plan, deck and packet now"
+              : "No state on file for this property — the CMA and listing_presentations.state both require one"
+          }
+        >
+          {building ? <Loader2 className="h-3 w-3 animate-spin" /> : <FileText className="h-3 w-3" />}
+          Prepare now
+        </Button>
         {prep.status !== "completed" && (
           <Button
             size="sm"
@@ -298,6 +391,7 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             Mark prep ready
           </Button>
         )}
+        </div>
       </div>
     </div>
   )

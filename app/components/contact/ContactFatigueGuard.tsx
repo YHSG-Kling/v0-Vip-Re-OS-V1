@@ -17,7 +17,7 @@
 import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { ShieldCheck, ShieldAlert } from "lucide-react"
-import { getBuyerFatigueScore, getBuyerFatigueAlert } from "@/app/actions/fatigue"
+import { getBuyerFatigueScore, getBuyerFatigueAlert } from "@/app/actions/buyer-fatigue"
 import {
   buildReachoutGuard,
   type ReachoutGuard,
@@ -41,7 +41,9 @@ export function ContactFatigueGuard({ contactId }: Props) {
         getBuyerFatigueAlert(contactId),
       ])
       if (!active) return
-      const score = scoreRes.success ? (scoreRes.score as FatigueScoreInput | null) : null
+      // buyer-fatigue's getBuyerFatigueScore returns the row as `data` (the retired
+      // duplicate action module called it `score`).
+      const score = scoreRes.success ? (scoreRes.data as FatigueScoreInput | null) : null
       const alert =
         alertRes.success && alertRes.alert ? (alertRes.alert as FatigueAlertInput) : null
       setGuard(buildReachoutGuard(score, alert))

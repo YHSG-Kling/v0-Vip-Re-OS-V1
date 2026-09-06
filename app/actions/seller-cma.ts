@@ -4,7 +4,11 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scoreAllComps } from "@/lib/cma/ai-cma-engine"
 import { generatePricePrediction } from "@/lib/pricing/predictive-pricing"
-import { generateNetSheet } from "@/app/actions/cma-presentation/net-sheet-calculator"
+import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { isValidUUID } from "@/lib/validations"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -120,6 +124,7 @@ interface ListingAgreement {
   total_commission_rate: number | null
   commission_is_flat_fee: boolean | null
   commission_flat_amount: number | null
+  seller_transaction_fee: number | null
   has_commission_adjustment: boolean | null
   adjustment_type: string | null
   adjustment_value: number | null
@@ -170,6 +175,11 @@ interface NetSheetCalc {
   hoa_fees: number | null
   repair_credits: number | null
   seller_concessions: number | null
+  /** Flat seller transaction fee used on this saved sheet (m287). */
+  transaction_fee: number | null
+  /** Agreed commission was a flat dollar fee, not a percentage (m289). */
+  commission_is_flat_fee: boolean | null
+  commission_flat_amount: number | null
   gross_proceeds: number | null
   total_costs: number | null
   net_proceeds: number | null
@@ -203,7 +213,7 @@ export async function loadCMAPageData(listingId: string): Promise<CMAPageData> {
     supabase
       .from("listing_agreements")
       .select(
-        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
       )
       .eq("listing_id", listingId)
       .order("created_at", { ascending: false })
@@ -267,6 +277,143 @@ export async function loadCMAPageData(listingId: string): Promise<CMAPageData> {
   }
 }
 
+/**
+ * Load ONE cma_reports row by its own id, gated by the session's brokerage.
+ *
+ * loadCMAPageData above is listing-scoped — the latest row by listing_id — and
+ * that was the ONLY reader of a CMA in the tree. A cma_reports row with
+ * listing_id = null is legal (ai-cma.ts writes it that way for the
+ * listing-appointment prep chain), and such a row was unreachable by any page:
+ * the copilot panel held its id and had nowhere to send it. This is the by-id
+ * reader that app/dashboard/cma/[cmaId]/page.tsx renders.
+ *
+ * GATE — the exact shape of buildAppraisalDefensePackage
+ * (app/actions/appraisal-defense.ts:95-110): requireAuth → read the parent →
+ * refuse unless report.brokerage_id === auth.brokerageId. §4: the tenant comes
+ * from the session; the caller's id only picks a row INSIDE it. The children
+ * (cma_comparables, ai_comp_scores, comp_risk_flags) carry no brokerage_id —
+ * they are tenanted only transitively through cma_id — so they are read only
+ * AFTER the parent passed, and keyed by ITS id, never by the caller's string.
+ * "cma_not_found" is returned for both a missing row and a wrong-tenant row so
+ * the endpoint cannot be used as an existence oracle across tenants.
+ *
+ * §3: every read destructures { data, error } and a refusal THROWS. supabase-js
+ * resolves refusals; a `?? []` over an unread error would render an empty comp
+ * table as if the CMA had no comparables, and the page's error boundary is the
+ * honest surface for a read the database declined.
+ *
+ * Contact-facing variant — NOT built here (gap brief §1.4 names it). A portal
+ * caller would add `.eq("contact_id", <contacts.id from the portal session>)`
+ * on top of the brokerage pin — cma_reports.contact_id holds contacts.id (the
+ * PK), not contacts.contact_id — and §5 applies: a contact sees no financials
+ * beyond their own property's valuation. Precedent for the portal gate shape:
+ * app/portal/[contactId]/listing/page.tsx.
+ */
+export async function loadCMAReportById(cmaId: string): Promise<
+  | {
+      success: true
+      data: CMAPageData & { cmaId: string; listingId: string | null; contactId: string | null }
+    }
+  | { success: false; error: "unauthenticated" | "invalid_id" | "cma_not_found" }
+> {
+  // Shape check before any query (matches ai-cma.ts getCMAReport).
+  if (!isValidUUID(cmaId)) return { success: false, error: "invalid_id" }
+
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false, error: "unauthenticated" }
+
+  const { data: report, error: reportError } = await supabase
+    .from("cma_reports")
+    .select("*")
+    .eq("id", cmaId)
+    .maybeSingle()
+  if (reportError) throw new Error(`cma_reports read refused: ${reportError.message}`)
+  if (!report || report.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "cma_not_found" }
+  }
+
+  // Children — the same three reads as loadCMAPageData, keyed by the GATED
+  // parent's id. propertyUpgrades and listing_agreements are keyed by listing_id
+  // and a prep CMA has none; those two are simply absent then, not guessed.
+  const listingId: string | null = report.listing_id ?? null
+  const [compsRes, scoresRes, flagsRes, upgradesRes, agreementRes] = await Promise.all([
+    supabase
+      .from("cma_comparables")
+      .select("*")
+      .eq("cma_id", report.id)
+      .order("similarity_score", { ascending: false }),
+    supabase
+      .from("ai_comp_scores")
+      .select("*")
+      .eq("cma_id", report.id),
+    supabase
+      .from("comp_risk_flags")
+      .select("*")
+      .eq("cma_id", report.id)
+      .eq("is_resolved", false),
+    listingId
+      ? supabase
+          .from("property_upgrades")
+          .select("*")
+          .eq("listing_id", listingId)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] as PropertyUpgrade[], error: null }),
+    listingId
+      ? supabase
+          .from("listing_agreements")
+          .select(
+            "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+          )
+          .eq("listing_id", listingId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null as ListingAgreement | null, error: null }),
+  ])
+
+  if (compsRes.error) throw new Error(`cma_comparables read refused: ${compsRes.error.message}`)
+  if (scoresRes.error) throw new Error(`ai_comp_scores read refused: ${scoresRes.error.message}`)
+  if (flagsRes.error) throw new Error(`comp_risk_flags read refused: ${flagsRes.error.message}`)
+  if (upgradesRes.error) throw new Error(`property_upgrades read refused: ${upgradesRes.error.message}`)
+  if (agreementRes.error) throw new Error(`listing_agreements read refused: ${agreementRes.error.message}`)
+
+  const comparables: CMAComparable[] = compsRes.data ?? []
+  const riskFlags: CompRiskFlag[] = flagsRes.data ?? []
+  const compScores: Record<string, AICompScore> = {}
+  for (const score of scoresRes.data ?? []) {
+    compScores[score.comparable_id] = score
+  }
+
+  // `autoGenerated` — NOT derived from status here. cma_reports.status is
+  // CHECK-constrained to archived | draft | presented | ready
+  // (scripts/check-vocabularies.ts), and none of those means "no human actor".
+  // loadCMAPageData tests status === "auto_generated" (a value the column cannot
+  // hold, so it is permanently false there); repeating that test would carry a
+  // §6 vocabulary defect into a second reader. Until a column can say it, the
+  // honest answer is that the row does not claim to be auto-generated.
+  const cma: CMAReport = {
+    ...report,
+    hasAIScores: Object.keys(compScores).length > 0,
+    autoGenerated: false,
+  }
+
+  return {
+    success: true,
+    data: {
+      cma,
+      comparables,
+      compScores,
+      riskFlags,
+      propertyUpgrades: upgradesRes.data ?? [],
+      agreement: agreementRes.data ?? null,
+      cmaId: report.id as string,
+      listingId,
+      contactId: (report.contact_id as string | null | undefined) ?? null,
+    },
+  }
+}
+
 export async function loadNetSheetPageData(listingId: string): Promise<NetSheetPageData> {
   const supabase = await createClient()
 
@@ -288,7 +435,7 @@ export async function loadNetSheetPageData(listingId: string): Promise<NetSheetP
     supabase
       .from("listing_agreements")
       .select(
-        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
       )
       .eq("listing_id", listingId)
       .order("created_at", { ascending: false })
@@ -415,6 +562,12 @@ export async function saveNetSheet(params: {
   hoaFees?: number
   repairCredits?: number
   sellerConcessions?: number
+  /** Flat brokerage transaction fee charged to the SELLER (m286/m287). */
+  transactionFee?: number
+  /** Agreed commission is a flat dollar fee, not a percentage (m289). */
+  commissionIsFlatFee?: boolean
+  /** The flat commission in dollars when commissionIsFlatFee (m289). */
+  commissionFlatAmount?: number
 }): Promise<{ success: boolean; netSheetId?: string; error?: string }> {
   const supabase = await createClient()
 
@@ -429,27 +582,118 @@ export async function saveNetSheet(params: {
 
   if (!profile?.brokerage_id) return { success: false, error: "No brokerage found" }
 
-  // Save to net_sheet_calculations using live schema columns
   const svc = createServiceClient()
-  const totalCommission =
-    (params.salePrice * ((params.listingCommissionRate ?? 3) / 100)) +
-    (params.salePrice * ((params.buyerCommissionRate ?? 3) / 100))
-  const closingCosts = params.closingCosts ?? params.salePrice * 0.02
-  const totalCosts =
-    totalCommission +
-    closingCosts +
+
+  // net_sheet_calculations.agent_id FKs agents(id), NOT users(id). This wrote
+  // user.user.id straight in, so every insert was rejected by the foreign key and
+  // the action returned an error — net_sheet_calculations had ZERO rows on the live
+  // database. The Save button on the seller net sheet had never once worked.
+  //
+  // The FK pass that fixed 60+ of these missed this site. lib/kernel/agent-identity
+  // states the rule outright: "NEVER do: agentId = user.id".
+  const agentId = await resolveAgentId(svc, user.user.id)
+  if (!agentId) {
+    return { success: false, error: "No agent profile for this user — complete onboarding before saving a net sheet." }
+  }
+
+  // ── Persist the sheet that was SHOWN, not a second guess at it ──────────────
+  //
+  // This used to re-derive the totals with its own fallbacks — `?? 3` for each
+  // commission side and `salePrice * 0.02` for closing costs — none of which the
+  // displayed sheet uses. Three ways a SAVED sheet could disagree with the sheet
+  // the seller was actually shown:
+  //
+  //   1. FLAT FEE ERASED. The tab charges a flat agreement fee as-is (buyer side
+  //      zero). There was no field to send it, so a $4,995 flat fee reloaded as
+  //      3% + 3% of the sale price. m289 adds the columns; the params carry it.
+  //   2. REGIONAL CLOSING COSTS DISCARDED. The tab defaults the closing-cost line
+  //      to deriveNetSheetClosingCostSection — itemized title fees and doc stamps
+  //      for the listing's state. It sends `undefined` when the agent hasn't typed
+  //      an override, and the flat 2% silently replaced the county-customary math.
+  //      Now derived here with the SAME helper, from the listing's own state.
+  //   3. COMMISSION GUESSED AT 3+3. When rates are absent the agreed commission is
+  //      resolved from the listing agreement through resolveAgreedCommission —
+  //      the same resolver the offers page and the cron runner already use —
+  //      instead of a house number that matches no agreement.
+  const { data: listingRow } = await svc
+    .from("listings")
+    .select("id, state, commission_rate")
+    .eq("id", params.listingId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  const { data: agreement } = await svc
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
+    .eq("listing_id", params.listingId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  // Commission: explicit caller values win (the agent may have edited them on the
+  // sheet); otherwise fall back to the agreement via the canonical resolver.
+  const agreed = resolveAgreedCommission({
+    agreement: agreement ?? null,
+    listingCommissionRatePercent: (listingRow?.commission_rate as number | null) ?? null,
+    referencePrice: params.salePrice,
+  })
+
+  const isFlatFee = params.commissionIsFlatFee ?? agreed.isFlatFee
+  const flatAmount = params.commissionFlatAmount ?? agreed.flatAmount ?? null
+
+  // A flat fee is charged as-is and the buyer side is folded into it — mirrors the
+  // tab exactly (listComm = flatAmount, buyerComm = 0).
+  const listingRate = isFlatFee ? 0 : params.listingCommissionRate ?? agreed.rate * 100
+  const buyerRate = isFlatFee ? 0 : params.buyerCommissionRate ?? 0
+  const totalCommission = isFlatFee
+    ? Number(flatAmount ?? 0)
+    : params.salePrice * (listingRate / 100) + params.salePrice * (buyerRate / 100)
+
+  // Closing costs: an explicit override wins; else the county-customary midpoint
+  // for the listing's state; else (state unknown) the legacy 2%.
+  const closingSection = deriveNetSheetClosingCostSection(
+    params.salePrice,
+    (listingRow?.state as string | null) ?? null,
+  )
+  const closingCosts =
+    params.closingCosts ?? closingSection?.midpoint ?? params.salePrice * 0.02
+
+  // Costs that do NOT move with the sale price. A payoff, a tax bill, HOA dues,
+  // agreed repair credits and a flat transaction fee are the same dollars at any
+  // price — only commission (and the percentage-based closing costs) scale.
+  const fixedCosts =
     (params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0) +
     (params.propertyTaxes ?? 0) +
     (params.hoaFees ?? 0) +
     (params.repairCredits ?? 0) +
-    (params.sellerConcessions ?? 0)
+    (params.sellerConcessions ?? 0) +
+    (params.transactionFee ?? 0)
+
+  const totalCosts = totalCommission + closingCosts + fixedCosts
   const netProceeds = params.salePrice - totalCosts
 
-  // Multi-scenario array stored in scenarios jsonb
+  /**
+   * Scenario net at a different price. The old version multiplied the ENTIRE cost
+   * stack by the scenario factor, which shrank the mortgage payoff, the tax bill
+   * and the flat transaction fee by 5% on a quick sale — flattering the number by
+   * whatever those happened to total. Only the price-proportional lines move.
+   */
+  function scenarioNet(factor: number): { salePrice: number; netProceeds: number } {
+    const price = Math.round(params.salePrice * factor)
+    const commission = isFlatFee
+      ? Number(flatAmount ?? 0)
+      : price * (listingRate / 100) + price * (buyerRate / 100)
+    const closing =
+      params.closingCosts != null
+        ? params.closingCosts * factor // an explicit override is a % of price in practice
+        : deriveNetSheetClosingCostSection(price, (listingRow?.state as string | null) ?? null)?.midpoint ??
+          price * 0.02
+    return { salePrice: price, netProceeds: Math.round(price - (commission + closing + fixedCosts)) }
+  }
+
   const scenarios = [
     { name: "Recommended", salePrice: params.salePrice, netProceeds },
-    { name: "Quick Sale (-5%)", salePrice: Math.round(params.salePrice * 0.95), netProceeds: Math.round(params.salePrice * 0.95 - totalCosts * 0.95) },
-    { name: "Premium (+5%)", salePrice: Math.round(params.salePrice * 1.05), netProceeds: Math.round(params.salePrice * 1.05 - totalCosts * 1.05) },
+    { name: "Quick Sale (-5%)", ...scenarioNet(0.95) },
+    { name: "Premium (+5%)", ...scenarioNet(1.05) },
   ]
 
   const expires = new Date()
@@ -461,11 +705,14 @@ export async function saveNetSheet(params: {
       brokerage_id: profile.brokerage_id,
       listing_id: params.listingId,
       contact_id: params.contactId,
-      agent_id: user.user.id,
+      agent_id: agentId,
       sale_price: params.salePrice,
-      listing_commission_rate: params.listingCommissionRate ?? 3,
-      buyer_commission_rate: params.buyerCommissionRate ?? 3,
+      listing_commission_rate: listingRate,
+      buyer_commission_rate: buyerRate,
+      commission_is_flat_fee: isFlatFee,
+      commission_flat_amount: isFlatFee ? flatAmount : null,
       closing_costs: closingCosts,
+      transaction_fee: params.transactionFee ?? 0,
       mortgage_balance: params.mortgageBalance ?? 0,
       mortgage_payoff_amount: params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0,
       property_taxes: params.propertyTaxes ?? 0,

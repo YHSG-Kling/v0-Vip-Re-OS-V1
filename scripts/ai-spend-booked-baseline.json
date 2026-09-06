@@ -1,0 +1,125 @@
+{
+  "unbooked": {
+    "app/actions/ai-agent-goals.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-calendar-management.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-client-gifting.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-closing-workflow.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-communication-hub.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-contract-review.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-document-intelligence.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-lead-nurturing.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-lead-scoring.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-listing-intake.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-listing-presentation.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-market-intelligence.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-newsletter.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-property-matching.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-referral-management.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-review-automation.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-sphere-management.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-training-coaching.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-transaction-coordinator.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-vendor-management.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/ai-voice-transcription.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/buyer-coaching.ts": [
+      "raw:generateText"
+    ],
+    "app/actions/documents.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/market-insight-actions.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/negotiation-copilot.ts": [
+      "raw:generateText"
+    ],
+    "app/actions/objection-training.ts": [
+      "shim:generateObject"
+    ],
+    "app/actions/repair-negotiation-copilot.ts": [
+      "raw:generateText"
+    ],
+    "app/actions/social-publishing.ts": [
+      "raw:generateText"
+    ],
+    "app/actions/social/generate-social-post.ts": [
+      "shim:generateObject"
+    ],
+    "app/api/internal/ai-note/route.ts": [
+      "raw:generateText"
+    ],
+    "app/api/internal/voice-command/route.ts": [
+      "raw:generateText"
+    ],
+    "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": [
+      "raw:generateText"
+    ],
+    "lib/ads/ad-creator.ts": [
+      "raw:generateText"
+    ],
+    "lib/ads/ad-monitor.ts": [
+      "raw:generateText"
+    ],
+    "lib/fatigue/fatigue-calculator.ts": [
+      "raw:generateText"
+    ],
+    "lib/fatigue/recovery-generator.ts": [
+      "raw:generateText"
+    ],
+    "lib/intelligence/pattern-detector.ts": [
+      "raw:generateText"
+    ],
+    "lib/listing-presentation/generate-ai-presentation.ts": [
+      "shim:generateObject"
+    ],
+    "lib/property/enrichment-chain.ts": [
+      "shim:generateObject"
+    ],
+    "services/aiMappingService.ts": [
+      "raw:generateText"
+    ]
+  },
+  "routedWithoutTenant": {}
+}

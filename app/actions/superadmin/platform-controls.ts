@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { getPlatformControls, setPlatformControls, type PlatformControls } from "@/lib/platform/platform-controls"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireSuperadmin(): Promise<
   | { ok: true; userId: string; email: string }
@@ -18,7 +19,7 @@ async function requireSuperadmin(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }

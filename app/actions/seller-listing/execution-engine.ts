@@ -21,11 +21,27 @@
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
+import { auditListingDocuments } from "@/lib/compliance/required-documents"
+// THE LISTING-ACTIVATION COMPLIANCE GATE (owner's ruling, 2026-09-04: "same
+// compliance gate when a listing becomes an active listing"). See activateMLS.
+import { assertListingActivationAllowed } from "@/lib/listings/listing-activation-gate"
+import { scanListingPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
+import { notifyComplianceFlag } from "@/lib/notifications/notify-helpers"
+import { LISTING_AGREEMENT_EXECUTED_STATUS } from "@/lib/transactions/coordination-status"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import { getStageDefinition, type ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
+import {
+  ledgerMechanismForReason,
+  recipientTypeForReason,
+  commissionAdjustmentReasonLabel,
+  isCommissionAdjustmentReason,
+} from "@/lib/commission/adjustment-vocabulary"
+import { resolveTotalCommissionRate } from "@/lib/commission/agreement-total-rate"
 
 // ============================================================================
 // DOMAIN 1: Seller Decision & Commitment
@@ -35,14 +51,181 @@ import { KernelEvent } from "@/lib/kernel/events"
  * Schedule listing appointment and trigger CMA + presentation workflow
  * Minimum drip duration: 5 days before appointment
  */
+
+/**
+ * Write a lifecycle activity and SAY SO WHEN IT DOES NOT LAND.
+ *
+ * This file logs the entire seller listing lifecycle — appointment set, agreement
+ * signed, photography booked, live on market — as `activities` rows, and all
+ * eighteen writes were `await logLifecycleActivity(supabase, {…})` with the
+ * result dropped. supabase-js RESOLVES a rejected insert rather than throwing, so
+ * a failed write was indistinguishable from a successful one and the surrounding
+ * action returned success either way.
+ *
+ * That matters more here than almost anywhere: these rows ARE the listing's
+ * history. The kernel's conversation memory reads them into the AI's picture of
+ * the relationship, and a broker would hand them to a regulator as the record of
+ * what happened and when. One helper rather than eighteen repeated checks, so
+ * the next writer cannot forget.
+ */
+async function logLifecycleActivity(
+  supabase: any,
+  row: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase.from("activities").insert(row)
+  if (error) {
+    console.error(
+      `[seller-lifecycle] activity "${String(row.activity_type)}" NOT recorded:`,
+      error.message,
+    )
+  }
+}
+
+/**
+ * THE TENANT GATE. Every export in this file is a `"use server"` action, and every
+ * one of them took `userId` and `brokerageId` AS PARAMETERS with no authentication
+ * anywhere in the file — 23 actions, zero requireAuth calls. A server action is a
+ * POST endpoint: whoever called one chose which brokerage's ledger to write into,
+ * whose user id to attribute the act to, and which listing to drive through a
+ * kernel stage transition. Nothing checked that the caller belonged to that
+ * brokerage or that the listing did either.
+ *
+ * These rows ARE the listing's history — the kernel reads them into the AI's
+ * picture of the relationship and a broker would hand them to a regulator. A
+ * forged one is worse than a missing one.
+ *
+ * Identity now comes from the SESSION and the listing must belong to it. The
+ * params are still accepted so existing callers (the voice command map, the
+ * lifecycle cards) keep compiling, but the values USED are the resolved ones —
+ * a caller cannot widen its own scope by passing a different id.
+ */
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): both halves of the gate result are
+// named only by the private authorizeListingAction below.
+interface ListingActionScope {
+  ok: true
+  userId: string
+  brokerageId: string
+}
+interface ListingActionDenied {
+  ok: false
+  error: string
+}
+
+async function authorizeListingAction(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+): Promise<ListingActionScope | ListingActionDenied> {
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { ok: false, error: "unauthenticated" }
+  if (!isValidUUID(listingId)) return { ok: false, error: "invalid_listing_id" }
+
+  // The listing must be inside the caller's brokerage. Reading through the
+  // request-scoped client means RLS applies too — a listing the caller cannot
+  // see resolves to no row and is refused rather than silently acted upon.
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("id, brokerage_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!listing) return { ok: false, error: "listing_not_found" }
+  if (listing.brokerage_id !== auth.brokerageId) return { ok: false, error: "listing_not_in_your_brokerage" }
+
+  return { ok: true, userId: auth.userId, brokerageId: auth.brokerageId }
+}
+
+/**
+ * THE STAGE PRECONDITION — read the listing's CURRENT stage, not a pile of events.
+ *
+ * Four stage-advancing actions each hand-rolled their own gate, and all four were
+ * broken in the same two ways:
+ *
+ *   1. THEY MATCHED AN EVENT TYPE NOTHING WRITES. Each queried lifecycle_events
+ *      for `event_type = KernelEvent.LISTING_STAGE_CHANGED` — the bare
+ *      'listing_stage_changed'. But transitionLifecycle, the ONLY writer of these
+ *      rows, stores `lifecycle.${eventType}` (lib/kernel/lifecycle.ts:218). The
+ *      prefixed value never equals the bare one, so every one of these gates
+ *      matched ZERO rows for every listing, and markMLSReady /
+ *      approveOpenHouseMarketing / prepareComingSoonAssets / submitToMLSAdmin
+ *      could NEVER SUCCEED. Not "rarely" — never.
+ *
+ *   2. THEY ASKED THE WRONG QUESTION. "Has an event of this type ever been
+ *      recorded" is not "is the listing in the required state". markMLSReady
+ *      counted rows of EITHER type and accepted `length >= 2`, so once the prefix
+ *      was corrected two ordinary stage changes would have satisfied a gate whose
+ *      stated meaning is "media approved AND coming soon activated". Fixing only
+ *      the prefix would have turned a gate that blocks everything into a gate
+ *      that blocks nothing.
+ *
+ * And nothing downstream catches it: transitionLifecycle writes the state column
+ * UNCONDITIONALLY and records `fromState` in metadata as a claim it never
+ * verifies. These pre-gates are the only enforcement of stage order that exists,
+ * and listing_stage_machine transitions also sync `listings.status`, so a listing
+ * that skipped ahead goes publicly live out of order.
+ *
+ * So the precondition is read from the entity's own stage column and compared
+ * against `allowedFrom` in LISTING_LIFECYCLE_STAGES — the authoritative table
+ * that already declares which stage each target may be entered from. Deriving the
+ * gate from the definition means the two cannot drift; adding a stage updates
+ * both at once.
+ */
+async function requireCurrentListingStage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  allowed: readonly ListingStage[],
+  requirementLabel: string,
+): Promise<{ ok: true; from: ListingStage } | { ok: false; error: string }> {
+  const { data: listing, error } = await supabase
+    .from("listings")
+    .select("lifecycle_stage")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  // A gate that could not READ is not a gate that passed. supabase-js resolves a
+  // failed query, so without this the refusal would be indistinguishable from a
+  // listing sitting in the wrong stage — and the message would send the agent
+  // hunting for a stage problem that does not exist.
+  if (error) return { ok: false, error: `stage_check_failed:${error.message}` }
+  if (!listing) return { ok: false, error: "listing_not_found" }
+
+  const current = (listing.lifecycle_stage as ListingStage | null) ?? null
+  if (!current) return { ok: false, error: `listing_has_no_stage; ${requirementLabel} requires ${allowed.join(" or ")}` }
+  if (!allowed.includes(current)) {
+    return { ok: false, error: `listing is ${current}; ${requirementLabel} requires ${allowed.join(" or ")}` }
+  }
+  return { ok: true, from: current }
+}
+
+/**
+ * For an action that ADVANCES the stage: the listing must be in one of the stages
+ * the target declares it may be entered from.
+ */
+async function requireListingStage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  target: ListingStage,
+): Promise<{ ok: true; from: ListingStage } | { ok: false; error: string }> {
+  const def = getStageDefinition(target)
+  if (!def) return { ok: false, error: `unknown_stage:${target}` }
+  return requireCurrentListingStage(supabase, listingId, def.allowedFrom, target)
+}
+
 export async function scheduleListingAppointment(params: {
   listingId: string
   appointmentDate: string // ISO date
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, appointmentDate, userId, brokerageId } = params
+  const { listingId, appointmentDate } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   if (!isValidUUID(listingId)) {
     return { success: false, error: "Invalid listing ID" }
@@ -84,9 +267,10 @@ export async function scheduleListingAppointment(params: {
   }).catch(() => {})
 
   // Human-readable CRM activity (agent task log — activities is correct here)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.appointment.scheduled",
     title:         "Listing appointment scheduled",
     description:   `Appointment scheduled for ${appointmentDate}`,
@@ -135,11 +319,20 @@ export async function scheduleListingAppointment(params: {
  */
 export async function markDripCompleted(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: PRESENTATION_DRIP_PREP → SELLER_DECISION
   const transitionResult = await transitionLifecycle({
@@ -165,9 +358,10 @@ export async function markDripCompleted(params: {
   }).catch(() => {})
 
   // CRM human task record — drip sequence completion (activities correct)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.presentation.drip_completed",
     title:         "Seller drip sequence completed",
     description:   "Presentation drip sequence completed",
@@ -194,12 +388,21 @@ export async function markDripCompleted(params: {
 export async function recordSellerDecision(params: {
   listingId: string
   decision: "accepted" | "declined"
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   reason?: string
 }) {
   const supabase = await createClient()
-  const { listingId, decision, userId, brokerageId, reason } = params
+  const { listingId, decision, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition varies by decision
   const toState      = decision === "accepted" ? "LISTING_AGREEMENT_INITIATED" : "SELLER_DECLINED"
@@ -228,7 +431,7 @@ export async function recordSellerDecision(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: activityType,
@@ -252,24 +455,40 @@ export async function recordSellerDecision(params: {
  */
 export async function initiateListingAgreement(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
 
-  // Gate: Requires seller.decision.accepted — check lifecycle_events (activities has no listing_id)
-  const { data: decisionEvent } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", "seller.decision.accepted")
-    .limit(1)
-    .maybeSingle()
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
-  if (!decisionEvent) {
-    return { success: false, error: "Seller decision not accepted" }
-  }
+  // Gate: the seller must have ACCEPTED.
+  //
+  // This read used to look in lifecycle_events for event_type
+  // 'seller.decision.accepted' — a row nothing has ever written there.
+  // recordSellerDecision writes that string as an ACTIVITY_TYPE into `activities`
+  // (via logLifecycleActivity); the read was moved to lifecycle_events and the
+  // write was not, and the comment that used to sit here ("activities has no
+  // listing_id") records someone noticing the table was wrong without following
+  // the value. So this gate matched nothing and initiateListingAgreement refused
+  // every caller.
+  //
+  // What acceptance actually PRODUCES is the stage: recordSellerDecision
+  // transitions SELLER_DECISION → LISTING_AGREEMENT_INITIATED on accept, and
+  // → SELLER_DECLINED on decline. Reading the stage answers the question directly
+  // and cannot be desynchronised from the writer.
+  const stageGate = await requireCurrentListingStage(
+    supabase, listingId, ["LISTING_AGREEMENT_INITIATED"], "starting the listing agreement",
+  )
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Sub-event: agreement paperwork started inside LISTING_AGREEMENT_INITIATED stage — no state change
   const { error: leError } = await supabase.from("lifecycle_events").insert({
@@ -292,9 +511,10 @@ export async function initiateListingAgreement(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing_agreement.initiated",
     title:         "Listing agreement initiated",
     description:   `Listing agreement process initiated for listing ${listingId}`,
@@ -310,8 +530,13 @@ export async function initiateListingAgreement(params: {
  * Mark listing agreement as signed — provider-routed.
  *
  * Steps (per spec):
- * 1. Resolve esign + transaction provider via provider_overrides cascade.
- * 2. Load integration_credentials for resolved provider_key.
+ * 1. Resolve the esign provider via the provider_overrides cascade. (The spec
+ *    said "esign + transaction"; the transaction half was resolved and never
+ *    read, so it was deleted 2026-08-22 — see the note at the call site.)
+ * 2. (RETIRED 2026-08-22) "Load integration_credentials for resolved
+ *    provider_key" — nothing consumed it and this function makes no provider
+ *    call. See the tombstone at the former call site; credentials resolve
+ *    through lib/connections/resolve-scoped.ts.
  * 3. If manual_upload: store documentUrl to listing_agreements.
  *    If provider_pull: store providerRef to listing_agreements.
  * 4. INSERT listing_agreements (commission terms + document refs).
@@ -321,16 +546,73 @@ export async function initiateListingAgreement(params: {
  */
 export async function markAgreementSigned(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   uploadMode: "manual_upload" | "provider_pull"
   documentUrl?: string
   providerRef?: string
+  /**
+   * `listing_agreements.document_name` — what the executed agreement document is
+   * called. Read (with effective_date) on the listing lifecycle page; had no
+   * writer until orphan tranche X4 (2026-09-01) added intake for both. Optional:
+   * blank writes NULL ("not recorded"), never a name derived or invented here.
+   */
+  documentName?: string
+  /**
+   * `listing_agreements.effective_date` — the effective date stated ON the
+   * agreement (yyyy-mm-dd). NOT defaulted to today: the signature timestamps
+   * below already record when it was executed, and a listing agreement's stated
+   * effective date is part of the form, so an uncaptured one is NULL — the same
+   * "absent means not recorded" doctrine as seller_transaction_fee.
+   */
+  effectiveDate?: string
   commissionTerms?: {
     listingRate?: number
     buyerRate?: number
+    /**
+     * `listing_agreements.total_commission_rate` — the TOTAL commission percent
+     * as it appears on the executed agreement. Owner ruling (2026-08-27):
+     * "listing agreement total commission rate is part of the agreement which is
+     * a state form and/or seller agreement" — so it is captured at intake, not
+     * inferred later. Rules (one vocabulary with the seven readers, see
+     * lib/commission/agreement-total-rate.ts): PERCENT values (3 = 3%);
+     * total-only agreements are legal (total set, splits blank); when both
+     * splits are entered the total must equal their sum and is DERIVED as that
+     * sum when left blank; blank everywhere writes NULL, never 0.
+     */
+    totalRate?: number
     isFlatFee?: boolean
     flatAmount?: number
+    /**
+     * `listing_agreements.seller_transaction_fee` — the FLAT brokerage
+     * transaction fee charged to the SELLER at closing, in dollars, as agreed on
+     * this agreement.
+     *
+     * WHY IT IS HERE (wave 14). m286 built the column and wrote its doctrine, and
+     * no writer ever followed. SIX readers price the seller's net against it:
+     *   lib/kernel/offer-net-sheet.ts:162          the offer net sheet
+     *   lib/workflow/intelligence/multi-offer-matrix.ts:97  the multi-offer matrix
+     *   app/actions/cma-presentation/net-sheet-calculator.ts:151
+     *   app/actions/seller-cma.ts:215 / :300       the CMA + net-sheet pages
+     *   app/actions/portal-seller.ts:573           THE SELLER'S OWN PORTAL
+     *   app/dashboard/listings/[id]/offers/page.tsx:150
+     * Every one of them read NULL and coerced it to 0, so every net-sheet figure
+     * shown to a seller — including in their own portal — OVERSTATED their
+     * proceeds by the brokerage's flat fee.
+     *
+     * NOT agents.transaction_fee / agent_commission_profiles.transaction_fee.
+     * Those are AGENT-side (what the agent pays the brokerage out of their own
+     * split) and must never reduce the seller's proceeds — m286 says so
+     * explicitly, and the temptation to default this from one of them is exactly
+     * the mistake that comment exists to prevent. Absent means NONE AGREED, which
+     * is written as NULL, not as 0: 0 asserts a fee of zero was negotiated.
+     *
+     * Flat dollars only. A percentage charge is commission and belongs in the
+     * rate fields above.
+     */
+    sellerTransactionFee?: number
     adjustmentType?: string
     adjustmentValue?: number
     adjustmentValueType?: "percent" | "flat"
@@ -338,7 +620,27 @@ export async function markAgreementSigned(params: {
   }
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, uploadMode, documentUrl, providerRef, commissionTerms } = params
+  const { listingId, uploadMode, documentUrl, providerRef, commissionTerms } = params
+
+  // Validate the OPTIONAL agreement metadata before any work: a malformed date
+  // would be refused by Postgres and supabase-js reports that by resolving, so
+  // the whole insert would fail late looking like a compliance problem.
+  const documentName = params.documentName?.trim() || null
+  let effectiveDate: string | null = null
+  if (params.effectiveDate != null && params.effectiveDate.trim() !== "") {
+    const raw = params.effectiveDate.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(new Date(raw).getTime())) {
+      return { success: false, error: "Effective date must be a valid yyyy-mm-dd date (or left blank if the agreement states none)." }
+    }
+    effectiveDate = raw
+  }
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   if (!isValidUUID(listingId)) {
     return { success: false, error: "Invalid listing ID" }
@@ -347,51 +649,263 @@ export async function markAgreementSigned(params: {
   // ── 1. Resolve providers via kernel cascade ───────────────────────────────
   const actorContext = { userId, brokerageId }
 
-  const [esignResolved, transactionResolved] = await Promise.all([
-    resolveProvider({ providerType: "esign",       actorContext }),
-    resolveProvider({ providerType: "transaction",  actorContext }),
-  ])
+  // ONE resolve, not two. The `transaction` provider was resolved here beside
+  // `esign` and then never read — `transactionResolved` appeared on this line and
+  // nowhere else in the function. It was not free: `resolveProvider` walks the
+  // provider_overrides cascade, so every agreement-signing paid for a second
+  // cascade whose answer was discarded. Deleted rather than kept "for symmetry":
+  // an unread resolve is an orphan read, and this function makes no transaction-
+  // provider call at all (steps 3-7 below touch listing_agreements,
+  // commission_adjustments, listings and lifecycle_events only).
+  const esignResolved = await resolveProvider({ providerType: "esign", actorContext })
 
   const activeProviderKey = esignResolved.providerKey
 
-  // ── 2. Load integration_credentials for the resolved provider_key ─────────
-  const { data: creds } = await supabase
-    .from("integration_credentials")
-    .select("id, provider_name, api_key, api_secret, webhook_url")
-    .eq("brokerage_id", brokerageId)
-    .eq("provider_name", activeProviderKey)
-    .eq("is_active", true)
+  // ─── TOMBSTONE — step 2, "Load integration_credentials for the resolved
+  //     provider_key" (2026-08-22) ──────────────────────────────────────────
+  //
+  // SURVIVOR — credential resolution for this and every other provider lane:
+  //   lib/connections/resolve-scoped.ts  resolveScopedConnectionResult /
+  //                                      resolveScopedConnection
+  //   which walks agent → team → brokerage → platform and reaches
+  //   `integration_credentials` through its last tier,
+  //   lib/integrations/connection-manager.ts:resolveConnectionResult.
+  //
+  // DELETED AS AN ORPHAN READ WITH NO READER. It selected six columns —
+  // including `api_key` and `api_secret` — into a `creds` binding that NOTHING
+  // in this function ever touched. `markAgreementSigned` does not CALL an e-sign
+  // provider: `manual_upload` stores a `documentUrl` the agent already uploaded,
+  // `provider_pull` stores a `providerRef` the caller already holds, and the row
+  // is written straight to `listing_agreements` with esign_status EXECUTED. So
+  // this was a needless secret read on every execution — the worst kind of dead
+  // code, because it costs confidentiality rather than cycles.
+  //
+  // IT ALSO SWALLOWED ITS OWN REFUSAL. It destructured `{ data }` only, so a
+  // refused read (supabase-js RESOLVES refusals — CLAUDE.md §3) was byte-for-byte
+  // "no credential configured". Rebuilding it correctly was rejected as the fix:
+  // that would be a SECOND reader of the credential store with its own
+  // brokerage-only lookup, which is exactly the shape the survivor exists to
+  // replace — resolve-scoped reports connected | not_connected | unreadable and
+  // STOPS on an unreadable tier instead of descending onto another owner's
+  // credential (see the ruling at lib/kernel/manager-registry.ts:1010, and the
+  // same deletion already made at app/actions/dispatch-showing.ts:219).
+  //
+  // IF a real e-sign dispatch is ever wired into this function, resolve it
+  // through the survivor above — never with a fresh `.from("integration_credentials")`.
+  //
+  // `resolveProvider` above is NOT the survivor for this: it reads
+  // `provider_overrides` and answers WHICH VENDOR, never WITH WHAT CREDENTIAL.
+
+  // ── 2.5 COMPLIANCE GATE (owner's ruling: the same run as the offer side) ──
+  //
+  // This function used to write `compliance_passed: true` as a LITERAL. Nothing
+  // had been checked; the column simply asserted a pass. Per the owner, a signed
+  // listing agreement is gated exactly like an accepted offer: every required
+  // brokerage / team / agent document present (required-vs-warning coming from
+  // the same settings cascade), and no missing signature, initial or field.
+  //
+  // No MLS number is read here. Per the owner's ruling the MLS number belongs to
+  // the listing-LAUNCH checkpoint, not to executing the agreement.
+  const { data: listingRow } = await supabase
+    .from("listings")
+    .select("state, agent_id, seller_contact_id, contact_id")
+    .eq("id", listingId)
     .maybeSingle()
 
-  // Credentials optional — provider may not require them (manual_upload path)
+  const { data: actingUser } = await supabase
+    .from("users").select("team_id").eq("id", userId).maybeSingle()
+
+  // The listing agent, RESOLVED agents.id → users.id (never substituted), so a
+  // TC or broker executing on their behalf still notifies them.
+  const listingAgentUserId = listingRow?.agent_id
+    ? ((await supabase.from("agents").select("user_id").eq("id", listingRow.agent_id as string).maybeSingle())
+        .data?.user_id as string | null) ?? null
+    : null
+
+  // The seller, resolved ONCE and used by both the document audit below and the
+  // agreement row itself. `listings.contact_id` is the historical fallback and
+  // is not populated live (see the note in the audit call), so seller_contact_id
+  // wins when present.
+  const sellerContactId = ((listingRow?.seller_contact_id ?? listingRow?.contact_id) as string | null) ?? null
+
+  const docAudit = await auditListingDocuments(supabase as any, {
+    brokerageId,
+    // The seller lives in seller_contact_id. listings.contact_id exists but is
+    // not populated (0 of 3 rows live), so this had been passing null and the
+    // audit skipped every document filed against the seller's CONTACT record.
+    // Raised in review; the readiness gate carried the same mistake and both
+    // were corrected together so the two checkpoints stay in agreement.
+    sellerContactId,
+    agentUserId:     userId,
+    teamId:          (actingUser?.team_id as string | null) ?? null,
+    stateCode:       (listingRow?.state as string | null) ?? null,
+    listingId,
+  })
+
+  const packetScan = await scanListingPacketCompleteness({
+    listingId,
+    raiserUserId: userId,
+    brokerageId,
+    alsoNotifyUserIds: [listingAgentUserId],
+  })
+
+  const blockingDocs    = docAudit.missing_blocking ?? []
+  const packetBlockers  = packetScan.blockers ?? []
+  const warningDocs     = docAudit.missing_warning ?? []
+  const packetWarnings  = packetScan.warnings ?? []
+
+  // An AUDIT that could not run is a block for the same reason a packet scan
+  // that could not run is: it verified nothing. auditListingDocuments now says
+  // so explicitly instead of returning the all-zero shape of a clean file.
+  const auditUnavailable = docAudit.unavailable_reason
+
+  if (blockingDocs.length > 0 || packetBlockers.length > 0 || !packetScan.success || auditUnavailable) {
+    const bits: string[] = []
+    if (blockingDocs.length > 0)   bits.push(`${blockingDocs.length} required document(s) missing`)
+    if (packetBlockers.length > 0) bits.push(`${packetBlockers.length} packet blocker(s)`)
+    if (auditUnavailable) bits.push(`required-document check could not run (${auditUnavailable})`)
+    // A scan that could not RUN is treated as a block, never as a pass — the
+    // same rule the listing-launch gate uses.
+    if (!packetScan.success) bits.push(`packet check could not run (${packetScan.error ?? "no reason given"})`)
+
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId,
+      agentUserId: userId,
+      alsoNotifyUserIds: [listingAgentUserId],
+      flag: {
+        type:       "compliance.listing_agreement_blocked",
+        severity:   "high",
+        title:      `Listing agreement blocked: ${bits.join(", ")}`,
+        body:       `Missing required: ${blockingDocs.join(", ") || "(none)"}.\nPacket blockers: ${packetBlockers.slice(0, 5).map(b => b.title).join("; ") || "(none)"}.`,
+        entityType: "document",
+        entityId:   listingId,
+      },
+    })
+
+    return {
+      success: false,
+      error: `Cannot execute the listing agreement — ${bits.join(" and ")}. Fix the listed items first.`,
+      missing_required: blockingDocs,
+      packet_blockers:  packetBlockers.map(b => ({ flagType: b.flagType, severity: b.severity, title: b.title })),
+    }
+  }
+
+  // Warnings do not block, but they are still told to somebody — otherwise the
+  // required/warning switch means "stops the deal" or "silence", with nothing
+  // in between.
+  if (warningDocs.length > 0 || packetWarnings.length > 0) {
+    await notifyComplianceFlag(supabase as any, {
+      brokerageId,
+      agentUserId: userId,
+      alsoNotifyUserIds: [listingAgentUserId],
+      flag: {
+        type:       "compliance.listing_agreement_warnings",
+        severity:   "medium",
+        title:      `Listing agreement executed with warnings: ${warningDocs.length} optional document(s), ${packetWarnings.length} packet warning(s)`,
+        body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.`,
+        entityType: "document",
+        entityId:   listingId,
+      },
+    })
+  }
 
   // ── 3+4. INSERT listing_agreements ───────────────────────────────────────
+  // adjustmentType is typed `string` at the boundary; the reason CHECK on
+  // listing_agreements.adjustment_type refuses anything outside the vocabulary,
+  // and supabase-js reports that by RESOLVING, not throwing. Validate with the
+  // vocabulary's own guard BEFORE writing, so an unknown reason is refused with
+  // a message instead of surfacing as a bare constraint violation.
+  if (commissionTerms?.adjustmentType && !isCommissionAdjustmentReason(commissionTerms.adjustmentType)) {
+    return {
+      success: false,
+      error: `Unknown commission adjustment reason "${commissionTerms.adjustmentType}" — pick one of the offered reasons (or "custom").`,
+    }
+  }
   const hasAdjustment = !!(commissionTerms?.adjustmentType && commissionTerms?.adjustmentValue !== undefined)
+
+  // MONEY SHOWN TO A SELLER — validated before it is written, because the six
+  // net-sheet readers subtract it from the seller's proceeds without re-checking.
+  // A negative fee would ADD to their net; a NaN would render "$NaN" on the
+  // seller's own portal. Neither is a number anyone agreed to.
+  const rawFee = commissionTerms?.sellerTransactionFee
+  if (rawFee !== undefined && rawFee !== null) {
+    if (!Number.isFinite(Number(rawFee)) || Number(rawFee) < 0) {
+      return { success: false, error: "Seller transaction fee must be a positive dollar amount (or left blank if none was agreed)." }
+    }
+  }
+  const sellerTransactionFee =
+    rawFee === undefined || rawFee === null ? null : Number(rawFee)
+
+  // THE AGREEMENT'S TOTAL — validated/derived BEFORE the write (owner ruling
+  // 2026-08-27: the total commission rate is part of the state form / seller
+  // agreement). resolveAgreedCommission gives a written total precedence over
+  // the split sum, so a total that disagrees with the splits must be refused
+  // here rather than written and left to silently win downstream.
+  const totalRateResolution = resolveTotalCommissionRate({
+    listingRate: commissionTerms?.listingRate ?? null,
+    buyerRate: commissionTerms?.buyerRate ?? null,
+    totalRate: commissionTerms?.totalRate ?? null,
+  })
+  if (!totalRateResolution.ok) {
+    return { success: false, error: totalRateResolution.error }
+  }
 
   const { data: agreement, error: agreementError } = await supabase
     .from("listing_agreements")
     .insert({
       listing_id:                  listingId,
       brokerage_id:                brokerageId,
+      // THE SELLER, STAMPED ON THE AGREEMENT. This is the only insert of
+      // `listing_agreements` in the tree and it left `seller_contact_id` NULL,
+      // while two consumers key on it:
+      //
+      //   · lib/kernel/compliance/active-representation.ts:59-63 — arm 3 of the
+      //     implied-TCPA-consent test is "a fully-signed listing agreement for
+      //     this contact". With the column NULL that arm could never match, so
+      //     a seller whose agreement THIS FUNCTION had just fully executed
+      //     (esign_status is written executed a few lines below) still counted
+      //     as unconsented on sms/phone, and the dispatch suppression gate
+      //     blocked the servicing team from reaching their own active client.
+      //   · lib/kernel/notification-engine.ts:314-323 — reads seller_contact_id
+      //     off the agreement to find the seller to notify, and skips silently
+      //     on NULL (`if (listingAgreement?.seller_contact_id)`).
+      //
+      // The value was already in scope: the same id is handed to
+      // auditListingDocuments above. It was resolved and then not written down.
+      seller_contact_id:           sellerContactId,
       agent_user_id:               userId,
       upload_mode:                 uploadMode,
       provider_name:               activeProviderKey,
       document_url:                uploadMode === "manual_upload" ? (documentUrl ?? null) : null,
       provider_ref:                uploadMode === "provider_pull" ? (providerRef ?? null) : null,
-      esign_status:                "executed",
+      // Optional intake (see the parameter docs): NULL means "not recorded",
+      // and the lifecycle-page reader treats it that way.
+      document_name:               documentName,
+      effective_date:              effectiveDate,
+      esign_status:                LISTING_AGREEMENT_EXECUTED_STATUS,
       agreement_type:              "listing",
       seller_signed_at:            new Date().toISOString(),
       agent_signed_at:             new Date().toISOString(),
       fully_executed_at:           new Date().toISOString(),
       listing_commission_rate:     commissionTerms?.listingRate ?? null,
       buyer_commission_rate:       commissionTerms?.buyerRate ?? null,
+      // Entered on the form, or derived as listing + buyer when both sides were
+      // entered and the total line was left blank; NULL when nothing was
+      // recorded. See resolveTotalCommissionRate for the refusal rules.
+      total_commission_rate:       totalRateResolution.total,
       commission_is_flat_fee:      commissionTerms?.isFlatFee ?? false,
       commission_flat_amount:      commissionTerms?.flatAmount ?? null,
+      // NULL, never 0, when none was agreed — see the doc on the parameter. The
+      // six net-sheet readers all treat NULL as "no fee"; writing 0 would be
+      // indistinguishable but would ASSERT a negotiated zero.
+      seller_transaction_fee:      sellerTransactionFee,
       has_commission_adjustment:   hasAdjustment,
       adjustment_type:             commissionTerms?.adjustmentType ?? null,
       adjustment_value:            commissionTerms?.adjustmentValue ?? null,
       adjustment_value_type:       commissionTerms?.adjustmentValueType ?? null,
       adjustment_notes:            commissionTerms?.adjustmentNotes ?? null,
+      // Reached only after the gate above passed, so this now records a check
+      // that actually ran instead of asserting one that never did.
       compliance_passed:           true,
     })
     .select("id")
@@ -402,19 +916,70 @@ export async function markAgreementSigned(params: {
   }
 
   // ── 5. INSERT commission_adjustments if applicable ────────────────────────
+  //
+  // THIS INSERT COULD NEVER SUCCEED, and nothing said so. Three separate live-schema
+  // violations, all invisible because the result was never destructured — supabase-js
+  // RESOLVES a rejected write, so `await ...insert(...)` with no `error` check reports
+  // a constraint violation exactly like a success:
+  //
+  //   · transaction_id  — NOT NULL, no default. Never supplied.
+  //   · recipient_type  — NOT NULL, no default. Never supplied.
+  //   · adjustment_type — written straight through from the listing agreement's
+  //     REASON vocabulary into the ledger's MECHANISM vocabulary. `military`,
+  //     `repeat_client` and `relocation` are valid reasons and are rejected here.
+  //
+  // What it cost: an agent negotiates a reduced commission, the agreement saves, the
+  // UI confirms — and lib/commission/waterfall/03-apply-gross-adjustments.ts, which
+  // reads this table filtered on transaction_id, finds nothing. The seller is invoiced
+  // the FULL commission the agent promised to discount, at closing, every time.
+  let adjustmentWarning: string | null = null
   if (hasAdjustment && commissionTerms) {
-    await supabase.from("commission_adjustments").insert({
-      brokerage_id:          brokerageId,
-      created_by_agent_id:   await resolveAgentId(supabase as any, userId),
-      adjustment_type:       commissionTerms.adjustmentType!,
-      value:                 commissionTerms.adjustmentValue!,
-      value_type:            commissionTerms.adjustmentValueType ?? "percent",
-      notes:                 commissionTerms.adjustmentNotes ?? null,
-      applies_to:            "listing",
-      direction:             "reduction",
-      is_active:             true,
-      effective_date:        new Date().toISOString().slice(0, 10),
-    })
+    // The ledger row hangs off the TRANSACTION — that is the only key the waterfall
+    // reads. Without one there is nothing to attach the concession to, and inventing
+    // a transaction here would be a far larger side effect than this action implies.
+    const { data: tx } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("listing_id", listingId)
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (!tx?.id) {
+      adjustmentWarning =
+        "The commission adjustment is recorded on the listing agreement but NOT in the commission ledger — this listing has no transaction yet, and the ledger entry is what reduces the commission at closing. Open the transaction for this listing and re-apply the adjustment."
+    } else {
+      const reason = commissionTerms.adjustmentType ?? null
+      const { error: adjustmentError } = await supabase
+        .from("commission_adjustments")
+        .insert({
+          brokerage_id:          brokerageId,
+          transaction_id:        tx.id,
+          created_by_agent_id:   await resolveAgentId(supabase as any, userId),
+          // Reason → mechanism. The reason itself stays on
+          // listing_agreements.adjustment_type and is carried into the notes below,
+          // so translating here loses nothing.
+          adjustment_type:       ledgerMechanismForReason(reason),
+          recipient_type:        recipientTypeForReason(reason),
+          value:                 commissionTerms.adjustmentValue!,
+          value_type:            commissionTerms.adjustmentValueType ?? "percent",
+          notes:                 [commissionAdjustmentReasonLabel(reason), commissionTerms.adjustmentNotes]
+                                   .filter(Boolean).join(" — ") || null,
+          // applies_to is (gross|agent|brokerage) — a seller-negotiated listing
+          // concession comes off the GROSS commission — and direction is
+          // (credit|surcharge); a reduction IS a credit.
+          applies_to:            "gross",
+          direction:             "credit",
+          is_active:             true,
+          effective_date:        new Date().toISOString().slice(0, 10),
+        })
+
+      if (adjustmentError) {
+        adjustmentWarning =
+          `The commission adjustment is recorded on the listing agreement but NOT in the commission ledger (${adjustmentError.message}). The ledger entry is what reduces the commission at closing.`
+      }
+    }
   }
 
   // ── 6. Set go_live_date + calculate open house dates ──────────────────────
@@ -515,7 +1080,23 @@ export async function markAgreementSigned(params: {
   // Non-blocking — notification failure must not fail the agreement signing
   })
 
-  return { success: true, agreementId: agreement.id }
+  // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ────────────
+  // The audit above decided whether the AGREEMENT could be executed; the loop now
+  // asks the ONE listing gate whether the LISTING may go coming-soon. A pass walks
+  // it to COMING_SOON_PREP (status coming_soon via the gated map); a fail names the
+  // missing documents, signatures and initials — separately — to the TC, the
+  // compliance officer and the agent, and every later upload re-enters the loop.
+  try {
+    const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+    await runListingComplianceLoop(supabase as any, { brokerageId, listingId, trigger: "agreement_executed", actorUserId: userId })
+  } catch (err: any) {
+    console.error("[markAgreementSigned] listing compliance loop failed (non-fatal):", err?.message ?? err)
+  }
+
+  // The agreement itself saved. If the ledger entry did not, the caller is told so
+  // explicitly rather than being handed an unqualified success — a concession the
+  // money engine never sees is money the seller is charged anyway.
+  return { success: true, agreementId: agreement.id, ...(adjustmentWarning ? { warning: adjustmentWarning } : {}) }
 }
 
 // ─── OPEN HOUSE DATE CALCULATOR ───────────────────────────────────────────────
@@ -550,11 +1131,20 @@ export async function recordPreListingRepair(params: {
   repairType: string
   description: string
   vendorId?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairType, description, vendorId, userId, brokerageId } = params
+  const { listingId, repairType, description, vendorId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: LISTING_AGREEMENT_SIGNED → REPAIRS_IN_PROGRESS
   const transitionResult = await transitionLifecycle({
@@ -579,9 +1169,10 @@ export async function recordPreListingRepair(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.required.pre_listing",
     title:         `Pre-listing repair required: ${repairType}`,
     description,
@@ -599,11 +1190,20 @@ export async function recordPreListingRepair(params: {
 export async function markRepairCompleted(params: {
   listingId: string
   repairId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairId, userId, brokerageId } = params
+  const { listingId, repairId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: REPAIRS_IN_PROGRESS → COMING_SOON_PREP
   const transitionResult = await transitionLifecycle({
@@ -628,9 +1228,10 @@ export async function markRepairCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.completed.pre_listing",
     title:         "Pre-listing repair completed",
     notes:         JSON.stringify({ listing_id: listingId, repair_id: repairId }),
@@ -648,15 +1249,25 @@ export async function markRepairFailed(params: {
   listingId: string
   repairId: string
   reason: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, repairId, reason, userId, brokerageId } = params
+  const { listingId, repairId, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.repair.failed.pre_listing",
     title:         "Pre-listing repair failed",
     description:   reason,
@@ -696,15 +1307,25 @@ export async function scheduleMediaCapture(params: {
   listingId: string
   scheduledDate: string
   vendorId?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, scheduledDate, vendorId, userId, brokerageId } = params
+  const { listingId, scheduledDate, vendorId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.scheduled",
     title:         `Media capture scheduled: ${scheduledDate}`,
     description:   `Media capture session scheduled`,
@@ -743,11 +1364,20 @@ export async function markMediaCaptured(params: {
   listingId: string
   photoCount: number
   hasVideo: boolean
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, photoCount, hasVideo, userId, brokerageId } = params
+  const { listingId, photoCount, hasVideo } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: COMING_SOON_PREP → MEDIA_CAPTURE
   const transitionResult = await transitionLifecycle({
@@ -772,9 +1402,10 @@ export async function markMediaCaptured(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.captured",
     title:         `Media captured: ${photoCount} photos${hasVideo ? ", video" : ""}`,
     description:   `${photoCount} photos captured${hasVideo ? " with video" : ""}`,
@@ -791,12 +1422,21 @@ export async function markMediaCaptured(params: {
  */
 export async function approveMedia(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -827,9 +1467,10 @@ export async function approveMedia(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.media.approved",
     title:         "Media approved",
     description:   `Media approved by ${role}`,
@@ -846,24 +1487,24 @@ export async function approveMedia(params: {
  */
 export async function prepareComingSoonAssets(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
 
-  // Gate: Requires media approved — check lifecycle_events (activities has no listing_id)
-  const { data: mediaEvent } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
-    .limit(1)
-    .maybeSingle()
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
-  if (!mediaEvent) {
-    return { success: false, error: "Media not approved" }
-  }
+  // Gate: the listing must actually be in the stage COMING_SOON_PREP is entered from.
+  const stageGate = await requireListingStage(supabase, listingId, "COMING_SOON_PREP")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Stage transition: MEDIA_APPROVED → COMING_SOON_PREP
   const transitionResult = await transitionLifecycle({
@@ -888,9 +1529,10 @@ export async function prepareComingSoonAssets(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.coming_soon.assets_prepared",
     title:         "Coming soon assets prepared (without address)",
     description:   "Coming soon marketing assets prepared, address withheld per compliance",
@@ -907,12 +1549,21 @@ export async function prepareComingSoonAssets(params: {
  */
 export async function activateComingSoon(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -943,9 +1594,10 @@ export async function activateComingSoon(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.coming_soon.activated",
     title:         "Coming soon marketing activated",
     description:   `Coming soon activated by ${role}`,
@@ -962,22 +1614,27 @@ export async function activateComingSoon(params: {
  */
 export async function markMLSReady(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
 
-  // Gate: Requires media approved + coming soon activated — check lifecycle_events
-  const { data: gates } = await supabase
-    .from("lifecycle_events")
-    .select("event_type")
-    .eq("entity_id", listingId)
-    .in("event_type", [KernelEvent.LISTING_STAGE_CHANGED, KernelEvent.COMING_SOON_SENT])
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
-  if (!gates || gates.length < 2) {
-    return { success: false, error: "Media not approved or coming soon not activated" }
-  }
+  // Gate: the listing must actually be in the stage MLS_READY is entered from
+  // (MEDIA_APPROVED), which is only reachable through COMING_SOON_ACTIVE and
+  // MEDIA_CAPTURE — so the stage itself carries "media approved AND coming soon
+  // activated". The old two-row count could not express that and never matched.
+  const stageGate = await requireListingStage(supabase, listingId, "MLS_READY")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Stage transition: COMING_SOON_ACTIVE → MLS_READY
   const transitionResult = await transitionLifecycle({
@@ -1002,9 +1659,10 @@ export async function markMLSReady(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.ready",
     title:         "Listing MLS ready",
     description:   "Listing cleared all gates and is ready for MLS submission",
@@ -1025,25 +1683,26 @@ export async function markMLSReady(params: {
  */
 export async function approveOpenHouseMarketing(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, role } = params
+  const { listingId, role } = params
 
-  // Gate: Requires MLS ready — check lifecycle_events (activities has no listing_id)
-  const { data: mlsReady } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
-    .limit(1)
-    .maybeSingle()
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
-  if (!mlsReady) {
-    return { success: false, error: "Listing not MLS ready" }
-  }
+  // Gate: the listing must actually be MLS_READY, the stage OPEN_HOUSE_MARKETING
+  // is entered from.
+  const stageGate = await requireListingStage(supabase, listingId, "OPEN_HOUSE_MARKETING")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   // Authority check
   if (role !== "agent" && role !== "team_lead") {
@@ -1074,9 +1733,10 @@ export async function approveOpenHouseMarketing(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house_marketing.approved",
     title:         "Open house marketing approved",
     description:   `Open house marketing approved by ${role}`,
@@ -1093,28 +1753,32 @@ export async function approveOpenHouseMarketing(params: {
  */
 export async function submitToMLSAdmin(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
 
-  // Gate: Requires open house marketing approved — check lifecycle_events
-  const { data: openHouseApproved } = await supabase
-    .from("lifecycle_events")
-    .select("id")
-    .eq("entity_id", listingId)
-    .eq("event_type", KernelEvent.OPEN_HOUSE_MARKETING_STARTED)
-    .limit(1)
-    .maybeSingle()
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
-  if (!openHouseApproved) {
-    return { success: false, error: "Open house marketing not approved" }
-  }
+  // Gate: open house marketing must be approved — i.e. the listing is sitting in
+  // OPEN_HOUSE_MARKETING, the stage MLS_ACTIVE is entered from. Expressed against
+  // the target so the requirement stays tied to the stage table rather than to a
+  // hand-copied literal.
+  const stageGate = await requireListingStage(supabase, listingId, "MLS_ACTIVE")
+  if (!stageGate.ok) return { success: false, error: stageGate.error }
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.submitted_to_admin",
     title:         "Listing submitted to MLS admin",
     description:   "Listing submitted to admin for MLS entry",
@@ -1152,16 +1816,66 @@ export async function submitToMLSAdmin(params: {
 export async function activateMLS(params: {
   listingId: string
   mlsNumber: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
   role: string
 }) {
   const supabase = await createClient()
-  const { listingId, mlsNumber, userId, brokerageId, role } = params
+  const { listingId, mlsNumber, role } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Authority check: Admin only
   if (role !== "admin") {
     return { success: false, error: "Only admin can activate MLS" }
+  }
+
+  // ── THE COMPLIANCE GATE (owner's ruling, 2026-09-04) ─────────────────────
+  //
+  // "same compliance gate when a listing becomes an active listing."
+  //
+  // This is the moment. Until now the ONLY conditions on making a listing
+  // publicly live through this door were `authorizeListingAction` (tenancy) and
+  // `role !== "admin"` (authority) — no document check, no signature check, no
+  // initial check, and not even a stage precondition. An admin could take a
+  // listing with an empty file straight to MLS_ACTIVE, and because
+  // transitionLifecycle syncs listings.status ('active' via
+  // lib/listings/listing-status-sync.ts), it went publicly live on the spot.
+  //
+  // The gate is the listing-side twin of assertTransactionCreationAllowed and
+  // asks the same four questions against the BROKERAGE'S OWN checklist. It runs
+  // BEFORE the transition, and a refusal returns the reason verbatim — it names
+  // the missing documents, the missing signatures and the missing initials
+  // separately, because those are three different jobs for whoever fixes them.
+  const complianceGate = await assertListingActivationAllowed(supabase as any, {
+    brokerageId,
+    listingId,
+    door: "MLS activation",
+  })
+  if (!complianceGate.allowed) {
+    // A refused MLS door used to tell only the CALLER. The three roles who can fix it
+    // are told what is missing (deduped on the blocker set), and the loop re-runs on
+    // upload. It never advances from here — MLS_READY is past the coming-soon window.
+    try {
+      const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+      await runListingComplianceLoop(supabase as any, { brokerageId, listingId, trigger: "activation_refused", actorUserId: userId })
+    } catch (err: any) {
+      console.error("[activateMLS] compliance-loop notification failed (non-fatal):", err?.message ?? err)
+    }
+    return {
+      success: false,
+      error: complianceGate.reason,
+      refusals: complianceGate.refusals,
+      missing_required: complianceGate.detail.missingRequired,
+      unexecuted: complianceGate.detail.unexecuted,
+    }
   }
 
   // Stage transition: MLS_READY → MLS_ACTIVE
@@ -1189,9 +1903,10 @@ export async function activateMLS(params: {
   }).catch(() => {})
 
   // CRM human task record for MLS activation (activities correct)
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.mls.activated",
     title:         `Listing activated on MLS: ${mlsNumber}`,
     description:   `Listing published to MLS with number ${mlsNumber}`,
@@ -1219,11 +1934,20 @@ export async function activateMLS(params: {
 export async function scheduleOpenHouse(params: {
   listingId: string
   eventDate: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, eventDate, userId, brokerageId } = params
+  const { listingId, eventDate } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: MLS_ACTIVE → OPEN_HOUSE_EVENT
   const transitionResult = await transitionLifecycle({
@@ -1248,9 +1972,10 @@ export async function scheduleOpenHouse(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house.scheduled",
     title:         `Open house scheduled: ${eventDate}`,
     description:   `Open house event scheduled for ${eventDate}`,
@@ -1269,11 +1994,20 @@ export async function scheduleOpenHouse(params: {
 export async function markOpenHouseCompleted(params: {
   listingId: string
   attendeeCount: number
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, attendeeCount, userId, brokerageId } = params
+  const { listingId, attendeeCount } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: OPEN_HOUSE_EVENT → SHOWINGS_ACTIVE
   const transitionResult = await transitionLifecycle({
@@ -1298,9 +2032,10 @@ export async function markOpenHouseCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.open_house.completed",
     title:         `Open house completed: ${attendeeCount} attendees`,
     description:   `Open house completed with ${attendeeCount} attendees`,
@@ -1319,15 +2054,25 @@ export async function recordShowingCompleted(params: {
   listingId: string
   showingId: string
   feedback?: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, showingId, feedback, userId, brokerageId } = params
+  const { listingId, showingId, feedback } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.showing.completed",
     title:         "Showing completed",
     description:   feedback ?? "Showing completed",
@@ -1368,11 +2113,20 @@ export async function recordShowingCompleted(params: {
  */
 export async function markUnderContract(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: OFFERS_RECEIVED → UNDER_CONTRACT (terminal — stops System 5.2)
   const transitionResult = await transitionLifecycle({
@@ -1397,9 +2151,10 @@ export async function markUnderContract(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.under_contract",
     title:         "Listing under contract",
     description:   "Listing moved to under contract — handed off to transaction system",
@@ -1417,11 +2172,20 @@ export async function markUnderContract(params: {
 export async function cancelListing(params: {
   listingId: string
   reason: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, reason, userId, brokerageId } = params
+  const { listingId, reason } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Fetch current stage to use as fromState
   const { data: listingRow } = await supabase
@@ -1455,9 +2219,10 @@ export async function cancelListing(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing.cancelled",
     title:         "Listing cancelled",
     description:   reason,
@@ -1474,11 +2239,20 @@ export async function cancelListing(params: {
  */
 export async function markListingExpired(params: {
   listingId: string
-  userId: string
-  brokerageId: string
+  /** @deprecated ignored — identity is resolved from the session by the tenant gate. */
+  userId?: string
+  /** @deprecated ignored — resolved from the session; passing one cannot widen scope. */
+  brokerageId?: string
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId } = params
+  const { listingId } = params
+
+  // TENANT GATE — identity from the SESSION, and the listing must belong to it.
+  // The userId / brokerageId params are ignored in favour of these; a caller
+  // cannot write into another brokerage's ledger by passing its id.
+  const scope = await authorizeListingAction(supabase, listingId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { userId, brokerageId } = scope
 
   // Stage transition: MLS_ACTIVE → LISTING_EXPIRED (terminal)
   const transitionResult = await transitionLifecycle({
@@ -1503,9 +2277,10 @@ export async function markListingExpired(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  await supabase.from("activities").insert({
+  await logLifecycleActivity(supabase, {
     brokerage_id:  brokerageId,
     agent_id:      await resolveAgentId(supabase as any, userId),
+    listing_id:    listingId,
     activity_type: "seller.listing.expired",
     title:         "Listing expired",
     description:   "Listing expired without a contract",

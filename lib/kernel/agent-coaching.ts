@@ -53,21 +53,28 @@ type Svc = ReturnType<typeof createServiceClient>
 
 /** A conversion/no-show metric needs at least this many events before it earns a verdict. */
 export const MIN_SAMPLE = 3
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: LEAK_PENALTY, STRONG_EDUCATION_PCT, STRONG_HEALTH, STRONG_TOUR_OFFER, WEAK_EDUCATION_PCT, WEAK_HEALTH, WEAK_TOUR_OFFER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Tour→offer conversion at/above this is a STRENGTH (buyer-side: tours turning into offers). */
-export const STRONG_TOUR_OFFER = 0.5
+const STRONG_TOUR_OFFER = 0.5
 /** Tour→offer conversion at/below this is a LEAK (tours not converting to written offers). */
-export const WEAK_TOUR_OFFER = 0.2
+const WEAK_TOUR_OFFER = 0.2
 /** No-show RATE at/above this (of scheduled appointments) is a LEAK. */
 export const HIGH_NOSHOW_RATE = 0.25
 /** Avg deal health at/above this is a STRENGTH; at/below LOW is a LEAK. */
-export const STRONG_HEALTH = 80
-export const WEAK_HEALTH = 50
+const STRONG_HEALTH = 80
+const WEAK_HEALTH = 50
 /** This many+ stale (cold past DEFAULT_STALE_DAYS) contacts on the agent's book is a LEAK. */
 export const STALE_LEAK_COUNT = 5
 /** Education completion at/below this (with assignments on file) is a LEAK. */
-export const WEAK_EDUCATION_PCT = 50
+const WEAK_EDUCATION_PCT = 50
 /** Education completion at/above this is a STRENGTH. */
-export const STRONG_EDUCATION_PCT = 90
+const STRONG_EDUCATION_PCT = 90
 
 // ── The pure brief model ──────────────────────────────────────────────────────
 
@@ -268,7 +275,7 @@ export interface WeeklyCoachingReport {
 /** PURE + deterministic. A 0-100 coaching score from the brief — never a fabricated number:
  *  each real leak costs LEAK_PENALTY (capped), a clean brief with strengths sits high, and the
  *  honest not-enough-data case is a neutral 70 (a "we don't know yet" placeholder, not praise). */
-export const LEAK_PENALTY = 12
+const LEAK_PENALTY = 12
 export function coachingScore(brief: CoachingBrief): number {
   if (brief.notEnoughData) return 70
   const base = brief.strengths.length > 0 ? 92 : 80

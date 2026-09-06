@@ -33,6 +33,7 @@ import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -246,6 +247,25 @@ async function finalizeMatchingOffer(
         status:                           "accepted",
       })
       .eq("id", matchedOffer.id)
+
+    // THE OFFER COMPLIANCE LOOP STARTS HERE (owner, 2026-09-06: "…looped for
+    // offers turning into active transactions after pass and if fail, same as
+    // the listing autonomous loop"). Both sides have now signed; the loop asks
+    // the ONE gate (submitOfferToCompliance) and on a pass the transaction is
+    // created under contract with no click. Until this wire existed a counter
+    // executed through this webhook sat fully signed forever unless a human
+    // pressed "submit to compliance". Best-effort: a webhook never fails on it.
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(supabase, {
+        brokerageId: matchedOffer.brokerage_id as string,
+        offerId:     matchedOffer.id as string,
+        trigger:     "agreement_executed",
+        actorUserId: null,
+      })
+    } catch (err) {
+      console.error("[finalize-packet] offer compliance loop failed (non-fatal):", (err as Error).message)
+    }
   } else {
     // Standard buyer-first path (original offer, not yet seller-countered):
     // mark buyer side as signed; seller side still pending the agent's
@@ -266,14 +286,21 @@ async function finalizeMatchingOffer(
   // the agents table join so both surfaces fire together.
   const agentId = (matchedOffer.agent_id as string | null) ?? null
   if (agentId) {
-    const { data: activityRow } = await supabase.from("activities").insert({
+    // `{ data }` alone cannot tell a REJECTED insert from one that landed —
+    // both come back with data null-ish. This row records a SIGNED document,
+    // so the error is read too.
+    const { data: activityRow, error: signedActivityError } = await supabase.from("activities").insert({
       brokerage_id:  matchedOffer.brokerage_id,
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
       entity_type:   "offer",
+      // THE OFFER KEY. This row carried entity_type='offer' with NO entity_id,
+      // so it was unreachable from the offer it describes — the same defect
+      // wave 7 closed across the writer set (docs/wave7-offer-lifecycle-audit.md).
+      entity_id:     matchedOffer.id,
       activity_type: isCounterFullyExecuted
-                       ? "buyer.offer.counter.fully_executed"
-                       : "buyer.offer.buyer_signed",
+                       ? OFFER_AUDIT_EVENT.COUNTER_FULLY_EXECUTED
+                       : OFFER_AUDIT_EVENT.BUYER_SIGNED,
       title:         isCounterFullyExecuted
                        ? "Counter fully executed — both sides signed"
                        : "Buyer signed the offer",
@@ -285,6 +312,68 @@ async function finalizeMatchingOffer(
       status:        "completed",
       priority:      "high",
     }).select("id").maybeSingle()
+    if (signedActivityError) {
+      console.error(`[finalize-packet] buyer-signed activity REJECTED for offer ${matchedOffer.id} — the signature is on the offer row but not on the audit feed:`, signedActivityError.message)
+    }
+
+    // ── THE LIFECYCLE EVENT (wave 7) ─────────────────────────────────────────
+    // The row above is an AUDIT/QUEUE row: its title and description are written
+    // for the agent's feed, and `buyer.offer.buyer_signed` is not a state in the
+    // canonical machine. Nothing in the tree emitted `buyer.offer.submitted`,
+    // so every real offer's DERIVED state was stuck at DRAFT — which is why the
+    // /api/cron/offer-expiry sweep refused every offer it ever scanned (it
+    // requires PENDING, correctly, and nothing ever reached PENDING).
+    //
+    // This is the moment the offer is in front of the seller. The docblock on
+    // this function already says so in its own words: "Forward to listing agent
+    // and await seller response." So the canonical DRAFT → PENDING transition
+    // belongs exactly here, and it is filed on the offer key.
+    //
+    // ONLY on the buyer-first path. When the counter is fully executed both
+    // sides have signed, and the state that follows is ACCEPTED — which in this
+    // system is reachable ONLY through the compliance gate
+    // (submit-to-compliance.ts emits OFFER_EVENT.ACCEPTED after
+    // buyer.offer.compliance.passed). Emitting an acceptance here would walk
+    // straight past that gate, so this branch deliberately files nothing:
+    // `buyer.offer.counter.fully_executed` above is the audit record, and
+    // compliance remains the only door.
+    if (!isCounterFullyExecuted) {
+      const { error: submittedEventError } = await supabase.from("activities").insert({
+        brokerage_id:  matchedOffer.brokerage_id,
+        agent_id:      agentId,
+        contact_id:    matchedOffer.contact_id,
+        entity_type:   "offer",
+        entity_id:     matchedOffer.id,
+        activity_type: OFFER_EVENT.SUBMITTED,
+        title:         "Offer submitted to the seller",
+        description:   `Buyer signature complete; the offer is with the listing side awaiting a seller response.`,
+        notes:         JSON.stringify({ offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now }),
+        metadata:      { offer_id: matchedOffer.id, envelopeId, provider, submitted_at: now },
+        status:        "completed",
+      })
+
+      // Not fire-and-forget. If this row is lost the offer stays DRAFT forever:
+      // it can never expire on its deadline, and every surface that gates on
+      // PENDING treats a live offer as a draft. Say so rather than move on.
+      if (submittedEventError) {
+        console.error(
+          `[finalize-packet] offer ${matchedOffer.id}: buyer signed but the ${OFFER_EVENT.SUBMITTED} lifecycle event did NOT land — the offer will read as DRAFT:`,
+          submittedEventError.message,
+        )
+      } else {
+        // The operational index the screens read, kept in step with the event.
+        const { error: statusError } = await supabase
+          .from("offers")
+          .update({ status: EVENT_TO_STATUS[OFFER_EVENT.SUBMITTED] })
+          .eq("id", matchedOffer.id)
+        if (statusError) {
+          console.error(
+            `[finalize-packet] offer ${matchedOffer.id}: ${OFFER_EVENT.SUBMITTED} filed but offers.status did not move:`,
+            statusError.message,
+          )
+        }
+      }
+    }
 
     // Resolve agents.id → users.id for the notification recipient
     const { data: agentRow } = await supabase
@@ -389,10 +478,28 @@ export async function finalizeLegacyEsignArtifacts(
         eventType:   "listing_agreement_signed",
         metadata:    { agreementId: matchedAgreement.id, envelopeId, source: "webhook" },
       }, supabase)
+      // stage_entered_at is the stage machine's clock; listings.status is NOT written here —
+      // transitionLifecycle synced it (listing_signed) from the shared map one call above.
       await supabase
         .from("listings")
-        .update({ status: "coming_soon", stage_entered_at: now })
+        .update({ stage_entered_at: now })
         .eq("id", matchedAgreement.listing_id)
+      // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ─────────
+      // The executed agreement is where compliance STARTS. The kernel transition above
+      // already stamped `listing_signed` through the shared map; the explicit
+      // `status: coming_soon` write that stood here overwrote it and declared the
+      // gate passed before it had run. Now the loop runs the ONE gate: a pass walks the
+      // listing to COMING_SOON_PREP (status coming_soon), a fail names what is missing
+      // to the TC, the compliance officer and the agent, and every later upload
+      // re-enters it. Non-fatal — the webhook has already recorded the signature.
+      try {
+        const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+        await runListingComplianceLoop(supabase as any, {
+          brokerageId: (listingRow as any).brokerage_id, listingId: matchedAgreement.listing_id, trigger: "agreement_executed", actorUserId: null,
+        })
+      } catch (err: any) {
+        console.error("[finalize-packet] listing compliance loop failed (non-fatal):", err?.message ?? err)
+      }
     }
   }
 

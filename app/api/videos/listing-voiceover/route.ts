@@ -11,11 +11,64 @@
  *   property_image_urls: string[],  // in display order
  * }
  * Returns: { audio_url: string, property_image_urls: string[], video_project_id: string }
+ *
+ * ── UNRESOLVED, AND DELIBERATELY LEFT STANDING (lane G1, 2026-08-28) ─────────
+ * The census reports this route under 6b ("nothing in the tree addresses it").
+ * That is true, and it is HALF the story: the rail is unfinished at BOTH ends.
+ *   · NO CALLER. Nothing in the tree POSTs here.
+ *   · NO COMPLETER. The handler leaves the row at status 'generating' /
+ *     provider_status 'audio_ready' and says "the client stitches images +
+ *     audio". No such stitcher exists anywhere in this repo, so a row that DID
+ *     reach here would sit in flight until the pipeline reaper aged it out
+ *     (lib/video/video-status.ts:126 records exactly that phase; the reaper
+ *     covers it — scripts/video-pipeline-reaper-simulator.ts:40).
+ *
+ * ── EXIT (a) EVALUATED AND REFUSED (lane W8, 2026-09-01) ─────────────────────
+ * The owner's option (a) — retire onto the walkthrough rail — was compared
+ * capability by capability against what commissionVideo actually accepts
+ * today, and RETIREMENT IS BLOCKED: three of this route's inputs have no door
+ * on that rail, so deleting it would delete capability, not duplication (§1.3
+ * requires "the functionality already lives elsewhere"; it does not).
+ *
+ *   · "my photos" — commissionVideo's CommissionOpts carries listingId /
+ *     contactId / leadId / campaignId and NO photo input; PhotoWalkthroughReel
+ *     sources photos exclusively from listing_media (m221: "Photos are
+ *     listing_media (file_url, sort_order asc, media_type=image)"). Arbitrary
+ *     caller-supplied property_image_urls — photos not attached to any
+ *     listing — cannot ride.
+ *   · "my script" — commissionVideo has no script parameter: the only prose it
+ *     drafts is the 8-word hook line (generatePersonaCopy + compliance gate),
+ *     and PhotoWalkthroughReel's content props are listingReelProps(listing,
+ *     hookLine) (lib/video/director-content.ts:466) — no narration-script
+ *     input. The compliance-gated agent-script door exists
+ *     (app/actions/workflows.ts:savePrivateScript → the fused
+ *     gateAndStorePrivateScript), but NOTHING routes a `scripts` row into a
+ *     walkthrough render's narration, so a saved private script still cannot
+ *     reach this rail.
+ *   · "my voice" — commissionVideo has no voice parameter; the render path
+ *     resolves the narration voice from the agent → team → brokerage
+ *     voice-profile cascade (lib/video/video-identity.ts →
+ *     prepareReelVoiceover), i.e. the agent's own configured clone. A
+ *     caller-chosen elevenlabs_voice_id cannot ride.
+ *
+ * Per the owner's 2026-08-28 methodology ruling — a shared outcome is not a
+ * shared capability — those are two processes, and deleting this one would be
+ * deleting to move a number. The route therefore STAYS, still owed either its
+ * missing renderer (option b) or a commissionVideo surface that accepts
+ * photos/script/voice (which would reopen option a). What did NOT survive the
+ * evaluation is the §5 bypass: a CALLER-SUPPLIED script was synthesized and
+ * attached with no fair-housing gate at all, on the one video lane whose text
+ * is written by the caller. The POST now runs the SAME pure red-flag gate the
+ * private-script door uses (lib/video/script-compliance.ts:
+ * detectFairHousingRedFlags — deterministic, synchronous, fails closed on a
+ * protected-class/steering hit) BEFORE any TTS spend, and refuses with the
+ * findings rather than laundering them into audio.
  */
 
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { isValidUUID } from "@/lib/validations"
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,6 +83,60 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: "Missing required fields: video_project_id, script, elevenlabs_voice_id, property_image_urls" },
         { status: 400 }
+      )
+    }
+
+    if (!isValidUUID(video_project_id)) {
+      return NextResponse.json({ error: "Invalid project id" }, { status: 400 })
+    }
+
+    // THE NAMED PROJECT MUST BE THE CALLER'S (CLAUDE.md §4).
+    //
+    // requireAuth resolved a brokerage above and then NOTHING used it: the write
+    // below keyed on `.eq("id", video_project_id)` alone, so any signed-in user
+    // could name any project id on the platform and overwrite its status,
+    // provider_status and provider_metadata with their own audio — and append a
+    // video_render_log row against it. The tenant is resolved from the SESSION
+    // and compared for EQUALITY here, which is also why RLS is not the backstop:
+    // ai_video_projects.brokerage_id is NULLABLE and every policy admits
+    // `brokerage_id IS NULL`, so an untenanted row satisfies the predicate for
+    // every brokerage. An equality test is the only thing a NULL cannot pass.
+    const { data: project, error: projectError } = await supabase
+      .from("ai_video_projects")
+      .select("id, brokerage_id")
+      .eq("id", video_project_id)
+      .maybeSingle()
+    // supabase-js RESOLVES a refusal (§3): without reading the error, a refused
+    // read is byte-identical to "no such project" and would answer 404 for what
+    // is really a broken read.
+    if (projectError) {
+      console.error("[ListingVoiceover] project read refused:", projectError)
+      return NextResponse.json({ error: "Failed to verify project" }, { status: 500 })
+    }
+    if (!project) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 })
+    }
+    if (project.brokerage_id !== auth.brokerageId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // ── §5 GATE ON THE CALLER'S OWN WORDS, BEFORE ANY TTS SPEND ──────────────
+    // This is the one video lane whose script is written BY THE CALLER, and it
+    // used to synthesize that text ungated. Same hard line as the private-
+    // script door (app/actions/workflows.ts:gateAndStorePrivateScript): a
+    // deterministic fair-housing red flag — protected-class reference or
+    // high-severity steering — REFUSES the request outright; the check is pure
+    // and synchronous, so an outage can never make a hit read as clean. A
+    // listing voiceover speaks to the seller side (scriptJourneyType's rule).
+    const { detectFairHousingRedFlags } = await import("@/lib/video/script-compliance")
+    const redFlags = detectFairHousingRedFlags(String(script), "seller")
+    if (redFlags.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Script refused — hard fair-housing flag. Nothing was generated.",
+          violations: redFlags,
+        },
+        { status: 422 }
       )
     }
 
@@ -49,11 +156,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to generate voiceover audio" }, { status: 500 })
     }
 
-    // Update project with audio URL — client handles slideshow rendering
-    await supabase
+    // Update project with audio URL — client handles slideshow rendering.
+    // Tenant-scoped on the way in as well as gated above, and `.select()`ed so a
+    // predicate that matched nothing is distinguishable from a write that
+    // landed: an UPDATE matching zero rows resolves with error === null (§3).
+    const { data: updated, error: updateError } = await supabase
       .from("ai_video_projects")
       .update({
-        status: "audio_ready",
+        // The voiceover exists but the slideshow video does not — this row is
+        // still IN FLIGHT, not finished. provider_status keeps the finer-grained
+        // 'audio_ready' detail; ai_video_projects.status is the one vocabulary.
+        status: "generating",
         provider_status: "audio_ready",
         provider_metadata: {
           provider: "slideshow",
@@ -63,11 +176,55 @@ export async function POST(request: NextRequest) {
         error_message: null,
       })
       .eq("id", video_project_id)
+      .eq("brokerage_id", auth.brokerageId)
+      .select("id")
 
-    await supabase.from("video_render_log").insert({
+    if (updateError) {
+      console.error("[ListingVoiceover] project update refused:", updateError)
+      return NextResponse.json({ error: "Failed to attach the voiceover" }, { status: 500 })
+    }
+    if (!updated || updated.length === 0) {
+      // The gate passed a moment ago, so zero rows here means the row moved out
+      // from under us (or the tenant predicate refused). Reporting success would
+      // hand back an audio_url attached to nothing.
+      return NextResponse.json({ error: "Failed to attach the voiceover" }, { status: 409 })
+    }
+
+    // `status` is NAMED rather than left on the column DEFAULT: the attempt list
+    // an agent reads (app/components/content-studio/LinkToVideoGenerator.tsx:614)
+    // renders this value, and an unnamed default is indistinguishable from an
+    // attempt nobody ever updated. The voiceover IS the deliverable of this
+    // route — the slideshow render is a later step — so the honest state of THIS
+    // attempt is submitted, matching the project's own 'generating'.
+    //
+    // `cost_usd` IS KNOWN ON THIS LANE, and that is the whole reason it is
+    // filled here and nowhere else. The column is read by the render-attempt
+    // list (app/actions/link-to-video.ts:583) and had no writer at all, because
+    // the D-ID lane deliberately refuses to invent a figure it has no price
+    // table for (see app/api/did/generate-video/route.ts:497 — that refusal
+    // stands). ElevenLabs is different: lib/vendor-governance/cost-normalizer.ts
+    // carries a documented $0.30/1K-character rate for it, and the character
+    // count of the script is right here. So this is the repo's own price table
+    // applied to a measured quantity, not a per-render guess — the distinction
+    // §5 draws when it says a wrong number in a cost ledger is a wrong invoice.
+    // A render whose provider has no entry in that table still writes NULL.
+    const { normalizeVendorCost, VENDOR_PRICING } = await import("@/lib/vendor-governance/cost-normalizer")
+    const voiceCostUsd = VENDOR_PRICING["elevenlabs"]
+      ? normalizeVendorCost("elevenlabs", String(script ?? "").length)
+      : null
+
+    const { error: renderLogError } = await supabase.from("video_render_log").insert({
       project_id: video_project_id,
+      brokerage_id: auth.brokerageId,
       provider: "elevenlabs_slideshow",
+      status: "submitted",
+      cost_usd: voiceCostUsd,
     })
+    // The ledger row is not the product — a refused insert is logged, and the
+    // voiceover the caller paid for is still returned rather than discarded.
+    if (renderLogError) {
+      console.error("[ListingVoiceover] video_render_log insert refused:", renderLogError)
+    }
 
     return NextResponse.json({
       success: true,

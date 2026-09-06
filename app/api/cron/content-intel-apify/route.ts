@@ -18,6 +18,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { apifyToken } from "@/lib/env/aliases"
 import { runApifyScrape } from "@/lib/content-intel/apify-scraper"
 
 export const dynamic = "force-dynamic"
@@ -49,7 +50,9 @@ export async function GET(req: NextRequest) {
   const expected = process.env.CRON_SECRET
   if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
   if (auth !== expected && qs !== expected) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  if (!process.env.APIFY_TOKEN) return NextResponse.json({ skipped: "APIFY_TOKEN not configured" })
+  // ONE SPELLING (§6): APIFY_API_TOKEN is the survivor; APIFY_TOKEN accepted for
+  // one release through lib/env/aliases.ts.
+  if (!apifyToken()) return NextResponse.json({ skipped: "APIFY_API_TOKEN not configured" })
 
   const svc = createServiceClient()
   const { data: sources, error } = await svc.from("content_topic_sources")

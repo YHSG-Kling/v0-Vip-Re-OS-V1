@@ -31,26 +31,72 @@
 //   user_role_assignments.brokerage_id → brokerages.id
 //   user_role_assignments.agent_id     → agents.id (nullable)
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// — under this header, below raw line 3, where scripts/use-server-export-guard.ts
+// could not see it — published all nine exports as Server Actions, POST-able by
+// action id from any session while this module sat in the server graph, with
+// ZERO session tokens in the file. `assignUserToBrokerage` and `assignUserToTeam`
+// take the target TENANT and the CALLER'S IDENTITY from their parameters and
+// write on the service client: §4's IDOR shape, on the tenancy ledger. Every
+// real caller is server-side and gates before calling (app/actions/admin/
+// update-user.ts, invite-user.ts, create-subscriber.ts, superadmin/tenant-users.ts,
+// auth/signup-brokerage.ts, onboarding/ensure-agent-brokerage.ts,
+// app/dashboard/page.tsx, app/api/billing/webhook), so the directive was only
+// ever a door. These are gate-first internals; `server-only` makes a future
+// client import fail at build instead of bundling the service client.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { requiresAgentRow } from "./tenant-provisioning-spec"
-import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
+import { requiresAgentRow, requiresOnboardingRow, ownerNeedsTeamRow } from "./tenant-provisioning-spec"
+import { roleDashboardRoute } from "./role-routes"
+import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
+// Runtime-safe both ways: seat-usage imports only TYPES from this module
+// (erased at compile time), so this is not a runtime cycle.
+import { seatGate } from "./seat-usage"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 export type UserDomainRole =
   | "agent"
   | "broker"
+  // OWNER RULING (2026-08-22): "a broker admin is a user type with differnt
+  // permission roles" — and CLAUDE.md §4's tenant roster has always named it
+  // (broker, broker_admin, broker_owner, team_lead, admin).
+  //
+  // NOT YET STORABLE. users_user_type_check admits fourteen values and this is
+  // not one of them, which is why m308/m518 stripped it out of the RLS
+  // predicates. supabase/migrations/m530-…sql adds it (WRITTEN, NOT APPLIED).
+  // Until then the invite menu cannot offer it — tier-role-matrix.ts
+  // `seatableUserTypes` intersects the menu with the live CHECK vocabulary — so
+  // this union member is reachable by TYPE but never written to the column.
+  | "broker_admin"
+  // Admitted by the users.user_type CHECK and mapped to brokerage_admin by
+  // normalizeCriticalRole, but it was in no seat list — so a brokerage OWNER
+  // consumed no seat on any surface.
+  | "broker_owner"
   | "admin"
   | "tc"
   | "isa"
   | "team_lead"
   | "compliance_officer"
   | "vendor"
-  | "lender"
+  // TOMBSTONE — 'lender' REMOVED (owner ruling, 2026-09-04: "lender is not a user
+  // type, it is a vendor category"). The survivor is vendors.category='lender',
+  // resolved by lib/kernel/lender-linkage.ts:isLenderVendorCategory /
+  // lenderVendorForUser and gated by lib/kernel/portal-auth.ts:
+  // requireLenderVendorActor. This union is the PROVISIONING vocabulary — every
+  // member is a value inviteTenantMember may write to users.user_type — and
+  // tier-role-matrix.ts already refused it (PARTNER_ROLES is `["vendor"]`, and
+  // roleRefusalReason names the vendor invite flow), so keeping it here only kept
+  // the value alive for the god console, which is the one path that could still
+  // mint the drift. supabase/migrations/m603-lender-is-not-a-user-type-it-is-a-vendor-category.sql drops it from the CHECK.
+  // It remains a CANONICAL ROLE in lib/security/types.ts — a lender vendor's
+  // permissions are still spelled 'lender'; only the SEAT is 'vendor'.
   | "superadmin"
+  // Platform/OS staff — admitted by the users.user_type CHECK, absent from this
+  // union. Like superadmin it is NOT a tenant seat.
+  | "support"
   | "contact"
   | "system"
 
@@ -162,12 +208,40 @@ export async function createOrRepairUserDomainRecords(
     const { userId, userType, brokerageId, teamId, tier, callerUserId } = params
 
     // ── 1. user_role_assignments ──────────────────────────────────────────
-    // Write canonical RBAC join row for ALL roles
-    const { data: existingRole } = await service
+    // Does the grant this run is about to write ALREADY exist?
+    //
+    // This read does NOT choose insert-vs-update — step 5 below is an upsert and
+    // decides that itself, in the database, on the real unique key. The only thing
+    // this answers is whether "user_role_assignments" belongs in `created`, which
+    // in turn picks USER_DOMAIN_RECORDS_CREATED vs …_REPAIRED on the lifecycle
+    // event. So the question is narrow and exact: is there already a grant for
+    // (this user, THIS role)?
+    //
+    // WAS: `.eq("user_id", userId).maybeSingle()` with no role filter — which asks
+    // "does this user hold any grant at all?", a different question, and one that
+    // cannot be answered by a single-row read: the table is UNIQUE on
+    // (user_id, role), NOT on user_id. MEASURED live, one user holds three grants
+    // (admin+agent+isa) and another holds two (contact+team_lead); over several
+    // rows `.maybeSingle()` is an ERROR, supabase-js RESOLVES it, and the
+    // `{ data: … }` destructuring threw the error away. Every provisioning run for
+    // those users therefore reported a brand-new grant it had not created, and
+    // emitted CREATED where the truth was REPAIRED.
+    //
+    // Adding `.eq("role", …)` makes the read single-row BY THE CONSTRAINT, not by
+    // a `.limit(1)` that would merely hide the ambiguity. `agent_id` came out of
+    // the select because nothing read it.
+    const { data: existingRole, error: existingRoleErr } = await service
       .from("user_role_assignments")
-      .select("id, agent_id")
+      .select("id")
       .eq("user_id", userId)
+      .eq("role", userType)
       .maybeSingle()
+
+    // A refused read must not masquerade as "no grant yet" — that is how a repair
+    // run comes to announce itself as a first-time provision.
+    if (existingRoleErr) {
+      console.error("[kernel/users] existing role-grant probe failed:", existingRoleErr.message)
+    }
 
     // ── 2. agents row — AGENT_ROLES + solo/team tenant OWNER ─────────────
     if (requiresAgentRow(userType, tier) && brokerageId) {
@@ -294,7 +368,7 @@ export async function createOrRepairUserDomainRecords(
 
     // ── 5. user_role_assignments — upsert canonical RBAC row ─────────────
     if (brokerageId) {
-      await service
+      const { data: upserted, error: upsertErr } = await service
         .from("user_role_assignments")
         .upsert(
           {
@@ -310,8 +384,25 @@ export async function createOrRepairUserDomainRecords(
           // alone matches no unique index and throws 42P10 at runtime.
           { onConflict: "user_id,role" }
         )
+        // supabase-js RESOLVES a failed write, and a row refused by RLS comes back
+        // as error:null with nothing written. Selecting the id turns both into
+        // something this function can actually see.
+        .select("id")
 
-      if (!existingRole) created.push("user_role_assignments")
+      if (upsertErr || (upserted?.length ?? 0) === 0) {
+        return {
+          success: false,
+          agentId,
+          coordinatorId,
+          domainRecordsCreated: created,
+          error: upsertErr?.message ?? "role grant upsert wrote no row",
+        }
+      }
+
+      // Only claim a creation when the probe SUCCEEDED and found nothing. A failed
+      // probe leaves `existingRole` null too, and reporting that as a creation is
+      // the same conflation this pass exists to remove.
+      if (!existingRoleErr && !existingRole) created.push("user_role_assignments")
     }
 
     // ── 6. Emit lifecycle event ───────────────────────────────────────────
@@ -348,24 +439,59 @@ export async function createOrRepairUserDomainRecords(
 export async function resolveUserWorkspaceContext(userId: string): Promise<WorkspaceContext> {
   const service = createServiceClient()
 
+  // The role-grant read is NOT `.maybeSingle()` — see below. It is the one read
+  // in this batch whose subject can legitimately be several rows.
   const [
     { data: userData },
     { data: agentData },
     { data: tcData },
     { data: onboardingData },
-    { data: roleData },
+    roleGrantsResult,
   ] = await Promise.all([
     service.from("users").select("user_type, brokerage_id, team_id").eq("id", userId).maybeSingle(),
     service.from("agents").select("id").eq("user_id", userId).maybeSingle(),
     service.from("transaction_coordinators").select("id").eq("user_id", userId).maybeSingle(),
     service.from("agent_onboarding").select("id, status").eq("user_id", userId).maybeSingle(),
-    service.from("user_role_assignments").select("role, agent_id").eq("user_id", userId).maybeSingle(),
+    readRoleGrants(service, userId),
   ])
+
+  // WAS: `.from("user_role_assignments").select("role, agent_id").eq("user_id", userId).maybeSingle()`
+  // — no vendor filter, no limit, and the error discarded by the `{ data: … }`
+  // destructuring. This was the most exposed instance of defect #221 in the tree:
+  // every other site at least narrowed by `.not("vendor_id","is",null)` first, so
+  // they needed an unlucky data shape to break. This one narrowed by nothing, and
+  // user_role_assignments is UNIQUE on (user_id, role), NOT on user_id.
+  //
+  // MEASURED on the live database: one user holds THREE grants (agent + admin +
+  // isa). `.maybeSingle()` over three rows is an ERROR, supabase-js RESOLVES it,
+  // and the discarded error became `roleData = null`. So for that user this
+  // function reported hasRoleAssignment:false and lost the `agent_id` fallback on
+  // the line below — meaning a user WITH an agent grant could be told they were
+  // missing their agents row and pushed back into setup. It is broken today, not
+  // hypothetically.
+  if (!roleGrantsResult.ok) {
+    console.error("[kernel/users] role grant read failed:", roleGrantsResult.error)
+  }
+  const roleGrants = roleGrantsResult.ok ? roleGrantsResult.grants : []
 
   const userType   = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? null
   const teamId     = userData?.team_id ?? null
-  const agentId    = agentData?.id ?? roleData?.agent_id ?? null
+  // Only a grant that actually carries an agent_id can stand in for the agents row;
+  // picking "the" grant first and then reading agent_id off it would discard a real
+  // agent linkage whenever another grant happened to sort ahead of it.
+  //
+  // And `find` is not enough either: public.agents is UNIQUE (user_id), so one
+  // user's grants can only correctly name ONE agent, and two different ones is a
+  // provable data fault that `find` would settle by row order. selectAgentId
+  // reports it instead — and here the authoritative `agentData` (read straight off
+  // agents by user_id) is already preferred, so a reported fault simply leaves the
+  // fallback unused rather than substituting another agent's identity.
+  const { agentId: agentGrantId, ambiguous: agentGrantAmbiguous } = selectAgentId(roleGrants)
+  if (agentGrantAmbiguous) {
+    console.error("[kernel/users] user", userId, "holds grants naming more than one agent")
+  }
+  const agentId    = agentData?.id ?? agentGrantId
   const coordinatorId = tcData?.id ?? null
 
   // Load the tenant tier so a solo/team OWNER (admin/broker) is correctly held
@@ -386,15 +512,20 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
     missing.push("transaction_coordinators")
   }
   // Onboarding is agent-scoped (agent_id NOT NULL) — expected exactly when an
-  // agents row is expected.
-  if (requiresAgentRow(userType as UserDomainRole, tier) && !onboardingData) {
+  // agents row is expected. ONE VOCABULARY (§6, wave 26): asked through
+  // `requiresOnboardingRow` (tenant-provisioning-spec.ts:31), the predicate
+  // declared for THIS question, rather than through the agents-row predicate
+  // plus a comment explaining that the two coincide. They coincide today because
+  // agent_onboarding.agent_id is NOT NULL; if that ever stops being true, the
+  // spec module is the one place that has to change.
+  if (requiresOnboardingRow(userType as UserDomainRole, tier) && !onboardingData) {
     missing.push("agent_onboarding")
   }
 
   const isComplete    = missing.length === 0
   const requiresSetup = !isComplete || onboardingData?.status === "pending"
 
-  const dashboardRoute = ROLE_DASHBOARD_ROUTES[userType] ?? "/dashboard/agent"
+  const dashboardRoute = roleDashboardRoute(userType)
 
   return {
     userId,
@@ -405,7 +536,7 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
     coordinatorId,
     hasAgentRow:       !!agentId,
     hasOnboardingRow:  !!onboardingData,
-    hasRoleAssignment: !!roleData,
+    hasRoleAssignment: roleGrants.length > 0,
     isComplete,
     dashboardRoute,
     requiresSetup,
@@ -683,6 +814,49 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   const { authUserId: linked, orphanToMerge } = await resolveEmailHolder(service, email)
   let authUserId = linked
 
+  // CROSS-TENANT CAPTURE GUARD.
+  //
+  // resolveEmailHolder searches users.email GLOBALLY — it has to, because that column is
+  // unique across the platform and a stale holder would otherwise break the invite. But
+  // when it returns an existing auth-linked user, the upsert below rewrites that row's
+  // brokerage_id to the INVITER's. So a broker who typed the email of an agent at another
+  // brokerage did not "invite" them — they moved them, silently, out of their tenant and
+  // into their own, taking the agents/onboarding/RBAC provisioning with them. Every
+  // broker, admin and team_lead with invite rights could do it knowing only an email.
+  //
+  // An invite may legitimately RE-invite someone already in this brokerage (idempotent),
+  // and a superadmin may legitimately move a user between tenants — that is what the
+  // superadmin tenant-users path is for. Anything else is refused.
+  if (authUserId) {
+    const { data: holder } = await service
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", authUserId)
+      .maybeSingle()
+    const holderBrokerageId = (holder as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+
+    if (holderBrokerageId && holderBrokerageId !== brokerageId) {
+      const { data: caller } = await service
+        .from("users")
+        .select("user_type, platform_role")
+        .eq("id", callerUserId)
+        .maybeSingle()
+      const callerType = (caller as { user_type?: string | null } | null)?.user_type ?? ""
+      const callerPlatformRole = (caller as { platform_role?: string | null } | null)?.platform_role ?? ""
+      const isSuperadmin = callerType === "superadmin" || callerPlatformRole === "superadmin"
+
+      if (!isSuperadmin) {
+        return {
+          success: false,
+          userId: null,
+          agentId: null,
+          error:
+            "That email already belongs to a user at another brokerage. They must leave it before they can be invited here.",
+        }
+      }
+    }
+  }
+
   if (!authUserId) {
     try {
       const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
@@ -801,6 +975,25 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   //    free a stale ORPHAN email (failed pre-invite / seed) so the trigger can create
   //    the canonical row; the orphan's children are merged onto the auth id afterwards.
   const { authUserId: linkedId, orphanToMerge } = await resolveEmailHolder(service, email)
+
+  // SEATS — the owner is the tenant's FIRST seat, and on a brand-new tenant this
+  // is a no-op (0 in use, 2 available on the smallest plan). It is here for the
+  // two cases where it is not: this helper takes an EXISTING brokerageId (both
+  // callers create the row first), so re-running it against a live tenant, or
+  // superadmin create-subscriber pointed at one, would otherwise seat another
+  // admin with nothing counting. An idempotent re-run for the SAME owner passes
+  // through `already_seated` on their linked id rather than being charged twice.
+  // Same gate as every other add path; FAILS CLOSED (lib/kernel/seat-usage.ts).
+  {
+    const verdict = await seatGate(service, brokerageId, "admin", { subjectUserId: linkedId })
+    if (!verdict.allowed) {
+      return {
+        success: false, userId: null, agentId: null, teamId: null, inviteSent: false,
+        error: verdict.message ?? "Seat limit reached for this workspace.",
+      }
+    }
+  }
+
   let authUserId: string | null = linkedId
   let inviteSent = false
   let inviteError: string | undefined
@@ -861,7 +1054,11 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   // 4. Team tier → the team must exist (team = team_lead + teams row) so invited
   //    agents can be attached. Idempotent: reuse the brokerage's first live team.
   let teamId: string | null = null
-  if (tier === "team") {
+  // ONE VOCABULARY (§6, wave 26): `ownerNeedsTeamRow(tier)`
+  // (tenant-provisioning-spec.ts:36) is the declared answer to "does this tier
+  // require a teams row"; the inline `tier === "team"` was a second copy of it
+  // sitting in the provisioning path the spec module exists to describe.
+  if (ownerNeedsTeamRow(tier)) {
     const { data: existingTeam } = await service
       .from("teams").select("id").eq("brokerage_id", brokerageId).is("deleted_at", null)
       .order("created_at", { ascending: true }).limit(1).maybeSingle()

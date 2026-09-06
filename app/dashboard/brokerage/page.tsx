@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getBrokerageDashboard, forecastBrokerageRevenue, trackLicenseExpirations } from "@/app/actions/multi-persona"
+import { getBrokerageStats } from "@/app/actions/agents"
 import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"
 import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/buyer-fatigue"
 import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
@@ -18,7 +19,6 @@ import {
   AlertTriangle,
   Shield,
   FileText,
-  Activity,
   Brain,
   ArrowRight,
   BarChart3,
@@ -51,6 +51,11 @@ import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action
 import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-card"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isPlatformStaffIdentity, isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { resolveCallerIdentity } from "@/lib/auth/require-caller"
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -59,25 +64,72 @@ export default async function BrokerageDashboard({
 }) {
   const params = await searchParams
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
 
-  if (!user) redirect("/login")
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
 
-  let brokerageId = params.brokerageId
-  if (!brokerageId) {
-    // Look up via users.brokerage_id — brokerages table has no owner_id column
-    const { data: userRow } = await supabase
-      .from("users")
-      .select("brokerage_id, user_type")
-      .eq("id", user.id)
-      .maybeSingle()
-    // Guard: only broker/admin/superadmin may access this dashboard
-    if (!userRow?.brokerage_id || !["broker", "admin", "superadmin"].includes(userRow.user_type ?? "")) {
-      redirect("/dashboard")
-    }
-    brokerageId = userRow.brokerage_id
+  // ── THE TENANT COMES FROM THE SESSION, THE ROLE GATE ALWAYS RUNS (§4) ──────
+  //
+  // THE SHAPE THIS REPLACES (2026-09-03, lane H4): `brokerageId` was taken from
+  // `?brokerageId=` FIRST, and the users-row read + isAdminOrBroker gate ran ONLY
+  // when the param was absent. So `?brokerageId=<any other tenant>` skipped the
+  // role gate entirely AND set the tenant for every read on this page — including
+  // loadPortfolioIntelligence, which runs on the SERVICE client with no RLS
+  // underneath, and the brokerageId props handed to the two action bars. Any
+  // signed-in seat could open any brokerage's command center by editing the URL.
+  //
+  // THE SHAPE NOW:
+  //   1. identity from the session — ONE users read, all three columns
+  //      (brokerage_id, user_type, platform_role), error destructured (§3);
+  //   2. the role gate runs UNCONDITIONALLY: tenant admin-class (the one roster)
+  //      OR platform staff (platform_role — §4: never user_type='superadmin');
+  //   3. `?brokerageId=` is honoured ONLY for platform staff, and must be a uuid.
+  //      A tenant caller who supplies one — even their own — is REFUSED, not
+  //      quietly corrected: a tenant URL that names a tenant is the IDOR shape,
+  //      and correcting it would teach the browser that the parameter works.
+  //   4. everything below reads with the resolved `brokerageId` and nothing else.
+  //
+  // BLIND SPOT, published: the actions this page calls that derive their OWN
+  // tenant from the session (getBrokerageDashboard, forecastBrokerageRevenue,
+  // trackLicenseExpirations, the recruiting/fatigue reads, getBrokerageStats)
+  // ignore the resolved id by design — so for platform staff viewing another
+  // tenant via the param, those panels show the STAFF row's own brokerage while
+  // the direct reads below show the named one. That is a pre-existing mismatch
+  // in app/actions/** (not this lane's files) and is recorded, not hidden.
+  const caller = await resolveCallerIdentity()
+  if (!caller.ok) {
+    if (caller.reason === "unauthenticated") redirect("/login")
+    // The gate could not run. Refuse visibly rather than render zeros (§4).
+    return (
+      <div className="container mx-auto p-6">
+        <Card>
+          <CardContent className="p-8 text-center">
+            <AlertTriangle className="h-12 w-12 mx-auto mb-4 text-red-700" />
+            <p className="text-red-700">{caller.error}</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+  const user = { id: caller.userId }
+
+  if (!isTenantAdminOrPlatformStaff({ user_type: caller.userType, platform_role: caller.platformRole })) {
+    redirect("/dashboard")
+  }
+
+  const isPlatform = isPlatformStaffIdentity(caller.userType, caller.platformRole)
+  const requested = typeof params.brokerageId === "string" ? params.brokerageId.trim() : ""
+  let brokerageId: string | null
+  if (requested) {
+    // Only platform staff may name a tenant, and only a well-formed one.
+    if (!isPlatform || !UUID_RE.test(requested)) redirect("/dashboard")
+    brokerageId = requested
+  } else {
+    brokerageId = caller.brokerageId
   }
 
   if (!brokerageId) {
@@ -108,18 +160,20 @@ export default async function BrokerageDashboard({
     providerStatusResult,
     unassignedLeadsResult,
     pendingDistributionsResult,
+    brokerageStats,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
     trackLicenseExpirations(brokerageId),
-    getRecruitingROISummary(brokerageId).catch(() => ({
+    // Recruiting ROI actions take the tenant from the SESSION (§4) — no id passed.
+    getRecruitingROISummary().catch(() => ({
       totalInvested: 0,
       totalGenerated: 0,
       avgROI: 0,
       activeRecruits: 0,
       profitableRecruits: 0,
     })),
-    getRecruitingCostBreakdown(brokerageId).catch(() => ({
+    getRecruitingCostBreakdown().catch(() => ({
       training: 0,
       marketing: 0,
       technology: 0,
@@ -127,7 +181,7 @@ export default async function BrokerageDashboard({
       guarantees: 0,
       other: 0,
     })),
-    getBreakEvenAnalysis(brokerageId).catch(() => ({
+    getBreakEvenAnalysis().catch(() => ({
       avgBreakEvenMonth: 0,
       breakEvenMonths: [],
     })),
@@ -152,7 +206,9 @@ export default async function BrokerageDashboard({
       .from("transactions")
       .select("id, property_address, close_date, agent_id, contact_id")
       .eq("brokerage_id", brokerageId)
-      .in("stage", ["active", "pending", "contingent"]),
+      // The in-flight stages, in the vocabulary the column admits. The old
+      // ["active","pending","contingent"] matched nothing and this metric read 0.
+      .in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"]),
     // Provider health status
     getSystemProviderStatus().catch(() => ({ directMailEnabled: true, videoEnabled: true })),
     // Unassigned leads count — leads' assignment column is agent_id (assigned_agent_id
@@ -172,6 +228,12 @@ export default async function BrokerageDashboard({
       .eq("status", "pending")
       .order("created_at", { ascending: true })
       .limit(20),
+    // Month-over-month GCI and the compliance-FLAG risk level. Nothing else on
+    // this page computes either: getBrokerageDashboard reports headcount, open
+    // deal volume and compliance_EVENTS (the gate ledger) — a different table
+    // from compliance_flags, and no trend at all. The tenant comes from the
+    // session inside the action, not from this page's brokerageId.
+    getBrokerageStats(),
   ])
 
   const agents = (dashboard as any).agents ?? []
@@ -489,6 +551,94 @@ export default async function BrokerageDashboard({
         }}
       />
 
+      {/* Month-over-month money + compliance-flag risk.
+          Anything that could not actually be READ is named rather than shown as
+          a zero — a refused query used to render here as "$0 GCI this month" and
+          a "Normal" risk level, which is the most dangerous kind of wrong. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-blue-600" />
+            This Month
+          </CardTitle>
+          <CardDescription>
+            Gross commission against last month, deals in contract, and open compliance flags.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {brokerageStats.error ? (
+            <p className="text-sm text-red-700">{brokerageStats.error}</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">GCI this month</p>
+                  {brokerageStats.degraded.includes("monthlyGCI") ? (
+                    <p className="text-sm font-medium text-red-700 mt-1">Could not read</p>
+                  ) : (
+                    <>
+                      <p className="text-2xl font-bold text-green-700 mt-1">
+                        ${brokerageStats.monthlyGCI.toLocaleString()}
+                      </p>
+                      {brokerageStats.gciChange !== 0 && (
+                        <p
+                          className={`text-xs mt-0.5 ${
+                            brokerageStats.gciChange > 0 ? "text-green-700" : "text-red-700"
+                          }`}
+                        >
+                          {brokerageStats.gciChange > 0 ? "+" : ""}
+                          {brokerageStats.gciChange}% vs last month
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Deals under contract</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {brokerageStats.degraded.includes("activeDeals") ? "—" : brokerageStats.activeDeals}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Active agents</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {brokerageStats.degraded.includes("agentCount") ? "—" : brokerageStats.agentCount}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Compliance risk</p>
+                  <p
+                    className={`text-2xl font-bold mt-1 ${
+                      brokerageStats.riskLevel === "Critical"
+                        ? "text-red-700"
+                        : brokerageStats.riskLevel === "Elevated"
+                          ? "text-amber-700"
+                          : brokerageStats.riskLevel === "Normal"
+                            ? "text-green-700"
+                            : "text-muted-foreground"
+                    }`}
+                  >
+                    {brokerageStats.riskLevel}
+                  </p>
+                  {!brokerageStats.degraded.includes("openComplianceFlags") && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {brokerageStats.openComplianceFlags} open flag
+                      {brokerageStats.openComplianceFlags === 1 ? "" : "s"}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {brokerageStats.degraded.length > 0 && (
+                <p className="text-xs text-red-700 mt-3">
+                  These figures are incomplete — {brokerageStats.degraded.join(", ")} could not be
+                  read. Do not treat the blanks as zeros.
+                </p>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       {/* License Alerts */}
       {(licenseStatus.expiringLicenses.length > 0 || licenseStatus.expiredLicenses.length > 0) && (
         <Card className="border-orange-200 bg-orange-50">
@@ -718,7 +868,6 @@ export default async function BrokerageDashboard({
             costBreakdown={costBreakdown}
           />
           <BrokerRecruitingActionBar
-            brokerageId={brokerageId}
             breakEvenAnalysis={breakEvenAnalysis as any}
             costBreakdown={costBreakdown}
           />

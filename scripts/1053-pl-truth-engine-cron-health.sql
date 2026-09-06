@@ -83,7 +83,13 @@ CREATE TABLE IF NOT EXISTS cron_health_snapshot (
   cron_name               text        NOT NULL,
   cron_path               text,
   last_run_at             timestamptz,
-  last_status             text,        -- 'success'|'failure'|'partial'|'running'
+  -- VOCABULARY CORRECTED 2026-08-23. This comment claimed four words and there
+  -- is no CHECK on the column to hold anyone to them, so it was the only thing
+  -- readers had to go on and two of the four had no writer at all. The truth is
+  -- lib/kernel/cron-logging.ts:CRON_SNAPSHOT_STATUSES — 'running' (stamped by
+  -- createCronRunContext at the start choke), 'success' (:319), 'failure'
+  -- (:415). 'partial' had no producer and its read sites are now deleted.
+  last_status             text,        -- 'running'|'success'|'failure'
   last_duration_ms        int,
   last_records_processed  int,
   last_error_message      text,

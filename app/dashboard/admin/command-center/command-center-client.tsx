@@ -7,9 +7,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-center"
 import { generateStandupAudio } from "@/app/actions/standup-audio"
-import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
+import { getManagerSessionDetail } from "@/app/actions/admin/manager-evals"
+import type { CommandCenterData, CommandCenterAction, CommandCenterSession, ManagerSessionDetail } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
+import { ManagerActivityFeed } from "./manager-activity-feed"
 import { CommandBar } from "./command-bar"
 
 const SESSION_BADGE: Record<string, string> = {
@@ -249,6 +251,11 @@ export function CommandCenterClient({
           coordination-kind vocabulary (see manager-talk-feed.tsx). */}
       <ManagerTalkFeed talk={data.managerTalk ?? []} />
 
+      {/* What the managers did — the completed-work ledger: the third manager story
+          (alongside the pending queue + the talking feed). One chronological,
+          manager-attributed timeline composed from the per-manager stores. */}
+      <ManagerActivityFeed activity={data.managerActivity ?? []} />
+
       {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
           The proof-of-system view: N AI deliverables this week, every one human-approved
           before it shipped. */}
@@ -344,6 +351,10 @@ export function CommandCenterClient({
                 <span className="text-green-700 font-medium">{data.retentionOutcomes.retained} retained</span>
                 <span className="text-red-700 font-medium">{data.retentionOutcomes.lost} lost</span>
                 <span className="text-muted-foreground">{data.retentionOutcomes.pending} pending</span>
+                {/* Unresolved past the settle window — still open, no longer "still working". */}
+                {data.retentionOutcomes.aging > 0 && (
+                  <span className="text-amber-700 font-medium">{data.retentionOutcomes.aging} aging</span>
+                )}
                 {data.retentionOutcomes.winRate !== null && (
                   <Badge className="bg-green-700 text-white">{Math.round(data.retentionOutcomes.winRate * 100)}% win rate</Badge>
                 )}
@@ -363,10 +374,20 @@ export function CommandCenterClient({
                         {a.trend && a.trend !== "stable" && (
                           <span className={"text-[11px] font-medium " + (a.trend === "declining" ? "text-red-700" : "text-green-700")}>
                             {a.trend === "declining" ? "▼ declining" : "▲ improving"}
+                            {/* HOW FAR, not only which way — agent_retention_scores.previous_score.
+                                A −2 drift and a −30 collapse both read as "declining" before this. */}
+                            {a.delta !== null ? ` ${a.delta > 0 ? "+" : ""}${a.delta}` : ""}
                           </span>
                         )}
                       </div>
-                      {a.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{a.drivers.join(" · ")}</p>}
+                      {a.drivers.length > 0 && (
+                        <p className="text-xs text-muted-foreground truncate">
+                          {a.drivers.join(" · ")}
+                          {/* HOW WEAK — the radar's stored signal_breakdown, the only
+                              place the driver labels' magnitude lives. */}
+                          {a.weakestSignal ? ` · weakest ${a.weakestSignal.key} ${a.weakestSignal.score}/100` : ""}
+                        </p>
+                      )}
                     </div>
                     <span className="text-lg font-semibold shrink-0">{a.score}<span className="text-xs text-muted-foreground">/100</span></span>
                   </Card>
@@ -577,6 +598,28 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Heartbeat — every scheduled loop that ran is owned by an accountable manager
+          (resolveCronManager). The cron owner had no product reader before this. */}
+      {(data.cronOwners ?? []).length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-lg font-semibold">Heartbeat — who runs each loop</h2>
+          <div className="flex flex-wrap gap-2">
+            {data.cronOwners.map((c) => (
+              <Card key={c.cronPath} className="px-3 py-2 flex items-center gap-2" title={`${c.cronPath} · ${MANAGERS[c.managerKey]?.domain ?? ""}`}>
+                <Badge className="bg-slate-900 text-white">{c.managerLabel}</Badge>
+                <span className="text-sm">{c.cronName}</span>
+                <Badge className={c.status === "failed" ? "bg-red-100 text-red-800" : c.status === "running" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}>
+                  {c.status ?? "unknown"}
+                </Badge>
+                {c.startedAt && (
+                  <span className="text-xs text-muted-foreground">{new Date(c.startedAt).toLocaleString()}</span>
+                )}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Approval queue */}
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Approval queue</h2>
@@ -591,15 +634,10 @@ export function CommandCenterClient({
         )}
       </section>
 
-      {/* Sessions */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Manager sessions</h2>
-        {data.sessions.length === 0 ? (
-          <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
-        ) : (
-          <div className="space-y-2">{data.sessions.map((s) => <SessionRow key={s.id} session={s} />)}</div>
-        )}
-      </section>
+      {/* Sessions — with the status filter + per-session drill-down merged from
+          the retired /api/admin/agents/sessions route (§1.1): last-message
+          preview on the row, and a click opens the rubric-evaluation drawer. */}
+      <SessionsSection sessions={data.sessions} />
     </div>
   )
 }
@@ -613,16 +651,142 @@ function Stat({ label, value, accent }: { label: string; value: number; accent: 
   )
 }
 
-function SessionRow({ session }: { session: CommandCenterSession }) {
+/** The status vocabulary offered as filters — "active" = running+idle (the
+ *  actionable pair the retired route defaulted to), "all" = everything. The
+ *  filter is over the loaded window (the page's limit), not a re-query. */
+const SESSION_FILTERS = ["all", "active", "running", "idle", "terminated", "error"] as const
+type SessionFilter = (typeof SESSION_FILTERS)[number]
+
+function SessionsSection({ sessions }: { sessions: CommandCenterSession[] }) {
+  const [filter, setFilter] = useState<SessionFilter>("all")
+  const filtered = sessions.filter((s) =>
+    filter === "all" ? true : filter === "active" ? s.status === "running" || s.status === "idle" : s.status === filter,
+  )
   return (
-    <Card className="p-4 flex items-center justify-between">
-      <div>
-        <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
-        <div className="text-xs text-muted-foreground">
-          {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold">Manager sessions</h2>
+        <div className="flex flex-wrap gap-1.5">
+          {SESSION_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={
+                "rounded-full border px-2.5 py-0.5 text-xs " +
+                (filter === f ? "bg-slate-900 text-white border-slate-900" : "text-muted-foreground hover:bg-muted")
+              }
+            >
+              {f}
+            </button>
+          ))}
         </div>
       </div>
-      <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+      {sessions.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
+      ) : filtered.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">
+          No {filter} session in the loaded window ({sessions.length} loaded).
+        </Card>
+      ) : (
+        <div className="space-y-2">{filtered.map((s) => <SessionRow key={s.id} session={s} />)}</div>
+      )}
+    </section>
+  )
+}
+
+function SessionRow({ session }: { session: CommandCenterSession }) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [detail, setDetail] = useState<ManagerSessionDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && !detail && !loading) {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await getManagerSessionDetail(session.id)
+        if (res.ok) setDetail(res.detail)
+        else setError(res.error)
+      } catch {
+        setError("The session detail read failed to run.")
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <button type="button" onClick={toggle} className="w-full text-left flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
+          <div className="text-xs text-muted-foreground">
+            {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+          </div>
+          {session.lastAgentMessage && (
+            <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+              &ldquo;{session.lastAgentMessage}&rdquo;
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+          <span className="text-xs text-muted-foreground">{open ? "▲" : "▼"}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
+          {loading && <p className="text-xs text-muted-foreground">Loading session detail…</p>}
+          {error && <p className="text-xs text-red-600">Could not load this session: {error}</p>}
+          {detail && (
+            <>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                {detail.model && <span>model: <span className="font-medium text-foreground">{detail.model}</span></span>}
+                {detail.agentKind && <span>kind: {detail.agentKind}</span>}
+                {detail.anthropicAgentId && <span>agent: {detail.anthropicAgentId.slice(0, 18)}…</span>}
+                {detail.stopReason && <span>stop reason: {detail.stopReason}</span>}
+                {detail.endedAt && <span>ended {timeAgo(detail.endedAt)}</span>}
+              </div>
+              {detail.lastAgentMessage && (
+                <p className="text-sm whitespace-pre-wrap max-h-40 overflow-auto">{detail.lastAgentMessage}</p>
+              )}
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                  Rubric evaluations {detail.evaluations.length > 0 ? `(${detail.evaluations.length})` : ""}
+                </div>
+                {detail.evaluations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No outcome evaluation has been recorded for this session yet.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detail.evaluations.map((e) => (
+                      <li key={e.iteration} className="rounded border bg-background p-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <Badge className={e.result === "pass" ? "bg-green-100 text-green-800" : e.result === "fail" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700"}>
+                            iter {e.iteration} · {e.result}
+                          </Badge>
+                          <span className="text-muted-foreground">
+                            {e.inputTokens.toLocaleString()} in / {e.outputTokens.toLocaleString()} out
+                            {e.cacheReadInputTokens > 0 ? ` (+${e.cacheReadInputTokens.toLocaleString()} cached)` : ""}
+                          </span>
+                          {e.evaluatedAt && <span className="text-muted-foreground">{timeAgo(e.evaluatedAt)}</span>}
+                        </div>
+                        {e.explanation && <p className="mt-1 text-xs text-muted-foreground">{e.explanation}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
@@ -637,10 +801,15 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
   const videos = Array.isArray(input.video_renders) ? (input.video_renders as Array<{ section_key: string; title: string; output_url: string; thumbnail_url: string | null }>) : []
   const email = (input.email ?? {}) as { subject?: string; preview_text?: string; preview_html?: string }
   const appt = input.appointment_at as string | null
+  // "audience" is the proposer's own key (lib/listing-presentation/prelisting-delivery.ts,
+  // same name the email composer takes). Rows proposed before the key existed have no
+  // `audience` and fall through to the seller wording — the pre-existing behaviour, so
+  // no back-fill migration is needed.
+  const buyer = input.audience === "buyer"
 
   return (
     <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the seller</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the {buyer ? "buyer" : "seller"}</div>
 
       {videos.length > 0 && (
         <div>
@@ -679,7 +848,7 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
         </div>
       )}
 
-      {appt && <div className="text-[11px] text-muted-foreground">Seller appointment: {new Date(appt).toLocaleString()}</div>}
+      {appt && <div className="text-[11px] text-muted-foreground">{buyer ? "Buyer consultation" : "Seller appointment"}: {new Date(appt).toLocaleString()}</div>}
     </div>
   )
 }
@@ -898,6 +1067,16 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
   const isClientMsg = action.queue === "client_message"
   const [editedBody, setEditedBody] = useState<string>(isClientMsg ? String(action.actionInput.body ?? "") : "")
 
+  // Display label for the action type (AdActionPreview precedent: a per-type label
+  // map). approve_prelisting_delivery is ONE action type serving two audiences —
+  // the label reads the proposer's `audience` key from action_input, never
+  // action.queue. A row without the key (proposed before the key existed) falls
+  // through to the seller wording, the pre-existing behaviour — no migration.
+  const actionTypeLabel =
+    action.actionType === "approve_prelisting_delivery"
+      ? (action.actionInput.audience === "buyer" ? "Release buyer-consultation deck" : "Release pre-listing presentation")
+      : action.actionType.replace(/_/g, " ")
+
   function run(kind: "approve" | "reject") {
     setError(null)
     startTransition(async () => {
@@ -920,7 +1099,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
             <Badge className={QUEUE_BADGE[action.queue] ?? "bg-slate-100 text-slate-700"}>
               {QUEUE_LABEL[action.queue] ?? action.queue}
             </Badge>
-            <span className="font-medium">{action.actionType.replace(/_/g, " ")}</span>
+            <span className="font-medium">{actionTypeLabel}</span>
             {action.slaLevel === "breached" && (
               <Badge className="bg-red-100 text-red-800">SLA breached · {Math.round(action.ageHours)}h</Badge>
             )}

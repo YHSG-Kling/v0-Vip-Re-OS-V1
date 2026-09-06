@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { proposeIsaDialBatch, approveIsaDialBatch } from "@/lib/ai-isa/voice-dial-batch"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface Actor { userId: string; brokerageId: string; agentId: string | null; isManager: boolean }
 
@@ -15,7 +16,7 @@ async function requireActor(): Promise<Actor | { error: string }> {
   if (!user) return { error: "Unauthorized" }
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { error: "Unauthorized" }
-  const isManager = ["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(u.user_type ?? "")
+  const isManager = isAdminOrBroker({ user_type: u.user_type ?? "" })
   const { data: a } = await supabase.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", u.brokerage_id).maybeSingle()
   const agentId = (a as { id: string } | null)?.id ?? null
   if (!isManager && !agentId) return { error: "Forbidden" }

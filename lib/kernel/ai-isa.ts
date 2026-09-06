@@ -75,6 +75,16 @@ export interface AiIsaWorkspaceData {
   queue: AiIsaLeadRow[]
   recentCalls: AiIsaCallRow[]
   pendingHandoffs: AiIsaHandoffRow[]
+  /**
+   * The ledger of handoffs a human already took — newest first, bounded to
+   * COMPLETED_HANDOFFS_BOUND rows (the bound is echoed in stats so a consumer
+   * can say "showing the last N" instead of implying it saw them all).
+   * Written by app/actions/leads.ts handOffToHumanAgent (handoff_status =
+   * 'completed', completed_at, to_agent_type = 'human'); until this read the
+   * repo had no completed-handoff view of any kind — every reader filtered
+   * handoff_status = 'pending'.
+   */
+  completedHandoffs: AiIsaCompletedHandoffRow[]
   stats: {
     activeCampaigns: number
     leadsInQueue: number
@@ -82,8 +92,38 @@ export interface AiIsaWorkspaceData {
     pendingHandoffs: number
     appointmentsBooked: number
     conversionRate: number
+    /** Rows in completedHandoffs — may equal completedHandoffsBound (truncated). */
+    completedHandoffs: number
+    completedHandoffsBound: number
   }
 }
+
+/** Upper bound on the completed-handoff ledger read by loadAiIsaWorkspace. */
+export const COMPLETED_HANDOFFS_BOUND = 20
+
+/*
+ * SURVIVOR DECISION — "what is the ISA handing me?" (wave 25, lane W1)
+ *
+ * Two sources answered that question and disagreed about what it meant:
+ *
+ *   · app/dashboard/isa/ai-isa-console-client.tsx derives a per-LEAD state
+ *     (handoff_ready / agent_handoff_required) from the lead's qualification
+ *     row, urgency score and last call analysis. That is a PREDICTION —
+ *     "this lead looks ready to hand off" — computed on every render.
+ *   · agent_handoffs is the LEDGER — a row exists only because handoffToHumanAgent
+ *     (below) or app/actions/leads.ts actually issued one, and only the ledger
+ *     row carries the context_package written FOR the receiving human.
+ *
+ * They are not duplicates; they are the forecast and the record. The console
+ * keeps its forecast for triage. The ledger is the survivor for "what has been
+ * handed to me": it is what the operations dashboard and the team page already
+ * count as "pending handoffs", and it is the sole home of the package. Until
+ * wave 25 this loader had NO caller — a written contract nobody read — while
+ * the console showed an "accept" affordance that had never seen the ledger.
+ * app/dashboard/isa/page.tsx now calls this loader, joins the pending ledger
+ * onto the console's lead cards by entity_id, and renders the completed ledger
+ * with its bound printed. Do not re-derive the ledger from lead state.
+ */
 
 export interface AiIsaCampaignRow {
   id: string
@@ -121,6 +161,39 @@ export interface AiIsaCallRow {
   created_at: string
 }
 
+/**
+ * The EXACT shape handoffToHumanAgent (this file, COMMAND 7) writes into
+ * agent_handoffs.context_package. It is the package written FOR the receiving
+ * human: who handed the lead over and, when the lead had already converted,
+ * the contact the human should open instead of the lead. Curated fields only —
+ * a consumer renders these two, never the raw jsonb.
+ *
+ * The other writer of agent_handoffs (app/actions/leads.ts handOffToHumanAgent)
+ * writes this package too since 2026-09-03 ({ from_user_id, contact_id: null }
+ * — it hands over a LEAD, so there is no contact to open). Rows written before
+ * that date carry NULL, so the column stays nullable on read and every field
+ * inside it is optional: an older or foreign row must not throw on `.contact_id`.
+ * The two writers still disagree on handoff_status ("completed" there,
+ * "pending" here) — a product divergence recorded, not resolved.
+ */
+export interface AiIsaHandoffContextPackage {
+  /** users.id of the actor who triggered the handoff (ctx.userId) — NOT agents.id. */
+  from_user_id?: string | null
+  /** contacts.id (the PK, not contacts.contact_id) when the lead had already converted. */
+  contact_id?: string | null
+}
+
+/** Pick the curated fields out of a context_package jsonb value; anything that
+ *  is not an object (NULL, a string, an array) yields an empty package. */
+export function readHandoffContextPackage(raw: unknown): AiIsaHandoffContextPackage {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const r = raw as Record<string, unknown>
+  return {
+    from_user_id: typeof r.from_user_id === "string" ? r.from_user_id : null,
+    contact_id: typeof r.contact_id === "string" ? r.contact_id : null,
+  }
+}
+
 export interface AiIsaHandoffRow {
   id: string
   // Live schema uses an entity_type/entity_id discriminator instead of
@@ -131,6 +204,22 @@ export interface AiIsaHandoffRow {
   handoff_reason: string | null
   handoff_status: string
   human_agent_id: string | null
+  /** CHECK: coaching_agent | content_agent | human | isa_agent | none | router | tc_agent */
+  to_agent_type: string | null
+  /** Curated from the jsonb by readHandoffContextPackage — see that type. */
+  context_package: AiIsaHandoffContextPackage
+  created_at: string
+}
+
+export interface AiIsaCompletedHandoffRow {
+  id: string
+  entity_type: string
+  entity_id: string
+  handoff_reason: string | null
+  to_agent_type: string | null
+  human_agent_id: string | null
+  /** When the human took it. NULL only for a 'completed' row written before completed_at existed. */
+  completed_at: string | null
   created_at: string
 }
 
@@ -263,7 +352,7 @@ export async function loadAiIsaWorkspace(
     const { ctx, limit = 50 } = input
     const supabase = createServiceClient()
 
-    const [campaignsRes, queueRes, callsRes, handoffsRes] = await Promise.all([
+    const [campaignsRes, queueRes, callsRes, handoffsRes, completedRes] = await Promise.all([
       supabase
         .from("ai_isa_campaigns")
         .select("id, name, campaign_type, status, leads_targeted, touches_sent, conversions, created_at")
@@ -287,19 +376,49 @@ export async function loadAiIsaWorkspace(
         .order("created_at", { ascending: false })
         .limit(20),
 
+      // to_agent_type + context_package: the package COMMAND 7 writes FOR the
+      // receiving human (who handed it over, which contact to open) was never
+      // selected by any reader — every agent_handoffs read in the tree stopped
+      // at handoff_reason. Curated by readHandoffContextPackage below.
       supabase
         .from("agent_handoffs")
-        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, created_at")
+        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, to_agent_type, context_package, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("handoff_status", "pending")
         .order("created_at", { ascending: false })
         .limit(20),
+
+      // The completed ledger — bounded; the bound is reported in stats.
+      supabase
+        .from("agent_handoffs")
+        .select("id, entity_type, entity_id, handoff_reason, to_agent_type, human_agent_id, completed_at, created_at")
+        .eq("brokerage_id", ctx.brokerageId)
+        .eq("handoff_status", "completed")
+        .order("completed_at", { ascending: false, nullsFirst: false })
+        .limit(COMPLETED_HANDOFFS_BOUND),
     ])
+
+    // supabase-js RESOLVES a refusal (CLAUDE.md §3). Every lane above used to
+    // coalesce `data ?? []`, which renders a refused read as an empty console.
+    // Log each refusal by lane so an empty workspace is at least not silent.
+    for (const [lane, res] of [
+      ["ai_isa_campaigns", campaignsRes],
+      ["leads", queueRes],
+      ["ai_isa_calls", callsRes],
+      ["agent_handoffs(pending)", handoffsRes],
+      ["agent_handoffs(completed)", completedRes],
+    ] as const) {
+      if (res.error) console.error(`[ai-isa] loadAiIsaWorkspace ${lane} read refused:`, res.error.message)
+    }
 
     const campaigns: AiIsaCampaignRow[] = campaignsRes.data ?? []
     const queue: AiIsaLeadRow[] = queueRes.data ?? []
     const calls: AiIsaCallRow[] = callsRes.data ?? []
-    const handoffs: AiIsaHandoffRow[] = handoffsRes.data ?? []
+    const handoffs: AiIsaHandoffRow[] = (handoffsRes.data ?? []).map((h) => ({
+      ...h,
+      context_package: readHandoffContextPackage(h.context_package),
+    }))
+    const completedHandoffs: AiIsaCompletedHandoffRow[] = completedRes.data ?? []
 
     const today = new Date().toISOString().slice(0, 10)
     const callsToday = calls.filter((c) => c.created_at.startsWith(today)).length
@@ -314,6 +433,7 @@ export async function loadAiIsaWorkspace(
         queue,
         recentCalls: calls,
         pendingHandoffs: handoffs,
+        completedHandoffs,
         stats: {
           activeCampaigns: campaigns.filter((c) => c.status === "active").length,
           leadsInQueue: queue.length,
@@ -321,6 +441,8 @@ export async function loadAiIsaWorkspace(
           pendingHandoffs: handoffs.length,
           appointmentsBooked: apptBooked,
           conversionRate,
+          completedHandoffs: completedHandoffs.length,
+          completedHandoffsBound: COMPLETED_HANDOFFS_BOUND,
         },
       },
     }
@@ -483,16 +605,40 @@ export async function assignAiIsaToLeadAfterGate(
     const { ctx, leadId, campaignId } = input
     const supabase = createServiceClient()
 
-    // Re-check minimum_viable_for_isa — the gate must have been evaluated
+    // Re-check minimum_viable_for_isa — the gate must have been evaluated.
+    //
+    // `contact_id` and `is_active` ADDED: this select carried NEITHER, so the
+    // second ISA door assigned AI-ISA ownership to leads that had already become
+    // contacts — and then wrote `lifecycle_state='isa_qualifying'`, which is the
+    // exact value lib/ai-isa/ghost-reengagement.ts:detectGhostLeads sweeps on.
+    // lib/contact-promotion/lead-deactivator.ts used to CLAIM this gate checked
+    // is_active + ai_isa_owner. It checked neither; that comment is corrected at
+    // its source.
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, call_stop_flag, opted_out_at, lifecycle_state")
+      .select("id, contact_id, is_active, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (fetchErr || !lead) {
       return { success: false, error: "Lead not found" }
+    }
+
+    // CONVERSION FINALITY — refusal, not re-route. There is no contact-side
+    // equivalent of "assign AI-ISA ownership of a LEAD": a contact's ISA
+    // engagement is governed by `contacts.ai_isa_enabled` (which
+    // lib/kernel/crm.ts:convertLeadToContact already turns on at conversion) and
+    // driven by initiateAIISAContactEngagement. Re-arming lead ownership here
+    // would put a client back on the lead outreach queue, which is precisely
+    // what the ruling forbids. The refusal is REPORTABLE — `blockedReason`
+    // carries the contact that owns the relationship now.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        return { success: false, blocked: true, blockedReason: verdict.reason }
+      }
     }
 
     if (lead.call_stop_flag || lead.opted_out_at) {
@@ -1023,16 +1169,27 @@ export async function recordAiIsaOutcome(
           .maybeSingle()
 
         if (sequenceRow?.id) {
-          const { enrollContactInSequence } = await import(
-            "@/app/actions/campaign-sequences"
-          )
-          await enrollContactInSequence({
+          // UNATTENDED LANE: this runs with no session, so it uses the shared
+          // enrollment library directly and supplies its tenant explicitly. It used
+          // to call the `"use server"` action `enrollContactInSequence`, which
+          // omitted the NOT NULL `brokerage_id` — every enrollment here was refused
+          // by the database, and the swallowing catch below reported "enrolled in
+          // long-term nurture" while enrolling nobody. That catch is kept (the
+          // outcome record must not fail on a nurture miss) but the failure is now
+          // at least logged instead of vanishing.
+          const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
+          const { error: enrollError } = await enrollInSequence({
             sequenceId: sequenceRow.id,
+            brokerageId: ctx.brokerageId,
             leadId,
+            enrolledBy: ctx.userId ?? null,
           })
+          if (enrollError) {
+            console.error("[ai-isa] long-term nurture enrollment failed:", enrollError)
+          }
         }
       } catch (e) {
-        // best effort
+        console.error("[ai-isa] long-term nurture enrollment threw:", e)
       }
     }
 
@@ -1130,11 +1287,19 @@ export async function routeHistoryToCanonicalEntity(
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
       } else {
-        await supabase
+        // FAIL CLOSED (CLAUDE.md §4). supabase-js RESOLVES a refused UPDATE, so
+        // this discarded result let a rejected opt-out return `{ success: true }`
+        // — the inbound "STOP" was acknowledged to the caller while the contact
+        // row still permitted outreach.
+        const { error: dncError } = await supabase
           .from("contacts")
           .update({ dnc_status: true, isa_reengage_allowed: false, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (dncError) {
+          console.error(`[ai-isa] contact opt-out write REFUSED for ${entityId}:`, dncError.message)
+          return { success: false, error: `Contact opt-out write refused: ${dncError.message}` }
+        }
       }
     }
 

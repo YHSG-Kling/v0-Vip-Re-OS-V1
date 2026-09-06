@@ -12,6 +12,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 import type { DispositionRoute } from "@/lib/platform/disposition-route"
+import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -63,16 +64,31 @@ export async function autoDetectCommissionDispute(
 
   if (params.dispositionRoute === "in_app") {
     // Auto-file the dispute so the on-platform broker resolves it. System-initiated (not a user action).
-    await svc
+    //
+    // THE RESULT IS CHECKED. This is the agent's money: if the update is
+    // rejected (CHECK, RLS, a status race), the dispute is never filed, and
+    // discarding the result would have returned "auto_disputed" to the caller
+    // anyway — reporting a dispute that does not exist. supabase-js RESOLVES a
+    // rejected write, so silence here is not evidence of success.
+    const { error: disputeError } = await svc
       .from("agent_commissions")
       .update({ status: "disputed", dispute_reason: reason, disputed_at: now, disputed_by: "system:ai_finance", dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
       .in("status", ["pending", "approved"]) // idempotent — no-op if already disputed
-    await svc.from("lifecycle_events").insert({
-      brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
-      entity_type: "agent_commission", entity_id: commissionId,
-      event_type: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, created_at: now,
-    }).then(() => {}, () => {})
+    if (disputeError) {
+      console.error("[auto-dispute] failed to file commission dispute:", disputeError.message)
+      return { acted: "none", reason: null }
+    }
+    // The event mirror IS allowed to fail — the dispute above is the record that
+    // matters, and losing its timeline echo must not undo it.
+    await bestEffort(
+      svc.from("lifecycle_events").insert({
+        brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
+        entity_type: "agent_commission", entity_id: commissionId,
+        event_type: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, created_at: now,
+      }),
+      "timeline echo of a dispute that is already filed on agent_commissions",
+    )
     return { acted: "auto_disputed", reason }
   }
 

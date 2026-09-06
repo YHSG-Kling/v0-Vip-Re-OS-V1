@@ -46,7 +46,14 @@ export const PRODUCT_ANGLES: Record<string, { hook: string; proof: string }> = {
   },
 }
 
-export const PRODUCT_HASHTAGS: Record<ProductChannel, string> = {
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: PRODUCT_HASHTAGS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const PRODUCT_HASHTAGS: Record<ProductChannel, string> = {
   linkedin: "#RealEstate #AI #Proptech #BrokerageGrowth",
   instagram: "#realestate #realtor #ai #realestateagent #proptech",
   facebook: "#RealEstate #AI #Realtor",
@@ -114,8 +121,19 @@ export function buildWeeklyProductCalendar(
 export const DRAFT_STATUSES = ["draft", "approved", "posted", "discarded"] as const
 export type DraftStatus = (typeof DRAFT_STATUSES)[number]
 
-/** PURE: legal status transitions — posted requires a permalink; posted/discarded are terminal. */
-export function canTransitionDraft(from: string, to: string, permalink?: string | null): { ok: boolean; reason?: string } {
+/** Boundary narrower for DraftStatus — the door an untrusted string (request input, a DB row)
+ *  walks through before it may reach canTransitionDraft. */
+export function isDraftStatus(v: unknown): v is DraftStatus {
+  return typeof v === "string" && (DRAFT_STATUSES as readonly string[]).includes(v)
+}
+
+/** PURE: legal status transitions — posted requires a permalink; posted/discarded are terminal.
+ *  SIGNATURE TIGHTENED to the module's own vocabulary (2026-08-31): it took `string`/`string`,
+ *  refusing to use the DRAFT_STATUSES roster four lines up, so a caller could ask about a
+ *  transition that does not exist and only find out at runtime. Callers holding untrusted
+ *  strings narrow through isDraftStatus first. The runtime `to` check stays as the backstop
+ *  for any path that casts. */
+export function canTransitionDraft(from: DraftStatus, to: DraftStatus, permalink?: string | null): { ok: boolean; reason?: string } {
   if (!(DRAFT_STATUSES as readonly string[]).includes(to)) return { ok: false, reason: "unknown status" }
   if (from === "posted" || from === "discarded") return { ok: false, reason: `${from} is terminal` }
   if (to === "posted" && from !== "approved") return { ok: false, reason: "approve before posting" }

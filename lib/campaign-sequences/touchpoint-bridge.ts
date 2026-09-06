@@ -38,11 +38,26 @@ export function touchpointChannelForStep(stepChannel: string): string | null {
 // job, but the channel's owning manager is the meaningful attribution for "why did my client get
 // this?": voice is the AI ISA's, social/direct-mail are the Marketing Agent's, video is assembled
 // by the Asset Manager (Video Director). Pure + defaulting (campaign_orchestrator) so it never throws.
+// The map covers BOTH channel vocabularies that reach it (§6 — one function, one
+// home): the sequence engine's step channels (ai_call, voice_drop, social_post …)
+// and the campaign recorder's channel names (social, blog, podcast …), which are
+// the same ideas under different spellings. Merging them here rather than adding a
+// second map is what keeps a touch credited to the same manager whichever writer
+// records it.
+//
+// DELIBERATELY UNMAPPED, so they take the campaign_orchestrator default rather than
+// a wrong owner: `phone` (the recorder's human-dialed call — crediting the AI ISA
+// for an agent's own call would be a false receipt; the ISA's calls arrive as
+// ai_call/voice_drop), and `qr_scan`/`portal` (inbound visitor actions, not a touch
+// any manager sent).
 const CHANNEL_TO_MANAGER: Record<string, string> = {
   ai_call:     "ai_isa",
   voice_drop:  "ai_isa",
   social_post: "marketing_agent",
+  social:      "marketing_agent",
   direct_mail: "marketing_agent",
+  blog:        "marketing_agent",
+  podcast:     "marketing_agent",
   video:       "asset_manager",
   newsletter:  "campaign_orchestrator",
   email:       "campaign_orchestrator",
@@ -88,6 +103,10 @@ export async function recordSequenceTouchpoint(
       source:       "sequence",
       // Provenance — manager + sequence + ai_intent + channel make every touch answerable in the
       // Command Center: "why did my client get this, and which manager produced it?".
+      // The TYPED sequence_id/source columns above are the preferred home and are read by
+      // lib/intelligence/manager-touch-provenance.ts (per-manager sequence receipts) and
+      // lib/intelligence/decision-receipts.ts (per-contact "sent via sequence step" trail);
+      // this metadata duplicates enrollment/step linkage only for per-step drill-down.
       metadata:     {
         enrollment_id: input.enrollmentId,
         step_id:       input.stepId,

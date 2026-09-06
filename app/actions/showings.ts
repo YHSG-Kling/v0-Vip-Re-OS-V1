@@ -3,6 +3,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { requireActiveBBA } from "@/lib/buyer-broker/gate"
+import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+// bestEffort import left with the deleted confirmShowing — see its tombstone below.
 
 export async function requestShowing(data: {
   contactId: string
@@ -53,11 +57,17 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // requestShowing fires from the buyer portal, the auth user is the
     // contact, not a brokerage staff user, so users.brokerage_id resolves
     // to null and downstream notifications/activities lose tenancy).
-    const { data: contactBrokerage } = await supabase
+    // The error is destructured because this read is what gives the showing its TENANT: a refused
+    // read resolves (supabase-js does not throw) and used to arrive as a clean `null`, so the
+    // ledger row and the notification below quietly lost their tenancy instead of saying so.
+    const { data: contactBrokerage, error: contactBrokerageError } = await supabase
       .from("contacts")
       .select("brokerage_id")
       .eq("id", data.contactId)
       .maybeSingle()
+    if (contactBrokerageError) {
+      console.error("[showings] contact tenancy read refused — downstream rows lose brokerage scope:", contactBrokerageError.message)
+    }
     const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
     // The auth user id feeds only the assigned-agent fallback below; on the
     // sessionless caller lane it comes from the caller's verified actor.
@@ -70,11 +80,16 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // Agreement with their assigned agent. Skip when there's no assigned
     // agent (yet) — those are pre-representation inquiries that go through
     // the lead-pickup flow, not the BBA-gated showing flow.
-    const { data: contactForBBA } = await supabase
+    // Also the source of the OWNING AGENT stamped on the portal-activity row below, so its error
+    // is destructured too — a refused read here is not "this buyer has no agent".
+    const { data: contactForBBA, error: contactForBBAError } = await supabase
       .from("contacts")
       .select("agent_id")
       .eq("id", data.contactId)
       .maybeSingle()
+    if (contactForBBAError) {
+      console.error("[showings] contact agent read refused — activity row loses its agent stamp:", contactForBBAError.message)
+    }
     if (contactForBBA?.agent_id) {
       const gate = await requireActiveBBA({
         buyerContactId: data.contactId,
@@ -84,6 +99,27 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
       if (!gate.allowed) {
         return { success: false, error: gate.reason ?? "BBA gate failed", errorCode: "bba_required" }
       }
+    }
+
+    // ── Buyer financial gate — TENANT SETTING (m377) ───────────────────────
+    // Off by default and for every existing brokerage, in which case this
+    // returns immediately and nothing about this path changes. When a brokerage
+    // has opted in, the buyer must be financially verified before a showing is
+    // set. The refusal carries the gate's OWN reason so "your lender hasn't
+    // confirmed financials yet" never arrives looking like a server error.
+    // `caller` is forwarded so the sessionless (voice webhook) lane does not hit the
+    // cookie-session gate inside checkBuyerCanPerformAction — wave 3 gated that action
+    // on requireContactAccess, and this lane has no cookie by construction. Same gate,
+    // same blocked-attempt log, real resolved actor; see the overload note in
+    // lib/buyer-execution/showing-financial-policy.ts.
+    const finGate = await guardShowingFinancialGate({
+      contactId:   data.contactId,
+      brokerageId: brokerageId,
+      userId:      authUserId,
+      caller:      caller ? { actorUserId: caller.actorUserId ?? authUserId } : null,
+    })
+    if (finGate.blocked) {
+      return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
     }
 
     // Build a readable message from preferred dates and notes
@@ -149,17 +185,41 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     // This is the entry point for the agent to action the request — no calendar_events yet,
     // those are written only when the agent confirms.
     try {
-      // Resolve the contact's assigned agent to surface the activity on the right agent's feed
-      const { data: contact } = await supabase
+      // Resolve the contact's assigned agent to surface the activity on the right
+      // agent's feed.
+      //
+      // THE FALLBACK USED TO COALESCE TWO DISJOINT ID SPACES. It read
+      // `contact?.agent_id ?? authUserId`: `contacts.agent_id` is an AGENTS.id
+      // and `authUserId` is a USERS.id, so a contact with no assigned agent put a
+      // users id into `activities.agent_id` — a column every agent feed filters
+      // by agents.id. The row then belonged to nobody: it either FK-failed or
+      // landed where no query looks, and the showing request the buyer just made
+      // reached no one. This is the class m350 and m390 were written for.
+      //
+      // RESOLVE, never `??`. The caller's users id is translated into their
+      // agents id; if they have no agents row in this tenant there is no agent
+      // feed to write to, and the activity is skipped with a log rather than
+      // addressed to an id that cannot match.
+      const { data: contact, error: contactErr } = await supabase
         .from("contacts")
         .select("agent_id")
         .eq("id", data.contactId)
         .maybeSingle()
+      if (contactErr) {
+        console.error(`[showings] could not read the contact's assigned agent (${contactErr.message}) — the request is saved, but no agent feed row was written.`)
+      }
 
-      const assignedAgentId = contact?.agent_id ?? authUserId
+      const callerAgentId = authUserId ? await resolveAgentId(supabase, authUserId) : null
+      const assignedAgentId = (contact?.agent_id as string | null) ?? callerAgentId
+      if (!assignedAgentId) {
+        console.error(`[showings] showing request ${data.contactId}: no agents-class id could be resolved for the contact or the caller — nobody was given the request to action.`)
+      }
 
       if (assignedAgentId) {
-        await supabase.from("activities").insert({
+        // The two console.errors above exist because nobody being handed the
+        // request is the failure that matters. A REJECTED row is that same
+        // failure and supabase-js reports it as { error }, not a throw.
+        const { error: showingRequestActivityError } = await supabase.from("activities").insert({
           brokerage_id:  brokerageId,
           agent_id:      assignedAgentId,
           contact_id:    data.contactId,
@@ -172,23 +232,42 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
           status:        "pending",
           priority:      "high",
         })
+        if (showingRequestActivityError) {
+          console.error(`[showings] showing request activity REJECTED (${showingRequestActivityError.message}) — the request is saved, but no agent feed row was written.`)
+        }
       }
     } catch { /* non-critical */ }
 
-    // Log portal activity (best-effort)
-    try {
-      await supabase.from("client_portal_activity").insert({
-        contact_id:    data.contactId,
-        activity_type: "request_showing",
-        metadata: {
-          property_address:   data.propertyAddress,
-          mls_number:         data.mlsNumber ?? null,
-          listing_id:         data.listingId ?? null,
-          showing_request_id: showing.id,
-          source:             data.source ?? 'buyer_portal',
-        },
-      })
-    } catch { /* non-critical */ }
+    // The buyer's showing ask, on the engagement ledger. TENANT-STAMPED, and that is the whole
+    // repair: this row's SELECT policy admits the agent side only via
+    // has_brokerage_access(brokerage_id) or agent_id = current_user_agent_id(). Written with both
+    // columns null — as it was — the ledger entry was readable by the BUYER and by platform
+    // admins, and by neither the agent it exists to inform nor their broker. Both columns are
+    // nullable so the insert succeeded, which is exactly why nobody noticed.
+    //
+    // `contactForBBA.agent_id` is the contact's assigned agent and is AGENTS-class, the same class
+    // this column FKs — a straight copy, never the auth user id (that is USERS-class and disjoint).
+    // The bare try/catch that used to wrap this caught NOTHING: supabase-js RESOLVES a refused
+    // write rather than throwing, so a rejected insert left no trace at all.
+    const portalActivityRow = {
+      brokerage_id:  brokerageId,
+      contact_id:    data.contactId,
+      agent_id:      contactForBBA?.agent_id ?? null,
+      activity_type: "request_showing",
+      metadata: {
+        property_address:   data.propertyAddress,
+        mls_number:         data.mlsNumber ?? null,
+        listing_id:         data.listingId ?? null,
+        showing_request_id: showing.id,
+        source:             data.source ?? 'buyer_portal',
+      },
+    }
+    const { error: portalActivityError } = await supabase
+      .from("client_portal_activity")
+      .insert(portalActivityRow)
+    if (portalActivityError) {
+      console.error("[showings] portal activity 'request_showing' NOT recorded:", portalActivityError.message)
+    }
 
     // Notify the assigned (buyer) agent in-app.
     // contacts.agent_id stores agents.id (NOT users.id), but
@@ -286,9 +365,62 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
   }
 }
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `showings` branch:
+ * the session gate, the tenant boundary, and a refused read reported as a
+ * FAILURE instead of an empty list.
+ *
+ * Three things were wrong and all three are the same family:
+ *   · no session of any kind — the contact id came from the caller and was the
+ *     only filter, so any signed-in browser could read any brokerage's buyer's
+ *     showing history by id;
+ *   · both the `if (error)` path and the catch returned `[]`, so a refusal
+ *     rendered as "this buyer has never asked to see anything";
+ *   · the request rows themselves are not reliably tenant-stamped — the public
+ *     landing-page capture in app/actions/listing-landing.ts writes one with no
+ *     brokerage anchor at all. So the boundary is enforced on the CONTACT, which
+ *     is always stamped, rather than on a column that would silently hide the
+ *     agent's own rows. Same shape as documents.ts:getDocuments.
+ *
+ * The result is now discriminated. hooks/use-contact-dashboard.ts already
+ * accepted both shapes, so nothing downstream had to be told.
+ */
 export async function getShowings(contactId: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", showings: [] as any[] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", showings: [] as any[] }
+    }
+
     const supabase = await createClient()
+
+    // The tenant boundary, session-derived: this contact must be one of ours.
+    //
+    // `error` is destructured. The previous shape leaned on `!owner` to cover a
+    // refused lookup as well as a missing row, and it did fail CLOSED — but it
+    // answered an OUTAGE with the word "Forbidden", which reads as a decision
+    // somebody made about this caller. It is the same conflation wave 15 removed
+    // from lib/portal/require-contact-access.ts: failing closed is the floor,
+    // not the whole obligation, and a caller told "Forbidden" will not retry.
+    const { data: owner, error: ownerError } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (ownerError) {
+      console.error("[showings] getShowings tenant check refused:", ownerError.message)
+      return {
+        success: false,
+        error: "We couldn't verify this contact just now — please try again.",
+        showings: [] as any[],
+      }
+    }
+
+    if (!owner || owner.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden", showings: [] as any[] }
+    }
 
     const { data, error } = await supabase
       .from("showing_requests")
@@ -297,46 +429,52 @@ export async function getShowings(contactId: string) {
       .order("created_at", { ascending: false })
 
     if (error) {
-      console.error("[v0] Error fetching showings:", error)
-      return []
+      console.error("[showings] getShowings read refused:", error.message)
+      return { success: false, error: `Could not load showings: ${error.message}`, showings: [] as any[] }
     }
 
-    return data || []
-  } catch (error) {
-    console.error("[v0] Error in getShowings:", error)
-    return []
-  }
-}
-
-export async function updateShowingStatus(
-  showingId: string,
-  status: "pending" | "approved" | "needs_reschedule" | "denied" | "cancelled",
-  sellerNotes?: string
-) {
-  try {
-    const supabase = await createClient()
-
-    const { error } = await supabase
-      .from("showing_requests")
-      .update({
-        status, // CHECK: pending|approved|needs_reschedule|denied|cancelled
-        ...(sellerNotes !== undefined ? { seller_notes: sellerNotes } : {}),
-        ...(status === "approved" ? { seller_approved: true, seller_approved_at: new Date().toISOString() } : {}),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", showingId)
-
-    if (error) {
-      console.error("[v0] Error updating showing status:", error)
-      return { success: false, error: error.message }
-    }
-
-    return { success: true }
+    return { success: true, showings: (data ?? []) as any[] }
   } catch (error: any) {
-    console.error("[v0] Error in updateShowingStatus:", error)
-    return { success: false, error: error.message }
+    console.error("[showings] getShowings failed:", error?.message)
+    return { success: false, error: error?.message ?? "Could not load showings", showings: [] as any[] }
   }
 }
+
+/**
+ * DELETED (wave 4 slice 2): `updateShowingStatus`.
+ *
+ * Survivors, all session-gated (`requireCaller`), all listing-tenancy-checked,
+ * and all already WIRED to
+ * app/components/dashboard/listings/showings/showing-requests-panel.tsx:
+ *
+ *   approved          → app/actions/seller-showings.ts:approveShowingRequest
+ *   denied            → app/actions/seller-showings.ts:denyShowingRequest
+ *   needs_reschedule  → app/actions/seller-showings.ts:suggestAlternativeTime
+ *   cancelled         → app/actions/showings.ts:cancelShowing (below)
+ *
+ * Its own doc block claimed two unique capabilities. Both were checked and both
+ * were false or harmful:
+ *
+ *   · "the seller_approved / seller_approved_at stamping … nothing else writes
+ *     those columns" — approveShowingRequest has always written both
+ *     (seller-showings.ts). A comment is not evidence.
+ *   · the `pending` status, which no survivor offers. Not ported: reverting an
+ *     approved request to pending would leave the `showings` row,
+ *     converted_showing_id, the lifecycle_event and the fired SHOWING_SCHEDULED
+ *     event behind it untouched — a badly-implemented extra, so the class was
+ *     fixed at the survivor instead of the implementation copied.
+ *
+ * What it DID have, and what was merged onto the survivors before deleting:
+ * the `.select()` + zero-row refusal, so an update RLS refused stops reporting
+ * success. approveShowingRequest additionally did not destructure `error` at
+ * all, and went on to INSERT a real showings row for an approval that may never
+ * have been recorded. suggestAlternativeTime also gained the
+ * `status: "needs_reschedule"` write the loser carried.
+ *
+ * The loser was also the weakest of the four: no authentication check, no
+ * listing-tenancy check, no revalidatePath, and none of the approve-path
+ * side effects.
+ */
 
 // Mark an actual scheduled showing (showings table) as completed. The mobile
 // day-panel operates on showings rows, not showing_requests.
@@ -373,8 +511,27 @@ export async function createShowing(params: {
     const supabase = await createClient()
 
     // brokerage_id + requested_date/start/end are NOT NULL on showing_requests.
-    const { data: c } = await supabase
+    const { data: c, error: contactErr } = await supabase
       .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+    if (contactErr) {
+      console.error("Error loading contact for createShowing:", contactErr)
+      return { success: false, error: contactErr.message }
+    }
+
+    // ── Buyer financial gate — TENANT SETTING (m377) ───────────────────────
+    // No-op unless this brokerage opted in. When it did, an agent creating the
+    // showing directly is the same "setting a showing" moment the owner named,
+    // so it is gated exactly like the buyer-initiated request path.
+    const { data: { user: creator } } = await supabase.auth.getUser()
+    const finGate = await guardShowingFinancialGate({
+      contactId:   params.contactId,
+      brokerageId: c?.brokerage_id ?? null,
+      userId:      creator?.id ?? null,
+    })
+    if (finGate.blocked) {
+      return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
+    }
+
     const startTime = `${params.scheduledTime}:00`
     const [eh, em] = params.scheduledTime.split(":").map(Number)
     const endTotal = eh * 60 + em + 30
@@ -432,9 +589,59 @@ export async function updateShowing(showingId: string, updates: any) {
   }
 }
 
+/**
+ * Cancel a showing request (the `cancelled` verb of the request lifecycle —
+ * the wave-4 ruling assigned it here beside approveShowingRequest /
+ * denyShowingRequest / suggestAlternativeTime in seller-showings.ts).
+ *
+ * WIRED (lane E2 2026-08-28) to the listing showings console
+ * (showing-requests-panel.tsx) — until then nothing could cancel an approved
+ * request. Gated at the same time: this had no session check and updated any
+ * request by uuid; now the request must resolve into the caller's brokerage
+ * (contact first — always stamped — falling back to the listing), and the
+ * `.select()` + zero-row refusal stays so an RLS-refused update cannot report
+ * success.
+ */
 export async function cancelShowing(showingId: string, reason?: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
+
+    // The id may be a showing_requests.id, or — from the confirmed-showings
+    // list, which renders converted `showings` rows — a showings.id; the
+    // request points at its conversion via converted_showing_id.
+    const reqSelect =
+      "id, brokerage_id, contact_id, listing_id, converted_showing_id, contacts(brokerage_id), listings(brokerage_id)"
+    let { data: reqRow, error: reqErr } = await supabase
+      .from("showing_requests")
+      .select(reqSelect)
+      .eq("id", showingId)
+      .maybeSingle()
+    if (reqErr) return { success: false, error: reqErr.message }
+    if (!reqRow) {
+      const byConversion = await supabase
+        .from("showing_requests")
+        .select(reqSelect)
+        .eq("converted_showing_id", showingId)
+        .maybeSingle()
+      if (byConversion.error) return { success: false, error: byConversion.error.message }
+      reqRow = byConversion.data
+    }
+    if (!reqRow) return { success: false, error: "Showing request not found" }
+
+    // Tenant check — via the request's own stamp, contact, or listing.
+    const rowTenant =
+      (reqRow as any).brokerage_id ??
+      (reqRow as any).contacts?.brokerage_id ??
+      (reqRow as any).listings?.brokerage_id ??
+      null
+    if (rowTenant !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     const { data, error } = await supabase
       .from("showing_requests")
@@ -443,11 +650,28 @@ export async function cancelShowing(showingId: string, reason?: string) {
         ...(reason !== undefined ? { seller_notes: reason } : {}),
         updated_at: new Date().toISOString(),
       })
-      .eq("id", showingId)
+      .eq("id", (reqRow as any).id)
       .select()
       .single()
 
     if (error) throw error
+
+    // The converted showings row (what the confirmed list renders) must agree —
+    // a cancelled request with a still-"confirmed" showing is two truths.
+    const convertedId = (reqRow as any).converted_showing_id
+    if (convertedId) {
+      const { data: cancelledShowings, error: showErr } = await supabase
+        .from("showings")
+        .update({ status: "cancelled" })
+        .eq("id", convertedId)
+        .select("id")
+      if (showErr) {
+        return { success: false, error: `Request cancelled, but the showing row was refused: ${showErr.message}` }
+      }
+      if (!cancelledShowings || cancelledShowings.length === 0) {
+        return { success: false, error: "Request cancelled, but the converted showing row was not found" }
+      }
+    }
 
     revalidatePath("/dashboard")
 
@@ -458,58 +682,15 @@ export async function cancelShowing(showingId: string, reason?: string) {
   }
 }
 
-export async function confirmShowing(showingId: string, confirmedDate: string) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("showing_requests")
-      .update({
-        status:             "approved", // CHECK-valid; "confirmed" is not allowed
-        seller_approved:    true,
-        seller_approved_at: new Date().toISOString(),
-        updated_at:         new Date().toISOString(),
-      })
-      .eq("id", showingId)
-      .select("id, contact_id, brokerage_id, listing_id, requested_date")
-      .single()
-
-    if (error) throw error
-
-    // Write the agent's calendar_event — only appears now that it is confirmed.
-    // The contact's calendar event is written separately when the tour is sent/confirmed.
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: u } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-        await supabase.from("calendar_events").insert({
-          brokerage_id:        u?.brokerage_id ?? data.brokerage_id,
-          entity_type:         "showing_request",
-          entity_id:           data.id,
-          event_type:          "showing",
-          start_at:            confirmedDate,
-          is_system_generated: true,
-        })
-      }
-    } catch { /* non-critical */ }
-
-    // Update activities row status to completed
-    try {
-      await supabase
-        .from("activities")
-        .update({ status: "completed", completed_at: new Date().toISOString() })
-        .eq("entity_type", "showing_request")
-        .eq("entity_id", showingId)
-    } catch { /* non-critical */ }
-
-    revalidatePath("/dashboard")
-    revalidatePath(`/crm/contacts/${data.contact_id}`)
-
-    return { success: true, showing: data }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `confirmShowing` deleted.
+// SURVIVOR: app/actions/seller-showings.ts:approveShowingRequest (wired at
+// app/components/dashboard/listings/showings/showing-requests-panel.tsx:83),
+// the session-gated, listing-tenancy-checked approval that also converts the
+// request into a real `showings` row, stamps converted_showing_id, and fires
+// SHOWING_SCHEDULED. What this twin had that the survivor lacked — the
+// agent's calendar_events write — was MERGED onto the survivor first. This
+// copy had no auth gate, and a stripped-source census found zero callers
+// outside the app/actions/index.ts barrel, which itself has zero importers.
 
 // NOTE: getShowingFeedback (by listingId) is canonically defined in seller-updates.ts —
 // the showing_requests-based duplicate that lived here wrote/read phantom feedback

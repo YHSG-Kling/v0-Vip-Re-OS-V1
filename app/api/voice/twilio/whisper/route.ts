@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     // Rebuild the settings-driven identity from the caller's OWN call (the To
     // number the caller dialed) — assistant name/agent/brokerage all live in
     // the tenant-editable AI identity profile.
-    const { data: call } = await svc.from("voice_calls").select("phone_to").eq("vapi_call_id", callerSid).maybeSingle()
+    const { data: call } = await svc.from("voice_calls").select("phone_to").eq("vendor_call_id", callerSid).maybeSingle()
     const ctx = (call as any)?.phone_to ? await resolveInboundContext(svc, (call as any).phone_to) : null
     const briefing = composeWhisperBriefing(ctx?.identity ?? {}, label, topic)
     const joinUrl = `${url.origin}${url.pathname}?${new URLSearchParams({ token: given, step: "join", conf, caller: callerSid, vc: voiceCallId ?? "", b: brokerageId }).toString()}`

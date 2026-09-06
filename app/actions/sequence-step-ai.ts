@@ -10,7 +10,7 @@ type StepType =
   | "ai_image" | "video" | "newsletter" | "social_post" | "assign_task"
   | "draft_document" | "schedule_showing" | "schedule_tour" | "avm_cma"
   | "ad_campaign" | "in_app" | "condition" | "listing_landing_page"
-  | "add_to_segment" | "remove_from_campaign"
+  | "add_to_segment" | "remove_from_segment" | "remove_from_campaign"
 
 const TYPE_GUIDANCE: Partial<Record<StepType, string>> = {
   email:

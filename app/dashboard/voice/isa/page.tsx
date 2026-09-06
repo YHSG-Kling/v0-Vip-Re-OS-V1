@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
+import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getAIISASettings } from "@/app/actions/ai-isa-settings"
-import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -11,16 +11,14 @@ import {
   Phone, 
   CheckCircle2, 
   Clock, 
-  Users, 
+  
   TrendingUp,
-  PhoneOff,
   ArrowRight
 } from "lucide-react"
 import { ISACallsTable } from "./isa-calls-table"
 import { ISACampaignsPanel } from "./isa-campaigns-panel"
 import { CoachingInsightsPanel } from "./coaching-insights-panel"
 import { HandoffQueuePanel } from "./handoff-queue-panel"
-import { ContactHistorySheet } from "./contact-history-sheet"
 import { ISAConfigSummary } from "./isa-config-summary"
 
 export const dynamic = "force-dynamic"
@@ -32,9 +30,17 @@ export const metadata = {
 
 export default async function VoiceISAPage() {
   const supabase = await createClient()
-  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = await getAgentContext()
+  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw, userId } = await getAgentContext()
   const agentId = agentIdRaw ?? ""
   const brokerageId = brokerageIdRaw ?? ""
+  // `agents.id` and `users.id` are DISJOINT id spaces (measured live: zero
+  // overlap). `agentId` is the right value for `ai_isa_calls.agent_id` /
+  // `ai_isa_qualifications.agent_id` below — both FK `agents(id)` — and the WRONG
+  // value for the handoff panel, every column of which FKs `users(id)`. This page
+  // passed `agentId` there, so every claim on this surface was refused 23503
+  // three times over while reporting success. `getAgentContext()` returns the
+  // same human's `users.id` in the very same call, so the crossing costs nothing.
+  const userIdForHandoff = userId ?? ""
 
   // Get today's date at midnight
   const today = new Date()
@@ -149,7 +155,12 @@ export default async function VoiceISAPage() {
       )
     `)
     .eq("brokerage_id", brokerageId)
-    .in("status", ["no_answer", "failed", "busy"])
+    // The Twilio status callback always writes status = "completed" on a
+    // terminated leg and puts the real disposition in OUTCOME
+    // (busy / no_answer / failed / canceled). Filtering status for those three
+    // matched nothing on every run — this retry list was permanently empty, and
+    // "busy" is not even a value voice_calls.status admits.
+    .in("outcome", ["no_answer", "failed", "busy", "canceled"])
     .order("started_at", { ascending: false })
     .limit(50)
 
@@ -212,22 +223,20 @@ export default async function VoiceISAPage() {
     .eq("agent_id", agentId)
     .maybeSingle()
 
-  // ai_isa_settings was a writer-less legacy twin (burn-down round 4 repoint):
-  // vapi_assistant_id lives on ai_identity_profiles (written by lib/voice/vapi-numbers.ts,
-  // read back by lib/ai-isa/build-call-context.ts) and the ISA enabled toggle lives in
-  // global_settings.additional_settings->ai_isa_settings (app/actions/ai-isa-settings.ts).
-  const { data: identityProfiles } = await supabase
-    .from("ai_identity_profiles")
-    .select("vapi_assistant_id")
-    .eq("brokerage_id", brokerageId)
-    .eq("active", true)
-    .not("vapi_assistant_id", "is", null)
-    .limit(1)
-
-  const vapiConfigured = !!identityProfiles?.[0]?.vapi_assistant_id
+  // READINESS FROM THE REAL GATES, not from a retired vendor's assistant id.
+  // This tested ai_identity_profiles.vapi_assistant_id, so a fully-working
+  // Twilio brokerage was told AI calling was unavailable and sent off to
+  // configure VAPI — which this OS no longer calls at all. The profile query
+  // went with it: that test was its only consumer.
+  const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
   const isaActive      = brokerageId ? (await getAIISASettings(brokerageId)).enabled : false
-  // require_broker_approval has no real store (it existed only on the phantom ai_isa_settings
-  // table, which was never written) — its effective value was always the `?? false` fallback.
+  // require_broker_approval still has no WRITER. The `ai_isa_settings` table is no
+  // longer phantom — m552 gave it the per-user owner grain and
+  // lib/ai-isa/resolve-isa-settings.ts::writeIsaSettings writes it — but that
+  // writer sets is_active + settings, and `require_broker_approval` is not a key of
+  // AIISASettings, so the COLUMN remains writer-less and reading it would be
+  // reading a value nobody can set. Still the honest `false`; the open half is a
+  // writer, not a reader.
   const requiresBrokerApproval = false
 
   return (
@@ -251,21 +260,22 @@ export default async function VoiceISAPage() {
         </div>
       </div>
 
-      {/* VAPI not configured CTA — shown instead of a blank failure */}
-      {!vapiConfigured && (
+      {/* Shown only when AI calling genuinely cannot run, and it names the one
+          thing the agent has to do about it. */}
+      {!callingReadiness.canPlaceAiCalls && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
           <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-800">Configure VAPI to enable AI calling</p>
-            <p className="text-xs text-amber-700 mt-0.5">
-              AI-ISA outbound calling requires a VAPI assistant ID. Add it in AI-ISA Settings to activate automated dialing.
-            </p>
+            <p className="text-sm font-semibold text-amber-800">AI calling isn&apos;t ready yet</p>
+            <p className="text-xs text-amber-700 mt-0.5">{callingReadiness.reason}</p>
           </div>
-          <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 shrink-0" asChild>
-            <Link href="/settings?tab=ai-isa">
-              Configure VAPI
-              <ArrowRight className="h-3 w-3 ml-1" />
-            </Link>
-          </Button>
+          {callingReadiness.ctaHref && (
+            <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 shrink-0" asChild>
+              <Link href={callingReadiness.ctaHref}>
+                {callingReadiness.ctaLabel}
+                <ArrowRight className="h-3 w-3 ml-1" />
+              </Link>
+            </Button>
+          )}
         </div>
       )}
 
@@ -383,11 +393,8 @@ export default async function VoiceISAPage() {
         />
 
         {/* Handoff Queue */}
-        <HandoffQueuePanel
-          queue={(handoffQueue || []) as any[]}
-          brokerageId={brokerageId}
-          agentId={agentId}
-        />
+        {/* Tenant + claimant are session-derived inside the claim action now. */}
+        <HandoffQueuePanel queue={(handoffQueue || []) as any[]} />
       </div>
 
       {/* ISA Configuration Summary */}

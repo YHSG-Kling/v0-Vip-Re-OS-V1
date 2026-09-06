@@ -12,6 +12,58 @@ import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
 
+/**
+ * THE AGE BANDS, DEFINED ONCE. Everything that needs a band derives it from
+ * here; nothing re-derives the boundaries inline.
+ *
+ * A BAND IS A SEGMENT, A BIRTHDATE IS A DOSSIER. The owner ruling (wave 15)
+ * unlocked demographic data so education can be routed by age group — "we
+ * determine the kind of education in channels by the age group" — and this repo
+ * already holds the matching discipline for timeline (buckets 1-3 / 3-6 / 6-12,
+ * never 30/60/90, CLAUDE.md §5). The same discipline applies here: selection
+ * reads the BAND, never the raw age or the birthday.
+ *
+ * `AgeSegment` and `DELIVERY_MATRIX` already lived in this file, so the
+ * derivation lives beside them rather than in a fifth module. It was previously
+ * open-coded inline at lib/portal/resolve-education-context.ts, which is the
+ * duplicate this replaces.
+ */
+export const AGE_SEGMENTS: readonly AgeSegment[] = ["18-30", "30-50", "50-65", "65+"]
+
+/** PURE. Whole-years age → band. null in, null out — an unknown age must stay
+ *  unknown rather than defaulting into a band it was never measured in. */
+export function ageSegmentFromAge(age: number | null | undefined): AgeSegment | null {
+  if (age == null || !Number.isFinite(age) || age <= 0) return null
+  if (age < 30) return "18-30"
+  if (age < 50) return "30-50"
+  if (age < 65) return "50-65"
+  return "65+"
+}
+
+/**
+ * PURE. An enrichment `age_range` string → a single representative age.
+ *
+ * `contacts.age_range` is written by the enrichment lane
+ * (lib/lead-pipeline/enrichment-column-map.ts, app/actions/contact-enrichment.ts)
+ * in the PROVIDER's banding — "25-34", "35-44", "55+", "65 plus" — which does
+ * not line up with ours. Rather than adding a second age vocabulary (CLAUDE.md
+ * §6), the provider band is collapsed to its MIDPOINT here and every band
+ * boundary in the tree is decided by `ageSegmentFromAge` alone. An open-ended
+ * top band ("65+") uses its lower bound, which lands in the same segment.
+ */
+export function ageMidpointFromAgeRange(range: string | null | undefined): number | null {
+  if (!range) return null
+  const nums = String(range).match(/\d+/g)?.map(Number).filter((n) => Number.isFinite(n) && n > 0) ?? []
+  if (nums.length === 0) return null
+  if (nums.length === 1) return nums[0]
+  return Math.round((nums[0] + nums[1]) / 2)
+}
+
+/** PURE. An enrichment `age_range` string → OUR band, via the midpoint above. */
+export function ageSegmentFromAgeRange(range: string | null | undefined): AgeSegment | null {
+  return ageSegmentFromAge(ageMidpointFromAgeRange(range))
+}
+
 // ─── GENERATIONAL COHORT ──────────────────────────────────────────────────────
 // Companion routing axis. Same person can be 50-65 ageSeg + 'boomer' OR
 // 'gen_x' depending on which side of 1965 they were born. Tone differs:
@@ -686,17 +738,40 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
 export interface CreateEducationalResourceInput {
   title: string
   description: string
-  contentType: "video" | "article" | "interactive" | "assessment"
+  /** "podcast" added wave 4 slice 2 — the learning-modules console already
+   *  offers a Podcast channel, and the education editor can now author an
+   *  audio/podcast script (content-generation-engine.ts:generateAudio). */
+  contentType: "video" | "article" | "interactive" | "assessment" | "podcast"
   content: string
   estimatedMinutes: number
   createdBy: string
   brokerageId: string
+  /**
+   * MODEL-AUTHORED content lands at status 'pending_review' with is_ai_generated
+   * true — an admin approves before it publishes (the post-migration-1049 rule
+   * every autonomous authoring path already follows; app/actions/learning-modules-approvals.ts).
+   * Human-authored content (the default) publishes as before. Ported from the
+   * deleted generateAIEducation (see its tombstone below), which was the only
+   * writer that honoured the rule while the REAL AI path — the education editor's
+   * generate tab → this function — published model output immediately.
+   */
+  isAiGenerated?: boolean
+  /** Optional team scope (learning_modules.team_id). */
+  teamId?: string | null
+  /** Optional audience targeting (learning_modules.audience_roles / audience_personas / stage_tags). */
+  audienceRoles?: string[]
+  audiencePersonas?: string[]
+  stageTags?: string[]
+  /** Optional milestone the lesson teaches (learning_modules.milestone_key). */
+  milestoneKey?: string | null
 }
 
 export interface CreateEducationalResourceOutput {
   resourceId: string
   success: boolean
   createdAt: string
+  /** 'pending_review' for AI-authored drafts, 'published' otherwise. */
+  status: "published" | "pending_review"
 }
 
 export async function createEducationalResource(
@@ -706,6 +781,7 @@ export async function createEducationalResource(
   const channels = (() => {
     switch (input.contentType) {
       case "video":         return ["video"]
+      case "podcast":       return ["podcast"]
       case "article":       return ["article"]
       case "interactive":   return ["quiz"]
       case "assessment":    return ["quiz"]
@@ -713,6 +789,27 @@ export async function createEducationalResource(
     }
   })()
 
+  const isAi = !!input.isAiGenerated
+  const status: "published" | "pending_review" = isAi ? "pending_review" : "published"
+
+  // No-duplicate guard: return an existing near-identical resource rather than
+  // publishing a second copy (owner: "no duplicates or noise"). An AI draft is
+  // compared against its declared audience (the guard's audience-overlap rule);
+  // a human resource keeps the audience-agnostic comparison it always had.
+  {
+    const { findNearDuplicateModule } = await import("@/lib/education/dedup-guard")
+    const dup = await findNearDuplicateModule(
+      supabase, input.brokerageId, input.title, isAi ? (input.audienceRoles ?? []) : null,
+    )
+    if (dup) {
+      return { resourceId: dup.id, success: true, createdAt: new Date().toISOString(), status }
+    }
+  }
+
+  // Every column below is in scripts/schema-snapshot.ts:learning_modules
+  // (team_id, audience_roles, audience_personas, stage_tags, milestone_key,
+  // is_ai_generated, status, published_at) — PGRST204 refuses the WHOLE row on
+  // one absent column, so the optional ones are only sent when supplied.
   const { data, error } = await supabase
     .from("learning_modules")
     .insert({
@@ -723,8 +820,14 @@ export async function createEducationalResource(
       body:                input.content,
       estimated_minutes:   input.estimatedMinutes,
       channels,
-      status:              "published",
-      published_at:        new Date().toISOString(),
+      status,
+      published_at:        isAi ? null : new Date().toISOString(),
+      is_ai_generated:     isAi,
+      ...(input.teamId !== undefined ? { team_id: input.teamId } : {}),
+      ...(input.audienceRoles ? { audience_roles: input.audienceRoles } : {}),
+      ...(input.audiencePersonas ? { audience_personas: input.audiencePersonas } : {}),
+      ...(input.stageTags ? { stage_tags: input.stageTags } : {}),
+      ...(input.milestoneKey !== undefined ? { milestone_key: input.milestoneKey } : {}),
     })
     .select("id, created_at")
     .maybeSingle()
@@ -737,6 +840,7 @@ export async function createEducationalResource(
     resourceId: data.id,
     success:    true,
     createdAt: data.created_at,
+    status,
   }
 }
 
@@ -838,170 +942,33 @@ export async function recordCompletion(
   }
 }
 
-export interface GetPersonalizedLearningPathInput {
-  contactId: string
-  brokerageId: string
-}
+// TOMBSTONE (orphan tranche 4): getPersonalizedLearningPath deleted. It was a
+// stub that reported a raw completed-count as "completionPercentage", never a
+// next resource, and 0 time remaining — fabricated shape, no honest signal. The
+// survivors that do this job for real:
+//   · getEducationPlan (this file, exported via lib/kernel/index.ts) — the
+//     contact-side plan the portal renders (stage-aware lessons + progress);
+//   · app/actions/ai-training-coaching.ts:generateLearningPath — the agent-side
+//     personalized path, wired to the academy's learning-path panel.
 
-export interface GetPersonalizedLearningPathOutput {
-  nextResource?: { id: string; title: string; estimatedMinutes: number }
-  completionPercentage: number
-  estimatedTimeRemaining: number
-}
-
-export async function getPersonalizedLearningPath(
-  supabase: any,
-  input: GetPersonalizedLearningPathInput
-): Promise<GetPersonalizedLearningPathOutput> {
-  // Post-1043: completed modules come from learning_assignments.
-  const { data: progress } = await supabase
-    .from("learning_assignments")
-    .select("module_id")
-    .eq("contact_id", input.contactId)
-    .eq("status", "completed")
-
-  const completedIds = new Set(progress?.map((p: { module_id: string }) => p.module_id) || [])
-
-  return {
-    nextResource: undefined,
-    completionPercentage:   completedIds.size,
-    estimatedTimeRemaining: 0,
-  }
-}
-
-export interface GenerateAIEducationInput {
-  topic: string
-  contentType: "video_script" | "article" | "quiz"
-  tone: "professional" | "conversational"
-  brokerageId: string
-  createdBy: string
-  /** Optional team scope. When set, team.bio_text + per-team brand voice
-   *  override the brokerage defaults. */
-  teamId?: string
-  /** Optional milestone the lesson teaches; surfaces it in the
-   *  milestone-gated panel + drives the customer's portal stream. */
-  milestoneKey?: string
-  /** Optional audience targeting (passed through to learning_modules). */
-  audiencePersonas?: string[]
-  audienceRoles?:    string[]
-  stageTags?:        string[]
-}
-
-export interface GenerateAIEducationOutput {
-  resourceId: string
-  success: boolean
-  /** Always 'pending_review' after migration 1049 — admin must approve. */
-  status:    "pending_review"
-  /** Brand-voice signals folded into the body draft. */
-  brandVoiceApplied: {
-    brokerageAbout: boolean
-    brokerageBio:   boolean
-    teamBio:        boolean
-    brandVoice:     boolean
-  }
-}
-
-export async function generateAIEducation(
-  supabase: any,
-  input: GenerateAIEducationInput
-): Promise<GenerateAIEducationOutput> {
-  // Resolve brand-voice context: brokerage about + bio, team bio, brand voice profile
-  const { data: brokerage } = await supabase
-    .from("brokerages")
-    .select("name, about_text, bio_text")
-    .eq("id", input.brokerageId)
-    .maybeSingle()
-
-  let teamBio: string | null = null
-  if (input.teamId) {
-    const { data: team } = await supabase
-      .from("teams")
-      .select("name, bio_text")
-      .eq("id", input.teamId)
-      .maybeSingle()
-    teamBio = (team?.bio_text as string | null) ?? null
-  }
-
-  // Brand voice profile lookup — prefer team > brokerage scope (post-1049
-  // schema fix; brokerage_id + team_id columns now exist).
-  let brandVoiceTone:      string | null = null
-  let brandVoiceKeywords:  string[]      = []
-  try {
-    const { data: bv } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, key_brand_messages, prohibited_words")
-      .or(`team_id.eq.${input.teamId ?? "00000000-0000-0000-0000-000000000000"},brokerage_id.eq.${input.brokerageId}`)
-      .order("team_id", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .maybeSingle()
-    brandVoiceTone     = (bv?.tone as string | null) ?? null
-    brandVoiceKeywords = ((bv?.key_brand_messages as string[] | null) ?? []) as string[]
-  } catch {
-    // brand_voice_profile lookup is best-effort; failures don't block generation
-  }
-
-  const brokerageAbout = (brokerage?.about_text as string | null) ?? null
-  const brokerageBio   = (brokerage?.bio_text   as string | null) ?? null
-  const brokerageName  = (brokerage?.name       as string | null) ?? null
-
-  // Fold brand-voice context into the draft body so an admin reviewer can
-  // see what was used. Real AI generation upgrades this later — for now
-  // we store the prompt context + a placeholder body that's brand-flavored.
-  const contextBlock = [
-    brokerageName  ? `Brokerage: ${brokerageName}`              : null,
-    brokerageAbout ? `About: ${brokerageAbout}`                 : null,
-    brokerageBio   ? `Bio: ${brokerageBio}`                     : null,
-    teamBio        ? `Team bio: ${teamBio}`                     : null,
-    brandVoiceTone ? `Brand voice: ${brandVoiceTone} tone`      : null,
-    brandVoiceKeywords.length > 0 ? `Key messages: ${brandVoiceKeywords.join(", ")}` : null,
-  ].filter(Boolean).join("\n")
-
-  const placeholderBody = [
-    `# ${input.topic}`,
-    "",
-    contextBlock ? `> Brand voice context applied during generation:\n> ${contextBlock.replace(/\n/g, "\n> ")}` : "",
-    "",
-    "AI-generated content — admin review required before publishing.",
-  ].filter(Boolean).join("\n")
-
-  const channels = input.contentType.includes("video") ? ["video"] : ["article"]
-  const { data, error } = await supabase
-    .from("learning_modules")
-    .insert({
-      brokerage_id:      input.brokerageId,
-      team_id:           input.teamId ?? null,
-      authored_by:       input.createdBy,
-      title:             `AI: ${input.topic}`,
-      summary:           `Generated by AI education engine (${input.tone} tone)`,
-      body:              placeholderBody,
-      estimated_minutes: 5,
-      channels,
-      audience_roles:    input.audienceRoles ?? [],
-      audience_personas: input.audiencePersonas ?? [],
-      stage_tags:        input.stageTags ?? [],
-      milestone_key:     input.milestoneKey ?? null,
-      is_ai_generated:   true,
-      status:            "pending_review",   // post-1049: admin must approve
-    })
-    .select("id")
-    .maybeSingle()
-
-  if (error || !data) {
-    throw new Error(`Failed to generate AI education: ${error?.message}`)
-  }
-
-  return {
-    resourceId: data.id,
-    success:    true,
-    status:     "pending_review",
-    brandVoiceApplied: {
-      brokerageAbout: !!brokerageAbout,
-      brokerageBio:   !!brokerageBio,
-      teamBio:        !!teamBio,
-      brandVoice:     !!brandVoiceTone || brandVoiceKeywords.length > 0,
-    },
-  }
-}
+// TOMBSTONE (§1.1, wave 26, lane L4): `generateAIEducation` (+ its Input/Output
+// types) DELETED. SURVIVOR: createEducationalResource (this file, above), reached
+// through app/actions/education-kernel.ts:createResourceAction from the
+// education editor's generate tab (app/components/features/education/EducationEditor.tsx).
+//
+// It was not an AI generator. Its own comment said "Real AI generation upgrades
+// this later — for now we store … a placeholder body": every row it wrote was a
+// title, a quoted brand-voice context block and the line "AI-generated content —
+// admin review required before publishing". The real model path already existed
+// (EducationEditor → content-generation-engine → createResourceAction) and wrote
+// the same table — but PUBLISHED model output immediately, which is the one
+// thing this function did right. Ported onto the survivor first, per the
+// doctrine: `isAiGenerated` → status 'pending_review' + is_ai_generated, the
+// audience-overlap dedup for AI drafts, and the team_id / audience_roles /
+// audience_personas / stage_tags / milestone_key passthrough. NOT ported: the
+// brand-voice context block — it decorated a placeholder; the real generators own
+// voice (lib/ai-isa/brand-voice-prompt.ts is the one reading of it).
+// scripts/education-dedup-simulator.ts's manual-path check now targets the survivor.
 
 export interface GetProgressDashboardInput {
   brokerageId: string

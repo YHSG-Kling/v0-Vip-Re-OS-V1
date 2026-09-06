@@ -13,7 +13,9 @@ import {
   analyzeMessageSentiment,
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
-import { getLeadThreadMessages, convertLeadFromInbox } from "@/app/actions/inbox"
+import { getLeadThreadMessages, convertLeadFromInbox, markInboxRead } from "@/app/actions/inbox"
+import { sendSocialDmReply } from "@/app/actions/social-dm"
+import { socialDmSupport } from "@/lib/social/dm-support"
 import { analyzeConversation } from "@/app/actions/ai-predictions"
 import { Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -40,10 +42,40 @@ type Conversation = {
     call_stop_flag?: boolean | null
   } | null
   last_message_preview?: string
+  /** Social threads: {page_id, sender_id, platform} stamped by the DM webhooks. */
+  context_data?: any
   // AI-ISA LEAD threads (leads are NOT contacts): id is `lead:<leads.id>`
   party?: "lead"
   lead_id?: string
   lead_name?: string
+}
+
+const PLATFORM_NICE: Record<string, string> = {
+  instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
+  twitter: "X / Twitter", x: "X / Twitter", whatsapp: "WhatsApp",
+}
+
+/** Platform slug for a social thread — context_data.platform (meta-dm webhook
+ *  threads are generic 'social_dm') wins over the type suffix. */
+function socialPlatformOf(type?: string, contextData?: any): string {
+  const t = (type ?? "").toLowerCase()
+  if (!t.startsWith("social")) return ""
+  const fromCtx = String(contextData?.platform ?? "").toLowerCase()
+  if (fromCtx) return fromCtx
+  return t.replace(/^social_dm_?/, "").replace(/^social_?/, "")
+}
+
+/** Humanize a conversation type for the thread header (social_dm_instagram → "Instagram DM"). */
+function channelLabel(type?: string, contextData?: any): string {
+  const t = (type ?? "email").toLowerCase()
+  if (t.startsWith("social")) {
+    const platform = socialPlatformOf(type, contextData)
+    return platform ? `${PLATFORM_NICE[platform] ?? platform} DM` : "Social DM"
+  }
+  if (t === "in_app" || t === "in-app") return "In-App"
+  if (t === "sms") return "SMS"
+  if (t === "voice" || t === "call") return "Voice"
+  return t.charAt(0).toUpperCase() + t.slice(1)
 }
 
 type EmailTemplate = {
@@ -97,6 +129,22 @@ export default function InboxClient({
   const contact = selectedConvo?.contacts ?? null
   const isLeadThread = selectedConvo?.party === "lead"
   const [convertingLead, setConvertingLead] = useState(false)
+
+  // Social thread send posture: FB/IG/WhatsApp replies dispatch through the
+  // tenant's connected account; LinkedIn/X stay log-only (no DM API access).
+  const isSocialThread = (selectedConvo?.type ?? "").toLowerCase().startsWith("social")
+  const socialPlatform = isSocialThread
+    ? socialPlatformOf(selectedConvo?.type, selectedConvo?.context_data)
+    : ""
+  const socialDispatchable = isSocialThread && !!socialPlatform && socialDmSupport(socialPlatform).supported
+
+  const didInitialSelect = useRef(false)
+
+  // handleSelect runs inside startTransition and must read the CURRENT list to
+  // resolve the thread's contact id; closing over `conversations` would capture a
+  // stale array (the same class the loadThread comment above already records).
+  const conversationsRef = useRef<Conversation[]>(conversations)
+  useEffect(() => { conversationsRef.current = conversations }, [conversations])
 
   // ── Supabase Realtime — subscribe to new messages in selected conversation ──
   useEffect(() => {
@@ -225,11 +273,44 @@ export default function InboxClient({
     loadThread(id)
     startTransition(async () => {
       await markConversationRead(id)
+
+      // TWO LEDGERS, NOT ONE. `markConversationRead` zeroes
+      // `conversations.unread_count` — the thread BADGE — and nothing else. The
+      // underlying rows stay unread: `messages.status = 'unread'` and
+      // `client_portal_messages.read = false`. Every surface that counts those
+      // directly (the kernel's `loadUniversalInbox` totalUnread, the client
+      // portal's own unread state) therefore kept reporting messages the agent
+      // had already opened. `markInboxRead` is the function that clears them, and
+      // it had no caller anywhere — so it never ran.
+      //
+      // Contact-keyed, so it only applies to contact threads (lead threads return
+      // above; they have no conversations row and no read state).
+      const contactId = conversationsRef.current.find(c => c.id === id)?.contacts?.id
+      if (contactId) {
+        // Best-effort: it re-verifies the contact's tenant server-side and returns
+        // a reason rather than throwing, and the badge above must not depend on it.
+        const res = await markInboxRead({ contactId })
+        if (!res.success) console.error("[inbox] markInboxRead failed:", res.error)
+      }
+
       setConversations(prev =>
         prev.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
       )
     })
   }, [loadThread, loadLeadThread])
+
+  // Auto-select the first conversation once on load so the reply composer is visible
+  // immediately (the walkthrough's "no window to type"). Must LOAD the thread too —
+  // setting selectedId alone left the thread blank (VADE). No mobileView change (mobile
+  // still lands on the list) and no auto mark-read (don't mutate read state unopened).
+  useEffect(() => {
+    if (didInitialSelect.current || selectedId || conversations.length === 0) return
+    didInitialSelect.current = true
+    const firstId = conversations[0].id
+    setSelectedId(firstId)
+    if (firstId.startsWith("lead:")) loadLeadThread(firstId.slice(5))
+    else loadThread(firstId)
+  }, [conversations, selectedId, loadThread, loadLeadThread])
 
   const handleConvertLead = useCallback(async () => {
     if (!selectedConvo?.lead_id) return
@@ -259,6 +340,31 @@ export default function InboxClient({
     channel?: string
   ): Promise<{ success: boolean; error?: string }> => {
     if (!selectedId) return { success: false, error: "No conversation selected" }
+
+    // Social threads with a dispatch-capable platform send through the tenant's
+    // connected account (works even without a contact — the thread carries the
+    // platform recipient). A failed dispatch shows the honest platform reason.
+    if (isSocialThread && socialDispatchable) {
+      const res = await sendSocialDmReply({ conversationId: selectedId, body })
+      if (res.success) {
+        setMessages(prev => [...prev, res.message ?? {
+          id:          crypto.randomUUID(),
+          body,
+          content:     body,
+          direction:   "outbound",
+          sender_type: "agent",
+          created_at:  new Date().toISOString(),
+          type:        selectedConvo?.type ?? "social_dm",
+          channel:     "social_dm",
+        }])
+        return { success: true }
+      }
+      toast.error("DM not delivered", {
+        description: res.error ?? "The platform rejected the message.",
+      })
+      return { success: false, error: res.error }
+    }
+
     if (!contact?.id) return { success: false, error: "Contact record missing — cannot send message" }
 
     const resolvedChannel = (channel ?? selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"
@@ -296,7 +402,7 @@ export default function InboxClient({
     }
 
     return { success: result.success, error: result.error }
-  }, [selectedId, contact?.id, agentId, selectedConvo?.type])
+  }, [selectedId, contact?.id, agentId, selectedConvo?.type, isSocialThread, socialDispatchable])
 
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
     // If the AI Reply Coach has injected an accepted draft, consume it first
@@ -391,10 +497,10 @@ export default function InboxClient({
               </button>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm text-foreground truncate">{contactName}</p>
-                <p className="text-xs text-muted-foreground capitalize">
+                <p className="text-xs text-muted-foreground">
                   {isLeadThread
                     ? "Lead · AI ISA nurturing"
-                    : `${selectedConvo.type ?? "email"} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
+                    : `${channelLabel(selectedConvo.type, selectedConvo.context_data)} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
                 </p>
               </div>
               {isLeadThread && (
@@ -468,7 +574,12 @@ export default function InboxClient({
                 conversationId={selectedId!}
                 agentId={agentId}
                 contactId={contact?.id ?? ""}
-                channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
+                channel={(["email", "sms", "in_app"].includes(selectedConvo.type ?? "")
+                  ? selectedConvo.type
+                  : "email") as "email" | "sms" | "in_app"}
+                conversationType={selectedConvo.type}
+                socialDispatchable={socialDispatchable}
+                socialPlatformName={socialPlatform ? (PLATFORM_NICE[socialPlatform] ?? socialPlatform) : undefined}
                 lifecycleState={contact?.lifecycle_state}
                 tcpaConsent={contact?.tcpa_consent ?? null}
                 emailTemplates={emailTemplates}

@@ -7,6 +7,8 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI CALENDAR & SCHEDULING MANAGEMENT
@@ -20,14 +22,40 @@ import { z } from "zod"
  * - brokerage_id: ownership context
  */
 
-export async function getAppointments(params?: { agentId?: string; contactId?: string; startDate?: string; endDate?: string }) {
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `appointments` branch:
+ * the SESSION-DERIVED tenant filter, applied unconditionally BEFORE any
+ * caller-supplied parameter is considered.
+ *
+ * This had no scope of any kind — every filter was optional and caller-supplied,
+ * so `getAppointments()` returned every calendar event on the platform and
+ * `getAppointments({ contactId })` returned any brokerage's contact's calendar.
+ *
+ * The `agentId` parameter is GONE rather than filtered on. The calendar table
+ * has no agents.id column at all — it carries `agent_user_id`, a users.id, which
+ * the live writer in this same file does not stamp (it puts the agent in
+ * `metadata`). Honouring the parameter against either column would have returned
+ * zero rows while reporting success; substituting one id space for the other is
+ * the exact defect this lane exists to refuse. Per-agent narrowing needs the
+ * writer fixed first, and that is a feature, not a filter.
+ */
+export async function getAppointments(params?: { contactId?: string; startDate?: string; endDate?: string }) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", appointments: [] }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Your account is not linked to a brokerage yet.", appointments: [] }
+    }
+
     const supabase = await createClient()
-    
-    // Query calendar_events (canonical calendar table per Kernel OS)
+
+    // Query calendar_events (canonical calendar table per Kernel OS).
+    // The tenant anchor is session-derived and applied first; everything below
+    // may only NARROW it.
     let query = supabase
       .from("calendar_events")
       .select("*")
+      .eq("brokerage_id", ctx.brokerageId)
       .order("start_at", { ascending: true })
 
     // Filter by contact (entity_type='contact' and entity_id=contactId)
@@ -35,8 +63,15 @@ export async function getAppointments(params?: { agentId?: string; contactId?: s
       query = query.eq("entity_type", "contact").eq("entity_id", params.contactId)
     }
 
+    // Window semantics: an appointment belongs to the window its START falls in
+    // — the calendar convention, and what the one live door (the calendar
+    // shell's week view) needs. This used to compare `end_at <= endDate`, which
+    // dropped any event STARTING inside the window but running past its edge;
+    // aligned when the shell's duplicate inline read was rewired onto this
+    // survivor (lane E6 2026-08-28). endDate is exclusive for the same reason
+    // (a week window is [start, nextWeekStart)).
     if (params?.startDate) query = query.gte("start_at", params.startDate)
-    if (params?.endDate) query = query.lte("end_at", params.endDate)
+    if (params?.endDate) query = query.lt("start_at", params.endDate)
 
     const { data: appointments, error } = await query
 
@@ -162,8 +197,21 @@ export async function createAppointment(params: {
   }
 }
 
+/**
+ * Reschedule a calendar_events appointment.
+ *
+ * WIRED (lane E2 2026-08-28) to the calendar agenda view — the calendar had a
+ * create door (calendar-quick-create-panel) and no edit door anywhere.
+ * Session-gated + tenant-pinned at the same time: this updated any event by
+ * raw uuid before.
+ */
 export async function updateAppointment(appointmentId: string, updates: Record<string, unknown>) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
 
     // Map appointment fields to calendar_events fields
@@ -171,15 +219,23 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
     if (updates.start_time) calendarUpdates.start_at = updates.start_time
     if (updates.end_time) calendarUpdates.end_at = updates.end_time
     if (updates.event_type) calendarUpdates.event_type = updates.event_type
+    if (Object.keys(calendarUpdates).length === 0) {
+      return { success: false, error: "Nothing to update" }
+    }
 
     const { data, error } = await supabase
       .from("calendar_events")
       .update(calendarUpdates)
       .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
       .maybeSingle()
 
     if (error) throw error
+    if (!data) {
+      // A zero-row update resolves cleanly (§3) — report it, never "success".
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
@@ -190,21 +246,51 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
   }
 }
 
+/**
+ * Cancel a calendar_events appointment. WIRED beside updateAppointment (lane
+ * E2 2026-08-28); gated + tenant-pinned the same way. metadata is MERGED, not
+ * replaced — the old write clobbered title/location/notes with
+ * `{ cancelled: true }`, erasing what the event was as it cancelled it.
+ */
 export async function cancelAppointment(appointmentId: string, reason?: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
 
-    // Delete calendar event (or mark cancelled if schema supports status field)
+    const { data: existing, error: readErr } = await supabase
+      .from("calendar_events")
+      .select("id, metadata")
+      .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) throw readErr
+    if (!existing) {
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
+
+    const mergedMetadata = {
+      ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+      cancelled: true,
+      cancelledReason: reason ?? null,
+      cancelledAt: new Date().toISOString(),
+    }
+
     const { data, error } = await supabase
       .from("calendar_events")
-      .update({
-        metadata: { cancelled: true, cancelledReason: reason },
-      })
+      .update({ metadata: mergedMetadata })
       .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
       .maybeSingle()
 
     if (error) throw error
+    if (!data) {
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
@@ -408,18 +494,40 @@ export async function scheduleSmartFollowUps(params: {
     const supabase = await createClient()
     const daysAhead = params.daysAhead || 7
 
-    // Get contacts needing follow-up
-    const { data: contacts } = await supabase
+    // Get contacts needing follow-up.
+    //
+    // This query was broken TWICE over, and each fault alone was fatal:
+    //  1. `interactions(*)` embedded a table that DOES NOT EXIST (no public.interactions,
+    //     and `interactions` is not an FK column on contacts). PostgREST rejects the whole
+    //     query on an unknown relation. Nothing in this function ever read
+    //     `c.interactions` — only `transactions.length` and the last-contact date are
+    //     consumed — so the embed is simply dropped rather than repointed. (The `activities`
+    //     read further down this file, ~line 714, is a separate query and is unaffected.)
+    //  2. `.or("last_interaction_date...")` filtered a column contacts DOES NOT HAVE. The
+    //     real column is `last_contacted_at`. A bad column in a filter fails the query the
+    //     same way a bad embed does.
+    // With `error` undestructured both faults surfaced as `contacts: null`, i.e. "all
+    // contacts have follow-ups scheduled" — this action has never scheduled anything.
+    //
+    // `transactions` has THREE foreign keys to contacts (contact_id, buyer_contact_id,
+    // seller_contact_id), so the bare `transactions(*)` embed was ambiguous and would have
+    // failed even on its own. It is now named by constraint, and only the column actually
+    // consumed (a count) is selected — never `*` inside an embed (defect #214).
+    const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select(`
         *,
-        interactions(*),
-        transactions(*)
+        transactions!transactions_contact_id_fkey(id)
       `)
       .eq("agent_id", params.agentId)
       .eq("status", "active")
-      .or(`last_interaction_date.is.null,last_interaction_date.lt.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
+      .or(`last_contacted_at.is.null,last_contacted_at.lt.${new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()}`)
       .limit(50)
+
+    if (contactsError) {
+      console.error("[scheduleSmartFollowUps] contacts read failed:", contactsError.message)
+      return { success: false, error: contactsError.message }
+    }
 
     // Get existing follow-ups scheduled
     const { data: existingFollowUps } = await supabase
@@ -459,12 +567,13 @@ export async function scheduleSmartFollowUps(params: {
       prompt: `Plan follow-ups for these contacts over the next ${daysAhead} days:
 
 ${contactsNeedingFollowUp.map((c: any) => `
+Contact ID: ${c.id}
 Contact: ${c.first_name} ${c.last_name}
-Stage: ${c.stage}
-Last Interaction: ${c.last_interaction_date || 'Never'}
+Stage: ${c.lifecycle_state || 'Unknown'}
+Last Contacted: ${c.last_contacted_at || 'Never'}
 Lead Score: ${c.lead_score || 'Unknown'}
 Transaction History: ${c.transactions?.length || 0} transactions
-Preferred Contact: ${c.preferred_contact_method || 'Any'}
+Preferred Contact: ${c.preferred_channel || 'Any'}
 `).join('\n---\n')}
 
 Create a balanced follow-up schedule that:
@@ -492,7 +601,17 @@ Create a balanced follow-up schedule that:
     }
 
     revalidatePath("/calendar")
-    return { success: true, followUpPlan, scheduled: followUpPlan.scheduledFollowUps.length }
+    // DRAFTED, NOT SCHEDULED-TO-SEND. Nothing in this repo drains
+    // scheduled_touchpoints: the only reads are this action's own dedupe and
+    // the calendar display. The status CHECK (scheduled|sent|completed|
+    // skipped|failed) even anticipates a sender that was never built, so
+    // "sent" and "failed" are unreachable states. The row is genuinely
+    // SCHEDULED on the agent's calendar — that part is true and useful, and
+    // the AI-written message_template is real content they can use. What was
+    // false is returning `scheduled: N`, which the caller reads as N outbound
+    // messages that will go out on their own. They will not; a human sends
+    // them from the calendar.
+    return { success: true, followUpPlan, drafted: followUpPlan.scheduledFollowUps.length }
   } catch (error) {
     return handleError(error, "scheduleSmartFollowUps")
   }
@@ -809,7 +928,7 @@ export async function generateWeeklyPlan(params: {
       .from("transactions")
       .select("*")
       .eq("agent_id", params.agentId)
-      .in("status", ["under_contract", "inspection", "financing", "appraisal", "closing"])
+      .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
     const { data: goals } = await supabase
       .from("agent_goals")
@@ -899,22 +1018,36 @@ Create a balanced weekly plan that:
  */
 export async function createDeadlineEventsFromMilestones(params: {
   transactionId: string
-  brokerageId: string
+  /** Ignored — derived from the session. */
+  brokerageId?: string
 }) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return { success: false, error: "Unauthorized" }
+    // TENANT SCOPE (added). The auth check here was real but stopped at "someone
+    // is signed in": `brokerageId` then came from the CALLER and was written
+    // straight into `calendar_events.brokerage_id`. So any signed-in user could
+    // read another transaction's milestone titles, dates and descriptions
+    // (`transaction_id` was the only predicate) and mint system-generated
+    // deadline events **inside a brokerage they do not belong to** — events that
+    // then show up on that tenant's calendar as if the OS had produced them.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const brokerageId = ctx.brokerageId
 
-    if (!isValidUUID(params.transactionId) || !isValidUUID(params.brokerageId)) {
+    const supabase = await createClient()
+
+    if (!isValidUUID(params.transactionId)) {
       return { success: false, error: "Invalid IDs" }
     }
 
-    // Fetch pending milestones with target dates
+    // Fetch pending milestones with target dates — scoped to the caller's tenant.
+    // `transaction_milestones.brokerage_id` is a real column (verified live).
     const { data: milestones, error: mErr } = await supabase
       .from("transaction_milestones")
       .select("id, title, milestone_type, target_date, description")
       .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
       .not("target_date", "is", null)
 
@@ -924,16 +1057,39 @@ export async function createDeadlineEventsFromMilestones(params: {
     }
 
     let created = 0
+    let skipped = 0
+    const failures: string[] = []
+
     for (const milestone of milestones) {
-      // Check for existing calendar event for this milestone
-      const { data: existing } = await supabase
+      const eventTitle =
+        milestone.title || milestone.milestone_type?.replace(/_/g, " ") || "Milestone"
+
+      // Check for existing calendar event for this milestone.
+      //
+      // The tenant predicate is on this read too — without it the idempotency
+      // probe reads across brokerages, so a milestone id colliding in another
+      // tenant would suppress an event this tenant is owed. `.limit(1)` because
+      // nothing enforces one event per milestone at the database, and a bare
+      // maybeSingle() THROWS on a second row — turning a duplicate into a total
+      // failure of the whole run.
+      const { data: existing, error: existingErr } = await supabase
         .from("calendar_events")
         .select("id")
         .eq("entity_type", "transaction_milestone")
         .eq("entity_id", milestone.id)
+        .eq("brokerage_id", brokerageId)
+        .limit(1)
         .maybeSingle()
 
-      if (existing) continue // Already exists
+      // A refused idempotency check must NOT fall through to an insert — that is
+      // how a deadline gets duplicated on the agent's calendar every time the
+      // action runs. Skip the milestone and report it.
+      if (existingErr) {
+        failures.push(`${eventTitle}: could not check for an existing event (${existingErr.message})`)
+        continue
+      }
+
+      if (existing) { skipped++; continue } // Already exists
 
       const targetDate = new Date(milestone.target_date!)
       const startAt = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 9, 0, 0)
@@ -942,27 +1098,44 @@ export async function createDeadlineEventsFromMilestones(params: {
       const { error: insertErr } = await supabase
         .from("calendar_events")
         .insert({
-          brokerage_id: params.brokerageId,
+          brokerage_id: brokerageId,
           entity_type: "transaction_milestone",
           entity_id: milestone.id,
           event_type: "deadline",
           start_at: startAt.toISOString(),
           end_at: endAt.toISOString(),
           is_system_generated: true,
+          // `title` IS A REAL COLUMN on calendar_events (verified live), and it
+          // was being written only into `metadata`. This file's older writer
+          // (createAppointment) does the same, which is why the note above
+          // getAppointments says per-agent narrowing needs the writer fixed —
+          // a reader that renders `title` got nothing from either writer.
+          // Stamped in BOTH places: the column for readers that select it, and
+          // metadata unchanged so nothing already reading metadata.title breaks.
+          title: eventTitle,
           metadata: {
-            title: milestone.title || milestone.milestone_type?.replace(/_/g, " ") || "Milestone",
+            title: eventTitle,
             description: milestone.description,
             transaction_id: params.transactionId,
             milestone_type: milestone.milestone_type,
           },
         })
 
-      if (!insertErr) created++
+      if (insertErr) {
+        // Silently dropping this was the whole defect class: `created` counted
+        // successes and nothing counted refusals, so a run that wrote NOTHING
+        // returned { success: true, created: 0 } — indistinguishable from
+        // "every deadline was already on the calendar".
+        console.error("[createDeadlineEventsFromMilestones] event insert refused:", insertErr.message)
+        failures.push(`${eventTitle}: ${insertErr.message}`)
+        continue
+      }
+      created++
     }
 
     revalidatePath("/dashboard/calendar")
 
-    return { success: true, created }
+    return { success: true, created, skipped, failures }
   } catch (error) {
     return handleError(error, "createDeadlineEventsFromMilestones")
   }

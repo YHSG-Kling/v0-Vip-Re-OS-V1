@@ -1,10 +1,14 @@
 "use client"
 
 // Premium Placement panel — the monetization surface on the Preferred tab.
-// Brokerage leadership charges vendors for featured placement in the curated
-// directory (vendor_directory): offer → placement invoice (awaiting payment)
-// → "Mark paid & feature" once funds are collected (check / ACH / external
-// Stripe invoice — collection is manual in v1; see lib/vendors/premium-placement).
+// Brokerage leadership charges vendors for featured placement: offer →
+// placement invoice (awaiting payment) → "Mark paid & feature" once funds are
+// collected (check / ACH / external Stripe invoice — collection is manual in v1;
+// see lib/vendors/premium-placement).
+//
+// ONE VENDOR SYSTEM (m355): placement is a set of columns on the vendor row, not
+// a second `vendor_directory` row keyed separately. There is one id — vendorId —
+// and the panel no longer has to reconcile two.
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -26,8 +30,9 @@ import {
   markPlacementPaidAction,
 } from "@/app/actions/vendor-premium-placement"
 
-export interface DirectoryEntry {
-  id: string
+export interface PlaceableVendor {
+  /** The vendors.id — the one identity. This is what the offer is placed against. */
+  vendorId: string
   name: string | null
   category: string | null
   preferred: boolean | null
@@ -45,12 +50,15 @@ export interface PlacementInvoice {
     type?: string
     months?: number
     price_cents?: number
-    directory_id?: string
+    vendor_id?: string
     placement_until?: string
   }> | null
 }
 
-const MANAGER_ROLES = ["admin", "broker", "broker_admin", "superadmin", "team_lead"]
+// SCOPE LADDER (kept inline — mirrors the vendor-billing server gates):
+// 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
+// added — storable seat that owns the brokerage these placements bill for.
+const MANAGER_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead"]
 const PAYMENT_METHODS = ["check", "ach", "stripe", "cash_app", "manual"]
 
 function placementItem(inv: PlacementInvoice) {
@@ -58,11 +66,11 @@ function placementItem(inv: PlacementInvoice) {
 }
 
 export function PremiumPlacementPanel({
-  directoryEntries,
+  vendors,
   placementInvoices,
   userRole,
 }: {
-  directoryEntries: DirectoryEntry[]
+  vendors: PlaceableVendor[]
   placementInvoices: PlacementInvoice[]
   userRole: string
 }) {
@@ -77,15 +85,15 @@ export function PremiumPlacementPanel({
 
   const canManage = MANAGER_ROLES.includes(userRole)
 
-  // Latest paid placement term per directory row → "active until" line.
+  // Latest paid placement term per vendor → "active until" line.
   const activeUntil = new Map<string, string>()
   for (const inv of placementInvoices) {
     if (inv.status !== "paid") continue
     const item = placementItem(inv)
-    if (!item?.directory_id || !item.placement_until) continue
-    const existing = activeUntil.get(item.directory_id)
+    if (!item?.vendor_id || !item.placement_until) continue
+    const existing = activeUntil.get(item.vendor_id)
     if (!existing || item.placement_until > existing) {
-      activeUntil.set(item.directory_id, item.placement_until)
+      activeUntil.set(item.vendor_id, item.placement_until)
     }
   }
 
@@ -93,14 +101,14 @@ export function PremiumPlacementPanel({
     (inv) => inv.status !== "paid" && inv.status !== "cancelled"
   )
 
-  const handleOffer = (directoryId: string) => {
+  const handleOffer = (entry: PlaceableVendor) => {
     setMessage(null)
     setError(null)
     const monthsNum = parseInt(months, 10)
     const priceCents = Math.round(parseFloat(price) * 100)
     startTransition(async () => {
       const result = await offerPremiumPlacementAction({
-        vendorDirectoryId: directoryId,
+        vendorId: entry.vendorId,
         months: monthsNum,
         priceCents,
       })
@@ -131,7 +139,7 @@ export function PremiumPlacementPanel({
     })
   }
 
-  if (directoryEntries.length === 0 && placementInvoices.length === 0) return null
+  if (vendors.length === 0 && placementInvoices.length === 0) return null
 
   return (
     <Card>
@@ -160,10 +168,10 @@ export function PremiumPlacementPanel({
 
         {/* Directory entries — offer placement per row */}
         <div className="space-y-3">
-          {directoryEntries.map((entry) => {
-            const until = activeUntil.get(entry.id)
+          {vendors.map((entry) => {
+            const until = activeUntil.get(entry.vendorId)
             return (
-              <div key={entry.id} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
+              <div key={entry.vendorId} className="p-4 border rounded-lg hover:bg-muted/50 transition-colors">
                 <div className="flex items-center justify-between gap-4">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
@@ -186,7 +194,7 @@ export function PremiumPlacementPanel({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setOfferFor(offerFor === entry.id ? null : entry.id)}
+                      onClick={() => setOfferFor(offerFor === entry.vendorId ? null : entry.vendorId)}
                       disabled={isPending}
                     >
                       Offer premium placement
@@ -194,12 +202,12 @@ export function PremiumPlacementPanel({
                   )}
                 </div>
 
-                {canManage && offerFor === entry.id && (
+                {canManage && offerFor === entry.vendorId && (
                   <div className="mt-3 flex flex-wrap items-end gap-3 border-t pt-3">
                     <div className="space-y-1">
-                      <Label htmlFor={`pp-months-${entry.id}`} className="text-xs">Months</Label>
+                      <Label htmlFor={`pp-months-${entry.vendorId}`} className="text-xs">Months</Label>
                       <Input
-                        id={`pp-months-${entry.id}`}
+                        id={`pp-months-${entry.vendorId}`}
                         type="number"
                         min={1}
                         max={60}
@@ -209,9 +217,9 @@ export function PremiumPlacementPanel({
                       />
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor={`pp-price-${entry.id}`} className="text-xs">Price ($)</Label>
+                      <Label htmlFor={`pp-price-${entry.vendorId}`} className="text-xs">Price ($)</Label>
                       <Input
-                        id={`pp-price-${entry.id}`}
+                        id={`pp-price-${entry.vendorId}`}
                         type="number"
                         min={1}
                         step="0.01"
@@ -220,7 +228,7 @@ export function PremiumPlacementPanel({
                         className="w-28 h-9"
                       />
                     </div>
-                    <Button size="sm" onClick={() => handleOffer(entry.id)} disabled={isPending}>
+                    <Button size="sm" onClick={() => handleOffer(entry)} disabled={isPending}>
                       {isPending ? "Creating..." : "Create placement invoice"}
                     </Button>
                   </div>
@@ -236,7 +244,7 @@ export function PremiumPlacementPanel({
             <p className="text-sm font-medium">Placement invoices awaiting payment</p>
             {openInvoices.map((inv) => {
               const item = placementItem(inv)
-              const entry = directoryEntries.find((d) => d.id === item?.directory_id)
+              const entry = vendors.find((v) => v.vendorId === item?.vendor_id)
               return (
                 <div
                   key={inv.id}

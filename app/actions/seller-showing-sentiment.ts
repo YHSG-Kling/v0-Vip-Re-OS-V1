@@ -20,6 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObjectRouted } from "@/lib/ai/models"
+import { feedbackTemperatureToRating, tourInterestToRating } from "@/lib/behavior-learning/signal-mapping"
 import { z } from "zod"
 
 export interface ShowingSentimentSummary {
@@ -46,7 +47,13 @@ const ThemeExtractionSchema = z.object({
   oneLineRecommendation: z.string().max(160),
 })
 
-async function extractThemes(feedbackTexts: string[]) {
+async function extractThemes(
+  feedbackTexts: string[],
+  /** Tenant for the AI cost ledger — the LISTING's own brokerage, resolved by
+   *  the caller from a listings row, never from a request body (§4). Null =
+   *  no tenant reached this lane and nothing books, which is honest. */
+  spendActor: { brokerageId: string | null; userId: string | null },
+) {
   // Routed via generateObjectRouted: gateway + AI_TASK_ROUTING + fallback model + fair-use + cost
   // accounting. Falls back to keyword bucketing when the gateway key is missing.
   if (!process.env.AI_GATEWAY_API_KEY || feedbackTexts.length === 0) {
@@ -54,6 +61,8 @@ async function extractThemes(feedbackTexts: string[]) {
   }
   try {
     const { object } = await generateObjectRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       feature: "sentiment_analysis",
       schema:  ThemeExtractionSchema,
       system:
@@ -99,6 +108,11 @@ function bucketKeywords(texts: string[]) {
 
 export async function buildShowingSentimentSummary(
   listingId: string,
+  /** The listing's tenant + the acting user, for the AI cost ledger. Both
+   *  callers already hold a listings row (the cron iterates them; the action
+   *  reads one and checks it against the caller's own brokerage), so this is
+   *  threaded rather than re-derived — and it is never a body value (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null } = { brokerageId: null, userId: null },
 ): Promise<ShowingSentimentSummary | null> {
   const supabase = createServiceClient()
   const windowEnd = new Date()
@@ -147,10 +161,40 @@ export async function buildShowingSentimentSummary(
   const averageSentiment = avg(allFeedback.map((f: any) => f.sentiment_score))
   const averagePresentation = avg(allFeedback.map((f: any) => f.presentation_rating))
   const averageCleanliness = avg(allFeedback.map((f: any) => f.cleanliness_rating))
-  const averageImpression = avg(allFeedback.map((f: any) => f.overall_impression))
+  // WAS: avg(allFeedback.map((f) => f.overall_impression)) — and
+  // `showing_feedback.overall_impression` is TEXT (live CHECK since m568:
+  // love_it | like_it | maybe | no), while avg() keeps only `typeof v === "number"`.
+  // So the filter kept nothing and this average was structurally null on every
+  // listing, forever: the seller-sentiment panel's "Impression" figure has only
+  // ever rendered as a dash. Same failure as the two counters below — a text
+  // vocabulary read as if it were a number — so it is fixed on the same ladder.
+  // m568 put the column on the ONE showing-verdict vocabulary, so the canonical
+  // ladder reads it directly (impressionToRating, the old dialect's bridge, is
+  // retired into tourInterestToRating — see signal-mapping.ts's tombstone).
+  const averageImpression = avg(allFeedback.map((f: any) => tourInterestToRating(f.overall_impression)))
 
-  const highInterestCount = allFeedback.filter((f: any) => (f.buyer_interest_level ?? 0) >= 4).length
-  const lowInterestCount = allFeedback.filter((f: any) => (f.buyer_interest_level ?? 0) <= 2).length
+  // ONE VOCABULARY (CLAUDE.md §6). WAS:
+  //   (f.buyer_interest_level ?? 0) >= 4   /   (f.buyer_interest_level ?? 0) <= 2
+  // `showing_feedback.buyer_interest_level` is TEXT with the live CHECK
+  // hot | warm | cool | cold, so both comparisons are `"hot" >= 4` — NaN, false on
+  // every row, always. Nothing threw. Both counters were structurally 0, which is
+  // not a harmless zero: lib/intelligence/showing-feedback-routing.ts sets
+  // urgency = lowInterestCount >= highInterestCount ? "now" : "soon" (0 >= 0, so
+  // permanently "now"), and its "raise" arm needs highInterestCount >= 3, so that
+  // branch has never once been reachable. `interestRatio` below was 0 for the same
+  // reason, making pricingPressure === "raise" unreachable here too.
+  // The ladder is owned by lib/behavior-learning/signal-mapping.ts, which also
+  // records WHY this column is a per-buyer TEMPERATURE and not a duplicate of
+  // showings.buyer_interest_level. The author's own 4/2 thresholds are kept — only
+  // the rungs are now values the column can actually hold.
+  const highInterestCount = allFeedback.filter((f: any) => {
+    const r = feedbackTemperatureToRating(f.buyer_interest_level)
+    return r !== null && r >= 4
+  }).length
+  const lowInterestCount = allFeedback.filter((f: any) => {
+    const r = feedbackTemperatureToRating(f.buyer_interest_level)
+    return r !== null && r <= 2
+  }).length
 
   const texts = allFeedback
     .map((f: any) => [f.ai_summary, f.additional_notes].filter(Boolean).join(" "))
@@ -159,7 +203,7 @@ export async function buildShowingSentimentSummary(
   let positiveThemes: string[] = []
   let objections: string[] = []
   let recommendedAction = ""
-  const themed = await extractThemes(texts)
+  const themed = await extractThemes(texts, spendActor)
   if (themed) {
     positiveThemes = themed.positiveThemes
     objections = themed.objections
@@ -227,6 +271,9 @@ export async function getShowingSentimentSummaryAction(listingId: string) {
     return { success: false, error: "forbidden" }
   }
 
-  const summary = await buildShowingSentimentSummary(listingId)
+  const summary = await buildShowingSentimentSummary(listingId, {
+    brokerageId: listing.brokerage_id ?? null,
+    userId: user.id,
+  })
   return { success: true, summary }
 }

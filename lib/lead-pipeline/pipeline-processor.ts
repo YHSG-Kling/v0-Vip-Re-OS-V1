@@ -1,8 +1,9 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import type { RawProcessingStatus } from "./processing-status"
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
-import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
+import { extractPropertySpecs, leadSpecPatch, contactSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -21,20 +22,10 @@ import {
 //   | insufficient_identity_for_promotion → promoted | error
 // ─────────────────────────────────────────────────────────────────────────────
 
-type ProcessingStatus =
-  | 'pending'
-  | 'processing'
-  | 'queued_for_enrichment'
-  | 'duplicate_pre_enrich'
-  | 'enriching'
-  | 'duplicate_post_enrich'
-  | 'territory_mismatch'
-  | 'insufficient_contact_data'
-  | 'insufficient_identity'
-  | 'insufficient_identity_for_promotion'
-  | 'unassigned_no_market'
-  | 'promoted'
-  | 'error'
+// The vocabulary moved to lib/lead-pipeline/processing-status.ts so the cockpit
+// and the database CHECK are generated from the SAME list. It used to be
+// declared here and hand-copied into lead-intake-cockpit's REJECTION_STATUSES.
+type ProcessingStatus = RawProcessingStatus
 
 // RawRecord shape after reading from raw_scraped_leads
 interface RawRecord {
@@ -308,8 +299,34 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     if (newConfidence > oldConfidence * 1.1) {
       const targetTable = postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts'
 
+      // LOSSLESS ON THE MERGE PATH TOO — THE CONTACT-SIDE TWIN THAT WAS MISSING.
+      //
+      // `leadSpecPatch` runs on the INSERT path below (:512) and on the manual
+      // promoter, so a raw record that becomes a NEW lead carries its scraped
+      // beds/baths/sqft/type/value. A raw record that lands here instead —
+      // higher-confidence duplicate of a record we already hold — carried only
+      // email/phone/confidence, so exactly the specs the extractor exists to
+      // rescue were dropped, and dropped SILENTLY, on the branch that has already
+      // decided this record is the better one.
+      //
+      // `contactSpecPatch` is the contacts-side patch and it is not the same
+      // patch: contacts store the property value in `home_value_estimate` while
+      // leads use `estimated_value`, and naming the wrong one is a PGRST204 that
+      // refuses the WHOLE update, not just that field. Choosing by target table
+      // is the only correct form, and it is why two patch builders exist.
+      //
+      // ADDITIVE BY CONSTRUCTION: both builders emit only the keys the raw jsonb
+      // actually produced, so a spec we did not scrape can never null out one the
+      // existing record already has.
+      // Same two jsonb sources, in the same order, as the insert path at :535 —
+      // so the merged record and the inserted one can never carry different
+      // specs for the same raw row.
+      const mergeSpecs = extractPropertySpecs([rec.raw_data as any, rec.normalized_preview as any])
+      const specPatch = targetTable === 'leads' ? leadSpecPatch(mergeSpecs) : contactSpecPatch(mergeSpecs)
+
       // enrichment_status exists only on leads; contacts tracks confidence only.
       const mergeUpdate: Record<string, unknown> = {
+        ...specPatch,
         email:                 enriched.email || postEnrichDuplicate.email,
         phone:                 enriched.phone || postEnrichDuplicate.phone,
         enrichment_confidence: newConfidence,
@@ -386,12 +403,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
-  // Owner's canonical rule (round 39): after enrichment + second dedup, promote when the
-  // record carries a FIRST NAME and LAST NAME plus at least an EMAIL ADDRESS and/or a
-  // MAILING ADDRESS (phone is not an anchor). Names are fed post-enrichment
-  // (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY a missing name
-  // before this pass. Single source of truth in canonical-lead-eligibility so the two
-  // historical paths can never drift apart.
+  // Owner's canonical rule (wave 14): after enrichment + second dedup, promote when the
+  // record carries a FIRST NAME and a LAST NAME plus at least ONE reachable channel —
+  // an EMAIL and/or a PHONE and/or a VERIFIED MAILING ADDRESS. Names are fed
+  // post-enrichment (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY
+  // a missing name before this pass. Single source of truth in canonical-lead-eligibility
+  // so the two historical paths can never drift apart.
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
@@ -399,21 +416,78 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
                         ?? false
   // Resolution order for the mailing address (same chain the lead insert uses):
   // enrichment result → raw first-class column → preview/raw_data jsonb.
-  const resolvedMailingAddress =
+  let resolvedMailingAddress =
     (enriched as any).mailing_address
     ?? rec.mailing_address
     ?? rec.normalized_preview?.mailingAddress
     ?? (rec.raw_data as any)?.mailing_address
     ?? null
-  const resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
-  const promoEligibility = evaluateCanonicalLeadEligibility({
+  let resolvedMailingCity  = (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null
+  let resolvedMailingState = (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null
+  let resolvedMailingZip   = (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null
+  let resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
+  let resolvedMailingSource: string | null =
+    (enriched as any).mailing_address_source
+    ?? rec.mailing_address_source
+    ?? (rec.raw_data as any)?.mailing_address_source
+    ?? null
+
+  const promoCandidate = {
     first_name:               enriched.first_name ?? firstName,
     last_name:                enriched.last_name  ?? lastName,
     email:                    enriched.email,
     phone:                    enriched.phone ?? phone,
     mailing_address:          resolvedMailingAddress,
     mailing_address_verified: resolvedMailingVerified,
-  })
+  }
+  let promoEligibility = evaluateCanonicalLeadEligibility(promoCandidate)
+
+  // ── THE VERIFIED-ADDRESS ARM'S WRITER ──────────────────────────────────────
+  // "a mailing address VERIFIED" is only a real arm of the gate if something
+  // actually verifies. When the record is refused for want of a channel and its
+  // address is the ONLY candidate anchor (no email, no phone), buy ONE Lob
+  // US-verification (~$0.0025) and persist the verdict onto the raw row, then
+  // re-evaluate against the same canonical gate. Bounded by construction: a
+  // record reachable by email or phone never reaches this call, and an address
+  // Lob already ruled undeliverable is never re-bought.
+  // FAIL CLOSED: no LOB_API_KEY / a transient Lob failure verifies nothing, the
+  // gate's refusal stands, and the record stays raw and retryable.
+  if (!promoEligibility.eligible && promoEligibility.failing === "contact_anchor") {
+    const { verifyMailingAddressForPromotion } =
+      await import("@/lib/lead-pipeline/promotion-address-verification")
+    const addrVerdict = await verifyMailingAddressForPromotion({
+      candidate: {
+        email:                    enriched.email,
+        phone:                    enriched.phone ?? phone,
+        mailing_address:          resolvedMailingAddress,
+        mailing_city:             resolvedMailingCity,
+        mailing_state:            resolvedMailingState,
+        mailing_zip:              resolvedMailingZip,
+        mailing_address_verified: resolvedMailingVerified,
+        mailing_address_source:   resolvedMailingSource,
+      },
+      supabase,
+      table: "raw_scraped_leads",
+      id:    rawRecordId,
+    })
+    if (addrVerdict.ran) {
+      resolvedMailingVerified = addrVerdict.verified
+      // Carry Lob's STANDARDIZED parts onto the lead too — the raw row already
+      // took the patch, and a lead holding the pre-standardized string would put
+      // the two rows out of agreement the moment direct mail reads either one.
+      const p = addrVerdict.patch
+      if (typeof p.mailing_address_source === "string") resolvedMailingSource  = p.mailing_address_source
+      if (typeof p.mailing_address        === "string") resolvedMailingAddress = p.mailing_address
+      if (typeof p.mailing_city           === "string") resolvedMailingCity    = p.mailing_city
+      if (typeof p.mailing_state          === "string") resolvedMailingState   = p.mailing_state
+      if (typeof p.mailing_zip            === "string") resolvedMailingZip     = p.mailing_zip
+      promoEligibility = evaluateCanonicalLeadEligibility({
+        ...promoCandidate,
+        mailing_address_verified: resolvedMailingVerified,
+      })
+    }
+  }
+
   if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
     await logDeduplication({
@@ -512,16 +586,18 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
       // columns, so they must be in the fallback chain or the breakdown is silently lost.
       mailing_address:       resolvedMailingAddress,
-      mailing_address_source:(enriched as any).mailing_address_source ?? rec.mailing_address_source ?? (rec.raw_data as any)?.mailing_address_source ?? null,
+      // Carries 'lob_cass' when the gate's own verification ruled on this address,
+      // so the direct-mail CASS gate does not re-buy a verdict we already paid for.
+      mailing_address_source: resolvedMailingSource,
       // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
       // incomplete and they never reached the contact): physical address + mailing breakdown.
       address:               rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null,
       city:                  city,
       state:                 state,
       zip_code:              rec.zip_code ?? rec.normalized_preview?.zip ?? (rec.raw_data?.zip as string | null) ?? null,
-      mailing_city:          (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null,
-      mailing_state:         (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null,
-      mailing_zip:           (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null,
+      mailing_city:          resolvedMailingCity,
+      mailing_state:         resolvedMailingState,
+      mailing_zip:           resolvedMailingZip,
       email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
     })
@@ -576,7 +652,26 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
       const distResult = await distributePlatformLead({ leadId: newLead.id })
       if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
-        await supabase.from('automation_errors').insert({
+        // WRITTEN DELIBERATELY UNTENANTED, and it is the same defended case as
+        // the platform-wide cron sweeps — not an oversight.
+        //
+        // This branch only runs for a PLATFORM-ORIGIN lead, which is created with
+        // `brokerage_id: null` on purpose (the parked-until-distributed rule two
+        // hundred lines above: "no tenant sees it"). What failed is Engine 1's
+        // zip rotation deciding WHICH subscriber should get it — a platform
+        // decision about a lead no brokerage owns yet.
+        //
+        // `effectiveBrokerageId` is in scope and is deliberately NOT used: it is
+        // the market-territory owner, and stamping it would surface a platform
+        // rotation failure inside one tenant's automations console, about a lead
+        // that tenant is explicitly not permitted to see. The row is instead left
+        // for the audience it belongs to — `lib/platform/ai-ops.ts:73` reads
+        // `automation_errors` cross-tenant with NO brokerage predicate and its row
+        // type carries `brokerageId: string | null`, and
+        // `resolveAutomationErrorAction` resolves by id alone, so it is both
+        // visible and resolvable there.
+        const { error: distributionLogError } = await supabase.from('automation_errors').insert({
+          brokerage_id: null,
           workflow_name: 'platform_lead_distribution',
           error_message: distResult.reason,
           context_json: JSON.stringify({ leadId: newLead.id, rawRecordId }),
@@ -584,6 +679,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
           status: 'open',
           created_at: new Date().toISOString(),
         })
+        if (distributionLogError) {
+          console.error('[pipeline-processor] automation_errors insert refused:', distributionLogError.message)
+        }
       }
     } catch (err: any) {
       console.error(`[v0] Distribution engine failed for ${newLead.id}:`, err)

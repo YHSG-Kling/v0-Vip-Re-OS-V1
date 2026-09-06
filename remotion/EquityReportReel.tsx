@@ -37,15 +37,11 @@
  * simulator can assert the prop contract without a render context.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { horizontalBars } from "../lib/charts/geometry"
+import { ordinal } from "../lib/format/ordinal"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface EquityReportReelBrand {
@@ -107,10 +103,10 @@ function fmtPct(n: number): string {
   return `${sign}${n}%`
 }
 
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = n % 100
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here,
+// byte-identical to the copy in lib/kernel/anniversary-equity.ts. Survivor:
+// lib/format/ordinal.ts:32 `ordinal` — a pure leaf (zero imports), so pulling
+// it into the Remotion bundle adds nothing server-side.
 
 /**
  * PURE — which equity treatment the reel renders. Exported so the simulator can
@@ -225,15 +221,15 @@ const AvatarPIP: React.FC<{
   if (avatarVideoUrl) {
     return (
       <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }} />
       </div>
     )
   }
   if (agentPhotoUrl) {
     return (
       <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       </div>
     )
   }
@@ -296,7 +292,7 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brandColors.logoUrl && (
-            <Img src={brandColors.logoUrl} style={{
+            <SafeImg src={brandColors.logoUrl} style={{
               height: 64, objectFit: "contain", marginBottom: 36,
               opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />

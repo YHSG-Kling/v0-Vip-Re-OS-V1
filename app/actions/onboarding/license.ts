@@ -7,6 +7,11 @@
 // All server actions verify session, enforce RLS, and return typed { data, error }.
 
 import { createClient } from "@/lib/supabase/server"
+// TRUE ADMIN GATES (operational: license/onboarding) — the two user_type role
+// arrays below are repointed to the ONE tenant roster. 'superadmin'/'super_admin'
+// were dead there: 0 live rows store either users.user_type spelling.
+import { isAdminOrBroker, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -33,6 +38,15 @@ export interface EOFormData {
   certificateUrl?: string
 }
 
+export interface ContractRecordView {
+  id: string
+  status: string
+  sent_at: string | null
+  signed_at: string | null
+  provider: string
+  signing_url: string | null
+}
+
 export interface AgentLicenseStatus {
   currentStep: number
   licenseRecord: {
@@ -44,14 +58,18 @@ export interface AgentLicenseStatus {
     verification_status: string
     document_url: string | null
   } | null
-  contractRecord: {
-    id: string
-    status: string
-    sent_at: string | null
-    signed_at: string | null
-    provider: string
-    signing_url: string | null
-  } | null
+  /** The brokerage-join contract (contract_type 'independent_contractor'). */
+  contractRecord: ContractRecordView | null
+  /**
+   * m481 — the TEAM-join contract (contract_type 'team_agreement'). Present
+   * only when the agent is on a team: an agent joining a team signs BOTH the
+   * brokerage's independent-contractor agreement AND the team's agreement
+   * (owner ruling: "the agent has to sign contracts to join the brokerage and
+   * teams"). null = no team, or no team contract issued yet.
+   */
+  teamContractRecord: ContractRecordView | null
+  /** The team the agent resolved to (public.agent_team_id), or null. */
+  teamId: string | null
   completedSteps: string[]
   onboardingId: string | null
 }
@@ -74,8 +92,7 @@ export async function getAgentLicenseStatus(
     const { data: caller } = await supabase
       .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
     if (!caller?.brokerage_id) return { data: null, error: "Unauthorized" }
-    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-      .includes(caller.user_type ?? "")
+    const isAdmin = isAdminOrBroker({ user_type: caller.user_type })
 
     // Caller-supplied agentId — allow only self OR admin in same brokerage.
     // Previously any caller could view any agent's license/E&O/contract
@@ -99,11 +116,25 @@ export async function getAgentLicenseStatus(
       return { data: null, error: "Forbidden" }
     }
 
+    // IDENTITY CLASS (m340). This action is keyed by a USERS id — agentId is
+    // compared against user.id above and looked up in `users` — but
+    // agent_onboarding, agent_licenses and agent_step_completions ALL FK AGENTS.
+    // Someone already hit this on the contract_signatures query below and left a
+    // comment about it ("caught by the pilot simulation"), then fixed only that
+    // one query. The other three kept the bug: the onboarding INSERT was a
+    // foreign-key violation, so a licence page could neither find nor create an
+    // onboarding record, and the licence + step reads returned empty as though
+    // the agent had simply not started.
+    const agentRecordId = await resolveUserIdToAgentRecord(agentId, agent.brokerage_id)
+    if (!agentRecordId) {
+      return { data: null, error: "No agent record for this user in this brokerage" }
+    }
+
     // Get or create onboarding record
     let { data: onboarding } = await supabase
       .from("agent_onboarding")
       .select("id, status")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .single()
 
@@ -112,7 +143,7 @@ export async function getAgentLicenseStatus(
       const { data: newOnboarding, error: createError } = await supabase
         .from("agent_onboarding")
         .insert({
-          agent_id: agentId,
+          agent_id: agentRecordId,
           brokerage_id: agent.brokerage_id,
           status: "in_progress",
           start_date: new Date().toISOString().split("T")[0],
@@ -133,7 +164,7 @@ export async function getAgentLicenseStatus(
     const { data: licenseRecord } = await supabase
       .from("agent_licenses")
       .select("id, license_number, license_state, license_type, expiry_date:expiration_date, verification_status, document_url")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -161,11 +192,44 @@ export async function getAgentLicenseStatus(
           .single()
       : { data: null }
 
+    // m481 — TEAM-JOIN AWARENESS. If the agent resolves to a team (the same
+    // FK-anchored resolution RLS uses: public.agent_team_id — never a
+    // user_type), surface the team_agreement contract beside the
+    // independent-contractor one, so joining a team is also in writing.
+    // DESTRUCTURED errors: a refused read must not report as "no team" /
+    // "no contract".
+    let teamId: string | null = null
+    let teamContractRecord: ContractRecordView | null = null
+    const { data: resolvedTeam, error: teamErr } = await supabase.rpc("agent_team_id", {
+      p_agent_id: agentRecordId,
+    })
+    if (teamErr) {
+      console.error("[L11-License] Could not resolve the agent's team:", teamErr)
+    } else if (resolvedTeam) {
+      teamId = resolvedTeam as string
+      const { data: teamContract, error: teamContractErr } = agentRowIds.length > 0
+        ? await supabase
+            .from("contract_signatures")
+            .select("id, status:esign_status, sent_at, signed_at:fully_signed_at, provider:provider_name, signing_url")
+            .in("agent_id", agentRowIds)
+            .eq("brokerage_id", agent.brokerage_id)
+            .eq("contract_type", "team_agreement")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+        : { data: null, error: null }
+      if (teamContractErr) {
+        console.error("[L11-License] Team contract read failed:", teamContractErr)
+      } else {
+        teamContractRecord = (teamContract as ContractRecordView | null) ?? null
+      }
+    }
+
     // Get completed steps
     const { data: completedStepsData } = await supabase
       .from("agent_step_completions")
       .select("step_id, completed")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .eq("completed", true)
 
@@ -207,6 +271,8 @@ export async function getAgentLicenseStatus(
         currentStep,
         licenseRecord,
         contractRecord,
+        teamContractRecord,
+        teamId,
         completedSteps,
         onboardingId: onboarding?.id || null,
       },
@@ -232,7 +298,17 @@ export async function submitLicenseDetails(
       return { success: false, error: "Unauthorized" }
     }
 
-    // Resolve the proper agent ID
+    // Resolve the proper agent ID.
+    //
+    // REPORTED, NOT CHANGED HERE: resolveAgentId is the UNSCOPED resolver — it
+    // returns the user's oldest agents row across every brokerage, so a user who
+    // belongs to two tenants could file a licence against the wrong one. The
+    // scoped resolveUserIdToAgentRecord(userId, brokerageId) is what the reader
+    // above and the E&O writer below use. Changing it here needs the caller's
+    // tenant established first (this action derives the tenant FROM the agents
+    // row, so it would be circular), and m459 now makes the database refuse a
+    // mismatch outright rather than write into the wrong tenant. No live user
+    // has rows in two brokerages, so this is latent, not active.
     const agentId = await resolveAgentId(supabase, user.id)
     if (!agentId) {
       return { success: false, error: "Agent profile not found" }
@@ -388,28 +464,75 @@ export async function submitEOInsurance(
       return { success: false, error: "E&O insurance expiry date must be in the future" }
     }
 
+    // IDENTITY CLASS, AGAIN. `agent_licenses.agent_id` FKs AGENTS (verified
+    // against pg_constraint: agent_licenses_agent_id_fkey -> agents.id), and this
+    // read compared it to `user.id`, a USERS id. Two id spaces that never
+    // overlap, so the lookup matched nothing, `if (licenseRecord)` fell through,
+    // and E&O insurance was NEVER PERSISTED — while the action returned
+    // success:true and marked the step complete.
+    //
+    // The identical bug was found and fixed in getLicenseStatus (line 112) and
+    // submitLicenseDetails, both of which resolve the agents row first. This
+    // copy was missed, exactly as the comment at line 105 describes happening
+    // once already. Same resolver, same argument order.
+    const agentRecordId = await resolveUserIdToAgentRecord(user.id, agent.brokerage_id)
+    if (!agentRecordId) {
+      return { success: false, error: "No agent record for this user in this brokerage" }
+    }
+
     // Update the most recent license record with E&O info using the dedicated
-    // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/expiration).
-    const { data: licenseRecord } = await supabase
+    // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/
+    // expiration) plus eo_certificate_url, added by m459 — the certificate the
+    // intake form uploads to storage had nowhere to land and was being dropped.
+    // It is NOT document_url: that column holds the licence itself.
+    //
+    // The error is destructured now. supabase-js RESOLVES a failed query, so the
+    // old bare `{ data }` reported a PGRST116 (no rows) and a permission denial
+    // identically, as "nothing there".
+    const { data: licenseRecord, error: licenseLookupError } = await supabase
       .from("agent_licenses")
       .select("id")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentRecordId)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
 
-    if (licenseRecord) {
-      await supabase
-        .from("agent_licenses")
-        .update({
-          eo_insurance_carrier: data.insurerName,
-          eo_policy_number: data.policyNumber,
-          eo_coverage_amount: data.coverageAmount,
-          eo_expiration_date: data.expiryDate,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", licenseRecord.id)
+    if (licenseLookupError) {
+      console.error("[L11-License] E&O licence lookup failed:", licenseLookupError)
+      return { success: false, error: "Could not read your licence record" }
+    }
+
+    // E&O attaches TO a licence. With no licence on file there is nothing to
+    // attach it to, and silently succeeding is what hid this bug: say so.
+    if (!licenseRecord) {
+      return { success: false, error: "Add your licence details before submitting E&O insurance" }
+    }
+
+    // `.select("id")` on the UPDATE is not decoration. A zero-row RLS refusal on
+    // an UPDATE comes back as `error: null` with no rows — indistinguishable from
+    // a successful write unless the affected rows are counted. m459 narrowed this
+    // table to "your own row, or a brokerage admin", so a refusal is now possible
+    // and must not read as a save.
+    const { data: eoUpdated, error: eoError } = await supabase
+      .from("agent_licenses")
+      .update({
+        eo_insurance_carrier: data.insurerName,
+        eo_policy_number: data.policyNumber,
+        eo_coverage_amount: data.coverageAmount,
+        eo_expiration_date: data.expiryDate,
+        eo_certificate_url: data.certificateUrl ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", licenseRecord.id)
+      .select("id")
+
+    if (eoError) {
+      console.error("[L11-License] Failed to save E&O insurance:", eoError)
+      return { success: false, error: "Failed to save E&O insurance" }
+    }
+    if (!eoUpdated || eoUpdated.length === 0) {
+      return { success: false, error: "E&O insurance was not saved — you may not have permission to edit this licence record" }
     }
 
     // Get or create step completion record
@@ -423,8 +546,16 @@ export async function submitEOInsurance(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
-        agent_id: await resolveAgentId(supabase as any, user.id),
+      // agentRecordId, not resolveAgentId(user.id): the unscoped resolver returns
+      // the user's FIRST agents row across every brokerage, which is the wrong
+      // one for anyone who belongs to more than one. This is the same row the E&O
+      // write above landed on, so the completion cannot drift from the record.
+      //
+      // Reached only AFTER the E&O update is proven to have written — marking the
+      // step complete beside a write that did not happen is precisely how this
+      // defect stayed invisible: the checklist said done, the record was empty.
+      const { error: stepError } = await supabase.from("agent_step_completions").upsert({
+        agent_id: agentRecordId,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
@@ -432,6 +563,11 @@ export async function submitEOInsurance(
       }, {
         onConflict: "agent_id,step_id",
       })
+      if (stepError) {
+        // The E&O record IS saved at this point; only the checklist tick failed.
+        // Report it rather than swallow it, but do not claim the save failed.
+        console.error("[L11-License] E&O saved but step completion failed:", stepError)
+      }
     }
 
     return { success: true }
@@ -464,8 +600,7 @@ export async function sendContractForSignature(
     if (!caller?.brokerage_id) {
       return { success: false, error: "Unauthorized" }
     }
-    const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-      .includes(caller.user_type ?? "")
+    const isAdmin = isAdminOrBroker({ user_type: caller.user_type })
     if (user.id !== agentId && !isAdmin) {
       return { success: false, error: "Unauthorized to send contract for this agent" }
     }
@@ -560,21 +695,34 @@ export async function markContractSignedManually(
       return { success: false, error: "Unauthorized" }
     }
 
-    // Verify user is admin
-    const { data: userData } = await supabase
+    // TENANT gate (the body pins the contract to the caller's brokerage) — the old
+    // gate tested a tenant roster against platform_role and so admitted only platform staff.
+    const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("platform_role, brokerage_id")
+      .select("user_type, brokerage_id")
       .eq("id", user.id)
       .single()
 
-    if (!userData || !["admin", "broker", "superadmin"].includes(userData.platform_role || "")) {
+    if (userError || !userData) {
       return { success: false, error: "Only admins can manually mark contracts as signed" }
     }
 
-    // Get contract and verify brokerage
+    // Guards a WRITE → resolveTenantAdmin, so a tenant role GRANT passes too (m466 parity).
+    const adminResult = await resolveTenantAdmin(supabase, user.id, userData)
+    if (!adminResult.ok) {
+      return { success: false, error: adminResult.error }
+    }
+    if (!adminResult.isTenantAdmin) {
+      return { success: false, error: "Only admins can manually mark contracts as signed" }
+    }
+
+    // Get contract and verify brokerage. contract_type matters below: the
+    // "contract_signed" onboarding step means the BROKERAGE-JOIN contract
+    // (independent_contractor); a team_agreement (m481) is recorded here too,
+    // but must not tick the brokerage-contract checklist step.
     const { data: contract } = await supabase
       .from("contract_signatures")
-      .select("id, agent_id, brokerage_id")
+      .select("id, agent_id, brokerage_id, contract_type")
       .eq("id", contractSignatureId)
       .single()
 
@@ -588,14 +736,26 @@ export async function markContractSignedManually(
 
     const now = new Date().toISOString()
 
-    // Update contract status
-    await supabase
+    // Update contract status. `.select("id")` + destructured error: a zero-row
+    // RLS refusal on an UPDATE resolves with error:null and no rows — counting
+    // the rows is the only way "recorded" cannot be reported over a refusal.
+    const { data: signedRows, error: signErr } = await supabase
       .from("contract_signatures")
       .update({
         esign_status: "fully_signed",
         fully_signed_at: now,
       })
       .eq("id", contractSignatureId)
+      .select("id")
+    if (signErr) {
+      console.error("[L11-License] Failed to mark contract signed:", signErr)
+      return { success: false, error: "Failed to mark contract as signed" }
+    }
+    if (!signedRows || signedRows.length === 0) {
+      return { success: false, error: "Contract was not updated — you may not have permission to sign it off" }
+    }
+
+    const isBrokerageJoinContract = contract.contract_type === "independent_contractor"
 
     // Get agent's onboarding record
     const { data: onboarding } = await supabase
@@ -605,26 +765,33 @@ export async function markContractSignedManually(
       .eq("brokerage_id", contract.brokerage_id)
       .single()
 
-    // Mark step as complete
-    const { data: stepRecord } = await supabase
-      .from("onboarding_steps")
-      .select("id")
-      .eq("step_key", "contract_signed")
-      .or(`brokerage_id.eq.${contract.brokerage_id},brokerage_id.is.null`)
-      .order("brokerage_id", { ascending: false, nullsFirst: false })
-      .limit(1)
-      .single()
+    // Mark the checklist step — ONLY for the brokerage-join contract; a signed
+    // team agreement is its own record, not the "contract_signed" step.
+    if (isBrokerageJoinContract) {
+      const { data: stepRecord } = await supabase
+        .from("onboarding_steps")
+        .select("id")
+        .eq("step_key", "contract_signed")
+        .or(`brokerage_id.eq.${contract.brokerage_id},brokerage_id.is.null`)
+        .order("brokerage_id", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .single()
 
-    if (stepRecord) {
-      await supabase.from("agent_step_completions").upsert({
-        agent_id: contract.agent_id,
-        brokerage_id: contract.brokerage_id,
-        step_id: stepRecord.id,
-        completed: true,
-        completed_at: new Date().toISOString(),
-      }, {
-        onConflict: "agent_id,step_id",
-      })
+      if (stepRecord) {
+        const { error: stepErr } = await supabase.from("agent_step_completions").upsert({
+          agent_id: contract.agent_id,
+          brokerage_id: contract.brokerage_id,
+          step_id: stepRecord.id,
+          completed: true,
+          completed_at: new Date().toISOString(),
+        }, {
+          onConflict: "agent_id,step_id",
+        })
+        if (stepErr) {
+          // The contract IS recorded signed; only the checklist tick failed.
+          console.error("[L11-License] Contract signed but step completion failed:", stepErr)
+        }
+      }
     }
 
     // Fire kernel event
@@ -635,8 +802,10 @@ export async function markContractSignedManually(
       entityId: contractSignatureId,
     })
 
-    if (onboarding) {
-      // Transition lifecycle
+    if (onboarding && isBrokerageJoinContract) {
+      // Transition lifecycle — the onboarding machine's contract_signed state
+      // is about the brokerage-join contract, so the team agreement does not
+      // drive it.
       await transitionLifecycle({
         brokerageId: contract.brokerage_id,
         entityType: "agent_onboarding_machine",

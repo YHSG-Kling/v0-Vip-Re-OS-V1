@@ -22,8 +22,9 @@
 //
 // HONESTY RULES (non-negotiable):
 //   · The current value comes from a REAL valuation source (RentCast AVM by default,
-//     key resolved from integration_credentials or RENTCAST_API_KEY env — never
-//     written to files or logged). No valuation available → the contact is SKIPPED
+//     on the ONE platform RENTCAST_API_KEY — RentCast is platform-gated, so there is
+//     no per-tenant key to resolve; the brokerage only attributes/meters the call —
+//     never written to files or logged). No valuation available → the contact is SKIPPED
 //     and counted as skippedNoValuation. NEVER a fabricated value.
 //   · Equity math is honest about loan data: when the original loan amount is on
 //     file (transaction_lenders.loan_amount), equity = est. value − est. remaining
@@ -41,6 +42,7 @@
 // NOT server-only (simulator-driven). Pure helpers carry the math; the runner does
 // I/O. Valuation fetcher, copy generator, and video dispatcher are injectable seams.
 
+import { ordinal } from "@/lib/format/ordinal"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
@@ -51,10 +53,17 @@ type Svc = ReturnType<typeof createServiceClient>
 /** Anniversary window: the close-date month/day within ±this many days of now. */
 export const ANNIVERSARY_WINDOW_DAYS = 7
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: ANNUAL_PAYDOWN_PCT.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Conservative principal-paydown approximation (~1.5%/yr of the ORIGINAL loan) —
  *  the same documented assumption as lib/avm/provider-chain.ts computeEquityRatio.
  *  It deliberately UNDER-estimates paydown so the equity estimate stays honest. */
-export const ANNUAL_PAYDOWN_PCT = 0.015
+const ANNUAL_PAYDOWN_PCT = 0.015
 
 /** The rationale tag prefix that carries the per-(contact, year) idempotency key. */
 export const ANNIVERSARY_EQUITY_TAG = "ANNIVERSARY EQUITY"
@@ -178,10 +187,10 @@ function fmtUsd(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 }
 
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = n % 100
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here,
+// byte-identical to the copy in remotion/EquityReportReel.tsx. Survivor:
+// lib/format/ordinal.ts:32 `ordinal` — a pure leaf both the kernel and the
+// Remotion bundle can import without dragging either side's dependencies in.
 
 export interface EquityNoteArgs {
   firstName: string | null
@@ -220,6 +229,45 @@ export function composeEquityNote(args: EquityNoteArgs): { subject: string; body
     `These figures are estimates, not an appraisal, and not financial advice — if you'd like a precise picture or just want to catch up, I'm always glad to walk through it with you.`
 
   return { subject: `Happy ${ordinal(n)} home anniversary — your annual equity update`, body }
+}
+
+/**
+ * PURE: THE EQUITY REPORT AS FACT LINES A WRITER MAY USE.
+ *
+ * Extracted from `runAnniversaryEquity`'s body, where it was an inline array with
+ * exactly ONE reader — the portal note's persona copy generator. The
+ * ANNIVERSARY VIDEO, which the owner's ruling says IS "a happy anniversary with
+ * an equity report", could not see it: `dispatchAnniversaryVideo` took only
+ * `yearsAgo`, and its writing prompt then forbade "specific home-value claims"
+ * outright. Two writers, one set of facts, one place they are spelled (§6) —
+ * rather than the video growing a second rendering of the same numbers that
+ * could round or hedge them differently from the card sitting underneath it.
+ *
+ * EVERY LINE IS ALREADY HONEST, because the honesty is not the writer's job to
+ * remember: each figure is labeled an estimate here, the appreciation-only case
+ * SAYS it is appreciation-only and instructs the writer to say so too, and the
+ * closing line carries "not an appraisal" and "not financial advice". A writer
+ * that repeats these verbatim cannot produce an unqualified claim.
+ *
+ * NOTHING IS INVENTED: every value comes from `computeEquityLine` over a REAL
+ * valuation. A contact with no valuation is skipped upstream, never given a
+ * guessed one.
+ */
+export function equityNarrationFacts(args: {
+  anniversaryNumber: number
+  estimatedValue: number
+  line: EquityLine
+}): string[] {
+  const { line } = args
+  return [
+    `It is the ${ordinal(args.anniversaryNumber)} anniversary of their home closing`,
+    `Estimated current value: ${fmtUsd(args.estimatedValue)} (an estimate, not an appraisal)`,
+    `They paid ${fmtUsd(line.basisPrice)}; estimated change since purchase: ${fmtUsd(line.appreciation)} (${line.appreciationPct}%)`,
+    line.hasLoanData && line.estimatedEquity != null
+      ? `Estimated equity: ${fmtUsd(line.estimatedEquity)} (estimated remaining balance ${fmtUsd(line.estimatedRemainingBalance ?? 0)})`
+      : `No loan details on file — the update reports estimated value growth only, not loan balance or true equity, and must say so`,
+    `These figures are estimates, not an appraisal, and not financial advice`,
+  ]
 }
 
 /**
@@ -295,8 +343,9 @@ export function composeEquityDecision(line: EquityLine, yearsHeld: number): Equi
 // ─── Injectable seams ───────────────────────────────────────────────────────────
 
 /** REAL valuation seam. Default is RentCast-backed (lib/property/rentcast
- *  getRentcastAVM — key from integration_credentials or RENTCAST_API_KEY env,
- *  never logged/persisted by this play). Returns null when no real estimate is
+ *  getRentcastAVM — the ONE platform RENTCAST_API_KEY, since RentCast is
+ *  platform-gated and has no per-tenant key; the brokerage is carried for
+ *  metering/attribution only, never logged/persisted by this play). Returns null when no real estimate is
  *  available; the runner then SKIPS the contact (skippedNoValuation) — it NEVER
  *  invents a value. The simulator injects fixed numbers (no vendor spend). */
 export type ValuationFetcher = (args: { brokerageId: string; address: string }) => Promise<{
@@ -314,6 +363,21 @@ export type AnniversaryVideoDispatcher = (args: {
   /** agents.id (transactions.agent_id) — the reactor resolves users.id itself. */
   agentId: string
   yearsAgo: number
+  /**
+   * THE EQUITY REPORT THE VIDEO SPEAKS — owner ruling, "anniversary video is a
+   * happy anniversary with an equity report".
+   *
+   * These are the SAME fact lines the portal note is written from
+   * (`equityNarrationFacts` below), not a second rendering of the numbers. Until
+   * this existed the list had exactly one reader and the video was written blind
+   * to the report it was supposed to be delivering — its prompt forbade
+   * "specific home-value claims" outright, so the agent on screen could not
+   * mention the equity story the card underneath the clip was telling.
+   */
+  equity?: {
+    facts: readonly string[]
+    hasLoanData: boolean
+  }
 }) => Promise<{ ok: boolean; status: string }>
 
 // ─── Live runner ────────────────────────────────────────────────────────────────
@@ -385,8 +449,9 @@ export async function runAnniversaryEquity(
     skippedNoPurchasePrice: 0, skippedWithdrawn: 0, skippedDuplicate: 0,
   }
 
-  // REAL RentCast-backed default — key resolved inside getRentcastAVM from
-  // integration_credentials or RENTCAST_API_KEY env (never logged/persisted here).
+  // REAL RentCast-backed default — getRentcastAVM resolves the ONE platform
+  // RENTCAST_API_KEY (platform-gated: no per-tenant key exists to prefer; the
+  // brokerage below only attributes + meters the call, never logged/persisted here).
   // No key or no result → null → honest skip. The simulator injects fixed numbers.
   const fetchValuation: ValuationFetcher = opts.valuationFetcher ?? (async ({ brokerageId: bid, address }) => {
     const { getRentcastAVM } = await import("@/lib/property/rentcast")
@@ -401,6 +466,10 @@ export async function runAnniversaryEquity(
     const r = await dispatchAnniversaryVideo({
       brokerageId: d.brokerageId, contactId: d.contactId, agentId: d.agentId,
       yearsAgo: d.yearsAgo, delivery: "portal",
+      // Forwarded, not re-derived. A default dispatcher that dropped the equity
+      // half would leave the seam's callers looking wired while the video went
+      // out as a bare greeting.
+      ...(d.equity ? { equity: d.equity } : {}),
     })
     return { ok: r.ok, status: r.status }
   })
@@ -507,15 +576,14 @@ export async function runAnniversaryEquity(
       firstName, address, anniversaryNumber: hit.anniversaryNumber,
       estimatedValue: valuation.value, line,
     })
-    const facts = [
-      `It is the ${ordinal(hit.anniversaryNumber)} anniversary of their home closing`,
-      `Estimated current value: ${fmtUsd(valuation.value)} (an estimate, not an appraisal)`,
-      `They paid ${fmtUsd(line.basisPrice)}; estimated change since purchase: ${fmtUsd(line.appreciation)} (${line.appreciationPct}%)`,
-      line.hasLoanData && line.estimatedEquity != null
-        ? `Estimated equity: ${fmtUsd(line.estimatedEquity)} (estimated remaining balance ${fmtUsd(line.estimatedRemainingBalance ?? 0)})`
-        : `No loan details on file — the update reports estimated value growth only, not loan balance or true equity, and must say so`,
-      `These figures are estimates, not an appraisal, and not financial advice`,
-    ]
+    // ONE fact set, TWO writers: the portal note below and the anniversary
+    // VIDEO's script (dispatchVideo, further down). Same numbers, same
+    // qualifiers, one place they are spelled.
+    const facts = equityNarrationFacts({
+      anniversaryNumber: hit.anniversaryNumber,
+      estimatedValue: valuation.value,
+      line,
+    })
     const draft = await generatePersonaCopy(
       {
         goal: "a warm yearly home-anniversary equity update for a past client (estimates clearly labeled; explicitly 'not an appraisal'; no financial advice; no pressure)",
@@ -603,6 +671,11 @@ export async function runAnniversaryEquity(
         try {
           const v = await dispatchVideo({
             brokerageId, contactId, agentId: t.agent_id, yearsAgo: hit.anniversaryNumber,
+            // The second half of the owner's ruling. `hasLoanData` is carried
+            // separately from the facts because it governs what may be SAID:
+            // false means estimatedEquity is null, so the script may report
+            // value growth and must not claim equity.
+            equity: { facts, hasLoanData: line.hasLoanData },
           })
           if (v.ok && v.status !== "skipped" && v.status !== "suppressed") result.videosDispatched += 1
           else result.skippedNoAvatar += v.ok ? 0 : 1

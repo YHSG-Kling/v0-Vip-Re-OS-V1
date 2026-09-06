@@ -10,19 +10,35 @@ import { KernelEvent } from "./events"
 import type { AgeSegment } from "./education"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
+// EIGHT of this block's twelve names were imported and never used. They split
+// cleanly into two classes, and neither is a build:
+//
+// 1. WRONG LAYER — `PORTAL_ERRORS`, `createPortalSuccess`,
+//    `createPortalErrorResponse` and `PORTAL_VALIDATION_RULES` shape an HTTP
+//    RESPONSE. This file is Layer 0: it returns data, it does not answer
+//    requests. The three that are live are live at the layer that owns them —
+//    app/api/portal/[contactId]/view/route.ts:19-21 and
+//    app/api/portal/[contactId]/modules/route.ts:19-21 both import and use them
+//    on every exit path. (`PORTAL_VALIDATION_RULES` has no consumer at all; that
+//    is an ORPHANED-EXPORT question about portal-contracts.ts, not a missing
+//    wire here, and it is left for that census.)
+//
+// 2. A DUPLICATE OF THE WIRED SHAPES — `PortalVisibilityInput/Output` and
+//    `NavigationBuildInput/Output` describe two functions this module already
+//    has under different names, which is the one-vocabulary defect, not a gap:
+//      · visibility  → `determinePortalModules` (:287) returns exactly those
+//        booleans (buyer_smart_search, seller_listing_actions, …) and
+//        `requireContactAccess` (lib/portal/require-contact-access) answers the
+//        `canAccessPortal` half for both routes.
+//      · navigation  → `buildPortalNav` (:452), whose `NavItem[]` is what the
+//        one real caller consumes (app/portal/[contactId]/layout.tsx:258).
+//    The wired pair is the survivor; the declared-but-unconsumed pair is the
+//    duplicate. Nothing was lost, and no capability disappeared with the import.
 import {
   PortalViewOutput,
   PortalModulesOutput,
-  PortalVisibilityOutput,
-  NavigationBuildOutput,
-  PORTAL_VALIDATION_RULES,
-  PORTAL_ERRORS,
-  createPortalSuccess,
-  createPortalErrorResponse,
   type PortalViewInput,
   type PortalModulesInput,
-  type PortalVisibilityInput,
-  type NavigationBuildInput,
 } from "./portal-contracts"
 
 // ─── PORTAL VIEW TYPES ────────────────────────────────────────────────────────
@@ -276,26 +292,60 @@ export async function determinePortalView(
 }
 
 /**
+ * WHO ENABLED A MODULE. `contact_portal_modules.enabled_by_agent_id` is stamped
+ * by the one writer (lib/transactions/stage-progression.ts, the sold-listing
+ * grant) and was read by nothing. It is an AGENTS-class id — the column FKs
+ * agents(id), per scripts/agent-fk-columns.ts (AGENT_FK_COLUMNS.contact_portal_modules)
+ * and scripts/schema-fk-map.ts — so it is resolved agents → users through
+ * `agents.user_id`; it would match nothing against users.id (the two spaces are
+ * disjoint, CLAUDE.md §3). Four states, never collapsed and never "the system":
+ *   resolved        — the agent's name, found inside the row's own brokerage
+ *   unresolved      — an id is stamped but no agent of THIS brokerage carries it
+ *   not_recorded    — the column is NULL
+ *   lookup_refused  — the name read itself was refused (supabase-js RESOLVES a
+ *                     refusal; a swallowed one would read as "unresolved", which
+ *                     asserts a fact nobody checked)
+ */
+interface PortalModuleAttribution {
+  moduleKey: string
+  isEnabled: boolean
+  enabledAt: string | null
+  enabledByAgentId: string | null
+  enabledByName: string | null
+  enabledByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
+}
+
+/**
  * KERNEL CONTRACT: Determines which portal modules are enabled for a contact.
- * 
+ *
  * Input: PortalModulesInput { contactId, view, isPropertyOwner? }
- * Output: PortalModulesOutput { modules, journey, messages, ... }
- * 
+ * Output: PortalModulesOutput { modules, journey, messages, ... } plus
+ *         `moduleAttribution` — one entry per stored override, naming the agent
+ *         who set it (see PortalModuleAttribution above). The contract type in
+ *         portal-contracts.ts is widened here by intersection rather than edited.
+ *
  * Reads from contact_portal_modules table if available.
  * Returns all modules enabled as graceful fallback if table not accessible.
  */
 export async function determinePortalModules(
   supabase: SupabaseClient,
   input: PortalModulesInput
-): Promise<PortalModulesOutput> {
+): Promise<PortalModulesOutput & { moduleAttribution: PortalModuleAttribution[] }> {
   try {
     const { contactId, view, isPropertyOwner } = input
 
-    // Fetch module overrides from database
+    // Fetch module overrides from database. enabled_by_agent_id / enabled_at /
+    // brokerage_id are read so the attribution below can be resolved and
+    // TENANT-ANCHORED on the row's own brokerage, never on a caller field.
     const { data: modules, error } = await supabase
       .from("contact_portal_modules")
-      .select("module_key, is_enabled")
+      .select("module_key, is_enabled, enabled_by_agent_id, enabled_at, brokerage_id")
       .eq("contact_id", contactId)
+    if (error) {
+      // Read, not swallowed: the reason below carries DEFAULT_FALLBACK, and the
+      // log carries WHY so a refused read is distinguishable from "no overrides".
+      console.warn("[Portal] contact_portal_modules read refused — rendering defaults:", error.message)
+    }
 
     // Build default module map based on view type
     const defaultModules: Record<string, boolean> = {
@@ -304,21 +354,93 @@ export async function determinePortalModules(
       documents: true,
       buyer_smart_search: view === 'buyer',
       seller_listing_actions: view === 'seller',
-      offers: view === 'buyer' || view === 'lifetime',
+      // A SELLER HAS OFFERS. Gating these two to buyer/lifetime stripped both
+      // items straight out of the seller nav — and the seller nav is the one
+      // place a seller would go to read the offers on their own house. Both
+      // routes exist on disk, and nothing could turn them back on: the only
+      // writer to contact_portal_modules stamps a module_key ("sold_listing")
+      // that buildPortalNav never consults. The ERROR fallback below has always
+      // had these as `true`, so the two maps disagreed about the same product
+      // question and only the failure path got it right.
+      offers: true,
       showings: view === 'buyer' || view === 'lifetime',
       properties: view === 'buyer',
-      calendar: view === 'buyer' || view === 'lifetime',
-      education: view === 'buyer',
+      calendar: true,
+      // All three navs list "Learn", and /portal/[contactId]/learn is a real
+      // route for all three. Buyer-only here would hide an item every view
+      // currently shows — because the old label-derived filter looked up
+      // `learn`, a key that does not exist, and so never hid anything. Keeping
+      // this true preserves what clients see today while making the toggle mean
+      // something for the first time.
+      education: true,
     }
+
+    type ModuleRow = {
+      module_key: string
+      is_enabled: boolean
+      enabled_by_agent_id: string | null
+      enabled_at: string | null
+      brokerage_id: string | null
+    }
+    const moduleRows = (!error && modules ? modules : []) as ModuleRow[]
 
     // Merge database overrides if available
-    if (!error && modules && modules.length > 0) {
-      for (const m of modules) {
-        defaultModules[m.module_key] = m.is_enabled
-      }
+    for (const m of moduleRows) {
+      defaultModules[m.module_key] = m.is_enabled
     }
 
+    // Resolve the enabling agents in ONE batched read, anchored on the rows'
+    // own brokerage_id (every override for one contact belongs to one tenant;
+    // the first stamped tenant is the anchor). agents → users via agents.user_id.
+    const agentIds = Array.from(new Set(moduleRows.map((m) => m.enabled_by_agent_id).filter((id): id is string => !!id)))
+    const anchorBrokerageId = moduleRows.find((m) => m.brokerage_id)?.brokerage_id ?? null
+    const agentNameById = new Map<string, string>()
+    let attributionLookupRefused = false
+    if (agentIds.length > 0 && anchorBrokerageId) {
+      const { data: agentRows, error: agentErr } = await supabase
+        .from("agents")
+        .select("id, users(first_name, last_name, email)")
+        .in("id", agentIds)
+        .eq("brokerage_id", anchorBrokerageId)
+      if (agentErr) {
+        attributionLookupRefused = true
+        console.warn("[Portal] module attribution lookup refused:", agentErr.message)
+      }
+      // agents.user_id is the ONE FK from agents to users, so the embed is a
+      // single row at runtime; the generated types spell it as an array, hence
+      // the normalisation (same shape the portal pages read).
+      type EmbeddedUser = { first_name: string | null; last_name: string | null; email: string | null }
+      for (const a of (agentRows ?? []) as unknown as Array<{ id: string; users: EmbeddedUser | EmbeddedUser[] | null }>) {
+        const u = Array.isArray(a.users) ? (a.users[0] ?? null) : a.users
+        const label = u ? ([u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || "") : ""
+        if (label) agentNameById.set(a.id, label)
+      }
+    } else if (agentIds.length > 0 && !anchorBrokerageId) {
+      // An id with no tenant to anchor on cannot be resolved honestly — a
+      // cross-tenant name read is exactly the shape §4 forbids.
+      attributionLookupRefused = true
+      console.warn("[Portal] module attribution skipped — override rows carry no brokerage_id to anchor on")
+    }
+
+    const moduleAttribution: PortalModuleAttribution[] = moduleRows.map((m) => {
+      const name = m.enabled_by_agent_id ? agentNameById.get(m.enabled_by_agent_id) ?? null : null
+      const enabledByState: PortalModuleAttribution["enabledByState"] =
+        !m.enabled_by_agent_id ? "not_recorded"
+        : name ? "resolved"
+        : attributionLookupRefused ? "lookup_refused"
+        : "unresolved"
+      return {
+        moduleKey: m.module_key,
+        isEnabled: m.is_enabled,
+        enabledAt: m.enabled_at ?? null,
+        enabledByAgentId: m.enabled_by_agent_id ?? null,
+        enabledByName: name,
+        enabledByState,
+      }
+    })
+
     return {
+      moduleAttribution,
       modules: defaultModules,
       journey: defaultModules.journey,
       messages: defaultModules.messages,
@@ -335,6 +457,9 @@ export async function determinePortalModules(
   } catch (error) {
     console.warn("[Portal] Error fetching portal modules:", error)
     return {
+      // Nothing was read, so nothing is attributed — an empty list, not a
+      // fabricated "enabled by" for the defaults below.
+      moduleAttribution: [],
       modules: {
         journey: true,
         messages: true,
@@ -345,7 +470,7 @@ export async function determinePortalModules(
         showings: true,
         properties: input.view === 'buyer',
         calendar: true,
-        education: input.view === 'buyer',
+        education: true,
       },
       journey: true,
       messages: true,
@@ -375,23 +500,55 @@ export async function logPortalAccess(
   agentId?: string
 ): Promise<void> {
   try {
+    // THE CONTACT IS THE LOG LINE'S TENANT. portal_access_logs.contact_id FKs
+    // contacts, and the sibling writer (app/actions/workflows.ts grantPortalAccess)
+    // already stamps the brokerage on this same table. Unstamped, the row is
+    // invisible to the compliance audit trail, which reads portal_access_logs
+    // through the caller's tenant-scoped client
+    // (app/api/admin/audit-events/route.ts) — portal access is the one event class
+    // that exists to be auditable, so a row no brokerage can see is not a log.
+    // The `error` is destructured because a refused read resolves in supabase-js:
+    // without it, "permission denied" would read as "this contact has no
+    // brokerage" and we would write the unanchored row anyway.
+    const { data: contactRow, error: contactError } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (contactError) {
+      console.warn("[Portal] Unable to resolve contact tenant for access log:", contactError.message)
+      return
+    }
+    const brokerageId = contactRow?.brokerage_id ?? null
+    if (!brokerageId) {
+      console.warn(`[Portal] Contact ${contactId} has no brokerage — skipping the access log rather than writing an untenanted audit row`)
+      return
+    }
+
     // Insert access log
-    await supabase
+    const { error: logError } = await supabase
       .from("portal_access_logs")
       .insert({
         contact_id: contactId,
+        brokerage_id: brokerageId,
         module_key: moduleKey,
         action,
         agent_id: agentId,
         accessed_at: new Date().toISOString(),
       })
+    if (logError) {
+      console.warn("[Portal] Unable to write portal access log:", logError.message)
+    }
 
-    // Emit kernel event
+    // Emit kernel event. brokerageId was the empty string here — a value that
+    // matches no tenant — for want of a resolved contact; it now carries the real
+    // one resolved above.
     await processKernelEvent({
       event: KernelEvent.PORTAL_ACCESSED,
       entityType: "contact",
       entityId: contactId,
-      brokerageId: '',
+      brokerageId,
     })
   } catch (error) {
     // Fail silently — portal_access_logs table may not exist yet
@@ -412,55 +569,95 @@ export function buildPortalNav(
 
   const basePath = `/portal/${contactId}`
 
+  // EACH ITEM NAMES ITS OWN MODULE KEY. The filter used to derive the key from
+  // the LABEL — item.label.toLowerCase().replace(/ /g, '_') — which silently
+  // works only where the label happens to equal the key. It did not for four
+  // items: "My Journey" → my_journey (key is `journey`), "Smart Search" →
+  // smart_search (`buyer_smart_search`), "My Listing" → my_listing
+  // (`seller_listing_actions`), "Learn" → learn (`education`). Those four
+  // toggles could be set to false in contact_portal_modules and the nav item
+  // would still render, because nothing was looking under that name. An item
+  // with no moduleKey is unconditional — Home, Help and My Team are not gated.
+  type GatedNavItem = NavItem & { moduleKey?: string }
+
+  const render = (items: GatedNavItem[]): NavItem[] =>
+    items
+      .filter((item) => !item.moduleKey || isEnabled(item.moduleKey))
+      .map(({ moduleKey: _moduleKey, ...item }) => item)
+
   if (view === 'buyer') {
-    const items: NavItem[] = [
+    return render([
       { label: "Home", href: basePath, icon: "home" },
-      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
-      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
-      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
-      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-      { label: "Properties", href: `${basePath}/properties`, icon: "building" },
-      { label: "Smart Search", href: `${basePath}/search`, icon: "search" },
-      { label: "Showings", href: `${basePath}/showings`, icon: "eye" },
-      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
-      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route", moduleKey: "journey" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square", moduleKey: "messages" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar", moduleKey: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+      { label: "Properties", href: `${basePath}/properties`, icon: "building", moduleKey: "properties" },
+      { label: "Smart Search", href: `${basePath}/search`, icon: "search", moduleKey: "buyer_smart_search" },
+      { label: "Showings", href: `${basePath}/showings`, icon: "eye", moduleKey: "showings" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+      // ── ORPHAN-ROUTE SWEEP (lane G) ─────────────────────────────────────────
+      // /portal/[contactId]/assistant existed with NOTHING linking to it, so
+      // `handleBuyerVoiceAssistant` (app/actions/buyer-execution.ts) — hardened
+      // in an earlier wave and then left with no caller at all — has never been
+      // reachable by the audience it was written for. This is the entry.
+      { label: "Assistant", href: `${basePath}/assistant`, icon: "message-circle" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      // /portal/[contactId]/connections — the contact's OWN calendar / social /
+      // financial-provider links (getConnectionCenter, scope "contact"). Also an
+      // orphan route. NO moduleKey, deliberately: the module vocabulary is the
+      // fixed set in determinePortalModules' `defaultModules`
+      // (lib/kernel/portal.ts:316), and inventing a key that map does not carry
+      // is the two-spellings defect, not a toggle. It joins Home / My Team /
+      // Vendors / Help as unconditional.
+      { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-    ]
-    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+    ])
   }
 
   if (view === 'seller') {
-    const items: NavItem[] = [
+    return render([
       { label: "Home", href: basePath, icon: "home" },
-      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
-      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
-      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
-      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-      { label: "My Listing", href: `${basePath}/listing`, icon: "home" },
-      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route", moduleKey: "journey" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square", moduleKey: "messages" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar", moduleKey: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+      { label: "My Listing", href: `${basePath}/listing`, icon: "home", moduleKey: "seller_listing_actions" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
       { label: "Insights", href: `${basePath}/insights`, icon: "bar-chart" },
-      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+      // ── ORPHAN-ROUTE SWEEP (lane G) ─────────────────────────────────────────
+      // /portal/[contactId]/social is the SELLER's share-my-listing hub
+      // (PortalSocialHub — "available for sellers with an active listing", and
+      // the page itself refuses a contact with no listing). It was reachable
+      // from nothing, so the seller-amplification loop had no front door. Seller
+      // nav only: it is meaningless in the buyer and lifetime views.
+      { label: "Share My Listing", href: `${basePath}/social`, icon: "share-2", moduleKey: "seller_listing_actions" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      // See the buyer nav above for why this carries no moduleKey.
+      { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-    ]
-    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+    ])
   }
 
   // Lifetime view
-  const items: NavItem[] = [
+  return render([
     { label: "Home", href: basePath, icon: "home" },
     { label: "My History", href: `${basePath}/history`, icon: "clock" },
     { label: "Market Updates", href: `${basePath}/market-updates`, icon: "trending-up" },
     { label: "Resources", href: `${basePath}/resources`, icon: "book-open" },
     { label: "Referrals", href: `${basePath}/referrals`, icon: "share-2" },
-    { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
-    { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+    { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
+    { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+    // See the buyer nav above (orphan-route sweep, lane G) for why this carries
+    // no moduleKey. A past client's calendar/social/provider links are theirs in
+    // every view, so it is in all three.
+    { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
     { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
-  ]
-  return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+  ])
 }
 
 // ─── PORTAL MILESTONE ─────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ import {
   MANAGERS, collaborationsFor, type ManagerKey,
 } from "@/lib/kernel/manager-registry"
 import { emittersForDomain } from "@/lib/managers/cross-referral"
-import { MANAGER_FACT_LOADERS } from "@/lib/managers/deliberation"
+import { MANAGER_FACT_LOADERS, isDeliberativeDomain } from "@/lib/managers/deliberation"
 
 export interface TeamArgumentDomain {
   key: string
@@ -60,7 +60,8 @@ export function composeTeamArgumentMap(): TeamArgumentSeat[] {
     const domains: TeamArgumentDomain[] = collaborationsFor(mk).map((d) => ({
       key: d.key,
       label: d.label,
-      deliberative: d.deliberate === true,
+      // The same predicate the referral handler escalates on — never a re-spelling of it.
+      deliberative: isDeliberativeDomain(d.key),
       peers: d.managers.filter((m) => m !== mk),
       emitters: emittersForDomain(d.key).map((e) => ({ key: e.key, kind: e.kind, what: e.what })),
     }))

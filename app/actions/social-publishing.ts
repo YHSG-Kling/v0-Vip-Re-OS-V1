@@ -6,6 +6,9 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
+// resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
+// no longer imported here: its only user, handleContentApproved, was deleted
+// onto approveSocialPost, which now carries the import.
 
 // =====================================================
 // AUTH HELPER
@@ -38,153 +41,71 @@ async function resolveCaller(): Promise<
 }
 
 // =====================================================
-// EVENT HANDLERS - Called by orchestrator
+// EVENT HANDLERS — none remain (see the two tombstones below)
 // =====================================================
 
-export async function handleScheduledPost(payload: any) {
-  const caller = await resolveCaller()
-  if (!caller.ok) return { success: false, error: "Unauthorized" }
+// REMOVED (w4s1) — handleScheduledPost and handlePostPublished.
+//
+// Survivor for BOTH: app/api/cron/publish-social-posts/route.ts (the publish loop).
+// Neither removed function published anything; both were "use server" endpoints —
+// reachable over HTTP by any signed-in browser session — that mutated the publish
+// state machine out of band, and nothing in the tree ever dispatched them (searched
+// for callers, for the event names, and through lib/orchestrator).
+//
+// ONE GROUND OF THAT SEARCH HAS SINCE CHANGED; THE CONCLUSION HAS NOT. This note used
+// to add that "the internal EVENT_HANDLERS map that would have registered them is
+// itself declared and never read". That is RETIRED: lib/orchestrator/internal.ts's
+// map is now "CONSULTED BY orchestrateEvent()" — `dispatchRegistered` (~:185-208)
+// invokes handlers through it for the event types the switch routes there. What still
+// holds, and is decisive on its own: neither function was ever a key in that map, and
+// `lib/events/types.ts:29-54` — the whole EVENT_TYPES vocabulary — has no member for a
+// scheduled-post or post-published event, so there was never an event that could have
+// reached them through the map even now.
+//
+// They were actively hazardous, not merely redundant:
+//   · handleScheduledPost flipped a due post to status='publishing' and created a
+//     "Verify social post published" task. The cron selects on status='scheduled',
+//     so a post moved to 'publishing' by anything else NEVER MATCHES AGAIN — the
+//     post is stranded mid-flight and silently never publishes. An endpoint that
+//     can permanently strand another tenant-member's scheduled post.
+//   · handlePostPublished stamped status='published', published_at and a
+//     CALLER-SUPPLIED external_post_id. Any signed-in user could mark any of their
+//     brokerage's posts published with a fabricated platform id without a single
+//     byte going to a platform — a control reporting success without doing the
+//     thing, and it also skipped social_publish_log, the engagement-tracking seed
+//     and the SOCIAL_POST_PUBLISHED kernel event, all of which the cron writes.
+//
+// MERGE REVIEW: the only capability they had that the cron lacks was an
+// auto-created follow-up task per post ("verify published" at +30m, "check
+// engagement" at +24h). Deliberately NOT ported. The verify task was raised at the
+// moment of flipping to 'publishing' — before anything had published — and the cron
+// already records real failure (status='failed', social_publish_log,
+// SOCIAL_POST_FAILED), so it is busywork by construction. The engagement-check task
+// is the right INTENT implemented badly: a task per published post is task spam, and
+// the class is already served better at the survivor, which seeds
+// social_engagement_tracking and is followed by the nightly
+// /api/cron/social-analytics-sync that writes measured platform numbers.
 
-  const supabase = createServiceClient()
-  const { post_id, scheduled_for } = payload
-
-  // Verify post belongs to caller's brokerage before mutating
-  const { data: post } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id")
-    .eq("id", post_id)
-    .maybeSingle()
-  if (!post) return { success: false, error: "Post not found" }
-  if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
-
-  const now = new Date()
-  const scheduledTime = new Date(scheduled_for)
-
-  if (scheduledTime <= now) {
-    await supabase
-      .from("social_posts")
-      .update({ status: "publishing" })
-      .eq("id", post_id)
-      .eq("brokerage_id", caller.brokerageId)
-
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("user_id", post.user_id)
-      .eq("brokerage_id", post.brokerage_id)
-      .maybeSingle()
-    if (agentRow) {
-      await supabase.from("tasks").insert({
-        brokerage_id: post.brokerage_id,
-        assigned_to_agent_id: agentRow.id,
-        title: "Verify social post published",
-        due_date: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        priority: "medium",
-        auto_generated: true,
-      })
-    }
-  }
-
-  return { success: true }
-}
-
-export async function handlePostPublished(payload: any) {
-  const caller = await resolveCaller()
-  if (!caller.ok) return { success: false, error: "Unauthorized" }
-
-  const supabase = createServiceClient()
-  const { post_id, platform, external_id } = payload
-
-  // Verify post belongs to caller's brokerage before mutating
-  const { data: post } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id")
-    .eq("id", post_id)
-    .maybeSingle()
-  if (!post) return { success: false, error: "Post not found" }
-  if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
-
-  await supabase
-    .from("social_posts")
-    .update({
-      status: "published",
-      published_at: new Date().toISOString(),
-      external_post_id: external_id,
-    })
-    .eq("id", post_id)
-    .eq("brokerage_id", caller.brokerageId)
-
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", post.user_id)
-    .eq("brokerage_id", post.brokerage_id)
-    .maybeSingle()
-  if (agentRow) {
-    await supabase.from("tasks").insert({
-      brokerage_id: post.brokerage_id,
-      assigned_to_agent_id: agentRow.id,
-      title: `Check engagement on ${platform} post`,
-      due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      priority: "low",
-      auto_generated: true,
-    })
-  }
-
-  return { success: true }
-}
-
-export async function handleContentApproved(payload: any) {
-  const caller = await resolveCaller()
-  if (!caller.ok) return { success: false, error: "Unauthorized" }
-
-  const supabase = createServiceClient()
-  const { content_id } = payload
-
-  // Verify post belongs to caller's brokerage before mutating
-  const { data: post } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id, status, scheduled_for")
-    .eq("id", content_id)
-    .maybeSingle()
-  if (!post) return { success: false, error: "Post not found" }
-  if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
-
-  // Approval must leave the post PUBLISHABLE: the publisher only ships
-  // status='scheduled' + approved + due, so a draft (repurpose rail) has to
-  // flip to scheduled here or it strands forever (same contract as
-  // approveSocialPost in social-media-automation).
-  const needsScheduling = post.status === "draft" || post.status === "pending_approval"
-  await supabase
-    .from("social_posts")
-    .update({
-      approval_status: "approved",
-      approved_by: caller.userId,
-      approved_at: new Date().toISOString(),
-      ...(needsScheduling && {
-        status: "scheduled",
-        scheduled_for: post.scheduled_for ?? new Date().toISOString(),
-      }),
-    })
-    .eq("id", content_id)
-    .eq("brokerage_id", caller.brokerageId)
-
-  await supabase.from("notifications").insert({
-    user_id: post.user_id,
-    type: "content_approved",
-    title: "Content Approved",
-    body: "Your social media content has been approved and is ready to publish.",
-    entity_type: "social_post",
-    entity_id: content_id,
-    created_at: new Date().toISOString(),
-  })
-
-  return { success: true }
-}
+// ─── handleContentApproved — DELETED (orphan doctrine §1.1, 2026-09-03) ──────
+//
+// TOMBSTONE — `handleContentApproved(payload)` is DELETED. Survivor:
+// app/actions/social-media-automation.ts `approveSocialPost`, wired from
+// app/actions/command-center.ts. The header above says "called by orchestrator";
+// nothing in lib/orchestrator or anywhere else ever dispatched it (no caller in
+// app/ or lib/), so it was a second, unreachable approver of the same
+// social_posts row. What it had that the survivor lacked — the `content_approved`
+// notification to the post's author, tenant-resolved through
+// resolveRecipientBrokerageId — was ported onto the survivor FIRST. What was not
+// ported, on purpose: its `pending_approval` scheduling arm (the survivor's own
+// note rules that status was never valid — approval-pending posts are drafts).
+// The header's "EVENT HANDLERS" label now describes nothing in this file.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all posts in brokerage
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "compliance_officer", "superadmin"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin' removed — dead as
+  // users.user_type (0 live rows store it).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 
@@ -267,7 +188,11 @@ export async function connectSocialAccount(params: {
 
   if (error) throw error
 
-  revalidatePath("/settings/social-accounts")
+  // /settings/social-accounts has no page.tsx. social_media_accounts is connected
+  // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
+  // listed by the social dashboard (app/dashboard/social/page.tsx).
+  revalidatePath("/dashboard/profile")
+  revalidatePath("/dashboard/social")
   return data
 }
 
@@ -285,7 +210,11 @@ export async function disconnectSocialAccount(accountId: string, _userId?: strin
 
   if (error) throw error
 
-  revalidatePath("/settings/social-accounts")
+  // /settings/social-accounts has no page.tsx. social_media_accounts is connected
+  // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
+  // listed by the social dashboard (app/dashboard/social/page.tsx).
+  revalidatePath("/dashboard/profile")
+  revalidatePath("/dashboard/social")
 }
 
 export async function getSocialPosts(filters?: {
@@ -506,56 +435,28 @@ export async function deleteSocialPost(postId: string, _userId?: string) {
   revalidatePath("/social-planner")
 }
 
-export async function getSocialAnalytics(dateRange?: {
-  start: string
-  end: string
-  userId?: string  // ignored — kept for backward compat
-  userRole?: string  // ignored
-}) {
-  const caller = await resolveCaller()
-  if (!caller.ok) return []
-
-  const supabase = createServiceClient()
-
-  let query = supabase
-    .from("social_posts")
-    .select(`
-      id,
-      content,
-      platform,
-      scheduled_for,
-      published_at,
-      status,
-      social_post_analytics(
-        platform,
-        impressions,
-        reach,
-        engagement,
-        likes,
-        comments,
-        shares,
-        clicks
-      )
-    `)
-    .eq("status", "published")
-    .eq("brokerage_id", caller.brokerageId)
-
-  if (shouldFilterByUser(caller.userType)) {
-    query = query.eq("user_id", caller.userId)
-  }
-
-  if (dateRange) {
-    query = query.gte("published_at", dateRange.start).lte("published_at", dateRange.end)
-  }
-
-  const { data, error } = await query.order("published_at", { ascending: false })
-
-  if (error) {
-    console.log("[social-publishing] Get social analytics error:", error)
-    return []
-  }
-  return data || []
-}
+// REMOVED (w4s1) — getSocialAnalytics.
+//
+// Survivor: app/actions/social-media-automation.ts:getSocialMediaAnalytics — the
+// canonical social lane (that file's own header names social_engagement_tracking /
+// social_publish_log as the canonical tables), wired to
+// app/dashboard/social/social-dashboard-client.tsx.
+//
+// This one embedded `social_post_analytics`, whose only writer was REMOVED from the
+// publish cron in favour of social_engagement_tracking (see the note at
+// app/api/cron/publish-social-posts/route.ts: "Previously wrote
+// social_post_analytics, a table nothing reads"). So its analytics block was
+// structurally empty for every post, forever — it returned rows that looked like
+// analytics and carried no measurement. The survivor reads the live
+// social_engagement_tracking AND lets the nightly-synced social_media_analytics
+// (real platform numbers) win where present.
+//
+// MERGED before removal: the ONE thing this had that the survivor lacked was
+// per-user scoping — it narrowed to the caller's own posts for non-leadership roles,
+// while the survivor was brokerage-wide, so an individual agent could read the whole
+// brokerage's social performance. That filter is now on the survivor
+// (`seesAllBrokeragePosts`), including the extra `broker_admin` role this list
+// omitted.
 
 export async function generateSocialContent(params: {
   contentType: string

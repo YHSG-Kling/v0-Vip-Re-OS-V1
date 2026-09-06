@@ -12,9 +12,9 @@ import { AT_RISK_THRESHOLD } from "@/lib/recruiting/retention-score"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export type RetentionOutcome = "retained" | "lost" | "pending"
+export type RetentionOutcome = "retained" | "lost" | "pending" | "aging"
 
-/** Days after a save-play before an unresolved (still at-risk, still active) case counts as pending→ aging. */
+/** Days after a save-play before an unresolved (still at-risk, still active) case counts as pending → aging. */
 export const OUTCOME_SETTLE_DAYS = 30
 
 export interface OutcomeInput {
@@ -28,14 +28,19 @@ export interface OutcomeInput {
 /**
  * PURE: classify one save-play's outcome. LOST if the agent has since deactivated. RETAINED if, after the
  * save-play, their score climbed back to/above the at-risk threshold while they stayed active. Otherwise
- * PENDING (still working — the intervention hasn't resolved yet). Honest: no fabricated wins.
+ * unresolved: PENDING while inside the OUTCOME_SETTLE_DAYS window, AGING once the save-play is older than
+ * that (measured from savePlayDate against input.now) — still at-risk, still active, intervention has had
+ * its window and hasn't landed. Honest: no fabricated wins, and a stale "pending" no longer reads as
+ * "still working". (Built 2026-09-01 — OUTCOME_SETTLE_DAYS documented this threshold while the vocabulary
+ * couldn't express it and `now` was accepted but never read.)
  */
 export function classifyRetentionOutcome(input: OutcomeInput): RetentionOutcome {
   if (!input.isActive) return "lost"
   const after = input.scoresAfter.filter((s) => s.score_date >= input.savePlayDate.slice(0, 10))
   const recovered = after.some((s) => s.composite_score >= AT_RISK_THRESHOLD)
   if (recovered) return "retained"
-  return "pending"
+  const ageDays = (input.now.getTime() - new Date(input.savePlayDate).getTime()) / 86_400_000
+  return ageDays > OUTCOME_SETTLE_DAYS ? "aging" : "pending"
 }
 
 export interface RetentionOutcomeBoard {
@@ -43,6 +48,8 @@ export interface RetentionOutcomeBoard {
   retained: number
   lost: number
   pending: number
+  /** Unresolved past OUTCOME_SETTLE_DAYS — excluded (like pending) from the settled winRate denominator. */
+  aging: number
   /** retained / (retained + lost) — the settled win rate; null until at least one case settles. */
   winRate: number | null
 }
@@ -52,8 +59,9 @@ export function summarizeRetentionOutcomes(outcomes: RetentionOutcome[]): Retent
   const retained = outcomes.filter((o) => o === "retained").length
   const lost = outcomes.filter((o) => o === "lost").length
   const pending = outcomes.filter((o) => o === "pending").length
+  const aging = outcomes.filter((o) => o === "aging").length
   const settled = retained + lost
-  return { total: outcomes.length, retained, lost, pending, winRate: settled === 0 ? null : Math.round((retained / settled) * 100) / 100 }
+  return { total: outcomes.length, retained, lost, pending, aging, winRate: settled === 0 ? null : Math.round((retained / settled) * 100) / 100 }
 }
 
 /** Build the retention-effectiveness board for a brokerage from real save-plays. Best-effort → null. */
@@ -67,7 +75,7 @@ export async function generateRetentionOutcomeBoard(brokerageId: string, client?
       .eq("brokerage_id", brokerageId).eq("agent_kind", "recruiting_manager").eq("entity_type", "agent")
       .ilike("rationale", "RETENTION SAVE-PLAY%").order("created_at", { ascending: true }).limit(2000)
     const rows = (plays ?? []) as Array<{ entity_id: string; created_at: string }>
-    if (rows.length === 0) return { total: 0, retained: 0, lost: 0, pending: 0, winRate: null }
+    if (rows.length === 0) return { total: 0, retained: 0, lost: 0, pending: 0, aging: 0, winRate: null }
 
     // First save-play per agent (the intervention that started the clock).
     const firstPlay = new Map<string, string>()

@@ -10,6 +10,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export const dynamic = "force-dynamic"
 
@@ -117,7 +118,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
       const { captureTextingContact } = await import("@/lib/voice/sms-inbound")
       const captured = await captureTextingContact(
-        supabase, numberCtx, inbound.fromPhone,
+        numberCtx, inbound.fromPhone,
         inbound.channel === "whatsapp" ? "whatsapp" : "sms",
       )
       if (captured) {
@@ -182,6 +183,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 5c: CREDIT THE SEQUENCE STEP THAT EARNED THIS REPLY ───────────────
+  // `sequence_step_executions.replied_at` is the numerator of every per-channel
+  // reply rate this OS computes — lib/campaign-sequences/channel-order-runner.ts
+  // turns it into the "lead with SMS, it earns 2× the replies here" advisory,
+  // lib/intelligence/predictor-outcome-resolver.ts resolves predictions against
+  // it, and the decision-receipts trail renders it. Nothing wrote it, so every
+  // channel scored a flat 0% and the advisory could only ever rank a field that
+  // was tied at zero. This ingress is the only place in the tree that knows a
+  // contact answered.
+  //
+  // WhatsApp is deliberately not mapped: `campaign_sequence_steps.channel` has
+  // no whatsapp member, so crediting a WhatsApp reply to an SMS step would
+  // attribute a reply to a touch that never happened.
+  if (entityType === "contact" && entityId) {
+    const replyChannel =
+      inbound.channel === "sms" ? "sms" : inbound.channel === "email" ? "email" : null
+    if (replyChannel) {
+      try {
+        const { recordSequenceReply } = await import("@/lib/outcomes/provider-event-fanout")
+        const credited = await recordSequenceReply(supabase, {
+          brokerageId: inbound.brokerageId,
+          contactId: entityId,
+          channel: replyChannel,
+        })
+        // A refused write must not read as "this channel earns no replies" —
+        // that conflation is what kept the advisory blind in the first place.
+        if (credited.refusal) {
+          console.error("[InboundRouter] sequence reply credit refused:", credited.refusal)
+        }
+      } catch (err) {
+        console.error("[InboundRouter] sequence reply credit failed (non-blocking):", err)
+      }
+    }
+  }
+
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
   // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
   await supabase.from("lifecycle_events").insert({
@@ -199,14 +235,42 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     },
   })
 
+  // ── Step 6b: Behavioural event log — sms_reply ─────────────────────────────
+  // The contact texting back is a scored responsiveness signal (sms_reply,
+  // 10 pts in lib/lead-scoring/behavioral-events), read by the canonical
+  // scorer's behavioural 30% from lead_behavioral_data. This ingress is the
+  // only place that knows the reply happened, and it can never hold the agent
+  // session the old tracker action demanded. Identity/tenant are the ones THIS
+  // route already resolved server-side: the signature-verified provider event's
+  // sender matched within inbound.brokerageId (Steps 1–5) — never the body.
+  // entityId is a contact id or a scraped-lead id; both are the id class the
+  // scorer queries lead_behavioral_data.lead_id with. Best-effort: the recorder
+  // logs a refused write as not-recorded and never breaks ingress.
+  if (inbound.providerType === "twilio" && (inbound.text ?? "").trim()) {
+    const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+    await recordBehavioralEvent({
+      brokerageId: inbound.brokerageId,
+      contactId: entityId,
+      eventType: "sms_reply",
+      eventData: {
+        channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+        provider_message_id: inbound.messageId ?? null,
+        entity_type: entityType,
+      },
+    })
+  }
+
   // ── Step 7: Update last activity timestamps ─────────────────────────────────
   const now = new Date().toISOString()
 
   if (entityType === "contact") {
-    await supabase
-      .from("contacts")
-      .update({ last_contacted_at: now })
-      .eq("id", entityId)
+    await bestEffort(
+      supabase
+        .from("contacts")
+        .update({ last_contacted_at: now })
+        .eq("id", entityId),
+      "recency stamp on an inbound message that is already persisted by the spine; the OPT-OUT detection for this same message runs at step 7b below and is a separate, error-checked write",
+    )
   } else {
     await supabase
       .from("leads")
@@ -276,7 +340,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .from("users")
           .select("id")
           .eq("brokerage_id", inbound.brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+          .in("user_type", ["compliance_officer", "admin", "broker"])
         for (const r of reviewers ?? []) {
           await supabase.from("notifications").insert({
             user_id: r.id,
@@ -328,6 +392,54 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       })
     } catch (err) {
       console.error("[InboundRouter] inbound-intent classification failed:", err)
+    }
+  }
+
+  // ── Step 8c: THE SAME DOOR, FOR EVERY LEAD INBOUND — including the ones 8b
+  // could never see. ───────────────────────────────────────────────────────────
+  //
+  // Step 8b is guarded on `inbound.fromEmail`, which an SMS never carries. So a
+  // LEAD who TEXTED in was matched at Step 4, logged at Step 6, scanned for
+  // opt-out at Step 7b — and then dropped. Their words never reached the intent
+  // classifier and they could not convert, ever. The owner's ruling names texts
+  // explicitly alongside calls, email and direct mail.
+  //
+  // This runs for BOTH branches, and does different work in each:
+  //   • SMS/WhatsApp (no fromEmail) — records the message and runs the FULL
+  //     evaluation: opt-out, then intent, then automatic conversion on a clear
+  //     positive through the canonical lane.
+  //   • Email (8b already classified) — `intentAlreadyRouted: true`, so it records
+  //     the message and BINDS the opt-out without a second model call. That
+  //     binding is the part 8b does not do: Step 7b's processOptOut writes flags
+  //     on the row but no `contact_suppression_list` row, and for a LEAD the
+  //     address-keyed suppression list is the only arm of `checkSuppression` that
+  //     can fire (the flag arm is contact-keyed).
+  //
+  // Idempotent by construction: the door records to `lead_conversation_history`
+  // first, where m488's partial unique index on (lead_id, provider_ref) refuses a
+  // retried webhook before any evaluation runs.
+  //
+  // Best-effort — a classification failure must never break ingress.
+  if (entityType === "lead" && entityId && (inbound.text ?? "").trim()) {
+    try {
+      const { ingestInboundLeadSignalAction } = await import("@/app/actions/lead-signal-ingest")
+      await ingestInboundLeadSignalAction({
+        brokerageId: inbound.brokerageId,
+        leadId: entityId,
+        channel: inbound.fromEmail ? "email" : "sms",
+        body: inbound.text ?? "",
+        providerRef: inbound.messageId ?? null,
+        context: {
+          provider: inbound.providerType,
+          from_email: inbound.fromEmail ?? null,
+          from_phone: inbound.fromPhone ?? null,
+          subject: inbound.subject ?? null,
+        },
+        intentAlreadyRouted: !!inbound.fromEmail,
+        internalSecret: process.env.CRON_SECRET,
+      })
+    } catch (err) {
+      console.error("[InboundRouter] lead inbound-intent door failed:", err)
     }
   }
 

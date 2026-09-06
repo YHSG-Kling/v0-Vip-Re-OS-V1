@@ -12,6 +12,7 @@
  *   - Full contract + all counters + addendums
  *   - 3-4 comps within 1mi sold within 6 months (expand radius/window if thin) —
  *     INCLUDING 1 pending + 1 active
+ *     (SOURCED FROM DATA PROVIDERS — see "COMPARABLES" below)
  *   - GIS property report
  *   - Seller upgrades with DATE + COST of each
  *   - Tax report
@@ -26,11 +27,44 @@
  *      hold (GIS + tax reports have no provider rail here). Renders a cover
  *      checklist + the assembled sections through the shared client-PDF engine
  *      (lib/documents/client-pdf — reused, not forked), hosts it in storage
- *      (hostRenderedMedia idiom), and records it in generated_documents.
+ *      (hostRenderedMedia into GENERATED_DOCUMENT_BUCKET — a DOCUMENT-class
+ *      bucket, so the URL is signed and expiring, never a permanent public one),
+ *      and records it in generated_documents.
  *   2. runAppraiserPacketCoaching() — the coaching moment: seller-side gated,
  *      idempotent per (transaction, appraisal order), composes the packet and
  *      creates ONE agent-facing task with an AI-authored brand-voice note (with
  *      a deterministic, data-derived fallback — never a hardcoded string).
+ *
+ * ─── COMPARABLES: WHERE THEY COME FROM, AND WHY THAT CHANGED ────────────────
+ * This section used to be built from lib/cma/perplexity-comp-finder directly —
+ * an AI web search of public listing sites — and handed to a LICENSED APPRAISER
+ * standing at the property. AI-derived "comparable sales" entering a formal
+ * valuation opinion is the highest-stakes instance of a defect class the CMA
+ * lanes already fixed, so the packet now sources through the same provider path
+ * every CMA uses: lib/cma/comp-provider.sourceCompsForCma.
+ *
+ * WHY sourceCompsForCma AND NOT runAiCma. The packet needs COMPARABLES and their
+ * provenance. It does not need — and must not carry — our adjusted value range
+ * or an AI valuation narrative: the appraiser independently forms the opinion of
+ * value under USPAP, and putting our number in front of them before they do is
+ * the opposite of what this packet is for. runAiCma would also spend an extra
+ * model call on a narrative nothing here renders. So: the comp layer only.
+ *
+ * WHAT THE APPRAISER SEES. Every comparable row carries its SOURCE — RentCast,
+ * the brokerage's IDX feed, or (pending/active only) a labelled AI web search —
+ * and the packet carries a "How these comparables were sourced" section built
+ * from `CompProvenance`. An appraiser can tell a provider record from an
+ * AI-sourced one at a glance, without reading a footnote.
+ *
+ * THE OLD FALLBACK LADDER. The previous implementation expanded 1mi/6mo →
+ * 1mi/12mo → 2mi/12mo by re-asking the model. The provider path supports the
+ * WINDOW half of that natively (comp-provider widens 6→12 months when fewer than
+ * three sales qualify, and records that it did). It does NOT support the RADIUS
+ * half: RentCast's /avm/value comparables endpoint takes an address and a comp
+ * count, not a radius, and a bare IDX key reaches only the brokerage's own
+ * featured set. Rather than silently narrowing the search and letting the packet
+ * imply a radius ladder it no longer runs, the packet STATES the limitation in
+ * the comparables section and tells the agent what to pull manually.
  *
  * NO new tables (the packet rides generated_documents). Best-effort throughout —
  * the caller (the APPRAISAL_ORDERED hook) treats this as non-blocking garnish.
@@ -44,11 +78,15 @@ import {
 } from "@/lib/documents/client-pdf"
 import { resolvePdfBrand } from "@/lib/documents/client-document-producer"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { GENERATED_DOCUMENT_BUCKET } from "@/lib/storage/document-buckets"
 import {
-  findCompsViaPerplexity,
-  type PerplexityCompFinderResult,
-  type ScoredComp,
-} from "@/lib/cma/perplexity-comp-finder"
+  sourceCompsForCma,
+  REQUIRED_SOLD_COMPS,
+  PRIMARY_SOLD_WINDOW_MONTHS,
+  type CompProvenance,
+} from "@/lib/cma/comp-provider"
+import { describeCompProvenance } from "@/lib/cma/ai-cma-orchestrator"
+import type { ScoredComp } from "@/lib/cma/comp-types"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -116,7 +154,7 @@ interface TxRow {
 }
 
 async function loadTransaction(svc: Svc, transactionId: string, brokerageId: string): Promise<TxRow | null> {
-  const { data } = await svc
+  const { data, error } = await svc
     .from("transactions")
     .select(
       "id, brokerage_id, deal_type, property_address, property_city, property_state, property_zip, " +
@@ -125,6 +163,12 @@ async function loadTransaction(svc: Svc, transactionId: string, brokerageId: str
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (error) {
+    // A read failure is NOT "no such transaction" — say which one it was so the
+    // caller's "transaction not found" verdict cannot hide a broken query.
+    console.error("[appraiser-packet] transaction load failed:", error.message)
+    return null
+  }
   return (data as TxRow | null) ?? null
 }
 
@@ -187,18 +231,23 @@ async function gatherTransactionDocuments(svc: Svc, transactionId: string): Prom
   const rows: NormalizedDoc[] = []
   // 1. Uploaded transaction documents (survey/floorplan uploads + signed contracts).
   try {
-    const { data } = await svc.from("transaction_documents").select("*").eq("transaction_id", transactionId)
+    const { data, error } = await svc
+      .from("transaction_documents")
+      .select("*")
+      .eq("transaction_id", transactionId)
+    if (error) console.error("[appraiser-packet] transaction_documents read failed:", error.message)
     for (const r of (data ?? []) as any[]) rows.push(normDoc(r))
   } catch {
     /* best-effort */
   }
   // 2. Generated documents (OS-produced offers/counters/addendums live here too).
   try {
-    const { data } = await svc
+    const { data, error } = await svc
       .from("generated_documents")
       .select("document_type, file_name, blob_url, metadata")
       .eq("transaction_id", transactionId)
       .neq("document_type", PACKET_DOCUMENT_TYPE) // never fold the packet into itself
+    if (error) console.error("[appraiser-packet] generated_documents read failed:", error.message)
     for (const r of (data ?? []) as any[]) rows.push(normDoc(r))
   } catch {
     /* best-effort */
@@ -219,11 +268,15 @@ interface UpgradeRow {
 async function gatherSellerUpgrades(svc: Svc, listingId: string | null): Promise<UpgradeRow[]> {
   if (!listingId) return []
   try {
-    const { data } = await svc
+    const { data, error } = await svc
       .from("property_upgrades")
       .select("upgrade_description, estimated_cost, status, created_at")
       .eq("listing_id", listingId)
       .in("status", ["completed", "approved"])
+    if (error) {
+      console.error("[appraiser-packet] property_upgrades read failed:", error.message)
+      return []
+    }
     return ((data ?? []) as any[]).map((u) => ({
       description: String(u.upgrade_description ?? "Upgrade"),
       cost: u.estimated_cost ?? null,
@@ -249,11 +302,15 @@ interface AppraisalOrderInfo {
 
 async function gatherAppraisalOrder(svc: Svc, transactionId: string): Promise<AppraisalOrderInfo> {
   try {
-    const { data } = await svc
+    const { data, error } = await svc
       .from("transaction_lenders")
       .select("lender_name, loan_officer_name, appraisal_ordered_date")
       .eq("transaction_id", transactionId)
       .maybeSingle()
+    if (error) {
+      console.error("[appraiser-packet] transaction_lenders read failed:", error.message)
+      return { lenderName: null, loanOfficer: null, orderedDate: null }
+    }
     return {
       lenderName: (data as any)?.lender_name ?? null,
       loanOfficer: (data as any)?.loan_officer_name ?? null,
@@ -265,69 +322,109 @@ async function gatherAppraisalOrder(svc: Svc, transactionId: string): Promise<Ap
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Comps — reuse the internal comp engine with the spec's fallback ladder
+// Comps — the SAME provider path every CMA uses (see the module header)
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CompsBundle {
-  result: PerplexityCompFinderResult | null
+  closed: ScoredComp[]
+  pending: ScoredComp[]
+  active: ScoredComp[]
+  /** Null only when the sourcing could not be attempted at all (no address). */
+  provenance: CompProvenance | null
+  /** Human-readable label for the window/source actually reached. */
   tierLabel: string | null
 }
 
-/**
- * Spec fallback ladder: 3-4 closed comps within 1mi sold in 6mo (+1 pending
- * +1 active). If thin, EXPAND — first the window to a year, then the radius.
- * Reuses lib/cma/perplexity-comp-finder (the internal comp engine; no scraper).
- * Best-effort — returns the best tier reached, or null if the engine is down.
- */
-async function gatherComps(subject: {
-  address: string | null
-  city: string | null
-  state: string | null
-  zip: string | null
-  beds: number | null
-  baths: number | null
-  sqft: number | null
-  yearBuilt: number | null
-  propertyType: string | null
-}): Promise<CompsBundle> {
-  if (!subject.address) return { result: null, tierLabel: null }
-
-  const tiers = [
-    { radius: 1, months: 6, label: "within 1 mile, sold in the last 6 months" },
-    { radius: 1, months: 12, label: "within 1 mile, sold in the last 12 months (window expanded)" },
-    { radius: 2, months: 12, label: "within 2 miles, sold in the last 12 months (radius + window expanded)" },
-  ]
-
-  let best: PerplexityCompFinderResult | null = null
-  let bestLabel: string | null = null
-
-  for (const tier of tiers) {
-    try {
-      const r = await findCompsViaPerplexity({
-        subjectAddress: subject.address,
-        subjectCity: subject.city,
-        subjectState: subject.state,
-        subjectZip: subject.zip,
-        subjectBeds: subject.beds,
-        subjectBaths: subject.baths,
-        subjectSqft: subject.sqft,
-        subjectYearBuilt: subject.yearBuilt,
-        subjectPropertyType: subject.propertyType,
-        searchRadiusMiles: tier.radius,
-        monthsBack: tier.months,
-      })
-      // Prefer the first tier that yields the target 3 closed comps.
-      if (r.closedComps.length >= 3) return { result: r, tierLabel: tier.label }
-      // Otherwise keep the richest partial result as we expand.
-      if (!best || r.closedComps.length > best.closedComps.length) {
-        best = r
-        bestLabel = tier.label
-      }
-    } catch {
-      /* try the next, wider tier */
-    }
+/** Split a decimal bath count into the full/half pair the comp shape carries. */
+function splitBaths(bathrooms: number | null): { fullBaths: number | null; halfBaths: number | null } {
+  if (bathrooms == null || !Number.isFinite(bathrooms) || bathrooms <= 0) {
+    return { fullBaths: null, halfBaths: null }
   }
-  return { result: best, tierLabel: bestLabel }
+  const full = Math.floor(bathrooms)
+  return { fullBaths: full, halfBaths: bathrooms - full >= 0.5 ? 1 : 0 }
+}
+
+/**
+ * Source the packet's comparables from the data providers.
+ *
+ * comp-provider owns the mix (3 sold / 2 active / 1 pending) and the 6→12-month
+ * window ladder, and it labels every row with the system that produced it. The
+ * radius half of the old ladder has no provider equivalent — the packet says so
+ * rather than pretending otherwise (module header, "THE OLD FALLBACK LADDER").
+ *
+ * Best-effort: any failure yields an empty bundle and the packet's honest
+ * "pull comps before the appointment" branch.
+ */
+async function gatherComps(
+  brokerageId: string,
+  agentUserId: string | null,
+  subject: {
+    address: string | null
+    city: string | null
+    state: string | null
+    zip: string | null
+    beds: number | null
+    baths: number | null
+    sqft: number | null
+    yearBuilt: number | null
+    propertyType: string | null
+  },
+): Promise<CompsBundle> {
+  const emptyBundle: CompsBundle = { closed: [], pending: [], active: [], provenance: null, tierLabel: null }
+  if (!subject.address) return emptyBundle
+
+  const { fullBaths, halfBaths } = splitBaths(subject.baths)
+  try {
+    const sourced = await sourceCompsForCma({
+      brokerageId,
+      // auth users.id of the listing agent, resolved from agents.user_id by the
+      // caller — used ONLY to find THEIR IDX connection. Never an agents.id.
+      agentUserId,
+      address: subject.address,
+      city: subject.city,
+      state: subject.state,
+      zip: subject.zip,
+      subject: {
+        sqftLiving: subject.sqft,
+        bedrooms: subject.beds,
+        fullBaths,
+        halfBaths,
+        yearBuilt: subject.yearBuilt,
+      },
+      propertyType: subject.propertyType,
+      systemSource: "appraiser_packet",
+    })
+
+    const p = sourced.provenance
+    const tierLabel =
+      p.soldWindowMonths != null
+        ? `sold within the last ${p.soldWindowMonths} months${p.soldWindowWidened ? " (window expanded from 6 — fewer than 3 qualifying sales closed inside 6 months)" : ""}`
+        : null
+
+    return {
+      closed: sourced.closedComps,
+      pending: sourced.pendingComps,
+      active: sourced.activeComps,
+      provenance: p,
+      tierLabel,
+    }
+  } catch {
+    return emptyBundle
+  }
+}
+
+/** How a comparable's source reads to an appraiser scanning the table. */
+function compSourceLabel(c: ScoredComp): string {
+  switch (c.sourceProvider) {
+    case "rentcast":
+      return "RentCast (data provider)"
+    case "idxbroker":
+      return "IDX Broker feed (MLS)"
+    case "perplexity":
+      return "AI WEB SEARCH — UNVERIFIED"
+    default:
+      return "—"
+  }
 }
 
 function compRow(c: ScoredComp): string[] {
@@ -339,11 +436,14 @@ function compRow(c: ScoredComp): string[] {
     .join("/")
   return [
     c.address,
-    c.status,
+    // An asking price and a closed sale are not the same fact and an appraiser
+    // must never have to infer which one a row holds.
+    c.status === "closed" ? "closed sale" : `${c.status} (asking)`,
     money(c.salePrice),
     c.saleDate ?? "—",
     bedBath || "—",
     c.sqftLiving != null ? `${c.sqftLiving}` : "—",
+    compSourceLabel(c),
   ]
 }
 
@@ -388,7 +488,12 @@ export async function composeAppraiserPacket(args: {
     }
     if (tx.listing_id) {
       try {
-        const { data: l } = await svc.from("listings").select("*").eq("id", tx.listing_id).maybeSingle()
+        const { data: l, error: lErr } = await svc
+          .from("listings")
+          .select("*")
+          .eq("id", tx.listing_id)
+          .maybeSingle()
+        if (lErr) throw lErr
         if (l) {
           const ll = l as any
           subject = {
@@ -408,20 +513,42 @@ export async function composeAppraiserPacket(args: {
       }
     }
 
+    // ── Resolve the listing agent's auth users.id BEFORE sourcing comps ──────
+    // transactions.agent_id is an agents.id; the IDX-connection cascade and the
+    // PDF brand block both key off auth users.id. Two different id spaces —
+    // RESOLVED through agents.user_id, never substituted for one another.
+    let agentUserId: string | null = null
+    if (tx.agent_id) {
+      const { data: ag, error: agErr } = await svc
+        .from("agents")
+        .select("user_id")
+        .eq("id", tx.agent_id)
+        .maybeSingle()
+      if (agErr) {
+        // Not fatal: without it we fall back to the brokerage/platform IDX
+        // credential and the default brand. Both degrade honestly.
+        console.error("[appraiser-packet] agents.user_id lookup failed:", agErr.message)
+      }
+      agentUserId = (ag as { user_id: string | null } | null)?.user_id ?? null
+    }
+
     // Gather every real source in parallel.
     const [docs, upgrades, order, comps] = await Promise.all([
       gatherTransactionDocuments(svc, tx.id),
       gatherSellerUpgrades(svc, tx.listing_id),
       gatherAppraisalOrder(svc, tx.id),
-      gatherComps(subject),
+      gatherComps(tx.brokerage_id, agentUserId, subject),
     ])
 
     const propertyLabel = tx.property_address ?? tx.deal_name ?? "the property"
 
     // ── Build the checklist provenance (drives both the PDF cover + the task) ──
-    const closedCount = comps.result?.closedComps.length ?? 0
-    const hasPending = !!comps.result?.pendingComp
-    const hasActive = !!comps.result?.activeComp
+    const closedCount = comps.closed.length
+    const pendingCount = comps.pending.length
+    const activeCount = comps.active.length
+    const aiSourcedCount = [...comps.closed, ...comps.pending, ...comps.active].filter(
+      (c) => c.sourceProvider === "perplexity",
+    ).length
     const contractDocs = [...docs.contracts, ...docs.counters, ...docs.addendums]
 
     const checklist: PacketSectionStatus[] = [
@@ -436,12 +563,15 @@ export async function composeAppraiserPacket(args: {
       },
       {
         key: "comps",
-        label: "3-4 comps within 1mi/6mo, incl. 1 pending + 1 active",
+        label: `${REQUIRED_SOLD_COMPS}+ comps sold in ${PRIMARY_SOLD_WINDOW_MONTHS}mo, incl. 1 pending + 1 active`,
         present: closedCount >= 1,
         detail:
           closedCount >= 1
-            ? `${closedCount} closed${hasPending ? " + 1 pending" : ""}${hasActive ? " + 1 active" : ""} (${comps.tierLabel})`
-            : "Comp engine returned nothing — pull comps before the appointment",
+            ? `${closedCount} closed${pendingCount > 0 ? ` + ${pendingCount} pending` : ""}${activeCount > 0 ? ` + ${activeCount} active` : ""}` +
+              `${comps.tierLabel ? ` (${comps.tierLabel})` : ""}` +
+              `${aiSourcedCount > 0 ? ` — ${aiSourcedCount} row(s) from an AI web search, UNVERIFIED` : ""}` +
+              `${closedCount < REQUIRED_SOLD_COMPS ? ` — below the ${REQUIRED_SOLD_COMPS}-sale target; pull the rest from the MLS` : ""}`
+            : "No data provider returned a closed comparable sale — pull comps from the MLS before the appointment",
       },
       {
         key: "gis",
@@ -524,20 +654,44 @@ export async function composeAppraiserPacket(args: {
       })
     }
 
-    // Comps.
-    if (comps.result && (closedCount > 0 || hasPending || hasActive)) {
-      const rows: string[][] = []
-      for (const c of comps.result.closedComps) rows.push(compRow(c))
-      if (comps.result.pendingComp) rows.push(compRow(comps.result.pendingComp))
-      if (comps.result.activeComp) rows.push(compRow(comps.result.activeComp))
+    // Comps — every row carries its SOURCE, and the sourcing method is stated
+    // in full below the table. An appraiser must be able to tell a data-provider
+    // record from an AI-sourced one at a glance.
+    if (closedCount > 0 || pendingCount > 0 || activeCount > 0) {
+      const rows: string[][] = [
+        ...comps.closed.map(compRow),
+        ...comps.pending.map(compRow),
+        ...comps.active.map(compRow),
+      ]
+      const paragraphs = [
+        `${closedCount} closed sale(s)` +
+          `${pendingCount > 0 ? `, ${pendingCount} pending` : ""}` +
+          `${activeCount > 0 ? `, ${activeCount} active` : ""}` +
+          ` for your reference${comps.tierLabel ? `, ${comps.tierLabel}` : ""}. ` +
+          "The Source column names the system that produced each row. Pending and active rows are ASKING " +
+          "prices, not sales.",
+      ]
+      if (aiSourcedCount > 0) {
+        paragraphs.push(
+          `IMPORTANT — ${aiSourcedCount} row(s) in this table are marked "AI WEB SEARCH — UNVERIFIED". No connected ` +
+            "data provider could supply a comparable for that slot, so it was found by an AI search of public " +
+            "listing sites and has NOT been confirmed against the MLS or public records. Verify it independently " +
+            "before relying on it. No CLOSED SALE in this table came from that source — closed sales are taken " +
+            "exclusively from a data provider.",
+        )
+      }
+      if (closedCount < REQUIRED_SOLD_COMPS) {
+        paragraphs.push(
+          `Only ${closedCount} closed comparable sale(s) could be sourced from a data provider — fewer than the ` +
+            `${REQUIRED_SOLD_COMPS} this packet targets. The shortfall was deliberately NOT filled with AI-sourced ` +
+            "sales. Pull the remaining closed comparables from the MLS and add them to the packet.",
+        )
+      }
       sections.push({
         heading: "Comparable sales",
-        paragraphs: [
-          `Comps selected ${comps.tierLabel}. Includes ${closedCount} closed sale(s)` +
-            `${hasPending ? ", 1 pending" : ""}${hasActive ? ", 1 active" : ""} for the appraiser's reference.`,
-        ],
+        paragraphs,
         table: {
-          header: ["Address", "Status", "Price", "Date", "Bd/Ba", "SqFt"],
+          header: ["Address", "Status", "Price", "Date", "Bd/Ba", "SqFt", "Source"],
           rows,
         },
       })
@@ -545,9 +699,33 @@ export async function composeAppraiserPacket(args: {
       sections.push({
         heading: "Comparable sales",
         paragraphs: [
-          "Comps were not available automatically. Pull 3-4 comparable sales within one mile that closed in the " +
-            "last six months (expand the radius or to within a year if needed), and include one pending and one " +
-            "active listing, before the appointment.",
+          "No comparables could be sourced from a connected data provider for this address. Pull 3-4 comparable " +
+            "sales within one mile that closed in the last six months (expand the radius, or to within a year, if " +
+            "needed) from the MLS, and include one pending and one active listing, before the appointment.",
+        ],
+      })
+    }
+
+    // How the comps were sourced — the provenance the appraiser is owed.
+    if (comps.provenance) {
+      const p = comps.provenance
+      sections.push({
+        heading: "How these comparables were sourced",
+        paragraphs: [describeCompProvenance(p)],
+        bullets: [
+          ...p.notes,
+          // The radius limitation, stated rather than silently dropped.
+          "Search radius: the connected data providers do not accept a radius parameter — RentCast returns its own " +
+            "nearest comparables for the subject address, and a connected IDX feed returns the brokerage's own " +
+            "inventory narrowed to the subject's city/ZIP. This packet therefore does NOT run a 1-mile-then-2-mile " +
+            "radius expansion. If the comparables above are too far out or too few, widen the search in the MLS.",
+          p.rentcastConfigured
+            ? "RentCast (the platform data provider) was configured and queried for this brokerage."
+            : "RentCast is NOT configured for this brokerage, so no closed comparable sales could be sourced at all. " +
+              "Connecting it is what fixes this — nothing was substituted in its place.",
+          p.idxConnected
+            ? "An IDX Broker feed is connected for this brokerage and was queried for active/pending listings."
+            : "No IDX Broker feed is connected, so no MLS-rights listing inventory was available.",
         ],
       })
     }
@@ -610,17 +788,8 @@ export async function composeAppraiserPacket(args: {
       ],
     })
 
-    // Brand block — resolve the agent's users.id from their agents.id for the
-    // brand/license lookup (resolvePdfBrand keys off users.id).
-    let agentUserId: string | null = null
-    if (tx.agent_id) {
-      try {
-        const { data: ag } = await svc.from("agents").select("user_id").eq("id", tx.agent_id).maybeSingle()
-        agentUserId = (ag as any)?.user_id ?? null
-      } catch {
-        /* defaults keep the render valid */
-      }
-    }
+    // Brand block — reuses the agents.id → auth users.id resolution done above
+    // for the IDX-connection cascade (resolvePdfBrand also keys off users.id).
     const brand = await resolvePdfBrand(svc, { brokerageId: tx.brokerage_id, agentUserId })
 
     const spec: ClientPdfSpec = {
@@ -631,8 +800,14 @@ export async function composeAppraiserPacket(args: {
       sections,
       disclaimer:
         "This packet is a courtesy compilation of transaction facts, comparable sales, and property " +
-        "improvements provided to assist the appraiser. Comparable sales are drawn from available public " +
-        "data and are for reference only; they are not an appraisal or a determination of value under USPAP. " +
+        "improvements provided to assist the appraiser. Comparable sales are drawn from third-party data " +
+        "providers and are for reference only; they are not an appraisal or a determination of value under USPAP. " +
+        "Each row names its source in the Source column. " +
+        (aiSourcedCount > 0
+          ? `${aiSourcedCount} row(s) marked "AI WEB SEARCH — UNVERIFIED" were located by an automated web search of ` +
+            "public listing sites because no data provider could serve that slot; they are unverified and must be " +
+            "independently confirmed. No closed sale in this packet came from that source. "
+          : "") +
         "The appraiser independently determines the opinion of value. Verify all figures against source records.",
     }
 
@@ -640,11 +815,23 @@ export async function composeAppraiserPacket(args: {
     const bytes = await renderClientPdf(spec)
     const buf = Buffer.from(bytes)
     const fileName = `appraiser-packet-${tx.id}-${Date.now()}.pdf`
-    const pdfUrl = await hostRenderedMedia(svc, `client-docs/${tx.brokerage_id}/${fileName}`, buf, "application/pdf")
+    // ONE spelling of the object key (§6). It was the upload path and the
+    // `blob_id` on the row; blob_id is gone (tombstone below, no reader), so the
+    // path survives only inside the URL the issuer returns.
+    const objectPath = `client-docs/${tx.brokerage_id}/${fileName}`
+    // GENERATED_DOCUMENT_BUCKET, NOT hostRenderedMedia's default. The default is
+    // `video-assets`, a PUBLIC_MEDIA bucket, and this packet is the transaction:
+    // contract price, every counter and addendum on file, the seller's dated and
+    // COSTED upgrades, the survey and the sourced comparables. That was landing
+    // at a permanent unauthenticated URL — no session, no RLS, no expiry —
+    // persisted onto generated_documents.blob_url and put into an agent task. The
+    // bucket named here is document-class, so the one issuer signs it instead.
+    // See lib/storage/document-buckets.ts#GENERATED_DOCUMENT_BUCKET.
+    const pdfUrl = await hostRenderedMedia(svc, objectPath, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
 
     let documentId: string | null = null
     try {
-      const { data: doc } = await svc
+      const { data: doc, error: docErr } = await svc
         .from("generated_documents")
         .insert({
           brokerage_id: tx.brokerage_id,
@@ -654,17 +841,42 @@ export async function composeAppraiserPacket(args: {
           transaction_id: tx.id,
           document_type: PACKET_DOCUMENT_TYPE,
           blob_url: pdfUrl,
-          blob_id: `client-docs/${tx.brokerage_id}/${fileName}`,
+          // TOMBSTONE (§1.1, w26 lane C8): `blob_id` DELETED from this insert.
+          // SURVIVOR: `blob_url` on the same row, read by
+          // app/actions/generated-documents.ts:65 (the Document Center library).
+          //
+          // blob_id stored `client-docs/<brokerage>/<file>` — the object PATH, which is
+          // the exact string handed to hostRenderedMedia one line above. NOTHING READ IT;
+          // that, and only that, is why it goes.
+          //
+          // CORRECTED 2026-09-03 (integrator): the original tombstone justified the
+          // delete by saying the bucket was public-class, so the permanent URL already
+          // contained the path. Lane SEC then moved these documents OFF the public
+          // roster onto the signing branch, because a permanent unauthenticated URL for
+          // a client document was the defect. The delete still stands on the reader
+          // count, but a justification that has stopped being true must not sit here
+          // reading as current — a signed URL expires, and anything that later needs the
+          // path must take it from the survivor rather than assume this row carried it.
           file_name: fileName,
           file_size: buf.length,
           metadata: {
             title: spec.title,
             comps_tier: comps.tierLabel,
+            // The full sourcing record, stored with the document so a packet on
+            // file can be audited later without re-running the comp pull —
+            // which system served each side, which window, what was AI-filled.
+            comp_provenance: comps.provenance,
+            comp_provenance_summary: comps.provenance ? describeCompProvenance(comps.provenance) : null,
+            ai_sourced_comp_count: aiSourcedCount,
             checklist: checklist.map((c) => ({ key: c.key, present: c.present })),
           },
         })
         .select("id")
         .single()
+      // Declared best-effort: the hosted PDF is already real and the coaching
+      // task carries its URL, so a lost ledger row must not fail the packet —
+      // but it is LOGGED rather than swallowed.
+      if (docErr) console.error("[appraiser-packet] generated_documents insert failed:", docErr.message)
       documentId = (doc as { id: string } | null)?.id ?? null
     } catch {
       /* the hosted PDF URL is still returned even if the ledger insert fails */
@@ -764,7 +976,7 @@ export async function runAppraiserPacketCoaching(args: {
 
   // ── Idempotency per (transaction, appraisal order): one coaching task per deal.
   try {
-    const { data: existing } = await svc
+    const { data: existing, error: existingErr } = await svc
       .from("tasks")
       .select("id")
       .eq("brokerage_id", args.brokerageId)
@@ -772,6 +984,7 @@ export async function runAppraiserPacketCoaching(args: {
       .eq("source", COACHING_TASK_SOURCE)
       .limit(1)
       .maybeSingle()
+    if (existingErr) console.error("[appraiser-packet] coaching-task dedupe read failed:", existingErr.message)
     if (existing) {
       return { fired: false, reason: "skipped: coaching task already exists for this appraisal order", taskId: (existing as any).id }
     }

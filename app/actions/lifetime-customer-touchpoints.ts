@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
-import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgentId, requireAgentId } from "@/lib/kernel/agent-identity"
 
 // System callers (e.g. the daily lifetime-touchpoints cron) have no user session,
 // so they pass the owning agentId + a service-role client; UI callers pass neither
@@ -237,77 +237,61 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
   return { success: true }
 }
 
-// Get past client contacts for agent
-export async function getLifetimeCustomerContacts() {
-  const context = await getAgentContext()
-  if (!context?.agentId) {
-    return { success: false, error: "Agent context not available", contacts: [] }
-  }
+// ── DELETED: getLifetimeCustomerContacts ────────────────────────────────────
+//
+// DUPLICATE. The survivor is app/actions/lifetime-customers.ts:143
+// `getLifetimeCustomers` — the same query (this agent's contacts ∩ closed
+// transactions), and it is the LIVE one: app/lifetime-customers/page.tsx has
+// always read the whole Lifetime Customers screen from it. This copy had no
+// caller anywhere in the tree.
+//
+// The survivor does strictly more (search filter, client_engagement_scores
+// join, property_address + actual_close_date on the transaction rows). The two
+// things THIS copy had and the survivor lacked were carried over first, before
+// it was removed:
+//   · the missing-identity guard. getLifetimeCustomers used agentId/brokerageId
+//     from getAgentContext() without checking either, so a caller with no agents
+//     row issued `.eq("agent_id", null)` and got an empty list that read as
+//     "you have no lifetime customers" rather than "we could not identify you".
+//   · the most-recent-closing-first sort. The survivor returned contacts in
+//     whatever order PostgREST handed them back.
+// Both now live on app/actions/lifetime-customers.ts:getLifetimeCustomers.
+//
+// Nothing else moved: the return key differs (`contacts` here, `clients` there)
+// and the survivor's key is the one every consumer already reads.
 
-  const { agentId, brokerageId } = context
-  const supabase = await createClient()
-
-  // Get contacts for this agent
-  const { data: contacts, error: contactError } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-
-  if (contactError || !contacts) {
-    console.error("Error fetching contacts:", contactError)
-    return { success: false, error: contactError?.message, contacts: [] }
-  }
-
-  if (contacts.length === 0) {
-    return { success: true, contacts: [] }
-  }
-
-  // Get closed transactions for these contacts
-  const contactIds = contacts.map(c => c.id)
-  const { data: transactions, error: transError } = await supabase
-    .from("transactions")
-    .select("id, contact_id, status, close_date, sale_price:purchase_price")
-    .in("contact_id", contactIds)
-    .in("status", ["closed", "sold"])
-
-  if (transError) {
-    console.error("Error fetching transactions:", transError)
-    return { success: false, error: transError.message, contacts: [] }
-  }
-
-  if (!transactions || transactions.length === 0) {
-    return { success: true, contacts: [] }
-  }
-
-  // Build map of transactions by contact_id
-  const transactionMap = new Map()
-  transactions.forEach(t => {
-    if (!transactionMap.has(t.contact_id)) {
-      transactionMap.set(t.contact_id, [])
-    }
-    transactionMap.get(t.contact_id).push(t)
-  })
-
-  // Merge contacts with their transactions
-  const pastClients = contacts
-    .filter(c => transactionMap.has(c.id))
-    .map(c => ({
-      ...c,
-      transactions: transactionMap.get(c.id) || []
-    }))
-    .sort((a, b) => {
-      const aLatest = Math.max(...(a.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
-      const bLatest = Math.max(...(b.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
-      return bLatest - aLatest
-    })
-
-  return { success: true, contacts: pastClients }
-}
-
-// Get touchpoint calendar for agent
-export async function getTouchpointCalendar(month: number, year: number) {
+/**
+ * Scheduled + sent touchpoints for one calendar month, for the signed-in agent.
+ *
+ * `month` is 0-indexed (January = 0) to match `Date`, which is what the
+ * range below is built from.
+ *
+ * Hardened while being wired to its first caller (the Lifetime Customers
+ * milestones tab):
+ *   · IDENTITY GUARD. This used agentId/brokerageId straight out of
+ *     getAgentContext() without checking either. A caller with no agents row
+ *     produced `.eq("agent_id", null)`, i.e. `agent_id=eq.null` on the wire —
+ *     which matches nothing — so an unidentifiable caller was shown an empty
+ *     calendar that reads as "nothing scheduled this month".
+ *   · IT THREW. A `"use server"` export that throws surfaces to the browser as
+ *     an opaque server-action error, so a refused read took the whole tab down
+ *     instead of saying what happened. It reports the refusal now.
+ * `lifetime_customer_touchpoints.scheduled_date` is a DATE column, so both
+ * bounds are date-only strings, and endDate is day 0 of the following month =
+ * the last day of `month`.
+ */
+export async function getTouchpointCalendar(
+  month: number,
+  year: number,
+): Promise<{
+  success: boolean
+  error?: string
+  touchpoints: Array<Record<string, unknown>>
+}> {
   const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Agent context not available", touchpoints: [] }
+  }
   const supabase = await createClient()
 
   const startDate = new Date(year, month, 1)
@@ -322,8 +306,11 @@ export async function getTouchpointCalendar(month: number, year: number) {
     .lte("scheduled_date", endDate.toISOString().split("T")[0])
     .order("scheduled_date")
 
-  if (error) throw error
-  return data
+  if (error) {
+    console.error("[lifetime-touchpoints] calendar read failed:", error.message)
+    return { success: false, error: error.message, touchpoints: [] }
+  }
+  return { success: true, touchpoints: (data ?? []) as Array<Record<string, unknown>> }
 }
 
 // Calculate engagement score
@@ -334,8 +321,11 @@ export async function calculateEngagementScore(contactId: string) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
+  // ONE VOCABULARY (§6) — the second verbatim copy of requireAgentId
+  // (lib/kernel/agent-identity.ts:113). Merged onto the survivor; the message it
+  // throws also tells the caller what to do about it ("Please complete
+  // onboarding") instead of only naming the absence.
+  const agentId = await requireAgentId(supabase, user.id)
   // client_engagement_scores.brokerage_id is NOT NULL — resolve from the agent.
   const { data: agentRow } = await supabase
     .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()

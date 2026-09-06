@@ -1,4 +1,4 @@
-import { generateText, Output, stepCountIs } from "ai"
+import { generateText, streamText, Output, stepCountIs } from "ai"
 import type { z } from "zod"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -80,7 +80,21 @@ export const AI_TASK_ROUTING: Record<string, {
   social_post_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Public-facing social content — Them-First + fair housing check" },
   listing_description:       { model: "claude-sonnet", fallback: "gpt-4o",       reason: "MLS-facing listing copy — fair housing compliance required" },
   video_script_generation:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Video scripts — brand voice, persona-aware, Them-First scored" },
+  marketing_script_generation:{ model: "claude-sonnet", fallback: "gpt-4o",      reason: "Call/listing/objection scripts saved to the scripts library — agent-facing copy, brand voice" },
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
+  // ── The four other AI lanes of app/actions/ai-direct-mail.ts ──────────────
+  // ADDED, not invented. Those lanes called the UNROUTED generateObject shim
+  // (lib/ai/generate.ts:120), which books no ai_tool_usage row at all — so every
+  // direct-mail model call was spend the cost ledger never saw, and §5's "a wrong
+  // number there is a wrong invoice" was wrong by the whole feature. Moving them
+  // onto generateObjectRouted needs a routing key each, and each key is pinned to
+  // the model that call site ALREADY pinned so the migration changes the ledger,
+  // not the cost: gpt-4o for the two that named gpt-4o, gpt-4o-mini for the two
+  // that named gpt-4o-mini. Fallbacks follow the section conventions above.
+  direct_mail_design:        { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Postcard design suggestion — palette/layout JSON, cheapest structured lane" },
+  direct_mail_targeting:     { model: "gpt-4o",       fallback: "claude-sonnet", reason: "Audience segment selection — structured criteria objects from past performance" },
+  direct_mail_roi_forecast:  { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Campaign ROI projection — arithmetic-shaped structured output" },
+  direct_mail_performance:   { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Post-campaign performance analysis — summarises rows already computed" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
   smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },
@@ -94,6 +108,47 @@ export const AI_TASK_ROUTING: Record<string, {
   home_assistant_qa:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Lifetime portal 'ask your home anything' — scoped, compliance-safe, client-facing" },
   sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
   live_avatar_conversation:  { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "D-ID Agents real-time conversational turns — latency-critical, short replies" },
+
+  // ── STREAMING CHAT LANES (streamTextRouted call sites) ────────────────────
+  // Each row pins the model its route was already shipping with when the lane
+  // moved onto streamTextRouted — routing + caps + ledger arrived WITHOUT a
+  // silent model change. Re-route deliberately here, never at the call site.
+  agent_chat_stream:            { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Agent coaching chat SSE stream — latency-critical, high volume" },
+  widget_visitor_chat:          { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Public website widget chat — anonymous visitors, cheap + fast" },
+  portal_chat_stream:           { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Client portal live chat — conversational turns, latency-critical" },
+  internal_assistant_chat:      { model: "gpt-4o-mini",   fallback: "claude-haiku", reason: "Role-scoped internal assistant with staging tools — fast multi-step" },
+  onboarding_setup_assistant:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "KB-grounded setup Q&A for new agents — quality over latency" },
+  onboarding_performance_report:{ model: "claude-sonnet", fallback: "gpt-4o",       reason: "Onboarding coaching report — long-form, encouraging-but-honest narrative" },
+  brand_voice_sample:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Brand-voice sample email during setup — brand quality showcase" },
+
+  // ── THE lib/intelligence LANES (were RAW-SDK generateObject call sites) ────
+  // ADDED, not invented, and pinned the same way the direct-mail block above is.
+  // These five call sites imported `generateObject` straight from the "ai" SDK,
+  // which is not a lane at all: no routing, no fair-use pre-flight, no Data
+  // Guard redaction and — the reason they are here — NO ai_tool_usage ROW. Every
+  // one of them ran with a real `brokerageId` already in scope, so the spend was
+  // attributable the whole time and simply never booked. §5's "a wrong number
+  // there is a wrong invoice" was wrong by the whole lib/intelligence surface.
+  //
+  // EVERY KEY BELOW IS PINNED TO claude-sonnet BECAUSE THAT IS WHAT THE CALL
+  // SITE ALREADY PINNED — each one passed
+  // resolveModel("anthropic/claude-sonnet-4-20250514"), which is byte-identical
+  // to MODEL_CONFIG["claude-sonnet"]. The migration therefore changes the
+  // LEDGER, not the model, not the prompt and not the output. Fallbacks follow
+  // the claude-sonnet section convention (gpt-4o); a raw call had no fallback at
+  // all, so the error path gains a retry it did not have — the success path is
+  // unchanged.
+  inbound_intent_classification:   { model: "claude-sonnet", fallback: "gpt-4o", reason: "Inbound message intent + urgency classification (lib/intelligence/intent-classifier.ts) — drives routing and escalation, so nuance beats cost. DISTINCT from intent_classification (gpt-4o-mini), which is the voice/command-bar router." },
+  conversation_insight_extraction: { model: "claude-sonnet", fallback: "gpt-4o", reason: "Structured insight extraction over a whole agent/contact thread (lib/intelligence/conversation-insights.ts) — long context, feeds conversation_insights" },
+  feedback_theme_analysis:         { model: "claude-sonnet", fallback: "gpt-4o", reason: "Top themes across negative feedback (lib/intelligence/feedback-aggregator.ts) — feeds ai_improvement_metrics" },
+  prompt_calibration:              { model: "claude-sonnet", fallback: "gpt-4o", reason: "System-prompt improvement suggestions from feedback themes (lib/intelligence/prompt-calibrator.ts) — writes model_retraining_log" },
+  market_insight_narrative:        { model: "claude-sonnet", fallback: "gpt-4o", reason: "Narrates market rows ALREADY in the database (lib/intelligence/market-insight-generator.ts). DISTINCT from market_insight_generation (perplexity-sonar-pro): that one needs live web search, this one needs none — which is exactly why the call site pinned sonnet rather than perplexity." },
+
+  // Same migration, the raw generateText (not generateObject) call sites. Same
+  // pinning rule: each already passed anthropic/claude-sonnet-4-20250514.
+  buyer_stage_coaching:            { model: "claude-sonnet", fallback: "gpt-4o", reason: "Per-stage buyer-journey coaching for the agent (lib/intelligence/coaching-engine.ts). DISTINCT from coaching_insight (claude-haiku), which is the nightly internal nudge." },
+  seller_stage_coaching:           { model: "claude-sonnet", fallback: "gpt-4o", reason: "Per-stage seller-journey coaching for the listing agent (lib/seller-coaching/coaching-generator.ts) — the seller twin of buyer_stage_coaching" },
+  buyer_prediction:                { model: "claude-sonnet", fallback: "gpt-4o", reason: "Predicts a buyer's likely offer price band / type / timeline from behaviour signals (lib/behavior-learning/prediction-engine.ts). DISTINCT from behavioral_pattern_detect (claude-haiku), which only classifies a signal." },
 
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
   market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
@@ -135,6 +190,43 @@ export const AI_TASK_ROUTING: Record<string, {
   generate_text:             { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic short text — default fallback for unspecified tasks" },
   simple:                    { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic simple task from pipeline.ts runPipelineSimple" },
   unspecified:               { model: "claude-sonnet", fallback: "gpt-4o",     reason: "Unknown feature — default to best general model" },
+}
+
+/**
+ * WHICH BILLABLE MODEL IDENTITY A GATEWAY MODEL STRING IS.
+ * ─────────────────────────────────────────────────────────────
+ * The routed lanes above carry `AIModel` — the platform's own billing identity,
+ * which is what `ai_tool_usage.model_used` stores and what `calculateCost` and
+ * `getModelPricing` key on. The UNROUTED model boundary (lib/ai/generate.ts's
+ * generateObject shim) is handed a gateway model string instead
+ * ("anthropic/claude-sonnet-4-20250514"), because its callers pin a model at
+ * their own call site. A caller of that shim that must ledger its own spend
+ * therefore needs the string turned back into an identity — otherwise the only
+ * way to name the model on the row is to hardcode the one the lane is BELIEVED
+ * to pin, which is an assertion about another file and goes silently wrong the
+ * day that file re-pins.
+ *
+ * Reads MODEL_CONFIG rather than a second table of its own: a reverse map
+ * maintained by hand is how two lanes disagree about what a call cost.
+ *
+ * RETURNS NULL RATHER THAN GUESSING, in two cases:
+ *   · the argument is not a string (an already-constructed provider instance
+ *     carries no id this side of the SDK), and
+ *   · the string is ambiguous — MODEL_CONFIG maps BOTH "gemini-pro" and
+ *     "gemini-flash" onto google/gemini-2.0-flash-exp, and those two price 16x
+ *     apart ($1.25 vs $0.075 per 1M input). Picking either would be inventing
+ *     the tenant's cost.
+ * A null answer means the call cannot be attributed, and m508 says what that
+ * costs: a row claiming tokens must name the model that produced them, so the
+ * caller must book ZERO with a named reason rather than a figure with no model.
+ */
+export function modelIdentityFor(model: unknown): AIModel | null {
+  if (typeof model !== "string") return null
+  const resolved = String(resolveModel(model as Parameters<typeof resolveModel>[0])).trim().toLowerCase()
+  const hits = (Object.entries(MODEL_CONFIG) as Array<[AIModel, { provider: string; modelId: string }]>)
+    .filter(([, cfg]) => `${cfg.provider}/${cfg.modelId}`.toLowerCase() === resolved)
+    .map(([name]) => name)
+  return hits.length === 1 ? hits[0] : null
 }
 
 /**
@@ -289,7 +381,13 @@ async function checkCompliance(
     // 3. Them-First Check
     if (context.requiresThemFirstCheck) {
       try {
-        const themFirstResult = await validateThemFirstContent(content, "email")
+        // Booked to the SAME actor this function already books its own model call
+        // to, a few lines down — the Them-First check is two more model calls on
+        // the platform's credentials and they were reaching no ledger at all (§5).
+        const themFirstResult = await validateThemFirstContent(content, "email", undefined, {
+          brokerageId: context.brokerageId ?? null,
+          userId:      context.userId ?? null,
+        })
         
         if (!themFirstResult.passed || (themFirstResult as any).score < 0.6) {
           const score = (themFirstResult as any).score ?? 0
@@ -339,22 +437,19 @@ async function executeModelCall(
     throw new Error(`Unknown model: ${model}`)
   }
   
-  // Build the namespaced string and resolve to a provider instance
-  let modelInstance: ReturnType<typeof resolveModel>
-  
-  if (config.provider === "perplexity") {
-    // Perplexity uses a custom OpenAI-compatible base URL — handle separately
-    const { createOpenAI } = await import("@ai-sdk/openai")
-    const perplexity = createOpenAI({
-      apiKey: process.env.PERPLEXITY_API_KEY || "",
-      baseURL: "https://api.perplexity.ai"
-    })
-    modelInstance = perplexity(config.modelId)
-  } else {
-    // All other providers: build "provider/modelId", resolve alias, wrap with gateway
-    const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
-    modelInstance = toGatewayModel(resolveModel(modelStr) as string)
-  }
+  // ONE LANE. Every provider in MODEL_CONFIG — including Perplexity — is reached
+  // as "provider/modelId" through the Vercel AI Gateway.
+  //
+  // Perplexity used to be special-cased here with a direct `createOpenAI` client
+  // pointed at https://api.perplexity.ai on PERPLEXITY_API_KEY. That was the only
+  // text-generation call in the repo that left the gateway, and it disagreed with
+  // generateTextRouted/generateObjectRouted BELOW IN THIS SAME FILE, which have
+  // always sent perplexity-sonar / perplexity-sonar-pro through toGatewayModel.
+  // The gateway carries them (`perplexity/sonar`, `perplexity/sonar-pro` are
+  // GatewayModelId members in @ai-sdk/gateway), so the second client bought
+  // nothing but a second key, a second bill and a second failure mode.
+  const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
+  const modelInstance: ReturnType<typeof resolveModel> = toGatewayModel(resolveModel(modelStr) as string)
 
   // ── DATA GUARD — the model-boundary checkpoint ────────────────────────────
   // Redact high-confidence secrets (SSN/ITIN, EIN, card PAN, bank account/routing) from the
@@ -500,9 +595,20 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Log usage
   await logAIUsage({
     userId: request.metadata.userId,
-    brokerageId: request.metadata.brokerageId ?? "",
-    teamId: request.metadata.teamId ?? "",
-    agentId: request.metadata.agentId ?? "",
+    // `?? null`, NOT `?? ""`. These three land in uuid columns on ai_tool_usage.
+    // Postgres refuses '' for a uuid with 22P02 (`invalid input syntax for type
+    // uuid: ""` — reproduced live), and logAIUsage swallows the insert error into
+    // a console line. So every call that lacked a full identity triple — a
+    // background job, a cron, an unauthenticated path — vanished from the cost
+    // ledger entirely rather than landing with the fields it did know.
+    //
+    // This matters more now than it did: ai_tool_usage is the single source of
+    // record for AI spend (the content cost surface, increment_ai_usage_monthly
+    // and the ai_tokens_monthly fair-use counter all read it), so a swallowed
+    // insert is unbilled, uncapped spend. All three columns are nullable.
+    brokerageId: request.metadata.brokerageId ?? null,
+    teamId: request.metadata.teamId ?? null,
+    agentId: request.metadata.agentId ?? null,
     model: executionResult.modelUsed,
     inputTokens: executionResult.inputTokens,
     outputTokens: executionResult.outputTokens,
@@ -557,16 +663,55 @@ export interface RoutedTextRequest {
    * @example "email_generation" | "social_post_generation" | "lead_analysis"
    */
   feature?: string
-  /** Optional — used only for usage logging, not routing */
-  userId?: string
+  /**
+   * Optional — used only for usage logging, not routing.
+   *
+   * NULL IS ACCEPTED, and that is not cosmetic. Both fields already reach
+   * logAIUsage as `request.userId ?? null` / `request.agentId ?? null`, and
+   * `ai_tool_usage.user_id` is nullable BY DESIGN (#187: anonymous tenant
+   * traffic). The narrower `string` forced every caller threading a session to
+   * write `?? undefined` on a value the ledger stores as NULL anyway — and a
+   * caller that would rather not add the noise drops `userId` entirely, which
+   * is how an attributable call loses its actor. RoutedStreamRequest below has
+   * always allowed null here; these three now agree (§6, one vocabulary).
+   *
+   * `brokerageId` is the field lib/ai/models.ts books under — see
+   * `if (request.brokerageId)` in each lane. It must come from the SESSION or
+   * from a row already read under a tenant-scoped predicate, never from a
+   * request body (CLAUDE.md §4).
+   */
+  userId?: string | null
   brokerageId?: string | null
-  agentId?: string
+  agentId?: string | null
   /** Tools the model can invoke — same shape as AI SDK's tool() helper.
    *  When omitted, behaves as a plain text-generation call (current default). */
   tools?: Record<string, unknown>
   /** Multi-step tool calling: stop after N steps. Defaults to 1 (text only)
    *  in the SDK; set higher for tool-using flows (typical: 5). */
   maxSteps?: number
+}
+
+/**
+ * The REAL token counts the provider returned for one routed call, plus the
+ * model that actually served it (which is the FALLBACK model when the primary
+ * threw). Both routed lanes already computed this to write logAIUsage and then
+ * discarded it, so a caller that needed to report its own spend had no honest
+ * source and had to invent one.
+ *
+ * ADDITIVE — `const { text } = await generateTextRouted(...)` is unchanged.
+ *
+ * WHO BOOKS THE SPEND, so this never becomes a second meter reading: when a
+ * caller passes `brokerageId`, THIS FILE writes the ai_tool_usage ledger row
+ * (logAIUsage, below) and the caller must treat `usage` as read-only telemetry.
+ * A caller that omits `brokerageId` is not ledgered here at all and is the one
+ * responsible for booking the figure exactly once.
+ */
+export interface RoutedUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  /** The model that served the call — `fallback` when the primary threw. */
+  model: AIModel
 }
 
 /**
@@ -580,12 +725,12 @@ export interface RoutedTextRequest {
  */
 export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   request: RoutedTextRequest & { schema: TSchema }
-): Promise<{ object: z.infer<TSchema> }> {
+): Promise<{ object: z.infer<TSchema>; usage: RoutedUsage }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
-  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
@@ -637,9 +782,11 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
     resultObject = result.experimental_output as z.infer<TSchema>
   }
 
-  if (request.userId && request.brokerageId) {
+  // Cost keys on the TENANT alone — a turn with no staff seat is still the
+  // brokerage's spend (#187; null user = anonymous tenant traffic).
+  if (request.brokerageId) {
     await logAIUsage({
-      userId:       request.userId,
+      userId:       request.userId ?? null,
       brokerageId:  request.brokerageId,
       agentId:      request.agentId ?? null,
       model:        modelUsed,
@@ -649,17 +796,20 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
     })
   }
 
-  return { object: resultObject }
+  return {
+    object: resultObject,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, model: modelUsed },
+  }
 }
 
 export async function generateTextRouted(
   request: RoutedTextRequest
-): Promise<{ text: string }> {
+): Promise<{ text: string; usage: RoutedUsage }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
   // Fair-use pre-flight (skipped for background jobs without brokerageId)
-  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
+  const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
@@ -719,9 +869,11 @@ export async function generateTextRouted(
     resultText   = result.text
   }
 
-  if (request.userId && request.brokerageId) {
+  // Cost keys on the TENANT alone — a turn with no staff seat is still the
+  // brokerage's spend (#187; null user = anonymous tenant traffic).
+  if (request.brokerageId) {
     await logAIUsage({
-      userId:       request.userId,
+      userId:       request.userId ?? null,
       brokerageId:  request.brokerageId,
       agentId:      request.agentId ?? null,
       model:        modelUsed,
@@ -731,7 +883,177 @@ export async function generateTextRouted(
     })
   }
 
-  return { text: resultText }
+  return {
+    text: resultText,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, model: modelUsed },
+  }
+}
+
+/**
+ * AIFairUseError
+ * Thrown by streamTextRouted's PRE-FLIGHT cap check — before any bytes stream.
+ * A distinct class (not a bare Error) so routes can map it to a 429 without
+ * string-matching the message, while every other failure keeps its 500 path.
+ */
+export class AIFairUseError extends Error {
+  /** HTTP status the refusal should surface as. */
+  readonly status = 429 as const
+  constructor(message: string) {
+    super(message)
+    this.name = "AIFairUseError"
+  }
+}
+
+/**
+ * Text the model will actually read out of a carried messages array — string
+ * content plus text parts (UIMessage/ModelMessage both land here). Feeds the
+ * SAME estimateTokens heuristic the prompt path uses; a second estimator is
+ * how two lanes drift. Estimating from the latest prompt alone let a long
+ * chat history stream past the cap (#187).
+ */
+function messagesTextForEstimate(messages: unknown[] | undefined): string {
+  if (!messages?.length) return ""
+  let out = ""
+  for (const m of messages as Array<{ content?: unknown; parts?: unknown }>) {
+    const content = m?.content ?? m?.parts
+    if (typeof content === "string") out += content
+    else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (typeof part === "string") out += part
+        else if (typeof (part as { text?: unknown })?.text === "string") out += (part as { text: string }).text
+      }
+    }
+  }
+  return out
+}
+
+export interface RoutedStreamRequest {
+  prompt?: string
+  system?: string
+  /** ModelMessage[] (e.g. from convertToModelMessages). Typed loose because the
+   *  SDK's message union (tool parts etc.) is wider than the simple pairs
+   *  RoutedTextRequest carries; passed through to streamText unchanged. */
+  messages?: unknown[]
+  temperature?: number
+  maxTokens?: number
+  /** Feature key from AI_TASK_ROUTING — selects the routing row.
+   *  Defaults to "unspecified" → claude-sonnet + gpt-4o fallback. */
+  feature?: string
+  /** Resolved SERVER-SIDE from the caller's session — never from a request
+   *  body. Used for the cost ledger (logAIUsage) and nothing else. Null with a
+   *  brokerageId = anonymous tenant traffic (public widget visitor, D-ID
+   *  avatar turn): the row still lands, on the tenant. */
+  userId?: string | null
+  /** The tenant the fair-use cap and ledger bill against. Null/undefined =
+   *  background job → uncapped (handled inside checkAIFairUse). */
+  brokerageId?: string | null
+  agentId?: string | null
+  /** Tools the model can invoke — same shape as AI SDK's tool() helper. */
+  tools?: Record<string, unknown>
+  /** Multi-step tool calling: stop after N steps (default 5 when tools set). */
+  maxSteps?: number
+  /** Runs AFTER the cost ledger write, with the SDK's finish event
+   *  (event.text is the full generated reply). */
+  onFinish?: (event: { text: string }) => void | PromiseLike<void>
+}
+
+/**
+ * streamTextRouted
+ * ─────────────────────────────────────────────────────────────
+ * The streaming sibling of generateTextRouted — THE one sanctioned entry for
+ * streaming AI calls. Same routing table, same fair-use pre-flight, same cost
+ * ledger, so the streaming lanes stop being invisible to caps and billing.
+ *
+ *   - ROUTING: feature key → AI_TASK_ROUTING → gateway model. Call sites never
+ *     name a model; re-route in the table above.
+ *   - CAPS: checkAIFairUse runs BEFORE streamText — a blocked tenant is refused
+ *     with AIFairUseError before the first byte, never mid-stream.
+ *   - LEDGER: onFinish writes logAIUsage — the SAME vocabulary every
+ *     non-streaming call uses (ai_tool_usage + increment_ai_usage_monthly +
+ *     the ai_tokens_monthly counter). No second ledger.
+ *
+ * NO runtime fallback model, deliberately — unlike generateTextRouted.
+ * streamText returns synchronously and surfaces provider errors INSIDE the
+ * stream, after headers (and possibly bytes) have already been flushed; a
+ * try/catch fallback around it can never fire (the old did/custom-llm route
+ * carried exactly that dead catch), and swapping models mid-stream is not a
+ * thing. The routing table's fallback column still documents the intended
+ * substitute for when a lane's primary is re-routed.
+ *
+ * Returns the streamText result untouched, so routes keep their exact response
+ * shape (toUIMessageStreamResponse / toTextStreamResponse / textStream).
+ */
+export async function streamTextRouted(
+  request: RoutedStreamRequest
+): Promise<ReturnType<typeof streamText>> {
+  const feature = request.feature ?? "unspecified"
+  const { model: routedModel } = selectModelForTask(feature)
+
+  // Fair-use PRE-FLIGHT (skipped for background jobs without brokerageId).
+  // prompt + system + EVERY carried message + the output budget — the chat
+  // lanes send their history as `messages`, and a prompt-only estimate let a
+  // long conversation stream past the cap. One estimator (estimateTokens),
+  // one heuristic.
+  const estTokens = estimateTokens(
+    (request.prompt ?? "") + (request.system ?? "") + messagesTextForEstimate(request.messages)
+  ) + (request.maxTokens ?? 2000)
+  const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
+  if (!fairUse.allowed) {
+    throw new AIFairUseError(fairUse.message ?? "AI fair-use limit reached for this billing period.")
+  }
+
+  // Data Guard — redact high-confidence secrets before anything leaves for the
+  // model. Same scrub every routed call applies; the streaming lanes used to
+  // hand-roll this (or skip it) because there was no routed entry to inherit from.
+  {
+    const { redactSensitive } = await import("@/lib/data-guard")
+    if (request.prompt) request.prompt = redactSensitive(request.prompt).text
+    if (request.system) request.system = redactSensitive(request.system).text
+  }
+
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG["claude-sonnet"]
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
+
+  const stopWhen = request.tools ? stepCountIs(request.maxSteps ?? 5) : undefined
+
+  const callerOnFinish = request.onFinish
+  const { userId, brokerageId, agentId } = request
+
+  return streamText({
+    model: primaryInstance,
+    prompt: request.prompt,
+    system: request.system,
+    maxOutputTokens: request.maxTokens,
+    temperature: request.temperature,
+    messages: request.messages as any,
+    tools: request.tools as any,
+    stopWhen,
+    onFinish: async (event) => {
+      // THE LEDGER — first, so a throwing caller callback can never lose the
+      // usage row. Keyed on the TENANT alone: AI cost always belongs to the
+      // brokerage, staff seat or not, so an anonymous turn (widget visitor,
+      // D-ID avatar) lands with a null user rather than not landing at all.
+      // Both ids come from the route's own session resolution, never a body.
+      // totalUsage spans every step of a tool-calling stream; usage is the
+      // final step only — prefer the total so tool turns are billed too.
+      const usage: any = (event as any).totalUsage ?? (event as any).usage ?? {}
+      const inputTokens  = usage.inputTokens  ?? usage.promptTokens     ?? estimateTokens((request.prompt ?? "") + (request.system ?? ""))
+      const outputTokens = usage.outputTokens ?? usage.completionTokens ?? estimateTokens(event.text ?? "")
+      if (brokerageId) {
+        await logAIUsage({
+          userId: userId ?? null,
+          brokerageId,
+          agentId: agentId ?? null,
+          model: routedModel,
+          inputTokens,
+          outputTokens,
+          feature,
+        })
+      }
+      await callerOnFinish?.(event)
+    },
+  })
 }
 
 /**

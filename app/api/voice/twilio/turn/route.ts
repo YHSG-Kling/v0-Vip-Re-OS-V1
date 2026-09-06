@@ -88,7 +88,7 @@ export async function POST(request: NextRequest) {
   }
 
   const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
-    .eq("vapi_call_id", callSid).maybeSingle()
+    .eq("vendor_call_id", callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
 
   // Silence (Gather timed out with nothing) → one gentle retry then goodbye.
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     const closer = "No problem — call back any time. Goodbye!"
     if (call) {
       await finishCall(svc, (call as any).id, appendTranscript(transcript, null, closer))
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(closer), { headers: { "Content-Type": "text/xml" } })
   }
@@ -144,6 +144,24 @@ export async function POST(request: NextRequest) {
 
   // ── Actions on the SAME rails as every other engine ────────────────────────
   if (plan.action.kind === "transfer" && ctx.forwardNumber) {
+    // WHY THE AI HANDED OFF. `inbound_call_classifications.transfer_reason` was
+    // READ BY CODE AND WRITTEN BY NOBODY (census 1b) — the contact timeline on
+    // the seller lifetime overview selects it
+    // (app/crm/contacts/[contactId]/seller-lifetime-overview.tsx:67), so every
+    // classified inbound call showed a handoff with no stated reason. The
+    // classification writer's own note anticipated this half and it was never
+    // built: "transfer_reason is enriched later if the turn route hands off to a
+    // human" (app/api/voice/twilio/inbound/route.ts:119-120). This IS that turn
+    // route, and this IS the hand-off, so the reason is written here.
+    //
+    // The reason is the caller's OWN last utterance — the sentence that made the
+    // AI transfer. Nothing is characterised on the caller's behalf.
+    //
+    // Keyed on the resolved contact within the tenant, newest classification
+    // first, because that table carries no voice_call_id: the inbound handler
+    // wrote its row seconds earlier for this same caller. Best-effort and
+    // never blocking the transfer — the caller is mid-sentence.
+    await stampTransferReason(svc, ctx.brokerageId, (call as any)?.contact_id ?? null, speech, ctx.agentUserId ?? null)
     // WARM BRIDGE first (brief-then-bridge): the caller holds while the
     // agent hears the settings-driven whisper and presses 1. Blind <Dial>
     // remains the honest fallback when the bridge can't start.
@@ -178,7 +196,7 @@ export async function POST(request: NextRequest) {
       await finishCall(svc, (call as any).id, newTranscript)
       // A LEAD's completed call routes through the inbound intent classifier —
       // positive direction converts the lead to a contact (canonical handoff).
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(plan.say), { headers: { "Content-Type": "text/xml" } })
   }
@@ -186,13 +204,61 @@ export async function POST(request: NextRequest) {
   return new NextResponse(twimlGatherTurn(plan.say, url), { headers: { "Content-Type": "text/xml" } })
 }
 
-/** Lead call-ins: classify the closed call's transcript → convert / halt / nurture. */
-async function maybeRouteLeadIntent(svc: any, call: any): Promise<void> {
-  if (!call?.lead_id) return
+/** Post-call brain for a closed call: LEAD → classify transcript (convert / halt
+ *  / nurture); EVERY call → automatic outcome routing (contact DNC on negative,
+ *  agent notify + auto-drafted follow-up on positive, scoring + rolling
+ *  qualification). Best-effort — the voice webhook never 500s over post-call. */
+async function maybeRoutePostCall(svc: any, call: any): Promise<void> {
   try {
-    const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-    await routeLeadCallIntent(svc, call.id)
-  } catch { /* best-effort — the voice webhook never 500s over classification */ }
+    if (call?.lead_id) {
+      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+      await routeLeadCallIntent(svc, call.id)
+    }
+    const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+    await routePostCallOutcome(svc, call.id)
+  } catch { /* best-effort — the voice webhook never 500s over post-call work */ }
+}
+
+/**
+ * Record WHY this call left the AI for a human, on the classification row the
+ * inbound handler wrote for this caller.
+ *
+ * `transferred_to_user_id` takes the line's OWN agent user id from the resolved
+ * tenant context — never anything the caller said, and never the forward number
+ * (that column is a users.id and the number is not one; this table carries no FK
+ * on it, so a wrong-class value would be stored happily and read back as a
+ * person who was never called).
+ */
+async function stampTransferReason(
+  svc: any,
+  brokerageId: string,
+  contactId: string | null,
+  callerSaid: string,
+  agentUserId: string | null,
+): Promise<void> {
+  if (!contactId) return // an unresolved caller has no classification row to enrich
+  try {
+    const { data: row } = await svc
+      .from("inbound_call_classifications")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("resulting_contact_id", contactId)
+      .is("transfer_reason", null)
+      .order("classified_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!row?.id) return
+    const reason = (callerSaid ?? "").trim().slice(0, 500) || "Caller asked for a human."
+    const { error } = await svc
+      .from("inbound_call_classifications")
+      .update({ transfer_reason: reason, transferred_to_user_id: agentUserId })
+      .eq("id", row.id)
+    if (error) {
+      console.error("[voice-turn] transfer_reason NOT stamped — the contact timeline shows a handoff with no reason:", error.message)
+    }
+  } catch {
+    /* best-effort — the transfer itself must never wait on the ledger */
+  }
 }
 
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {

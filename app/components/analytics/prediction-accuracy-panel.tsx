@@ -19,6 +19,7 @@ import type {
   PredictionAccuracyReport,
   PredictionTrustChip,
   RailAccuracy,
+  RailBreakdownRow,
 } from "@/lib/analytics/prediction-accuracy"
 
 function fmtMedianError(m: NonNullable<RailAccuracy["medianError"]>): string {
@@ -39,6 +40,22 @@ function withinBadge(rate: number) {
     rate >= 0.4 ? "bg-amber-100 text-amber-800" :
     "bg-red-100 text-red-800"
   return <Badge className={`${cls} text-xs`}>{pct}%</Badge>
+}
+
+// A breakdown row used to be rendered with a HARDCODED `±$` — right while every
+// breakdown row came from the closing-cost rail, wrong the moment the content
+// rail started publishing rows in percentage points. `unit` is optional and
+// absent means "usd", so the closing-cost rows render exactly as before.
+// A row with no medianError is NOT a zero miss: it is an outcome that has not
+// been reconciled yet, and it says so.
+function fmtBreakdownError(b: RailBreakdownRow): string {
+  if (b.medianError == null) return "not yet measured"
+  switch (b.unit ?? "usd") {
+    case "score_points": return `±${Math.round(b.medianError)} pts`
+    case "pct_points":   return `±${b.medianError.toFixed(2)} pp`
+    case "usd":
+    default:             return `±$${Math.round(b.medianError).toLocaleString("en-US")}`
+  }
 }
 
 function fmtPeriod(p: RailAccuracy["period"]): string {
@@ -114,9 +131,9 @@ export function PredictionAccuracyPanel({
                         <p className="text-[11px] text-muted-foreground mt-0.5">
                           {r.predictionSource} → {r.outcomeSource}
                         </p>
-                        {r.honestNotes.length > 0 && (
-                          <p className="text-[11px] text-muted-foreground/80 mt-0.5">{r.honestNotes[0]}</p>
-                        )}
+                        {r.honestNotes.map((n, i) => (
+                          <p key={i} className="text-[11px] text-muted-foreground/80 mt-0.5">{n}</p>
+                        ))}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{r.observations}</td>
                       <td className="px-4 py-2.5 text-right font-medium" title={r.medianError?.label ?? undefined}>
@@ -129,10 +146,17 @@ export function PredictionAccuracyPanel({
                     </tr>
                     {(r.breakdown ?? []).map((b) => (
                       <tr key={`${r.rail}-${b.group}`} className="border-b last:border-0 bg-muted/5">
-                        <td className="pl-8 pr-4 py-1.5 text-xs text-muted-foreground">{b.group}</td>
+                        <td className="pl-8 pr-4 py-1.5 text-xs text-muted-foreground">
+                          {b.group}
+                          {b.pending != null && b.pending > 0 && (
+                            <span className="ml-2 text-[10px] text-muted-foreground/70">
+                              {b.pending} not yet measured
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-1.5 text-right text-xs text-muted-foreground tabular-nums">{b.observations}</td>
                         <td className="px-4 py-1.5 text-right text-xs text-muted-foreground tabular-nums">
-                          {b.medianError != null ? `±$${Math.round(b.medianError).toLocaleString("en-US")}` : "—"}
+                          {fmtBreakdownError(b)}
                         </td>
                         <td className="px-4 py-1.5 text-right">
                           {b.withinRate != null ? withinBadge(b.withinRate) : <span className="text-xs text-muted-foreground">—</span>}

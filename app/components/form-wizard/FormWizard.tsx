@@ -27,7 +27,7 @@
  * parent_offer_id in offer detail, not a wizard.
  */
 
-import { useState, useCallback, useRef, useEffect } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -39,11 +39,17 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck, Upload } from "lucide-react"
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
+// The ONE TTL vocabulary for a persisted document URL — the same constant the
+// server-side signer uses (lib/storage/signed-doc-url.ts). Imported rather than
+// respelled so the wizard and the signer cannot drift.
+import { DOC_URL_TTL_SECONDS as FORM_URL_TTL_SECONDS } from "@/lib/storage/signed-doc-url"
 import { createOffer } from "@/app/actions/buyer-offers"
+import { createListingWithSellerContact, resolveListingIdByMlsAction } from "@/app/actions/listings-kernel"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
 import Link from "next/link"
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -83,7 +89,15 @@ interface WizardState {
   propertyCity: string
   propertyState: string
   propertyZip: string
+  /**
+   * A REAL listings.id (uuid). In offer mode it is resolved from the MLS number
+   * the agent typed; in listing mode it is the draft this wizard just created.
+   * It used to be bound directly to the "MLS #" text input, which meant an agent
+   * who filled that field in sent "MLS-12345" into the uuid FK `offers.listing_id`.
+   */
   listingId?: string
+  /** The free-text MLS number the agent typed — NOT a uuid, never an FK. */
+  mlsNumber?: string
   listPrice?: number
   sellerName?: string
   propertyType?: string
@@ -167,6 +181,18 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const [packetLoading, setPacketLoading] = useState(false)
   const [editedFields, setEditedFields] = useState<Map<string, { newValue: unknown; reason?: string }>>(new Map())
   const [approving, setApproving] = useState(false)
+  // ── Field-level AI-fill audit (document_field_audit) ────────────────────────
+  // The banner's confidence COUNTS come from the `filledPacket.audit` blob inside
+  // documents.content. The LEDGER — one row per field, with the AI value, its
+  // source intake field, its confidence, and whether a licensed agent overrode it
+  // — is the E&O record, and until now nothing read it back (recordAIFill and
+  // recordAgentOverride both wrote; getDocumentAudit had no caller anywhere).
+  // Loaded through the gated reader, which proves the document is in the caller's
+  // brokerage before touching the service client.
+  const [fieldAudit, setFieldAudit] = useState<
+    { fieldName: string; aiValue: unknown; aiSource: string | null; aiConfidence: string | null; agentOverrode: boolean; overrideReason: string | null }[] | null
+  >(null)
+  const [fieldAuditError, setFieldAuditError] = useState<string | null>(null)
 
   const [state, setState] = useState<WizardState>(() => ({
     propertyAddress: "",
@@ -250,6 +276,34 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     })()
   }, [open, documentId, stagedPacket, packetLoading])
 
+  // ── Field-level audit load — runs once per staged packet ────────────────────
+  const loadFieldAudit = useCallback(async () => {
+    if (!documentId) return
+    const { getDocumentFieldAuditAction } = await import("@/app/actions/document-field-audit")
+    const res = await getDocumentFieldAuditAction(documentId)
+    if (!res.ok) {
+      // Reported, not swallowed. "The ledger refused this read" and "this packet
+      // has no AI-filled fields" mean different things to an E&O reviewer.
+      setFieldAuditError(res.error)
+      setFieldAudit([])
+      return
+    }
+    setFieldAuditError(null)
+    setFieldAudit(res.audit.entries.map(e => ({
+      fieldName:      e.fieldName,
+      aiValue:        e.aiValue,
+      aiSource:       e.aiSource ?? null,
+      aiConfidence:   e.aiConfidence ?? null,
+      agentOverrode:  !!e.agentOverrode,
+      overrideReason: e.overrideReason ?? null,
+    })))
+  }, [documentId])
+
+  useEffect(() => {
+    if (!open || !documentId || fieldAudit !== null) return
+    void loadFieldAudit()
+  }, [open, documentId, fieldAudit, loadFieldAudit])
+
   // Track an agent override on a packet field (best-effort persistence)
   const recordOverride = useCallback((fieldName: string, newValue: unknown, reason?: string) => {
     setEditedFields(prev => {
@@ -305,8 +359,17 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         if (data) {
           for (const f of data) {
             if (f.name.endsWith(".pdf") || f.name.endsWith(".docx")) {
-              const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(`${prefix}${f.name}`)
-              collected.push({ name: f.name, url: urlData.publicUrl, scope, path: `${prefix}${f.name}` })
+              // brokerage-forms is a DOCUMENT-CLASS bucket: it holds broker
+              // transaction paperwork AND (under filled/) the FILLED copies that
+              // carry a buyer's name, price and terms. getPublicUrl minted a
+              // permanent unauthenticated link to each one. Signed, and skipped
+              // when it cannot be signed — never downgraded to public.
+              const objectPath = `${prefix}${f.name}`
+              const { data: signed, error: signErr } = await supabase.storage
+                .from("brokerage-forms")
+                .createSignedUrl(objectPath, FORM_URL_TTL_SECONDS)
+              if (signErr || !signed?.signedUrl) continue
+              collected.push({ name: f.name, url: signed.signedUrl, scope, path: objectPath })
             }
           }
         }
@@ -344,12 +407,21 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
     setBusy(true)
     setError(null)
     try {
+      // offers.listing_id is a uuid FK. Translate the MLS number the agent typed
+      // into one of this brokerage's listing ids; no match is normal (the offer is
+      // on someone else's listing) and must not block the offer.
+      let resolvedListingId = state.listingId ?? null
+      if (!resolvedListingId && state.mlsNumber?.trim()) {
+        const lookup = await resolveListingIdByMlsAction(state.mlsNumber)
+        resolvedListingId = lookup.listingId
+      }
+
       const result = await createOffer(contact.id, brokerageId, agentUserId, {
         property_address: state.propertyAddress,
         property_city: state.propertyCity,
         property_state: state.propertyState,
         property_zip: state.propertyZip,
-        listing_id: state.listingId ?? null,
+        listing_id: resolvedListingId,
         offer_price: 0,
         earnest_money: 0,
         financing_type: "conventional",
@@ -369,12 +441,27 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       if (!result.success || !result.offerId) { setError(result.error ?? "Failed to create offer"); return }
       setState(prev => ({ ...prev, offerId: result.offerId, esignProvider: esignProvider }))
 
+      // THE ROLE TRAVELS. This used to collapse `listing_agent` and `seller`
+      // into a flat "agent" here, at the caller, because the action's parameter
+      // type admitted only buyer/co_buyer/agent. Step 4 of this very wizard
+      // renders a "Listing Agent" row and collects their name and email — and
+      // that address was thrown away one line before it left the browser.
+      //
+      // On an OUTSIDE listing that address is the only key the deal's return
+      // mail will ever have: `offers.listing_id` is null, there is no `listings`
+      // row, and the inbound address match cannot fire. Flattened to "agent" it
+      // is also indistinguishable from OUR OWN buyer's agent, so it cannot be
+      // recovered downstream by guessing.
+      //
+      // The action now takes the real role and narrows it itself for the e-sign
+      // provider (which understands parties, not our deal roles) while keeping
+      // the counterparty for the reply watch.
       await submitForSignature({
         offerId: result.offerId,
         userId: agentUserId,
         signers: state.signers
           .filter(s => s.email)
-          .map(s => ({ name: s.name, email: s.email, role: s.role === "seller" || s.role === "listing_agent" ? "agent" : s.role === "co_buyer" ? "co_buyer" : s.role === "buyer" ? "buyer" : "agent" })),
+          .map(s => ({ name: s.name, email: s.email, role: s.role })),
       })
       setStep(6)
     } catch (e: unknown) {
@@ -383,6 +470,70 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       setBusy(false)
     }
   }, [contact, brokerageId, agentUserId, state, esignProvider])
+
+  /**
+   * THE LISTING LANE.
+   *
+   * Both submit controls used to read `mode === "offer" ? handleSubmitOffer :
+   * handleSubmitOffer` — the same handler on both branches — so "New Listing"
+   * created an OFFER row against the seller: offer_price 0, buyer contingency
+   * defaults, and no listing anywhere.
+   *
+   * What it creates now is a DRAFT. The owner's rule: a listing is taken on only
+   * once the listing agreement is SIGNED and the compliance check has reviewed all
+   * required documents, initials and signatures. So this parks the draft the
+   * agreement hangs off, and the promotion to a real (coming_soon /
+   * LISTING_AGREEMENT_SIGNED) listing happens in exactly one place — the
+   * compliance-listing-auto-create chain, once documents.ts has verified the
+   * agent's AND the seller's signatures and initials and auditListingDocuments
+   * reports no blocking gaps.
+   */
+  const handleSubmitListing = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      // The seller is whoever this listing is FOR. Contact-scoped entry
+      // (/crm/contacts/[id]/listings/new) passes the seller contact directly; the
+      // dashboard entry has no contact, so fall back to the seller signer the agent
+      // named in step 4. If neither names a seller we stop — a listing with an
+      // invented seller is worse than one the agent has to finish naming.
+      const sellerSigner = state.signers.find(s => s.role === "seller" && (s.name.trim() || s.email.trim()))
+      const sellerName = contact
+        ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+        : (sellerSigner?.name ?? "").trim()
+      if (!sellerName) {
+        setError("Add the seller in the Signers step before creating the listing.")
+        return
+      }
+      const [firstName, ...restName] = sellerName.split(/\s+/)
+
+      const result = await createListingWithSellerContact({
+        sellerFirstName: firstName,
+        sellerLastName:  restName.join(" "),
+        sellerEmail:     contact?.email ?? sellerSigner?.email ?? undefined,
+        sellerPhone:     contact?.phone ?? sellerSigner?.phone ?? undefined,
+        address:         state.propertyAddress,
+        city:            state.propertyCity,
+        state:           state.propertyState,
+        zip:             state.propertyZip,
+        listPrice:       state.listPrice,
+        propertyType:    state.propertyType,
+        // The formRefs the agent selected, so the draft carries its packet.
+        selectedFormIds: state.selectedForms.map(f => f.formRef),
+      })
+
+      if (!result.success || !result.listingId) {
+        setError(result.error ?? "Failed to create listing")
+        return
+      }
+      setState(prev => ({ ...prev, listingId: result.listingId }))
+      setStep(6)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error")
+    } finally {
+      setBusy(false)
+    }
+  }, [contact, state])
 
   const labels = stepLabels(mode)
 
@@ -403,7 +554,13 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           )}
 
           {/* AI-staged packet banner — only renders when documentId prop is set */}
-          {stagedPacket && <PacketBanner packet={stagedPacket} />}
+          {stagedPacket && (
+            <PacketBanner
+              packet={stagedPacket}
+              fieldAudit={fieldAudit}
+              fieldAuditError={fieldAuditError}
+            />
+          )}
 
           {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
           {step === 2 && (
@@ -446,8 +603,26 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           )}
           {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} update={update} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
-          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
-          {step === 6 && state.offerId && (
+          {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitListing} />}
+          {step === 6 && mode === "listing" && state.listingId && (
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <Check className="h-10 w-10 text-emerald-600" />
+              <h3 className="text-lg font-semibold">Draft listing created</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                This listing is a <span className="font-medium">draft</span> — it is not live, not
+                searchable and not on the MLS. It becomes a real listing once the listing agreement
+                is signed and the compliance check clears every required document, initial and
+                signature. Upload the signed agreement to the listing and that happens automatically.
+              </p>
+              <Button asChild className="mt-2">
+                <Link href={`/dashboard/listings/${state.listingId}`}>
+                  Open Listing
+                  <ExternalLink className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          )}
+          {step === 6 && mode === "offer" && state.offerId && (
             <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
               <Check className="h-10 w-10 text-emerald-600" />
               <h3 className="text-lg font-semibold">Offer submitted</h3>
@@ -488,9 +663,11 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
             </Button>
           )}
           {step === 5 && (
-            <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} disabled={busy}>
+            <Button onClick={mode === "offer" ? handleSubmitOffer : handleSubmitListing} disabled={busy}>
               {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Send for E-Sign
+              {/* The listing lane does not dispatch an envelope, so it must not say
+                  it does. It creates the draft the signed agreement attaches to. */}
+              {mode === "offer" ? "Send for E-Sign" : "Create Draft Listing"}
             </Button>
           )}
           {step === 6 && (
@@ -504,11 +681,35 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
 
 // ─── Step helpers ────────────────────────────────────────────────────────────
 
+/**
+ * `mode` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and step 4 is the
+ * step where the two modes differ most: `buildInitialSigners` below seeds an OFFER
+ * with buyer + agent + an EMPTY listing_agent row, and a LISTING with seller + agent.
+ *
+ * The old rule — "some signer has an email" — was satisfied by the AGENT's own email,
+ * which the wizard fills in for them automatically. So a user could walk straight past
+ * step 4 without ever entering the counterparty, and land on a button that says
+ * "Send for E-Sign" for a document with nobody on the other side to sign it.
+ *
+ * The gate is now the COUNTERPARTY for the mode: a buyer on an offer, a seller on a
+ * listing. The listing_agent row stays optional on purpose — on an offer it is often
+ * unknown at draft time, and blocking on it would stop a legitimate draft.
+ */
 function canAdvance(step: number, state: WizardState, mode: "offer" | "listing"): boolean {
   if (step === 1) return state.propertyAddress.trim().length > 0
   if (step === 2) return state.selectedForms.length > 0
   if (step === 3) return true
-  if (step === 4) return state.signers.some(s => s.email)
+  if (step === 4) {
+    const counterpartyRole = mode === "offer" ? "buyer" : "seller"
+    const hasCounterparty = state.signers.some(
+      (s) => s.role === counterpartyRole && s.email.trim().length > 0,
+    )
+    // Fall back to the old rule ONLY when the wizard seeded no counterparty row at
+    // all (no contact was supplied) — otherwise an empty seeded row would lock a
+    // flow that used to work.
+    const hasCounterpartyRow = state.signers.some((s) => s.role === counterpartyRole)
+    return hasCounterpartyRow ? hasCounterparty : state.signers.some((s) => s.email.trim().length > 0)
+  }
   return true
 }
 
@@ -566,7 +767,20 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
           </div>
           <div className="col-span-2 space-y-1">
             <Label>Property Type</Label>
-            <Input placeholder="Single Family, Condo…" value={state.propertyType ?? ""} onChange={e => update("propertyType", e.target.value)} />
+            <select
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              value={state.propertyType ?? ""}
+              onChange={e => update("propertyType", e.target.value)}
+            >
+              <option value="">Select property type…</option>
+              {/* Canonical value/label pairs. This list stored its DISPLAY string, so a
+                  wizard answer of "Single Family" never equalled a listing's
+                  "single_family"; it also offered "Manufactured", which has no canonical
+                  equivalent (canonicalPropertyType folds it to "other"). */}
+              {PROPERTY_TYPE_OPTIONS.map(pt => (
+                <option key={pt.value} value={pt.value}>{pt.label}</option>
+              ))}
+            </select>
           </div>
         </div>
       )}
@@ -589,10 +803,19 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
           <Input placeholder="78701" value={state.propertyZip} onChange={e => update("propertyZip", e.target.value)} />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label>MLS # (optional)</Label>
-        <Input placeholder="MLS-12345" value={state.listingId ?? ""} onChange={e => update("listingId", e.target.value)} />
-      </div>
+      {/* MLS # belongs to the OFFER side only. On the listing side a property has
+          no MLS number yet — the number is issued at LAUNCH, and an admin enters it
+          there — so asking for it at agreement-initiation could only ever collect a
+          number for a property this brokerage has not listed yet. */}
+      {mode === "offer" && (
+        <div className="space-y-1">
+          <Label>MLS # (optional)</Label>
+          <Input placeholder="MLS-12345" value={state.mlsNumber ?? ""} onChange={e => update("mlsNumber", e.target.value)} />
+          <p className="text-xs text-muted-foreground">
+            If this property is one of your brokerage&apos;s listings, the offer is linked to it automatically.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -634,9 +857,18 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
       const storagePath = `agents/${agentUserId}/uploads/${Date.now()}-${file.name.replace(/[^\w.\-]/g, "_")}`
       const { error: upErr } = await supabase.storage.from("brokerage-forms").upload(storagePath, file, { upsert: false })
       if (upErr) { setUploadError(upErr.message); return }
-      const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(storagePath)
-      const url = urlData.publicUrl
-      // Use the public URL as the form ref so it opens for review and dispatches to
+      // FAIL CLOSED — a form the agent just uploaded gets a TIME-LIMITED signed
+      // URL, or the upload is reported as failed. It must never fall back to a
+      // permanent public link (was getPublicUrl on a world-readable bucket).
+      const { data: signed, error: signErr } = await supabase.storage
+        .from("brokerage-forms")
+        .createSignedUrl(storagePath, FORM_URL_TTL_SECONDS)
+      if (signErr || !signed?.signedUrl) {
+        setUploadError(signErr?.message ?? "The form uploaded but no secure link could be created for it.")
+        return
+      }
+      const url = signed.signedUrl
+      // Use that URL as the form ref so it opens for review and dispatches to
       // the e-sign provider exactly like a library form.
       const entry = { name: file.name, url, scope: "agent" as const, path: url }
       onUploaded(entry)
@@ -1036,7 +1268,15 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
 
   return (
     <div className="space-y-4">
-      <h3 className="font-semibold">Review & Send for E-Sign</h3>
+      <h3 className="font-semibold">
+        {mode === "offer" ? "Review & Send for E-Sign" : "Review & Create Draft Listing"}
+      </h3>
+      {mode === "listing" && (
+        <p className="text-xs text-muted-foreground">
+          Creates the draft this listing agreement attaches to. The listing goes live only after the
+          signed agreement clears the compliance review of required documents, initials and signatures.
+        </p>
+      )}
 
       {planEntries.length > 0 && (
         <div className="rounded-lg border p-4 space-y-2">
@@ -1116,10 +1356,42 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
 // findings, addendum suggestions. PURELY ADDITIVE — does not affect any other
 // step or interaction when documentId prop is omitted.
 
-function PacketBanner({ packet }: { packet: StagedPacket }) {
+interface FieldAuditRow {
+  fieldName:      string
+  aiValue:        unknown
+  aiSource:       string | null
+  aiConfidence:   string | null
+  agentOverrode:  boolean
+  overrideReason: string | null
+}
+
+function auditValueText(v: unknown): string {
+  if (v === null || v === undefined) return "—"
+  if (typeof v === "string") return v
+  if (typeof v === "number" || typeof v === "boolean") return String(v)
+  try { return JSON.stringify(v) } catch { return "—" }
+}
+
+function PacketBanner({
+  packet,
+  fieldAudit,
+  fieldAuditError,
+}: {
+  packet: StagedPacket
+  /** null = still loading; [] = loaded and empty. */
+  fieldAudit?: FieldAuditRow[] | null
+  fieldAuditError?: string | null
+}) {
   const blockerCount = packet.findings.filter(f => f.severity === "blocker").length
   const warningCount = packet.findings.filter(f => f.severity === "warning").length
   const infoCount    = packet.findings.filter(f => f.severity === "info").length
+
+  // The E&O half. The counts above come from the packet blob; these rows come
+  // from the document_field_audit LEDGER, which is the record that survives the
+  // deal — including which prefilled values the licensed agent overrode and why.
+  const auditRows      = fieldAudit ?? []
+  const overriddenRows = auditRows.filter(r => r.agentOverrode)
+  const lowConfidence  = auditRows.filter(r => r.aiConfidence === "low" || r.aiConfidence === "medium")
 
   return (
     <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/50 dark:bg-violet-950/20 p-4 space-y-3">
@@ -1178,6 +1450,62 @@ function PacketBanner({ packet }: { packet: StagedPacket }) {
             {packet.findings.length > 4 && (
               <li className="text-xs text-muted-foreground italic ml-3">
                 +{packet.findings.length - 4} more findings — review before approving
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* ── AI fill audit (document_field_audit) ───────────────────────────────
+          The per-field E&O trail: what the AI put in each field, which intake
+          answer it came from, how confident it was, and what the agent changed.
+          Medium/low-confidence rows are listed first because those are the ones
+          a licensed human is expected to verify before signing. */}
+      {fieldAuditError && (
+        <p className="text-xs text-red-600">
+          AI fill audit unavailable — {fieldAuditError}
+        </p>
+      )}
+      {!fieldAuditError && fieldAudit === null && (
+        <p className="text-xs text-muted-foreground">Loading the AI fill audit…</p>
+      )}
+      {!fieldAuditError && fieldAudit !== null && auditRows.length > 0 && (
+        <div className="space-y-1.5 border-t border-violet-200/70 pt-2.5">
+          <p className="text-xs font-medium">
+            AI fill audit: {auditRows.length} field{auditRows.length !== 1 ? "s" : ""} on record
+            {overriddenRows.length > 0 && (
+              <span className="text-amber-700"> · {overriddenRows.length} overridden by you</span>
+            )}
+            {lowConfidence.length > 0 && (
+              <span className="text-muted-foreground"> · {lowConfidence.length} to verify</span>
+            )}
+          </p>
+          <ul className="space-y-1">
+            {[...lowConfidence, ...auditRows.filter(r => !lowConfidence.includes(r))]
+              .slice(0, 8)
+              .map((r, i) => (
+                <li key={`${r.fieldName}-${i}`} className="text-xs">
+                  <span className="font-medium">{r.fieldName}</span>
+                  <span className="text-muted-foreground"> = {auditValueText(r.aiValue)}</span>
+                  {r.aiConfidence && (
+                    <span className={
+                      r.aiConfidence === "low" ? " text-red-600"
+                      : r.aiConfidence === "medium" ? " text-amber-700"
+                      : " text-muted-foreground"
+                    }>
+                      {" "}({r.aiConfidence}{r.aiSource ? ` from ${r.aiSource}` : ""})
+                    </span>
+                  )}
+                  {r.agentOverrode && (
+                    <span className="block ml-3 text-amber-700">
+                      → you overrode this{r.overrideReason ? `: ${r.overrideReason}` : ""}
+                    </span>
+                  )}
+                </li>
+              ))}
+            {auditRows.length > 8 && (
+              <li className="text-xs text-muted-foreground italic ml-3">
+                +{auditRows.length - 8} more audited fields
               </li>
             )}
           </ul>

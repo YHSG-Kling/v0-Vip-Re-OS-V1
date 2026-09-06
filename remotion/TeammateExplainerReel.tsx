@@ -26,14 +26,9 @@
  * what it is handed and never redrafts.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -81,7 +76,7 @@ const IntroCard: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ eyebrow, title, brand }) => {
   const frame = useCurrentFrame()
-  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateRight: "clamp" })
+  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill
       style={{
@@ -90,12 +85,12 @@ const IntroCard: React.FC<{
       }}
     >
       {brand.logoUrl ? (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
-          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1]) }}
+          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}
         />
       ) : (
-        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1]), marginBottom: 30 }}>
+        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), marginBottom: 30 }}>
           {brand.brokerageName}
         </div>
       )}
@@ -104,7 +99,7 @@ const IntroCard: React.FC<{
           display: "inline-block", padding: "8px 22px", borderRadius: 4,
           backgroundColor: brand.accentColor, color: brand.primaryColor,
           fontSize: 20, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1]),
+          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}
       >
         {eyebrow}
@@ -112,8 +107,8 @@ const IntroCard: React.FC<{
       <div
         style={{
           fontSize: 66, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 880,
-          opacity: interpolate(frame, [10, 32], [0, 1]),
-          transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateRight: "clamp" })}px)`,
+          opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+          translate: `0 ${interpolate(frame, [10, 32], [24, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
         }}
       >
         {title}
@@ -131,9 +126,9 @@ const LowerThird: React.FC<{
   accentColor: string
 }> = ({ agentName, brokerageName, primaryColor, accentColor }) => {
   const frame = useCurrentFrame()
-  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateRight: "clamp" })
+  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
-    <div style={{ position: "absolute", left: 0, bottom: 168, transform: `translateX(${slideIn}px)` }}>
+    <div style={{ position: "absolute", left: 0, bottom: 168, translate: `${slideIn}px` }}>
       <div
         style={{
           display: "flex", alignItems: "stretch",
@@ -163,19 +158,20 @@ const AvatarBody: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ avatarVideoUrl, agentPhotoUrl, agentName, title, brand }) => {
   const frame = useCurrentFrame()
-  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateRight: "clamp" })
+  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
       {avatarVideoUrl ? (
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
-          style={{ width: "100%", height: "100%", objectFit: "cover", opacity: fadeIn }}
+          style={{ width: "100%", height: "100%", opacity: fadeIn }}
         />
       ) : agentPhotoUrl ? (
         // Honest fallback frame — the avatar clip has not been wired in.
         <AbsoluteFill style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 72, opacity: fadeIn }}>
           <div style={{ width: 460, height: 460, borderRadius: 230, overflow: "hidden", boxShadow: `0 0 0 8px ${brand.accentColor}` }}>
-            <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
           </div>
           <div style={{ fontSize: 44, fontWeight: 700, color: "#fff", marginTop: 44, textAlign: "center", maxWidth: 860, lineHeight: 1.25 }}>
             {title}
@@ -191,7 +187,7 @@ const AvatarBody: React.FC<{
 
       {/* Logo watermark — top-right, subtle. */}
       {brand.logoUrl && (
-        <Img
+        <SafeImg
           src={brand.logoUrl}
           style={{ position: "absolute", top: 40, right: 40, height: 52, objectFit: "contain", opacity: 0.85 }}
         />
@@ -226,18 +222,18 @@ const OutroCard: React.FC<{
       }}
     >
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1]) }} />
+        <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
       )}
       <div
         style={{
           fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
-          opacity: interpolate(frame, [4, 20], [0, 1]),
-          transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateRight: "clamp" })}px)`,
+          opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+          translate: `0 ${interpolate(frame, [4, 20], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
         }}
       >
         {ctaLabel}
       </div>
-      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1]) }}>
+      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}>
         {agentName}
       </div>
       <div

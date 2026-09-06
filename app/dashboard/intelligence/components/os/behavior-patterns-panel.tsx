@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import {
   TrendingUp,
-  AlertTriangle,
   Eye,
   ArrowRight,
   Target,

@@ -12,6 +12,7 @@ import {
 import { UserContext } from '@/app/types/roles'
 import { useRouter } from 'next/navigation'
 import { User } from 'lucide-react'
+import { signOut } from '@/app/actions/auth'
 
 interface UserMenuProps {
   userContext: UserContext
@@ -19,10 +20,22 @@ interface UserMenuProps {
 
 export function UserMenu({ userContext }: UserMenuProps) {
   const router = useRouter()
+  const [signOutError, setSignOutError] = React.useState<string | null>(null)
 
+  // This used to POST /api/auth/logout, which cleared two cookies named
+  // `auth-token` and `supabase-auth-token`. Supabase SSR keeps the session in
+  // `sb-<ref>-auth-token`, so NEITHER cookie was the session: the user was
+  // bounced to /login while still fully signed in, and could walk straight back
+  // into the dashboard. Sign out for real, and only claim it when it worked.
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' })
+    setSignOutError(null)
+    const res = await signOut()
+    if (!res.success) {
+      setSignOutError(res.error)
+      return
+    }
     router.push('/login')
+    router.refresh()
   }
 
   return (
@@ -38,7 +51,7 @@ export function UserMenu({ userContext }: UserMenuProps) {
           <p className="text-xs text-gray-600">{userContext.email}</p>
         </div>
         <DropdownMenuSeparator className="bg-gray-200" />
-        <DropdownMenuItem onClick={() => router.push('/settings?tab=profile')} className="text-gray-700">
+        <DropdownMenuItem onClick={() => router.push('/dashboard/profile')} className="text-gray-700">
           My Profile
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => router.push('/settings')} className="text-gray-700">
@@ -48,6 +61,11 @@ export function UserMenu({ userContext }: UserMenuProps) {
         <DropdownMenuItem onClick={handleLogout} className="text-gray-700">
           Logout
         </DropdownMenuItem>
+        {signOutError && (
+          <p className="px-2 py-1.5 text-xs text-red-600">
+            Still signed in — sign out failed: {signOutError}
+          </p>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )

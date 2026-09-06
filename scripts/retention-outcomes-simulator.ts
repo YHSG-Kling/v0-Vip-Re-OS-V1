@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
-import { classifyRetentionOutcome, summarizeRetentionOutcomes } from "../lib/intelligence/retention-outcomes"
+import { classifyRetentionOutcome, summarizeRetentionOutcomes, OUTCOME_SETTLE_DAYS } from "../lib/intelligence/retention-outcomes"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -26,15 +26,24 @@ function pureLayer() {
   console.log("\n[classifyRetentionOutcome · pure — honest win/loss]")
   check("agent deactivated after a save-play → lost", classifyRetentionOutcome({ savePlayDate: "2026-06-01", scoresAfter: [{ score_date: "2026-06-10", composite_score: 30 }], isActive: false, now }) === "lost")
   check("score recovered above at-risk while active → retained", classifyRetentionOutcome({ savePlayDate: "2026-06-01", scoresAfter: [{ score_date: "2026-06-20", composite_score: 62 }], isActive: true, now }) === "retained")
-  check("still at-risk + active → pending (not a fabricated win)", classifyRetentionOutcome({ savePlayDate: "2026-06-01", scoresAfter: [{ score_date: "2026-06-20", composite_score: 25 }], isActive: true, now }) === "pending")
+  check("still at-risk + active, inside the settle window → pending (not a fabricated win)", classifyRetentionOutcome({ savePlayDate: "2026-06-20", scoresAfter: [{ score_date: "2026-06-25", composite_score: 25 }], isActive: true, now }) === "pending")
   check("only scores AFTER the save-play count", classifyRetentionOutcome({ savePlayDate: "2026-06-15", scoresAfter: [{ score_date: "2026-06-01", composite_score: 90 }], isActive: true, now }) === "pending")
-  check("no scores yet + active → pending", classifyRetentionOutcome({ savePlayDate: "2026-06-01", scoresAfter: [], isActive: true, now }) === "pending")
+  check("no scores yet + active (recent) → pending", classifyRetentionOutcome({ savePlayDate: "2026-06-25", scoresAfter: [], isActive: true, now }) === "pending")
+
+  console.log(`\n[aging · pure — unresolved past OUTCOME_SETTLE_DAYS (${OUTCOME_SETTLE_DAYS}d) stops reading as "still working"]`)
+  // Derive the boundary dates from the RULE (§2: assert the rule, never pin a waypoint).
+  const justInside = new Date(now.getTime() - (OUTCOME_SETTLE_DAYS - 1) * 86_400_000).toISOString()
+  const justPast = new Date(now.getTime() - (OUTCOME_SETTLE_DAYS + 1) * 86_400_000).toISOString()
+  check("unresolved younger than the settle window → still pending", classifyRetentionOutcome({ savePlayDate: justInside, scoresAfter: [], isActive: true, now }) === "pending")
+  check("unresolved older than the settle window → aging", classifyRetentionOutcome({ savePlayDate: justPast, scoresAfter: [], isActive: true, now }) === "aging")
+  check("a settled case never ages: old + recovered → retained", classifyRetentionOutcome({ savePlayDate: justPast, scoresAfter: [{ score_date: "2026-06-20", composite_score: 70 }], isActive: true, now }) === "retained")
+  check("a settled case never ages: old + deactivated → lost", classifyRetentionOutcome({ savePlayDate: justPast, scoresAfter: [], isActive: false, now }) === "lost")
 
   console.log("\n[summarizeRetentionOutcomes · pure — win rate]")
-  const b = summarizeRetentionOutcomes(["retained", "retained", "lost", "pending"])
-  check("counts retained/lost/pending", b.retained === 2 && b.lost === 1 && b.pending === 1 && b.total === 4)
-  check("win rate = retained / settled (2/3)", b.winRate === 0.67)
-  check("win rate null until a case settles", summarizeRetentionOutcomes(["pending", "pending"]).winRate === null)
+  const b = summarizeRetentionOutcomes(["retained", "retained", "lost", "pending", "aging"])
+  check("counts retained/lost/pending/aging", b.retained === 2 && b.lost === 1 && b.pending === 1 && b.aging === 1 && b.total === 5)
+  check("win rate = retained / settled (2/3) — aging stays OUT of the settled denominator", b.winRate === 0.67)
+  check("win rate null until a case settles (pending/aging alone never settle it)", summarizeRetentionOutcomes(["pending", "aging"]).winRate === null)
 }
 
 function sourceLayer() {
@@ -46,6 +55,7 @@ function sourceLayer() {
   check("retentionOutcomes wired into loadCommandCenter", /retentionOutcomes:\s*import\("@\/lib\/intelligence\/retention-outcomes"\)/.test(cc) && /generateRetentionOutcomeBoard\(brokerageId\)/.test(cc))
   const client = src("app/dashboard/admin/command-center/command-center-client.tsx")
   check("the retention card shows save-play effectiveness + win rate", /Save-play effectiveness/.test(client) && /data\.retentionOutcomes/.test(client))
+  check("the retention card surfaces the aging count distinctly", /retentionOutcomes\.aging/.test(client))
 }
 
 async function liveLayer() {

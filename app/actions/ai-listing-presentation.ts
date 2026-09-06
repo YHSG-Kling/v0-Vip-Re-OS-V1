@@ -3,11 +3,14 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  generateAiListingPresentation,
+  type AiListingPresentationPropertyData,
+} from "@/lib/listing-presentation/generate-ai-presentation"
 import { z } from "zod"
 
 // ============================================================================
@@ -34,194 +37,45 @@ async function requireCaller(): Promise<
 }
 
 /**
- * Generate a complete listing presentation package
+ * Generate a complete listing presentation package.
+ *
+ * THE AUTHENTICATED DOOR. The work itself lives in
+ * lib/listing-presentation/generate-ai-presentation.ts so the UNATTENDED caller —
+ * step 2 of the listing-appt-prep chain, which the AI-ISA drives from a webhook
+ * with no session — has a door of its own instead of being turned away by the
+ * gate below. The tenant is derived from the session here and from the run row
+ * there; neither takes it from the caller.
  */
 export async function generateListingPresentation(params: {
   agentId: string
-  propertyData: {
-    address: string
-    city: string
-    state: string
-    zipCode: string
-    bedrooms: number
-    bathrooms: number
-    sqft: number
-    lotSize?: number
-    yearBuilt?: number
-    propertyType: string
-    features?: string[]
-    condition?: string
-    sellerMotivation?: string
-    timeline?: string
-  }
+  contactId?: string | null
+  appointmentId?: string | null
+  appointmentAt?: string | null
+  propertyData: AiListingPresentationPropertyData
   sellerInfo?: {
     name: string
     concerns?: string[]
     previousAgentExperience?: string
   }
+  /** The agent's own note to this seller, typed on the CMA → Presentation tab. */
+  agentMessage?: string
   presentationType?: "full" | "mini" | "digital"
 }) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const supabase = await createClient()
-
   try {
-    // Get agent profile — must be in caller's brokerage
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("*, brand_voice_profile(*)")
-      .eq("id", params.agentId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-    if (!agent) return { success: false, error: "Agent not found in your brokerage" }
-
-    // Get comparable sales
-    const { data: comps } = await supabase
-      .from("listings")
-      .select("*")
-      // tenant anchor (scope burn-down): comps come from the caller's own brokerage inventory
-      .eq("brokerage_id", auth.brokerageId)
-      .eq("zip", params.propertyData.zipCode)
-      .eq("status", "sold")
-      .order("go_live_date", { ascending: false })
-      .limit(10)
-
-    // Get market data
-    const { data: marketData } = await supabase
-      .from("market_data")
-      .select("*")
-      .eq("zip_code", params.propertyData.zipCode)
-      .order("data_date", { ascending: false })
-      .limit(5)
-
-    const { object: presentation } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        title: z.string(),
-        subtitle: z.string(),
-        sections: z.array(z.object({
-          sectionNumber: z.number(),
-          title: z.string(),
-          content: z.string(),
-          bulletPoints: z.array(z.string()).optional(),
-          visualSuggestion: z.string().optional(),
-          talkingPoints: z.array(z.string())
-        })),
-        marketAnalysis: z.object({
-          summary: z.string(),
-          comparablesSummary: z.string(),
-          pricingStrategy: z.object({
-            recommendedPrice: z.number(),
-            priceRange: z.object({ low: z.number(), high: z.number() }),
-            reasoning: z.string()
-          }),
-          marketTrends: z.array(z.object({
-            trend: z.string(),
-            impact: z.string()
-          })),
-          daysOnMarketExpectation: z.number()
-        }),
-        marketingPlan: z.object({
-          overview: z.string(),
-          strategies: z.array(z.object({
-            strategy: z.string(),
-            description: z.string(),
-            timeline: z.string()
-          })),
-          digitalMarketing: z.array(z.string()),
-          traditionalMarketing: z.array(z.string()),
-          photography: z.string(),
-          staging: z.string(),
-          openHousePlan: z.string()
-        }),
-        timeline: z.object({
-          preListing: z.array(z.object({ task: z.string(), days: z.string() })),
-          activeListing: z.array(z.object({ task: z.string(), days: z.string() })),
-          underContract: z.array(z.object({ task: z.string(), days: z.string() }))
-        }),
-        valueProposition: z.object({
-          mainMessage: z.string(),
-          differentiators: z.array(z.string()),
-          testimonialSuggestion: z.string(),
-          guarantees: z.array(z.string()).optional()
-        }),
-        objectionHandlers: z.array(z.object({
-          objection: z.string(),
-          response: z.string(),
-          supporting: z.string()
-        })),
-        closingSlide: z.object({
-          headline: z.string(),
-          callToAction: z.string(),
-          nextSteps: z.array(z.string())
-        }),
-        appendix: z.object({
-          detailedComps: z.array(z.object({
-            address: z.string(),
-            soldPrice: z.number(),
-            soldDate: z.string(),
-            comparison: z.string()
-          })),
-          agentBio: z.string(),
-          testimonials: z.array(z.string())
-        })
-      }),
-      prompt: `Create a compelling listing presentation:
-
-Property Details:
-${JSON.stringify(params.propertyData, null, 2)}
-
-Seller Information:
-${JSON.stringify(params.sellerInfo || {}, null, 2)}
-
-Agent Profile:
-Name: ${agent?.first_name} ${agent?.last_name}
-Specializations: ${agent?.specializations?.join(", ") || "N/A"}
-Years Experience: ${agent?.years_experience || "N/A"}
-
-Comparable Sales:
-${JSON.stringify(comps?.slice(0, 5) || [], null, 2)}
-
-Market Data:
-${JSON.stringify(marketData || [], null, 2)}
-
-Presentation Type: ${params.presentationType || "full"}
-
-Create:
-1. Engaging title and introduction
-2. Market analysis with pricing recommendation
-3. Comprehensive marketing plan
-4. Clear timeline
-5. Strong value proposition
-6. Objection handlers for common concerns
-7. Powerful closing with clear next steps
-8. Supporting appendix materials`
+    return await generateAiListingPresentation({
+      brokerageId:    auth.brokerageId,
+      agentId:        params.agentId,
+      contactId:      params.contactId ?? null,
+      appointmentId:  params.appointmentId ?? null,
+      appointmentAt:  params.appointmentAt ?? null,
+      propertyData:   params.propertyData,
+      sellerInfo:     params.sellerInfo,
+      agentMessage:   params.agentMessage,
+      presentationType: params.presentationType,
     })
-
-    // Save presentation
-    const { data: saved, error } = await supabase
-      .from("listing_presentations")
-      .insert({
-        agent_id: params.agentId,
-        property_address: params.propertyData.address,
-        property_data: params.propertyData,
-        presentation: presentation,
-        presentation_type: params.presentationType || "full",
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single()
-
-    return {
-      success: true,
-      presentation,
-      presentationId: saved?.id
-    }
   } catch (error) {
     console.error("[v0] Generate listing presentation error:", error)
     return handleError(error, "generateListingPresentation")
@@ -418,99 +272,39 @@ Create:
   }
 }
 
-/**
- * Generate property brochure content
- */
-export async function generateBrochureContent(params: {
-  agentId: string
-  listingId: string
-  brochureType: "luxury" | "standard" | "investment" | "new_construction"
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", params.listingId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
-
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("*")
-      .eq("id", params.agentId)
-      .single()
-
-    const { object: brochure } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        headline: z.string(),
-        tagline: z.string(),
-        propertyDescription: z.object({
-          opening: z.string(),
-          features: z.string(),
-          lifestyle: z.string(),
-          neighborhood: z.string(),
-          closing: z.string()
-        }),
-        featureHighlights: z.array(z.object({
-          feature: z.string(),
-          description: z.string(),
-          icon: z.string()
-        })),
-        quickFacts: z.array(z.object({
-          label: z.string(),
-          value: z.string()
-        })),
-        floorplanDescription: z.string().optional(),
-        neighborhoodHighlights: z.array(z.string()),
-        schoolInfo: z.array(z.object({
-          name: z.string(),
-          type: z.string(),
-          rating: z.string()
-        })).optional(),
-        callToAction: z.string(),
-        agentSection: z.object({
-          intro: z.string(),
-          credentials: z.array(z.string())
-        }),
-        disclaimers: z.array(z.string())
-      }),
-      prompt: `Create brochure content:
-
-Listing:
-${JSON.stringify(listing || {}, null, 2)}
-
-Agent:
-${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email }, null, 2)}
-
-Brochure Type: ${params.brochureType}
-
-Create compelling content for:
-1. Headline and tagline
-2. Multi-paragraph property description
-3. Feature highlights
-4. Quick facts
-5. Neighborhood highlights
-6. Call to action
-7. Agent section`
-    })
-
-    return {
-      success: true,
-      brochure
-    }
-  } catch (error) {
-    console.error("[v0] Generate brochure content error:", error)
-    return handleError(error, "generateBrochureContent")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `generateBrochureContent` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `lib/documents/listing-brochure.ts` — `runListingBrochures` (line 91)
+ * with `listingBrochureSpec` (line 50). It is wired and autonomous: the daily
+ * video-plays cron runs it (app/api/cron/video-plays/route.ts:50) and the Jobs
+ * kernel's "Launch full listing kit" play runs it on demand
+ * (lib/kernel/jobs.ts:102). This function had no caller anywhere.
+ *
+ * NOTHING WAS MERGED, because the survivor already covers every section this
+ * produced and does three things this could not:
+ *
+ *   · IT PRODUCES THE ACTUAL ARTEFACT. The survivor lays out a multi-page PDF —
+ *     brand cover, hero spread, facts table, highlights, photo gallery, agent
+ *     page — hosts it on storage through produceClientDocument, records it in
+ *     generated_documents, and notifies the agent with the print-ready link.
+ *     This function returned a JSON blob to its caller and persisted nothing, so
+ *     even with a caller there would have been no brochure at the end of it.
+ *   · ITS COPY IS GROUNDED AND GATED. The survivor's narrative goes through
+ *     generatePersonaCopy on the compliance-gated copy rail, built ONLY from the
+ *     listing's own remarks and facts, with those remarks as a deterministic
+ *     fallback. This function asked a model for `neighborhoodHighlights` and a
+ *     `schoolInfo[]` carrying a per-school `rating` — invented school ratings
+ *     printed beside a real address, on a leave-behind, is a Fair Housing and
+ *     accuracy hazard, not a missing feature.
+ *   · IT IS IDEMPOTENT. One brochure per listing, keyed on generated_documents,
+ *     so a re-run cannot produce a second conflicting piece.
+ *
+ * NOT CARRIED, AND SAID PLAINLY: the survivor has no equivalent of this
+ * function's `brochureType` tone variants (luxury / standard / investment /
+ * new_construction) — its narrative prompt is fixed at "editorial, magazine
+ * tone". That is a real gap and a worthwhile follow-up on
+ * lib/documents/listing-brochure.ts, but it is a one-line prompt input on the
+ * survivor, not a reason to keep a second brochure generator that produces no
+ * brochure.
+ * ───────────────────────────────────────────────────────────────────────────── */

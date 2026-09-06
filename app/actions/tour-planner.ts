@@ -11,6 +11,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { emitLifecycleTransition } from '@/lib/buyer-lifecycle/lifecycle-logger'
 import { updateBuyerPreferences } from '@/lib/behavior-learning'
 import { isValidUUID } from '@/lib/validations'
+import { dispatchStopScheduling } from '@/app/actions/dispatch-showing'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -232,7 +233,8 @@ export async function getBuyerTours(contactId: string) {
         confirmed_time, is_confirmed, suggested_time,
         suggested_duration_minutes, drive_time_from_prev_minutes,
         buyer_interest_level, buyer_note, showing_id,
-        time_arrived_at, time_left_at, time_spent_minutes
+        time_arrived_at, time_left_at, time_spent_minutes,
+        scheduling_reference
       )
     `)
     .eq('contact_id', contactId)
@@ -474,7 +476,7 @@ export async function scheduleTourStops(params: {
   tourId:      string
   agentUserId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
-}): Promise<{ success: boolean; error?: string; dispatched?: number }> {
+}): Promise<{ success: boolean; error?: string; dispatched?: number; sent?: number; drafted?: number }> {
   const { tourId } = params
   if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
 
@@ -501,30 +503,49 @@ export async function scheduleTourStops(params: {
   }
 
   // Flip status to scheduling
-  await supabase.from('tours').update({ status: 'scheduling' }).eq('id', tourId)
+  const { error: statusError } = await supabase
+    .from('tours').update({ status: 'scheduling' }).eq('id', tourId)
+  if (statusError) return { success: false, error: statusError.message }
 
-  // For each stop, queue the appropriate outbound dispatch. The actual
-  // ShowingTime/SMS/email delivery happens in `lib/showings/dispatcher.ts`
-  // which reads from showing_dispatches. For now we emit lifecycle events
-  // so the UI can show per-stop "scheduling pending" status.
+  // Dispatch each stop through the CANONICAL showing-dispatch lane
+  // (app/actions/dispatch-showing.ts → lib/showings/dispatchers.ts). This used
+  // to only write 'tour_stop.schedule_dispatched' lifecycle events — the toast
+  // said "N listing agents contacted" while nothing had actually gone out; the
+  // real dispatcher was reachable only via the per-stop dropdown. Same lane,
+  // now on the bulk button too: with provider credentials the request is sent
+  // (ShowingTime API / Twilio / Gmail-Outlook-SendGrid); without them the lane
+  // records an honest DRAFT ('tour_stop.scheduling_drafted') the agent finishes
+  // from the per-stop dropdown. dispatchStopScheduling records each attempt as
+  // a lifecycle_event itself, so no duplicate event write here.
+  //
+  // Channel comes from the stop's own scheduling_method, falling back to
+  // whichever listing-agent handle is actually on file — never a channel with
+  // no recipient when a usable one exists.
+  let sent = 0
+  let drafted = 0
   for (const stop of stops ?? []) {
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id:  brokerageId,
-      entity_type:   'tour_stop',
-      entity_id:     stop.id,
-      event_type:    'tour_stop.schedule_dispatched',
-      actor_user_id: agentUserId,
-      metadata: {
-        scheduling_method:   stop.scheduling_method ?? 'manual_call',
-        listing_agent_phone: stop.listing_agent_phone,
-        listing_agent_email: stop.listing_agent_email,
-        suggested_time:      stop.suggested_time,
-        suggested_duration:  stop.suggested_duration_minutes,
-      },
-    }).then(() => null, () => null)
+    const method = stop.scheduling_method ?? 'manual_call'
+    const channel: 'showingtime' | 'sms' | 'email' =
+      method === 'showingtime' ? 'showingtime'
+      : method === 'email'     ? 'email'
+      : stop.listing_agent_phone ? 'sms'
+      : stop.listing_agent_email ? 'email'
+      : 'showingtime'
+    const res = await dispatchStopScheduling({ tourStopId: stop.id, channel })
+    if (!res.success) {
+      // Refusal reported as a refusal — a stop the lane would not take must not
+      // be counted as contacted.
+      return {
+        success: false,
+        error: `Dispatch refused for stop ${stop.property_address ?? stop.id}: ${res.error ?? 'unknown'}`,
+        dispatched: sent + drafted, sent, drafted,
+      }
+    }
+    if (res.sent) sent += 1
+    else drafted += 1
   }
 
-  return { success: true, dispatched: (stops ?? []).length }
+  return { success: true, dispatched: (stops ?? []).length, sent, drafted }
 }
 
 // ─── 4b. Finalize tour (after agent has heard back from listing agents) ──────
@@ -548,8 +569,11 @@ export async function finalizeTour(params: {
   /** Optional final edits the agent made before finalizing */
   editedNotes?: string
   editedNarrative?: string
+  /** When the agent plans to leave — carried onto the buyer-lifecycle event.
+   *  MERGED IN from the deleted `confirmTour` wrapper (tombstone below). */
+  departureTime?: string
 }): Promise<{ success: boolean; error?: string; calendarEventCount?: number }> {
-  const { tourId, reportChannels, reportUrl, editedNotes, editedNarrative } = params
+  const { tourId, reportChannels, reportUrl, editedNotes, editedNarrative, departureTime } = params
   if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
 
   const auth = await requireCaller()
@@ -648,43 +672,61 @@ export async function finalizeTour(params: {
     },
   }).then(() => null, () => null)
 
+  // ── MERGED FORWARD FROM THE DELETED `confirmTour` WRAPPER ──────────────────
+  // Two writes the wrapper did and this function did not: the agent's own
+  // in-app notification, and the BUYER-LIFECYCLE event (a different rail from
+  // the `tour` lifecycle event above — same event_type, different entity).
+  // Both are best-effort; neither may turn a confirmed tour into a failure.
+  //
+  // The contact id comes from the TOUR ROW, not from a parameter. The wrapper
+  // took `contactId` from its caller and wrote it straight onto a lifecycle
+  // event under the caller's brokerage — a body-supplied entity id on a service
+  // client, which is the shape CLAUDE.md §4 rules out. `tour` was already loaded
+  // above under `.eq('brokerage_id', brokerageId)`, so its `contact_id` is
+  // tenant-proven and cannot be pointed at another brokerage's contact.
+  try {
+    await supabase.from('notifications').insert({
+      user_id:      agentUserId,
+      brokerage_id: brokerageId,
+      type:         'tour.confirmed',
+      title:        'Tour confirmed',
+      body:         'Your tour is confirmed and calendar events have been created.',
+      entity_type:  'tour',
+      entity_id:    tourId,
+      priority:     'high',
+      channel:      'in_app',
+    })
+  } catch { /* non-critical */ }
+
+  if (tour.contact_id) {
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id:  brokerageId,
+      entity_type:   'buyer_lifecycle',
+      entity_id:     tour.contact_id,
+      event_type:    'tour.confirmed',
+      actor_user_id: agentUserId,
+      metadata:      { tour_id: tourId, departure_time: departureTime ?? null },
+    }).then(() => null, () => null)
+  }
+
   return { success: true, calendarEventCount }
 }
 
-// ─── DEPRECATED — old approval action retained for backwards compatibility ───
-/** @deprecated Use finalizeTour() instead. The two-step approve-then-send
- *  flow was wrong: the agent approves AFTER hearing back from listing agents,
- *  which is exactly what finalizeTour does in a single step.
- */
-export async function approveTourPlan(params: {
-  tourId:       string
-  agentUserId:  string
-  brokerageId:  string
-  editedNotes?: string
-  editedNarrative?: string
-}) {
-  return finalizeTour({
-    ...params,
-    reportChannels: ['portal'],
-  })
-}
-
-/** @deprecated Inlined into finalizeTour(). */
-export async function sendTourReport(params: {
-  tourId:        string
-  agentUserId:   string
-  brokerageId:   string
-  channels:      Array<'portal' | 'email' | 'sms'>
-  reportUrl?:    string
-}): Promise<{ success: boolean; error?: string }> {
-  return finalizeTour({
-    tourId:         params.tourId,
-    agentUserId:    params.agentUserId,
-    brokerageId:    params.brokerageId,
-    reportChannels: params.channels,
-    reportUrl:      params.reportUrl,
-  })
-}
+// ─── `approveTourPlan` and `sendTourReport` REMOVED ──────────────────────────
+// Both were @deprecated one-line shims that did nothing but call
+// `finalizeTour` above — approveTourPlan with `reportChannels: ['portal']`,
+// sendTourReport with the caller's `channels` renamed. The survivor is
+// `app/actions/tour-planner.ts:finalizeTour`, which the tour confirm tab
+// (app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx) already
+// calls directly, and which is strictly more capable: it takes every channel,
+// the report url and the agent's final edits in ONE step, resolves the actor
+// and the tenant from the SESSION (the shims accepted `agentUserId` and
+// `brokerageId` from the caller — parameters finalizeTour now ignores on
+// purpose), and stamps `report_sent_at` for lib/kernel/tour-optimizer.ts's
+// idempotency. Nothing was merged forward: neither shim held a line of logic
+// of its own, and the two-step approve-then-send flow they preserved is the
+// flow the deprecation note says was wrong — the agent approves AFTER the
+// listing agents reply, which is what finalizeTour does in a single call.
 
 // ─── 5. Confirm a single stop ─────────────────────────────────────────────────
 
@@ -727,6 +769,23 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       listing_agent_name:     listingAgentName ?? null,
       listing_agent_phone:    listingAgentPhone ?? null,
       listing_agent_company:  listingAgentCompany ?? null,
+      // RE-ADJUDICATED 2026-09-04 — THE 2026-09-03 NOTE WAS WRONG, and the way
+      // it was wrong is the exact failure CLAUDE.md §2 warns about: it pointed
+      // at a TYPE and a useState default as if they were a read.
+      // app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:39
+      // declares `scheduling_reference` on its TourStop interface and :98 seeds
+      // the input from `stop.scheduling_reference` — but the only query that
+      // loads those stops (getContactTours, the `tour_stops (…)` embed at :226)
+      // listed its columns EXPLICITLY and did not include this one. A TypeScript
+      // interface is not a select list: the field arrived `undefined` on every
+      // render, the confirm form opened blank, and an agent re-confirming a
+      // ShowingTime appointment silently wiped the provider's own reference by
+      // saving an empty string back over it. The census was right and the
+      // re-check was reading the wrong evidence.
+      //
+      // FIXED at the source: `scheduling_reference` is now IN the embed
+      // (:226+), which is the reader this column always needed. Other writer:
+      // the ShowingTime webhook (app/api/showings/showingtime-webhook/route.ts:180).
       scheduling_reference:   schedulingReference ?? null,
       is_confirmed:           true,
     })
@@ -798,63 +857,219 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   return { success: true, allConfirmed }
 }
 
-// ─── 4c. Confirm Tour (legacy entry — routes to finalizeTour) ────────────────
+// ─── 4c. `confirmTour` REMOVED ───────────────────────────────────────────────
 //
-// The pre-canonical tour-confirm UI calls confirmTour() with departureTime +
-// agentNotes. We now route it through finalizeTour() so the canonical
-// per-stop calendar events + buyer-portal message + report-sent timestamps
-// happen on every path.
+// TOMBSTONE: `confirmTour(params)` — DELETED as a legacy wrapper.
+// SURVIVOR: `finalizeTour`, app/actions/tour-planner.ts:560.
+//
+// Its own header called it "legacy entry — routes to finalizeTour", and that is
+// all it did: validate two uuids, re-authenticate, call finalizeTour, then add
+// two best-effort writes of its own. BOTH of those writes were MERGED ONTO THE
+// SURVIVOR FIRST (see the "MERGED FORWARD" block at the end of finalizeTour) —
+// the agent's `tour.confirmed` notification and the `buyer_lifecycle` lifecycle
+// event, plus the `departureTime` that event carries, which finalizeTour now
+// accepts as an optional parameter.
+//
+// THE MERGE MADE IT STRICTLY SAFER, not merely equal. The wrapper required a
+// caller-supplied `contactId` and wrote it onto a lifecycle event under the
+// caller's brokerage; the survivor takes the contact id off the TOUR ROW it
+// already loaded with `.eq('brokerage_id', brokerageId)`, so a body-supplied id
+// can no longer name another tenant's contact (CLAUDE.md §4). The survivor also
+// returns `calendarEventCount`, which the wrapper swallowed and replaced with a
+// bare `{ success: true }`.
+//
+// The single caller — app/crm/contacts/[contactId]/tours/components/
+// tour-confirm-tab.tsx — already imported `finalizeTour` alongside it and now
+// calls it directly, which is what the `approveTourPlan`/`sendTourReport`
+// tombstone above already claimed was true.
 
-export async function confirmTour(params: {
-  tourId: string
-  brokerageId?: string  // ignored — derived from session
-  contactId: string
-  agentUserId?: string  // ignored — derived from session
-  departureTime?: string
-  agentNotes?: string
-  reportChannels?: Array<'portal' | 'email' | 'sms'>
-}) {
-  if (!isValidUUID(params.tourId) || !isValidUUID(params.contactId)) {
-    return { success: false, error: 'Invalid ID' }
-  }
+// ─── 4d. Day-of check-in / check-out on a stop ───────────────────────────────
+//
+// ORPHAN DOCTRINE §1.2 — no duplicate existed, the capability was wanted, so this
+// is the BUILT missing half.
+//
+// tour_stops.time_arrived_at / time_left_at / time_spent_minutes were WRITERLESS.
+// Verified live on hrvaqgvukzxfskkcrwbt before this was written: all three column
+// DEFAULTs NULL and is_generated 'NEVER'; pg_trigger empty for tour_stops; pg_proc
+// holds no routine naming the table or any of the three columns; and every row
+// count was 0. Their ONE appearance in the whole tree was the SELECT list at
+// getBuyerTours above (:236) — read by nobody, written by nothing.
+//
+// THE OWNER'S RULING closed the question a prior lane left unresolved:
+// showings.completed_at / duration_minutes are NOT the survivor —
+// "tours and showings are 2 different as showings are for showing requests or
+// showings on the tenants listings". A showing is a request against a tenant's
+// OWN listing; a tour stop is our buyer standing in someone else's house. There
+// is no duplicate to merge onto, so the half that was missing gets BUILT.
+//
+// THE READER THAT WAS ALREADY THERE, THROWING THE NUMBER AWAY:
+// app/crm/contacts/[contactId]/tours/components/tour-day-of-tab.tsx has run a
+// per-stop STOPWATCH since it was written — "Time at this stop: 07:42", ticking
+// once a second, reset on every stop change and lost on every refresh. The agent
+// has always been shown this number. Nothing ever persisted it. That is the exact
+// shape §1.2 describes: the capability is wanted, half of it already shipped, and
+// the other half is a writer.
+//
+// WHY THE DURATION IS NOT A PARAMETER: m564 makes time_spent_minutes a GENERATED
+// ALWAYS column derived from the two timestamps, so a caller-supplied minute count
+// is not merely ignored here — Postgres refuses it outright. This action stamps
+// SERVER time for both ends; the browser's clock never reaches the row. A stop
+// with an arrival and no departure derives NULL, never 0: "we never recorded the
+// leave" must not launder itself into "they spent no time there", the same rule
+// signal-mapping.ts::tourInterestToRating holds for an unrated stop.
+export async function stampTourStopPresence(params: {
+  tourStopId: string
+  phase: 'arrived' | 'departed'
+}): Promise<{
+  success: boolean
+  error?: string
+  arrivedAt?: string | null
+  leftAt?: string | null
+  minutesOnSite?: number | null
+  tourStatus?: string | null
+}> {
+  const { tourStopId, phase } = params
 
+  if (!isValidUUID(tourStopId)) return { success: false, error: 'Invalid tour stop ID' }
+  if (phase !== 'arrived' && phase !== 'departed') return { success: false, error: 'Invalid phase' }
+
+  // Tenant from the SESSION (§4) — this action takes no brokerageId, no
+  // contactId and no agentUserId, so there is no body-supplied tenant to trust.
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
 
-  const result = await finalizeTour({
-    tourId:         params.tourId,
-    reportChannels: params.reportChannels ?? ['portal'],
-    editedNotes:    params.agentNotes,
-  })
-  if (!result.success) return result
-
-  // Maintain pre-canonical behaviour: agent notification of "tour confirmed"
-  // + buyer-lifecycle event. Both scoped to caller's session brokerage.
   const supabase = createServiceClient()
-  try {
-    await supabase.from('notifications').insert({
-      user_id:      auth.userId,
-      brokerage_id: auth.brokerageId,
-      type:         'tour.confirmed',
-      title:        'Tour confirmed',
-      body:         'Your tour is confirmed and calendar events have been created.',
-      entity_type:  'tour',
-      entity_id:    params.tourId,
-      priority:     'high',
-      channel:      'in_app',
-    })
-  } catch { /* non-critical */ }
 
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  auth.brokerageId,
-    entity_type:   'buyer_lifecycle',
-    entity_id:     params.contactId,
-    event_type:    'tour.confirmed',
-    actor_user_id: auth.userId,
-    metadata:      { tour_id: params.tourId, departure_time: params.departureTime },
-  }).then(() => null, () => null)
+  // ── THE PREDICATE CHAIN: a stop belongs to a tour belongs to a tenant ───────
+  // BOTH links are proven, not just the stop's own denormalized brokerage_id.
+  // tour_stops.brokerage_id is a copy; tours.brokerage_id is where the tour
+  // actually lives. If a stop row's copy ever disagreed with its parent, trusting
+  // the copy alone would let a stop be stamped under the wrong tenant — so link 1
+  // checks the copy, link 2 re-derives the truth through the parent, and a
+  // disagreement refuses instead of picking a winner.
+  const { data: stopRow, error: stopReadError } = await supabase
+    .from('tour_stops')
+    .select('id, tour_id, brokerage_id, time_arrived_at, time_left_at, time_spent_minutes')
+    .eq('id', tourStopId)
+    .maybeSingle()
+  if (stopReadError) return { success: false, error: stopReadError.message }
+  if (!stopRow) return { success: false, error: 'Tour stop not found' }
+  if (stopRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
+  if (!stopRow.tour_id) return { success: false, error: 'Tour stop has no parent tour' }
 
-  return { success: true }
+  const { data: tourRow, error: tourReadError } = await supabase
+    .from('tours')
+    .select('id, status')
+    .eq('id', stopRow.tour_id)
+    .eq('brokerage_id', brokerageId)   // link 2 — the parent, under the session's tenant
+    .maybeSingle()
+  if (tourReadError) return { success: false, error: tourReadError.message }
+  // Deliberately the same message as a missing stop: distinguishing "not yours"
+  // from "does not exist" is an id-enumeration oracle across tenants
+  // (the rule lib/kernel/crm.ts::archiveContactRecord states).
+  if (!tourRow) return { success: false, error: 'Tour stop not found' }
+
+  // A closed day takes no more stamps. Statuses that ACCEPT a stamp are the live
+  // ones the tree actually writes — planned / scheduling / confirmed / in_progress
+  // — so this is a refusal list, not an allow-list that a new state silently fails.
+  if (tourRow.status === 'cancelled' || tourRow.status === 'completed') {
+    return {
+      success: false,
+      error: `Tour is ${tourRow.status} — the day is closed; stops can no longer be checked in or out.`,
+    }
+  }
+
+  const nowIso = new Date().toISOString()
+  const patch: Record<string, string> = {}
+
+  if (phase === 'arrived') {
+    // FIRST ARRIVAL WINS. The day-of tab stamps on mount, and a remount — a
+    // refresh, a back-navigation, React re-running an effect — must not restart
+    // the clock and shrink a 40-minute visit to 2. Re-stamping is reported as the
+    // no-op it is, carrying the ORIGINAL arrival back so the caller renders the
+    // real one.
+    if (stopRow.time_arrived_at) {
+      return {
+        success:       true,
+        arrivedAt:     stopRow.time_arrived_at,
+        leftAt:        stopRow.time_left_at ?? null,
+        minutesOnSite: stopRow.time_spent_minutes ?? null,
+        tourStatus:    tourRow.status ?? null,
+      }
+    }
+    patch.time_arrived_at = nowIso
+  } else {
+    // You cannot leave a house you never entered. Stamping a lone departure would
+    // leave time_spent_minutes NULL forever while the row LOOKED recorded — an
+    // absence dressed as a fact. Refuse and say why.
+    if (!stopRow.time_arrived_at) {
+      return { success: false, error: 'No arrival recorded for this stop — check in before checking out.' }
+    }
+    // m564's tour_stops_visit_window_check would refuse this at the database, but
+    // a caught constraint violation reads as an outage; naming the real cause is
+    // the honest failure.
+    if (new Date(nowIso).getTime() < new Date(stopRow.time_arrived_at).getTime()) {
+      return { success: false, error: 'Departure precedes the recorded arrival — refusing to store a negative visit.' }
+    }
+    // LATEST DEPARTURE WINS — an agent who steps out and comes back leaves for
+    // real the last time, and the second stamp is the truer one.
+    patch.time_left_at = nowIso
+  }
+
+  // §3: an UPDATE matching NOTHING resolves clean — `error` null, and byte-identical
+  // to one that worked. `.select()` the update and COUNT what came back, or a stop
+  // deleted or re-parented between the read above and this write reports SUCCESS to
+  // an agent standing in the driveway. The survivor pattern is
+  // lib/kernel/crm.ts::archiveContactRecord (~:981).
+  const { data: stamped, error: stampError } = await supabase
+    .from('tour_stops')
+    .update(patch)
+    .eq('id', tourStopId)
+    .eq('tour_id', stopRow.tour_id)
+    .eq('brokerage_id', brokerageId)
+    .select('id, time_arrived_at, time_left_at, time_spent_minutes')
+
+  if (stampError) return { success: false, error: stampError.message }
+  if (!stamped?.length) {
+    return { success: false, error: 'Tour stop not found, moved, or not yours to stamp' }
+  }
+  const row = stamped[0] as {
+    time_arrived_at: string | null
+    time_left_at: string | null
+    time_spent_minutes: number | null
+  }
+
+  // ── THE STATE-MACHINE TRANSITION NOTHING ON THIS SURFACE PERFORMED ─────────
+  // The canonical machine at the top of this file says in_progress is "Tour day —
+  // buyer is touring. Per-stop arrived/left timestamps + ratings flow in." The
+  // first arrival IS that moment. Until now only the mobile Start Tour button
+  // (app/mobile/components/os/tour-day-panel.tsx) ever wrote in_progress, so an
+  // agent working the CRM day-of tab left the tour sitting in `confirmed` through
+  // the entire day it was being toured.
+  //
+  // Best-effort and zero-row-tolerant on purpose: this is a status the tour may
+  // already hold, and a concurrent completeTour is a legitimate race. The stamp is
+  // the thing that must not lie; the status is a consequence of it.
+  let tourStatus: string | null = tourRow.status ?? null
+  if (phase === 'arrived' && tourRow.status !== 'in_progress') {
+    const { data: advanced } = await supabase
+      .from('tours')
+      .update({ status: 'in_progress' })
+      .eq('id', stopRow.tour_id)
+      .eq('brokerage_id', brokerageId)
+      .in('status', ['planned', 'scheduling', 'confirmed'])
+      .select('id, status')
+    if (advanced?.length) tourStatus = (advanced[0] as { status: string }).status
+  }
+
+  return {
+    success:       true,
+    arrivedAt:     row.time_arrived_at,
+    leftAt:        row.time_left_at,
+    minutesOnSite: row.time_spent_minutes,
+    tourStatus,
+  }
 }
 
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
@@ -901,10 +1116,28 @@ export async function rateTourStop(params: RateStopParams) {
   // Canonical learner vocabulary (matches preference-updater SIGNAL_WEIGHTS); legacy 'no' → not_for_us.
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 3, maybe: 1, not_for_us: -5 }
   const canonicalSignal = interestLevel === 'no' ? 'not_for_us' : interestLevel
-  await supabase.from('buyer_behavior_log').insert({
+
+  // buyer_behavior_log.agent_id FKs to agents(id), and agents.id / users.id are
+  // DISJOINT (§3) — this insert used to write the caller's users.id straight in,
+  // so Postgres refused it with 23503 whenever that id had no agents twin. And
+  // the result was not destructured, so the refusal RESOLVED silently (§3) and
+  // every day-of tour reaction — love_it / like_it / maybe / not_for_us, the
+  // highest-value behavior signals in the product — was lost to the preference
+  // learner while the UI reported success. completeTour below had already been
+  // fixed for the identical class; this is its sibling, now on the same shape.
+  const { data: actorAgent, error: actorErr } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('user_id', agentUserId)
+    .eq('brokerage_id', brokerageId)
+    .maybeSingle()
+  if (actorErr) console.error('[rateTourStop] agents resolution refused:', actorErr.message)
+  const actorAgentId = (actorAgent as { id: string } | null)?.id ?? null
+
+  const { error: logErr } = await supabase.from('buyer_behavior_log').insert({
     brokerage_id:     brokerageId,
     contact_id:       contactId,
-    agent_id:         agentUserId,
+    agent_id:         actorAgentId,
     signal_type:      canonicalSignal,
     listing_id:       listingId ?? null,
     property_address: propertyAddress,
@@ -915,6 +1148,12 @@ export async function rateTourStop(params: RateStopParams) {
     source:           'agent_dashboard',
     metadata:         { note, tour_stop_id: tourStopId },
   })
+  if (logErr) {
+    // The stop rating itself saved above; a lost learner signal must not fail
+    // the rating — but it must never be silent, because a swallowed refusal
+    // here is exactly how this signal went missing for its whole life.
+    console.error('[rateTourStop] buyer_behavior_log insert refused — preference signal lost:', logErr.message)
+  }
 
   return { success: true }
 }
@@ -937,8 +1176,12 @@ export async function completeTour(params: CompleteTourParams) {
 
   // buyer_behavior_log.agent_id FKs to agents(id) — resolve the caller's
   // agents row once (LIVE-FK class fix; users.id here failed the insert).
-  const { data: actorAgent } = await supabase
-    .from('agents').select('id').eq('user_id', agentUserId).maybeSingle()
+  // Brokerage-scoped and error-read since the rateTourStop sibling fix: a
+  // multi-brokerage user must resolve to THIS tenant's agents row, and a
+  // refused read must not silently become "no agent" (§3).
+  const { data: actorAgent, error: actorErr } = await supabase
+    .from('agents').select('id').eq('user_id', agentUserId).eq('brokerage_id', brokerageId).maybeSingle()
+  if (actorErr) console.error('[completeTour] agents resolution refused:', actorErr.message)
   const actorAgentId = (actorAgent as { id: string } | null)?.id ?? null
 
   // Verify tour belongs to caller's brokerage and contact
@@ -999,7 +1242,13 @@ export async function completeTour(params: CompleteTourParams) {
       metadata:         { tour_id: tourId, note: r.note },
     }
   })
-  await supabase.from('buyer_behavior_log').insert(logInserts)
+  // Destructured since the rateTourStop sibling fix: supabase-js RESOLVES a
+  // refused insert (§3), and a silent refusal here loses the whole tour's
+  // reaction batch to the preference learner while the tour still completes.
+  const { error: batchLogErr } = await supabase.from('buyer_behavior_log').insert(logInserts)
+  if (batchLogErr) {
+    console.error('[completeTour] buyer_behavior_log batch insert refused — tour preference signals lost:', batchLogErr.message)
+  }
 
   // Update preference model from new signals
   await updateBuyerPreferences(contactId, brokerageId).catch(() => {})
@@ -1112,4 +1361,156 @@ export async function updateTourStopOrder(
   const failed = results.find(r => r.error)
   if (failed?.error) return { success: false, error: failed.error.message }
   return { success: true }
+}
+
+// ─── 11. The shortlist BECOMES a tour ────────────────────────────────────────
+//
+// THE DRIFT THIS CLOSES. The product grew a second route/drive-time lane:
+// `app/actions/ai-predictions.ts:optimizeShowingRoute` writes
+// `smart_showing_recommendations` — which of a buyer's SAVED homes are worth
+// seeing, resolved against whichever property source serves the tenant (the
+// platform's RentCast by default, the tenant's own IDX feed when connected),
+// with the homes no source could answer reported by name. That is a REAL and
+// distinct act: it is a recommendation, and nothing else in the product makes
+// one. What it must NOT be is a second tour planner, and until this wave it was
+// one — it guessed its own stop order and drive time from a model while the
+// tour lane (tours + tour_stops + showings, and the kernel optimizer that
+// sequences them by real geometry) answered the same question from coordinates.
+//
+// Owner ruling, verbatim: "you have smart showing route but there is also tour
+// planning which was what we built originally. you have to be careful and not
+// create more drifts we are trying to solve."
+//
+// So the recommendation now HANDS OFF instead of re-deriving: the row carries
+// the kernel's order, the start time and the start address, and this action
+// turns it into the real thing — createTourPlan (above) writes tours +
+// tour_stops + showings, and lib/kernel/tour-optimizer.ts:optimizeTourRoute then
+// runs over the SAVED tour, stamping tours.total_drive_time_minutes and the
+// showing_routes audit row. One engine, one set of numbers, one lane the agent
+// can actually schedule, confirm and run.
+//
+// EVERY GATE createTourPlan HOLDS STILL HOLDS: session-derived tenant and agent
+// seat, the contact must be in the caller's brokerage, and the buyer must be
+// financially verified. This is a shortcut through the shortlist, never around
+// the gates.
+export async function createTourFromShowingRecommendation(params: {
+  recommendationId: string
+}): Promise<{ success: boolean; error?: string; tourId?: string; stopCount?: number; optimized?: string }> {
+  const { recommendationId } = params
+  if (!isValidUUID(recommendationId)) return { success: false, error: 'Invalid recommendation ID' }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = createServiceClient()
+
+  // The error is READ. supabase-js resolves a refusal, so "we were refused" and
+  // "no such plan" are byte-identical if only `data` is destructured — and one
+  // of those is a tenancy problem the agent must be told about.
+  const { data: rec, error: recError } = await supabase
+    .from('smart_showing_recommendations')
+    .select('id, brokerage_id, contact_id, recommended_properties, showing_route, recommended_day')
+    .eq('id', recommendationId)
+    .maybeSingle()
+  if (recError) return { success: false, error: `Could not read the showing plan: ${recError.message}` }
+  if (!rec) return { success: false, error: 'Showing plan not found' }
+  if (rec.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
+  if (!rec.contact_id) {
+    // The table is dual-keyed (lead_id | contact_id). A tour hangs off a CONTACT,
+    // and `contacts.id` and `leads.id` are disjoint spaces — so a lead-keyed plan
+    // is refused rather than filed against a contact that does not exist.
+    return {
+      success: false,
+      error: 'This showing plan is filed against a pre-conversion record. Promote it to a contact before planning a tour.',
+    }
+  }
+
+  const route = (rec.showing_route ?? {}) as {
+    startTime?: string | null
+    startAddress?: string | null
+    properties?: unknown
+  }
+  const rows = Array.isArray(rec.recommended_properties)
+    ? (rec.recommended_properties as Array<Record<string, unknown>>)
+    : []
+  if (rows.length === 0) return { success: false, error: 'This showing plan has no homes in it.' }
+
+  // The ORDER is the kernel's, carried across unchanged: the plan was sequenced
+  // by lib/kernel/tour-optimizer.ts and re-sorting it here would be a second
+  // opinion on the one fact this whole change exists to keep single.
+  const ordered = [...rows].sort(
+    (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0),
+  )
+
+  const stops: TourStop[] = ordered
+    .map((r) => {
+      const address = typeof r.address === 'string' ? r.address.trim() : ''
+      if (!address) return null
+      const drive = typeof r.driveMinutesFromPrev === 'number' ? r.driveMinutesFromPrev : undefined
+      const duration = typeof r.durationMinutes === 'number' ? r.durationMinutes : 30
+      return {
+        propertyAddress: address,
+        suggestedDurationMinutes: duration,
+        // Carried so the created plan's clock matches the shortlist the agent
+        // approved. Un-geocoded homes carried NO drive on the plan and carry
+        // none here either — `undefined`, never 0.
+        driveTimeFromPrevMinutes: drive ?? undefined,
+      } as TourStop
+    })
+    .filter((s): s is TourStop => s !== null)
+
+  if (stops.length === 0) return { success: false, error: 'None of the homes on this plan carry an address to tour.' }
+
+  const startTime = typeof route.startTime === 'string' && /^\d{1,2}:\d{2}/.test(route.startTime)
+    ? route.startTime
+    : null
+  if (!startTime) {
+    return { success: false, error: 'This showing plan has no start time, so a tour day cannot be laid out from it.' }
+  }
+  const tourDate = rec.recommended_day
+  if (!tourDate) return { success: false, error: 'This showing plan has no date.' }
+
+  const created = await createTourPlan({
+    contactId: rec.contact_id,
+    // Ignored by createTourPlan — it derives both from the session (§4). Passed
+    // only because the parameter shape requires them.
+    agentUserId: auth.userId,
+    brokerageId: auth.brokerageId,
+    tourDate,
+    startTime,
+    startAddress: typeof route.startAddress === 'string' && route.startAddress.trim()
+      ? route.startAddress.trim()
+      : undefined,
+    stops,
+    // NO totalDriveTimeMinutes ON PURPOSE. A non-null tours.total_drive_time_minutes
+    // is the kernel optimizer's idempotency stamp, so passing one here would mark
+    // the new tour "already optimized" and the run below — the one that writes the
+    // per-leg drives and the showing_routes audit row — would skip it forever.
+    totalDurationMinutes: stops.reduce(
+      (a, s) => a + (s.suggestedDurationMinutes ?? 30) + (s.driveTimeFromPrevMinutes ?? 0),
+      0,
+    ),
+  })
+  if (!created.success || !created.tourId) {
+    return { success: false, error: created.error ?? 'Failed to create the tour' }
+  }
+
+  // ONE ENGINE, RUN ON THE SAVED TOUR. Same module the plan tab, the confirm tab,
+  // the voice lane and the cron sweep run. A refusal here does not undo the tour:
+  // the tour exists and is schedulable; what it lacks is the audit row, and that
+  // is reported rather than hidden.
+  let optimized: string | undefined
+  try {
+    const { optimizeTourRoute } = await import('@/lib/kernel/tour-optimizer')
+    const r = await optimizeTourRoute(created.tourId, supabase)
+    optimized = r.ok
+      ? `${r.stopsSequenced}/${r.stopsTotal} stops sequenced by drive time (~${r.totalDriveMinutes} min est.).`
+      : `The tour was created but the route optimizer did not run: ${r.reason ?? 'unknown'}.`
+  } catch (err) {
+    optimized = `The tour was created but the route optimizer did not run: ${
+      err instanceof Error ? err.message : 'unknown error'
+    }.`
+  }
+
+  return { success: true, tourId: created.tourId, stopCount: stops.length, optimized }
 }

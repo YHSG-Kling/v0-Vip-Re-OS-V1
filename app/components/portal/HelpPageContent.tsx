@@ -23,21 +23,34 @@ interface Contact {
   first_name?: string
   last_name?: string
   name?: string
-  agents?: {
-    name?: string
-    first_name?: string
-    last_name?: string
-    phone?: string
-    email?: string
-  }
 }
 
 interface HelpPageContentProps {
   contact: Contact
   contactId: string
+  /**
+   * Resolved by the page from `users` via agents.user_id. They arrive as props
+   * because `agents` has no name/email column and only phone_mobile /
+   * phone_office — the old code read contact.agents?.name / .phone / .email,
+   * which were undefined on every load, and fell back to a hardcoded
+   * "(555) 123-4567" that real clients were being shown.
+   */
+  agentName: string | null
+  agentEmail: string | null
+  agentPhone: string | null
+  brokerageName: string | null
+  brokeragePhone: string | null
 }
 
-export default function HelpPageContent({ contact, contactId }: HelpPageContentProps) {
+export default function HelpPageContent({
+  contact,
+  contactId,
+  agentName: resolvedAgentName,
+  agentEmail,
+  agentPhone,
+  brokerageName,
+  brokeragePhone,
+}: HelpPageContentProps) {
   const faqs = [
     {
       icon: Home,
@@ -71,10 +84,7 @@ export default function HelpPageContent({ contact, contactId }: HelpPageContentP
     },
   ]
 
-  const agentName =
-    contact.agents?.name || contact.agents?.first_name
-      ? `${contact.agents?.first_name} ${contact.agents?.last_name || ""}`.trim()
-      : "Your Agent"
+  const agentName = resolvedAgentName || "Your Agent"
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -111,20 +121,44 @@ export default function HelpPageContent({ contact, contactId }: HelpPageContentP
           <CardDescription>Get personalized help from {agentName}</CardDescription>
         </CardHeader>
         <CardContent>
+          {/*
+            All three had no handler at all. "Send Message" now goes to the
+            portal's real message thread — which already has the composer, the
+            history and the send path — rather than duplicating a compose box
+            here. The phone and email buttons render ONLY when we actually hold
+            the value: a client told to call (555) 123-4567 is worse off than a
+            client told nothing.
+          */}
           <div className="flex flex-wrap gap-4">
-            <Button variant="default">
-              <MessageCircle className="h-4 w-4 mr-2" />
-              Send Message
+            <Button asChild variant="default">
+              <Link href={`/portal/${contactId}/messages`}>
+                <MessageCircle className="h-4 w-4 mr-2" />
+                Send Message
+              </Link>
             </Button>
-            <Button variant="outline">
-              <Phone className="h-4 w-4 mr-2" />
-              {contact.agents?.phone || "(555) 123-4567"}
-            </Button>
-            <Button variant="outline">
-              <Mail className="h-4 w-4 mr-2" />
-              Email Agent
-            </Button>
+            {agentPhone && (
+              <Button asChild variant="outline">
+                <a href={`tel:${agentPhone}`}>
+                  <Phone className="h-4 w-4 mr-2" />
+                  {agentPhone}
+                </a>
+              </Button>
+            )}
+            {agentEmail && (
+              <Button asChild variant="outline">
+                <a href={`mailto:${agentEmail}`}>
+                  <Mail className="h-4 w-4 mr-2" />
+                  Email Agent
+                </a>
+              </Button>
+            )}
           </div>
+          {!agentPhone && !agentEmail && (
+            <p className="text-sm text-muted-foreground mt-3">
+              Your agent hasn&apos;t added a phone number or email yet — send them a message and
+              they&apos;ll get back to you.
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -227,23 +261,33 @@ export default function HelpPageContent({ contact, contactId }: HelpPageContentP
         </CardContent>
       </Card>
 
-      {/* Emergency Contact */}
-      <Card className="border-amber-200 bg-amber-50">
-        <CardContent className="pt-6">
-          <div className="flex items-center gap-4">
-            <div className="p-3 rounded-full bg-amber-100">
-              <Phone className="h-6 w-6 text-amber-600" />
+      {/*
+        The urgent-help line was hardcoded to (800) 555-0199 with invented
+        opening hours — a number that rings nowhere, printed on a client-facing
+        page under the heading "Need Urgent Help?". It now shows the brokerage's
+        real number, and the whole card is withheld when we do not have one.
+        Nothing invents a way to reach someone.
+      */}
+      {brokeragePhone && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-4">
+              <div className="p-3 rounded-full bg-amber-100">
+                <Phone className="h-6 w-6 text-amber-600" />
+              </div>
+              <div>
+                <p className="font-medium">Need Urgent Help?</p>
+                <p className="text-sm text-muted-foreground">
+                  Call {brokerageName || "our office"}:{" "}
+                  <a href={`tel:${brokeragePhone}`} className="font-semibold underline">
+                    {brokeragePhone}
+                  </a>
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="font-medium">Need Urgent Help?</p>
-              <p className="text-sm text-muted-foreground">
-                Call our support line: <strong>(800) 555-0199</strong>
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">Available Monday - Friday, 9am - 6pm EST</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

@@ -20,6 +20,7 @@
  * channel resolver, lead-eligibility) immediately see the result.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 import { assertCanActOnContact } from "@/lib/auth/contact-access"
 import { revalidatePath } from "next/cache"
 
@@ -44,7 +45,10 @@ export async function runDealInvestigatorAction(params: {
       const profile = { ...((existing?.enrichment_profile as Record<string, unknown>) ?? {}),
                         last_investigation_summary: r.summary,
                         last_investigation_at:      new Date().toISOString() }
-      await svc.from("contacts").update({ enrichment_profile: profile }).eq("id", params.contactId)
+      await bestEffort(
+        svc.from("contacts").update({ enrichment_profile: profile }).eq("id", params.contactId),
+        "caches the investigation summary onto enrichment_profile; the summary itself is returned to the caller and re-running the (paid) investigation regenerates it — a lost cache costs a re-run, not a fact",
+      )
     }
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, summary: r.summary, warnings: r.warnings, cost: r.cost }
@@ -63,7 +67,10 @@ export async function verifyContactEmailAction(params: {
     const mod = await import("@/lib/external/email-verifier")
     const r = params.deep ? await mod.verifyEmailDeep(gate.contact.email) : await mod.checkEmailMx(gate.contact.email)
     const svc = createServiceClient()
-    await svc.from("contacts").update({ email_verified: r.verified }).eq("id", params.contactId)
+    await bestEffort(
+      svc.from("contacts").update({ email_verified: r.verified }).eq("id", params.contactId),
+      "caches the deliverability verdict; the verdict is returned to the caller and re-verifying regenerates it. NOTE this is a DELIVERABILITY flag, not a consent flag — it never widens who may be contacted",
+    )
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, verified: r.verified, reason: r.reason, tier: r.tier, cost: r.cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "email verify failed" } }
@@ -86,7 +93,18 @@ export async function verifyContactAddressAction(params: {
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
     const svc = createServiceClient()
-    await svc.from("contacts").update({ mailing_address_verified: data.verified }).eq("id", params.contactId)
+    // Same Lob verdict the direct-mail CASS gate buys — stamp its marker and its
+    // timestamp so nothing downstream re-buys a verification already paid for.
+    const { CASS_SOURCE } = await import("@/lib/providers/mailing-cass-gate")
+    const { error: verifyWriteError } = await svc
+      .from("contacts")
+      .update({
+        mailing_address_verified:    data.verified,
+        mailing_address_source:      CASS_SOURCE,
+        mailing_address_verified_at: new Date().toISOString(),
+      })
+      .eq("id", params.contactId)
+    if (verifyWriteError) return { success: false, error: verifyWriteError.message, cost }
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }

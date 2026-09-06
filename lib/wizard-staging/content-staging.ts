@@ -332,12 +332,19 @@ export async function stagePodcastEpisode(
 
   // Fallback — direct insert
   const svc = createServiceClient()
-  const agentId = await resolveAgentRowId(svc, ctx.userId)
+  // podcast_episodes.agent_id is a NOT NULL FK to agents(id). Scoped resolve —
+  // ctx carries the brokerage, and this is the webhook path where the caller is
+  // whichever user the wizard is acting for, who may hold rows in two tenants.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const episodeAgentId = await resolveAgentIdInBrokerage(svc, ctx.userId, ctx.brokerageId)
+  if (!episodeAgentId) {
+    return { success: false, error: "No agent profile for this user in this brokerage — the episode has no owner to file it under." }
+  }
   const { data, error } = await svc
     .from("podcast_episodes")
     .insert({
       brokerage_id: ctx.brokerageId,
-      agent_id: agentId,
+      agent_id: episodeAgentId,
       title: intake.title,
       description: intake.description ?? null,
       script: intake.script ?? null,
@@ -376,10 +383,24 @@ export async function stageVideoProject(
   try {
     const { createVideoProject } = await import("@/app/actions/video/create-video-project")
     const svc = createServiceClient()
-    const agentId = await resolveAgentRowId(svc, ctx.userId)
+    // IDENTITY CLASS (m363) — INVERTED, not merely loose. createVideoProject
+    // writes ai_video_projects.agent_id, one of the twenty columns that FK
+    // USERS, and uses the same value as actorUserId for brand voice and as
+    // userId for the compliance actor context. It wants ctx.userId. This
+    // resolved users→AGENTS first and passed that, so the correct value was
+    // reachable ONLY through the `??` fallback — i.e. the feature worked only
+    // for users who had no agents row, and was FK-rejected for everyone else.
+    // The resolve is deleted rather than reordered: nothing here needs it.
+    //
+    // The field is `agentUserId`, not `agentId` — it was renamed when the
+    // users->agents resolve moved inside createVideoProject, and the `as never`
+    // cast at the end of this call kept the stale name compiling. The param
+    // arrived undefined, so isValidUUID rejected it and this lane returned
+    // "Invalid brokerage or agent ID" for EVERY user. Named correctly now; the
+    // value was already the right one (users-class ctx.userId).
     const result = await createVideoProject({
       brokerageId: ctx.brokerageId,
-      agentId: agentId ?? ctx.userId,
+      agentUserId: ctx.userId,
       title: intake.title,
       script: intake.script ?? "",
       videoType: (intake.videoType ?? "market_update") as never,
@@ -492,6 +513,10 @@ export async function stageAdCampaign(
         : [],
       interests: [],
       custom_audience_ids: [],
+      // NO SUPPRESSION LIST, said explicitly rather than omitted. A staged draft
+      // suppresses nobody; the agent adds exclusions in the ads dashboard, where
+      // every one of them is gated (lib/ads/audience-exclusion.ts).
+      excluded_audience_ids: [],
       lookalike_source_audience_id: null,
       income_percentile: "any" as const,
       homeowner_status: "any" as const,

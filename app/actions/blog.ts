@@ -16,6 +16,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
+import { resolveWordPressCredential, wordPressUnavailableReason } from "@/lib/blog/wordpress-connection"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ export interface UpdateBlogPostParams {
   callToAction?: string
 }
 
-export interface BlogPostResult {
+interface BlogPostResult {
   title: string
   slug: string
   excerpt: string
@@ -66,7 +67,7 @@ export interface BlogPostResult {
 export async function generateBlogPost(
   userId: string,
   params: GenerateBlogPostParams
-): Promise<{ success: boolean; postId?: string; error?: string }> {
+): Promise<{ success: boolean; postId?: string; error?: string; keywordWarnings?: string[] }> {
   const supabase = await createClient()
 
   // ── 1. Feature gate ─────────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   let blogResult: BlogPostResult
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
@@ -194,15 +195,8 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     persona: "first_time",
     messageType: "email",
     content: blogResult.content,
-    contact: {
-      id: "broadcast",
-      first_name: "Broadcast",
-      last_name: "Audience",
-      contact_type: "buyer",
-      tcpa_consent: true,
-      isa_reengage_allowed: false,
-      dnc_status: false,
-    },
+    // Broadcast payload — see lib/video/script-compliance.ts for why the
+    // stub contact is omitted rather than faked.
   })
 
   if (!complianceResult.allowed) {
@@ -288,6 +282,9 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   }
 
   // ── 7. Link keywords via seo_keywords + blog_post_keywords ──────────────────
+  // Collected rather than only logged: a keyword that cannot be stored is a
+  // silently incomplete blog post, and `continue` alone made that invisible.
+  const keywordFailures: string[] = []
   for (let i = 0; i < params.keywords.length; i++) {
     const keyword = params.keywords[i]
     const isPrimary = i === 0 // First keyword is primary
@@ -313,7 +310,14 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
           keyword: keyword,
           keyword_type: isPrimary ? "primary" : "secondary",
           search_intent: "informational",
-          visibility_scope: params.agentUserId ? "private" : "brokerage",
+          // "private" is NOT a member of seo_keywords_visibility_scope_check,
+          // which admits agent | team | brokerage | multi_location | platform
+          // (verified live). Every agent-scoped keyword this function tried to
+          // write was refused with SQLSTATE 23514 — and because the failure was
+          // only console.error'd and then `continue`d past, the blog post was
+          // reported as generated with its keywords silently missing. The
+          // agent-scoped spelling the constraint actually accepts is "agent".
+          visibility_scope: params.agentUserId ? "agent" : "brokerage",
           created_by: userId,
           is_active: true,
         })
@@ -322,6 +326,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 
       if (kwError || !newKeyword) {
         console.error("[generateBlogPost] Keyword insert failed:", kwError)
+        keywordFailures.push(`${keyword}: ${kwError?.message ?? "no row returned"}`)
         continue
       }
       seoKeywordId = newKeyword.id
@@ -349,7 +354,45 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     console.error("[blog] generateBlogPost kernel event failed (non-blocking):", err)
   })
 
-  return { success: true, postId: post.id }
+  // The post IS generated, so this is not a failure — but a caller that is told
+  // "success" while some of its keywords were refused has been misled about
+  // what it got. Name them.
+  return {
+    success: true,
+    postId: post.id,
+    ...(keywordFailures.length ? { keywordWarnings: keywordFailures } : {}),
+  }
+}
+
+// ─── THE BLOG ACTOR GATE ──────────────────────────────────────────────────────
+//
+// `userId` arrives from the BROWSER on three exported server actions in this file
+// (updateBlogPost, publishBlogPost, publishToWordPress). Every export of a
+// "use server" file is a public HTTP endpoint (CLAUDE.md §4), and on two of the
+// three that parameter was accepted and READ BY NOTHING — so the actions ran no
+// authorization at all: any authenticated session could name any blog post id, in
+// any brokerage, and edit or publish it.
+//
+// The fix is the rule, not the parameter: THE TENANT COMES FROM THE SESSION. The
+// client-supplied id is now read only as an ASSERTION — if the browser claims to be
+// someone the session is not, that is a refusal, not a fallback — and the session's
+// brokerage becomes the predicate on every subsequent read and write.
+//
+// This is a NON-EXPORTED helper on purpose: exporting it would publish the gate
+// itself as an endpoint.
+async function resolveBlogActor(
+  claimedUserId: string,
+): Promise<{ ok: true; userId: string; brokerageId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { ok: false, error: "Not authenticated" }
+  }
+  // FAIL CLOSED (§4): a mismatch is refused rather than quietly preferring the
+  // session, so a caller passing someone else's id is TOLD, not silently corrected.
+  if (claimedUserId && claimedUserId !== ctx.userId) {
+    return { ok: false, error: "Identity mismatch — you may only act as yourself" }
+  }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId }
 }
 
 // ─── updateBlogPost ───────────────────────────────────────────────────────────
@@ -359,13 +402,17 @@ export async function updateBlogPost(
   postId: string,
   updates: UpdateBlogPostParams
 ): Promise<{ success: boolean; error?: string }> {
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
 
-  // ── 1. Fetch post to get brokerageId ────────────────────────────────────────
+  // ── 1. Fetch post to get brokerageId — SCOPED TO THE SESSION'S BROKERAGE ────
   const { data: existingPost, error: fetchError } = await supabase
     .from("blog_posts")
     .select("brokerage_id, publish_status")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   if (fetchError || !existingPost) {
@@ -378,6 +425,7 @@ export async function updateBlogPost(
       .from("blog_posts")
       .select("content")
       .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
       .maybeSingle()
 
     if (fullPost?.content) {
@@ -409,16 +457,31 @@ export async function updateBlogPost(
   if (updates.category !== undefined) updateData.category = updates.category || null
   if (updates.callToAction !== undefined) updateData.call_to_action = updates.callToAction || null
 
-  const { error: updateError } = await supabase.from("blog_posts").update(updateData).eq("id", postId)
+  const { data: updatedRows, error: updateError } = await supabase
+    .from("blog_posts")
+    .update(updateData)
+    .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
+    .select("id")
 
   if (updateError) {
     console.error("[updateBlogPost] Update failed:", updateError)
     return { success: false, error: "Failed to update blog post" }
   }
+  // An UPDATE that matched NOTHING also resolves with error === null (CLAUDE.md §3):
+  // a refused tenant predicate is byte-identical to a successful write. COUNT the
+  // rows the write actually returned rather than trusting the absent error.
+  if (!updatedRows || updatedRows.length === 0) {
+    return { success: false, error: "Blog post not found" }
+  }
 
   // ── 4. If published, fire kernel event ──────────────────────────────────────
   if (updates.publishStatus === "published") {
-    await supabase.from("blog_posts").update({ published_at: new Date().toISOString() }).eq("id", postId)
+    await supabase
+      .from("blog_posts")
+      .update({ published_at: new Date().toISOString() })
+      .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
 
     await processKernelEvent({
       event: KernelEvent.BLOG_POST_PUBLISHED,
@@ -456,11 +519,15 @@ export async function publishBlogPost(
   userId: string,
   postId: string,
 ): Promise<{ success: boolean; hostedUrl?: string; wordpressPostId?: string; error?: string }> {
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
   const { data: post } = await supabase
     .from("blog_posts")
     .select("id, brokerage_id, slug, publish_status, publish_target")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string } | null
   if (!p) return { success: false, error: "Blog post not found" }
@@ -475,7 +542,7 @@ export async function publishBlogPost(
     await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
-    }).eq("id", postId)
+    }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     return { success: true, hostedUrl }
   }
 
@@ -487,7 +554,7 @@ export async function publishBlogPost(
     await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
-    }).eq("id", postId)
+    }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     return { success: true, hostedUrl: `${baseUrl}/embed/blog/${p.slug}` }
   }
 
@@ -499,7 +566,7 @@ export async function publishBlogPost(
   await supabase.from("blog_posts").update({
     publish_status: "published",
     published_at:   new Date().toISOString(),
-  }).eq("id", postId)
+  }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
   const wpResult = await publishToWordPress(userId, postId)
   return {
     success:         true,
@@ -513,13 +580,21 @@ export async function publishToWordPress(
   userId: string,
   postId: string
 ): Promise<{ success: boolean; wordpressPostId?: string; error?: string }> {
+  // `userId` was accepted here and read by NOTHING — see the gate's note above
+  // resolveBlogActor. This endpoint pushes a brokerage's article to that
+  // brokerage's WordPress using ITS stored credential, so an un-gated post id was
+  // a cross-tenant publish, not just a cross-tenant read.
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
 
-  // ── 1. Fetch post ───────────────────────────────────────────────────────────
+  // ── 1. Fetch post — SCOPED TO THE SESSION'S BROKERAGE ───────────────────────
   const { data: post, error: fetchError } = await supabase
     .from("blog_posts")
     .select("id, brokerage_id, title, content, excerpt, publish_status")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   if (fetchError || !post) {
@@ -530,17 +605,13 @@ export async function publishToWordPress(
     return { success: false, error: "Post must be approved before publishing to WordPress" }
   }
 
-  // ── 2. Get WordPress credentials from platform_credentials ──────────────────
-  const { data: credentials } = await supabase
-    .from("platform_credentials")
-    .select("api_url, api_key, access_token")
-    .eq("brokerage_id", post.brokerage_id)
-    .eq("platform", "wordpress")
-    .eq("is_active", true)
-    .maybeSingle()
+  // ── 2. Get WordPress credentials ────────────────────────────────────────────
+  // Resolution is gated on the Connection OS — see lib/blog/wordpress-connection.ts
+  // for why this used to be an unanswerable query and what decision unblocks it.
+  const credentials = await resolveWordPressCredential(supabase, post.brokerage_id)
 
   if (!credentials || !credentials.api_url) {
-    return { success: false, error: "WordPress credentials not configured" }
+    return { success: false, error: wordPressUnavailableReason() }
   }
 
   // ── 3. Call WordPress REST API ──────────────────────────────────────────────
@@ -583,6 +654,7 @@ export async function publishToWordPress(
         publish_status: "published",
       })
       .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
 
     return { success: true, wordpressPostId: String(wpPost.id) }
   } catch (err) {
@@ -592,9 +664,46 @@ export async function publishToWordPress(
 }
 
 // ─── getBlogPosts ──────────���────────────────────────────�����─────────────────────
+//
+// The FILTERED, reusable counterpart to the inline read in
+// app/dashboard/marketing/blog/page.tsx (BlogDashboardPage), which loads the
+// unfiltered first page server-side. That page is the survivor for the plain
+// list; this action exists for the filters it does NOT have (publish status,
+// agent, date range) — the refresh path the dashboard client still needs.
+//
+// TENANT NOW COMES FROM THE SESSION, NOT THE CALLER. It used to take
+// `brokerageId: string` and feed it straight into `.eq("brokerage_id", …)` with
+// no auth gate at all. In a "use server" module every export is a public HTTP
+// endpoint, so that was an unauthenticated cross-tenant read: any brokerage's
+// entire blog inventory — including unpublished drafts — for anyone who could
+// guess a brokerage uuid. The page it duplicates always scoped to the signed-in
+// user's brokerage; this one now does the same, the same way.
+//
+// WIRED (lane L). Caller: app/dashboard/marketing/blog/blog-dashboard-client.tsx —
+// the Author / Created-from / Created-to controls and the Refresh button.
+//
+// It is NOT covered by the page, which is why it was never a deletion. The page
+// runs ONE unfiltered read and hands the whole list to the client, which then
+// narrows it in memory by search text, publish status and category. Author and
+// date range cannot be done that way and existed nowhere: the client had no
+// concept of either, and no way to re-read at all, so a post generated in one tab
+// or written by a colleague never appeared until a full page reload. Those three
+// server axes now come back through here.
+//
+// THE PROJECTION MATCHES THE PAGE'S, COLUMN FOR COLUMN, and that is load-bearing:
+// the client keeps filtering the refreshed rows by `category` in memory, and this
+// file's sibling lesson (blog page, `category` once omitted from the select) is that
+// a column the surface renders but the reader drops turns every comparison false and
+// empties the list without an error. Do not narrow it.
+//
+// PATH GLOBS ARE WRITTEN WITHOUT THEIR TRAILING WILDCARD IN THIS FILE, on
+// purpose: a slash followed by a star opens a BLOCK comment even inside a line
+// comment, for any tool that strips block comments BEFORE it drops line comments
+// — and this file's own guard does exactly that. One such glob once swallowed
+// ~670 lines of real code from every such analyzer's view, including the query
+// this file's projection check anchors on. Do not reintroduce one.
 
 export async function getBlogPosts(
-  brokerageId: string,
   filters?: {
     publishStatus?: string
     agentUserId?: string
@@ -617,12 +726,17 @@ export async function getBlogPosts(
   }>
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
   let query = supabase
     .from("blog_posts")
     .select("id, title, slug, excerpt, publish_status, category, seo_score, created_at, published_at, agent_user_id")
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
   if (filters?.publishStatus) {
@@ -648,98 +762,24 @@ export async function getBlogPosts(
   return { success: true, posts: data || [] }
 }
 
-// ─── getBlogPostById ──────────────────────────────────────────────────────────
-
-export async function getBlogPostById(postId: string): Promise<{
-  success: boolean
-  post?: {
-    id: string
-    brokerage_id: string
-    title: string
-    slug: string
-    excerpt: string
-    content: string
-    featured_image_url: string | null
-    publish_status: string
-    seo_score: number | null
-    wordpress_post_id: string | null
-    created_at: string
-    published_at: string | null
-    keywords: Array<{
-      id: string
-      keyword: string
-      is_primary: boolean
-    }>
-    latestSeoLog: {
-      score: number
-      issues: string[]
-      recommendations: string[]
-    } | null
-  }
-  error?: string
-}> {
-  const supabase = await createClient()
-
-  // Fetch post
-  const { data: post, error: postError } = await supabase
-    .from("blog_posts")
-    .select(
-      "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at"
-    )
-    .eq("id", postId)
-    .maybeSingle()
-
-  if (postError || !post) {
-    return { success: false, error: "Blog post not found" }
-  }
-
-  // Fetch linked keywords
-  const { data: keywordLinks } = await supabase
-    .from("blog_post_keywords")
-    .select("is_primary, seo_keyword_id")
-    .eq("blog_post_id", postId)
-
-  const keywords: Array<{ id: string; keyword: string; is_primary: boolean }> = []
-  if (keywordLinks?.length) {
-    const keywordIds = keywordLinks.map((kl) => kl.seo_keyword_id)
-    const { data: keywordData } = await supabase.from("seo_keywords").select("id, keyword").in("id", keywordIds)
-
-    if (keywordData) {
-      for (const kd of keywordData) {
-        const link = keywordLinks.find((kl) => kl.seo_keyword_id === kd.id)
-        keywords.push({
-          id: kd.id,
-          keyword: kd.keyword,
-          is_primary: link?.is_primary || false,
-        })
-      }
-    }
-  }
-
-  // Fetch latest SEO log
-  const { data: seoLog } = await supabase
-    .from("seo_optimization_log")
-    .select("score, issues, recommendations")
-    .eq("blog_post_id", postId)
-    .order("optimized_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  return {
-    success: true,
-    post: {
-      ...post,
-      keywords,
-      latestSeoLog: seoLog
-        ? {
-            score: seoLog.score,
-            issues: (seoLog.issues as { items?: string[] })?.items || [],
-            recommendations: (seoLog.recommendations as { items?: string[] })?.items || [],
-          }
-        : null,
-    },
-  }
-}
+// ─── REMOVED in the orphan burn-down (lane O) ─────────────────────────────────
+//
+// `getBlogPostById(postId)` — DELETED.
+// SURVIVOR: app/dashboard/marketing/blog/[id]/page.tsx (BlogEditorPage), which
+// loads the same three things inline and always did: the post scoped
+// `.eq("id", postId).eq("brokerage_id", …)` (line 40-ish), its linked keywords
+// through blog_post_keywords → seo_keywords (line 59-76), and the latest
+// seo_optimization_log row (line 87). Nothing this action returned is missing
+// there, so nothing needed merging.
+//
+// Its own header, written by the wave that repaired it, already named that page
+// as the survivor and recorded that the page "was ALWAYS correct" while this
+// copy shipped `.eq("id", postId)` and nothing else — no auth gate and no
+// tenant predicate — returning any brokerage's unpublished body, keyword
+// strategy and SEO audit to anyone holding a post uuid. It was gated then
+// rather than removed. It has gained no caller since, and a second door onto a
+// page's own data is a door that has to be re-audited every time the page's
+// scoping changes. It is closed.
 
 // ─── addSeoKeyword ────────────────────────────────────────────────────────────
 
@@ -799,8 +839,33 @@ export async function addSeoKeyword(
 }
 
 // ─── getSeoKeywords ───────────────────────────────────────────────────────────
+//
+// NOT a duplicate of app/actions/ai-content-generation.tsx:getSEOKeywords — that
+// file's own comment records the split deliberately: it reads the AGENT-scoped
+// list (`.eq("agent_user_id", …)`), this one reads the BROKERAGE-wide list. Same
+// table, different axes; both are wanted. Kept.
+//
+// What was wrong was the scope's SOURCE: `brokerageId` arrived from the caller
+// with no auth gate, making a brokerage's whole keyword strategy — the SEO
+// targets it is spending on — readable by anyone with the uuid. Derived from the
+// session now, matching how the agent-scoped sibling gets its scope from
+// requireContentActor().
+//
+// WIRED (lane L). Caller: app/dashboard/marketing/seo/seo-keywords-client.tsx,
+// the Refresh control beside the keyword filters. That client had no reader at
+// all: it seeded from the page's server-rendered list and thereafter kept the
+// list in sync by RECONSTRUCTING each row from what the agent typed into the add
+// form. This is the read that replaces the guess with what the table actually
+// holds. The keep verdict above still holds — the agent-scoped sibling in
+// app/actions/ai-content-generation.tsx is a different axis, not a survivor.
+//
+// `created_at` IS IN THIS PROJECTION for the same class of reason the blog page
+// needed `category` in its own: the surface renders it, so a reader that omits
+// it hands back rows the client cannot render. It matches the SeoKeywordsTab
+// projection in app/dashboard/marketing/seo/page.tsx column for column, which is
+// what makes this a drop-in refresh of that list rather than a second shape.
 
-export async function getSeoKeywords(brokerageId: string): Promise<{
+export async function getSeoKeywords(): Promise<{
   success: boolean
   keywords?: Array<{
     id: string
@@ -813,17 +878,23 @@ export async function getSeoKeywords(brokerageId: string): Promise<{
     difficulty_score: number | null
     priority_score: number | null
     is_active: boolean
+    created_at: string
   }>
   error?: string
 }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("seo_keywords")
     .select(
-      "id, keyword, keyword_type, search_intent, target_location, search_volume, competition, difficulty_score, priority_score, is_active"
+      "id, keyword, keyword_type, search_intent, target_location, search_volume, competition, difficulty_score, priority_score, is_active, created_at"
     )
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", ctx.brokerageId)
     .order("priority_score", { ascending: false, nullsFirst: false })
 
   if (error) {
@@ -940,7 +1011,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
   let discovered: DiscoveredKeyword[]
   try {
     const { text } = await generateText({
-      feature:      "blog_generation",
+      feature:      "blog_post_generation",
       system:       systemPrompt,
       prompt:       userPrompt,
       temperature:  0.4,
@@ -1196,7 +1267,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
 
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.8,
@@ -1274,7 +1345,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
 
   try {
     const { text } = await generateText({
-      feature: "blog_generation",
+      feature: "blog_post_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.3,

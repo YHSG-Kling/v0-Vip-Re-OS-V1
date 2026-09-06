@@ -22,7 +22,11 @@ import { resolvePageCapability } from "./helpers"
 import { canAccessFeature } from "./0.1-feature-access"
 import type { PageCapability } from "./helpers"
 import type { FeatureAccessCheck } from "./types"
-import type { WriteContext } from "./identity"
+// SURVIVOR (§1.1): lib/kernel/identity.ts is deleted; the one WriteContext lives at
+// lib/platform/acting-context.ts:143. `KernelWriteContext` is its SUCCESS branch —
+// this module only ever describes a context that resolved.
+import type { WriteContext } from "@/lib/platform/acting-context"
+type KernelWriteContext = Extract<WriteContext, { ok: true }>
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -47,7 +51,7 @@ export interface CapabilityPreview {
 
 export interface RenderCapabilityPreviewParams {
   /** Fully resolved WriteContext from resolveWriteContext() */
-  context: WriteContext
+  context: KernelWriteContext
   /** Next.js route path, e.g. '/dashboard/listings' */
   route: string
   /**
@@ -162,24 +166,28 @@ export async function renderCapabilityPreview(
  *   1. userId is a non-empty UUID string
  *   2. brokerageId is a non-empty UUID string
  *   3. userType is a non-empty string
- *   4. actorContext.role is a valid ActorRole
- *   5. actorContext.userId === userId (no identity split)
- *   6. actorContext.brokerageId === brokerageId (no brokerage split)
- *   7. agentId: when userType === 'agent', agentId must be non-null
+ *   4. agentId: when userType === 'agent', agentId must be non-null
+ *
+ * TOMBSTONE (§1.1): three `actorContext.*` rules stood here. The field they checked
+ * existed only on lib/kernel/identity.ts's WriteContext, which is deleted — and it was
+ * an ORPHAN FIELD even there: built on every call, read by nothing (all 20 live
+ * `actorContext:` sites in app/ construct their own literal). Checking a field nobody
+ * reads is a rule that can never fail for a real reason. Survivor:
+ * lib/platform/acting-context.ts:143.
  *
  * @param context - The WriteContext to validate
  * @returns ContractValidationResult with pass/fail per rule
  */
 export function validateKernelContract(
-  context: WriteContext
+  context: KernelWriteContext
 ): ContractValidationResult {
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-  const VALID_ROLES = new Set([
-    "superadmin", "broker", "admin", "team_lead", "agent",
-    "isa", "tc", "compliance_officer", "vendor", "lender",
-    "title_agent", "contact", "system",
-  ])
+  // TOMBSTONE (§1.1): a local VALID_ROLES ActorRole set stood here, read ONLY by the
+  // three deleted actorContext rules. Not re-pointed at userType: `users.user_type` is a
+  // WIDER vocabulary than ActorRole (it legally holds 'support' and 'system'), so this
+  // set would have failed real seats. The one role vocabulary lives in
+  // lib/auth/resolve-user-role.ts (UserRole) and lib/platform/platform-staff-roster.ts.
 
   const rules: ContractValidationRule[] = [
     {
@@ -189,28 +197,13 @@ export function validateKernelContract(
     },
     {
       rule:   "brokerageId is a valid UUID",
-      passed: UUID_RE.test(context.brokerageId),
-      detail: context.brokerageId,
+      passed: UUID_RE.test(context.brokerageId ?? ""),
+      detail: context.brokerageId ?? "(none)",
     },
     {
       rule:   "userType is non-empty",
       passed: typeof context.userType === "string" && context.userType.length > 0,
       detail: context.userType,
-    },
-    {
-      rule:   "actorContext.role is a valid ActorRole",
-      passed: VALID_ROLES.has(context.actorContext.role),
-      detail: context.actorContext.role,
-    },
-    {
-      rule:   "actorContext.userId matches context.userId",
-      passed: context.actorContext.userId === context.userId,
-      detail: `actorContext.userId=${context.actorContext.userId}`,
-    },
-    {
-      rule:   "actorContext.brokerageId matches context.brokerageId",
-      passed: context.actorContext.brokerageId === context.brokerageId,
-      detail: `actorContext.brokerageId=${context.actorContext.brokerageId}`,
     },
     {
       rule:   "agentId is non-null when userType is 'agent'",

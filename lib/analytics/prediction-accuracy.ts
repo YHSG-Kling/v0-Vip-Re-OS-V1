@@ -89,8 +89,9 @@
 //                                prediction.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { medianOf, type AccuracyLine } from "@/lib/offers/closing-cost-accuracy"
+import { medianOf, type AccuracyLine, type ClosingCostSide } from "@/lib/offers/closing-cost-accuracy"
 import { MATERIAL_ABS, MATERIAL_PCT } from "@/lib/net-sheet/net-sheet-reconciler"
+import { applyTenantScope, platformScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -132,6 +133,18 @@ export interface RailBreakdownRow {
   withinRate: number | null
   /** same unit as the rail's medianError */
   medianError: number | null
+  /** ADDITIVE: how to READ medianError on THIS row. Absent = "usd", which is
+   *  what every breakdown row meant before the content rail gained rows in
+   *  score points and percentage points (the panel hardcoded a `±$` prefix, so
+   *  a rate would have rendered as dollars). Deliberately a breakdown-local
+   *  union and NOT a member of RailMedianError["unit"]: the accuracy gate
+   *  (lib/managers/accuracy-gate.ts fmtMetric) switches exhaustively over that
+   *  union with no default, and this rail's HEADLINE unit must stay
+   *  "score_points" or the marketing_content autonomy bar stops matching. */
+  unit?: "usd" | "score_points" | "pct_points"
+  /** ADDITIVE: rows this group covers that have no outcome yet. Rendered as
+   *  "not yet measured" — never as a zero. */
+  pending?: number
 }
 
 export interface RailAccuracy {
@@ -184,6 +197,13 @@ function unavailable(base: Omit<RailAccuracy, "available" | "why" | "observation
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 const round4 = (n: number) => Math.round(n * 10000) / 10000
+
+// CENSUS NOTE (orphan-export category B — LIVE, not a backlog): every summarize*Rows,
+// fractionalMedian and gradablePricePairs export in this module is called IN-FILE by its
+// rail adapter, every adapter runs inside getPredictionAccuracyReport (below), and the
+// report is rendered rail-by-rail by app/components/analytics/prediction-accuracy-panel.tsx:79
+// (mounted from app/dashboard/analytics/page.tsx and superadmin/platform/page.tsx). They are
+// exported for scripts/prediction-accuracy-simulator.ts and seller-closing-costs-simulator.ts.
 
 /** True fractional median (medianOf from the closing-cost module rounds to
  *  whole dollars — right for money, wrong for percentage errors). */
@@ -239,6 +259,39 @@ export interface ClosingCostObsRow {
   /** ADDITIVE (round 36): 'buyer' | 'seller'. Rows written before migration
    *  1105 carry no side column — they are buyer-side by construction. */
   side?: string | null
+  // ── THE SAMPLE'S OWN PROVENANCE (wave H5) ─────────────────────────────────
+  // The rail's first honest note already CLAIMS the provenance rule ("human-
+  // verified or high/medium-confidence scans") and the m1104 writer already
+  // records which half each observation landed on — but nothing read it, so
+  // the claim was a promise the surface could not evidence. CLAUDE.md §2:
+  // publish the blind spots beside the number. These four are the denominator
+  // of the accuracy figure, not decoration.
+  /** true when at least one ledger row behind this observation was human-verified */
+  extraction_verified?: boolean | null
+  /** which CD field_keys were provenance-usable here (of CD_ACCURACY_FIELD_KEYS) */
+  extracted_field_keys?: string[] | null
+  /** the deal the estimate was recomputed from — the accuracy's scale */
+  purchase_price?: number | string | null
+  /** null = no loan figure was known, so lender-dependent lines were NOT graded */
+  loan_amount?: number | string | null
+  /** the CD's own section-J total. NEVER compared to the estimate total (it nets
+   *  lender credits); used only to scale the per-line error into a share. */
+  total_closing_costs?: number | string | null
+  // ── CONTEXT ONLY, NEVER AN ERROR TERM ────────────────────────────────────
+  // Both are written on every observation (lib/offers/closing-cost-accuracy.ts:498
+  // and :632 on the buyer side, :632-633 on the seller side) and were read by
+  // nothing. They are admitted here as SAMPLE DESCRIPTION and nowhere else: the
+  // rail's honesty contract (see the note at :16 and the section-J rule at :192)
+  // is that only a line the estimator actually predicted may be scored, and
+  // neither of these is such a line.
+  /** The count the writer recorded beside `lines`. Read back as an INTEGRITY
+   *  check on the sample — if it disagrees with the array that arrived, the
+   *  observation was truncated in transit and the denominator is wrong. */
+  line_count?: number | string | null
+  /** The CD's cash-to-close (buyer side only; the seller writer stores null by
+   *  construction). Describes the deals the accuracy was measured on. NEVER
+   *  differenced against anything — no estimator predicts it. */
+  cash_to_close?: number | string | null
 }
 
 const CLOSING_COSTS_BASE = {
@@ -283,9 +336,13 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
 
   // BUYER/SELLER breakdown (round 36 — additive; the rail's shape is unchanged).
   // Missing side = pre-1105 row = buyer-side by construction, never guessed.
-  const bySide = new Map<string, { lines: AccuracyLine[]; observations: number }>()
+  // Keyed by the ONE side vocabulary (lib/offers/closing-cost-accuracy.ts
+  // ClosingCostSide), not by a bare string: the normalizer below is the only
+  // place a stored value becomes a group, and typing its output means a third
+  // spelling cannot enter this breakdown without failing type-check.
+  const bySide = new Map<ClosingCostSide, { lines: AccuracyLine[]; observations: number }>()
   for (const r of graded) {
-    const side = r.side === "seller" ? "seller" : "buyer"
+    const side: ClosingCostSide = r.side === "seller" ? "seller" : "buyer"
     const bucket = bySide.get(side) ?? { lines: [], observations: 0 }
     bucket.lines.push(...r.lines)
     bucket.observations += 1
@@ -300,6 +357,7 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
     }))
     .sort((a, b) => a.group.localeCompare(b.group))
   const sellerObs = bySide.get("seller")?.observations ?? 0
+  const medianLineError = medianOf(allLines.map((l) => Math.abs(l.deltaFromMid)))
 
   return {
     ...CLOSING_COSTS_BASE,
@@ -307,7 +365,7 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
     why: null,
     observations: graded.length,
     medianError: {
-      value: medianOf(allLines.map((l) => Math.abs(l.deltaFromMid))),
+      value: medianLineError,
       unit: "usd",
       label: "median |actual − estimate-band midpoint| per graded line",
     },
@@ -323,14 +381,142 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
       ...(sellerObs > 0
         ? ["Seller-side observations grade commission / title-and-settlement / transfer-tax lines against the settlement statement; buyer-side grades the CD's borrower-paid column."]
         : []),
+      ...describeClosingCostSample(graded, medianLineError),
     ],
   }
 }
 
+/**
+ * PURE: the sample's own provenance, stated beside the accuracy number.
+ *
+ * WHY THIS EXISTS (wave H5). `extraction_verified`, `extracted_field_keys`,
+ * `purchase_price` and `loan_amount` were written by BOTH observation writers
+ * (lib/offers/closing-cost-accuracy.ts:493-501 and :625-632) and read by
+ * nothing — while the rail's own first honest note asserted the provenance
+ * rule they record. An unread provenance column is an unmade check: a rail
+ * built entirely on unverified scans and one built on human-verified ledger
+ * rows rendered as the same number, and a reviewer could not tell which they
+ * were looking at. Each line here is measured off the graded rows or omitted
+ * — a missing column produces NO line rather than a fabricated one, so a
+ * pre-m1104 read and a genuinely unverified sample never look alike.
+ */
+function describeClosingCostSample(rows: ClosingCostObsRow[], medianLineError: number): string[] {
+  const notes: string[] = []
+  const n = rows.length
+  if (n === 0) return notes
+
+  // (1) PROVENANCE. Only rows that actually carry the flag are counted, so a
+  // legacy row with no column can never be silently scored as "unverified".
+  const withFlag = rows.filter((r) => typeof r.extraction_verified === "boolean")
+  if (withFlag.length > 0) {
+    const verified = withFlag.filter((r) => r.extraction_verified === true).length
+    notes.push(
+      `Provenance: ${verified} of ${withFlag.length} observation(s) used at least one HUMAN-VERIFIED extraction; ` +
+      `the remainder are high/medium-confidence scans` +
+      (withFlag.length < n ? ` (${n - withFlag.length} row(s) carry no provenance flag and are excluded from this count).` : "."),
+    )
+  }
+
+  // (2) COVERAGE — the denominator. How much of the CD each observation could
+  // actually see; a thin extraction grades fewer lines, which is why the line
+  // count and the observation count are different quantities.
+  const keyCounts = rows
+    .map((r) => (Array.isArray(r.extracted_field_keys) ? r.extracted_field_keys.length : null))
+    .filter((v): v is number => v != null)
+  if (keyCounts.length > 0) {
+    const distinct = new Set<string>()
+    for (const r of rows) for (const k of r.extracted_field_keys ?? []) distinct.add(k)
+    notes.push(
+      `Extraction coverage: median ${fractionalMedian(keyCounts)} provenance-usable field(s) per observation ` +
+      `across ${distinct.size} distinct CD field key(s) — lines whose figure was absent are NOT graded.`,
+    )
+  }
+
+  // (3) SCALE. An identical dollar error means very different things on a
+  // $180k and a $2.4M deal, so the price range the accuracy was measured on
+  // is stated rather than left for the reader to assume.
+  const prices = rows.map((r) => num(r.purchase_price)).filter((v): v is number => v != null && v > 0)
+  if (prices.length > 0) {
+    const sorted = [...prices].sort((a, b) => a - b)
+    const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`
+    notes.push(
+      `Measured on ${prices.length} deal(s) from ${usd(sorted[0])} to ${usd(sorted[sorted.length - 1])} ` +
+      `(median ${usd(fractionalMedian(prices))}).`,
+    )
+  }
+
+  // (4) WHY A LENDER LINE MAY BE THIN. Lender's-title and other loan-dependent
+  // lines are only gradeable where a loan figure was known.
+  const loanKnown = rows.filter((r) => num(r.loan_amount) != null).length
+  const loanColumnPresent = rows.some((r) => r.loan_amount !== undefined)
+  if (loanColumnPresent) {
+    notes.push(
+      `${loanKnown} of ${n} observation(s) had a known loan amount — loan-dependent lines (lender's title) ` +
+      `are graded only there, never estimated from a missing loan.`,
+    )
+  }
+
+  // (4b) SAMPLE INTEGRITY. line_count is what the WRITER recorded beside the
+  // lines array; the array is what actually arrived. They should agree on every
+  // row, and a disagreement means the graded denominator is not the denominator
+  // that was measured — a blind spot published beside the number rather than
+  // discovered later (CLAUDE.md §2). Rows with no count are excluded from the
+  // comparison, never scored as a mismatch.
+  const countable = rows.filter((r) => num(r.line_count) != null && Array.isArray(r.lines))
+  const countMismatch = countable.filter((r) => num(r.line_count) !== r.lines.length).length
+  if (countable.length > 0 && countMismatch > 0) {
+    notes.push(
+      `Sample integrity: ${countMismatch} of ${countable.length} observation(s) carry a recorded line count that ` +
+      `disagrees with the lines actually stored — the graded line total for those rows is not what was measured.`,
+    )
+  }
+
+  // (4c) WHOSE DEALS, IN THE BUYER'S OWN TERMS. cash_to_close is CONTEXT: it says
+  // what size of cash requirement these estimates were sitting behind. It is
+  // deliberately NOT differenced against anything — no estimator on this rail
+  // predicts cash-to-close, and treating it as an outcome would manufacture an
+  // error term for a prediction nobody made. The seller-side writer stores null,
+  // so this describes the buyer-side subset and says so.
+  const cash = rows.map((r) => num(r.cash_to_close)).filter((v): v is number => v != null && v > 0)
+  if (cash.length > 0) {
+    const sortedCash = [...cash].sort((a, b) => a - b)
+    const usdC = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`
+    notes.push(
+      `Context (not graded): the ${cash.length} observation(s) that recorded a cash-to-close ranged ` +
+      `${usdC(sortedCash[0])} to ${usdC(sortedCash[sortedCash.length - 1])}, median ` +
+      `${usdC(fractionalMedian(cash))}. Cash-to-close is never compared to an estimate — nothing predicts it.`,
+    )
+  }
+
+  // (5) THE ERROR IN CONTEXT. Scaled against the CD's OWN section-J total, not
+  // against the estimate total — the honesty contract forbids that comparison
+  // (section J nets lender credits; it is not the estimated quantity).
+  const cdTotals = rows.map((r) => num(r.total_closing_costs)).filter((v): v is number => v != null && v > 0)
+  if (cdTotals.length > 0 && medianLineError > 0) {
+    const medTotal = fractionalMedian(cdTotals)
+    notes.push(
+      `For scale, the median graded line error is ${round2((medianLineError / medTotal) * 100)}% of the median ` +
+      `CD section-J total ($${Math.round(medTotal).toLocaleString("en-US")}) on the ${cdTotals.length} observation(s) ` +
+      `that carried one. Section J is NEVER compared to the estimate total — it only scales the error.`,
+    )
+  }
+
+  return notes
+}
+
 async function closingCostsAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
   const buildQuery = (withSide: boolean) => {
+    // The provenance/scale columns (m1104) are selected in BOTH shapes — only
+    // `side` is m1105-dependent, so the legacy retry keeps the sample profile.
+    // Written as two plain LITERALS on purpose: the opposite-missing census
+    // parses select() arguments as strings, and a template literal would make
+    // this read unparseable — which drops the whole table from the
+    // written-never-read direction and would read as a fix instead of a
+    // blind spot (CLAUDE.md §2).
     let q = svc.from("closing_cost_accuracy_observations")
-      .select(withSide ? "state, lines, created_at, side" : "state, lines, created_at")
+      .select(withSide
+        ? "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs, line_count, cash_to_close, side"
+        : "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs, line_count, cash_to_close")
       .order("created_at", { ascending: false })
       .limit(2000)
     if (brokerageId) q = q.eq("brokerage_id", brokerageId)
@@ -354,6 +540,22 @@ export interface NetSheetReconRow {
   variance_amount: number | null
   surprise_level: string
   created_at: string | null
+  // ── DID THE SURPRISE ACTUALLY REACH A HUMAN? (wave H5) ────────────────────
+  // lib/net-sheet/net-sheet-guard-runner.ts:211 records `escalated` on every
+  // reconciliation, and the whole point of the surprise guard is that a
+  // material negative surprise ARMS the agent before the seller feels
+  // blindsided. Nothing read the flag, so a run where every escalation was
+  // refused (no agent user, a dead notifications insert, a bus publish that
+  // failed) rendered EXACTLY like a run where every one landed. An unread
+  // escalation flag is an unmade check.
+  /** true when a notification and/or a manager signal was actually published */
+  escalated?: boolean | null
+  /** varianceAmount / |estimatedNet| as recorded at reconciliation time */
+  variance_pct?: number | string | null
+  /** per-line deltas as recorded; the most negative netImpact is the TOP DRIVER */
+  line_item_deltas?: Array<{ key?: string; label?: string; netImpact?: number | null }> | null
+  /** the offer whose seller_net_estimate was the promise (null = derived elsewhere) */
+  offer_id?: string | null
 }
 
 const NET_SHEET_BASE = {
@@ -378,6 +580,70 @@ export function summarizeNetSheetRows(rows: NetSheetReconRow[]): RailAccuracy {
   // "Within" = the surprise guard's own recorded verdict ('none' = inside the
   // material tolerance). Pleasant/concerning/severe are all real gaps.
   const within = graded.filter((r) => r.surprise_level === "none").length
+
+  // ── THE ESCALATION CHECK. `flagged` is the guard's own definition: a
+  // materially NEGATIVE surprise (concerning/severe). Those are the only rows
+  // the runner ever tries to escalate, so they are the only honest denominator.
+  const flagged = graded.filter((r) => r.surprise_level === "concerning" || r.surprise_level === "severe")
+  const escalationKnown = flagged.filter((r) => typeof r.escalated === "boolean")
+  const escalationNotes: string[] = []
+  if (escalationKnown.length > 0) {
+    const reached = escalationKnown.filter((r) => r.escalated === true).length
+    const missed = escalationKnown.length - reached
+    escalationNotes.push(
+      `Escalation: ${reached} of ${escalationKnown.length} materially-negative surprise(s) actually reached a human ` +
+      `(agent notification and/or a Deal-Coordinator → Listing-Concierge signal)` +
+      (missed > 0
+        ? ` — ${missed} did NOT, and the seller was not armed by this rail on those deals.`
+        : "."),
+    )
+  } else if (flagged.length > 0) {
+    escalationNotes.push(
+      `${flagged.length} materially-negative surprise(s) carry no escalation flag — whether the agent was armed is UNKNOWN, not "fine".`,
+    )
+  }
+
+  // The percentage view of the same gap, recorded at reconciliation time. The
+  // dollar median above cannot say whether a $9k gap was 3% or 30% of the promise.
+  const pcts = graded.map((r) => num(r.variance_pct)).filter((v): v is number => v != null)
+  const pctNotes = pcts.length > 0
+    ? [`Median recorded variance: ${round2(fractionalMedian(pcts.map((p) => Math.abs(p))) * 100)}% of the promised net across ${pcts.length} reconciliation(s).`]
+    : []
+
+  // Provenance of the PROMISE: an offer row on file vs a net derived elsewhere.
+  const offerLinked = graded.filter((r) => r.offer_id != null).length
+  const offerNotes = graded.some((r) => r.offer_id !== undefined)
+    ? [`${offerLinked} of ${graded.length} reconciliation(s) name the offer whose seller-net estimate was the promise; the rest reconcile a net with no offer row on file.`]
+    : []
+
+  // ── TOP DRIVER BREAKDOWN. The single line most responsible for each negative
+  // surprise, folded across the sample: which cost line keeps hurting sellers.
+  const driverCount = new Map<string, { n: number; impacts: number[] }>()
+  for (const r of flagged) {
+    const deltas = Array.isArray(r.line_item_deltas) ? r.line_item_deltas : []
+    let worst: { label: string; impact: number } | null = null
+    for (const d of deltas) {
+      const impact = num(d?.netImpact)
+      if (impact == null || impact >= 0) continue          // only lines that HURT the net
+      const label = (d?.label ?? d?.key ?? "").toString().trim()
+      if (!label) continue
+      if (!worst || impact < worst.impact) worst = { label, impact }
+    }
+    if (!worst) continue
+    const bucket = driverCount.get(worst.label) ?? { n: 0, impacts: [] }
+    bucket.n += 1
+    bucket.impacts.push(Math.abs(worst.impact))
+    driverCount.set(worst.label, bucket)
+  }
+  const driverBreakdown: RailBreakdownRow[] = [...driverCount.entries()]
+    .map(([label, b]) => ({
+      group: label,
+      observations: b.n,
+      withinRate: null,                                     // a driver has no tolerance of its own
+      medianError: medianOf(b.impacts),
+    }))
+    .sort((a, b) => b.observations - a.observations || a.group.localeCompare(b.group))
+
   return {
     ...NET_SHEET_BASE,
     available: true,
@@ -393,12 +659,22 @@ export function summarizeNetSheetRows(rows: NetSheetReconRow[]): RailAccuracy {
       label: "settlements inside the surprise-guard tolerance of the promised net",
     },
     period: periodOf(graded.map((r) => r.created_at)),
+    ...(driverBreakdown.length > 0 ? { breakdown: driverBreakdown } : {}),
+    honestNotes: [
+      ...NET_SHEET_BASE.honestNotes,
+      ...escalationNotes,
+      ...pctNotes,
+      ...offerNotes,
+      ...(driverBreakdown.length > 0
+        ? ["The breakdown groups each negative surprise by the ONE line that hurt the net most — only lines present on both the estimate and the settlement can be a driver."]
+        : []),
+    ],
   }
 }
 
 async function netSheetAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
   let q = svc.from("net_sheet_reconciliations")
-    .select("estimated_net, actual_net, variance_amount, surprise_level, created_at")
+    .select("estimated_net, actual_net, variance_amount, variance_pct, surprise_level, escalated, line_item_deltas, offer_id, created_at")
     .order("created_at", { ascending: false })
     .limit(2000)
   if (brokerageId) q = q.eq("brokerage_id", brokerageId)
@@ -734,9 +1010,34 @@ async function patternAdapter(svc: Svc, brokerageId?: string): Promise<RailAccur
 
 // ─── Rail 8: CONTENT PERFORMANCE (predicted vs actual engagement score) ──────
 
+// THE READER USED TO DISCARD THREE OF THE WRITER'S FOUR MEASUREMENTS.
+// lib/content/performance-predictor.ts:313-326 writes actual_score, actual_ctr,
+// actual_engagement_rate AND prediction_id into prediction_accuracy_log; this
+// adapter selected `delta_score, logged_at` and nothing else, so the panel could
+// report exactly ONE abstract number (median |Δ score|) and could not say WHICH
+// call it graded. This rail gates EARNED AUTONOMY (lib/managers/accuracy-gate.ts
+// → app/dashboard/admin/manager-trust), so what it shows has to be complete.
+//
+// The headline metric is UNCHANGED on purpose: the accuracy gate's
+// marketing_content bar is "median engagement-score miss ≤ 15 score_points".
+// The recovered measurements arrive as BREAKDOWN rows beside it.
 export interface ContentAccuracyRow {
   delta_score: number | null
   logged_at: string | null
+  // ── the three recorded measurements the reader used to drop ────────────────
+  /** 0–100 engagement score actually observed. NULL until reconciliation lands
+   *  — honest-NULL by design; it is "not yet measured", never zero. */
+  actual_score?: number | null
+  /** clicks / impressions, 0..1 (same scale the predictor writes predicted_ctr on) */
+  actual_ctr?: number | null
+  /** (likes+comments+shares) / impressions, 0..1 */
+  actual_engagement_rate?: number | null
+  /** FK → content_performance_predictions.id: WHICH prediction made the call */
+  prediction_id?: string | null
+  // ── resolved from content_performance_predictions (second, tenant-anchored read) ──
+  predicted_score?: number | null
+  predicted_ctr?: number | null
+  predicted_engagement_rate?: number | null
 }
 
 const CONTENT_BASE = {
@@ -750,15 +1051,85 @@ const CONTENT_BASE = {
   detailHref: "/dashboard/marketing/studio",
 }
 
-/** PURE: content rail — median |delta_score| over logged outcomes. */
+/** PURE: median |predicted − actual| over rows where BOTH sides are present.
+ *  Returns null (never 0) when no row has both — absent is absent. */
+function pairedMedianAbs(
+  rows: ContentAccuracyRow[],
+  predicted: (r: ContentAccuracyRow) => number | null,
+  actual: (r: ContentAccuracyRow) => number | null,
+): { median: number | null; observations: number } {
+  const deltas: number[] = []
+  for (const r of rows) {
+    const p = predicted(r)
+    const a = actual(r)
+    if (p == null || a == null) continue
+    deltas.push(Math.abs(p - a))
+  }
+  return { median: deltas.length > 0 ? fractionalMedian(deltas) : null, observations: deltas.length }
+}
+
+/** PURE: content rail — median |delta_score| over logged outcomes, PLUS the
+ *  predicted-vs-actual CTR and engagement-rate comparisons the log already
+ *  carries, PLUS an explicit count of rows whose outcome has not landed yet. */
 export function summarizeContentRows(rows: ContentAccuracyRow[]): RailAccuracy {
   const graded = rows.filter((r) => num(r.delta_score) != null)
+
+  // A logged row with NO actual_* at all is a prediction awaiting
+  // reconciliation, not a miss of zero (§ honest-NULL).
+  const awaitingOutcome = rows.filter(
+    (r) => num(r.actual_score) == null && num(r.actual_ctr) == null && num(r.actual_engagement_rate) == null,
+  ).length
+  const unlinked = rows.filter((r) => !r.prediction_id).length
+  const linkedButUnresolved = rows.filter(
+    (r) => !!r.prediction_id && r.predicted_score == null && r.predicted_ctr == null && r.predicted_engagement_rate == null,
+  ).length
+
   if (graded.length === 0) {
-    return unavailable(CONTENT_BASE,
-      "No published content has its actual engagement logged against a prediction yet.")
+    const why = rows.length === 0
+      ? "No published content has its actual engagement logged against a prediction yet."
+      : `${rows.length} prediction${rows.length === 1 ? " is" : "s are"} logged but none carries a graded score delta yet — ${awaitingOutcome} still awaiting reconciliation.`
+    return unavailable(CONTENT_BASE, why)
   }
+
+  const ctr = pairedMedianAbs(rows, (r) => num(r.predicted_ctr), (r) => num(r.actual_ctr))
+  const eng = pairedMedianAbs(rows, (r) => num(r.predicted_engagement_rate), (r) => num(r.actual_engagement_rate))
+
+  const breakdown: RailBreakdownRow[] = [
+    {
+      group: "Click-through rate — predicted vs actual",
+      observations: ctr.observations,
+      withinRate: null,
+      // stored 0..1 on BOTH sides (predictor writes predicted_ctr = score/2000,
+      // logger writes actual_ctr = clicks/impressions) → ×100 = percentage points
+      medianError: ctr.median == null ? null : round2(ctr.median * 100),
+      unit: "pct_points",
+      pending: rows.length - ctr.observations,
+    },
+    {
+      group: "Engagement rate — predicted vs actual",
+      observations: eng.observations,
+      withinRate: null,
+      medianError: eng.median == null ? null : round2(eng.median * 100),
+      unit: "pct_points",
+      pending: rows.length - eng.observations,
+    },
+  ]
+
+  const honestNotes = [
+    ...CONTENT_BASE.honestNotes,
+    `CTR and engagement rate are compared only where the prediction row still resolves and the outcome has landed — ${ctr.observations} and ${eng.observations} of ${rows.length} logged rows respectively.`,
+    `${awaitingOutcome} logged prediction${awaitingOutcome === 1 ? "" : "s"} carr${awaitingOutcome === 1 ? "ies" : "y"} no recorded outcome yet — shown as "not yet measured", never as a zero miss.`,
+    ...(unlinked > 0
+      ? [`${unlinked} log row${unlinked === 1 ? "" : "s"} name${unlinked === 1 ? "s" : ""} no prediction_id, so the call behind ${unlinked === 1 ? "it" : "them"} cannot be identified.`]
+      : []),
+    ...(linkedButUnresolved > 0
+      ? [`${linkedButUnresolved} log row${linkedButUnresolved === 1 ? "" : "s"} name a prediction_id that did not resolve in this tenant scope — excluded from the rate comparisons.`]
+      : []),
+  ]
+
   return {
     ...CONTENT_BASE,
+    honestNotes,
     available: true,
     why: null,
     observations: graded.length,
@@ -769,18 +1140,93 @@ export function summarizeContentRows(rows: ContentAccuracyRow[]): RailAccuracy {
     },
     withinRate: null,
     period: periodOf(graded.map((r) => r.logged_at)),
+    breakdown,
   }
+}
+
+/** `.in()` travels in the query STRING — 2000 uuids is a 414, not a result. */
+function chunk<T>(xs: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size))
+  return out
 }
 
 async function contentAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
   let q = svc.from("prediction_accuracy_log")
-    .select("delta_score, logged_at")
+    // Every column the writer records. `actual_*` is honest-NULL until
+    // reconciliation lands; `prediction_id` names the call being graded.
+    .select("delta_score, logged_at, actual_score, actual_ctr, actual_engagement_rate, prediction_id")
     .order("logged_at", { ascending: false })
     .limit(2000)
   if (brokerageId) q = q.eq("brokerage_id", brokerageId)
   const { data, error } = await q
   if (error) return unavailable(CONTENT_BASE, `ledger unreadable: ${error.message}`)
-  return summarizeContentRows((data ?? []) as ContentAccuracyRow[])
+
+  const rows = (data ?? []) as ContentAccuracyRow[]
+
+  // ── Resolve the PREDICTION side ─────────────────────────────────────────────
+  // prediction_accuracy_log.prediction_id → content_performance_predictions is
+  // the pair's ONLY FK (scripts/schema-fk-map.ts:591), so an embed would be
+  // PGRST201-safe — but a second read is used anyway so the join is
+  // TENANT-ANCHORED ON ITS OWN ROW (content_performance_predictions carries its
+  // own brokerage_id) rather than inherited through the parent.
+  const predictionIds = [...new Set(
+    rows.map((r) => r.prediction_id).filter((v): v is string => typeof v === "string" && v.length > 0),
+  )]
+  const predicted = new Map<string, { predicted_score: number | null; predicted_ctr: number | null; predicted_engagement_rate: number | null }>()
+  let predictionSideRefusal: string | null = null
+
+  // The prediction side is scoped through lib/kernel/tenant-scope rather than
+  // the `if (brokerageId) q = q.eq(…)` shape the rest of this module still
+  // carries: a missing tenant id must not decay into "every tenant". Platform
+  // scope here is the SAME decision the log read above made, said out loud.
+  const predictionScope: TenantScope = brokerageId
+    ? tenantScope(brokerageId, "prediction accuracy · content rail (prediction side)")
+    : platformScope("cross-tenant accuracy report — the superadmin platform analytics mount passes no brokerageId, and this read is the prediction half of the log rows already read at that same scope")
+
+  for (const ids of chunk(predictionIds, 100)) {
+    const pq = svc.from("content_performance_predictions")
+      .select("id, predicted_score, predicted_ctr, predicted_engagement_rate")
+      .in("id", ids)
+    // Mutating form (as lib/kernel/command-center.ts:358 uses it): the builder is
+    // filtered in place, so the deeply-generic PostgREST return type is never
+    // re-inferred through applyTenantScope's own type parameter (TS2589).
+    interface EqOnly { eq(column: string, value: string): EqOnly }
+    applyTenantScope(pq as unknown as EqOnly, predictionScope)
+    const { data: preds, error: predError } = await pq
+    if (predError) {
+      // DELIBERATELY NOT FATAL, and said out loud. The headline metric is
+      // computed from delta_score, which the LOG carries on its own row — that
+      // number is still fully evidenced. Only the CTR / engagement-rate
+      // comparisons need the prediction side, and they degrade to "not yet
+      // measured" with the refusal named in the notes. Refusing the whole rail
+      // here would black out an autonomy gate over a secondary read.
+      predictionSideRefusal = predError.message
+      console.error("[PredictionAccuracy] content prediction-side read refused:", predError.message)
+      break
+    }
+    for (const p of (preds ?? []) as any[]) {
+      predicted.set(p.id as string, {
+        predicted_score: p.predicted_score ?? null,
+        predicted_ctr: p.predicted_ctr ?? null,
+        predicted_engagement_rate: p.predicted_engagement_rate ?? null,
+      })
+    }
+  }
+
+  const joined: ContentAccuracyRow[] = rows.map((r) => {
+    const p = r.prediction_id ? predicted.get(r.prediction_id) : undefined
+    return { ...r, ...(p ?? {}) }
+  })
+
+  const rail = summarizeContentRows(joined)
+  if (predictionSideRefusal && rail.available) {
+    rail.honestNotes = [
+      ...rail.honestNotes,
+      `Prediction-side read refused (${predictionSideRefusal}) — the score miss above still stands on the log's own delta_score; the rate comparisons are incomplete.`,
+    ]
+  }
+  return rail
 }
 
 // ─── Rail 9: DEAL OUTCOME (frozen probability calls vs the terminal event) ───
@@ -1305,6 +1751,15 @@ async function incomeForecastAdapter(svc: Svc, brokerageId?: string): Promise<Ra
   const { data: deals, error: tErr } = await tq
   if (tErr) return unavailable(INCOME_FORECAST_BASE, `ledger unreadable: ${tErr.message}`)
 
+  // IDENTITY CLASS (m352, corrected by m366). summarizeIncomeForecastRows joins
+  // these two lists BY agentId, and they used to be two different classes:
+  // income_forecast_snapshots.agent_id FK'd users while transactions.agent_id FK'd
+  // agents, so `dealsByAgent.get(snapshot.agentId)` never hit and this rail graded
+  // every income forecast as a total miss — in a surface that governs how much
+  // autonomy the OS is allowed. m366 re-pointed the snapshot column at agents, so
+  // both sides are agents-class now and the translation that fixed the join would
+  // re-break it in the opposite direction. Join agents to agents, no hop.
+
   return summarizeIncomeForecastRows(
     snapRows.map((s) => ({
       agentId: s.agent_id ?? null,
@@ -1314,7 +1769,9 @@ async function incomeForecastAdapter(svc: Svc, brokerageId?: string): Promise<Ra
       highBandPct: num(s.high_band_pct),
     })),
     ((deals ?? []) as any[]).map((d) => ({
-      agentId: d.agent_id ?? null,
+      // Agents-class on both sides; a deal with no agent is dropped by the
+      // existing `if (!d.agentId) continue`, which is the honest outcome.
+      agentId: (d.agent_id as string | null) ?? null,
       closeDate: d.close_date ?? null,
       gci: num(d.commission_amount) ?? num(d.estimated_commission),
     })),
@@ -1422,8 +1879,8 @@ export async function loadRailAccuracy(svc: Svc, rail: AccuracyRailId, brokerage
 
 export const TRUST_CHIP_MIN_OBSERVATIONS = 5
 export const TRUST_CHIP_NET_SHEET_MIN_WITHIN = 0.8
-export const TRUST_CHIP_CLOSING_COST_MIN_WITHIN = 0.7
-export const TRUST_CHIP_PRICE_MAX_MEDIAN_PCT = 0.05
+const TRUST_CHIP_CLOSING_COST_MIN_WITHIN = 0.7
+const TRUST_CHIP_PRICE_MAX_MEDIAN_PCT = 0.05
 
 export interface PredictionTrustChip {
   rail: AccuracyRailId

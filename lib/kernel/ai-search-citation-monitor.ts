@@ -111,6 +111,52 @@ export function detectOurCitation(searchResultText: string, target: DetectionTar
   return { cited: false, matched: null, kind: null }
 }
 
+// ── PURE: who ELSE did the answer name? ──
+
+/** A competitor we watch, as stored on competitors / competitor_profiles. */
+export interface CompetitorTarget {
+  name: string
+  /** Their site, when we know it. A domain match is the strong signal. */
+  domain?: string | null
+}
+
+/**
+ * PURE + total: which of the brokerages we watch appear in this SAME answer?
+ *
+ * This is the other half of the citation question, and the half that was being
+ * thrown away. detectOurCitation reads the answer and decides about US, then the
+ * text was discarded — so the OS could report a hit rate but never share of
+ * voice, which is the number that can move the OPPOSITE way. Run against the
+ * text already in memory, so it costs no extra provider call.
+ *
+ * Conservative by design: a domain match, or a competitor NAME long enough not
+ * to collide with ordinary prose. Short names are skipped rather than guessed —
+ * a false competitor citation would understate our own share and send a broker
+ * chasing a rival who was never mentioned.
+ */
+export function detectCompetitorCitations(
+  searchResultText: string, competitors: ReadonlyArray<CompetitorTarget>,
+): string[] {
+  const hay = norm(searchResultText || "")
+  if (!hay || !competitors?.length) return []
+
+  const found = new Set<string>()
+  for (const c of competitors) {
+    const name = String(c?.name ?? "").trim()
+    if (!name) continue
+
+    const domain = norm(String(c?.domain ?? "").replace(/^https?:\/\//, "").replace(/\/.*$/, ""))
+    if (domain.length >= 4 && hay.includes(domain)) { found.add(name); continue }
+
+    // 4 chars is the same floor detectOurCitation uses for a slug/domain. A
+    // brokerage called "EXP" or "KW" is skipped rather than matched against
+    // every occurrence of those letters inside other words.
+    const needle = norm(name)
+    if (needle.length >= 4 && hay.includes(needle)) found.add(name)
+  }
+  return [...found].sort()
+}
+
 // ── PURE: score AI-search visibility from REAL recorded observations ──
 
 export interface VisibilityScore {
@@ -268,6 +314,126 @@ export interface CitationMonitorResult {
 }
 
 /**
+ * The brokerage's watched competitors, for share-of-voice detection.
+ *
+ * Two tables hold them for two different features (competitors is the simple
+ * watch list, competitor_profiles the richer intel record), so both are read and
+ * merged by name — a broker who added a rival in one surface must not be
+ * invisible to the other. Never throws: share of voice is an enrichment, and a
+ * read failure must not stop the citation monitor from recording OUR outcome.
+ */
+async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promise<CompetitorTarget[]> {
+  const byName = new Map<string, CompetitorTarget>()
+  const add = (name: unknown, domain: unknown) => {
+    const n = String(name ?? "").trim()
+    if (!n) return
+    const key = n.toLowerCase()
+    const d = String(domain ?? "").trim() || null
+    const existing = byName.get(key)
+    if (!existing) byName.set(key, { name: n, domain: d })
+    else if (!existing.domain && d) existing.domain = d
+  }
+  try {
+    const { data } = await supabase.from("competitors")
+      .select("competitor_name, competitor_url").eq("brokerage_id", brokerageId)
+    for (const r of (data ?? []) as any[]) add(r.competitor_name, r.competitor_url)
+  } catch { /* enrichment only */ }
+  try {
+    // NAME ONLY FROM THIS ARM. `competitor_profiles.website_url` was read here
+    // as the domain half, but nothing writes it: the profile row is created by
+    // lib/competitive-intel/content-intel-scan.ts:68 from a
+    // `competitor_brokerages` watchlist entry, and that table carries no url
+    // column at all — so this arm contributed `null` on every row and the
+    // `add()` merge above kept whatever the `competitors` arm had. The domain
+    // this monitor uses comes from competitors.competitor_url, read one arm up
+    // at lib/kernel/ai-search-citation-monitor.ts:337. Asking for a column with
+    // no writer made the merge look like it had two sources of domain when it
+    // has one, which is the drift §6 exists to stop.
+    const { data } = await supabase.from("competitor_profiles")
+      .select("competitor_name").eq("brokerage_id", brokerageId).eq("is_active", true)
+    for (const r of (data ?? []) as any[]) add(r.competitor_name, null)
+  } catch { /* enrichment only */ }
+  return [...byName.values()]
+}
+
+/**
+ * WHO OWNS THE PAGE — resolved ONCE per pass for every agent the pass touches,
+ * not once per page (a per-page read would multiply the query count by the page
+ * count for data that cannot change mid-pass).
+ *
+ * Returns the agent's team AND their display name, because both are needed and
+ * both come from the same two rows:
+ *
+ *   · team_id is stamped onto the observation so a team lead has a team view.
+ *     Stamped AS OF the observation — an agent changing teams must not silently
+ *     rewrite last quarter's GEO history.
+ *   · the NAME becomes a detection brand. This is the fix for a defect the code
+ *     had documented but never implemented: the reel loop's comment said "agent
+ *     attribution for the brand targets" while brands carried the BROKERAGE name
+ *     alone. So an AI answer that named the agent — the single most valuable
+ *     citation a real-estate agent can get, and the one their personal brand is
+ *     built on — was recorded as not_cited. The score was not merely incomplete;
+ *     it asserted a miss that had not happened.
+ *
+ * Never throws: scope + attribution are enrichment, and a read failure must not
+ * stop the monitor from recording OUR outcome.
+ */
+interface PageOwner {
+  /** ALWAYS agents.id — the observation column FKs agents, and agents.team_id is
+   *  where the team lives. Never a users.id, whatever the source column held. */
+  agentId: string
+  teamId: string | null
+  name: string | null
+}
+
+/**
+ * TWO IDENTITY CLASSES, ONE COLUMN NAME — the trap this function exists to
+ * absorb. The two citable-page tables both call their owner column `agent_id`
+ * and they mean different things:
+ *
+ *   · ai_video_projects.agent_id  FKs AGENTS (an agents.id) — since m366; it was
+ *     a users.id before, which is why the caller declares its class here
+ *   · lead_capture_forms.agent_id FKs AGENTS (an agents.id)
+ *
+ * Stamping either straight onto the observation would be wrong for one of them:
+ * the observation's agent_id FKs agents, and every scoped read joins through
+ * agents.team_id. The reel path would have raised a foreign-key violation on
+ * EVERY write — caught by inserting a real row against the live schema rather
+ * than by reading the column name and trusting it.
+ *
+ * So the caller declares which class its ids are, and this returns a map keyed
+ * by THAT id whose value always carries the canonical agents.id.
+ */
+async function loadPageOwners(
+  supabase: Svc,
+  ids: string[],
+  keyClass: "users" | "agents",
+  brokerageId: string,
+): Promise<Map<string, PageOwner>> {
+  const owners = new Map<string, PageOwner>()
+  const unique = [...new Set(ids.filter((a): a is string => !!a))]
+  if (unique.length === 0) return owners
+  try {
+    const keyColumn = keyClass === "users" ? "user_id" : "id"
+    const { data } = await supabase.from("agents")
+      .select("id, team_id, user_id, users(first_name, last_name)")
+      // TENANT-SCOPED. The ids come from this brokerage's own pages, so this
+      // filter should never change the result — which is exactly why it belongs
+      // here: an id that somehow crossed tenants would otherwise resolve a
+      // stranger's name and team onto our observation, and nothing would say so.
+      .eq("brokerage_id", brokerageId)
+      .in(keyColumn, unique)
+    for (const r of (data ?? []) as any[]) {
+      const full = [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ").trim()
+      const key = keyClass === "users" ? r.user_id : r.id
+      if (!key) continue
+      owners.set(key, { agentId: r.id, teamId: r.team_id ?? null, name: full || null })
+    }
+  } catch { /* enrichment only */ }
+  return owners
+}
+
+/**
  * Run one citation-monitor pass for a brokerage.
  *
  * For each recently-published reel (ai_video_projects.is_published, public_slug set,
@@ -297,6 +463,10 @@ export async function runCitationMonitor(
   const maxPages = opts.maxPages ?? 25
   const windowDays = opts.windowDays ?? 30
   const observedOn = now.toISOString().slice(0, 10)
+
+  // Loaded ONCE per pass, not per page — the watch list does not change between
+  // pages and a per-page read would multiply the query count by the page count.
+  const competitorTargets = await loadCompetitorTargets(supabase, brokerageId)
   const since = new Date(now.getTime() - windowDays * 86_400_000).toISOString()
 
   const result: CitationMonitorResult = {
@@ -312,7 +482,7 @@ export async function runCitationMonitor(
 
   // Recently-published reels with a live public page.
   const { data: reels } = await supabase.from("ai_video_projects")
-    .select("id, title, listing_id, public_slug, published_at")
+    .select("id, title, listing_id, public_slug, published_at, agent_id")
     .eq("brokerage_id", brokerageId)
     .eq("is_published", true)
     .not("public_slug", "is", null)
@@ -321,8 +491,14 @@ export async function runCitationMonitor(
     .limit(maxPages)
   const pages = (reels ?? []) as Array<{
     id: string; title: string | null; listing_id: string | null;
-    public_slug: string | null; published_at: string | null
+    public_slug: string | null; published_at: string | null; agent_id: string | null
   }>
+
+  // One read for every agent in the pass — team (for scope) + name (for brand).
+  // ai_video_projects.agent_id became agents-class in m366; keying this by
+  // "users" now matches nothing, so every reel page would lose its agent brand
+  // target and its team scope silently.
+  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "agents", brokerageId)
 
   const allObs: CitationObservation[] = []
 
@@ -330,7 +506,9 @@ export async function runCitationMonitor(
     if (!page.public_slug) continue
     result.pagesMonitored += 1
 
-    // Listing place for the query + agent attribution for the brand targets.
+    // Listing place for the query. (Agent attribution for the brand targets is
+    // resolved above from loadPageOwners — this comment used to claim it
+    // happened here, while brands carried the brokerage name alone.)
     let city: string | null = null, state: string | null = null
     if (page.listing_id) {
       const { data: l } = await supabase.from("listings")
@@ -341,10 +519,16 @@ export async function runCitationMonitor(
 
     const slug = page.public_slug
     const pageUrl = `${origin}/v/${slug}`
+    // BOTH brands. The agent's own name is the citation that matters most to
+    // them and it was never a target — see loadPageOwners. The brokerage name
+    // stays: a brokerage-level page has no agent, and an answer naming the
+    // company is still a real citation.
+    const owner = page.agent_id ? owners.get(page.agent_id) ?? null : null
     const target: DetectionTarget = {
       slugs:   [pageUrl, `/v/${slug}`, slug],
       domains: [host],
-      brands:  [brandName].filter((b): b is string => !!b && b.trim().length >= 3),
+      brands:  [brandName, owner?.name ?? null]
+        .filter((b): b is string => !!b && b.trim().length >= 3),
     }
 
     const query = buildCitationQuery({ brandName, title: page.title, city, state })
@@ -356,6 +540,11 @@ export async function runCitationMonitor(
 
     const outcome: CitationOutcome = !ran ? "not_checked" : detection.cited ? "cited" : "not_cited"
     const citedUrl = outcome === "cited" ? detection.matched : null
+    // WHO ELSE the answer named, from the SAME text — no extra provider call.
+    // NULL when the search never ran: an empty array would claim we looked and
+    // found nobody, which is a different (and false) statement from "we could
+    // not look at all".
+    const competitorsCited = ran ? detectCompetitorCitations(fetched.text, competitorTargets) : null
 
     const pageObs: CitationObservation[] = []
     for (const platform of platforms) {
@@ -364,12 +553,18 @@ export async function runCitationMonitor(
       const { error } = await supabase.from("ai_search_citation_observations")
         .upsert({
           brokerage_id: brokerageId,
+          // WHOSE citation this is (m335) — GEO is for agents, teams and
+          // brokerages, and a row that knows only its tenant can answer only
+          // the brokerage question.
+          agent_id:     owner?.agentId ?? null,
+          team_id:      owner?.teamId ?? null,
           project_id:   page.id,
           public_slug:  slug,
           platform,
           query,
           outcome,
           cited_url:    citedUrl,
+          competitors_cited: competitorsCited,
           provider:     fetched.provider,
           observed_on:  observedOn,
           observed_at:  now.toISOString(),
@@ -453,6 +648,10 @@ export async function runLandingPageCitationMonitor(
   const maxPages = opts.maxPages ?? 25
   const observedOn = now.toISOString().slice(0, 10)
 
+  // Loaded ONCE per pass, not per page — the watch list does not change between
+  // pages and a per-page read would multiply the query count by the page count.
+  const competitorTargets = await loadCompetitorTargets(supabase, brokerageId)
+
   const result: LandingCitationMonitorResult = {
     pagesMonitored: 0, observations: 0, cited: 0, notCited: 0, notChecked: 0,
     visibility: scoreCitationVisibility([]), pages: [],
@@ -465,12 +664,17 @@ export async function runLandingPageCitationMonitor(
 
   // Active lead magnets that carry AI landing copy (the citable GEO surface).
   const { data: forms } = await supabase.from("lead_capture_forms")
-    .select("id, name, slug, landing_content")
+    .select("id, name, slug, landing_content, agent_id")
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
     .not("landing_content", "is", null)
     .limit(maxPages)
-  const pages = (forms ?? []) as Array<{ id: string; name: string | null; slug: string | null; landing_content: unknown }>
+  const pages = (forms ?? []) as Array<{
+    id: string; name: string | null; slug: string | null; landing_content: unknown; agent_id: string | null
+  }>
+
+  // lead_capture_forms.agent_id IS an agents id — the other class.
+  const owners = await loadPageOwners(supabase, pages.map((p) => p.agent_id ?? ""), "agents", brokerageId)
 
   const allObs: CitationObservation[] = []
 
@@ -483,10 +687,12 @@ export async function runLandingPageCitationMonitor(
 
     const slug = page.slug
     const pageUrl = `${origin}/lm/${slug}`
+    const owner = page.agent_id ? owners.get(page.agent_id) ?? null : null
     const target: DetectionTarget = {
       slugs:   [pageUrl, `/lm/${slug}`, slug],
       domains: [host],
-      brands:  [brandName].filter((b): b is string => !!b && b.trim().length >= 3),
+      brands:  [brandName, owner?.name ?? null]
+        .filter((b): b is string => !!b && b.trim().length >= 3),
     }
 
     const query = buildLandingCitationQuery({
@@ -500,18 +706,26 @@ export async function runLandingPageCitationMonitor(
     const detection = ran ? detectOurCitation(fetched.text, target) : { cited: false, matched: null, kind: null as null }
     const outcome: CitationOutcome = !ran ? "not_checked" : detection.cited ? "cited" : "not_cited"
     const citedUrl = outcome === "cited" ? detection.matched : null
+    // WHO ELSE the answer named, from the SAME text — no extra provider call.
+    // NULL when the search never ran: an empty array would claim we looked and
+    // found nobody, which is a different (and false) statement from "we could
+    // not look at all".
+    const competitorsCited = ran ? detectCompetitorCitations(fetched.text, competitorTargets) : null
 
     const pageObs: CitationObservation[] = []
     for (const platform of platforms) {
       const { error } = await supabase.from("ai_search_landing_citation_observations")
         .upsert({
           brokerage_id: brokerageId,
+          agent_id:     owner?.agentId ?? null,
+          team_id:      owner?.teamId ?? null,
           form_id:      page.id,
           public_slug:  slug,
           platform,
           query,
           outcome,
           cited_url:    citedUrl,
+          competitors_cited: competitorsCited,
           provider:     fetched.provider,
           observed_on:  observedOn,
           observed_at:  now.toISOString(),

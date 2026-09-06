@@ -26,23 +26,30 @@ interface CommissionRecord {
   blockerReason?: string
 }
 
+interface CommissionSummary {
+  pending: number
+  approved: number
+  paid: number
+  held: number
+  totalPending: number
+  totalApproved: number
+  totalPaid: number
+}
+
 interface CommissionIntelligencePanelProps {
   commissions: CommissionRecord[]
-  summary: {
-    pending: number
-    approved: number
-    paid: number
-    held: number
-    totalPending: number
-    totalApproved: number
-    totalPaid: number
-  }
+  summary?: CommissionSummary
   transactionLinkPrefix?: string // e.g., "/dashboard/transactions/"
 }
 
+const EMPTY_SUMMARY: CommissionSummary = {
+  pending: 0, approved: 0, paid: 0, held: 0, totalPending: 0, totalApproved: 0, totalPaid: 0,
+}
+
 export function CommissionIntelligencePanel({
-  commissions,
-  summary,
+  commissions = [],
+  // Default so a caller that omits summary can never crash on summary.pending.
+  summary = EMPTY_SUMMARY,
   transactionLinkPrefix = "/dashboard/transactions/",
 }: CommissionIntelligencePanelProps) {
   const formatCurrency = (val: number) =>

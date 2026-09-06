@@ -22,6 +22,7 @@
 // NOT server-only (simulator-driven, like the rest of the kernel loaders).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { TRANSACTION_STATUSES_IN_ESCROW, TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -145,7 +146,7 @@ export async function runClientPulse(
         .order("created_at", { ascending: false }).limit(1).maybeSingle(),
       supabase.from("transactions")
         .select("inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at, appraisal_value, id")
-        .eq("listing_id", l.id).in("status", ["under_contract", "closing"]).is("deleted_at", null).limit(1).maybeSingle(),
+        .eq("listing_id", l.id).in("status", [...TRANSACTION_STATUSES_IN_ESCROW]).is("deleted_at", null).limit(1).maybeSingle(),
     ])
     let adsLive = 0
     if (l.city) {
@@ -196,7 +197,7 @@ export async function runClientPulse(
   // ── BUYERS: live deals + this week's saves. ──
   const { data: buyerTxns } = await supabase.from("transactions")
     .select("id, deal_name, stage, buyer_contact_id, inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at, appraisal_value")
-    .eq("brokerage_id", brokerageId).in("status", ["active", "under_contract", "closing"])
+    .eq("brokerage_id", brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN])
     .not("buyer_contact_id", "is", null).is("deleted_at", null).limit(100)
   for (const t of (buyerTxns ?? []) as any[]) {
     const { data: c } = await supabase.from("contacts").select("first_name, nurture_status").eq("id", t.buyer_contact_id).maybeSingle()

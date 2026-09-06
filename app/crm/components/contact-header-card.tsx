@@ -32,10 +32,14 @@ import {
 import {
   Phone, Mail, MessageSquare, MessageCircle, Globe, MapPin, AlertTriangle,
   ChevronDown, MoreHorizontal, Share2, FileText, Loader2, ChevronUp, X,
-  UserCog, GitMerge,
+  UserCog, GitMerge, Moon, Sun,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { logActivity } from "@/app/actions/activities"
+import { setContactDormancy } from "@/app/actions/contacts"
+import type { ContactStatus } from "@/lib/contact-promotion/qualification"
+import { personaLabel } from "@/constants/crm-standards"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
 import { ReassignContactDialog } from "@/app/crm/components/reassign-contact-dialog"
 import { MergeContactsDialog } from "@/app/crm/components/merge-contacts-dialog"
@@ -84,6 +88,8 @@ interface Props {
   onShareSocialPost?: () => void
   /** Called when an opt-out toggle changes — parent persists */
   onChannelToggle: (channel: "email" | "sms" | "phone" | "direct_mail", optOut: boolean) => Promise<void>
+  /** Called after Mark dormant / Reactivate succeeds — parent reloads the contact */
+  onStatusChanged?: () => void
 }
 
 export function ContactHeaderCard({
@@ -99,9 +105,11 @@ export function ContactHeaderCard({
   onSendEmail,
   onShareSocialPost,
   onChannelToggle,
+  onStatusChanged,
 }: Props) {
   const router = useRouter()
   const [channelsOpen, setChannelsOpen] = useState(false)
+  const [dormancyPending, setDormancyPending] = useState(false)
   const [, startTransition] = useTransition()
   const [channelLoading, setChannelLoading] = useState<string | null>(null)
   // Reassign + Merge/Dedupe affordances (dialogs enforce their own server-side
@@ -134,6 +142,30 @@ export function ContactHeaderCard({
       status: "completed",
     }).catch(() => {})
     window.location.href = `tel:${contact.phone}`
+  }
+
+  // 'inactive' = dormancy (automation stops, contact stays visible — read by
+  // reengagement-policy, reactivation-enroller, stale-preapproval). This was a
+  // reader-only status reachable only through the free-form edit path; this is
+  // its dedicated setter. The SERVER decides tenancy/ownership and counts the
+  // update (app/actions/contacts.ts:setContactDormancy), so a refusal is
+  // reported honestly rather than assumed.
+  // Pinned to the canonical vocabulary — compile breaks if 'inactive' leaves it.
+  const isDormant = contact.status === ("inactive" satisfies ContactStatus)
+  async function handleDormancyToggle() {
+    setDormancyPending(true)
+    try {
+      const res = await setContactDormancy(contact.id, !isDormant)
+      if (!res.success) {
+        toast.error(res.error ?? "Could not update this contact's status")
+        return
+      }
+      toast.success(isDormant ? `${fullName} reactivated` : `${fullName} marked dormant — automation paused`)
+      onStatusChanged?.()
+      router.refresh()
+    } finally {
+      setDormancyPending(false)
+    }
   }
 
   async function handleChannelToggle(channel: "email" | "sms" | "phone" | "direct_mail") {
@@ -193,7 +225,9 @@ export function ContactHeaderCard({
             {/* Persona / buyer-stage subtle line */}
             {(contact.contact_persona || contact.buyer_stage) && (
               <p className="text-xs text-muted-foreground capitalize">
-                {[contact.contact_persona?.replace(/_/g, " "), contact.buyer_stage?.replace(/[_-]/g, " ")]
+                {/* Persona through the canonical label map (constants/crm-standards.ts) instead
+                    of an inline de-snake; buyer_stage keeps its own transform (different vocab). */}
+                {[personaLabel(contact.contact_persona), contact.buyer_stage?.replace(/[_-]/g, " ")]
                   .filter(Boolean).join(" · ")}
               </p>
             )}
@@ -280,6 +314,19 @@ export function ContactHeaderCard({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
+              {/* Dormancy toggle — the dedicated 'inactive' setter (see
+                  handleDormancyToggle). Distinct from Archive: a dormant
+                  contact stays on working lists; only automation stops. */}
+              <DropdownMenuItem onClick={handleDormancyToggle} disabled={dormancyPending} className="gap-2 text-xs">
+                {dormancyPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : isDormant ? (
+                  <Sun className="h-3.5 w-3.5" />
+                ) : (
+                  <Moon className="h-3.5 w-3.5" />
+                )}
+                {isDormant ? "Reactivate contact" : "Mark dormant"}
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setReassignOpen(true)} className="gap-2 text-xs">
                 <UserCog className="h-3.5 w-3.5" />
                 Reassign to another agent

@@ -20,12 +20,21 @@ interface AdvocacyRadarProps {
   leaderboardWidget?: {
     topReferrers: Array<{ name: string; count: number; rank: number }>
   } | null
+  /**
+   * ORPHAN DOCTRINE §1.2 (2026-09-04) — clients whose engagement score was
+   * computed for a DIFFERENT agent (client_engagement_scores.agent_id, written
+   * by the scorer and read by nobody until now). The Engagement figure below is
+   * an average over those rows too, so without this line an agent reads a
+   * relationship number that is partly somebody else's work.
+   */
+  inheritedEngagementScores?: number
 }
 
 export function AdvocacyRadar({
   sphereScore,
   topAdvocates,
   leaderboardWidget,
+  inheritedEngagementScores,
 }: AdvocacyRadarProps) {
   const score = sphereScore?.overall ?? 0
 
@@ -72,6 +81,12 @@ export function AdvocacyRadar({
             <div>
               <p className="text-muted-foreground">Engagement</p>
               <p className="font-semibold">{sphereScore?.engagement ?? 0}</p>
+              {/* §1.2 — the borrowed share, named rather than netted out. */}
+              {!!inheritedEngagementScores && inheritedEngagementScores > 0 && (
+                <p className="text-[10px] text-muted-foreground">
+                  {inheritedEngagementScores} scored for another agent
+                </p>
+              )}
             </div>
             <div>
               <p className="text-muted-foreground">Loyalty</p>

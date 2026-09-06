@@ -1,6 +1,10 @@
 "use client"
 
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useMemo } from "react"
+// Pure + client-safe: the weights live in a sibling of health-scorer because that
+// module imports the service client and cannot cross into a client component.
+import { distillDealConfidence } from "@/lib/kernel/deal-confidence"
+import { weightForFactorType, weightForCategory, PERSISTED_FACTOR_LABEL } from "@/lib/deal-health/category-weights"
 import { useParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -13,7 +17,6 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
   Send,
-  MoreVertical,
   Clock,
   CheckCircle,
   AlertTriangle,
@@ -33,7 +36,8 @@ import {
   Gift,
   ShieldCheck,
 } from "lucide-react"
-import { loadClientDashboard } from "@/app/actions/transactions"
+import { toast } from "sonner"
+import { loadClientDashboard, emitClientFriendlyUpdate } from "@/app/actions/transactions"
 import { createClient } from "@/lib/supabase/client"
 
 export default function AgentTransactionDetailPage() {
@@ -42,6 +46,7 @@ export default function AgentTransactionDetailPage() {
   const transactionId = params.transactionId as string
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [postingUpdate, setPostingUpdate] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
 
   // Documents tab state
@@ -77,6 +82,29 @@ export default function AgentTransactionDetailPage() {
     loadData()
   }, [transactionId])
 
+  // deal_health_factors holds the PER-CATEGORY breakdown (health-scorer writes it).
+  // transaction_health_factors, loaded below for its narrative/red-flag detail, only
+  // ever carries factor_type 'comprehensive' — one aggregate row, so it can never
+  // yield a weakest link.
+  const [dealFactors, setDealFactors] = useState<any[]>([])
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("deal_health_factors")
+      .select("id, factor_type, factor_value, risk_contribution, detail, scored_at")
+      .eq("transaction_id", transactionId)
+      .order("scored_at", { ascending: false })
+      .limit(40)
+      .then(({ data: rows }: { data: any[] | null }) => {
+        const latestByType = new Map<string, any>()
+        for (const row of rows ?? []) {
+          if (!latestByType.has(row.factor_type)) latestByType.set(row.factor_type, row)
+        }
+        setDealFactors([...latestByType.values()])
+      })
+      .catch(() => setDealFactors([]))
+  }, [transactionId])
+
   // Load the latest health factor per factor_type for the breakdown list
   useEffect(() => {
     const supabase = createClient()
@@ -107,12 +135,32 @@ export default function AgentTransactionDetailPage() {
       .maybeSingle()
       .then(({ data: txn }: { data: { listing_id: string | null } | null }) => {
         if (!txn?.listing_id) return
+        // ORPHAN DOCTRINE §1.2 (2026-09-04) — `contact_id` and `agent_id` joined
+        // this select, through the embed so the names travel with them. Both are
+        // written by scheduleClosingGift (lib/application/listing-lifecycle.ts:524)
+        // and were read by NOBODY: this card — the only place a closing gift is
+        // shown — could say a basket was scheduled and neither WHO it is being
+        // sent to nor WHOSE gift it is. On a co-listed deal that is the whole
+        // question, and getting it wrong means a gift addressed to the wrong
+        // seller.
+        //
+        // closing_gifts has one FK to contacts and one to agents (the writer's
+        // own comment records that agent_id is AGENTS-class), so both embeds are
+        // unambiguous — a second FK to either table would earn PGRST201 and kill
+        // the query rather than degrade it.
         supabase
           .from("closing_gifts")
-          .select("id, gift_description, status, order_date, delivery_date, price_cents, created_at")
+          .select("id, gift_description, status, order_date, delivery_date, price_cents, created_at, contact_id, agent_id, contacts(first_name, last_name), agents(users(first_name, last_name))")
           .eq("listing_id", txn.listing_id)
           .order("created_at", { ascending: false })
-          .then(({ data: rows }: { data: any[] | null }) => {
+          .then(({ data: rows, error }: { data: any[] | null; error: any }) => {
+            // §3 — supabase-js RESOLVES refusals. A swallowed one here renders as
+            // "no closing gift scheduled", which is how a gift stops being sent.
+            if (error) {
+              console.error("[transaction] closing_gifts read refused:", error.message)
+              setClosingGifts([])
+              return
+            }
             setClosingGifts(rows ?? [])
           })
       })
@@ -210,25 +258,45 @@ export default function AgentTransactionDetailPage() {
     setUploadingDoc(true)
     const supabase = createClient()
     const path = `transactions/${transactionId}/documents/${Date.now()}_${file.name}`
-    const { error: uploadError } = await supabase.storage.from("transaction-documents").upload(path, file)
-    if (uploadError) {
+    // Store and sign as ONE step: the previous shape bailed after the bytes were
+    // already in the bucket whenever the signer failed, leaving a deal document
+    // no row ever pointed at. putAndSign undoes the upload on that path.
+    const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+    const stored = await putAndSign(supabase, {
+      bucket:      "transaction-documents",
+      path,
+      body:        file,
+      contentType: file.type || undefined,
+      reason:      "transaction_document_upload",
+    })
+    if (!stored.ok) {
       setUploadingDoc(false)
       return
     }
-    const { data: urlData } = supabase.storage.from("transaction-documents").getPublicUrl(path)
-    const { data: inserted } = await supabase
+    const { data: inserted, error: insertError } = await supabase
       .from("transaction_documents")
       .insert({
         transaction_id: transactionId,
         doc_label: file.name,
         doc_type: "upload",
         status: "requested",
-        storage_url: urlData.publicUrl,
+        storage_url: stored.signedUrl,
         uploaded_at: new Date().toISOString(),
       })
       .select("id, doc_type, doc_label, status, storage_url, uploaded_at, uploaded_by, notes")
       .single()
-    if (inserted) setDocuments((prev) => [inserted, ...prev])
+    if (insertError || !inserted) {
+      // The row that would have referenced the file was refused — take the file
+      // back out rather than leaving it behind a failure we already know about.
+      await removeOrRecordOrphan(supabase, {
+        bucket:     "transaction-documents",
+        objectPath: stored.path,
+        reason:     "transaction_document_row_refused",
+        detail:     insertError?.message ?? "the transaction_documents insert returned no row",
+      })
+    } else {
+      setDocuments((prev) => [inserted, ...prev])
+    }
     setUploadingDoc(false)
     if (fileInputRef.current) fileInputRef.current.value = ""
   }
@@ -274,7 +342,75 @@ export default function AgentTransactionDetailPage() {
     return "bg-red-500 animate-pulse"
   }
 
-  const healthScore = data.team?.[0]?.transactions?.health_score || 75
+  // emitClientFriendlyUpdate RETURNS { success, error } on every path and never
+  // throws, so a try/catch would be dead code and an unconditional toast would
+  // announce a portal update that was refused.
+  const handleUpdateClient = async () => {
+    if (!data?.contact_id || !data?.brokerage_id || !data?.agent_id) return
+    const text = window.prompt("Plain-language update for the client (appears in their portal):")
+    if (!text?.trim()) return
+    setPostingUpdate(true)
+    const result = await emitClientFriendlyUpdate({
+      transactionId,
+      brokerageId: data.brokerage_id,
+      agentId: data.agent_id, // agents.id — transactions.agent_id FKs agents
+      contactId: data.contact_id, // contacts.id
+      updateType: "general",
+      updateText: text.trim(),
+      sendVia: "portal",
+    })
+    setPostingUpdate(false)
+    if (result.success) {
+      toast.success("Posted to the client's portal")
+      // Pull the dashboard again so the new entry shows in Updates without a
+      // full reload.
+      try {
+        setData(await loadClientDashboard(transactionId))
+      } catch {
+        /* the update landed; a stale panel is not worth an error toast */
+      }
+    } else {
+      toast.error(result.error ?? "The update was not posted")
+    }
+  }
+
+  // data.team is transaction_participants — {id, role, name, company, email,
+  // phone}. It has no `.transactions`, so this read was always undefined and the
+  // literal 75 was rendered three times as though it had been measured. The
+  // dashboard now returns the real score.
+  const healthScore = data.health_score ?? 75
+
+  // Distil the scored factors into a verdict + the single weakest link + the one
+  // protective action. Reuses the persisted scores; never recomputes them.
+  const dealConfidence = useMemo(() => {
+    const components = dealFactors
+      .map((f) => {
+        // detail is JSON {issues, category} written by the scorer. The ORIGINAL
+        // HealthCategory in there is the exact weight for this row; factor_type is a
+        // bucket that several categories collapse into, so weighting by the bucket
+        // charged each of two financing rows the full 28 and over-ranked that bucket.
+        let detailCategory: string | null = null
+        let issues: string[] = []
+        if (f.detail) {
+          try {
+            const d = JSON.parse(String(f.detail)) as { category?: string; issues?: string[] }
+            detailCategory = d.category ?? null
+            issues = Array.isArray(d.issues) ? d.issues.map(String) : []
+          } catch {
+            issues = [String(f.detail)]
+          }
+        }
+        return {
+          category: detailCategory || String(f.factor_type ?? ""),
+          score: Number(f.factor_value ?? 0),
+          weight: weightForCategory(detailCategory) || weightForFactorType(f.factor_type),
+          issues,
+        }
+      })
+      .filter((c) => c.category && c.weight > 0)
+    if (components.length === 0) return null
+    return distillDealConfidence(Number(healthScore), components)
+  }, [dealFactors, healthScore])
 
   return (
     <div className="container mx-auto py-6 space-y-6">
@@ -310,13 +446,22 @@ export default function AgentTransactionDetailPage() {
 
             {/* Quick Actions */}
             <div className="flex gap-2">
-              <Button variant="default" size="sm">
-                <Send className="w-4 h-4 mr-2" />
+              <Button
+                variant="default"
+                size="sm"
+                disabled={!data.contact_id || !data.brokerage_id || !data.agent_id || postingUpdate}
+                onClick={handleUpdateClient}
+              >
+                {postingUpdate ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
                 Update Client
               </Button>
-              <Button variant="outline" size="sm">
-                <MoreVertical className="w-5 h-5" />
-              </Button>
+              {/* An overflow "⋮" button used to sit here with no menu behind it —
+                  no DropdownMenu, no handler, nothing to open. There is no
+                  additional header-level capability on this page to hang off it
+                  (the real controls are Update Client above, the walkthrough /
+                  deal-shaky toggles at the top of the page, and the tabs below),
+                  so the affordance was removed rather than left promising a menu
+                  that does not exist. */}
             </div>
           </div>
 
@@ -352,32 +497,115 @@ export default function AgentTransactionDetailPage() {
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
                   <Users className="h-5 w-5" />
-                  Client Information
+                  Client &amp; Deal Team
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                {data.team.map((member: any, idx: number) => (
-                  <div key={idx} className="space-y-2">
-                    <p className="font-medium">{member.agents?.name || "Client Name"}</p>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Phone className="h-4 w-4" />
-                      <span>{member.agents?.phone || "No phone"}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Mail className="h-4 w-4" />
-                      <span>{member.agents?.email || "No email"}</span>
-                    </div>
+                {/*
+                  THE CLIENT IS NOT IN data.team. team is transaction_participants
+                  — the lender, title company, inspector — queried flat, with no
+                  embed at all. The old markup read member.agents?.name off those
+                  rows, which is undefined on every one of them, so the card
+                  rendered the literal fallbacks "Client Name" / "No phone" /
+                  "No email" once per vendor under a heading that said Client
+                  Information. Two separate mistakes stacked: the wrong field
+                  path, and the wrong table for the question being asked.
+                */}
+                {data.client ? (
+                  <div className="space-y-2">
+                    <p className="font-medium">{data.client.name ?? "—"}</p>
+                    {data.client.phone && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Phone className="h-4 w-4" />
+                        <span>{data.client.phone}</span>
+                      </div>
+                    )}
+                    {data.client.email && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Mail className="h-4 w-4" />
+                        <span>{data.client.email}</span>
+                      </div>
+                    )}
                   </div>
-                ))}
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No client contact is linked to this transaction yet.
+                  </p>
+                )}
+
+                {data.team.length > 0 && (
+                  <>
+                    <Separator />
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Deal Team</p>
+                    {data.team.map((member: any) => (
+                      <div key={member.id} className="space-y-1">
+                        <p className="font-medium text-sm">{member.name}</p>
+                        {(member.role || member.company) && (
+                          <p className="text-xs text-muted-foreground capitalize">
+                            {String(member.role ?? "").replace(/_/g, " ")}
+                            {member.company ? ` · ${member.company}` : ""}
+                          </p>
+                        )}
+                        {member.phone && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Phone className="h-4 w-4" />
+                            <span>{member.phone}</span>
+                          </div>
+                        )}
+                        {member.email && (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Mail className="h-4 w-4" />
+                            <span>{member.email}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
                 <Separator />
                 <div className="space-y-2">
-                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
-                    <Phone className="h-4 w-4 mr-2" />
-                    Call Client
+                  {/* tel:/mailto: rather than a server round-trip — the dominant
+                      pattern in this repo, and it needs no action at all once the
+                      client's real details are in scope. Rendered only when the
+                      detail exists, so nothing offers to dial a number we do not
+                      have. */}
+                  <Button
+                    asChild={!!data.client?.phone}
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start bg-transparent"
+                    disabled={!data.client?.phone}
+                  >
+                    {data.client?.phone ? (
+                      <a href={`tel:${data.client.phone}`}>
+                        <Phone className="h-4 w-4 mr-2" />
+                        Call Client
+                      </a>
+                    ) : (
+                      <span>
+                        <Phone className="h-4 w-4 mr-2" />
+                        No client phone on file
+                      </span>
+                    )}
                   </Button>
-                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
-                    <Mail className="h-4 w-4 mr-2" />
-                    Send Email
+                  <Button
+                    asChild={!!data.client?.email}
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start bg-transparent"
+                    disabled={!data.client?.email}
+                  >
+                    {data.client?.email ? (
+                      <a href={`mailto:${data.client.email}`}>
+                        <Mail className="h-4 w-4 mr-2" />
+                        Send Email
+                      </a>
+                    ) : (
+                      <span>
+                        <Mail className="h-4 w-4 mr-2" />
+                        No client email on file
+                      </span>
+                    )}
                   </Button>
                 </div>
               </CardContent>
@@ -417,20 +645,40 @@ export default function AgentTransactionDetailPage() {
                   <p className="text-sm text-muted-foreground">Overall Health Score</p>
                 </div>
                 <Separator />
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Timeline Adherence</span>
-                    <span className="font-medium">92%</span>
+                {/* Replaced three HARDCODED percentages (92/85/78) that rendered as
+                    real health data. This is derived from the scored factors. */}
+                {dealConfidence ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Verdict</span>
+                      <span
+                        className={cn(
+                          "font-medium capitalize",
+                          dealConfidence.verdict === "on_track" ? "text-emerald-600"
+                            : dealConfidence.verdict === "watch" ? "text-amber-600"
+                            : "text-red-600",
+                        )}
+                      >
+                        {dealConfidence.verdict.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                    {dealConfidence.weakestLink && (
+                      <div className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="text-muted-foreground">Weakest link</span>
+                        <span className="font-medium capitalize text-right">
+                          {PERSISTED_FACTOR_LABEL[dealConfidence.weakestLink.category] ?? dealConfidence.weakestLink.category.replace(/_/g, " ")} ({dealConfidence.weakestLink.score}/100)
+                        </span>
+                      </div>
+                    )}
+                    <p className="text-xs bg-muted/50 rounded p-2 leading-snug">
+                      {dealConfidence.protectiveAction}
+                    </p>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Document Completion</span>
-                    <span className="font-medium">85%</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Client Engagement</span>
-                    <span className="font-medium">78%</span>
-                  </div>
-                </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No scored health factors yet — nothing to distil.
+                  </p>
+                )}
                 {healthFactors.length > 0 && (
                   <>
                     <Separator />
@@ -508,6 +756,20 @@ export default function AgentTransactionDetailPage() {
                             <span>${(gift.price_cents / 100).toFixed(2)}</span>
                           )}
                         </div>
+                        {/* §1.2 — recipient and sender. Rendered only from what
+                            the row actually carries: an id with no resolvable
+                            name says "a client"/"an agent" rather than naming
+                            the wrong person. */}
+                        {(gift.contact_id || gift.agent_id) && (
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {gift.contact_id && (
+                              <>For {[gift.contacts?.first_name, gift.contacts?.last_name].filter(Boolean).join(" ") || "a client"}</>
+                            )}
+                            {gift.agent_id && (
+                              <> · from {[gift.agents?.users?.first_name, gift.agents?.users?.last_name].filter(Boolean).join(" ") || "an agent"}</>
+                            )}
+                          </p>
+                        )}
                       </div>
                       <Badge className={cn("text-xs capitalize font-semibold", giftStatusColors[gift.status] ?? "")}>
                         {gift.status}

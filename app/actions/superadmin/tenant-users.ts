@@ -10,9 +10,19 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+// `roleConsumesSeat` and `SEAT_ROLES` were imported here to count seats inline.
+// This file now calls the shared `seatGate`, which does that counting itself, so
+// both became DEAD IMPORTS — a reader with no writer, in the census's category 2.
+// Dropped rather than kept "in case": an import that nothing uses is a standing
+// invitation to re-derive the seat rule locally, which is exactly the third
+// spelling that let the admin meter disagree with the invite gate. Neither
+// export is orphaned by this — `roleConsumesSeat` has 8 other references and
+// `SEAT_ROLES` has 37, both still in lib/kernel/tier-role-matrix.ts.
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
-import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { seatGate } from "@/lib/kernel/seat-usage"
+import { requirePlatformCapability, resolvePlatformRole } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
@@ -59,12 +69,29 @@ async function lastSignInsFor(svc: ReturnType<typeof createServiceClient>, ids: 
   return out
 }
 
+/**
+ * The tenant's user roster, for the god console.
+ *
+ * READ-ONLY, gated on the platform 'tenants' capability rather than on
+ * superadmin. Owner ruling: "platform needs to see all tenants and THEIR USERS"
+ * — that names the platform staff roster (superadmin/admin/marketing/support),
+ * not the superadmin alone. This panel is rendered by
+ * /dashboard/superadmin/brokerages/[id], whose own gate is
+ * requirePlatformCapability("tenants"); a support operator could therefore open
+ * the page and be handed "Forbidden" by the panel inside it, which is one gate
+ * disagreeing with another about the same question.
+ *
+ * It grants no data the roster could not already reach: searchUsersByEmailAction
+ * below returns the same identity fields for the same capability, cross-tenant,
+ * and has done since it was written. Every MUTATION in this file
+ * (create/suspend/resend/revoke) remains superadmin-only.
+ */
 export async function listTenantUsersAction(brokerageId: string): Promise<
   | { ok: true; users: TenantUserRow[]; invites: TenantInviteRow[]; teams: TenantTeamRow[]; planTier: string | null }
   | { ok: false; error: string }
 > {
-  const auth = await requireSuperadmin()
-  if (!auth.ok) return auth
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
   const svc = createServiceClient()
   const [{ data: users }, { data: invites }, { data: teams }, { data: brk }] = await Promise.all([
     svc.from("users").select("id, email, first_name, last_name, user_type, status, team_id").eq("brokerage_id", brokerageId).is("deleted_at", null).limit(500),
@@ -156,8 +183,17 @@ export async function searchUsersByEmailAction(query: string): Promise<
 
 // Roles a superadmin can create INTO a tenant from the god console. (superadmin is
 // deliberately excluded — platform staff are provisioned through their own path.)
+// 'lender' REMOVED (owner ruling, 2026-09-04: "lender is not a user type, it is a
+// vendor category"). This console is the ONE creation path with a
+// `superadminOverride` that waives the tier matrix, so it was the only surface
+// that could still mint a `users.user_type='lender'` row after
+// lib/kernel/tier-role-matrix.ts:125 dropped lender from PARTNER_ROLES. A lender
+// is provisioned as a VENDOR (vendors.category 'lender') through the vendor
+// invite flow — see lib/kernel/lender-linkage.ts, which is the source of truth
+// for lender identity, and roleRefusalReason() in tier-role-matrix.ts for the
+// sentence a caller gets.
 const TENANT_CREATABLE_ROLES = new Set<string>([
-  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor",
+  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "vendor",
 ])
 
 /**
@@ -200,35 +236,44 @@ export async function createTenantUserAction(params: {
   const targetTier: string | null = (brk as { plan_tier?: string | null }).plan_tier ?? null
   const roleOutsideTier = !tierAllowsRole(targetTier, params.userType as UserDomainRole)
   if (roleOutsideTier && !params.superadminOverride) {
-    const minTier = minimumTierForRole(params.userType as UserDomainRole)
+    // Not a PLAN refusal any more (owner's ruling: the tier sells seats, not a
+    // role menu). These are the values that are not workspace seats on any tier.
     return {
       ok: false,
-      error:
-        `The ${tierLabel(targetTier)} plan does not include the '${params.userType}' role.` +
-        (minTier ? ` The tenant must upgrade to ${TIER_LABELS[minTier]}, or pass superadminOverride.` : ""),
+      error: `${roleRefusalReason(params.userType) ?? `'${params.userType}' cannot be seated.`} Pass superadminOverride to force it.`,
+    }
+  }
+
+  // The CHECK constraint is the last word (CLAUDE.md §3). This one is NOT
+  // overridable — superadminOverride waives PRODUCT rules, and no override makes
+  // Postgres accept a value users_user_type_check forbids; forcing it would just
+  // trade a clear refusal for a constraint violation mid-provision.
+  if (!seatableUserTypes(targetTier, CHECK_VOCABULARIES.users?.user_type).includes(params.userType as UserDomainRole)) {
+    return {
+      ok: false,
+      error: `'${params.userType}' is not a user type this database can store yet (users_user_type_check). No user was created.`,
     }
   }
 
   // SEATS (owner model: Solo 2 · Team 5 · Brokerage/Multi unlimited — a seat is
   // a working staff user; partners never consume one). The same override that
   // bypasses the role matrix bypasses the seat cap, with the same audit trail.
+  // ONE GATE with the tenant-side invite, the role-change path, the reactivation
+  // path and the recruiting provisioner (lib/kernel/seat-usage.ts `seatGate`):
+  // one seat resolver (both role sources), the limit from the PLAN CATALOGUE
+  // (subscription_tiers.max_agents) with the staff override on top, and FAIL
+  // CLOSED on an unreadable tenant / count / catalogue.
   let seatOverLimit = false
-  if (roleConsumesSeat(params.userType as UserDomainRole)) {
-    const { count: seatCount, error: seatErr } = await svc
-      .from("users")
-      .select("id", { count: "exact", head: true })
-      .eq("brokerage_id", params.brokerageId)
-      .in("user_type", SEAT_ROLES as unknown as string[])
-      .neq("status", "suspended")
-    if (seatErr) return { ok: false, error: seatErr.message }
-    // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant seat override
-    // (billing_metadata.seat_override — the tenant-entitlements panel) wins over the tier default.
-    const seats = seatCheck(targetTier, seatCount ?? 0, parseSeatOverride((brk as any)?.billing_metadata))
-    seatOverLimit = !seats.allowed
+  {
+    const verdict = await seatGate(svc, params.brokerageId, params.userType)
+    seatOverLimit = !verdict.allowed
     if (seatOverLimit && !params.superadminOverride) {
+      // The tenant-facing sentence names the UPGRADE (owner's ruling: solo → team,
+      // team → brokerage). Platform staff get that sentence PLUS the two levers
+      // only they hold, so a refusal is never a dead end on this console either.
       return {
         ok: false,
-        error: `${seats.overridden ? `This tenant has a custom limit of ${seats.limit} seats` : `The ${tierLabel(targetTier)} plan includes ${seats.limit} seats`} and all are in use. Deactivate a user, adjust the seat override, or pass superadminOverride.`,
+        error: `${verdict.message ?? "Seat check refused this add."} Staff: raise this tenant's seat override, or pass superadminOverride.`,
       }
     }
   }
@@ -264,9 +309,31 @@ export async function setTenantUserStatusAction(params: { userId: string; status
   if (!auth.ok) return auth
   if (params.status !== "active" && params.status !== "suspended") return { ok: false, error: "Invalid status" }
   const svc = createServiceClient()
-  const { data: target } = await svc.from("users").select("brokerage_id, user_type").eq("id", params.userId).maybeSingle()
+  const { data: target } = await svc.from("users").select("brokerage_id, user_type, platform_role").eq("id", params.userId).maybeSingle()
   if (!target) return { ok: false, error: "User not found" }
-  if ((target as any).user_type === "superadmin") return { ok: false, error: "Refusing to change a superadmin's status" }
+  // SELF-PROTECTION THAT NEVER FIRED. This read only target.user_type ===
+  // 'superadmin' — a value no live row carries, because the platform superadmin
+  // is platform_role='superadmin' with user_type='admin'. So the one account the
+  // check exists to protect was the one account it could not recognise, and
+  // suspending it — locking the platform out of its own console — was permitted.
+  // resolvePlatformRole is the canonical reader of that dual-source identity.
+  if (resolvePlatformRole(target as any) === "superadmin") {
+    return { ok: false, error: "Refusing to change a superadmin's status" }
+  }
+
+  // REACTIVATION IS A SEAT ADD. resolveSeatUsage excludes suspended users, so
+  // suspending frees a seat and un-suspending takes one back — a tenant at their
+  // cap with three suspended agents could walk straight past it here, on the one
+  // add path nobody thought of as an add. Same gate as every other path; the
+  // staff lever named in the refusal is the seat override, since this action
+  // carries no superadminOverride flag.
+  if (params.status === "active" && (target as any).brokerage_id) {
+    const verdict = await seatGate(svc, (target as any).brokerage_id as string, (target as any).user_type ?? "")
+    if (!verdict.allowed) {
+      return { ok: false, error: `${verdict.message ?? "Seat check refused this reactivation."} Staff: raise this tenant's seat override to reactivate without an upgrade.` }
+    }
+  }
+
   const { error } = await svc.from("users").update({ status: params.status, updated_at: new Date().toISOString() }).eq("id", params.userId)
   if (error) return { ok: false, error: error.message }
   await audit(auth.userId, auth.email, params.status === "suspended" ? "user.suspended" : "user.reactivated", params.userId, { brokerage_id: (target as any).brokerage_id, status: params.status })

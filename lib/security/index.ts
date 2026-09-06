@@ -13,7 +13,6 @@ export type {
   ResourceAccess,
   AccessCheckResult,
   AuthorizedUser,
-  SubscriptionContext,
   // Config
   RoleConfig,
   UserContext,
@@ -25,6 +24,10 @@ export {
   toCanonicalRoleOrDefault,
   toCanonicalRoles,
   isCanonicalRole,
+  // Expansion for DB filters — a Postgres .in() cannot canonicalize, so it has
+  // to be handed every raw spelling that means the role.
+  rawRoleVariants,
+  rawRoleVariantsFor,
   CANONICAL_ROLE_CONFIG,
 } from './types'
 
@@ -49,15 +52,20 @@ export {
   getResourceAccessList,
 } from './rbac'
 
-// ─── AUTHORIZATION (super admin / subscription admin) ─────────────────────────
-export {
-  requireSuperAdmin,
-  isSuperAdmin,
-  requireSubscriptionAdmin,
-  isSubscriptionAdmin,
-  getSubscriptionAdmin,
-  getCurrentUserSubscriptionContext,
-} from './authorization'
+// ─── AUTHORIZATION (super admin) ──────────────────────────────────────────────
+// TOMBSTONE: the four subscription-admin exports that stood here are deleted —
+// zero callers, and re-exported through a `"use server"` file, so each was a
+// public HTTP endpoint nothing needed. Survivor for "may this user administer
+// the tenant's subscription": app/actions/billing.ts:46 requireTenantBillingAdmin
+// over BROKERAGE_FINANCE_ADMIN_USER_TYPES. Full reasoning, and the live RLS
+// policy that still reads ai_subscription_tier, at ./authorization.ts:39.
+// TOMBSTONE (ruling 1, 2026-08-24): requireSuperAdmin / isSuperAdmin are deleted
+// here too — zero callers, and re-exported through a `"use server"` file, so both
+// were public HTTP endpoints. Survivor for "is this the platform/OS user":
+// lib/auth/platform-guard.ts:63 requireSuperadmin, over the one definition at
+// lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+// Full reasoning, and why the deleted copy was tighter than RLS, at
+// ./authorization.ts:3.
 
 // ─── PERMISSIONS SERVICE (UI / client-side runtime checks) ────────────────────
 export { permissionsService, ROLE_NAVIGATION } from './permissions-service'

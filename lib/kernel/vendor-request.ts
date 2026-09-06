@@ -16,6 +16,15 @@
  * (requireVendorActor + assignment-on-THIS-deal) and persistence.
  * deal_coordinator owns transactions + the vendor bench.
  */
+import { VENDOR_CATEGORY_LABELS, type VendorCategory } from "@/lib/kernel/vendor-categories"
+
+/** PURE — the human label for a stored category token, falling back to a
+ *  title-cased form so an unrecognised legacy value still reads as a word. */
+export function vendorCategoryLabel(raw: string): string {
+  const known = VENDOR_CATEGORY_LABELS[raw as VendorCategory]
+  if (known) return known
+  return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
 
 export const VENDOR_REQUEST_TYPES = {
   document: "Documents needed",
@@ -58,7 +67,13 @@ export interface VendorRequestTaskParams {
 
 /** PURE: the agent's task for a vendor request — who asked, for what, by when. */
 export function composeVendorRequestTask(p: VendorRequestTaskParams): { title: string; description: string } {
-  const who = p.vendorCategory ? `${p.vendorName} (${p.vendorCategory})` : p.vendorName
+  // Render the LABEL, not the stored token. vendors.category is lowercase_snake
+  // since m304 ("pest_control", "title"), which is right for a vocabulary and
+  // wrong for a sentence an agent reads — this line would have produced
+  // "Apex Inspections (inspector)" and "(pest_control)".
+  const who = p.vendorCategory
+    ? `${p.vendorName} (${vendorCategoryLabel(p.vendorCategory)})`
+    : p.vendorName
   const where = p.propertyAddress ? ` on ${p.propertyAddress}` : ""
   const by = p.neededBy ? ` Needed by ${p.neededBy}.` : ""
   return {
@@ -82,7 +97,9 @@ export function clientPartyForRequest(requestType: VendorRequestType, tx: { cont
 
 /** PURE: the gated client draft body — warm, specific, never vendor-jargon. */
 export function composeClientRequestBody(p: { vendorName: string; vendorCategory: string | null; requestType: VendorRequestType; details: string; neededBy: string | null }): { subject: string; body: string } {
-  const role = p.vendorCategory ? p.vendorCategory.toLowerCase() : "vendor"
+  // "your inspector" / "your title company" — the label lowercased reads
+  // naturally in a sentence; the raw token ("pest_control") does not.
+  const role = p.vendorCategory ? vendorCategoryLabel(p.vendorCategory).toLowerCase() : "vendor"
   const by = p.neededBy ? ` They're hoping to have this by ${p.neededBy}.` : ""
   return {
     subject: `Quick request from your ${role}`,

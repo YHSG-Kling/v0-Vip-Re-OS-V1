@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useEffect } from "react"
+import { useState, useTransition, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,6 +24,20 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
+import { VENDOR_CATEGORY_LABELS, type VendorCategory } from "@/lib/kernel/vendor-categories"
+
+/** Stored token → the words a broker reads. vendors.category is lowercase_snake
+ *  ("pest_control", "title"), which is right for a vocabulary and wrong for a
+ *  card heading. Falls back to a title-cased form so a pre-m304 row still reads
+ *  as words rather than as a token. */
+function categoryLabel(raw: string | null | undefined): string {
+  if (!raw) return "General"
+  return (
+    VENDOR_CATEGORY_LABELS[raw as VendorCategory] ??
+    raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+  )
+}
 import {
   Search,
   Star,
@@ -33,8 +47,6 @@ import {
   Calendar,
   DollarSign,
   Building2,
-  Users,
-  Clock,
   CheckCircle2,
   AlertCircle,
   Filter,
@@ -42,6 +54,8 @@ import {
   Plus,
   Paperclip,
   Package,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react"
 import {
   searchVendors,
@@ -50,11 +64,72 @@ import {
   markBookingComplete,
   getVendorCostComparison,
   getVendorReviews,
+  submitVendorReview,
+  flagVendorReview,
 } from "@/app/actions/vendor-marketplace"
 import {
   createVendorRecordAction,
   attachVendorDeliverableAction,
+  updateVendorRecordAction,
+  assignVendorToListingAction,
+  assignVendorToTransactionAction,
+  updateVendorBookingStatusAction,
 } from "@/app/actions/vendors-kernel"
+import { recordVendorInsuranceAction, submitVendorForVerification } from "@/app/actions/vendor-verification"
+import {
+  readVendorInsurance,
+  type InsurancePosture,
+  type InsuranceRecord,
+} from "@/lib/vendors/insurance-posture"
+
+/** vendor_assignments.assignment_type is CHECK-constrained to exactly these ten
+ *  values — a DIFFERENT and much shorter vocabulary than vendors.category (38
+ *  values) and than the free-text service_type on vendor_bookings. The picker
+ *  below cannot express anything outside it, and the server action re-checks the
+ *  same list before the kernel is called. */
+const VENDOR_ASSIGNMENT_TYPES = [
+  "inspector",
+  "lender",
+  "title",
+  "stager",
+  "photographer",
+  "cleaner",
+  "contractor",
+  "mover",
+  "insurance",
+  "other",
+] as const
+
+/** vendor_bookings.status transitions the kernel will accept, keyed by the
+ *  status a booking is currently in. Mirrors BOOKING_STATUS_TRANSITIONS in
+ *  lib/kernel/vendors.ts, which mirrors the live CHECK
+ *  (booked | confirmed | completed | cancelled | no_show). Offering a button for
+ *  a transition the kernel refuses would just be a guaranteed error message. */
+const BOOKING_NEXT_STATUSES: Record<string, Array<"confirmed" | "completed" | "cancelled" | "no_show">> = {
+  booked: ["confirmed", "cancelled", "no_show"],
+  confirmed: ["completed", "cancelled", "no_show"],
+  completed: [],
+  cancelled: [],
+  no_show: [],
+}
+
+const BOOKING_STATUS_LABEL: Record<string, string> = {
+  confirmed: "Confirm",
+  completed: "Mark complete",
+  cancelled: "Cancel",
+  no_show: "No-show",
+}
+
+/** Badge styling per insurance posture. Grey is reserved for the two states we
+ *  genuinely do not know ("never" / "no_expiry") — colouring an unknown green or
+ *  red would be the same fabricated verdict the server action refuses to make. */
+const INSURANCE_BADGE: Record<InsurancePosture, string> = {
+  verified:  "bg-green-100 text-green-800 border-green-200",
+  expiring:  "bg-amber-100 text-amber-900 border-amber-300",
+  expired:   "bg-red-100 text-red-800 border-red-300",
+  no_expiry: "bg-muted text-muted-foreground border-transparent",
+  never:     "bg-muted text-muted-foreground border-transparent",
+}
 
 interface Vendor {
   id: string
@@ -66,6 +141,8 @@ interface Vendor {
   notes: string | null
   rating: number | null
   brokerage_id: string | null
+  /** m376 credential bag — the certificate of insurance lives under `.insurance`. */
+  compliance_credentials?: Record<string, InsuranceRecord | null | undefined> | null
   vendor_rating?: {
     avg_agent_rating: number | null
     avg_client_rating: number | null
@@ -95,6 +172,12 @@ interface Transaction {
   stage: string
 }
 
+interface Listing {
+  id: string
+  address: string | null
+  status: string | null
+}
+
 interface Deliverable {
   id: string
   doc_name: string | null
@@ -113,10 +196,14 @@ interface VendorDirectoryClientProps {
   recentBookings: Booking[]
   pendingRatings: Booking[]
   transactions: Transaction[]
+  listings?: Listing[]
   serviceTypes: string[]
   brokerageId: string
   userRole: string
   deliverables?: Deliverable[]
+  /** `?vendor=<vendors.id>` — server-validated uuid (page.tsx). Brings that
+   *  vendor's card into view on the directory tab, once per mount. */
+  initialVendorId?: string | null
 }
 
 export function VendorDirectoryClient({
@@ -124,16 +211,44 @@ export function VendorDirectoryClient({
   recentBookings,
   pendingRatings,
   transactions,
+  listings = [],
   serviceTypes,
   brokerageId,
   userRole,
   deliverables = [],
+  initialVendorId = null,
 }: VendorDirectoryClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
   // Search & filter state
   const [vendors, setVendors] = useState<Vendor[]>(initialVendors)
+
+  // `?vendor=` deep-link. The card IS the vendor's row on this surface (there
+  // is no separate detail page — book / reviews / edit / insurance / assign all
+  // hang off it), so "open" means: scroll it into view and mark it. Resolved
+  // against the listing the server already handed us — searchVendors is
+  // tenant-scoped, so an id from another brokerage is simply "not in your
+  // directory", never a fetch by URL. Once per mount (ref guard, pattern:
+  // app/portal/[contactId]/learn/learn-client.tsx focusedRef).
+  const [focusedVendorId, setFocusedVendorId] = useState<string | null>(null)
+  const [deepLinkNotice, setDeepLinkNotice] = useState<string | null>(null)
+  const vendorDeepLinkRef = useRef(false)
+  useEffect(() => {
+    if (vendorDeepLinkRef.current || !initialVendorId) return
+    vendorDeepLinkRef.current = true
+    const target = initialVendors.find((v) => v.id === initialVendorId) ?? null
+    if (!target) {
+      setDeepLinkNotice("The vendor this link names is not in your brokerage's directory listing.")
+      return
+    }
+    setFocusedVendorId(target.id)
+    setDeepLinkNotice(`Showing ${target.name}.`)
+    // After paint — the card is in the initial render of the directory tab.
+    requestAnimationFrame(() => {
+      document.getElementById(`vendor-card-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+    })
+  }, [initialVendorId, initialVendors])
   const [searchName, setSearchName] = useState("")
   const [filterServiceType, setFilterServiceType] = useState<string>("")
   const [filterMinRating, setFilterMinRating] = useState<string>("")
@@ -141,12 +256,79 @@ export function VendorDirectoryClient({
   // Create Vendor dialog state
   const [createVendorOpen, setCreateVendorOpen] = useState(false)
   const [newVendorName, setNewVendorName] = useState("")
-  const [newVendorCategory, setNewVendorCategory] = useState("")
+  const [newVendorCategory, setNewVendorCategory] = useState<VendorCategory | "">("")
   const [newVendorPhone, setNewVendorPhone] = useState("")
   const [newVendorEmail, setNewVendorEmail] = useState("")
   const [newVendorWebsite, setNewVendorWebsite] = useState("")
   const [newVendorNotes, setNewVendorNotes] = useState("")
   const [createVendorError, setCreateVendorError] = useState("")
+
+  // Edit Vendor dialog state (updateVendorRecordAction)
+  const [editVendorOpen, setEditVendorOpen] = useState(false)
+  const [editVendor, setEditVendor] = useState<Vendor | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editCategory, setEditCategory] = useState<VendorCategory | "">("")
+  const [editPhone, setEditPhone] = useState("")
+  const [editEmail, setEditEmail] = useState("")
+  const [editWebsite, setEditWebsite] = useState("")
+  const [editNotes, setEditNotes] = useState("")
+  const [editVendorError, setEditVendorError] = useState("")
+
+  // Insurance dialog state (recordVendorInsuranceAction). The certificate of
+  // insurance was previously recordable ONLY from the approval queue, which
+  // lists status='pending' vendors — so once a vendor was approved, or once the
+  // nightly sweep suspended them for a lapse, there was NOWHERE in the product
+  // to record the renewal. This is that surface.
+  const [insuranceDialogOpen, setInsuranceDialogOpen] = useState(false)
+  const [insuranceVendor, setInsuranceVendor] = useState<Vendor | null>(null)
+  const [insCarrier, setInsCarrier] = useState("")
+  const [insPolicyNumber, setInsPolicyNumber] = useState("")
+  const [insCoverage, setInsCoverage] = useState("")
+  const [insEffective, setInsEffective] = useState("")
+  const [insExpiry, setInsExpiry] = useState("")
+  const [insUrl, setInsUrl] = useState("")
+  const [insuranceError, setInsuranceError] = useState("")
+  const [insuranceNotice, setInsuranceNotice] = useState("")
+
+  // Submit-for-verification state (submitVendorForVerification). THE APPROVAL
+  // QUEUE HAD NO PRODUCER: app/dashboard/admin/vendor-approvals/approval-client.tsx
+  // lists status='pending' vendors and approves/rejects them, but
+  // submitVendorForVerification (app/actions/vendor-verification.ts:25) is the
+  // ONLY writer of status='pending' + ai_verification_score, and it had no
+  // caller anywhere in the tree — so that queue could only ever be empty. This
+  // is the producer. Broker/admin only; the action enforces that itself and
+  // THROWS on refusal, so the handler reads the thrown message rather than a
+  // result union.
+  const [verifyVendorId, setVerifyVendorId] = useState<string | null>(null)
+  const [verifyNotice, setVerifyNotice] = useState<string>("")
+  const [verifyError, setVerifyError] = useState<string>("")
+
+  // Assign to Listing dialog state (assignVendorToListingAction)
+  const [listingDialogOpen, setListingDialogOpen] = useState(false)
+  const [listingVendor, setListingVendor] = useState<Vendor | null>(null)
+  const [listingId, setListingId] = useState("")
+  const [listingServiceType, setListingServiceType] = useState("")
+  const [listingDate, setListingDate] = useState("")
+  const [listingCost, setListingCost] = useState("")
+  const [listingNotes, setListingNotes] = useState("")
+  const [listingError, setListingError] = useState("")
+  const [listingNotice, setListingNotice] = useState("")
+
+  // Assign to Transaction dialog state (assignVendorToTransactionAction)
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false)
+  const [assignVendor, setAssignVendor] = useState<Vendor | null>(null)
+  const [assignTransactionId, setAssignTransactionId] = useState("")
+  const [assignType, setAssignType] = useState<string>("")
+  const [assignDate, setAssignDate] = useState("")
+  const [assignNotes, setAssignNotes] = useState("")
+  const [assignError, setAssignError] = useState("")
+  const [assignNotice, setAssignNotice] = useState("")
+
+  // Booking status transitions (updateVendorBookingStatusAction)
+  const [bookingStatuses, setBookingStatuses] = useState<Record<string, string>>({})
+  const [statusBookingId, setStatusBookingId] = useState<string | null>(null)
+  const [statusError, setStatusError] = useState("")
+  const [statusNotice, setStatusNotice] = useState("")
 
   // Attach Deliverable dialog state
   const [deliverableDialogOpen, setDeliverableDialogOpen] = useState(false)
@@ -184,6 +366,17 @@ export function VendorDirectoryClient({
   const [reviewsDialogOpen, setReviewsDialogOpen] = useState(false)
   const [reviewsVendor, setReviewsVendor] = useState<Vendor | null>(null)
   const [vendorReviews, setVendorReviews] = useState<any[]>([])
+
+  // Write-a-review state. submitVendorReview is the transaction-linked lane:
+  // rateVendorBooking only exists once a booking has been completed and rated,
+  // so a vendor an agent worked with off-booking had no way to be reviewed.
+  const [newReviewRating, setNewReviewRating] = useState(5)
+  const [newReviewHeadline, setNewReviewHeadline] = useState("")
+  const [newReviewBody, setNewReviewBody] = useState("")
+  const [newReviewTransactionId, setNewReviewTransactionId] = useState("")
+  const [reviewFormError, setReviewFormError] = useState("")
+  const [reviewFormNotice, setReviewFormNotice] = useState("")
+  const [flaggingReviewId, setFlaggingReviewId] = useState<string | null>(null)
 
   // Calendar overlay: all bookings for selected vendor in next 30 days
   const [vendorCalendarBookings, setVendorCalendarBookings] = useState<{ date: string; count: number }[]>([])
@@ -278,6 +471,277 @@ export function VendorDirectoryClient({
       router.refresh()
     })
   }
+
+  // ─── EDIT a vendor record ────────────────────────────────────────────────
+  // A vendor could be created and never corrected — a wrong phone number or a
+  // miscategorised trade was permanent from this screen. The category picker is
+  // the same constraint-safe control the create dialog uses; the placement flags
+  // (preferred / display_priority / visible_in_portal) are deliberately NOT here,
+  // because those are sold and are written only by the premium-placement lane.
+  const openEditVendor = (vendor: Vendor) => {
+    setEditVendor(vendor)
+    setEditName(vendor.name ?? "")
+    setEditCategory((vendor.category as VendorCategory | null) ?? "")
+    setEditPhone(vendor.phone ?? "")
+    setEditEmail(vendor.email ?? "")
+    setEditWebsite(vendor.website ?? "")
+    setEditNotes(vendor.notes ?? "")
+    setEditVendorError("")
+    setEditVendorOpen(true)
+  }
+
+  const handleUpdateVendor = () => {
+    if (!editVendor) return
+    if (!editName.trim()) {
+      setEditVendorError("Vendor name is required.")
+      return
+    }
+    setEditVendorError("")
+    startTransition(async () => {
+      const result = await updateVendorRecordAction({
+        vendorId: editVendor.id,
+        patch: {
+          name: editName.trim(),
+          ...(editCategory ? { category: editCategory } : {}),
+          phone: editPhone.trim(),
+          email: editEmail.trim(),
+          website: editWebsite.trim(),
+          notes: editNotes.trim(),
+        },
+      })
+      if (!result.success) {
+        setEditVendorError(result.error ?? "Failed to update vendor.")
+        return
+      }
+      // Only now does the local list move — the dialog never closes on a refusal.
+      setVendors((prev) =>
+        prev.map((v) =>
+          v.id === editVendor.id
+            ? {
+                ...v,
+                name: editName.trim(),
+                category: editCategory || v.category,
+                phone: editPhone.trim() || null,
+                email: editEmail.trim() || null,
+                website: editWebsite.trim() || null,
+                notes: editNotes.trim() || null,
+              }
+            : v,
+        ),
+      )
+      setEditVendorOpen(false)
+      setEditVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── RECORD a vendor's CERTIFICATE OF INSURANCE ──────────────────────────
+  // Pre-fills from whatever is already on file so an admin can see the policy
+  // they are replacing rather than typing blind into an empty form.
+  const openInsuranceDialog = (vendor: Vendor) => {
+    const current = readVendorInsurance(vendor.compliance_credentials, new Date())
+    setInsuranceVendor(vendor)
+    setInsCarrier(current.carrier ?? "")
+    setInsPolicyNumber(current.policyNumber ?? "")
+    setInsCoverage(current.coverageAmount != null ? String(current.coverageAmount) : "")
+    setInsEffective(current.effectiveDate ?? "")
+    setInsExpiry(current.expiry ?? "")
+    setInsUrl(current.certificateUrl ?? "")
+    setInsuranceError("")
+    setInsuranceNotice("")
+    setInsuranceDialogOpen(true)
+  }
+
+  const handleSubmitForVerification = (vendor: Vendor) => {
+    setVerifyVendorId(vendor.id)
+    setVerifyNotice("")
+    setVerifyError("")
+    startTransition(async () => {
+      try {
+        const result = await submitVendorForVerification(vendor.id)
+        // The server's own verdict, from the row it scored and staged.
+        setVerifyNotice(
+          `${vendor.name}: score ${result.score} — ${result.recommendation}. ` +
+          `Staged as ${result.status.toUpperCase()} and now waiting in the vendor approvals queue.`,
+        )
+        // No local row mutation: this directory's Vendor shape carries no
+        // `status` field and renders none, so there is nothing here to move.
+        // The queue at /dashboard/admin/vendor-approvals reads the staged row.
+      } catch (e) {
+        // submitVendorForVerification throws rather than returning a union:
+        // "Not authorized — vendor approval is broker/admin only", "Vendor not
+        // found in your brokerage", or the PostgREST message. Show its words.
+        setVerifyError(e instanceof Error ? e.message : "Could not submit this vendor for verification")
+      } finally {
+        setVerifyVendorId(null)
+      }
+    })
+  }
+
+  const handleRecordInsurance = () => {
+    if (!insuranceVendor) return
+    setInsuranceError("")
+    setInsuranceNotice("")
+    startTransition(async () => {
+      const result = await recordVendorInsuranceAction({
+        vendorId: insuranceVendor.id,
+        carrier: insCarrier.trim(),
+        policyNumber: insPolicyNumber.trim(),
+        coverageAmount: Number(insCoverage),
+        effectiveDate: insEffective,
+        expiry: insExpiry,
+        certificateUrl: insUrl.trim() || undefined,
+      })
+      // READ THE OUTCOME. A refusal (not an admin, vendor outside your
+      // brokerage, a date the CHECK rejects) leaves the dialog open showing the
+      // server's own words, and the list is NOT moved — the badge must never
+      // claim a certificate that was not stored.
+      if (!result.success) {
+        setInsuranceError(result.error)
+        return
+      }
+      // The verdict below is the server's, computed from the row it read back.
+      setInsuranceNotice(result.status.detail)
+      setVendors((prev) =>
+        prev.map((v) =>
+          v.id === insuranceVendor.id
+            ? {
+                ...v,
+                compliance_credentials: {
+                  ...(v.compliance_credentials ?? {}),
+                  insurance: {
+                    carrier: result.status.carrier,
+                    policy_number: result.status.policyNumber,
+                    coverage_amount: result.status.coverageAmount,
+                    effective_date: result.status.effectiveDate,
+                    expiry: result.status.expiry,
+                    url: result.status.certificateUrl,
+                    verified_at: result.status.verifiedAt,
+                    verified_by: result.status.verifiedBy,
+                  },
+                },
+              }
+            : v,
+        ),
+      )
+      router.refresh()
+    })
+  }
+
+  // ─── BOOK a vendor against a LISTING ─────────────────────────────────────
+  const openListingDialog = (vendor: Vendor) => {
+    setListingVendor(vendor)
+    setListingServiceType(vendor.category || "")
+    setListingId("")
+    setListingDate("")
+    setListingCost("")
+    setListingNotes("")
+    setListingError("")
+    setListingNotice("")
+    setListingDialogOpen(true)
+  }
+
+  const handleAssignToListing = () => {
+    if (!listingVendor) return
+    if (!listingId || !listingServiceType.trim()) {
+      setListingError("Pick a listing and name the service.")
+      return
+    }
+    setListingError("")
+    startTransition(async () => {
+      const result = await assignVendorToListingAction({
+        vendorId: listingVendor.id,
+        listingId,
+        serviceType: listingServiceType.trim(),
+        scheduledDate: listingDate || undefined,
+        cost: listingCost ? parseFloat(listingCost) : undefined,
+        notes: listingNotes || undefined,
+      })
+      if (!result.success) {
+        setListingError(result.error ?? "Failed to book that vendor for the listing.")
+        return
+      }
+      setListingNotice("Booked against the listing — the vendor has been emailed the job details.")
+      setListingDialogOpen(false)
+      setListingVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── ASSIGN a vendor to a TRANSACTION ────────────────────────────────────
+  // An assignment is a DIFFERENT record from a booking: it writes
+  // vendor_assignments plus a vendor_jobs row, which is what the deal screen and
+  // the vendor's own job list read. Nothing on the platform could create one.
+  const openAssignDialog = (vendor: Vendor) => {
+    setAssignVendor(vendor)
+    setAssignTransactionId("")
+    setAssignType(
+      (VENDOR_ASSIGNMENT_TYPES as readonly string[]).includes(vendor.category ?? "")
+        ? (vendor.category as string)
+        : "",
+    )
+    setAssignDate("")
+    setAssignNotes("")
+    setAssignError("")
+    setAssignNotice("")
+    setAssignDialogOpen(true)
+  }
+
+  const handleAssignToTransaction = () => {
+    if (!assignVendor) return
+    if (!assignTransactionId || !assignType) {
+      setAssignError("Pick a deal and an assignment type.")
+      return
+    }
+    setAssignError("")
+    startTransition(async () => {
+      const result = await assignVendorToTransactionAction({
+        vendorId: assignVendor.id,
+        transactionId: assignTransactionId,
+        assignmentType: assignType,
+        scheduledDate: assignDate || undefined,
+        notes: assignNotes || undefined,
+      })
+      if (!result.success) {
+        setAssignError(result.error ?? "Failed to assign that vendor to the deal.")
+        return
+      }
+      setAssignNotice("Assigned — the deal now carries a vendor job for this work.")
+      setAssignDialogOpen(false)
+      setAssignVendor(null)
+      router.refresh()
+    })
+  }
+
+  // ─── TRANSITION a booking's status ───────────────────────────────────────
+  // markBookingComplete can only ever say "completed". Confirming a booking a
+  // vendor has accepted, cancelling one, or recording a no-show had no writer on
+  // any screen — so a booking sat at "booked" forever and the no-show autopilot
+  // had nothing to read.
+  const handleBookingStatus = (
+    bookingId: string,
+    toStatus: "confirmed" | "completed" | "cancelled" | "no_show",
+  ) => {
+    setStatusBookingId(bookingId)
+    setStatusError("")
+    setStatusNotice("")
+    startTransition(async () => {
+      const result = await updateVendorBookingStatusAction({ bookingId, toStatus })
+      if (!result.success) {
+        setStatusError(result.error ?? "Could not change that booking's status.")
+        setStatusBookingId(null)
+        return
+      }
+      setBookingStatuses((prev) => ({ ...prev, [bookingId]: toStatus }))
+      setStatusNotice(`Booking is now ${toStatus.replace(/_/g, " ")}.`)
+      setStatusBookingId(null)
+      router.refresh()
+    })
+  }
+
+  /** The status the UI should believe for a booking: the one this session moved
+   *  it to, otherwise the one the server sent. */
+  const effectiveStatus = (booking: Booking) => bookingStatuses[booking.id] ?? booking.status
 
   const handleAttachDeliverable = () => {
     if (!deliverableBookingId || !deliverableUrl || !deliverableDescription) {
@@ -401,10 +865,70 @@ export function VendorDirectoryClient({
 
   const handleShowReviews = (vendor: Vendor) => {
     setReviewsVendor(vendor)
+    setReviewFormError("")
+    setReviewFormNotice("")
+    setNewReviewRating(5)
+    setNewReviewHeadline("")
+    setNewReviewBody("")
+    setNewReviewTransactionId("")
     startTransition(async () => {
       const reviews = await getVendorReviews(vendor.id)
       setVendorReviews(reviews)
       setReviewsDialogOpen(true)
+    })
+  }
+
+  const handleSubmitReview = () => {
+    if (!reviewsVendor) return
+    setReviewFormError("")
+    setReviewFormNotice("")
+    if (newReviewBody.trim().length < 50) {
+      setReviewFormError("A review needs at least 50 characters — shorter ones go to a human moderator instead of publishing.")
+      return
+    }
+    startTransition(async () => {
+      try {
+        const result = await submitVendorReview({
+          vendorId: reviewsVendor.id,
+          rating: newReviewRating,
+          body: newReviewBody.trim(),
+          headline: newReviewHeadline.trim() || undefined,
+          transactionId: newReviewTransactionId || undefined,
+        })
+        // Report what the server actually decided — screenReview may have routed
+        // this to a human, and saying "published" would be a lie.
+        setReviewFormNotice(
+          result.moderationStatus === "approved"
+            ? `Published${result.isVerified ? " as a verified review" : " (unverified — not linked to a deal you were a party to)"}.`
+            : "Submitted for moderation — a broker admin will review it before it appears.",
+        )
+        setNewReviewBody("")
+        setNewReviewHeadline("")
+        const reviews = await getVendorReviews(reviewsVendor.id)
+        setVendorReviews(reviews)
+        router.refresh()
+      } catch (err) {
+        setReviewFormError(err instanceof Error ? err.message : "Could not submit the review")
+      }
+    })
+  }
+
+  const handleFlagReview = (reviewId: string) => {
+    setFlaggingReviewId(reviewId)
+    startTransition(async () => {
+      try {
+        const result = await flagVendorReview(reviewId, "inappropriate")
+        setReviewFormNotice(
+          result.status === "under_review"
+            ? "Flagged — this review has reached the flag threshold and is now with a moderator."
+            : `Flagged (${result.flagCount} flag${result.flagCount === 1 ? "" : "s"} so far).`,
+        )
+        if (reviewsVendor) setVendorReviews(await getVendorReviews(reviewsVendor.id))
+      } catch (err) {
+        setReviewFormError(err instanceof Error ? err.message : "Could not flag the review")
+      } finally {
+        setFlaggingReviewId(null)
+      }
     })
   }
 
@@ -558,15 +1082,18 @@ export function VendorDirectoryClient({
 
                 <div className="space-y-2">
                   <Label>Service Type</Label>
-                  <Select value={filterServiceType} onValueChange={setFilterServiceType}>
+                  <Select
+                    value={filterServiceType || "__all__"}
+                    onValueChange={(v) => setFilterServiceType(v === "__all__" ? "" : v)}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="All types" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All types</SelectItem>
+                      <SelectItem value="__all__">All types</SelectItem>
                       {serviceTypes.map((type) => (
                         <SelectItem key={type} value={type}>
-                          {type}
+                          {categoryLabel(type)}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -575,12 +1102,15 @@ export function VendorDirectoryClient({
 
                 <div className="space-y-2">
                   <Label>Min Rating</Label>
-                  <Select value={filterMinRating} onValueChange={setFilterMinRating}>
+                  <Select
+                    value={filterMinRating || "__any__"}
+                    onValueChange={(v) => setFilterMinRating(v === "__any__" ? "" : v)}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Any rating" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Any rating</SelectItem>
+                      <SelectItem value="__any__">Any rating</SelectItem>
                       <SelectItem value="4">4+ stars</SelectItem>
                       <SelectItem value="3">3+ stars</SelectItem>
                       <SelectItem value="2">2+ stars</SelectItem>
@@ -603,15 +1133,57 @@ export function VendorDirectoryClient({
             </CardContent>
           </Card>
 
+          {deepLinkNotice && (
+            <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <span>{deepLinkNotice}</span>
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => { setDeepLinkNotice(null); setFocusedVendorId(null) }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Submit-for-verification verdict. The server's own words, either way:
+              the score + recommendation it computed, or the reason it refused
+              (not an admin, vendor outside your brokerage). Never a local
+              guess. */}
+          {(verifyNotice || verifyError) && (
+            <div
+              className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                verifyError ? "border-destructive/40 bg-destructive/10 text-destructive" : "bg-muted/40 text-muted-foreground"
+              }`}
+            >
+              <span>{verifyError || verifyNotice}</span>
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => { setVerifyNotice(""); setVerifyError("") }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Vendor Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {vendors.map((vendor) => (
-              <Card key={vendor.id} className="hover:shadow-md transition-shadow">
+            {vendors.map((vendor) => {
+              // Computed on every render from the STORED expiry — the bench
+              // ages by itself. Nothing writes a "compliant" flag anywhere.
+              const insurance = readVendorInsurance(vendor.compliance_credentials, new Date())
+              return (
+              <Card
+                key={vendor.id}
+                id={`vendor-card-${vendor.id}`}
+                className={`hover:shadow-md transition-shadow ${focusedVendorId === vendor.id ? "ring-2 ring-primary" : ""}`}
+              >
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between">
                     <div>
                       <CardTitle className="text-lg">{vendor.name}</CardTitle>
-                      <CardDescription>{vendor.category || "General"}</CardDescription>
+                      <CardDescription>{categoryLabel(vendor.category)}</CardDescription>
                     </div>
                     {!vendor.brokerage_id && (
                       <Badge variant="outline" className="text-xs">Global</Badge>
@@ -620,6 +1192,30 @@ export function VendorDirectoryClient({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {renderStars(vendor.rating)}
+
+                  {/* INSURANCE POSTURE — four distinguishable states, never a
+                      claim: green only when a stored expiry is still more than
+                      60 days out, amber inside the reminder window, red once it
+                      has passed, and grey when we have simply never checked. */}
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      className={`text-[11px] border ${INSURANCE_BADGE[insurance.posture]}`}
+                      title={insurance.detail}
+                    >
+                      {insurance.posture === "expired" && <ShieldAlert className="h-3 w-3 mr-1" />}
+                      {insurance.posture === "expiring" && <ShieldAlert className="h-3 w-3 mr-1" />}
+                      {insurance.posture === "verified" && <ShieldCheck className="h-3 w-3 mr-1" />}
+                      {insurance.label}
+                    </Badge>
+                    {insurance.coverageAmount != null && (
+                      <span className="text-[11px] text-muted-foreground">
+                        ${insurance.coverageAmount.toLocaleString()} limit
+                      </span>
+                    )}
+                  </div>
+                  {(insurance.posture === "expired" || insurance.posture === "expiring") && (
+                    <p className="text-[11px] text-muted-foreground leading-snug">{insurance.detail}</p>
+                  )}
 
                   {vendor.vendor_rating && (
                     <div className="text-xs text-muted-foreground">
@@ -650,11 +1246,11 @@ export function VendorDirectoryClient({
                     )}
                   </div>
 
-                  <div className="flex gap-2 pt-2">
+                  <div className="flex flex-wrap gap-2 pt-2">
                     <Button
                       size="sm"
                       onClick={() => handleBookVendor(vendor)}
-                      className="flex-1"
+                      className="flex-1 min-w-[80px]"
                     >
                       Book
                     </Button>
@@ -666,10 +1262,58 @@ export function VendorDirectoryClient({
                     >
                       Reviews
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openEditVendor(vendor)}
+                      className="bg-transparent"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={insurance.posture === "expired" ? "destructive" : "outline"}
+                      onClick={() => openInsuranceDialog(vendor)}
+                      className={insurance.posture === "expired" ? "" : "bg-transparent"}
+                      title="Record this vendor's certificate of insurance — carrier, policy, limit and expiry"
+                    >
+                      Insurance
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleSubmitForVerification(vendor)}
+                      disabled={isPending && verifyVendorId === vendor.id}
+                      className="bg-transparent"
+                      title="Score this vendor's application and stage it as PENDING for broker approval — it then appears in the vendor approvals queue"
+                    >
+                      {isPending && verifyVendorId === vendor.id ? "Submitting…" : "Submit for verification"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openAssignDialog(vendor)}
+                      className="bg-transparent"
+                      title="Create a vendor_assignments + vendor_jobs record on a deal"
+                    >
+                      Assign to deal
+                    </Button>
+                    {listings.length > 0 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openListingDialog(vendor)}
+                        className="bg-transparent"
+                        title="Book this vendor against a listing (pre-contract work)"
+                      >
+                        Book for listing
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
-            ))}
+              )
+            })}
           </div>
 
           {vendors.length === 0 && (
@@ -697,6 +1341,8 @@ export function VendorDirectoryClient({
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {statusError && <p className="text-sm text-destructive">{statusError}</p>}
+                  {statusNotice && <p className="text-sm text-emerald-700">{statusNotice}</p>}
                   {recentBookings.map((booking) => (
                     <div
                       key={booking.id}
@@ -705,7 +1351,7 @@ export function VendorDirectoryClient({
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{booking.vendors?.name || "Unknown Vendor"}</span>
-                          {getStatusBadge(booking.status)}
+                          {getStatusBadge(effectiveStatus(booking))}
                         </div>
                         <div className="text-sm text-muted-foreground">
                           {booking.service_type} - {booking.transactions?.property_address || "Unknown Property"}
@@ -722,8 +1368,23 @@ export function VendorDirectoryClient({
                           )}
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        {booking.status === "scheduled" && (
+                      <div className="flex flex-wrap gap-2 justify-end">
+                        {/* Full transition graph — confirm / cancel / no-show /
+                            complete, offered only where the kernel will accept
+                            them. A terminal booking shows no buttons at all. */}
+                        {(BOOKING_NEXT_STATUSES[effectiveStatus(booking)] ?? []).map((next) => (
+                          <Button
+                            key={next}
+                            size="sm"
+                            variant={next === "cancelled" || next === "no_show" ? "ghost" : "outline"}
+                            onClick={() => handleBookingStatus(booking.id, next)}
+                            disabled={isPending && statusBookingId === booking.id}
+                            className={next === "cancelled" || next === "no_show" ? "" : "bg-transparent"}
+                          >
+                            {BOOKING_STATUS_LABEL[next]}
+                          </Button>
+                        ))}
+                        {effectiveStatus(booking) === "scheduled" && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -734,7 +1395,7 @@ export function VendorDirectoryClient({
                             Mark Complete
                           </Button>
                         )}
-                        {booking.status === "completed" && !booking.agent_rating && (
+                        {effectiveStatus(booking) === "completed" && !booking.agent_rating && (
                           <Button
                             size="sm"
                             onClick={() => handleRateBooking(booking)}
@@ -818,7 +1479,7 @@ export function VendorDirectoryClient({
                     disabled={isPending}
                     className="bg-transparent"
                   >
-                    {type}
+                    {categoryLabel(type)}
                   </Button>
                 ))}
               </div>
@@ -884,16 +1545,13 @@ export function VendorDirectoryClient({
                           {new Date(doc.created_at).toLocaleDateString()}
                         </div>
                       </div>
-                      <a
-                        href={doc.file_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="ml-4 shrink-0"
-                      >
-                        <Button size="sm" variant="outline" className="bg-transparent">
+                      {/* asChild — the anchor IS the button, so the link is on
+                          the control itself rather than on a wrapper. */}
+                      <Button asChild size="sm" variant="outline" className="ml-4 shrink-0 bg-transparent">
+                        <a href={doc.file_url} target="_blank" rel="noopener noreferrer">
                           View
-                        </Button>
-                      </a>
+                        </a>
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -909,7 +1567,7 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Book Vendor</DialogTitle>
             <DialogDescription>
-              {selectedVendor?.name} - {selectedVendor?.category}
+              {selectedVendor?.name} - {categoryLabel(selectedVendor?.category)}
             </DialogDescription>
           </DialogHeader>
 
@@ -1131,11 +1789,11 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Reviews: {reviewsVendor?.name}</DialogTitle>
             <DialogDescription>
-              {reviewsVendor?.category} - {renderStars(reviewsVendor?.rating ?? null)}
+              {categoryLabel(reviewsVendor?.category)} - {renderStars(reviewsVendor?.rating ?? null)}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="py-4 max-h-96 overflow-y-auto">
+          <div className="py-4 max-h-72 overflow-y-auto">
             {vendorReviews.length === 0 ? (
               <p className="text-muted-foreground text-center py-8">
                 No reviews yet for this vendor in your brokerage.
@@ -1159,16 +1817,101 @@ export function VendorDirectoryClient({
                         {new Date(review.created_at).toLocaleDateString()}
                       </span>
                     </div>
+                    {review.headline && <p className="text-sm font-medium">{review.headline}</p>}
                     {review.review && (
                       <p className="text-sm">{review.review}</p>
                     )}
-                    <div className="text-xs text-muted-foreground mt-2">
-                      - {review.users?.first_name} {review.users?.last_name}
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                      {review.is_verified ? (
+                        <Badge variant="secondary" className="text-[10px]">
+                          <CheckCircle2 className="h-3 w-3 mr-1" />
+                          Verified {review.verification_method === "transaction_party" ? "deal party" : "booking party"}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">Unverified</Badge>
+                      )}
+                      {review.moderation_status !== "approved" && (
+                        <Badge variant="outline" className="text-[10px] capitalize">
+                          {String(review.moderation_status).replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                      {(review.flag_count ?? 0) > 0 && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {review.flag_count} flag{review.flag_count === 1 ? "" : "s"}
+                        </Badge>
+                      )}
+                    </div>
+                    {review.vendor_response && (
+                      <div className="mt-2 rounded border-l-2 border-primary/40 bg-muted/40 p-2">
+                        <p className="text-[11px] font-medium text-muted-foreground">Vendor response</p>
+                        <p className="text-sm">{review.vendor_response}</p>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-xs text-muted-foreground">
+                        - {review.users?.first_name} {review.users?.last_name}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px]"
+                        disabled={isPending || flaggingReviewId === review.id}
+                        onClick={() => handleFlagReview(review.id)}
+                      >
+                        <AlertCircle className="h-3 w-3 mr-1" /> Flag
+                      </Button>
                     </div>
                   </div>
                 ))}
               </div>
             )}
+          </div>
+
+          {/* WRITE A REVIEW — verification is decided by the server from the
+              deal you name; it can never be self-asserted here. */}
+          <div className="border-t pt-4 space-y-3">
+            <p className="text-sm font-medium">Write a review</p>
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button key={star} type="button" onClick={() => setNewReviewRating(star)}>
+                  <Star
+                    className={`h-5 w-5 ${star <= newReviewRating ? "fill-yellow-400 text-yellow-400" : "text-gray-300"}`}
+                  />
+                </button>
+              ))}
+              <span className="ml-2 text-sm text-muted-foreground">{newReviewRating} of 5</span>
+            </div>
+            <Input
+              value={newReviewHeadline}
+              onChange={(e) => setNewReviewHeadline(e.target.value)}
+              placeholder="Headline (optional)"
+            />
+            <Textarea
+              value={newReviewBody}
+              onChange={(e) => setNewReviewBody(e.target.value)}
+              placeholder="What was the work like? At least 50 characters."
+              rows={3}
+            />
+            <div className="space-y-1">
+              <Label className="text-xs">Link to a transaction (makes the review verified)</Label>
+              <Select value={newReviewTransactionId} onValueChange={setNewReviewTransactionId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No transaction" />
+                </SelectTrigger>
+                <SelectContent>
+                  {transactions.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.property_address}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {reviewFormError && <p className="text-sm text-destructive">{reviewFormError}</p>}
+            {reviewFormNotice && <p className="text-sm text-muted-foreground">{reviewFormNotice}</p>}
+            <DialogFooter>
+              <Button onClick={handleSubmitReview} disabled={isPending || !newReviewBody.trim()}>
+                Submit review
+              </Button>
+            </DialogFooter>
           </div>
         </DialogContent>
       </Dialog>
@@ -1196,11 +1939,18 @@ export function VendorDirectoryClient({
             </div>
 
             <div className="space-y-2">
-              <Label>Category / Service Type</Label>
-              <Input
+              <Label htmlFor="new-vendor-category">
+                Category / Service Type <span className="text-destructive">*</span>
+              </Label>
+              {/* vendors.category is CHECK-constrained — a free-text box here
+                  could only ever produce a rejected INSERT (its placeholder used
+                  to suggest "Home Inspection, Photography", neither of which the
+                  column has ever admitted). The picker cannot express an
+                  invalid value. */}
+              <VendorCategorySelect
+                id="new-vendor-category"
                 value={newVendorCategory}
-                onChange={(e) => setNewVendorCategory(e.target.value)}
-                placeholder="e.g., Home Inspection, Photography"
+                onChange={setNewVendorCategory}
               />
             </div>
 
@@ -1263,6 +2013,374 @@ export function VendorDirectoryClient({
             </Button>
             <Button onClick={handleCreateVendor} disabled={isPending || !newVendorName.trim()}>
               {isPending ? "Creating..." : "Create Vendor"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Vendor Dialog */}
+      <Dialog open={editVendorOpen} onOpenChange={setEditVendorOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Vendor</DialogTitle>
+            <DialogDescription>
+              Correct this vendor&apos;s details. Paid directory placement is not edited here — it
+              is sold and written by the placement lane.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Name <span className="text-destructive">*</span>
+              </Label>
+              <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-vendor-category">Category / Service Type</Label>
+              {/* Same CHECK-constrained picker as the create dialog — a free-text
+                  box here could only ever produce a rejected UPDATE. */}
+              <VendorCategorySelect
+                id="edit-vendor-category"
+                value={editCategory}
+                onChange={setEditCategory}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} type="tel" />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} type="email" />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Website</Label>
+              <Input value={editWebsite} onChange={(e) => setEditWebsite(e.target.value)} type="url" />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={editNotes} onChange={(e) => setEditNotes(e.target.value)} rows={2} />
+            </div>
+
+            {editVendorError && <p className="text-sm text-destructive">{editVendorError}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEditVendorOpen(false)
+                setEditVendorError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateVendor} disabled={isPending || !editName.trim()}>
+              {isPending ? "Saving..." : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Certificate of Insurance Dialog — recordVendorInsuranceAction */}
+      <Dialog open={insuranceDialogOpen} onOpenChange={setInsuranceDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Certificate of Insurance</DialogTitle>
+            <DialogDescription>
+              {insuranceVendor?.name} — record the liability certificate. The expiry you enter is the
+              date every compliance verdict is computed from: once it passes, the nightly sweep
+              suspends this vendor off the bench automatically.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* What is on file right now, stated before anything is changed. */}
+            {insuranceVendor && (() => {
+              const current = readVendorInsurance(insuranceVendor.compliance_credentials, new Date())
+              return (
+                <div className="rounded border p-2 text-xs space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground">On file:</span>
+                    <Badge className={`text-[11px] border ${INSURANCE_BADGE[current.posture]}`}>
+                      {current.label}
+                    </Badge>
+                  </div>
+                  <p className="text-muted-foreground leading-snug">{current.detail}</p>
+                </div>
+              )
+            })()}
+
+            <div className="space-y-2">
+              <Label>
+                Carrier <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={insCarrier}
+                onChange={(e) => setInsCarrier(e.target.value)}
+                placeholder="e.g. Travelers, Hartford"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Policy number <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={insPolicyNumber}
+                onChange={(e) => setInsPolicyNumber(e.target.value)}
+                placeholder="As printed on the certificate"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Coverage limit (USD) <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={1}
+                value={insCoverage}
+                onChange={(e) => setInsCoverage(e.target.value)}
+                placeholder="1000000"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>
+                  Effective <span className="text-destructive">*</span>
+                </Label>
+                <Input type="date" value={insEffective} onChange={(e) => setInsEffective(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  Expires <span className="text-destructive">*</span>
+                </Label>
+                <Input type="date" value={insExpiry} onChange={(e) => setInsExpiry(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Certificate link</Label>
+              <Input
+                value={insUrl}
+                onChange={(e) => setInsUrl(e.target.value)}
+                placeholder="https://… (optional)"
+              />
+            </div>
+
+            {insuranceError && <p className="text-sm text-destructive">{insuranceError}</p>}
+            {insuranceNotice && <p className="text-sm text-green-700">{insuranceNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setInsuranceDialogOpen(false)
+                setInsuranceError("")
+                setInsuranceNotice("")
+              }}
+              className="bg-transparent"
+            >
+              Close
+            </Button>
+            <Button
+              onClick={handleRecordInsurance}
+              disabled={
+                isPending ||
+                !insCarrier.trim() ||
+                !insPolicyNumber.trim() ||
+                !insCoverage.trim() ||
+                !insEffective ||
+                !insExpiry
+              }
+            >
+              {isPending ? "Verifying..." : "Record & verify"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Book for Listing Dialog */}
+      <Dialog open={listingDialogOpen} onOpenChange={setListingDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Book for a Listing</DialogTitle>
+            <DialogDescription>
+              {listingVendor?.name} — pre-contract work booked against the property itself
+              (staging, photography, pre-list inspection, cleaning).
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Listing <span className="text-destructive">*</span>
+              </Label>
+              <Select value={listingId} onValueChange={setListingId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a listing" />
+                </SelectTrigger>
+                <SelectContent>
+                  {listings.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.address ?? "Listing"}
+                      {l.status ? ` (${l.status})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Service Type <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={listingServiceType}
+                onChange={(e) => setListingServiceType(e.target.value)}
+                placeholder="e.g., staging"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Scheduled Date</Label>
+                <Input type="date" value={listingDate} onChange={(e) => setListingDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Estimated Cost ($)</Label>
+                <Input
+                  type="number"
+                  value={listingCost}
+                  onChange={(e) => setListingCost(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={listingNotes} onChange={(e) => setListingNotes(e.target.value)} rows={2} />
+            </div>
+
+            {listingError && <p className="text-sm text-destructive">{listingError}</p>}
+            {listingNotice && <p className="text-sm text-emerald-700">{listingNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setListingDialogOpen(false)
+                setListingError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignToListing}
+              disabled={isPending || !listingId || !listingServiceType.trim()}
+            >
+              {isPending ? "Booking..." : "Book for listing"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign to Deal Dialog */}
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign to a Deal</DialogTitle>
+            <DialogDescription>
+              {assignVendor?.name} — creates the assignment and the vendor job the deal screen and
+              the vendor&apos;s own job list read. This is a different record from a booking.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Transaction <span className="text-destructive">*</span>
+              </Label>
+              <Select value={assignTransactionId} onValueChange={setAssignTransactionId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a deal" />
+                </SelectTrigger>
+                <SelectContent>
+                  {transactions.map((txn) => (
+                    <SelectItem key={txn.id} value={txn.id}>
+                      {txn.property_address} ({txn.stage})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Assignment Type <span className="text-destructive">*</span>
+              </Label>
+              {/* vendor_assignments.assignment_type admits exactly these ten
+                  values — NOT the 38-value vendors.category vocabulary and not
+                  the free-text service types the booking form offers. */}
+              <Select value={assignType} onValueChange={setAssignType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select an assignment type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {VENDOR_ASSIGNMENT_TYPES.map((t) => (
+                    <SelectItem key={t} value={t} className="capitalize">
+                      {t.replace(/_/g, " ")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Scheduled Date</Label>
+              <Input type="date" value={assignDate} onChange={(e) => setAssignDate(e.target.value)} />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea value={assignNotes} onChange={(e) => setAssignNotes(e.target.value)} rows={2} />
+            </div>
+
+            {assignError && <p className="text-sm text-destructive">{assignError}</p>}
+            {assignNotice && <p className="text-sm text-emerald-700">{assignNotice}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAssignDialogOpen(false)
+                setAssignError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignToTransaction}
+              disabled={isPending || !assignTransactionId || !assignType}
+            >
+              {isPending ? "Assigning..." : "Assign to deal"}
             </Button>
           </DialogFooter>
         </DialogContent>

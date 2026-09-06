@@ -27,16 +27,45 @@ const EVENT_COLORS: Record<UnifiedCalendarEvent["eventType"], string> = {
   time_block: "bg-zinc-500/20 border-zinc-500 text-zinc-700 dark:text-zinc-300",
 }
 
+const GRID_START_HOUR = HOURS[0]
+const GRID_END_HOUR = HOURS[HOURS.length - 1] + 1
+const PX_PER_HOUR = 48
+
+/**
+ * `dayStart` — THE COLUMN THIS EVENT IS BEING DRAWN IN — WAS ACCEPTED HERE AND READ
+ * BY NOTHING until 2026-08-24. Both edges were taken straight off the event's own
+ * clock with `getHours()`, which has no idea which day it is positioning, so an event
+ * that crossed midnight (a 10pm closing walkthrough ending at 1am, an all-day block)
+ * produced an END HOUR SMALLER THAN ITS START: the height went negative, collapsed to
+ * the 24px floor, and a five-hour event rendered as a sliver.
+ *
+ * Both edges are now CLAMPED to the day column they are drawn in, so an event that
+ * begins before this day starts at the top of the column and one that runs past
+ * midnight is cut off at the bottom instead of inverting.
+ */
 function getEventPosition(event: UnifiedCalendarEvent, dayStart: Date) {
-  const eventStart = new Date(event.startAt)
-  const eventEnd = new Date(event.endAt)
-  
-  const startHour = eventStart.getHours() + eventStart.getMinutes() / 60
-  const endHour = eventEnd.getHours() + eventEnd.getMinutes() / 60
-  
-  const top = Math.max(0, (startHour - 7) * 48) // 48px per hour, starting at 7am
-  const height = Math.max(24, (endHour - startHour) * 48)
-  
+  const dayMidnight = new Date(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate()).getTime()
+  const dayEnd = dayMidnight + 24 * 60 * 60 * 1000
+
+  const rawStart = new Date(event.startAt).getTime()
+  const rawEnd = new Date(event.endAt).getTime()
+
+  const clampedStart = Math.min(Math.max(rawStart, dayMidnight), dayEnd)
+  // An end that is missing or before its own start is not a duration — treat it as a
+  // point in time and let the 24px floor below give it a readable body.
+  const clampedEnd = Math.min(Math.max(Number.isFinite(rawEnd) ? rawEnd : clampedStart, clampedStart), dayEnd)
+
+  const startHour = (clampedStart - dayMidnight) / (60 * 60 * 1000)
+  const endHour = (clampedEnd - dayMidnight) / (60 * 60 * 1000)
+
+  // The grid only renders GRID_START_HOUR..GRID_END_HOUR; anything outside it is
+  // pinned to the nearest edge rather than drawn off-canvas.
+  const visibleStart = Math.min(Math.max(startHour, GRID_START_HOUR), GRID_END_HOUR)
+  const visibleEnd = Math.min(Math.max(endHour, visibleStart), GRID_END_HOUR)
+
+  const top = (visibleStart - GRID_START_HOUR) * PX_PER_HOUR
+  const height = Math.max(24, (visibleEnd - visibleStart) * PX_PER_HOUR)
+
   return { top, height }
 }
 

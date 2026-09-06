@@ -100,6 +100,9 @@ export function compositionHintFor(kind: SituationKind, channel: TargetChannel):
     case "market_update": return "MarketUpdateReel"
     case "cma":           return "CMAReel"
     case "explainer":     return "AgentExplainerReel"
+    // The DRAWN explainer — same teaching job, animated diagram instead of a
+    // talking head, so the voice studio can schedule it as its own topic.
+    case "concept_animation": return "ExplainerAnimReel"
     case "lead_intro":    return "AgentExplainerReel"
     case "presentation":  return "ListingSectionReel"
     case "anniversary":   return "EquityReportReel"
@@ -144,6 +147,22 @@ export function daysForLabel(label: string): number {
  * The plan is deterministic per (context, durationLabel) — same inputs produce
  * the same plan. No randomness, no fabrication.
  */
+/**
+ * The evergreen topic rotation. ONE list: the voice studio passes it as
+ * context.topics, and planStudioSession falls back to it when a caller supplies
+ * none. Previously the fallback was a second hardcoded array that silently
+ * disagreed with the caller's list.
+ */
+export const DEFAULT_EVERGREEN_TOPICS: Array<{ kind: SituationKind; label: string }> = [
+  { kind: "market_update", label: "local market update" },
+  { kind: "neighborhood",  label: "neighborhood spotlight" },
+  { kind: "explainer",     label: "buyer/seller explainer" },
+  // The DRAWN explainer sits alongside the avatar-led one so a plan alternates
+  // talking-head and animated-diagram teaching instead of repeating one look.
+  { kind: "concept_animation", label: "animated concept explainer" },
+  { kind: "testimonial",   label: "client testimonial" },
+]
+
 export function planStudioSession(
   durationLabel: string,
   context: StudioSessionContext,
@@ -156,7 +175,9 @@ export function planStudioSession(
   // Priority: listing-promotional kinds for brokerage's active listings, then
   // evergreen topics to fill any remaining slots.
   const listingKinds: SituationKind[] = ["new_listing", "open_house", "just_sold", "coming_soon"]
-  const evergreenKinds: SituationKind[] = ["market_update", "neighborhood", "explainer", "testimonial"]
+  // Fallback only (used when the caller supplies no topics). Derived from the one
+  // DEFAULT_EVERGREEN_TOPICS list so this cannot drift out of sync with it.
+  const evergreenKinds: SituationKind[] = DEFAULT_EVERGREEN_TOPICS.map((t) => t.kind)
 
   // Build a work queue: interleave listing promos with evergreen content so the
   // content calendar is varied (not all listing reels, not all evergreen).
@@ -299,21 +320,48 @@ export async function commissionStudioSession(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
 
+  // studio_sessions.agent_id is a NOT NULL FK to agents(id). CLIENT-AGNOSTIC
+  // resolver: this module is deliberately not server-only (planStudioSession is
+  // pure and the simulator drives it), so it resolves through the client it was
+  // handed. Both the idempotency lookup and the anchor insert key off this — a
+  // null here would silently match every session, so refuse instead.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const sessionAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!sessionAgentId) {
+    return { ok: false, status: "failed", commissioned: 0, skipped: 0, videoProjectIds: [], spoken: "I couldn't find your agent profile in this brokerage — finish onboarding and I'll book the session.", reason: "no agent profile for this user in this brokerage" }
+  }
+
   // ── Idempotency: derive or accept the session key ──────────────────────────
   const sessionKey = opts.sessionKey ??
     `studio:${opts.brokerageId}:${opts.agentUserId}:${plan.durationLabel}:${plan.items[0]?.scheduledFor ?? "no-dates"}`
 
   // Check for an existing session with this key.
-  const { data: existingSession } = await svc
+  //
+  // duration_label / plan / spoken_command are read back HERE and nowhere
+  // else. The already-commissioned confirmation below used to be composed from
+  // the FRESHLY computed `plan` — but the session key is the caller's (see
+  // opts.sessionKey), so the row this probe finds can belong to a plan with a
+  // different duration label and a different item set. Agent hears "your
+  // week's session is already in the pipeline" about a row that booked a
+  // month. What was STORED is what was booked; speak that.
+  const { data: existingSession, error: existingErr } = await svc
     .from("studio_sessions")
-    .select("id, status, commissioned_count, skipped_count")
+    .select("id, status, commissioned_count, skipped_count, duration_label, plan, spoken_command")
     .eq("brokerage_id", opts.brokerageId)
-    .eq("agent_id", opts.agentUserId)
+    .eq("agent_id", sessionAgentId)
     .eq("session_key", sessionKey)
     .maybeSingle()
+  if (existingErr) {
+    // A refused probe cannot prove absence; proceeding would insert a duplicate
+    // anchor under a key that may already exist. Refuse instead.
+    return { ok: false, status: "failed", commissioned: 0, skipped: 0, videoProjectIds: [], spoken: "I couldn't check whether this studio session already exists — try again in a moment.", reason: `idempotency probe refused: ${existingErr.message}` }
+  }
 
   if (existingSession?.id) {
-    const s = existingSession as { id: string; status: string; commissioned_count: number; skipped_count: number }
+    const s = existingSession as {
+      id: string; status: string; commissioned_count: number; skipped_count: number
+      duration_label: string | null; plan: unknown; spoken_command: string | null
+    }
     // Fetch the video project IDs already linked to this session.
     const { data: existingVideos } = await svc
       .from("ai_video_projects")
@@ -329,7 +377,16 @@ export async function commissionStudioSession(
       commissioned: s.commissioned_count,
       skipped: s.skipped_count,
       videoProjectIds: ids,
-      spoken: `Your ${plan.durationLabel}'s studio session is already in the pipeline — ${s.commissioned_count} reel${s.commissioned_count !== 1 ? "s" : ""} staged for approval. No duplicate commissions.`,
+      spoken: composeSessionAlreadyCommissionedSpoken({
+        storedDurationLabel: s.duration_label,
+        storedPlan: s.plan,
+        storedSpokenCommand: s.spoken_command,
+        commissioned: s.commissioned_count,
+        // Only a row written before duration_label was stamped falls back to
+        // the fresh plan's label — and says so, rather than presenting a guess
+        // as the record.
+        fallbackDurationLabel: plan.durationLabel,
+      }),
     }
   }
 
@@ -339,7 +396,7 @@ export async function commissionStudioSession(
     .from("studio_sessions")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_id: sessionAgentId,
       spoken_command: opts.spokenCommand,
       duration_label: plan.durationLabel,
       plan: plan.items,
@@ -437,6 +494,33 @@ export async function commissionStudioSession(
     videoProjectIds,
     spoken,
   }
+}
+
+/**
+ * Pure: compose the spoken "already booked" confirmation from what the
+ * studio_sessions row STORED — never from a plan recomputed on the re-run.
+ * `storedPlan` is the jsonb `plan` column (StudioSessionItem[] as written by
+ * commissionStudioSession); its length is the number of reels that were
+ * planned, which may differ from commissioned_count when some were skipped.
+ */
+export function composeSessionAlreadyCommissionedSpoken(args: {
+  storedDurationLabel: string | null
+  storedPlan: unknown
+  storedSpokenCommand: string | null
+  commissioned: number
+  fallbackDurationLabel: string
+}): string {
+  const { storedDurationLabel, storedPlan, storedSpokenCommand, commissioned, fallbackDurationLabel } = args
+  const label = storedDurationLabel?.trim() || fallbackDurationLabel
+  const labelNote = storedDurationLabel?.trim() ? "" : " (that session predates duration tracking, so I'm going by your current request)"
+  const planned = Array.isArray(storedPlan) ? storedPlan.length : null
+  const plannedNote = planned !== null && planned !== commissioned
+    ? ` of the ${planned} planned`
+    : ""
+  const commandNote = storedSpokenCommand?.trim()
+    ? ` You booked it by asking "${storedSpokenCommand.trim()}".`
+    : ""
+  return `Your ${label}'s studio session is already in the pipeline${labelNote} — ${commissioned} reel${commissioned !== 1 ? "s" : ""}${plannedNote} staged for approval.${commandNote} No duplicate commissions.`
 }
 
 /** Pure: compose the spoken post-commission confirmation. */
@@ -549,12 +633,7 @@ export async function voiceStudioSession(
     .map((l) => ({ id: l.id, address: l.address! }))
 
   // Default evergreen topic set — always non-empty so the planner always has slots
-  const defaultTopics: Array<{ kind: SituationKind; label: string }> = [
-    { kind: "market_update", label: "local market update" },
-    { kind: "neighborhood",  label: "neighborhood spotlight" },
-    { kind: "explainer",     label: "buyer/seller explainer" },
-    { kind: "testimonial",   label: "client testimonial" },
-  ]
+  const defaultTopics = DEFAULT_EVERGREEN_TOPICS
 
   const today = new Date().toISOString().slice(0, 10)
 

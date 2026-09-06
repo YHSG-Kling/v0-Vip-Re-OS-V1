@@ -2,24 +2,38 @@
 
 import { useEffect, useState, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { seedTerritoriesFromServiceArea, setFarmTerritoryMode } from "@/lib/territory/metrics-aggregator"
+import {
+  seedTerritoriesFromServiceArea,
+  setFarmTerritoryMode,
+  type TerritoryMetricsRow,
+} from "@/lib/territory/metrics-aggregator"
 import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 type TerritoryMode = "use_settings" | "custom" | null
 
-type MetricRow = {
-  zip_code: string
-  lead_count: number
-  qualified_lead_count: number
-  conversion_rate: number
-  avg_score: number
-  roi: number
-  agent_saturation: number
-  total_cost: number
-  metric_date: string
-}
+// THE AGGREGATOR WRITES EIGHTEEN COLUMNS; THIS SURFACE READ TWELVE (wave H5).
+// lib/territory/metrics-aggregator.ts:155 upserts assigned_count,
+// consented_count, conversion_count, cost_per_lead, sla_compliance_rate and
+// leads_by_provider every night and NOTHING read them — the nightly cron was
+// computing a cost-per-lead and an SLA compliance rate for every farmed ZIP
+// that no human could ever see. The formatter below already had a
+// `cost_per_lead` branch (a half-built wire: the formatting existed, the
+// column was never selected and never offered in the picker).
+// The read shape is DERIVED from the writer's row type rather than retyped, so
+// a column renamed in lib/territory/metrics-aggregator.ts breaks this page at
+// type-check instead of quietly rendering zeros. Only `leads_by_provider` is
+// widened: the writer always builds an object, the database column can be NULL
+// on a row written before it existed.
+type MetricRow = Pick<
+  TerritoryMetricsRow,
+  | "zip_code" | "metric_date"
+  | "lead_count" | "qualified_lead_count" | "conversion_rate" | "avg_score"
+  | "roi" | "agent_saturation" | "total_cost"
+  | "cost_per_lead" | "conversion_count" | "assigned_count" | "consented_count"
+  | "sla_compliance_rate"
+> & { leads_by_provider: Record<string, number> | null }
 
 type FarmTerritory = {
   id: string
@@ -93,7 +107,7 @@ export default function FarmIntelligencePage() {
     const today = new Date().toISOString().split("T")[0]
     const { data: metricsData } = await supabase
       .from("territory_metrics")
-      .select("zip_code,lead_count,qualified_lead_count,conversion_rate,avg_score,roi,agent_saturation,total_cost,metric_date")
+      .select("zip_code,lead_count,qualified_lead_count,conversion_rate,avg_score,roi,agent_saturation,total_cost,cost_per_lead,conversion_count,assigned_count,consented_count,sla_compliance_rate,leads_by_provider,metric_date")
       .eq("brokerage_id", bid)
       .lte("metric_date", today)
       .order("metric_date", { ascending: false })
@@ -208,10 +222,37 @@ export default function FarmIntelligencePage() {
     lead_count: "Lead Count",
     qualified_lead_count: "Qualified Leads",
     conversion_rate: "Conversion Rate",
+    conversion_count: "Conversions",
+    assigned_count: "Assigned Leads",
+    consented_count: "Consented Leads",
+    sla_compliance_rate: "SLA Compliance",
     avg_score: "Avg Score",
     roi: "Est. ROI",
     agent_saturation: "Agent Saturation",
     total_cost: "Total Cost",
+    cost_per_lead: "Cost per Lead",
+  }
+
+  // The selected ZIP's provider mix — the "where did these leads come from"
+  // behind its cost per lead. Empty object → the panel says so rather than
+  // rendering a chart of nothing.
+  const providerMixForZip = selectedZip
+    ? Object.entries(metrics.find((m) => m.zip_code === selectedZip)?.leads_by_provider ?? {})
+        .filter(([, n]) => typeof n === "number" && n > 0)
+        .sort((a, b) => (b[1] as number) - (a[1] as number))
+    : []
+
+  /** One formatter for the picked metric — rates as percentages, money as
+   *  dollars, counts as whole numbers. Kept in ONE place so a metric added to
+   *  metricLabels cannot render as an unlabelled decimal. */
+  function formatMetric(key: string, value: number | null): string {
+    const v = value ?? 0
+    if (key === "conversion_rate" || key === "agent_saturation" || key === "sla_compliance_rate") return `${(v * 100).toFixed(1)}%`
+    if (key === "roi") return `${(v * 100).toFixed(0)}%`
+    if (key === "total_cost" || key === "cost_per_lead") return `$${v.toFixed(2)}`
+    if (key === "lead_count" || key === "qualified_lead_count" || key === "conversion_count" ||
+        key === "assigned_count" || key === "consented_count") return String(Math.round(v))
+    return v.toFixed(1)
   }
 
   // Color scale for choropleth-style table
@@ -379,7 +420,12 @@ export default function FarmIntelligencePage() {
                       <th className="text-left px-4 py-2">Zip Code</th>
                       <th className="text-right px-4 py-2">{metricLabels[metricKey]}</th>
                       <th className="text-right px-4 py-2">Leads</th>
+                      <th className="text-right px-4 py-2">Assigned</th>
+                      <th className="text-right px-4 py-2">Consented</th>
+                      <th className="text-right px-4 py-2">Conversions</th>
                       <th className="text-right px-4 py-2">Conv. Rate</th>
+                      <th className="text-right px-4 py-2">SLA</th>
+                      <th className="text-right px-4 py-2">Cost / Lead</th>
                       <th className="text-right px-4 py-2">Avg Score</th>
                     </tr>
                   </thead>
@@ -394,16 +440,15 @@ export default function FarmIntelligencePage() {
                       >
                         <td className="px-4 py-2 font-mono font-medium text-foreground">{m.zip_code}</td>
                         <td className={`px-4 py-2 text-right font-medium rounded-sm ${colorForValue((m[metricKey] as number) ?? 0, maxVal)}`}>
-                          {metricKey === "conversion_rate" || metricKey === "agent_saturation"
-                            ? `${(((m[metricKey] as number) ?? 0) * 100).toFixed(1)}%`
-                            : metricKey === "roi"
-                            ? `${(((m[metricKey] as number) ?? 0) * 100).toFixed(0)}%`
-                            : metricKey === "total_cost" || (metricKey as string) === "cost_per_lead"
-                            ? `$${((m[metricKey] as number) ?? 0).toFixed(2)}`
-                            : ((m[metricKey] as number) ?? 0).toFixed(1)}
+                          {formatMetric(metricKey, m[metricKey] as number | null)}
                         </td>
                         <td className="px-4 py-2 text-right text-muted-foreground">{m.lead_count}</td>
+                        <td className="px-4 py-2 text-right text-muted-foreground">{m.assigned_count ?? 0}</td>
+                        <td className="px-4 py-2 text-right text-muted-foreground">{m.consented_count ?? 0}</td>
+                        <td className="px-4 py-2 text-right text-muted-foreground">{m.conversion_count ?? 0}</td>
                         <td className="px-4 py-2 text-right text-muted-foreground">{(m.conversion_rate * 100).toFixed(1)}%</td>
+                        <td className="px-4 py-2 text-right text-muted-foreground">{((m.sla_compliance_rate ?? 0) * 100).toFixed(0)}%</td>
+                        <td className="px-4 py-2 text-right text-muted-foreground">${(m.cost_per_lead ?? 0).toFixed(2)}</td>
                         <td className="px-4 py-2 text-right text-muted-foreground">{m.avg_score.toFixed(0)}</td>
                       </tr>
                     ))}
@@ -412,6 +457,39 @@ export default function FarmIntelligencePage() {
               </div>
             )}
           </div>
+
+          {/* Provider mix for the selected zip — leads_by_provider, the source
+              breakdown the aggregator has always written and nobody could see.
+              Rendered ONLY when the selected row actually carries one; an empty
+              mix says so rather than implying "no leads". */}
+          {selectedZip && (
+            <div className="mt-4 rounded-xl border border-border p-4">
+              <p className="text-sm font-medium text-foreground mb-3">Lead Sources — {selectedZip}</p>
+              {providerMixForZip.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No per-source breakdown recorded for this zip on its latest metric date.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {providerMixForZip.map(([source, count]) => {
+                    const total = providerMixForZip.reduce((s, [, n]) => s + (n as number), 0)
+                    const pct = total > 0 ? ((count as number) / total) * 100 : 0
+                    return (
+                      <li key={source} className="flex items-center gap-3 text-xs">
+                        <span className="w-32 shrink-0 truncate text-foreground">{source}</span>
+                        <span className="flex-1 h-2 rounded bg-muted overflow-hidden">
+                          <span className="block h-full bg-primary" style={{ width: `${pct}%` }} />
+                        </span>
+                        <span className="w-20 shrink-0 text-right text-muted-foreground">
+                          {count as number} ({pct.toFixed(0)}%)
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
 
           {/* 30-day trend for selected zip */}
           {selectedZip && trendForZip.length > 0 && (

@@ -207,11 +207,58 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       materialName: listing.address ?? undefined,
     })
 
-    // Update packet job with generated content stored in config jsonb
-    await supabase
+    // PRINTABLE BINDER (owner ruling: "the listing packets need to take the
+    // content and make it printable material for the listing"). The assembled
+    // PacketDocuments are rendered through the client-PDF rail — pure spec
+    // builder (lib/documents/listing-packet-pdf.ts) → produceClientDocument
+    // (render → host on Supabase storage → generated_documents ledger row).
+    // Best-effort per the producer's never-throws contract: a failed render
+    // must NOT fail the packet — the content in config.content is still real.
+    // The failure is RECORDED (config.print_error) and output_url stays null.
+    let printedPdfUrl: string | null = null
+    let printError: string | null = null
+    try {
+      const { listingPacketSpec } = await import("@/lib/documents/listing-packet-pdf")
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const brand = await resolvePdfBrand(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packetAgentUserId,
+      })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      const spec = listingPacketSpec(
+        documents,
+        { address: listing.address, city: listing.city, state: listing.state, list_price: listing.list_price },
+        brand,
+        packetQr ? { scanUrl: packetQr.scanUrl, qrCodeDataUrl: packetQr.qrCodeDataUrl } : null,
+        dateLabel,
+      )
+      const produced = await produceClientDocument(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packetAgentUserId,
+        listingId: config.listingId,
+        documentType: "listing_packet",
+        spec,
+        metadata: { packetId: packet.id, sections: documents.map(d => d.type) },
+      })
+      if (produced.ok && produced.pdfUrl) printedPdfUrl = produced.pdfUrl
+      else printError = produced.error ?? "PDF production failed"
+    } catch (err) {
+      printError = err instanceof Error ? err.message : String(err)
+    }
+    if (printError) console.error("[generateListingPacket] printable packet NOT produced:", printError)
+
+    // Update packet job with generated content stored in config jsonb.
+    // completed_at is stamped here because readers key off it (the open-house
+    // dashboard shows when the packet was built). output_url now carries the
+    // hosted printable binder PDF when production succeeded — ONE update sets
+    // status/completed_at/config/output_url in a single round trip. On a
+    // failed produce, output_url is null and config.print_error says why.
+    const { error: completeError } = await supabase
       .from("listing_packet_jobs")
       .update({
         status: "completed",
+        completed_at: new Date().toISOString(),
+        output_url: printedPdfUrl,
         config: {
           ...config,
           sections: documents.map(d => d.type),
@@ -219,9 +266,13 @@ export async function generateListingPacket(config: ListingPacketConfig) {
           qr: packetQr
             ? { scanUrl: packetQr.scanUrl, qrCodeDataUrl: packetQr.qrCodeDataUrl, destinationType: packetQr.destinationType }
             : null,
+          ...(printError ? { print_error: printError } : {}),
         },
       })
       .eq("id", packet.id)
+    // supabase-js RESOLVES refusals — a swallowed error here would leave the job
+    // stuck "queued" while reporting success to the caller.
+    if (completeError) throw completeError
 
     revalidatePath(`/listings/${config.listingId}`)
     return {
@@ -237,16 +288,36 @@ export async function generateListingPacket(config: ListingPacketConfig) {
 }
 
 // =====================================================
+// PACKET DOCUMENT BUILDERS — INTERNAL, NOT SERVER ACTIONS
+// =====================================================
+//
+// The six builders below (flyer, seller disclosure, utilities form, GIS, tax
+// record, appraiser report) are called from exactly two places, both in this
+// file: generateListingPacket (which the Listing Packet panel calls with the
+// agent's document selection) and regeneratePacketDocument (its per-row Regenerate
+// button). They were `export`ed, and in a "use server" module every export is a
+// PUBLIC RPC endpoint — so each one published a callable that accepts
+// `listing: any` straight from the browser and spends GPT-4o on whatever strings
+// it is handed, against a listing the caller never had to own. requireCaller only
+// proves the caller is signed in; there is no listing to scope to, because the
+// listing arrives as a parameter.
+//
+// Un-exporting them removes six unscoped inference endpoints and changes nothing
+// about the panel, which only ever used the four real actions.
+
+// =====================================================
 // AI LISTING FLYER GENERATION
 // =====================================================
 
-export async function generateListingFlyer(listing: any) {
+async function generateListingFlyer(listing: any) {
   // Auth gate — burns paid AI inference even without DB access
   const auth = await requireCaller()
   if (!auth.ok) return { type: "listing_flyer", name: "Marketing Flyer", status: "error" as const }
 
   try {
     const { text: flyerContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate a professional real estate listing flyer for this property:
 
@@ -323,7 +394,7 @@ Return as JSON:
 // SELLER DISCLOSURE COMPILATION
 // =====================================================
 
-export async function compileSellerDisclosure(listing: any) {
+async function compileSellerDisclosure(listing: any) {
   // Auth gate — paid AI inference + reads disclosures
   const auth = await requireCaller()
   if (!auth.ok) return { type: "seller_disclosure", name: "Seller Disclosure", status: "error" as const }
@@ -343,6 +414,8 @@ export async function compileSellerDisclosure(listing: any) {
 
     // Use AI to compile and verify completeness
     const { text: analysisResult } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Analyze seller disclosure completeness for ${listing.state}:
 
@@ -391,12 +464,14 @@ Return JSON:
 // SELLER UTILITIES FORM
 // =====================================================
 
-export async function generateUtilitiesForm(listing: any) {
+async function generateUtilitiesForm(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "utilities_form", name: "Utilities Form", status: "error" as const }
 
   try {
     const { text: utilitiesContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a seller utilities form for property at ${listing.address}, ${listing.city}, ${listing.state}.
 
@@ -410,7 +485,18 @@ Create a comprehensive utilities information form that sellers typically fill ou
 7. Property tax information
 8. Any special assessments
 
-Return as JSON with form fields and any pre-filled information based on the location.`,
+Return as JSON with exactly this shape (pre-fill values you can infer from the
+location; use "" where the seller must fill it in):
+{
+  "electric": { "provider": "...", "avgMonthlyCost": "..." },
+  "gas": { "provider": "...", "avgMonthlyCost": "..." },
+  "waterSewer": { "provider": "...", "avgMonthlyCost": "..." },
+  "trashService": { "provider": "..." },
+  "internetCableProviders": ["...", "..."],
+  "hoa": { "applicable": "...", "name": "...", "monthlyDues": "..." },
+  "propertyTax": "...",
+  "specialAssessments": "..."
+}`,
     })
 
     const formData = JSON.parse(utilitiesContent)
@@ -436,7 +522,7 @@ Return as JSON with form fields and any pre-filled information based on the loca
 // GIS MAP PROPERTY REPORT
 // =====================================================
 
-export async function fetchGISPropertyReport(listing: any) {
+async function fetchGISPropertyReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "gis_report", name: "GIS Property Report", status: "error" as const }
 
@@ -444,6 +530,8 @@ export async function fetchGISPropertyReport(listing: any) {
     // In production, this would call actual GIS APIs
     // For now, generate AI-enhanced property report
     const { text: gisContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate a GIS property report summary for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -459,7 +547,17 @@ Include typical GIS report information:
 7. Environmental considerations
 8. Nearby amenities distances
 
-Return as JSON with sections for each category.`,
+Return as JSON with exactly this shape:
+{
+  "parcelBoundaries": "...",
+  "zoningClassification": "...",
+  "floodZoneStatus": "...",
+  "schoolDistrict": "...",
+  "utilitiesAvailability": "...",
+  "easements": "...",
+  "environmentalConsiderations": "...",
+  "nearbyAmenities": ["...", "..."]
+}`,
     })
 
     const gisData = JSON.parse(gisContent)
@@ -489,13 +587,15 @@ Return as JSON with sections for each category.`,
 // TAX RECORD REPORT
 // =====================================================
 
-export async function fetchTaxRecordReport(listing: any) {
+async function fetchTaxRecordReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "tax_record", name: "Property Tax Record", status: "error" as const }
 
   try {
     // In production, integrate with county assessor APIs
     const { text: taxContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a property tax record summary for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -511,7 +611,17 @@ Include typical tax record information:
 7. School taxes breakdown
 8. Special district taxes
 
-Return as JSON.`,
+Return as JSON with exactly this shape:
+{
+  "assessedValue": "...",
+  "annualPropertyTaxEstimate": "...",
+  "taxRate": "...",
+  "paymentSchedule": "...",
+  "possibleExemptions": ["...", "..."],
+  "assessmentHistory": "...",
+  "schoolTaxes": "...",
+  "specialDistrictTaxes": "..."
+}`,
     })
 
     const taxData = JSON.parse(taxContent)
@@ -541,12 +651,14 @@ Return as JSON.`,
 // APPRAISER SITE PROPERTY REPORT
 // =====================================================
 
-export async function fetchAppraiserSiteReport(listing: any) {
+async function fetchAppraiserSiteReport(listing: any) {
   const auth = await requireCaller()
   if (!auth.ok) return { type: "appraiser_report", name: "Appraiser Property Report", status: "error" as const }
 
   try {
     const { text: appraiserContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate an appraiser-style property report for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -567,7 +679,16 @@ Generate report sections:
 6. Value indicators
 7. Special considerations
 
-Return as JSON with professional appraiser report formatting.`,
+Return as JSON with exactly this shape (professional appraiser-report tone):
+{
+  "propertyIdentification": "...",
+  "siteAnalysis": "...",
+  "improvementsDescription": "...",
+  "comparableConsiderations": "...",
+  "marketConditions": "...",
+  "valueIndicators": ["...", "..."],
+  "specialConsiderations": "..."
+}`,
     })
 
     const appraiserData = JSON.parse(appraiserContent)
@@ -665,6 +786,8 @@ export async function aiPacketQualityCheck(packetId: string) {
     const documents = packet.config?.content || []
 
     const { text: qualityResult } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Review this listing packet for quality and completeness:
 
@@ -781,17 +904,64 @@ export async function regeneratePacketDocument(params: {
       doc.type === params.documentType ? newDocument : doc
     )
 
-    await supabase
+    // RE-RENDER THE PRINTABLE BINDER — the download must never serve a binder
+    // that predates the document it just replaced. Same rail and same failure
+    // semantics as generateListingPacket: a failed produce never fails the
+    // regeneration; it is recorded in config.print_error and output_url goes
+    // null so no reader hands out the stale PDF.
+    let printedPdfUrl: string | null = null
+    let printError: string | null = null
+    try {
+      const { listingPacketSpec } = await import("@/lib/documents/listing-packet-pdf")
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const service = createServiceClient()
+      const brand = await resolvePdfBrand(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packet.agent_user_id ?? null,
+      })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      const l = packet.listings ?? {}
+      const spec = listingPacketSpec(
+        updatedDocs,
+        { address: l.address, city: l.city, state: l.state, list_price: l.list_price },
+        brand,
+        packet.config?.qr ?? null,
+        dateLabel,
+      )
+      const produced = await produceClientDocument(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packet.agent_user_id ?? null,
+        listingId: packet.listing_id ?? null,
+        documentType: "listing_packet",
+        spec,
+        metadata: { packetId: params.packetId, sections: updatedDocs.map((d: PacketDocument) => d.type), regenerated: params.documentType },
+      })
+      if (produced.ok && produced.pdfUrl) printedPdfUrl = produced.pdfUrl
+      else printError = produced.error ?? "PDF production failed"
+    } catch (err) {
+      printError = err instanceof Error ? err.message : String(err)
+    }
+    if (printError) console.error("[regeneratePacketDocument] printable packet NOT re-produced:", printError)
+
+    const nextConfig: Record<string, unknown> = {
+      ...packet.config,
+      content: updatedDocs,
+      sections: updatedDocs.map((d: PacketDocument) => d.type),
+    }
+    if (printError) nextConfig.print_error = printError
+    else delete nextConfig.print_error // a successful re-render clears the stale failure note
+
+    const { error: regenUpdateError } = await supabase
       .from("listing_packet_jobs")
       .update({
-        config: {
-          ...packet.config,
-          content: updatedDocs,
-          sections: updatedDocs.map((d: PacketDocument) => d.type),
-        },
+        output_url: printedPdfUrl,
+        config: nextConfig,
       })
       .eq("id", params.packetId)
       .eq("brokerage_id", auth.brokerageId)
+    // supabase-js resolves refusals — an unread error here reports a regeneration
+    // that never landed.
+    if (regenUpdateError) throw regenUpdateError
 
     return { success: true, document: newDocument }
   } catch (error) {
@@ -850,6 +1020,12 @@ function getStateDisclosureRequirements(state: string): string[] {
 // AUTO-GENERATE PACKET AFTER LISTING GOES LIVE
 // =====================================================
 
+/**
+ * Called by launchListingAction (app/actions/listings-kernel.ts) the moment a
+ * listing goes live on the MLS — the exact event this whole module is named for
+ * and, until now, the one thing nothing invoked. See the note at that call site
+ * for the idempotency guard and why it is dispatched rather than awaited.
+ */
 export async function autoGeneratePacketOnLive(listingId: string, agentId: string) {
   // Default configuration for auto-generation
   const defaultConfig: ListingPacketConfig = {

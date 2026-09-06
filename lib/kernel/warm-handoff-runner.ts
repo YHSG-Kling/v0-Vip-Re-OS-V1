@@ -75,9 +75,15 @@ export async function runWarmHandoff(
     const brief = composeHandoffBrief(parts)
 
     // Persist the brief on the contact (read-merge-write metadata) — the agent UI reads it.
-    await svc.from("contacts").update({
+    // The error is READ. The agent UI reads the brief from this metadata key and
+    // nowhere else, so a refusal produced a "warm handoff" notification pointing
+    // at a brief that does not exist.
+    const { error: briefWriteError } = await svc.from("contacts").update({
       metadata: { ...(c.metadata ?? {}), warm_handoff: { ...brief, composedAt: new Date().toISOString() } },
     }).eq("id", contactId)
+    if (briefWriteError) {
+      console.error(`[warm-handoff] brief persist REFUSED for contact ${contactId}:`, briefWriteError.message)
+    }
 
     // Route ONE notification to the contact's agent.
     let notificationId: string | undefined

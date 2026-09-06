@@ -1,6 +1,21 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generatePersonalizedEmail(context) (pure copy
+// assembly) and logEmailActivity(leadId, brokerageId, …) as public HTTP doors
+// with no gate — the second one a service client WRITING an activities row
+// under a caller-supplied brokerageId: section 4's named IDOR shape, on a
+// write. Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/ai-isa/index.ts (the barrel), whose only value importers are the
+//     "use server" actions app/actions/ai-isa/engage-contact.ts:30,
+//     handle-inbound-email.ts:19 and initiate-engagement.ts:31
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId is now an IN-PROCESS CONTRACT: with the door closed, the server
+// caller that supplies it is the gate.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { collectError } from '@/lib/errors/collect-error'
 import { buildFirstTouchEmail } from '@/lib/ai-isa/first-touch-copy'
 import { generationalCohortFromAge, type GenerationalCohort } from '@/lib/kernel/education'
 
@@ -69,7 +84,11 @@ export async function logEmailActivity(
   const supabase = createServiceClient()
   
   // Agent task (correct location, no changes) — activity_type: ai_isa_email
-  await supabase.from('activities').insert({
+  // This row is the ONLY record of whether the ISA's first-touch email went out
+  // — it is written for both the sent and the failed case. Losing it silently
+  // means the OS cannot say whether a lead was ever contacted, which is exactly
+  // the question the ISA's next-touch logic asks.
+  const { error: activityError } = await supabase.from('activities').insert({
     contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
     entity_type: 'lead',
     entity_id: leadId,
@@ -83,14 +102,19 @@ export async function logEmailActivity(
     created_at: new Date().toISOString()
   })
 
+  if (activityError) {
+    console.error('[ai-isa/email-generator] ISA email activity NOT recorded:', activityError.message)
+  }
+
   if (!emailSent && errorMessage) {
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_first_email',
-      error_message: errorMessage,
-      context_json: JSON.stringify({ leadId }),
+    await collectError({
+      workflowName: 'ai_isa_first_email',
+      errorMessage,
       severity: 'medium',
-      status: 'new',
-      created_at: new Date().toISOString()
+      brokerageId,
+      leadId,
+      context: { leadId },
+      client: supabase,
     })
   }
 }

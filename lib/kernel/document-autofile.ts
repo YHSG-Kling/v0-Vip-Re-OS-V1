@@ -469,17 +469,25 @@ export interface StorageMoverOutput {
 export type StorageMover = (input: StorageMoverInput) => Promise<StorageMoverOutput>
 
 /**
- * The REAL default mover — Supabase Storage move() within the bucket, then getPublicUrl() for
- * the destination. Honest: returns ok:false (never throws) so a storage hiccup never blocks the
- * row filing.
+ * The REAL default mover — Supabase Storage move() within the bucket, then a URL for the
+ * destination from the ONE issuer (lib/storage/document-buckets.ts). Honest: returns ok:false
+ * (never throws) so a storage hiccup never blocks the row filing.
+ *
+ * It used to call getPublicUrl(). DOCUMENT_BUCKET is `client-documents`, which has been
+ * public=false since it was created — so that call was already minting a URL that 403s and
+ * writing it onto the row as the document's new home. Signed, the URL both resolves and stays
+ * governed; a bucket that IS public-media still gets a public URL, because the issuer decides.
  */
 export function makeSupabaseStorageMover(supabase: Svc): StorageMover {
   return async ({ bucket, fromPath, toPath }) => {
     try {
       const { error } = await (supabase as any).storage.from(bucket).move(fromPath, toPath)
       if (error) return { ok: false, error: error.message ?? String(error) }
-      const { data } = (supabase as any).storage.from(bucket).getPublicUrl(toPath)
-      return { ok: true, publicUrl: data?.publicUrl ?? null }
+      const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+      const issued = await issueBucketObjectUrl(supabase as never, { bucket, objectPath: toPath })
+      // The MOVE succeeded either way; a URL we could not mint is reported as null
+      // rather than fabricated, exactly as fileStorageObject already tolerates.
+      return { ok: true, publicUrl: issued.ok ? issued.url : null }
     } catch (e: any) {
       return { ok: false, error: e?.message ?? String(e) }
     }

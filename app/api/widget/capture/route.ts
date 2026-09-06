@@ -65,15 +65,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── 2. Resolve chat session and agent ──────────────────────────────────
-    const { data: session } = await supabase
+    // THE SESSION IS REQUIRED, not optional. It used to be read with `session?.`
+    // throughout, so a POST carrying a real brokerage slug and a made-up token
+    // still created a consented contact, a consent audit row and a lifecycle
+    // event in that brokerage — the slug is public, so that was an open door
+    // into any tenant's CRM. The token is opaque and server-issued, and it must
+    // belong to THIS brokerage.
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
       .select('id, agent_id, brokerage_id')
       .eq('widget_session_token', sessionToken)
       .eq('brokerage_id', brokerage.id)
       .maybeSingle()
 
+    if (sessionError) {
+      console.error('[widget/capture] session lookup failed:', sessionError.message)
+      return NextResponse.json(
+        { success: false, error: 'Capture is temporarily unavailable' },
+        { status: 503 },
+      )
+    }
+    if (!session) {
+      return NextResponse.json(
+        { success: false, error: 'Invalid session' },
+        { status: 403 },
+      )
+    }
+
     // chat_sessions.agent_id is agents.id (FK to agents). Pass through.
-    const ownerAgentId = session?.agent_id ?? null
+    const ownerAgentId = session.agent_id ?? null
 
     // ── 3. Parse name ──────────────────────────────────────────────────────
     const parts = name.trim().split(/\s+/)
@@ -112,16 +132,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     // ── 6. Link chat session to contact ────────────────────────────────────
-    if (session?.id) {
-      await supabase
-        .from('chat_sessions')
-        .update({
-          contact_id:    contactId,
-          capture_state: 'captured',
-          updated_at:    now,
-        })
-        .eq('id', session.id)
-    }
+    await supabase
+      .from('chat_sessions')
+      .update({
+        contact_id:    contactId,
+        capture_state: 'captured',
+        updated_at:    now,
+      })
+      .eq('id', session.id)
 
     // ── 7. Emit lifecycle event ────────────────────────────────────────────
     await supabase.from('lifecycle_events').insert({

@@ -14,8 +14,9 @@
  *
  * Run: npx tsx scripts/signal-integrity-simulator.ts   (npm run test:signal-integrity)
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { SIGNAL_REGISTRY, registeredSignalTypes } from "../lib/kernel/signal-registry"
 import { classifyCoordination, type CoordinationKind } from "../lib/kernel/coordination-kind"
 import { SIGNAL_HANDLERS } from "../lib/kernel/manager-signals"
@@ -38,24 +39,22 @@ function report() {
 const ROOT = process.cwd()
 const VALID_KINDS: CoordinationKind[] = ["deferral", "handoff", "escalation", "alert", "update"]
 
-/** Recursively collect *.ts files under a dir (skip node_modules / .next). */
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".next" || entry === ".git") continue
-    const full = join(dir, entry)
-    const st = statSync(full)
-    if (st.isDirectory()) walk(full, out)
-    else if (entry.endsWith(".ts") || entry.endsWith(".tsx")) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, and a root-level FILE is not a directory, so a signal published or
+// subscribed from `proxy.ts` was outside the corpus in both directions — invisible
+// as a publisher AND counted as a subscriber-less signal. `SIGNAL_CORPUS` below
+// takes lib/ + app/ from the survivor and adds the root runtime files.
+const SIGNAL_CORPUS = () =>
+  [...walkTs(join(ROOT, "lib")), ...walkTs(join(ROOT, "app")), ...rootRuntimeFiles(ROOT)]
 
 /** Every signal_type literal PUBLISHED on the manager bus in production source, with its file.
  *  Scoped to files that actually call publishManagerSignal so an unrelated `signalType:` field
  *  (e.g. a UI retraining-signal union) is never mistaken for a bus publication. */
 function scanPublishedSignals(): Map<string, string> {
   const found = new Map<string, string>()
-  const files = [...walk(join(ROOT, "lib")), ...walk(join(ROOT, "app"))]
+  const files = SIGNAL_CORPUS()
   const re = /signalType:\s*["']([a-z_]+)["']/g
   for (const f of files) {
     const src = readFileSync(f, "utf8")
@@ -75,7 +74,7 @@ function scanPublishedSignals(): Map<string, string> {
  *  are skipped — they can't be statically verified here. */
 function scanRoutedPairs(): Array<{ to: string; type: string; file: string }> {
   const out: Array<{ to: string; type: string; file: string }> = []
-  const files = [...walk(join(ROOT, "lib")), ...walk(join(ROOT, "app"))]
+  const files = SIGNAL_CORPUS()
   const fieldRe = /(toManager|signalType):\s*["']([a-z_]+)["']/g
   for (const f of files) {
     const src = readFileSync(f, "utf8")

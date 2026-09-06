@@ -10,6 +10,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── Property Data AI Fill ────────────────────────────────────────────────────
 
@@ -39,6 +43,10 @@ export async function fillPropertyDataWithAI(params: {
   buyerId?: string | null
   addressFragment?: string | null
 }): Promise<PropertyFillData | null> {
+  // Tenant for the AI cost ledger — SESSION (§4). This runs on the SERVICE
+  // client, so no row read here is tenant-scoped and none of them can supply a
+  // payer; the caller's session is the only honest one.
+  const spendActor = await getAgentContext()
   const supabase = createServiceClient()
 
   // ── 1. Try the listing record first ────────────────────────────────────────
@@ -94,6 +102,8 @@ Buyer preferences:
 
   try {
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are a real estate data assistant helping fill in missing property information for an offer form.
 

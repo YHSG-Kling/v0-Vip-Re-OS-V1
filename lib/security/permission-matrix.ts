@@ -35,17 +35,40 @@ export const ROLE_HIERARCHY: Record<UserRole, RoleHierarchy> = {
     canManage: [],
     canViewData: 'own',
   },
+  // ── THE TWO EXTERNAL PARTNER SEATS ARE 'own', NOT 'brokerage' ──────────────
+  // CLAUDE.md §5: "Contacts, lenders and vendors see no financials — only their
+  // own." A lender IS a vendor in this system (lib/kernel/lender-linkage.ts:1-19,
+  // vendors.category 'lender') and so is a title agent (vendors.category 'title',
+  // lib/kernel/vendor-categories.ts, read back from the live CHECK in
+  // scripts/check-vocabularies.ts:1621) — so §5's "vendors" reaches both by the
+  // data model, not by analogy.
+  //
+  // `canViewData` is the ROW half of this matrix: RoleManager.getDataScope
+  // (role-manager.ts:37) feeds AccessControl.checkResourceAccess (:34) and
+  // getReadFilter (:72). At 'brokerage' an external partner was scoped to the
+  // WHOLE TENANT's rows — every deal, every contact — which is the §5 violation
+  // restated in the scope half. 'own' is also what the sibling table already
+  // says: permissions-service.ts:312 getDataScope returns 'own' for both seats,
+  // and :443 getQueryFilters scopes a lender by `vendor_id`. The two tables now
+  // AGREE (§6) instead of disagreeing about the same seat.
+  //
+  // KNOWN NARROWNESS, published rather than hidden (§2): AccessControl's 'own'
+  // branch filters on `user_id`, and these seats are keyed by `vendor_id`. On
+  // the one path that consumes it that is too narrow, not too wide — it FAILS
+  // CLOSED (§4), which is the right direction to be wrong in. The correct
+  // vendor-scoped filter already exists at permissions-service.ts:443; folding
+  // AccessControl.getReadFilter onto it is a separate lane's merge.
   lender: {
     role: 'lender',
     level: 3,
     canManage: [],
-    canViewData: 'brokerage',
+    canViewData: 'own',
   },
   title_agent: {
     role: 'title_agent',
     level: 4,
     canManage: [],
-    canViewData: 'brokerage',
+    canViewData: 'own',
   },
   tc: {
     role: 'tc',
@@ -130,15 +153,54 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
     features: ['calling_center', 'lead_dialer', 'conversation_log', 'call_scripts'],
   },
 
+  // ── LENDER AND TITLE_AGENT — NARROWED TO §5 (wave 26, lane PERM2) ─────────
+  // WAS, on both rows, identically:
+  //   contacts:view_all, transactions:view_all, transactions:edit,
+  //   transactions:coordinate, team:view_all, analytics:view_all,
+  //   settings:manage_account
+  // i.e. an OUTSIDE PARTY held the brokerage's whole contact roster, every deal
+  // in the tenant, the staff roster, tenant-wide analytics, and a WRITE on the
+  // transaction record. CLAUDE.md §5 rules the opposite: "Contacts, lenders and
+  // vendors see no financials — only their own."
+  //
+  // WHY title_agent moved too, though §5 names only "contacts, lenders and
+  // vendors": in this system a title agent IS a vendor. vendors.category is a
+  // live CHECK whose values include both 'lender' and 'title'
+  // (scripts/check-vocabularies.ts:1621, generated from the live DB), the title
+  // partner's own dashboard resolves itself through a `vendors` row
+  // (app/title/dashboard/page.tsx:38-52), and lib/kernel/lender-linkage.ts:1-4
+  // states the same for lenders in as many words. So the ruling reaches this row
+  // through the data model rather than by extending the owner's list. If the
+  // owner disagrees, reverting THIS row alone restores the old grants; the
+  // lender row stands on §5 by name either way.
+  //
+  // WHY NOTHING BREAKS, measured before the edit: no lender or title surface
+  // consults this matrix. Every one of them gates on ASSIGNMENT —
+  // requireLenderVendorActor / requireTitleActor (lib/kernel/portal-auth.ts:61,
+  // :111) plus lenderVendorTransactionIds (lib/kernel/lender-linkage.ts) — and
+  // the lender's writes land on transaction_milestones, transaction_lenders and
+  // transaction_documents (app/actions/lender-portal-actions.ts:186,199,212,138),
+  // never on `transactions` itself. `transactions:edit` ("Edit transaction
+  // status", :445 below) was therefore a grant no lender surface ever needed and
+  // `transactions:coordinate` (:446, "checklists, vendors") is the TC's job, not
+  // a lending one. The five declared `features` are untouched, so loan_pipeline,
+  // application_review, document_request, approval_tracking, underwriting,
+  // title_orders and closing_coordination all keep working exactly as before.
+  //
+  // WHY THESE FOUR WORDS AND NOT NEW ONES (§6): every survivor already exists in
+  // this file's own vocabulary and is already carried by a sibling seat —
+  // `contacts:view` and `settings:manage_account` by `vendor` (:135, :138),
+  // `transactions:view` by `contact` (:128), `analytics:view_own` by `isa`
+  // (:150). No third spelling was minted. `financials:view_own` was deliberately
+  // NOT added: PERMISSION_DEFINITIONS reads it as "View own earnings" (:459) and
+  // neither seat has an earnings surface — `earnings_dashboard` is on `vendor`'s
+  // features (:140) and on neither of these.
   lender: {
     role: 'lender',
     permissions: [
-      'contacts:view_all',
-      'transactions:view_all',
-      'transactions:edit',
-      'transactions:coordinate',
-      'team:view_all',
-      'analytics:view_all',
+      'contacts:view',
+      'transactions:view',
+      'analytics:view_own',
       'settings:manage_account',
     ],
     features: [
@@ -153,12 +215,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
   title_agent: {
     role: 'title_agent',
     permissions: [
-      'contacts:view_all',
-      'transactions:view_all',
-      'transactions:edit',
-      'transactions:coordinate',
-      'team:view_all',
-      'analytics:view_all',
+      'contacts:view',
+      'transactions:view',
+      'analytics:view_own',
       'settings:manage_account',
     ],
     features: [
@@ -247,6 +306,15 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
       'contacts:view_all',
       'contacts:create',
       'contacts:edit',
+      // LEAD ACCESS — the ONE enforcer is lib/auth/lead-visibility.ts, and
+      // "_all" here means ALL OF THIS TEAM'S, not all of the brokerage's.
+      // ROLE_HIERARCHY above already records `canViewData: 'team'` for this same
+      // role (:95), and that is the half that decides rows: the resolver returns
+      // a team LeadRowScope pinned to `teams.team_lead_id`, which collapses to
+      // brokerage scope only where the actor's team IS the whole tenant (owner:
+      // "if team tier subscriptions, they don't have a broker in the
+      // subscription so the team lead can see leads"). This catalogue DESCRIBES;
+      // it does not gate — no lead surface reads it.
       'leads:view',
       'leads:view_all',
       'leads:claim',

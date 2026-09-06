@@ -12,8 +12,10 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -28,10 +30,6 @@ import {
 import {
   Plus,
   Sparkles,
-  Mail,
-  MessageSquare,
-  Phone,
-  Send,
   FlaskConical,
   BarChart2,
   Copy,
@@ -48,10 +46,10 @@ import {
   updateCampaignSequence,
   deleteCampaignSequence,
 } from "@/app/actions/campaign-sequences"
-import type { CampaignSequence } from "@/lib/campaigns/sequence-constants"
+import { SEQUENCE_TYPES, type CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
 import { AlertTriangle, ShieldCheck } from "lucide-react"
-import { WORKFLOW_TRIGGERS, groupedTriggers } from "@/lib/workflow/triggers"
+import { WORKFLOW_TRIGGERS, groupedTriggers, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,22 +67,23 @@ interface Props {
 const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
 const GROUPED_TRIGGERS = groupedTriggers()
 
-const SEQUENCE_TYPES = [
-  { value: "drip",           label: "Drip" },
-  { value: "nurture",        label: "Nurture" },
-  { value: "re_engagement",  label: "Re-engagement" },
-  { value: "transaction",    label: "Transaction" },
-  { value: "post_close",     label: "Post-Close" },
-]
-
-const CHANNEL_ICONS: Record<string, React.ElementType> = {
-  email:       Mail,
-  sms:         MessageSquare,
-  voice:       Phone,
-  direct_mail: Send,
-  in_app:      Layers,
-  video:       BarChart2,
-}
+// SEQUENCE_TYPES moved to lib/campaigns/sequence-constants.ts (imported above)
+// — same five values, now shared with app/actions/workflows.ts's drip-drain
+// validator instead of being spelled out twice.
+//
+// TOMBSTONE (orphan doctrine §1.1) — the local CHANNEL_ICONS map that stood here
+// is DELETED. It occurred exactly twice in this file: this declaration and the
+// re-export at the bottom, commented "so builder can reuse them". It was never
+// read in this file, and no file ever imported it — the builder it was written
+// for hand-rolled its own six-key copy instead.
+//
+// SURVIVOR: app/components/campaigns/step-type-select.tsx:47 `stepIcon(channel)`,
+// which resolves the icon NAME off lib/workflow/step-palette.ts — the same
+// palette saveSequenceSteps uses as its allow-list. Nothing merged, because the
+// survivor is strictly more complete: it answers for all 25 live
+// `campaign_sequence_steps.channel` CHECK values, where this map held six, and
+// one of those six (`voice`) was not a live value at all — the column spells it
+// `voice_drop`, so that entry could never have been hit by a stored step.
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -96,6 +95,54 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
   const [busy, setBusy]             = useState(false)
   const [seedingDefaults, setSeedingDefaults] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Default-sequence picker: browse the catalog + choose which to install.
+  type CatalogItem = { name: string; description: string; sequenceType: string; triggerLabel: string; stepCount: number; installed: boolean }
+  const [defaultsOpen, setDefaultsOpen] = useState(false)
+  const [catalog, setCatalog] = useState<CatalogItem[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [pickedDefaults, setPickedDefaults] = useState<Set<string>>(new Set())
+
+  const openDefaultsPicker = useCallback(async () => {
+    setDefaultsOpen(true)
+    setCatalogLoading(true)
+    try {
+      const { getDefaultSequenceCatalog } = await import("@/app/actions/seed-default-sequences")
+      const res = await getDefaultSequenceCatalog(brokerageId)
+      if (res.success) {
+        setCatalog(res.items)
+        // Preselect the ones not yet installed.
+        setPickedDefaults(new Set(res.items.filter((i) => !i.installed).map((i) => i.name)))
+      } else {
+        toast.error(res.error ?? "Could not load defaults")
+      }
+    } finally {
+      setCatalogLoading(false)
+    }
+  }, [brokerageId])
+
+  const installPickedDefaults = useCallback(async () => {
+    const names = [...pickedDefaults]
+    if (names.length === 0) return
+    setSeedingDefaults(true)
+    try {
+      const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
+      const res = await seedDefaultSequences(brokerageId, names)
+      if (res.success) {
+        if (res.created > 0) {
+          toast.success(`Installed ${res.created} default sequence${res.created === 1 ? "" : "s"}`)
+          if (typeof window !== "undefined") window.location.reload()
+        } else {
+          toast.info("Those defaults are already installed")
+          setDefaultsOpen(false)
+        }
+      } else {
+        toast.error(res.error ?? "Install failed")
+      }
+    } finally {
+      setSeedingDefaults(false)
+    }
+  }, [brokerageId, pickedDefaults])
 
   // New sequence form state
   const [form, setForm] = useState({
@@ -116,15 +163,69 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
     return { active, enrolled, avgCompletion, converted }
   }, [sequences])
 
+  const [batchNote, setBatchNote] = useState<string | null>(null)
+
+  /**
+   * BATCH ACTIVATE BYPASSED THE COMPLIANCE GATE.
+   *
+   * handleToggleActive runs precheckSequenceCompliance before it will activate a
+   * single sequence — the brand-voice / compliance gate that decides whether a
+   * sequence may start sending. This batch path called updateCampaignSequence
+   * directly, so selecting ten sequences and pressing Activate started all ten
+   * WITHOUT the gate the per-row button enforces. The bulk path was the
+   * permissive one, which is exactly backwards: bulk is where a mistake is
+   * multiplied.
+   *
+   * It also discarded every result and then optimistically marked all of them
+   * active, so a refused update still rendered as activated.
+   *
+   * Now: deactivation stays immediate (no gate needed to STOP sending), and
+   * activation runs the same precheck per sequence. Anything the gate blocks is
+   * left OFF and named, so the agent knows which ones need review rather than
+   * believing all ten went live.
+   */
   const handleBatchToggle = useCallback(async (active: boolean) => {
-    for (const id of selectedIds) {
+    setBusy(true)
+    setBatchNote(null)
+    const ids = Array.from(selectedIds)
+    const changedIds: string[] = []
+    const blocked: string[] = []
+    const failed: string[] = []
+
+    for (const id of ids) {
       const seq = sequences.find(s => s.id === id)
-      if (seq) {
-        await updateCampaignSequence(id, { is_active: active })
+      if (!seq) continue
+
+      if (active) {
+        const pre = await precheckSequenceCompliance(id)
+        // A precheck that could not RUN is not a pass. Treat it like a block —
+        // silence is not consent when the next step is sending to real people.
+        if (!pre.success || pre.blocked) {
+          blocked.push(seq.name)
+          continue
+        }
       }
+
+      const res = await updateCampaignSequence(id, { is_active: active })
+      // updateCampaignSequence returns {success, error} and does not throw — a
+      // refused write must not join the "changed" set.
+      if ((res as any)?.success === false) failed.push(seq.name)
+      else changedIds.push(id)
     }
-    setSequences(prev => prev.map(s => selectedIds.has(s.id) ? { ...s, is_active: active } : s))
+
+    // Only move the rows that actually changed. Tracked by ID, not by name —
+    // two sequences can share a name and a name-based filter would move the
+    // wrong row.
+    const changed = new Set(changedIds)
+    setSequences(prev => prev.map(s => changed.has(s.id) ? { ...s, is_active: active } : s))
     setSelectedIds(new Set())
+    setBusy(false)
+
+    const parts: string[] = []
+    if (changed.size) parts.push(`${changed.size} ${active ? "activated" : "paused"}`)
+    if (blocked.length) parts.push(`${blocked.length} held for compliance review: ${blocked.join(", ")}`)
+    if (failed.length) parts.push(`${failed.length} failed: ${failed.join(", ")}`)
+    setBatchNote(parts.join(" · ") || null)
   }, [selectedIds, sequences])
 
   const toggleSequenceSelection = useCallback((id: string) => {
@@ -280,6 +381,9 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                 <CheckCircle2 className="h-4 w-4 mr-1" />
                 Activate
               </Button>
+              {batchNote && (
+                <span className="text-xs text-muted-foreground ml-2">{batchNote}</span>
+              )}
               <Button size="sm" variant="outline" onClick={() => handleBatchToggle(false)} disabled={busy}>
                 <Lock className="h-4 w-4 mr-1" />
                 Pause
@@ -311,28 +415,10 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
               variant="outline"
               className="gap-1.5"
               disabled={seedingDefaults}
-              onClick={async () => {
-                setSeedingDefaults(true)
-                try {
-                  const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
-                  const res = await seedDefaultSequences(brokerageId)
-                  if (res.success) {
-                    toast.success(
-                      `Installed ${res.created} default sequences`,
-                      { description: res.skipped ? `${res.skipped} were already present.` : undefined },
-                    )
-                    // Reload to show the seeded sequences
-                    if (typeof window !== "undefined") window.location.reload()
-                  } else {
-                    toast.error(res.error ?? "Seeding failed")
-                  }
-                } finally {
-                  setSeedingDefaults(false)
-                }
-              }}
+              onClick={openDefaultsPicker}
             >
               <Sparkles className="h-4 w-4" />
-              {seedingDefaults ? "Installing…" : "Install canonical defaults"}
+              Browse &amp; install defaults
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground/70 max-w-md mx-auto pt-1">
@@ -365,6 +451,70 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
       )}
 
       {/* Create dialog */}
+      {/* Default-sequence picker — see every canonical flow + choose which to install */}
+      <Dialog open={defaultsOpen} onOpenChange={setDefaultsOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Install default sequences</DialogTitle>
+            <DialogDescription>
+              Canonical nurture flows that fire automatically on the matching event. Pick the ones you
+              want — already-installed flows are checked and locked. Edit or delete any of them later.
+            </DialogDescription>
+          </DialogHeader>
+
+          {catalogLoading ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">Loading defaults…</p>
+          ) : (
+            <div className="max-h-[50vh] overflow-y-auto space-y-2">
+              {catalog.map((item) => {
+                const checked = item.installed || pickedDefaults.has(item.name)
+                return (
+                  <label
+                    key={item.name}
+                    className={`flex items-start gap-3 rounded-lg border p-3 ${item.installed ? "opacity-70" : "cursor-pointer hover:border-primary/50"}`}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={item.installed}
+                      onCheckedChange={(v) => {
+                        setPickedDefaults((prev) => {
+                          const next = new Set(prev)
+                          if (v) next.add(item.name)
+                          else next.delete(item.name)
+                          return next
+                        })
+                      }}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{item.name}</span>
+                        {item.installed && <Badge variant="secondary" className="text-[10px]">Installed</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">{item.description}</p>
+                      <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
+                        <Badge variant="outline" className="text-[10px]">{item.triggerLabel}</Badge>
+                        <span>{item.stepCount} step{item.stepCount === 1 ? "" : "s"}</span>
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDefaultsOpen(false)}>Cancel</Button>
+            <Button
+              onClick={installPickedDefaults}
+              disabled={seedingDefaults || pickedDefaults.size === 0}
+            >
+              {seedingDefaults ? "Installing…" : `Install ${pickedDefaults.size} selected`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -390,7 +540,10 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="seq-trigger">Trigger Event</Label>
-              <Select value={form.trigger_event} onValueChange={v => setForm(p => ({ ...p, trigger_event: v }))}>
+              <Select
+                value={toTriggerSelectValue(form.trigger_event)}
+                onValueChange={v => setForm(p => ({ ...p, trigger_event: fromTriggerSelectValue(v) }))}
+              >
                 <SelectTrigger id="seq-trigger">
                   <SelectValue placeholder="Select a trigger (optional)" />
                 </SelectTrigger>
@@ -399,7 +552,7 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                     <SelectGroup key={category}>
                       <SelectLabel className="text-xs text-muted-foreground px-2 py-1">{category}</SelectLabel>
                       {triggers.map(t => (
-                        <SelectItem key={t.value || "__manual__"} value={t.value || "__manual__"}>
+                        <SelectItem key={toTriggerSelectValue(t.value)} value={toTriggerSelectValue(t.value)}>
                           {t.label}
                         </SelectItem>
                       ))}
@@ -691,5 +844,13 @@ function SequenceCard({
   )
 }
 
-// Re-export constants so builder can reuse them
-export { TRIGGER_EVENTS, SEQUENCE_TYPES, CHANNEL_ICONS }
+// TOMBSTONE (orphan doctrine §1.1) — this file used to end with
+// `export { TRIGGER_EVENTS, SEQUENCE_TYPES, CHANNEL_ICONS }`, commented
+// "Re-export constants so builder can reuse them". Nothing ever imported any of
+// the three: the only importer of this module (../sequences/page.tsx:5) takes
+// the default export only, and the builder it was written for hand-rolled its
+// own copies. Each name now has one home, and the builder can import from there:
+//   · TRIGGER_EVENTS  → derived from WORKFLOW_TRIGGERS, lib/workflow/triggers.ts
+//                       (already the canonical catalog; this file just maps it)
+//   · SEQUENCE_TYPES  → lib/campaigns/sequence-constants.ts
+//   · CHANNEL_ICONS   → app/components/campaigns/step-type-select.tsx:47 stepIcon()

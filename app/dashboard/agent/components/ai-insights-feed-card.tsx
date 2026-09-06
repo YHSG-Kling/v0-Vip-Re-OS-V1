@@ -11,9 +11,10 @@
  * so we extract it from there when present.
  */
 
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Lightbulb } from "lucide-react"
+import { Lightbulb, ArrowUpRight } from "lucide-react"
 
 export interface AiInsightRow {
   id: string
@@ -23,6 +24,53 @@ export interface AiInsightRow {
   priority: string | null
   estimated_impact: Record<string, any> | null
   created_at: string
+  /** jsonb text[] written by every ai-predictions insert — "what to do next". */
+  actionable_steps: string[] | null
+  /** CHECK vocabulary on ai_insights.entity_type is written as one of
+   *  lead | contact | transaction | property (see insightEntityHref). */
+  entity_type: string | null
+  /** uuid of the entity; NULL for the arbitrage "property" rows, whose subject
+   *  is an MLS string kept in estimated_impact.mls_id (ai-predictions.ts:2812). */
+  entity_id: string | null
+}
+
+/**
+ * The entity_type vocabulary the eleven ai_insights writers in
+ * app/actions/ai-predictions.ts actually produce, mapped to the ONE route that
+ * serves each:
+ *
+ *   transaction → /dashboard/transactions/[id]   (app/dashboard/transactions/[id])
+ *   contact     → /crm/contacts/[contactId]      (app/crm/contacts/[contactId];
+ *                 /dashboard/buyers/[contactId] is a redirect onto it)
+ *   lead        → /leads/[leadId]                 (app/leads/[leadId]/page.tsx —
+ *                 six of the eleven writers stamp 'lead', so this is the majority
+ *                 case). The `/dashboard/leads/[id]` spelling is the one that does
+ *                 NOT exist; an earlier version of this map searched only that
+ *                 spelling and wrongly concluded no lead route existed.
+ *                 §5: leads belong to the brokerage. The card does not decide who
+ *                 may view one — the page's own gate does (resolveLeadVisibility +
+ *                 leadRowInScope, redirecting to /dashboard when out of scope),
+ *                 and this link widens nothing.
+ *   property    → NO LINK. entity_id is NULL by design (MLS id, not a uuid).
+ *
+ * Anything else (a future vocabulary entry) gets no link rather than a guess.
+ */
+export function insightEntityHref(entityType: string | null, entityId: string | null): string | null {
+  if (!entityId) return null
+  switch (entityType) {
+    case "transaction": return `/dashboard/transactions/${entityId}`
+    case "contact":     return `/crm/contacts/${entityId}`
+    case "lead":        return `/leads/${entityId}`
+    default:            return null
+  }
+}
+
+/** actionable_steps is jsonb; writers pass string[] but a step can arrive as a
+ *  non-string (one writer maps `t.script`, which the model may omit). Keep only
+ *  the non-empty strings so a `null` step never renders as the word "null". */
+function cleanSteps(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((s): s is string => typeof s === "string" && s.trim().length > 0).map((s) => s.trim())
 }
 
 const TYPE_BADGE: Record<string, string> = {
@@ -53,6 +101,8 @@ export function AiInsightsFeedCard({ insights }: { insights: AiInsightRow[] }) {
       <CardContent className="space-y-3">
         {insights.map((insight) => {
           const confidence = extractConfidence(insight.estimated_impact)
+          const steps = cleanSteps(insight.actionable_steps).slice(0, 3)
+          const href = insightEntityHref(insight.entity_type, insight.entity_id)
           return (
             <div key={insight.id} className="flex items-start gap-3 border-b last:border-b-0 pb-3 last:pb-0">
               <div className="flex-1 min-w-0">
@@ -69,6 +119,25 @@ export function AiInsightsFeedCard({ insights }: { insights: AiInsightRow[] }) {
                   <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
                     {insight.insight_description}
                   </p>
+                )}
+                {steps.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {steps.map((step, i) => (
+                      <li key={i} className="text-xs text-foreground/90 flex gap-1.5">
+                        <span className="text-muted-foreground shrink-0">→</span>
+                        <span className="line-clamp-2">{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {href && (
+                  <Link
+                    href={href}
+                    className="inline-flex items-center gap-0.5 mt-1.5 text-xs text-primary hover:underline"
+                  >
+                    Open {insight.entity_type}
+                    <ArrowUpRight className="h-3 w-3" />
+                  </Link>
                 )}
               </div>
               <div className="shrink-0 text-right">

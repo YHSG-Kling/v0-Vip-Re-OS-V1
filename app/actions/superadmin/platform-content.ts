@@ -10,8 +10,8 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { buildWeeklyProductCalendar, canTransitionDraft, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { buildWeeklyProductCalendar, canTransitionDraft, isDraftStatus, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 
 async function requireMarketing(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
@@ -19,7 +19,7 @@ async function requireMarketing(): Promise<{ ok: true; userId: string; email: st
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "marketing")) return { ok: false, error: "Forbidden — platform marketing access required" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }
@@ -82,10 +82,18 @@ export async function listProductDraftsAction(): Promise<{ ok: true; drafts: any
 export async function transitionProductDraftAction(input: { id: string; to: string; permalink?: string }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireMarketing()
   if (!auth.ok) return auth
+  // BOUNDARY NARROWING (2026-08-31): canTransitionDraft is typed to DraftStatus now, so the
+  // request's `to` and the DB row's `status` — both untrusted strings — go through isDraftStatus
+  // instead of an `as` cast. A junk `to` was already refused inside the enforcer ("unknown
+  // status" — message preserved); a junk stored status used to sail THROUGH it (anything
+  // non-terminal was transitionable), which fail-open no longer happens.
+  if (!isDraftStatus(input.to)) return { ok: false, error: "unknown status" }
   const svc = createServiceClient()
   const { data: draft } = await svc.from("platform_social_drafts").select("id, status, media_type, video_url").eq("id", input.id).maybeSingle()
   if (!draft) return { ok: false, error: "Draft not found" }
-  const check = canTransitionDraft((draft as any).status, input.to, input.permalink)
+  const fromStatus: unknown = (draft as any).status
+  if (!isDraftStatus(fromStatus)) return { ok: false, error: `Draft has unrecognized status '${String(fromStatus)}'` }
+  const check = canTransitionDraft(fromStatus, input.to, input.permalink)
   if (!check.ok) return { ok: false, error: check.reason }
   // A VIDEO draft can only be posted once the rendered file is attached.
   if (input.to === "posted" && (draft as any).media_type === "video" && !((draft as any).video_url ?? "").trim()) {

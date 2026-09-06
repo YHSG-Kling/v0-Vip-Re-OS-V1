@@ -12,6 +12,12 @@ import { toast } from "sonner"
 interface VideoGenerationButtonsProps {
   script: string
   title: string
+  /**
+   * When this script is already a `video_scripts_library` row, pass its id. The
+   * action then renders THAT row (tenant-checked server-side) instead of writing
+   * a second copy of the same script into the library on every render.
+   */
+  scriptId?: string
   userId?: string
   onSuccess?: () => void
   size?: "sm" | "md" | "lg"
@@ -21,6 +27,7 @@ interface VideoGenerationButtonsProps {
 export function VideoGenerationButtons({
   script,
   title,
+  scriptId,
   userId,
   onSuccess,
   size = "md",
@@ -83,6 +90,9 @@ export function VideoGenerationButtons({
 
       // Generate video
       const result = await generateVideoFromScript({
+        // `scriptId` wins server-side when present: the script text and tenant
+        // are read from the stored row rather than trusted from the browser.
+        scriptId,
         script,
         title,
         type,

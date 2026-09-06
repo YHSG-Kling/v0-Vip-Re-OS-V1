@@ -27,6 +27,28 @@ import { KernelEvent } from "@/lib/kernel/events"
 // write it was never meant to trigger.
 const VALID_KERNEL_EVENTS = new Set<string>(Object.values(KernelEvent))
 
+/**
+ * linkDualJourneys, best-effort. The linker (lib/kernel/dual-intent-linker.ts)
+ * is idempotent and an honest no-op for a single-sided contact; here it must
+ * never throw and never block the concierge fan-out that follows. Its failure
+ * is LOGGED with the contact id — a lost link is a move-up buyer whose Listing
+ * Concierge never wakes, which must not vanish silently.
+ */
+async function linkDualIntentBestEffort(
+  contactId: string,
+  svc: ReturnType<typeof createServiceClient>,
+): Promise<void> {
+  try {
+    const { linkDualJourneys } = await import("@/lib/kernel/dual-intent-linker")
+    const link = await linkDualJourneys(contactId, svc)
+    if (link.linked) {
+      console.log(`[event-reactor] dual-intent link ensured for contact ${contactId} (dependency ${link.dependency?.reason ?? "n/a"})`)
+    }
+  } catch (err) {
+    console.error(`[event-reactor] dual-intent link failed for contact ${contactId} (non-blocking):`, err)
+  }
+}
+
 export interface ReactorResult {
   matched:  number
   enrolled: number
@@ -188,6 +210,15 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // carry contact_type in metadata; read from the row directly.
         const { createServiceClient } = await import("@/lib/supabase/service")
         const svc = createServiceClient()
+        // DUAL-INTENT LINK — BEFORE the fan-out, so the contact_type read below sees
+        // 'both' when this contact genuinely sells AND buys. linkDualJourneys had no
+        // caller: the spine never writes contact_type='both' (motivationToContactType
+        // maps it to buyer), so the Listing Concierge never woke for a move-up buyer
+        // and the portal's dependency banner read a stamp nothing wrote. Idempotent
+        // (upsert on journey_states.user_id, 24h card dedupe), an honest no-op when
+        // only one side has signal; its failure is logged, never thrown — a broken
+        // link must not stop the concierge that was going to spawn anyway.
+        await linkDualIntentBestEffort(params.entityId, svc)
         const { data: c } = await svc
           .from("contacts").select("contact_type").eq("id", params.entityId).maybeSingle()
         const ct = (c?.contact_type as string | null) ?? null
@@ -211,6 +242,9 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         const { data: l } = await svc
           .from("listings").select("seller_contact_id").eq("id", params.entityId).maybeSingle()
         if (l?.seller_contact_id) {
+          // A seller listing appearing is the OTHER half of dual intent — the
+          // seller who is also shopping. Same best-effort link as the contact side.
+          await linkDualIntentBestEffort(l.seller_contact_id as string, svc)
           const { spawnListingConciergeForSeller } = await import("@/lib/agents/listing-concierge")
           await spawnListingConciergeForSeller({ brokerageId: params.brokerageId, contactId: l.seller_contact_id as string })
         }
@@ -258,6 +292,176 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       const { produceEducationForEvent } = await import("@/lib/agents/education-delivery-producer")
       void produceEducationForEvent({ brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId }, svc)
     } catch { /* just-in-time education is best-effort */ }
+  }
+
+  // (D-quinquies) CONTACT ENRICHMENT — the owner's ruling, event-driven.
+  //
+  //   "contact enrichment should happen as soon as a new contact comes in and
+  //    also check if a life change or other change happens for the contact but
+  //    not if they have an active listing or an active transaction; just before
+  //    or after."
+  //
+  // TWO TRIGGERS, ONE SUPPRESSION.
+  //
+  // 1. AS SOON AS A NEW CONTACT COMES IN. There is no single code-level
+  //    chokepoint for contact creation — nineteen distinct `contacts` INSERT
+  //    sites exist across app/ and lib/ (enumerated in docs/wave3-enrichment.md),
+  //    and hooking each one would leave the twentieth unhooked the day someone
+  //    adds it. The kernel EVENT BUS is the closest thing to a chokepoint that
+  //    actually exists: CONTACT_CREATED and CONTACT_CAPTURED are the two events
+  //    the intake paths emit, every emitter reaches this reactor through
+  //    emitKernelEvent / processKernelEvent, and a new door that emits either
+  //    one is covered without being edited. The doors that emit NEITHER are
+  //    picked up by the nightly net (app/api/cron/contact-enrichment), which is
+  //    why that cron was revived rather than retired.
+  //
+  // 2. A LIFE CHANGE OR OTHER CHANGE. The re-check fires when a DEAL ENDS —
+  //    which is precisely the owner's "or after". A transaction closing or a
+  //    listing leaving its active stages is the moment suppression LIFTS, and it
+  //    is also the moment the contact's circumstances have most likely changed
+  //    (they just moved). Firing here means the re-check happens on a real
+  //    signal instead of only on a 30-day timer; the timer stays in the cron as
+  //    the net for contacts with no deal activity at all.
+  //
+  // BEST-EFFORT, ALWAYS. Both branches only ENQUEUE — one row and one event, no
+  // vendor call — so contact creation is never blocked by, and can never fail
+  // because of, enrichment. The queue writer applies the live-deal suppression
+  // itself, and the drain re-applies it before spending, because a contact can
+  // enter a deal between being queued and being processed.
+  if (params.brokerageId && params.entityType === "contact") {
+    const isCreate =
+      params.event === KernelEvent.CONTACT_CREATED || params.event === KernelEvent.CONTACT_CAPTURED
+
+    if (isCreate) {
+      try {
+        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+        await queueContactEnrichment({
+          contactId:   params.entityId,
+          brokerageId: params.brokerageId,
+          triggerType: params.event === KernelEvent.CONTACT_CREATED ? "contact_created" : "contact_captured",
+          supabase:    svc,
+        })
+      } catch (err) {
+        console.error("[event-reactor] contact enrichment enqueue failed:", err)
+      }
+    }
+  }
+
+  // (D-sexies) DEAL ENDED → re-check the contact for a life change.
+  // Listed separately from the block above because the entity here is the
+  // transaction or the listing, not the contact. Both sides of a dual deal are
+  // covered: the emitter's explicit buyer/seller ids are preferred, and
+  // resolveEventContacts — the same resolver the portal/sequence path uses,
+  // which returns BOTH represented sides of a transaction — fills in for bare
+  // emitters that forward only an entity id.
+  const DEAL_END_EVENTS: string[] = [
+    KernelEvent.TRANSACTION_CLOSED,
+    KernelEvent.TRANSACTION_STAGE_CHANGED,
+    KernelEvent.LISTING_STAGE_CHANGED,
+  ]
+  if (params.brokerageId && DEAL_END_EVENTS.includes(params.event)) {
+    try {
+      const { queueContactLifeChangeRecheck } = await import("@/lib/enrichment/contact-enrichment-core")
+      let dealContacts = [
+        params.contactId,
+        params.buyerContactId,
+        params.sellerContactId,
+      ].filter((id): id is string => typeof id === "string" && id.length > 0)
+
+      if (dealContacts.length === 0) {
+        const r = await resolveEventContacts(svc, params.entityType, params.entityId)
+        dealContacts = [r.contactId, r.buyerContactId, r.sellerContactId].filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        )
+      }
+
+      for (const contactId of [...new Set(dealContacts)]) {
+        // The helper is the one that decides whether the deal has actually
+        // ENDED — TRANSACTION_STAGE_CHANGED and LISTING_STAGE_CHANGED fire on
+        // every stage move, most of which are mid-deal. It re-uses the same
+        // isContactInLiveDeal predicate rather than parsing the event metadata,
+        // so "the deal ended" means exactly "no live deal remains", which is the
+        // condition the ruling actually names.
+        await queueContactLifeChangeRecheck({
+          contactId,
+          brokerageId: params.brokerageId,
+          triggerType: "deal_ended",
+          supabase:    svc,
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] deal-ended life-change re-check enqueue failed:", err)
+    }
+  }
+
+  // (D-septies) LEAD ENRICHMENT — Track A. The owner's wave-5 ruling:
+  //
+  //   "enrichment also needs to still happen with raw leads"
+  //
+  // The DRAIN has always handled both tracks (enrichment-orchestrator.ts line 2:
+  // "Processes BOTH lead_id rows (Track A) and contact_id rows (Track B)") and
+  // lead_enrichment_queue carries both lead_id and contact_id. What was missing
+  // was door coverage: enumerated the way wave 3 enumerated contacts, there are
+  // exactly THREE `leads` INSERT sites in app/ + lib/ and not one of them queued
+  // anything (docs/wave5-lead-enrichment.md).
+  //
+  // THE CHOKEPOINT. Only one of those three is live —
+  // lib/lead-pipeline/pipeline-processor.ts — and it already emits
+  // RAW_RECORD_PROMOTED with the new lead's id in metadata. So the event bus is
+  // the lead-side chokepoint for the same reason it is the contact-side one: a
+  // future promotion path that emits the event is covered without being edited.
+  // LEAD_CAPTURED is listened for alongside it because
+  // lib/kernel/lead-acquisition-handlers.ts:handleLeadCaptured emits it, and that
+  // handler's own hand-rolled queue INSERT (no freshness check, no idempotency,
+  // no identifier gate, no suppression, no budget gate) now routes through the
+  // guarded writer instead. The two other doors emit nothing and are hooked
+  // directly, by name, in the guard.
+  //
+  // ENTITY SHAPE. RAW_RECORD_PROMOTED's entity is the RAW RECORD, not the lead —
+  // entityType 'raw_scraped_lead', entityId the raw_scraped_leads id — so the
+  // lead id is read from metadata.lead_id. Using entityId here would hand a
+  // raw_scraped_leads.id to a leads-keyed query: a different id space, and
+  // exactly the substitution the enrichment lane refuses to make anywhere else.
+  //
+  // PARKED PLATFORM LEADS. A platform-origin lead is born with brokerage_id NULL
+  // and only gains a tenant when Engine 1 distributes it, which happens AFTER
+  // this emit. queueLeadEnrichment reads the lead `.eq("brokerage_id", …)`, so
+  // such a lead returns `not_found` and is not queued — correct: nobody should
+  // buy a record for a lead no tenant owns yet. The cron net
+  // (listLeadsNeedingEnrichment) collects it once distribution gives it a home.
+  //
+  // BEST-EFFORT, ALWAYS. The branch only ENQUEUES — a few reads and one row, no
+  // vendor call — and it is wrapped, so lead creation can never fail because of
+  // enrichment. The writer applies suppression, freshness-by-evidence, the
+  // identifier gate, the backlog cap and the budget pre-flight itself; the drain
+  // re-checks before spending.
+  const LEAD_CREATE_EVENTS: string[] = [
+    KernelEvent.RAW_RECORD_PROMOTED,
+    KernelEvent.LEAD_CAPTURED,
+  ]
+  if (params.brokerageId && LEAD_CREATE_EVENTS.includes(params.event)) {
+    try {
+      const metaLeadId = (params.metadata as Record<string, unknown> | null | undefined)?.lead_id
+      const leadId =
+        params.event === KernelEvent.LEAD_CAPTURED && params.entityType === "lead"
+          ? params.entityId
+          : typeof metaLeadId === "string" && metaLeadId.length > 0
+            ? metaLeadId
+            : null
+
+      if (leadId) {
+        const { queueLeadEnrichment } = await import("@/lib/enrichment/lead-enrichment-core")
+        await queueLeadEnrichment({
+          leadId,
+          brokerageId: params.brokerageId,
+          triggerType:
+            params.event === KernelEvent.LEAD_CAPTURED ? "lead_captured" : "raw_record_promoted",
+          supabase: svc,
+        })
+      }
+    } catch (err) {
+      console.error("[event-reactor] lead enrichment enqueue failed:", err)
+    }
   }
 
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set

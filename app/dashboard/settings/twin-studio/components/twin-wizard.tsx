@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useState, useTransition } from "react"
+import { DID_SENTIMENTS } from "@/lib/did/agent-presenter"
 import { Camera, Video, Loader2, ChevronRight, ChevronLeft, CheckCircle2, Sparkles } from "lucide-react"
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -10,16 +11,30 @@ import { Input } from "@/app/components/ui/input"
 import { Textarea } from "@/app/components/ui/textarea"
 import { Label } from "@/app/components/ui/label"
 import { toast } from "sonner"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { createTwinDraft, finalizeTwin } from "@/app/actions/twin-studio"
-import { uploadTwinAvatar, uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
-import { VoiceRecorder } from "./voice-recorder"
+import { uploadTwinAvatar } from "@/app/actions/twin-studio-upload"
+import { TwinVoiceStep } from "./twin-voice-step"
+import { ConsentRecorder } from "./consent-recorder"
 
-type Step = "look" | "voice" | "personality" | "done"
+type Step = "look" | "consent" | "voice" | "personality" | "done"
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
+
+/**
+ * The greeting tones D-ID actually supports, verbatim from their SDK reference.
+ *
+ * CLOSED, and sourced from the shared vocabulary rather than retyped: D-ID
+ * documents that an unsupported sentiment silently falls back to the default,
+ * so an invented tone would look chosen here and do nothing on the wire.
+ */
+const GREETING_TONES = DID_SENTIMENTS.map((value) => ({
+  value,
+  label: value.charAt(0).toUpperCase() + value.slice(1),
+}))
 
 const PERSONALITY_PRESETS = [
   { label: "Warm & reassuring", text: "Warm and reassuring. Lead with empathy. Plain English." },
@@ -31,8 +46,20 @@ const PERSONALITY_PRESETS = [
 export function TwinWizard({ open, onOpenChange }: Props) {
   const [step, setStep] = useState<Step>("look")
   const [twinId, setTwinId] = useState<string | null>(null)
+  // Which source the agent chose. A VIDEO twin is a V3 Instant Avatar and D-ID
+  // requires a recorded consent for those; a PHOTO twin does not, so the step
+  // is skipped rather than shown-and-auto-passed.
+  const [sourceKind, setSourceKind] = useState<"photo" | "video" | null>(null)
+  // The uploaded source, held back for a VIDEO twin so the D-ID submit can
+  // happen AFTER consent is verified rather than being refused before it.
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [label, setLabel] = useState("My Twin")
   const [personality, setPersonality] = useState("")
+  // The agent's OWN opening line. Optional, and empty is a real answer — an
+  // avatar that says nothing until spoken to is better than one that says
+  // something its owner never wrote.
+  const [greeting, setGreeting] = useState("")
+  const [greetingSentiment, setGreetingSentiment] = useState("")
   const [setAsDefault, setSetAsDefault] = useState(true)
   const [pending, startTransition] = useTransition()
 
@@ -42,6 +69,8 @@ export function TwinWizard({ open, onOpenChange }: Props) {
     setTimeout(() => {
       setStep("look")
       setTwinId(null)
+      setSourceKind(null)
+      setSourceUrl(null)
       setLabel("My Twin")
       setPersonality("")
       setSetAsDefault(true)
@@ -58,18 +87,85 @@ export function TwinWizard({ open, onOpenChange }: Props) {
           </DialogDescription>
         </DialogHeader>
 
-        <Steps current={step} />
+        <Steps current={step} showConsent={sourceKind === "video"} />
 
         {step === "look" && (
           <LookStep
             label={label}
             onLabelChange={setLabel}
-            onComplete={(id) => { setTwinId(id); setStep("voice") }}
+            onComplete={(id, kind, url) => {
+              setTwinId(id)
+              setSourceKind(kind)
+              setSourceUrl(url)
+              // Consent only stands between a VIDEO twin and D-ID.
+              setStep(kind === "video" ? "consent" : "voice")
+            }}
+          />
+        )}
+
+        {step === "consent" && (
+          <ConsentRecorder
+            // Consent verified → NOW submit the video to D-ID. This is the
+            // deferred hand-off from the look step: a V3 Instant Avatar cannot
+            // be created without the consent that just completed.
+            onVerified={async () => {
+              if (!twinId || !sourceUrl) { setStep("voice"); return }
+              try {
+                const res = await fetch("/api/did/create-avatar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    source_url: sourceUrl,
+                    source_type: "video",
+                    twin_id: twinId,
+                    label: label.trim() || "My Twin",
+                  }),
+                })
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}))
+                  toast.error(err.error ?? "Avatar processing failed")
+                  return
+                }
+              } catch {
+                toast.error("Couldn't start avatar processing — try again.")
+                return
+              }
+              setStep("voice")
+            }}
+            onSkip={async () => {
+              // Consent was ALREADY on file from a previous twin, so the submit
+              // that the look step deferred still has to happen.
+              if (!twinId || !sourceUrl) { setStep("voice"); return }
+              try {
+                const res = await fetch("/api/did/create-avatar", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    source_url: sourceUrl,
+                    source_type: "video",
+                    twin_id: twinId,
+                    label: label.trim() || "My Twin",
+                  }),
+                })
+                if (!res.ok) {
+                  const err = await res.json().catch(() => ({}))
+                  toast.error(err.error ?? "Avatar processing failed")
+                  return
+                }
+              } catch {
+                toast.error("Couldn't start avatar processing — try again.")
+                return
+              }
+              setStep("voice")
+            }}
           />
         )}
 
         {step === "voice" && twinId && (
-          <VoiceStep
+          // BOTH doors to a voice — clone or stock — live in one shared
+          // component, because the same step is offered again from the twin
+          // card for a twin that skipped it here.
+          <TwinVoiceStep
             twinId={twinId}
             label={label}
             onSkip={() => setStep("personality")}
@@ -81,6 +177,10 @@ export function TwinWizard({ open, onOpenChange }: Props) {
           <PersonalityStep
             personality={personality}
             onPersonalityChange={setPersonality}
+            greeting={greeting}
+            onGreetingChange={setGreeting}
+            greetingSentiment={greetingSentiment}
+            onGreetingSentimentChange={setGreetingSentiment}
             setAsDefault={setAsDefault}
             onSetAsDefaultChange={setSetAsDefault}
             pending={pending}
@@ -90,6 +190,8 @@ export function TwinWizard({ open, onOpenChange }: Props) {
                 const res = await finalizeTwin({
                   twinId,
                   personality: personality || undefined,
+                  greeting,
+                  greetingSentiment,
                   setAsDefault,
                 })
                 if (res.ok) {
@@ -112,18 +214,26 @@ export function TwinWizard({ open, onOpenChange }: Props) {
 
 function LookStep({
   label, onLabelChange, onComplete,
-}: { label: string; onLabelChange: (v: string) => void; onComplete: (twinId: string) => void }) {
+}: { label: string; onLabelChange: (v: string) => void; onComplete: (twinId: string, kind: "photo" | "video", sourceUrl: string) => void }) {
   const [kind, setKind] = useState<"photo" | "video" | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function handleFile(file: File) {
-    if (kind === "photo" && file.size > 10 * 1024 * 1024) {
-      toast.error("Photo must be under 10 MB")
-      return
-    }
-    if (kind === "video" && file.size > 50 * 1024 * 1024) {
-      toast.error("Video must be under 50 MB")
+    // COURTESY ONLY, and both numbers it replaces were fiction. uploadTwinAvatar
+    // is a Server Action that takes the file as a base64 STRING: Vercel caps a
+    // function request body at 4.5 MB ahead of Next.js, and base64 is a third
+    // larger than the bytes it carries, so the real ceiling is ~3.4 MB of file
+    // for BOTH kinds. A 40 MB "under 50 MB" video was encoded to 53 MB in the
+    // browser and then thrown away at the edge.
+    const twinGate = checkUpload({
+      bucket: "twin-avatars",
+      transport: "server_action_base64",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!twinGate.ok) {
+      toast.error(twinGate.reason)
       return
     }
 
@@ -151,7 +261,17 @@ function LookStep({
         return
       }
 
-      // Hand off to D-ID — async; cron polls until ready
+      // ORDER MATTERS. A VIDEO twin is a V3 Instant Avatar and D-ID refuses one
+      // without a verified consent, so submitting here would 428 before the
+      // agent has had any chance to record it — they would see a failure for
+      // something they were never offered. Video therefore defers the D-ID
+      // hand-off until AFTER the consent step; photo submits immediately,
+      // because a photo twin needs no consent at all.
+      if (kind === "video") {
+        onComplete(draft.twinId, "video", upload.url)
+        return
+      }
+
       const didRes = await fetch("/api/did/create-avatar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -168,7 +288,7 @@ function LookStep({
         return
       }
 
-      onComplete(draft.twinId)
+      onComplete(draft.twinId, kind!, upload.url)
     } finally {
       setUploading(false)
     }
@@ -248,76 +368,24 @@ function LookStep({
   )
 }
 
-// ─── Step 2 — Voice ────────────────────────────────────────────────────────
-
-function VoiceStep({
-  twinId, label, onSkip, onComplete,
-}: { twinId: string; label: string; onSkip: () => void; onComplete: () => void }) {
-  const [working, setWorking] = useState(false)
-
-  async function handleSample(blob: Blob, mimeType: string) {
-    setWorking(true)
-    try {
-      const base64 = await blobToBase64(blob)
-      const upload = await uploadTwinVoiceSample({ base64, mimeType })
-      if (!upload.ok || !upload.url) {
-        toast.error(upload.error ?? "Upload failed")
-        return
-      }
-
-      const cloneRes = await fetch("/api/elevenlabs/voice-clone", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `Twin: ${label}`,
-          sample_audio_urls: [upload.url],
-          twin_id: twinId,
-        }),
-      })
-      if (!cloneRes.ok) {
-        const err = await cloneRes.json().catch(() => ({}))
-        toast.error(err.error ?? "Voice clone failed")
-        return
-      }
-      onComplete()
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  if (working) {
-    return (
-      <div className="text-center py-12">
-        <Loader2 className="h-8 w-8 animate-spin mx-auto mb-3" />
-        <p className="text-sm font-medium">Cloning your voice…</p>
-        <p className="text-xs text-muted-foreground mt-1">Usually about 30 seconds.</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-4 pt-2">
-      <VoiceRecorder onSampleReady={handleSample} maxSeconds={60} />
-      <div className="text-center">
-        <button
-          onClick={onSkip}
-          className="text-xs text-muted-foreground hover:text-foreground"
-        >
-          Skip — I'll do this later
-        </button>
-      </div>
-    </div>
-  )
-}
+// Step 2 (Voice) is ./twin-voice-step.tsx — SHARED with the twin card's
+// "Add a voice" affordance, so the clone route and the stock-voice allowlist
+// have exactly one implementation between the two entry points.
 
 // ─── Step 3 — Personality ──────────────────────────────────────────────────
 
 function PersonalityStep({
-  personality, onPersonalityChange, setAsDefault, onSetAsDefaultChange,
+  personality, onPersonalityChange,
+  greeting, onGreetingChange, greetingSentiment, onGreetingSentimentChange,
+  setAsDefault, onSetAsDefaultChange,
   pending, onBack, onFinish,
 }: {
   personality: string
   onPersonalityChange: (v: string) => void
+  greeting: string
+  onGreetingChange: (v: string) => void
+  greetingSentiment: string
+  onGreetingSentimentChange: (v: string) => void
   setAsDefault: boolean
   onSetAsDefaultChange: (v: boolean) => void
   pending: boolean
@@ -352,6 +420,53 @@ function PersonalityStep({
           rows={3}
           maxLength={500}
         />
+      </div>
+
+      {/* THE ONLY WORDS THE AVATAR SPEAKS THAT THE BRAIN DID NOT WRITE.
+          Everything else the twin says comes from chat() through our custom-LLM.
+          A greeting is spoken verbatim, in this agent's cloned voice, to their
+          own client — so it is authored here or it does not exist. There is
+          deliberately no default: a friendly-sounding placeholder would be a
+          sentence the agent never approved. */}
+      <div>
+        <Label htmlFor="twin-greeting">Opening line (optional)</Label>
+        <p className="text-xs text-muted-foreground mt-1">
+          Spoken in your voice when a client starts a live conversation. Leave it
+          blank and your twin simply waits for them to speak first.
+        </p>
+        <Textarea
+          id="twin-greeting"
+          value={greeting}
+          onChange={(e) => onGreetingChange(e.target.value)}
+          placeholder="Hi — good to see you. What can I help you with today?"
+          className="mt-2 text-sm"
+          rows={2}
+          maxLength={300}
+        />
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[11px] text-muted-foreground">
+            {greeting.length}/300 — it is read aloud, so keep it short
+          </span>
+        </div>
+        {greeting.trim().length > 0 && (
+          <div className="mt-2">
+            <Label className="text-xs">Tone</Label>
+            <div className="flex flex-wrap gap-1.5 mt-1.5">
+              {GREETING_TONES.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  onClick={() => onGreetingSentimentChange(greetingSentiment === t.value ? "" : t.value)}
+                  className={`rounded-full border px-2.5 py-1 text-xs hover:bg-muted/50 transition-colors ${
+                    greetingSentiment === t.value ? "border-primary bg-primary/5 text-foreground" : "text-muted-foreground"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-3">
@@ -401,9 +516,11 @@ function DoneStep({ label, onClose }: { label: string; onClose: () => void }) {
 
 // ─── Steps indicator ──────────────────────────────────────────────────────
 
-function Steps({ current }: { current: Step }) {
+function Steps({ current, showConsent }: { current: Step; showConsent: boolean }) {
   const steps: { key: Step; label: string }[] = [
     { key: "look", label: "Look" },
+    // Shown only once the agent has chosen video — a photo twin never sees it.
+    ...(showConsent ? [{ key: "consent" as Step, label: "Consent" }] : []),
     { key: "voice", label: "Voice" },
     { key: "personality", label: "Personality" },
   ]
@@ -444,17 +561,5 @@ function fileToBase64(file: File): Promise<string> {
     }
     reader.onerror = reject
     reader.readAsDataURL(file)
-  })
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      resolve(result.split(",")[1] ?? "")
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
   })
 }

@@ -1,11 +1,40 @@
 "use client"
 
-import { useState, useEffect } from "react"
+// app/dashboard/motivation/motivation-client.tsx
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE STANDINGS + GAMIFICATION SURFACE, and it is open to agents by design —
+// there is no role gate on the page, and that is the point: an agent can see where
+// they stand.
+//
+// Openness was never the problem. Everything on this page was inert, and every
+// cause was a disagreement with the server:
+//
+//   · THE FILTERS SENT VALUES NOTHING HAD WRITTEN. Period was "This Month" /
+//     "This Quarter" / "This Year" against a column storing "2026-08"; scope
+//     offered "My Stats" (scope 'agent'), which is the row grain restated as a
+//     filter. Both now come from lib/gamification/leaderboard-vocabulary.ts — the
+//     module the POPULATOR writes from — so a filter that cannot be filled cannot
+//     be offered. Revenue is gone: nothing wrote it, and a peer-visible board does
+//     not carry money (#185, #57).
+//   · THE RESULTS WERE READ AS THE WRONG SHAPE. getLeaderboard returns an object
+//     and this component did `setLeaderboard(result || [])` then `leaderboard.length`,
+//     which is undefined on an object — so the table said "No leaderboard data" even
+//     with rows in hand. getAgentBadges was consumed the same way.
+//   · THE TIER LADDER DISAGREED WITH THE SERVER'S. 0/1000/5000/15000 here against
+//     500/2500/10000/25000 everywhere else, so the header printed one tier while the
+//     server had computed another. One ladder now: lib/gamification/tiers.ts.
+//   · THE REWARD CARDS OVERSTATED THE REWARD. "+500 pts" for a closed deal against
+//     an awarder that grants 100. Both read POINT_VALUES now.
+//   · THE CHALLENGE PANEL WAS FABRICATED — three hard-coded cards with invented
+//     progress bars ("2 of 5 completed") for challenges nobody had created. It reads
+//     the real challenge rail.
+
+import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Table,
@@ -20,195 +49,229 @@ import {
   Star,
   Zap,
   TrendingUp,
-  TrendingDown,
   Award,
   Target,
-  Users,
-  Home,
-  MessageSquare,
-  Share2,
-  BookOpen,
-  FileText,
-  Sparkles,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   CheckCircle,
   Lock,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import {
   getAgentBadges,
   getAgentPointsAndTier,
-  checkAndAwardBadges,
+  getAgentPointsHistory,
   getLeaderboard,
-  getLeaderboardWidget,
 } from "@/app/actions/gamification"
-import { toast } from "sonner"
+import { getChallenges } from "@/app/actions/challenges"
+import { POINT_VALUES, POINT_EARNING_ACTIONS } from "@/lib/gamification/award-points"
+import {
+  LEADERBOARD_SCOPES,
+  LEADERBOARD_METRICS,
+  SCOPE_LABEL,
+  METRIC_LABEL,
+  periodWindows,
+  defaultPeriodLabel,
+  isLeaderboardScope,
+  isLeaderboardMetric,
+  isCanonicalPeriodLabel,
+  type LeaderboardScope,
+  type LeaderboardMetric,
+  type LeaderboardRow,
+} from "@/lib/gamification/leaderboard-vocabulary"
+import { TIER_LABEL, tierProgressPercent, nextTierForPoints, type PointsTier } from "@/lib/gamification/tiers"
 import Link from "next/link"
 
 interface MotivationClientProps {
   agentId: string
   brokerageId: string
   userId: string
+  /** Seeded from the URL so a filtered board is shareable. Validated server-side first. */
+  initialScope?: LeaderboardScope | null
+  initialMetric?: LeaderboardMetric | null
+  initialPeriod?: string | null
 }
 
-const POINT_VALUES = {
-  close_deal: 500,
-  generate_referral: 200,
-  complete_tour: 50,
-  send_follow_up: 10,
-  log_activity: 5,
-}
-
-const TIER_BENEFITS: Record<string, string[]> = {
+const TIER_BENEFITS: Record<PointsTier, string[]> = {
+  unranked: ["Core features", "Standard support"],
   bronze: ["Access to basic reports", "Standard support", "Core features"],
   silver: ["Priority lead routing", "Advanced analytics", "Extended support hours"],
   gold: ["VIP lead routing", "Custom branding", "Dedicated success manager"],
   platinum: ["All features unlocked", "White-glove support", "Executive coaching access"],
+  diamond: ["All features unlocked", "White-glove support", "Broker-conferred recognition"],
 }
 
-const TIER_COLORS: Record<string, string> = {
+const TIER_COLORS: Record<PointsTier, string> = {
+  unranked: "bg-slate-500",
   bronze: "bg-amber-600",
   silver: "bg-slate-400",
   gold: "bg-yellow-500",
   platinum: "bg-gradient-to-r from-purple-500 to-pink-500",
+  diamond: "bg-gradient-to-r from-sky-400 to-indigo-500",
 }
 
-const TIER_THRESHOLDS = {
-  bronze: 0,
-  silver: 1000,
-  gold: 5000,
-  platinum: 15000,
-}
-
-function getTierFromPoints(points: number): string {
-  if (points >= TIER_THRESHOLDS.platinum) return "platinum"
-  if (points >= TIER_THRESHOLDS.gold) return "gold"
-  if (points >= TIER_THRESHOLDS.silver) return "silver"
-  return "bronze"
-}
-
-function getNextTierThreshold(currentTier: string): number {
-  switch (currentTier) {
-    case "bronze":
-      return TIER_THRESHOLDS.silver
-    case "silver":
-      return TIER_THRESHOLDS.gold
-    case "gold":
-      return TIER_THRESHOLDS.platinum
-    default:
-      return TIER_THRESHOLDS.platinum
-  }
-}
-
-const MOTIVATIONAL_MESSAGES: Record<string, string> = {
+const MOTIVATIONAL_MESSAGES: Record<PointsTier, string> = {
+  unranked: "Every action from here counts — your first badge is 500 points away",
   bronze: "Building momentum — every action counts",
-  silver: "You're in the top tier — keep pushing",
+  silver: "You're climbing — keep pushing",
   gold: "Elite performer — you're setting the standard",
   platinum: "Legendary performance — you're the benchmark",
+  diamond: "Conferred by your broker — the top of the house",
 }
 
-export function MotivationClient({ agentId, brokerageId, userId }: MotivationClientProps) {
-  const [loading, setLoading] = useState(true)
-  const [pointsData, setPointsData] = useState<{
-    points: number
-    tier: string
-    pointsHistory?: any[]
-  } | null>(null)
-  const [badges, setBadges] = useState<any[]>([])
-  const [leaderboard, setLeaderboard] = useState<any[]>([])
-  const [widgetData, setWidgetData] = useState<any>(null)
+/** The ledger stores reason keys (LISTING_CLOSED); a person reads "Listing closed". */
+function humaniseReason(reason: string): string {
+  return reason.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())
+}
 
-  // Filter states
-  const [selectedScope, setSelectedScope] = useState<"agent" | "team" | "brokerage">("brokerage")
-  const [selectedMetric, setSelectedMetric] = useState<"points" | "revenue" | "transactions" | "referrals">("points")
-  const [selectedPeriod, setSelectedPeriod] = useState<string>("This Month")
+interface BadgeView {
+  id: string
+  name: string
+  description: string | null
+  tier: string | null
+  requiredPoints: number
+  earned: boolean
+  earnedAt: string | null
+}
+
+export function MotivationClient({
+  agentId,
+  initialScope = null,
+  initialMetric = null,
+  initialPeriod = null,
+}: MotivationClientProps) {
+  const [loading, setLoading] = useState(true)
+  const [pointsData, setPointsData] = useState<{ points: number; tierId: PointsTier } | null>(null)
+  const [pointsHistory, setPointsHistory] = useState<Array<{ points: number; reason: string; createdAt: string }>>([])
+  const [badges, setBadges] = useState<BadgeView[]>([])
+  const [badgeError, setBadgeError] = useState<string | null>(null)
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([])
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null)
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false)
+  const [challenges, setChallenges] = useState<Array<{
+    id: string
+    title: string
+    metricLabel: string
+    status: string
+    prizePoints: number
+    youEnrolled: boolean
+    myRank: number | null
+    myValue: number
+    leaderValue: number
+  }>>([])
+
+  // The three period options are computed once per render pass from the SAME
+  // function the populator writes from, so a stale label can never be selected.
+  const [periods] = useState(() => periodWindows(new Date()))
+
+  const [selectedScope, setSelectedScope] = useState<LeaderboardScope>(
+    isLeaderboardScope(initialScope) ? initialScope : "brokerage",
+  )
+  const [selectedMetric, setSelectedMetric] = useState<LeaderboardMetric>(
+    isLeaderboardMetric(initialMetric) ? initialMetric : "points",
+  )
+  const [selectedPeriod, setSelectedPeriod] = useState<string>(
+    isCanonicalPeriodLabel(initialPeriod) ? (initialPeriod as string) : defaultPeriodLabel(),
+  )
   const [badgeFilter, setBadgeFilter] = useState<"all" | "earned" | "in-progress">("all")
   const [showPointsInfo, setShowPointsInfo] = useState(false)
-  const [leaderboardLoading, setLeaderboardLoading] = useState(false)
 
-  useEffect(() => {
-    loadData()
-  }, [agentId])
-
-  useEffect(() => {
-    loadLeaderboard()
-  }, [selectedScope, selectedMetric, selectedPeriod])
-
-  async function loadData() {
-    setLoading(true)
-    try {
-      const [pointsResult, badgesResult, leaderboardResult, widgetResult] = await Promise.all([
-        getAgentPointsAndTier(agentId),
-        getAgentBadges(agentId),
-        getLeaderboard({
-          scope: selectedScope,
-          metricType: selectedMetric,
-          periodLabel: selectedPeriod,
-          limit: 10,
-        }),
-        getLeaderboardWidget({ agentId }),
-      ])
-
-      setPointsData(pointsResult ? { points: pointsResult.points, tier: pointsResult.currentTier } : null)
-      setBadges((badgesResult as unknown as any[]) || [])
-      setLeaderboard((leaderboardResult as unknown as any[]) || [])
-      setWidgetData(widgetResult)
-
-      // Check for new badges
-      if (pointsResult?.points) {
-        const newBadges = await checkAndAwardBadges(agentId, pointsResult.points)
-        if (newBadges && newBadges.length > 0) {
-          newBadges.forEach((badge: any) => {
-            toast.success(`New Badge Earned: ${badge.name}!`, {
-              description: badge.description,
-            })
-          })
-          // Reload badges
-          const updatedBadges = await getAgentBadges(agentId)
-          setBadges((updatedBadges as unknown as any[]) || [])
-        }
-      }
-    } catch (error) {
-      console.error("Error loading motivation data:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function loadLeaderboard() {
+  const loadLeaderboard = useCallback(async () => {
     setLeaderboardLoading(true)
     try {
       const result = await getLeaderboard({
         scope: selectedScope,
         metricType: selectedMetric,
         periodLabel: selectedPeriod,
-        limit: 10,
+        limit: 25,
       })
-      setLeaderboard((result as unknown as any[]) || [])
+      // A refusal is not an empty board — say which one it was.
+      setLeaderboard(result.ok ? result.rankings : [])
+      setLeaderboardError(result.ok ? null : (result.error ?? "The leaderboard could not be read."))
     } catch (error) {
-      console.error("Error loading leaderboard:", error)
+      setLeaderboard([])
+      setLeaderboardError(error instanceof Error ? error.message : "The leaderboard could not be read.")
     } finally {
       setLeaderboardLoading(false)
     }
-  }
+  }, [selectedScope, selectedMetric, selectedPeriod])
 
-  const currentTier = pointsData?.tier || "bronze"
-  const currentPoints = pointsData?.points || 0
-  const nextTierThreshold = getNextTierThreshold(currentTier)
-  const progressToNextTier =
-    currentTier === "platinum" ? 100 : Math.min(100, (currentPoints / nextTierThreshold) * 100)
+  const loadPersonal = useCallback(async () => {
+    setLoading(true)
+    try {
+      // STANDINGS WITHOUT A PERSONAL RECORD. A broker or team lead is here for the
+      // board and may have no agents row at all; those reads are skipped rather
+      // than issued with an empty id.
+      if (!agentId) {
+        setPointsData(null)
+        setBadges([])
+        setPointsHistory([])
+        return
+      }
+      const [pointsResult, badgesResult, historyResult] = await Promise.all([
+        getAgentPointsAndTier(agentId),
+        getAgentBadges(agentId),
+        getAgentPointsHistory(agentId),
+      ])
+      setPointsData({ points: pointsResult.points, tierId: pointsResult.currentTierId as PointsTier })
+      setBadges(badgesResult.ok ? (badgesResult.badges as BadgeView[]) : [])
+      setBadgeError(badgesResult.ok ? null : (badgesResult.error ?? null))
+      setPointsHistory(historyResult.ok ? historyResult.entries : [])
+    } catch (error) {
+      console.error("Error loading motivation data:", error)
+    } finally {
+      setLoading(false)
+    }
+  }, [agentId])
 
-  // Filter badges
-  const earnedBadges = badges.filter((b) => b.earned_at)
-  const unearnedBadges = badges.filter((b) => !b.earned_at)
+  const loadChallenges = useCallback(async () => {
+    try {
+      const { challenges: rows } = await getChallenges()
+      setChallenges(
+        rows
+          .filter((c) => c.status === "active")
+          .slice(0, 3)
+          .map((c) => {
+            const mine = c.standings.find((s) => s.agentId === agentId) ?? null
+            return {
+              id: c.id,
+              title: c.title,
+              metricLabel: c.metricLabel,
+              status: c.status,
+              prizePoints: c.prizePoints,
+              youEnrolled: c.youEnrolled,
+              myRank: mine?.rank ?? null,
+              myValue: mine?.value ?? 0,
+              leaderValue: c.standings[0]?.value ?? 0,
+            }
+          }),
+      )
+    } catch (error) {
+      console.error("Error loading challenges:", error)
+    }
+  }, [agentId])
+
+  useEffect(() => {
+    loadPersonal()
+    loadChallenges()
+  }, [loadPersonal, loadChallenges])
+
+  useEffect(() => {
+    loadLeaderboard()
+  }, [loadLeaderboard])
+
+  const currentPoints = pointsData?.points ?? 0
+  const currentTier: PointsTier = pointsData?.tierId ?? "unranked"
+  const nextTier = nextTierForPoints(currentPoints)
+  const progressToNextTier = tierProgressPercent(currentPoints)
+
+  const earnedBadges = badges.filter((b) => b.earned)
+  const unearnedBadges = badges.filter((b) => !b.earned)
   const filteredBadges =
     badgeFilter === "all" ? badges : badgeFilter === "earned" ? earnedBadges : unearnedBadges
-
-  // Find next badge to earn
-  const nextBadge = unearnedBadges.sort((a, b) => (a.required_points || 0) - (b.required_points || 0))[0]
+  const nextBadge = unearnedBadges[0] ?? null
   const nextBadgeProgress = nextBadge
-    ? Math.min(100, (currentPoints / (nextBadge.required_points || 1)) * 100)
+    ? Math.min(100, Math.round((currentPoints / Math.max(nextBadge.requiredPoints, 1)) * 100))
     : 100
 
   if (loading) {
@@ -225,14 +288,12 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
       <div className="rounded-xl bg-gradient-to-r from-amber-600 to-orange-700 p-6 text-white">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div
-              className={`w-16 h-16 rounded-full flex items-center justify-center ${TIER_COLORS[currentTier]} shadow-lg`}
-            >
+            <div className={`w-16 h-16 rounded-full flex items-center justify-center ${TIER_COLORS[currentTier]} shadow-lg`}>
               <Trophy className="h-8 w-8 text-white" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-2xl font-bold capitalize">{currentTier}</span>
+                <span className="text-2xl font-bold">{TIER_LABEL[currentTier]}</span>
                 <Badge variant="secondary" className="bg-white/20 text-white border-0">
                   Tier
                 </Badge>
@@ -246,8 +307,8 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
             {nextBadge && (
               <div className="w-64">
                 <div className="flex justify-between text-sm text-amber-100 mb-1">
-                  <span>Next Badge: {nextBadge.name}</span>
-                  <span>{nextBadge.required_points?.toLocaleString()} pts</span>
+                  <span>Next badge: {nextBadge.name}</span>
+                  <span>{nextBadge.requiredPoints.toLocaleString()} pts</span>
                 </div>
                 <Progress value={nextBadgeProgress} className="h-2 bg-white/20" />
               </div>
@@ -256,9 +317,8 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
         </div>
       </div>
 
-      {/* Section B: Tier Progress */}
+      {/* Section B: Tier Progress + Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* LEFT: Tier Card */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -268,46 +328,35 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
             <CardDescription>Progress toward your next achievement level</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Current Tier */}
             <div className="flex items-center gap-4">
-              <div
-                className={`w-12 h-12 rounded-full flex items-center justify-center ${TIER_COLORS[currentTier]}`}
-              >
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center ${TIER_COLORS[currentTier]}`}>
                 <Star className="h-6 w-6 text-white" />
               </div>
               <div className="flex-1">
-                <p className="font-semibold capitalize text-lg">{currentTier} Tier</p>
+                <p className="font-semibold text-lg">{TIER_LABEL[currentTier]} tier</p>
                 <p className="text-sm text-muted-foreground">
-                  {currentTier === "platinum"
-                    ? "Maximum tier achieved!"
-                    : `${(nextTierThreshold - currentPoints).toLocaleString()} pts to next tier`}
+                  {nextTier
+                    ? `${nextTier.pointsToGo.toLocaleString()} pts to ${nextTier.label}`
+                    : "Top of the ladder — Diamond is conferred by your broker"}
                 </p>
               </div>
             </div>
 
-            {/* Progress Bar */}
-            {currentTier !== "platinum" && (
+            {nextTier && (
               <div>
                 <div className="flex justify-between text-sm mb-2">
-                  <span className="capitalize">{currentTier}</span>
-                  <span className="capitalize">
-                    {currentTier === "gold"
-                      ? "Platinum"
-                      : currentTier === "silver"
-                        ? "Gold"
-                        : "Silver"}
-                  </span>
+                  <span>{TIER_LABEL[currentTier]}</span>
+                  <span>{nextTier.label}</span>
                 </div>
                 <Progress value={progressToNextTier} className="h-3" />
                 <p className="text-sm text-muted-foreground mt-1 text-center">
-                  {currentPoints.toLocaleString()} / {nextTierThreshold.toLocaleString()} pts
+                  {currentPoints.toLocaleString()} / {nextTier.threshold.toLocaleString()} pts
                 </p>
               </div>
             )}
 
-            {/* Tier Benefits */}
             <div className="space-y-2">
-              <p className="font-medium">Your Benefits:</p>
+              <p className="font-medium">Your benefits:</p>
               <ul className="space-y-1">
                 {TIER_BENEFITS[currentTier]?.map((benefit, i) => (
                   <li key={i} className="flex items-center gap-2 text-sm">
@@ -318,26 +367,21 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
               </ul>
             </div>
 
-            {/* How to Earn Points */}
             <div>
               <Button
                 variant="ghost"
                 className="w-full justify-between"
                 onClick={() => setShowPointsInfo(!showPointsInfo)}
               >
-                <span>How to Earn Points</span>
-                {showPointsInfo ? (
-                  <ChevronUp className="h-4 w-4" />
-                ) : (
-                  <ChevronDown className="h-4 w-4" />
-                )}
+                <span>How points are earned</span>
+                {showPointsInfo ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
               </Button>
               {showPointsInfo && (
                 <div className="mt-2 space-y-2 p-3 bg-muted rounded-lg">
-                  {Object.entries(POINT_VALUES).map(([action, points]) => (
-                    <div key={action} className="flex justify-between text-sm">
-                      <span className="capitalize">{action.replace(/_/g, " ")}</span>
-                      <Badge variant="secondary">{points} pts</Badge>
+                  {POINT_EARNING_ACTIONS.map((a) => (
+                    <div key={a.reason} className="flex justify-between text-sm">
+                      <span>{a.label}</span>
+                      <Badge variant="secondary">{POINT_VALUES[a.reason]} pts</Badge>
                     </div>
                   ))}
                 </div>
@@ -346,19 +390,17 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
           </CardContent>
         </Card>
 
-        {/* RIGHT: Recent Activity */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Zap className="h-5 w-5" />
               Recent Activity
             </CardTitle>
-            <CardDescription>Your latest achievements and point earnings</CardDescription>
+            <CardDescription>Your latest badges and point earnings</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {/* Recent Badges */}
             <div>
-              <p className="font-medium mb-2">Recent Badges</p>
+              <p className="font-medium mb-2">Recent badges</p>
               {earnedBadges.length > 0 ? (
                 <div className="flex gap-2 flex-wrap">
                   {earnedBadges.slice(0, 3).map((badge) => (
@@ -376,30 +418,22 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
               )}
             </div>
 
-            {/* Points History */}
             <div>
-              <p className="font-medium mb-2">Points History</p>
-              {pointsData?.pointsHistory && pointsData.pointsHistory.length > 0 ? (
+              <p className="font-medium mb-2">Points history</p>
+              {pointsHistory.length > 0 ? (
                 <div className="space-y-2">
-                  {pointsData.pointsHistory.slice(0, 5).map((entry: any, i: number) => (
-                    <div
-                      key={i}
-                      className="flex justify-between items-center p-2 bg-muted/50 rounded"
-                    >
+                  {pointsHistory.map((entry, i) => (
+                    <div key={i} className="flex justify-between items-center p-2 bg-muted/50 rounded">
                       <div className="flex items-center gap-2">
                         <Zap className="h-4 w-4 text-primary" />
-                        <span className="text-sm capitalize">
-                          {entry.action?.replace(/_/g, " ") || "Activity"}
-                        </span>
+                        <span className="text-sm">{humaniseReason(entry.reason)}</span>
                       </div>
-                      <Badge variant="outline">+{entry.points || 0} pts</Badge>
+                      <Badge variant="outline">+{entry.points} pts</Badge>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  Complete actions to start earning points!
-                </p>
+                <p className="text-sm text-muted-foreground">Complete actions to start earning points.</p>
               )}
             </div>
           </CardContent>
@@ -413,44 +447,42 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Trophy className="h-5 w-5" />
-                Badges Showcase
+                Badges
               </CardTitle>
               <CardDescription>
-                {earnedBadges.length} earned / {badges.length} total
+                {earnedBadges.length} earned / {badges.length} available
               </CardDescription>
             </div>
-            <Tabs
-              value={badgeFilter}
-              onValueChange={(v) => setBadgeFilter(v as typeof badgeFilter)}
-            >
+            <Tabs value={badgeFilter} onValueChange={(v) => setBadgeFilter(v as typeof badgeFilter)}>
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
                 <TabsTrigger value="earned">Earned</TabsTrigger>
-                <TabsTrigger value="in-progress">In Progress</TabsTrigger>
+                <TabsTrigger value="in-progress">In progress</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
         </CardHeader>
         <CardContent>
-          {filteredBadges.length > 0 ? (
+          {badgeError ? (
+            <p className="text-sm text-red-700">{badgeError}</p>
+          ) : filteredBadges.length > 0 ? (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {filteredBadges.map((badge) => {
-                const isEarned = !!badge.earned_at
-                const progress = isEarned
+                const progress = badge.earned
                   ? 100
-                  : Math.min(100, (currentPoints / (badge.required_points || 1)) * 100)
+                  : Math.min(100, Math.round((currentPoints / Math.max(badge.requiredPoints, 1)) * 100))
 
                 return (
                   <div
                     key={badge.id}
                     className={`p-4 rounded-lg border ${
-                      isEarned
+                      badge.earned
                         ? "bg-amber-50 dark:bg-amber-950 border-amber-200 dark:border-amber-800"
                         : "bg-muted/30 border-muted grayscale"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2">
-                      {isEarned ? (
+                      {badge.earned ? (
                         <Trophy className="h-6 w-6 text-amber-600" />
                       ) : (
                         <Lock className="h-6 w-6 text-muted-foreground" />
@@ -460,15 +492,15 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
                     <p className="text-xs text-muted-foreground mb-2">
                       {badge.description || "Complete actions to earn this badge"}
                     </p>
-                    {isEarned ? (
+                    {badge.earned ? (
                       <p className="text-xs text-amber-600">
-                        Earned {new Date(badge.earned_at).toLocaleDateString()}
+                        Earned {badge.earnedAt ? new Date(badge.earnedAt).toLocaleDateString() : ""}
                       </p>
                     ) : (
                       <div>
                         <Progress value={progress} className="h-1.5 mb-1" />
                         <p className="text-xs text-muted-foreground">
-                          {badge.required_points?.toLocaleString()} pts required
+                          {badge.requiredPoints.toLocaleString()} pts required
                         </p>
                       </div>
                     )}
@@ -478,7 +510,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
             </div>
           ) : (
             <p className="text-center text-muted-foreground py-8">
-              No badges to display with current filter.
+              No badges to display with the current filter.
             </p>
           )}
         </CardContent>
@@ -496,25 +528,24 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
               <CardDescription>See how you stack up against your peers</CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Select value={selectedScope} onValueChange={(v) => setSelectedScope(v as any)}>
-                <SelectTrigger className="w-[130px]">
-                  <SelectValue placeholder="Scope" />
+              <Select value={selectedScope} onValueChange={(v) => setSelectedScope(v as LeaderboardScope)}>
+                <SelectTrigger className="w-[150px]">
+                  <SelectValue placeholder="Compare against" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="agent">My Stats</SelectItem>
-                  <SelectItem value="team">Team</SelectItem>
-                  <SelectItem value="brokerage">Brokerage</SelectItem>
+                  {LEADERBOARD_SCOPES.map((s) => (
+                    <SelectItem key={s} value={s}>{SCOPE_LABEL[s]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-              <Select value={selectedMetric} onValueChange={(v) => setSelectedMetric(v as any)}>
-                <SelectTrigger className="w-[140px]">
+              <Select value={selectedMetric} onValueChange={(v) => setSelectedMetric(v as LeaderboardMetric)}>
+                <SelectTrigger className="w-[150px]">
                   <SelectValue placeholder="Metric" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="points">Points</SelectItem>
-                  <SelectItem value="revenue">Revenue</SelectItem>
-                  <SelectItem value="transactions">Transactions</SelectItem>
-                  <SelectItem value="referrals">Referrals</SelectItem>
+                  {LEADERBOARD_METRICS.map((m) => (
+                    <SelectItem key={m} value={m}>{METRIC_LABEL[m]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
               <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
@@ -522,9 +553,9 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
                   <SelectValue placeholder="Period" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="This Month">This Month</SelectItem>
-                  <SelectItem value="This Quarter">This Quarter</SelectItem>
-                  <SelectItem value="This Year">This Year</SelectItem>
+                  {periods.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -535,204 +566,119 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
             </div>
+          ) : leaderboardError ? (
+            <p className="text-center text-sm text-red-700 py-8">{leaderboardError}</p>
           ) : leaderboard.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[80px]">Rank</TableHead>
                   <TableHead>Agent</TableHead>
-                  <TableHead className="text-right">Score</TableHead>
-                  <TableHead className="text-right w-[100px]">Change</TableHead>
+                  <TableHead className="text-right">{METRIC_LABEL[selectedMetric]}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {leaderboard.map((entry, index) => {
-                  const isCurrentAgent = entry.agent_id === agentId
-                  return (
-                    <TableRow
-                      key={entry.agent_id || index}
-                      className={isCurrentAgent ? "bg-primary/10" : ""}
-                    >
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          {index === 0 && <Trophy className="h-4 w-4 text-yellow-500" />}
-                          {index === 1 && <Trophy className="h-4 w-4 text-slate-400" />}
-                          {index === 2 && <Trophy className="h-4 w-4 text-amber-700" />}
-                          <span className="font-medium">#{index + 1}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <span className={isCurrentAgent ? "font-bold" : ""}>
-                            {entry.agent_name || "Agent"}
-                          </span>
-                          {isCurrentAgent && (
-                            <Badge variant="secondary" className="text-xs">
-                              You
-                            </Badge>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        {typeof entry.score === "number"
-                          ? selectedMetric === "revenue"
-                            ? `$${entry.score.toLocaleString()}`
-                            : entry.score.toLocaleString()
-                          : "-"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {entry.change !== undefined && entry.change !== 0 ? (
-                          <div
-                            className={`flex items-center justify-end gap-1 ${
-                              entry.change > 0 ? "text-green-600" : "text-red-600"
-                            }`}
-                          >
-                            {entry.change > 0 ? (
-                              <TrendingUp className="h-4 w-4" />
-                            ) : (
-                              <TrendingDown className="h-4 w-4" />
-                            )}
-                            <span>{Math.abs(entry.change)}</span>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
+                {leaderboard.map((entry) => (
+                  <TableRow key={entry.agentId} className={entry.isCurrentAgent ? "bg-primary/10" : ""}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        {entry.rank === 1 && <Trophy className="h-4 w-4 text-yellow-500" />}
+                        {entry.rank === 2 && <Trophy className="h-4 w-4 text-slate-400" />}
+                        {entry.rank === 3 && <Trophy className="h-4 w-4 text-amber-700" />}
+                        <span className="font-medium">#{entry.rank}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <span className={entry.isCurrentAgent ? "font-bold" : ""}>{entry.agentName}</span>
+                        {entry.isCurrentAgent && (
+                          <Badge variant="secondary" className="text-xs">You</Badge>
                         )}
-                      </TableCell>
-                    </TableRow>
-                  )
-                })}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-medium">
+                      {entry.score.toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           ) : (
             <p className="text-center text-muted-foreground py-8">
-              No leaderboard data available for the selected filters.
+              Nobody has scored on this board yet for the selected period.
             </p>
           )}
         </CardContent>
       </Card>
 
-      {/* Section E: Behavior Reinforcement */}
+      {/* Section E: Behaviour reinforcement — every value from POINT_VALUES */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Target className="h-5 w-5" />
             Actions That Move You Forward
           </CardTitle>
-          <CardDescription>Complete these actions to earn points and grow your business</CardDescription>
+          <CardDescription>What earns points, and exactly how many</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <Link href="/crm?contact_type=buyer">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <Home className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Complete a Showing</p>
-                <Badge variant="outline" className="mt-2">
-                  +50 pts
-                </Badge>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {POINT_EARNING_ACTIONS.map((a) => (
+              <div key={a.reason} className="p-4 rounded-lg border bg-card text-center">
+                <p className="font-medium text-sm">{a.label}</p>
+                <Badge variant="outline" className="mt-2">+{POINT_VALUES[a.reason]} pts</Badge>
               </div>
-            </Link>
-            <Link href="/dashboard/communications/inbox">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <MessageSquare className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Send a Follow-up</p>
-                <Badge variant="outline" className="mt-2">
-                  +10 pts
-                </Badge>
-              </div>
-            </Link>
-            <Link href="/referrals">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <Share2 className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Ask for a Referral</p>
-                <Badge variant="outline" className="mt-2">
-                  +200 pts
-                </Badge>
-              </div>
-            </Link>
-            <Link href="/academy">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <BookOpen className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Complete a Training</p>
-                <Badge variant="outline" className="mt-2">
-                  +25 pts
-                </Badge>
-              </div>
-            </Link>
-            <Link href="/dashboard/transactions">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <FileText className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Close a Deal</p>
-                <Badge variant="outline" className="mt-2">
-                  +500 pts
-                </Badge>
-              </div>
-            </Link>
-            <Link href="/dashboard/social">
-              <div className="p-4 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer text-center">
-                <Sparkles className="h-8 w-8 mx-auto mb-2 text-primary" />
-                <p className="font-medium text-sm">Post Social Content</p>
-                <Badge variant="outline" className="mt-2">
-                  +15 pts
-                </Badge>
-              </div>
-            </Link>
+            ))}
           </div>
         </CardContent>
       </Card>
 
-      {/* Section F: Challenge Panel */}
+      {/* Section F: Challenges — REAL rows, or nothing */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5" />
-            Weekly Challenges
-          </CardTitle>
-          <CardDescription>Complete these challenges to boost your performance</CardDescription>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5" />
+                Active Challenges
+              </CardTitle>
+              <CardDescription>Time-boxed competitions your brokerage is running</CardDescription>
+            </div>
+            <Link href="/dashboard/challenges">
+              <Button size="sm" variant="outline">All challenges</Button>
+            </Link>
+          </div>
         </CardHeader>
         <CardContent>
-          <div className="grid md:grid-cols-3 gap-4">
-            <div className="p-4 rounded-lg border bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950 dark:to-indigo-950">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-medium">Send 5 Follow-ups</span>
-                <Badge className="bg-blue-600">50 pts</Badge>
-              </div>
-              <Progress value={40} className="h-2 mb-2" />
-              <p className="text-sm text-muted-foreground mb-3">2 of 5 completed</p>
-              <Link href="/dashboard/communications/inbox">
-                <Button size="sm" className="w-full">
-                  Start Challenge
-                </Button>
-              </Link>
+          {challenges.length > 0 ? (
+            <div className="grid md:grid-cols-3 gap-4">
+              {challenges.map((c) => (
+                <div key={c.id} className="p-4 rounded-lg border bg-card">
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <span className="font-medium text-sm">{c.title}</span>
+                    {c.prizePoints > 0 && <Badge>{c.prizePoints} pts</Badge>}
+                  </div>
+                  <Progress
+                    value={c.leaderValue > 0 ? Math.min(100, Math.round((c.myValue / c.leaderValue) * 100)) : 0}
+                    className="h-2 mb-2"
+                  />
+                  <p className="text-sm text-muted-foreground mb-3">
+                    {c.youEnrolled
+                      ? `${c.myValue.toLocaleString()} ${c.metricLabel}${c.myRank ? ` · rank #${c.myRank}` : ""}`
+                      : "You are not enrolled yet"}
+                  </p>
+                  <Link href="/dashboard/challenges">
+                    <Button size="sm" className="w-full">
+                      {c.youEnrolled ? "View standings" : "Join"}
+                    </Button>
+                  </Link>
+                </div>
+              ))}
             </div>
-
-            <div className="p-4 rounded-lg border bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-medium">Complete 2 Tours</span>
-                <Badge className="bg-green-600">100 pts</Badge>
-              </div>
-              <Progress value={50} className="h-2 mb-2" />
-              <p className="text-sm text-muted-foreground mb-3">1 of 2 completed</p>
-              <Link href="/crm?contact_type=buyer">
-                <Button size="sm" className="w-full">
-                  Start Challenge
-                </Button>
-              </Link>
-            </div>
-
-            <div className="p-4 rounded-lg border bg-gradient-to-br from-purple-50 to-pink-50 dark:from-purple-950 dark:to-pink-950">
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-medium">Post 3 Social Items</span>
-                <Badge className="bg-purple-600">45 pts</Badge>
-              </div>
-              <Progress value={33} className="h-2 mb-2" />
-              <p className="text-sm text-muted-foreground mb-3">1 of 3 completed</p>
-              <Link href="/dashboard/social">
-                <Button size="sm" className="w-full">
-                  Start Challenge
-                </Button>
-              </Link>
-            </div>
-          </div>
+          ) : (
+            <p className="text-center text-muted-foreground py-6">
+              No challenge is running right now. Your broker can start one from the Challenges page.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

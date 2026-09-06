@@ -2,15 +2,22 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent } from "@/components/ui/card"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { ChevronLeft, ChevronRight, RefreshCw, CalendarClock, Loader2, CheckCircle2 } from "lucide-react"
-import { scheduleSmartFollowUps } from "@/app/actions/ai-calendar-management"
+// KEEP-ONE (§1, lane E6 2026-08-28): three of this shell's eight sources now go
+// through the canonical session-scoped readers the dashboard-data lane recorded
+// as survivors (lib/dashboard/data-survivors.ts) — getAppointments, getTasks,
+// getTours — instead of inline browser-client duplicates of them. The window
+// filters those inline reads carried were merged onto the survivors first.
+import { scheduleSmartFollowUps, getAppointments } from "@/app/actions/ai-calendar-management"
+import { getTasks } from "@/app/actions/tasks"
+import { getTours } from "@/app/actions/ai-showing-management"
 import { milestoneCalendarCategory } from "@/lib/transactions/milestone-identity"
 import { CalendarRoleFilterBar, type CalendarRole } from "./calendar-role-filter-bar"
 import { CalendarTimelineView } from "./calendar-timeline-view"
@@ -104,13 +111,9 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .lt("scheduled_at", endISO)
           .neq("status", "cancelled"),
 
-        // 2. Calendar events (ISA appointments, deadlines — filtered by brokerage)
-        supabase
-          .from("calendar_events")
-          .select("id, start_at, end_at, event_type, entity_type, entity_id, metadata, brokerage_id, timezone_name")
-          .eq("brokerage_id", brokerageId)
-          .gte("start_at", startISO)
-          .lt("start_at", endISO),
+        // 2. Calendar events (ISA appointments, deadlines) — the canonical
+        // reader derives the tenant from the SESSION and windows on start_at.
+        getAppointments({ startDate: startISO, endDate: endISO }),
 
         // 3. Open house events (correct table name)
         supabase
@@ -125,11 +128,23 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .lt("event_date", endISO),
 
         // 4. Transaction milestones with target_dates (inspection, appraisal, closing, deadline)
+        //
+        // transactions <-> contacts is joined by THREE foreign keys (contact_id,
+        // buyer_contact_id, seller_contact_id), and "!inner" is a JOIN TYPE, not a
+        // disambiguation hint — so the nested contacts embed was PGRST201 and the
+        // milestone lane of this calendar has always come back empty. The named
+        // constraint picks contact_id: the party the brokerage represents, which is
+        // the name a deadline reminder should carry. Do not simplify the hint away.
+        //
+        // The note lives ABOVE the statement on purpose. Inside the select it would
+        // be literal text sent to PostgREST, and between two chained calls it would
+        // end the contiguous chain the drift guard walks, quietly dropping this
+        // query from filter checking.
         supabase
           .from("transaction_milestones")
           .select(`
             id, milestone_type, milestone_name, title, target_date, status, transaction_id,
-            transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
+            transactions!inner(id, property_address, status, agent_id, contact_id, contacts!transactions_contact_id_fkey(first_name, last_name))
           `)
           .eq("transactions.agent_id", agentId)
           .eq("status", "pending")
@@ -137,14 +152,15 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .gte("target_date", start.toISOString().split("T")[0])
           .lte("target_date", end.toISOString().split("T")[0]),
 
-        // 5. Tasks with due dates
-        supabase
-          .from("tasks")
-          .select("*")
-          .eq("assigned_to_agent_id", agentId)
-          .gte("due_date", start.toISOString().split("T")[0])
-          .lte("due_date", end.toISOString().split("T")[0])
-          .neq("status", "completed"),
+        // 5. Tasks with due dates — the canonical reader re-derives the
+        // assignee from the session for non-admins; for a broker/admin the
+        // prop only NARROWS inside their own tenant. Completed tasks are
+        // filtered in the transform below (the old inline read's .neq).
+        getTasks({
+          assignedTo: agentId,
+          dueDateFrom: start.toISOString().split("T")[0],
+          dueDateTo: end.toISOString().split("T")[0],
+        }),
 
         // 6. Scheduled touchpoints / follow-ups
         // Note: scheduled_touchpoints has touchpoint_type, message_template (no purpose/priority)
@@ -160,17 +176,12 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .gte("scheduled_date", startISO)
           .lt("scheduled_date", endISO),
 
-        // 7. Tours (correct table name is tours, not buyer_tours)
-        supabase
-          .from("tours")
-          .select(`
-            id, tour_date, scheduled_at, status, notes,
-            contact_id,
-            contacts(first_name, last_name)
-          `)
-          .eq("agent_id", agentId)
-          .gte("tour_date", start.toISOString().split("T")[0])
-          .lte("tour_date", end.toISOString().split("T")[0]),
+        // 7. Tours — the canonical reader (same session-scoping rule as tasks
+        // above; the contacts embed this view needs was merged onto it).
+        getTours(agentId, {
+          from: start.toISOString().split("T")[0],
+          to: end.toISOString().split("T")[0],
+        }),
 
         // 8. Calendar blocks (prospecting/admin/personal/buffer time blocked via blockCalendarTime)
         supabase
@@ -182,6 +193,14 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       ])
 
       const unified: UnifiedCalendarEvent[] = []
+
+      // The three action-backed sources report refusals explicitly (the inline
+      // reads they replaced dropped the error, so a refusal rendered as an
+      // empty lane). No error surface exists on this shell, so the refusal is
+      // at least no longer silent in the console.
+      if (!calendarEventsRes.success) console.error("[calendar] appointments read refused:", calendarEventsRes.error)
+      if (!tasksRes.success) console.error("[calendar] tasks read refused:", tasksRes.error)
+      if (!toursRes.success) console.error("[calendar] tours read refused:", toursRes.error)
 
       // Transform showings
       showingsRes.data?.forEach((s: any) => {
@@ -204,7 +223,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       })
 
       // Transform calendar events (no title/location/agent_id columns — derive from metadata + event_type)
-      calendarEventsRes.data?.forEach((e: any) => {
+      ;(calendarEventsRes.success ? calendarEventsRes.appointments : [])?.forEach((e: any) => {
         const meta = (e.metadata as Record<string, unknown>) || {}
         const derivedTitle = (meta.title as string) || e.event_type?.replace(/_/g, " ") || "Calendar Event"
         unified.push({
@@ -266,8 +285,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform tasks
-      tasksRes.data?.forEach((task: any) => {
+      // Transform tasks (completed excluded here — parity with the retired
+      // inline read's .neq("status", "completed"))
+      ;(tasksRes.success ? tasksRes.tasks : [])
+        ?.filter((task: any) => task.status !== "completed")
+        .forEach((task: any) => {
         unified.push({
           id: task.id,
           title: task.title,
@@ -301,7 +323,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
       })
 
       // Transform tours (real table: tours, uses tour_date + scheduled_at)
-      toursRes.data?.forEach((tour: any) => {
+      ;((toursRes.success ? toursRes.tours : []) as any[])?.forEach((tour: any) => {
         const tourStart = tour.scheduled_at || `${tour.tour_date}T10:00:00`
         const tourEnd = new Date(new Date(tourStart).getTime() + 2 * 60 * 60000).toISOString()
         unified.push({

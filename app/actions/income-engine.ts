@@ -22,6 +22,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { analyzeIncomeGap } from "@/lib/income-engine/gap-analyzer"
 import { recommendActionsForAgent, type RecommendedAction } from "@/lib/income-engine/action-recommender"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function resolveAgentContext(): Promise<
   | { ok: true; userId: string; agentId: string; brokerageId: string }
@@ -92,8 +93,16 @@ export async function computeAndPersistGapAction(params?: {
   if (params?.agentId && params?.brokerageId) {
     const supabase = await createClient()
     const { data: profile } = await supabase
-      .from("users").select("user_type").eq("id", ctx.userId).maybeSingle()
-    if (!["superadmin", "super_admin"].includes(profile?.user_type ?? "")) {
+      .from("users").select("user_type, platform_role").eq("id", ctx.userId).maybeSingle()
+    // PLATFORM GATE: mirrors requirePlatformSuperadmin (lib/kernel/api-auth.ts).
+    // The old ["superadmin","super_admin"] user_type test admitted NOBODY — 0 live
+    // rows store either spelling; the platform's one superadmin is
+    // (user_type='admin', platform_role='superadmin'), so the override this gate
+    // exists to allow was unreachable. Dual-column check fixes that; 'super_admin'
+    // is dropped (not a storable user_type at all).
+    // ONE DEFINITION (ruling 1, 2026-08-24) — survivor:
+    // lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+    if (!isPlatformSuperadminIdentity(profile?.user_type, (profile as any)?.platform_role)) {
       return { ok: false, error: "Forbidden: only superadmin may override agentId/brokerageId" }
     }
     agentId     = params.agentId
@@ -110,7 +119,11 @@ export async function computeAndPersistGapAction(params?: {
   const gap = await analyzeIncomeGap({ agentId, userId, brokerageId })
 
   // 2. Generate ranked actions
-  const actions = await recommendActionsForAgent({ agentId, brokerageId, gap, maxActions: 5 })
+  // BOTH ids: contacts/transactions/listings key on agents.id, while the
+  // lifetime NPV ledger keys on users.id. Passing only agentId made the
+  // sphere-nurture rule filter a users.id column with an agents.id and
+  // silently return nothing.
+  const actions = await recommendActionsForAgent({ agentId, agentUserId: userId, brokerageId, gap, maxActions: 5 })
 
   // 3. Persist (upsert by (agent_id, analysis_date))
   const svc = createServiceClient()
@@ -236,7 +249,12 @@ export async function dismissRecommendedActionAction(params: {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
+  // actionId belonging to a DIFFERENT agent matched zero rows, came back with
+  // error === null, and was reported as { ok: true } — the agent was told the
+  // recommendation was dismissed when nothing was written, and it reappeared on
+  // the next load with no explanation.
+  const { data: touched, error } = await svc
     .from("income_gap_recommended_actions")
     .update({
       status:            "dismissed",
@@ -245,7 +263,11 @@ export async function dismissRecommendedActionAction(params: {
     })
     .eq("id", params.actionId)
     .eq("agent_id", ctx.agentId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!touched || touched.length === 0) {
+    return { ok: false, error: "That recommendation is not yours, or no longer exists." }
+  }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
 }
@@ -257,7 +279,12 @@ export async function completeRecommendedActionAction(params: {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
+  // actionId belonging to a DIFFERENT agent matched zero rows, came back with
+  // error === null, and was reported as { ok: true } — the agent was told the
+  // recommendation was completed when nothing was written, and it reappeared on
+  // the next load with no explanation.
+  const { data: touched, error } = await svc
     .from("income_gap_recommended_actions")
     .update({
       status:            "completed",
@@ -266,7 +293,11 @@ export async function completeRecommendedActionAction(params: {
     })
     .eq("id", params.actionId)
     .eq("agent_id", ctx.agentId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!touched || touched.length === 0) {
+    return { ok: false, error: "That recommendation is not yours, or no longer exists." }
+  }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
 }

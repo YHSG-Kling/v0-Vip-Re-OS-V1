@@ -31,7 +31,9 @@
  */
 
 import "server-only"
+import { latestByContact } from "./current"
 import { createServiceClient } from "@/lib/supabase/service"
+import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
 // ─── Tunables (in one place so the model can be refined per brokerage) ────
 
@@ -143,7 +145,10 @@ export async function scoreContactNpv(input: {
       .select("id, opportunity_type, monthly_savings_estimate, one_time_proceeds_estimate, status")
       .eq("contact_id", input.contactId)
       .eq("brokerage_id", input.brokerageId)
-      .in("status", ["new", "pushed", "reviewed", "acknowledged"]),
+      // open | presented | reviewed — the live CHECK vocabulary. This asked for
+      // new/pushed/acknowledged, none of which the column admits, so the wealth
+      // signal contributed exactly zero to every score.
+      .in("status", [...WEALTH_ACTIVE_STATUSES]),
   ])
 
   const contact = contactRes.data
@@ -279,10 +284,24 @@ export async function scoreContactNpv(input: {
   const previousScore: number | null = prev?.npv_score ?? null
   const scoreDelta = previousScore != null ? npvScore - Number(previousScore) : null
 
+  // IDENTITY CLASS — and the direction REVERSED with m366.
+  //
+  // The original defect: contacts.agent_id is an AGENTS id and
+  // lifetime_customer_npv_scores.agent_id FK'd USERS, so writing one into the
+  // other was a foreign-key violation, verified live, and the Lifetime Customer
+  // ledger could never hold a row. The fix then was to resolve agents->users.
+  //
+  // m366 re-pointed that column to agents(id) — verified live against
+  // pg_constraint. So the resolve is now the thing that breaks it: it would
+  // hand a users id to a column that FKs agents, re-creating the exact rejection
+  // it was added to cure. contacts.agent_id already IS the value this column
+  // wants, and no crossing is needed at all.
+  const ownerAgentId = (contact.agent_id as string | null) ?? null
+
   const result: NpvScoreResult = {
     contactId:   input.contactId,
     brokerageId: input.brokerageId,
-    agentId:     (contact.agent_id as string | null) ?? null,
+    agentId:     ownerAgentId,
     npvScore,
     npvDollars,
     tier,
@@ -364,18 +383,17 @@ export async function projectAgentSphereReferralValue(input: {
     .order("computed_at", { ascending: false })
     .limit(5000)
 
-  const latestByContact = new Map<string, { npv_dollars: number; tier: NpvTier }>()
-  for (const r of (rows ?? []) as Array<{ contact_id: string; npv_dollars: number; tier: NpvTier }>) {
-    if (!latestByContact.has(r.contact_id)) {
-      latestByContact.set(r.contact_id, { npv_dollars: r.npv_dollars, tier: r.tier })
-    }
-  }
+  // One shared newest-per-contact rule (./current) — this ledger is append-only,
+  // and the income engine's copy of this logic was the one that got it wrong.
+  const current = latestByContact(
+    (rows ?? []) as Array<{ contact_id: string; npv_dollars: number; tier: NpvTier; computed_at?: string }>,
+  )
 
   // Pro-rate the 5-year NPV $ to the requested horizon and apply the tier's
   // annual referral rate as the conversion probability per year.
   const fraction = horizonDays / 365
   let expected = 0
-  for (const { npv_dollars, tier } of latestByContact.values()) {
+  for (const { npv_dollars, tier } of current) {
     const annualRate = ANNUAL_REFERRAL_RATE[tier]
     expected += (Number(npv_dollars) / HORIZON_YEARS) * fraction * Math.min(annualRate, 1.0)
   }

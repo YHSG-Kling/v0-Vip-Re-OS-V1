@@ -18,7 +18,9 @@
  * Run: npx tsx scripts/orphan-write-sweep.ts  (npm run test:orphan-writes)
  * Tighten: GUARD_WRITE_BASELINE=1 npx tsx scripts/orphan-write-sweep.ts
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
+import { stripComments } from "./strip-comments"
 import { join } from "node:path"
 
 const BASELINE = join(process.cwd(), "scripts/orphan-write-baseline.json")
@@ -35,7 +37,6 @@ const AUDIT_EXEMPT: Record<string, string> = {
   // ── Telemetry / debugging ledgers ──
   agent_assistant_tool_calls: "assistant tool-call telemetry (debugging/analytics)",
   ai_usage_log: "LLM token/cost record — billing & cost reconciliation export",
-  assistant_queries: "assistant usage telemetry (debugging/analytics)",
   automation_logs: "automation-execution forensics (debugging)",
   event_processing_log: "orchestrator event replay/debugging ledger",
   workflow_webhook_events: "inbound webhook receipt — replay/debugging",
@@ -71,18 +72,22 @@ const RPC_READERS: Record<string, string> = {
   contact_memory: "contact_memory_recall", // lib/agents/contact-memory.ts recallContactMemory
 }
 
-function walk(dir: string, acc: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".next" || name === ".git") continue
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) walk(p, acc)
-    else if (/\.(ts|tsx)$/.test(name)) acc.push(p)
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This sweep decides whether a column is WRITTEN WITH NO READER. A file it cannot
+// open makes a real reader invisible, so the finding is a false accusation — and
+// `proxy.ts`, the edge middleware, reads four tables on every request while being
+// outside the corpus, because `walk()` enumerated DIRECTORIES and a root FILE is
+// not a directory. `rootRuntimeFiles()` from the same survivor supplies them.
 
 function main() {
-  const files: string[] = []
-  for (const d of ["app", "lib"]) { try { walk(join(process.cwd(), d), files) } catch {} }
+  const files: string[] = [
+    ...walkTs(join(process.cwd(), "app")),
+    ...walkTs(join(process.cwd(), "lib")),
+    ...rootRuntimeFiles(process.cwd()),
+  ]
 
   const writers = new Map<string, Set<string>>()
   const readers = new Set<string>()
@@ -92,7 +97,16 @@ function main() {
   const EMBED_TABLE = /(?:^|[,\s(])(?:[a-z_][a-z0-9_]*:)?([a-z_][a-z0-9_]*)\s*(?:!\w+)?\(/g
 
   for (const f of files) {
-    const s = readFileSync(f, "utf8")
+    // STRIPPED source (CLAUDE.md §2): this scan hunts code tokens
+    // (.from / .select / .insert), so comments must not count. Read raw, the
+    // fixed window below is eaten by prose — found live 2026-08-28 when five
+    // comment lines sitting between `.from("tool_usage_sessions")` and its
+    // `.select(` in app/actions/analytics.ts (565 chars of annotation) pushed
+    // the verb past the window and this sweep accused a table WITH a wired
+    // reader of being write-only. Same class as the round-11 widening: the
+    // window measures distance in characters, so only code characters may
+    // count toward it.
+    const s = stripComments(readFileSync(f, "utf8"))
     let m: RegExpExecArray | null
     while ((m = FROM.exec(s))) {
       const table = m[1]

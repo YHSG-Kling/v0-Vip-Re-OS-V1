@@ -33,8 +33,11 @@ export default async function DealHealthDashboardPage() {
 
   if (!userRecord?.brokerage_id) redirect("/dashboard/onboarding")
 
-  // Gate to broker/admin/manager/tc roles (or platform superadmin)
-  const allowedRoles = ["broker", "broker_owner", "admin", "manager", "tc", "superadmin"]
+  // Gate to broker/admin/manager/tc roles (or platform superadmin via the
+  // platform_role clause below).
+  // SCOPE LADDER (kept inline — admits tc): 'superadmin' removed — dead as
+  // users.user_type (0 live rows store it).
+  const allowedRoles = ["broker", "broker_owner", "broker_admin", "admin", "tc"]
   if (!allowedRoles.includes(userRecord.user_type ?? "") && userRecord.platform_role !== "superadmin") {
     redirect("/dashboard")
   }

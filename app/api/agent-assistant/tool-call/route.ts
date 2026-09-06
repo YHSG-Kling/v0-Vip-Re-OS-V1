@@ -31,6 +31,10 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { CONTACT_STATUSES, canonicalContactStatus } from "@/lib/contact-promotion/qualification"
+import type { ComplianceGate } from "@/lib/voice/tool-registry"
 
 export const runtime = "nodejs"
 
@@ -43,6 +47,13 @@ interface ToolCallBody {
   tool?: string
   args?: Record<string, unknown>
 }
+
+/** How far back the unattributed-session fallback may reach. The session row is
+ *  created inside the same click that starts the Conv-AI conversation, so the
+ *  first tool call follows it by seconds; this is generous enough for a slow
+ *  provider handshake and short enough that a session left open by a crashed
+ *  tab is never mistaken for the live one. */
+const SESSION_ATTRIBUTION_WINDOW_MS = 15 * 60 * 1000
 
 type SessionRow = {
   id: string
@@ -100,11 +111,22 @@ export async function POST(request: NextRequest) {
     // tool call). This is best-effort — a defensive secondary match would
     // tie the conversation to the user via cookie/jwt if we had one, but the
     // webhook is unauthenticated by design.
+    // AGE BOUND. `ended_at` now has a writer (the overlay PATCHes
+    // /api/agent-assistant/session on teardown), but a crashed tab or a killed
+    // browser still leaves a row open, and "the most recent open session" with
+    // no user predicate is the whole attribution here. A session older than the
+    // window below cannot be the one whose first tool call is arriving now —
+    // sessions are created SECONDS before it — so an abandoned row is no longer
+    // a candidate owner for somebody else's conversation. Better to fail to
+    // attribute (the caller is told to re-open the assistant) than to attribute
+    // to the wrong staff user.
+    const attributionFloor = new Date(Date.now() - SESSION_ATTRIBUTION_WINDOW_MS).toISOString()
     const { data: pending } = await supabase
       .from("agent_assistant_sessions")
       .select("id, brokerage_id, agent_id, user_id, conversation_id, tool_call_count")
       .is("conversation_id", null)
       .is("ended_at", null)
+      .gte("started_at", attributionFloor)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -121,24 +143,48 @@ export async function POST(request: NextRequest) {
     return jsonToolError("Session not found — try ending and re-opening the assistant.")
   }
 
-  // ── Per-intent role gate ───────────────────────────────────────────────
+  // ── GATE FIRST (CLAUDE.md §4) — registry → authority → declared gates → dispatch ──
   // VOICE ACCESS POLICY (owner): expanding the voice SURFACE to more staff
   // roles never widens per-intent permissions — every tool call is checked
   // against the canonical tool-registry authority for the session user's
   // role (agent sessions pass exactly as before; an expanded TC/compliance
   // session only gets the intents its role gates already permit).
+  //
+  // Three fail-open shapes this block used to carry, each closed here:
+  //   1. `if (voiceTools[toolName])` — a tool ABSENT from the registry skipped
+  //      the role gate entirely and went straight to runTool. run_team_command
+  //      (the bridge to every team command) was exactly that. An unregistered
+  //      name is now REFUSED before dispatch; the registry is the door.
+  //   2. `?? "agent"` — a missing or refused `users` read defaulted the caller
+  //      to agent. A role that cannot be read is a role that cannot be gated:
+  //      refuse, and say why.
+  //   3. The registry DECLARES each tool's gates (`gates: [...]`) and nothing
+  //      read them — four handlers re-implemented entity_owner by hand and the
+  //      rest trusted their backend. The IDENTITY gates (entity_owner,
+  //      assigned_party) are resolvable from session + params before the tool
+  //      runs, so they are resolved here, first. The CONTENT gates
+  //      (evaluate_outbound, tcpa_outbound, dnc_check, active_bba, ai_fair_use)
+  //      and service_role need the message/artifact the tool builds, so they
+  //      stay with the backends — named in `deferredToHandler`, never assumed.
   {
-    const { voiceTools, authorityAllows } = await import("@/lib/voice/tool-registry")
-    if (voiceTools[toolName]) {
-      const { data: sessionUser } = await supabase
-        .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
-      const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? "agent"
-      if (!authorityAllows(toolName, sessionUserType)) {
-        return jsonToolError(
-          `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
-        )
-      }
+    const { getVoiceTool, gatesFor, authorityAllows } = await import("@/lib/voice/tool-registry")
+    const tool = getVoiceTool(toolName)
+    if (!tool) {
+      return jsonToolError(`"${toolName.replace(/_/g, " ")}" isn't a registered voice tool, so I can't run it.`)
     }
+    const { data: sessionUser, error: sessionUserErr } = await supabase
+      .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
+    const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? null
+    if (sessionUserErr || !sessionUserType) {
+      return jsonToolError("I couldn't verify your role for that action — try re-opening the assistant.")
+    }
+    if (!authorityAllows(toolName, sessionUserType)) {
+      return jsonToolError(
+        `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
+      )
+    }
+    const preflight = await preflightDeclaredGates(gatesFor(toolName), params, session, supabase)
+    if (!preflight.ok) return jsonToolError(preflight.error)
   }
 
   // ── Dispatch ───────────────────────────────────────────────────────────
@@ -158,6 +204,13 @@ export async function POST(request: NextRequest) {
   // ── Audit log + counter ────────────────────────────────────────────────
   await Promise.all([
     supabase.from("agent_assistant_tool_calls").insert({
+      // Tenant comes from the agent_assistant_sessions row this call hangs off
+      // (session.brokerage_id) — NOT from caller context: this webhook is
+      // authenticated by a shared ElevenLabs secret, so there is no session
+      // cookie or JWT and no ambient tenant to read. Unstamped, the audit row
+      // would be readable AND writable by every brokerage, because the table's
+      // policy is `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()`.
+      brokerage_id: session.brokerage_id,
       session_id: session.id,
       tool_name: toolName,
       tool_input: params,
@@ -175,6 +228,73 @@ export async function POST(request: NextRequest) {
   // ElevenLabs accepts string or object as the tool response; we return the
   // tool's structured result so the LLM can quote details verbatim.
   return NextResponse.json({ result })
+}
+
+// ─── Declared-gate preflight — the registry's `gates` read BEFORE dispatch ─────
+//
+// Resolves the gates that are a pure function of (session, params) — who the
+// speaker is and whether the tenant / the vendor grant reaches the named row.
+// Every read destructures `error` (§3): a refused lookup is a refusal, not an
+// absent row. An ABSENT target id passes through: the handler owns the
+// "Which buyer?" clarification, and there is nothing to own yet.
+
+type GatePreflight =
+  | { ok: true; deferredToHandler: ComplianceGate[] }
+  | { ok: false; error: string }
+
+async function preflightDeclaredGates(
+  gates: ComplianceGate[],
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<GatePreflight> {
+  const deferredToHandler: ComplianceGate[] = []
+  for (const gate of gates) {
+    switch (gate) {
+      case "entity_owner": {
+        // The session's brokerage must OWN the target row. Contact ids and
+        // listing ids live in different tables — check whichever the params name.
+        const contactId = String(params.contact_id ?? params.buyer_id ?? params.seller_contact_id ?? "").trim()
+        const listingId = String(params.listing_id ?? params.listingId ?? "").trim()
+        if (contactId) {
+          const { data: ct, error } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+          if (error) return { ok: false, error: "I couldn't verify that contact belongs to your brokerage." }
+          if (!ct || (ct as { brokerage_id?: string | null }).brokerage_id !== session.brokerage_id) {
+            return { ok: false, error: "That contact isn't in your brokerage." }
+          }
+        }
+        if (listingId) {
+          const { data: lst, error } = await supabase.from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
+          if (error) return { ok: false, error: "I couldn't verify that listing belongs to your brokerage." }
+          if (!lst || (lst as { brokerage_id?: string | null }).brokerage_id !== session.brokerage_id) {
+            return { ok: false, error: "That listing isn't in your brokerage." }
+          }
+        }
+        break
+      }
+      case "assigned_party": {
+        // A vendor/lender USER reaches a contact only through an ACTIVE,
+        // unexpired vendor_contact_assignment (lib/vendor/assignment-access).
+        // The only assigned_party tool today confirms FINANCIALS, so the
+        // financial scope is required; the handler re-asserts inside the
+        // library call (defence in depth, not a second vocabulary).
+        const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+        if (contactId) {
+          const { assertVendorAssignedToContact } = await import("@/lib/vendor/assignment-access")
+          const check = await assertVendorAssignedToContact(supabase, {
+            vendorUserId: session.user_id,
+            contactId,
+            requiredScopes: ["financial"],
+          })
+          if (!check.ok) return { ok: false, error: check.error ?? "You're not assigned to that contact." }
+        }
+        break
+      }
+      default:
+        deferredToHandler.push(gate)
+    }
+  }
+  return { ok: true, deferredToHandler }
 }
 
 // ─── run_team_command — bridge the voice overlay to the shared team-command router ──
@@ -265,6 +385,176 @@ async function runTool(
 
     case "run_team_command":
       return runTeamCommandTool(String(params.command ?? "").trim(), session, supabase)
+
+    // ── Stack A fold-in (phase 4): read-only status queries, entity_owner-gated ──
+    case "query_listing_status": {
+      // entity_owner gate — the session's brokerage must own the listing (Stack A's
+      // validateListingAccess, ported into the canonical dispatch path). Without
+      // this, getListingCurrentStage(listingId) would read ANY brokerage's listing.
+      const listingId = String(params.listing_id ?? params.listingId ?? "").trim()
+      if (!listingId) return { error: "Which listing? I need the listing to check its stage." }
+      const { data: lst } = await supabase.from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
+      if (!lst || (lst as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That listing isn't in your brokerage." }
+      }
+      // Read the stage through the passed-in SERVICE client (brokerage-scoped
+      // manually above) — NOT the getListingCurrentStage server action, which
+      // builds a cookie-based RLS client. This webhook is unauthenticated
+      // (secret-header only, no Supabase user session), so an RLS client has no
+      // auth.uid() and the activities SELECT returns zero rows → always null.
+      const { getCurrentLifecycleStage } = await import("@/lib/listing-lifecycle")
+      const currentStage = await getCurrentLifecycleStage(supabase, listingId)
+      return { success: true, currentStage }
+    }
+
+    case "query_buyer_stage": {
+      // entity_owner gate — the session's brokerage must own the contact.
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact to check their journey." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      // Read the journey through the LIBRARY function, NOT the getBuyerJourney server
+      // action. Wave 3 gated that action on requireContactAccess, which builds a
+      // cookie-based Supabase client — and this webhook has no cookie session at all
+      // (secret header + agent_assistant_sessions lookup, by design, same as
+      // query_listing_status above). Calling the action would turn the voice lane away
+      // with "Unauthorized" on every buyer question.
+      //
+      // This is NOT a hole and NOT a fake identity: the speaker is the REAL user on the
+      // session row, and the tenant check the action would have done — contact's
+      // brokerage vs. caller's brokerage — is the entity_owner gate performed six lines
+      // above against session.brokerage_id. Same two facts, resolved the way this lane
+      // can resolve them.
+      const { getBuyerJourneyStatus, getBuyerFriendlyMessage } = await import("@/lib/buyer-execution")
+      const journey = await getBuyerJourneyStatus({
+        contactId,
+        userId: session.user_id,
+        source: "voice_assistant",
+      })
+      if (!journey.success || !journey.status) {
+        return { error: journey.error ?? "Could not read that buyer's journey." }
+      }
+      return { success: true, journey: journey.status, message: getBuyerFriendlyMessage(journey.status) }
+    }
+
+    // ── Vendor/lender lane: lender confirms a buyer's financing by voice ──
+    // The per-role reach is enforced above (authorityAllows('vendor')); the
+    // per-CONTACT grant + financial scope is enforced INSIDE the executor
+    // (assertVendorAssignedToContact). Because it flips the financing gate, the
+    // dispatcher requires an explicit spoken confirm FIRST — the AI reads the
+    // amount back and only re-calls with confirm:true. Nothing changes state on
+    // the first utterance. (Human-in-the-loop, deliberately.)
+    case "lender_confirm_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact whose financing you're confirming." }
+      const rawType = String(params.verification_type ?? "preapproval").trim()
+      const verificationType = (["preapproval", "proof_of_funds", "lender_intro"].includes(rawType)
+        ? rawType
+        : "preapproval") as "preapproval" | "proof_of_funds" | "lender_intro"
+      const approvedAmount = params.approved_amount != null ? Number(params.approved_amount) : undefined
+
+      // Human-in-the-loop: require an explicit confirm before the state change.
+      const confirmRaw = String(params.confirm ?? "").toLowerCase()
+      const confirmed = params.confirm === true || confirmRaw === "true" || confirmRaw === "yes"
+      if (!confirmed) {
+        const amt = approvedAmount != null ? `$${approvedAmount.toLocaleString()}` : "the stated amount"
+        return {
+          needs_confirmation: true,
+          spoken_summary: `Just to confirm — mark this buyer's ${verificationType.replace(/_/g, " ")} as verified for ${amt}? Say "confirm" and I'll record it. Nothing changes until you do.`,
+        }
+      }
+
+      // Library function, not the server action — the action is now gated on
+      // requireContactAccess (a cookie-session client) and this webhook has no cookie
+      // session. The authority that matters here is unchanged and lives INSIDE the
+      // library function: it proves the actor's user_type is lender/vendor and that
+      // they hold a vendor_contact_assignment for this contact with 'financial' scope
+      // (assertVendorAssignedToContact). session.user_id is the real speaker from the
+      // agent_assistant_sessions row, never anything the caller said.
+      const { lenderConfirmFinancialVerification } = await import("@/lib/buyer-execution")
+      const res = await lenderConfirmFinancialVerification({
+        contactId,
+        lenderId: session.user_id,          // the acting lender/vendor USER
+        verificationType,
+        metadata: {
+          approvedAmount,
+          loanType: params.loan_type ? String(params.loan_type) : undefined,
+          interestRate: params.interest_rate != null ? Number(params.interest_rate) : undefined,
+          lenderName: params.lender_name ? String(params.lender_name) : undefined,
+          notes: params.notes ? String(params.notes) : undefined,
+        },
+      })
+      if (!("success" in res) || !res.success) {
+        return { error: (res as { error?: string }).error ?? "Could not confirm financing." }
+      }
+      return {
+        success: true,
+        spoken_summary: `Done — the buyer's ${verificationType.replace(/_/g, " ")} is recorded as verified. The agent's deal file and the financing gate are updated.`,
+      }
+    }
+
+    // ── Staff financial lane: the brokerage's OWN staff read/record buyer
+    //    financials for their OWN contacts. Authority 'financial_staff' is
+    //    enforced above; the entity_owner gate (contact in the session's
+    //    brokerage) is enforced here — the agent/TC/compliance path that does
+    //    NOT require an assigned lender. ──
+    case "get_buyer_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact to check their financing." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      const { getBuyerFinancialStatus } = await import("@/app/actions/buyer-lifecycle-core")
+      const status = await getBuyerFinancialStatus(contactId)
+      return { success: true, financials: status }
+    }
+
+    case "confirm_buyer_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact whose financing you're recording." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      const rawType = String(params.verification_type ?? "preapproval").trim()
+      const verificationType = (["preapproval", "proof_of_funds", "lender_intro", "agent_confirmation"].includes(rawType)
+        ? rawType
+        : "preapproval") as "preapproval" | "proof_of_funds" | "lender_intro" | "agent_confirmation"
+      const approvedAmount = params.approved_amount != null ? Number(params.approved_amount) : undefined
+
+      // Human-in-the-loop: require an explicit confirm before the state change.
+      const confirmRaw = String(params.confirm ?? "").toLowerCase()
+      const confirmed = params.confirm === true || confirmRaw === "true" || confirmRaw === "yes"
+      if (!confirmed) {
+        const amt = approvedAmount != null ? `$${approvedAmount.toLocaleString()}` : "the stated amount"
+        return {
+          needs_confirmation: true,
+          spoken_summary: `Just to confirm — record this buyer's ${verificationType.replace(/_/g, " ")} as verified for ${amt}? Say "confirm" and I'll log it. Nothing changes until you do.`,
+        }
+      }
+
+      const { recordBuyerFinancialVerification } = await import("@/app/actions/buyer-lifecycle-core")
+      const res = await recordBuyerFinancialVerification({
+        contactId,
+        verificationType,
+        userId: session.user_id,          // the acting staff member
+        metadata: {
+          lender_name: params.lender_name ? String(params.lender_name) : undefined,
+          pre_approval_amount: approvedAmount,
+          recorded_via: "voice_assistant",
+        },
+      })
+      if (!res.success) {
+        return { error: res.error ?? "Could not record financing." }
+      }
+      return {
+        success: true,
+        spoken_summary: `Done — the buyer's ${verificationType.replace(/_/g, " ")} is recorded as verified. The deal file and the financing gate are updated.`,
+      }
+    }
 
     case "get_active_listings":
       return getActiveListings(session, supabase)
@@ -615,7 +905,13 @@ async function stageListingPacket(
     const { extractListingIntake } = await import("@/lib/workflow/intake/voice-to-listing")
     const { fillListingPacket }    = await import("@/lib/workflow/intake/form-fill-engine")
 
-    const extracted = await extractListingIntake({ text: voiceInput })
+    const extracted = await extractListingIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
     const state = extracted.intake.propertyState.value
 
     if (!state) {
@@ -653,6 +949,30 @@ async function stageListingPacket(
       .maybeSingle()
 
     if (error || !doc) return { error: error?.message ?? "Could not create listing document" }
+
+    // ── THE E&O AUDIT OF WHAT THE MODEL FILLED ───────────────────────────────
+    //
+    // The two in-app doors onto this same pipeline —
+    // app/actions/voice-assistant/draft-listing-from-voice.ts:190 and
+    // draft-offer-from-voice.ts:295 — both call recordAIFill after the packet is
+    // assembled, and this webhook did not. Same fillListingPacket, same
+    // documents row, same legal packet: the only difference was that a listing
+    // agreement staged from a PHONE CALL left no record of which fields the
+    // model wrote, so the FormWizard's review tab (getDocumentAudit) showed an
+    // empty audit and an E&O question about it had no answer. That is not a
+    // second implementation to merge — this door's auth model, its tenant
+    // resolution and its post-call email hand-off are all genuinely different —
+    // it is the audit half of the SAME engine that was never wired to it.
+    //
+    // Best-effort, exactly as on the other two lanes: a failed audit write must
+    // not lose the staged packet the agent is about to be emailed. It is never
+    // silent — an unwritten audit row is a fill nobody can account for.
+    try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch (auditErr) {
+      console.error("[voice/stageListingPacket] recordAIFill failed (non-blocking):", auditErr)
+    }
 
     // Post-call hand-off: email the agent with the review link. Same pattern
     // as stageOfferPacket — voice tells them "I've emailed you the link",
@@ -787,7 +1107,13 @@ async function stageOfferPacket(
     const { extractOfferIntake } = await import("@/lib/workflow/intake/voice-to-offer")
     const { fillOfferPacket } = await import("@/lib/workflow/intake/form-fill-engine")
 
-    const extracted = await extractOfferIntake({ text: voiceInput })
+    const extracted = await extractOfferIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
     const state = extracted.intake.propertyState.value
     if (!state) {
       return {
@@ -830,6 +1156,17 @@ async function stageOfferPacket(
       .select("id")
       .maybeSingle()
     if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
+
+    // THE E&O AUDIT — see the note on the listing branch above. Both in-app
+    // doors onto this pipeline record which fields the model filled; this
+    // webhook did not, so an offer staged from a phone call reached the
+    // FormWizard with an empty audit trail.
+    try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch (auditErr) {
+      console.error("[voice/stageOfferPacket] recordAIFill failed (non-blocking):", auditErr)
+    }
 
     // Also create the canonical `offers` row so the post-signed chain
     // (compliance.passed → recordSellerResponse → convertOfferToTransaction)
@@ -988,7 +1325,13 @@ async function stageBBAPacket(
 
   try {
     const { extractBBAIntake } = await import("@/lib/workflow/intake/voice-to-bba")
-    const extracted = await extractBBAIntake({ text: voiceInput })
+    const extracted = await extractBBAIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
 
     if (!extracted.readyToDraft) {
       // AI must capture more before drafting — return the missing questions
@@ -1281,10 +1624,13 @@ async function logActivity(
   if (error || !data) return { error: error?.message ?? "Failed to log activity" }
 
   // Bump contacts.last_contacted_at so the CRM reflects the touchpoint.
-  await supabase
-    .from("contacts")
-    .update({ last_contacted_at: new Date().toISOString() })
-    .eq("id", contactId)
+  await bestEffort(
+    supabase
+      .from("contacts")
+      .update({ last_contacted_at: new Date().toISOString() })
+      .eq("id", contactId),
+    "recency stamp mirroring the activities row that was just inserted AND error-checked above; the activity is the record of the touchpoint, this only keeps the CRM's 'last touched' column agreeing with it",
+  )
 
   // Surface the spoken action on the manager bus → the Command Center's "managers talking".
   const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
@@ -1485,7 +1831,7 @@ async function getTransactionsInProgress(
     .from("transactions")
     .select("id, deal_name, status, stage, property_address, close_date, contact_id, purchase_price")
     .eq("agent_id", session.agent_id)
-    .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing_prep"])
+    .in("status", ["under_contract"])
     .is("deleted_at", null)
     .order("close_date", { ascending: true })
     .limit(10)
@@ -1530,9 +1876,23 @@ async function updateContactStatus(
 ) {
   if (!contactId || !status) return { error: "contact_id + status required" }
 
+  // VOCABULARY GATE (2026-08-31). This status arrives from a model-composed
+  // tool call (the ElevenLabs tool description even suggests 'cold'/'closed'/
+  // 'unsubscribed', none of which contacts.status carries). The m587 CHECK
+  // refuses out-of-vocabulary writes at the database, and supabase-js RESOLVES
+  // that refusal (§3) — so without this gate the voice agent would tell the
+  // user "done" while nothing moved. canonicalContactStatus is the tolerant
+  // reader (maps retired spellings like 'nurturing'/'hot_lead' onto their
+  // survivors); an unmappable value is refused WITH the vocabulary named, so
+  // the agent can re-ask instead of guessing.
+  const canonicalStatus = canonicalContactStatus(status)
+  if (!canonicalStatus) {
+    return { error: `"${status}" is not a contact status. Valid statuses: ${CONTACT_STATUSES.join(", ")}.` }
+  }
+
   const { data, error } = await supabase
     .from("contacts")
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({ status: canonicalStatus, updated_at: new Date().toISOString() })
     .eq("id", contactId)
     .eq("brokerage_id", session.brokerage_id)
     .select("id, first_name, last_name, status")
@@ -2136,7 +2496,9 @@ async function dispatchTransactionPacket(
       ? "BBA + Offer packet"
       : bba ? "Buyer Broker Agreement" : "Offer packet",
     transactionType: "purchase",
-    agentId:         contact.agent_id ?? session.user_id,
+    // The agentId this used to pass is gone from CreateTransactionRequest (m374):
+    // all six providers scope the transaction by the account in their own
+    // credentials, so there was never an id for this caller to supply.
     contactId,
   })
   if (!txReq.success || !txReq.externalTransactionId) {
@@ -2493,8 +2855,7 @@ async function requireContactOwnership(
     .maybeSingle()
   const userType = (actingUser?.user_type ?? "") as string
 
-  const OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-  if (OVERRIDE_ROLES.has(userType)) return { ok: true }
+if (isAdminOrBroker({ user_type: userType })) return { ok: true }
 
   // Plain agents may only act on their own contacts (session.agent_id is
   // the agents.id row; contact.agent_id FKs agents.id).

@@ -73,8 +73,26 @@ export function tierCapabilities(tier: string | null | undefined): TierCapabilit
  * preferred/featured until they're current again. `active`/`trialing` use the paid tier as-is.
  */
 export function effectiveCapabilities(tier: string | null | undefined, status: string | null | undefined): TierCapabilities {
-  const s = (status ?? "active").toLowerCase()
-  if (s === "canceled" || s === "past_due") return VENDOR_TIERS.basic
+  // ── THROUGH THE SHARED NORMALIZER, NOT A RAW STRING COMPARE (wave 26) ──────
+  // This used to lowercase the raw status and test it against the literals
+  // "canceled" / "past_due". That misses two live spellings:
+  //
+  //   · "cancelled" — TWO Ls. lib/billing/stripe-status.ts documents that the
+  //     STORED spelling is 'cancelled' (the subscriptions CHECK admits
+  //     active|past_due|cancelled|trialing|paused) while Stripe EMITS 'canceled'
+  //     with one. A row carrying the stored spelling fell through this test, so
+  //     a cancelled vendor kept premium surfacing, preferred-list and featured
+  //     eligibility — the paywall simply did not fire.
+  //   · "unpaid" / "incomplete" / "incomplete_expired" — Stripe statuses that
+  //     mean not-paying and were not named here at all.
+  //
+  // normalizeStripeStatus is already imported in this file and already used by
+  // mapStripeEventToStatus below; the two halves of one file were classifying
+  // Stripe status two different ways (§6). `incomplete` is folded in with the
+  // other non-paying states: an initial invoice that never succeeded is not a
+  // paid tier.
+  const c = normalizeStripeStatus(status ?? "active")
+  if (c === "canceled" || c === "past_due" || c === "incomplete") return VENDOR_TIERS.basic
   return tierCapabilities(tier)
 }
 

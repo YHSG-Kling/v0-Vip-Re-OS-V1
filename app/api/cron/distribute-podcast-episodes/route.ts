@@ -367,17 +367,21 @@ async function distributeToChannel(
   }
 
   const supabase = createServiceClient()
-  // Resolve the episode host's user for the ownership cascade (podcast_episodes
-  // .agent_id carries agents.id by FK convention; tolerate a users.id).
+  // Resolve the episode host's user for the ownership cascade. podcast_episodes
+  // .agent_id is agents-class, and resolveScopedConnection keys the agent tier by
+  // users.id — so one hop across. The old `?? episode.agent_id` fallback made a
+  // missing agents row look like a users id, which is the substitution this rail
+  // must never do; a null now stays null and the cascade falls to team/brokerage.
   let agentUserId: string | null = null
-  if (episode.agent_id) {
-    const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", episode.agent_id).maybeSingle()
-    agentUserId = ((agentRow as any)?.user_id as string | null) ?? (episode.agent_id as string)
-  }
   let teamId: string | null = null
-  if (agentUserId) {
-    const { data: a } = await supabase.from("agents").select("team_id").eq("user_id", agentUserId).maybeSingle()
-    teamId = ((a as any)?.team_id as string | null) ?? null
+  if (episode.agent_id) {
+    const { data: agentRow, error: agentErr } = await supabase
+      .from("agents").select("user_id, team_id").eq("id", episode.agent_id).maybeSingle()
+    if (agentErr) {
+      console.error(`[distribute-podcast-episodes] agents lookup failed for agents.id=${episode.agent_id}:`, agentErr.message)
+    }
+    agentUserId = ((agentRow as any)?.user_id as string | null) ?? null
+    teamId      = ((agentRow as any)?.team_id as string | null) ?? null
   }
 
   const { resolveScopedConnection } = await import("@/lib/connections/resolve-scoped")

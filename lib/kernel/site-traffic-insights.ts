@@ -15,6 +15,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { rawRoleVariantsFor } from "@/lib/security/types"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -22,6 +23,9 @@ export interface PageTraffic {
   page: string
   visits: number
   avgSeconds: number
+  /** Rows that actually carried a recorded time-on-page. 0 = no dwell data
+   *  exists for this page, and no dwell verdict may be built on it (§4). */
+  dwellSamples: number
 }
 
 export interface SiteInsights {
@@ -34,33 +38,55 @@ export interface SiteInsights {
 
 /** PURE: what the traffic says, and the ONE adjustment worth making. */
 export function composeSiteInsights(rows: Array<{ page: string | null; seconds: number | null; source?: string | null }>): SiteInsights {
-  const byPage = new Map<string, { visits: number; totalSeconds: number }>()
+  const byPage = new Map<string, { visits: number; totalSeconds: number; dwellSamples: number }>()
   const bySource = new Map<string, number>()
   for (const r of rows) {
     const page = (r.page ?? "").trim()
     if (page) {
-      const cur = byPage.get(page) ?? { visits: 0, totalSeconds: 0 }
+      const cur = byPage.get(page) ?? { visits: 0, totalSeconds: 0, dwellSamples: 0 }
       cur.visits += 1
-      cur.totalSeconds += Math.max(0, r.seconds ?? 0)
+      // §4 fail closed: NULL seconds is "nobody measured", not "0 seconds".
+      // website_visitors.time_on_page_seconds now HAS its writer (2026-09-01):
+      // the dwell BEACON — a pagehide timer in the installer snippet
+      // (app/dashboard/admin/visitor-tracking/page.tsx) posting seconds to
+      // app/api/track/dwell/route.ts. The pixel still upserts the visit
+      // without it, and old rows carry NULL forever, so this guard stays.
+      // The old `?? 0` coercion made every page's avg 0, so the ×3 guard below
+      // read 0 >= 0×3 as true and mailed principals "visitors stay 0× longer".
+      // A recorded 0 still counts as a sample (a real instant bounce); an
+      // absent value counts as nothing.
+      if (typeof r.seconds === "number") {
+        cur.totalSeconds += Math.max(0, r.seconds)
+        cur.dwellSamples += 1
+      }
       byPage.set(page, cur)
     }
     const src = (r.source ?? "").trim()
     if (src) bySource.set(src, (bySource.get(src) ?? 0) + 1)
   }
   const pages: PageTraffic[] = Array.from(byPage.entries())
-    .map(([page, v]) => ({ page, visits: v.visits, avgSeconds: v.visits > 0 ? Math.round(v.totalSeconds / v.visits) : 0 }))
+    .map(([page, v]) => ({
+      page,
+      visits: v.visits,
+      avgSeconds: v.dwellSamples > 0 ? Math.round(v.totalSeconds / v.dwellSamples) : 0,
+      dwellSamples: v.dwellSamples,
+    }))
 
   if (pages.length === 0) return { topPage: null, stickiest: null, bounciest: null, topSource: null, adjustment: null }
 
   const topPage = [...pages].sort((a, b) => b.visits - a.visits)[0] ?? null
-  // Sticky/bouncy verdicts need real sample — never a claim from 2 visits.
-  const sampled = pages.filter((p) => p.visits >= 5)
+  // Sticky/bouncy verdicts need real sample — never a claim from 2 visits,
+  // and never from visits that carry no dwell measurement at all (§4: when
+  // no row has dwell data the dwell insight is SKIPPED, not sent).
+  const sampled = pages.filter((p) => p.visits >= 5 && p.dwellSamples >= 5)
   const stickiest = sampled.length > 0 ? [...sampled].sort((a, b) => b.avgSeconds - a.avgSeconds)[0]! : null
   const bounciest = sampled.length > 1 ? [...sampled].sort((a, b) => a.avgSeconds - b.avgSeconds)[0]! : null
   const topSource = bySource.size > 0 ? [...bySource.entries()].sort((a, b) => b[1] - a[1])[0]![0] : null
 
   let adjustment: string | null = null
-  if (stickiest && bounciest && stickiest.page !== bounciest.page && stickiest.avgSeconds >= bounciest.avgSeconds * 3) {
+  // stickiest.avgSeconds > 0 keeps the degenerate all-zero case (every
+  // measured dwell an instant bounce) from claiming "stays 0× longer".
+  if (stickiest && bounciest && stickiest.page !== bounciest.page && stickiest.avgSeconds > 0 && stickiest.avgSeconds >= bounciest.avgSeconds * 3) {
     adjustment = `Visitors stay ${Math.round(stickiest.avgSeconds / Math.max(1, bounciest.avgSeconds))}× longer on ${stickiest.page} than on ${bounciest.page} — feature that content (or link to it) from ${bounciest.page} before they bounce.`
   } else if (topPage && stickiest && topPage.page !== stickiest.page && stickiest.avgSeconds >= 60) {
     adjustment = `${stickiest.page} holds visitors ${stickiest.avgSeconds}s on average but gets less traffic than ${topPage.page} — promote it from your busiest page.`
@@ -84,15 +110,33 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
   const since = new Date(now.getTime() - 30 * 86_400_000).toISOString()
   let sent = 0, skipped = 0
 
-  const { data: visitors } = await svc.from("website_visitors")
-    .select("brokerage_id, page_url, time_on_page_seconds, utm_source, referrer")
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select. The
+  // tracking pixel stamps WHOSE page a visitor was on
+  // (app/api/track/pixel/route.ts:41) and nothing read it, so this weekly note
+  // — the only consumer of the table — could tell a brokerage its busiest page
+  // and never which agent's pages were pulling the traffic. That is the half a
+  // principal acts on.
+  const { data: visitors, error: visitorsError } = await svc.from("website_visitors")
+    .select("brokerage_id, agent_id, page_url, time_on_page_seconds, utm_source, referrer")
     .gte("last_seen_at", since).limit(2000)
+  // §3 — a refused read here would send every brokerage's weekly note as
+  // "skipped, no traffic", which is the false all-clear this note exists against.
+  if (visitorsError) {
+    console.error("[site-traffic-insights] website_visitors read refused:", visitorsError.message)
+    return { sent: 0, skipped: 0 }
+  }
   const byBrokerage = new Map<string, Array<{ page: string | null; seconds: number | null; source?: string | null }>>()
+  const agentVisitsByBrokerage = new Map<string, Map<string, number>>()
   for (const v of ((visitors ?? []) as any[])) {
     if (!v.brokerage_id) continue
     const arr = byBrokerage.get(v.brokerage_id) ?? []
     arr.push({ page: v.page_url, seconds: v.time_on_page_seconds, source: v.utm_source ?? v.referrer })
     byBrokerage.set(v.brokerage_id, arr)
+    if (v.agent_id) {
+      const perAgent = agentVisitsByBrokerage.get(v.brokerage_id) ?? new Map<string, number>()
+      perAgent.set(v.agent_id, (perAgent.get(v.agent_id) ?? 0) + 1)
+      agentVisitsByBrokerage.set(v.brokerage_id, perAgent)
+    }
   }
 
   for (const [brokerageId, rows] of byBrokerage) {
@@ -108,14 +152,37 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
 
     let { data: principals } = await svc.from("users")
       .select("id").eq("brokerage_id", brokerageId)
-      .in("role", ["broker", "admin", "super_admin", "broker_owner"]).limit(2)
+      // broker_owner is a legal user_type but not a canonical role, so the
+      // expansion cannot carry it — it is appended rather than dropped.
+      // 'superadmin' dropped from the expansion: it matches zero users.user_type
+      // rows (platform staff carry platform_role instead).
+      .in("user_type", [...rawRoleVariantsFor(["broker", "admin"]), "broker_owner"]).limit(2)
     if (!principals || principals.length === 0) {
       const { data: anyUser } = await svc.from("users")
         .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1)
       principals = anyUser ?? []
     }
+    // §1.2 — whose pages the traffic landed on. agent_id is AGENTS-class (the
+    // pixel takes it from the site's own agent param), so the name is resolved
+    // through agents ⨝ users; an unresolvable id degrades to "one agent" rather
+    // than naming the wrong person, and a refused read simply omits the line.
+    let agentLine: string | null = null
+    const perAgent = agentVisitsByBrokerage.get(brokerageId)
+    if (perAgent && perAgent.size > 0) {
+      const [topAgentId, topAgentVisits] = [...perAgent.entries()].sort((a, b) => b[1] - a[1])[0]
+      const { data: agentRow, error: agentErr } = await svc.from("agents")
+        .select("id, users:user_id(first_name, last_name)")
+        .eq("id", topAgentId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!agentErr) {
+        const u = (agentRow as any)?.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim()
+        agentLine = `${topAgentVisits} of those visits landed on ${name || "one agent"}'s pages${perAgent.size > 1 ? ` (${perAgent.size} agents got traffic)` : ""}.`
+      }
+    }
+
     const body = [
       insights.topPage ? `Busiest page: ${insights.topPage.page} (${insights.topPage.visits} visits).` : null,
+      agentLine,
       insights.stickiest ? `Visitors stay longest on ${insights.stickiest.page} (~${insights.stickiest.avgSeconds}s).` : null,
       insights.topSource ? `Most traffic arrives from ${insights.topSource}.` : null,
       `Suggested adjustment: ${insights.adjustment}`,

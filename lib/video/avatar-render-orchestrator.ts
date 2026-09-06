@@ -19,8 +19,45 @@
  *
  * Not server-only: the pure row builder is unit-tested; the enqueue uses the
  * service client. Never import from a client component.
+ *
+ * ── THIS MODULE OWNS BOTH ENDS OF THE `target_composition_id` CONTRACT ───────
+ *
+ * The key was READ here and WRITTEN in three unrelated places, each spelling the
+ * request by hand. That is how the welcome/intro video came to be the one avatar
+ * lane that never asked for its assembly: `lib/video/intro-video-reactor.ts`
+ * wrote `provider_metadata` with the provider, the mode and the talk id and no
+ * target, so `enqueueAvatarCompositionForProject` skipped it forever and the
+ * deliverable stayed a bare D-ID talking head — no Remotion assembly, no brand
+ * chrome. So the REQUEST side lives here too now, beside the read that consumes
+ * it (§6, one vocabulary per function):
+ *
+ *   buildIntroCompositionRequest  — the request an avatar-led PERSONAL video
+ *                                   stamps onto provider_metadata.
+ *   declaresAvatarComposition     — "is a composite owed on this project?"
+ *   resolveAvatarCompositeState   — has the assembly landed, is it still coming,
+ *                                   or will it never arrive? (over the render row)
+ *
+ * WHY THE LAST TWO EXIST. The D-ID cut and the assembled cut land on the SAME
+ * column: poll-did-videos writes `ai_video_projects.video_url` when the avatar
+ * track finishes, and render-composition OVERWRITES it with the composite
+ * minutes later. Every reader that waits on "video_url is populated" therefore
+ * has a window in which it ships the un-assembled avatar track — which for the
+ * welcome email is precisely the video the owner did not ask for. poll-did-videos
+ * already deferred its own fan-out on this condition, inline; that inline test is
+ * now this function, and the email backfill and lib/video/playable-video share it.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  missingContentProps,
+  describeMissingContent,
+  consumesVoiceover,
+} from "@/lib/remotion/content-contract"
+// ONE spelling of the buyer-slide composition id (§6) — the same constant the
+// narration budget derives from. Not server-only; no cycle (consultation-*
+// modules import THIS file only via dynamic import at call sites).
+import { BUYER_SLIDE_COMPOSITION } from "@/lib/buyer-consultation/consultation-narration"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export interface AvatarRenderRowParams {
   brokerageId:      string
@@ -31,16 +68,54 @@ export interface AvatarRenderRowParams {
   extraInputProps?: Record<string, unknown>
   entityType?:      string | null
   entityId?:        string | null
+  /**
+   * THE LIVING IDENTITY of the row this one REPLACES — m312's three columns,
+   * exactly as lib/remotion/registry.ts recordRenderQueued stamps them.
+   *
+   * WHY THEY ARE HERE. enqueueAvatarCompositionForProject prefers to merge the
+   * avatar INTO the staged row, but when the queue claims that row between the
+   * read and the write it falls back to inserting a fresh avatar-led row from
+   * this builder — and this builder wrote no living_kind. The refresh sweep
+   * (lib/video/living-video-sweep.ts) selects `.not("living_kind","is",null)`,
+   * so the replacement was invisible to the staleness check FOREVER: a seller's
+   * weekly update whose price then moved would never have been re-derived,
+   * because the row that actually rendered had no identity to check. Both the
+   * seller-update and buyer-match producers stage a living row and then request
+   * the avatar with target_render_id (lib/agents/seller-update-reel-producer.ts
+   * stageSellerUpdateAvatar), so the race is live, not hypothetical.
+   *
+   * Sourced from the staged row, never invented. Non-living callers (the intro /
+   * anniversary lane) pass nothing and their row is byte-identical to before:
+   * the three keys are only written when a kind is present.
+   */
+  livingKind?:      string | null
+  factsKey?:        string | null
+  facts?:           Record<string, unknown> | null
 }
+
+// TOMBSTONE (§6, 2026-09-03): the private `VOICEOVER_CONSUMING_COMPOSITIONS`
+// Set that stood here (14 ids, "grep voiceoverUrl remotion/") MOVED to
+// lib/remotion/content-contract.ts:VOICEOVER_CONSUMING_COMPOSITIONS, read
+// through `consumesVoiceover(id)`. It was ONE of TWO spellings of the same fact
+// — the live `remotion_compositions.requires_voiceover` column was the other,
+// and the two disagreed on 17 of 33 rows while both fed `used_voiceover`.
+// The survivor is the content-contract set (provable from remotion/** in CI —
+// test:content-contract §15); m601 aligns the column to it. The RULE this
+// builder applies is unchanged: a voiceover URL is staged, and `used_voiceover`
+// stamped, ONLY for a composition that actually plays the prop.
 
 /**
  * Pure: build the remotion_composition_renders insert payload for an avatar
  * composition. The avatar (and optional voiceover) URL is merged into
  * input_props over any caller-supplied props, and the used_* flags + scope are
  * set so the queue, coordinator, and tier gate all see a DID-avatar render.
+ * The voiceover (URL and flag alike) is gated on the target composition
+ * actually consuming it — consumesVoiceover, lib/remotion/content-contract.ts.
  */
 export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, unknown> {
-  const voiceover = p.voiceoverUrl ?? null
+  const voiceover = consumesVoiceover(p.compositionId)
+    ? (p.voiceoverUrl ?? null)
+    : null
   return {
     brokerage_id:    p.brokerageId,
     composition_id:  p.compositionId,
@@ -62,7 +137,38 @@ export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, u
     // carried by used_did_avatar + input_props.avatarVideoUrl.
     requested_via: "cron",
     is_published:  false,
+    // The living identity, only when the row being replaced had one — see
+    // AvatarRenderRowParams. facts_key / facts follow the kind: a kind with no
+    // key is a render the sweep would re-derive from nothing and always call
+    // stale, which is worse than honest nulls beside a kind.
+    ...(p.livingKind
+      ? { living_kind: p.livingKind, facts_key: p.factsKey ?? null, facts: p.facts ?? null }
+      : {}),
   }
+}
+
+/**
+ * WHICH CUT BECOMES THE AVATAR TRACK — prefer the CLEAN (un-branded) D-ID
+ * render. Load-bearing, and one line, so it is named rather than buried.
+ *
+ * poll-did-videos burns the brokerage attribution band into the D-ID output and
+ * writes THAT to `ai_video_projects.video_url`, keeping the un-branded Supabase
+ * copy at `provider_metadata.clean_video_url`. Remotion then applies the tenant's
+ * chrome again — brand cover, caption strip, CTA + EHO outro. Feeding it the
+ * branded cut would stack two attribution treatments on one video, which is the
+ * defect this preference exists to prevent. The branded cut is the fallback only
+ * when no clean copy was persisted, where a double band beats no video.
+ *
+ * PURE.
+ */
+function pickAvatarTrackUrl(
+  providerMetadata: unknown,
+  projectVideoUrl: string | null | undefined,
+): string | null {
+  const meta = (providerMetadata ?? {}) as Record<string, unknown>
+  const clean = meta.clean_video_url
+  if (typeof clean === "string" && clean.trim().length > 0) return clean
+  return projectVideoUrl ?? null
 }
 
 export type EnqueueResult =
@@ -81,11 +187,15 @@ export async function enqueueAvatarCompositionForProject(
 ): Promise<EnqueueResult> {
   const supabase = client ?? createServiceClient()
 
-  const { data: project } = await supabase
+  const { data: project, error: projectErr } = await supabase
     .from("ai_video_projects")
     .select("id, brokerage_id, agent_id, video_url, provider_metadata")
     .eq("id", projectId)
     .maybeSingle()
+  // supabase-js RESOLVES a refused read (§3) — a refusal is NOT "project not
+  // found", and reporting it as absence would hide an RLS/permission failure as
+  // a benign skip. Same discipline as the staged-render read below.
+  if (projectErr) return { ok: false, skipped: `project read refused: ${projectErr.message}` }
   if (!project) return { ok: false, skipped: "project not found" }
 
   const meta = (project.provider_metadata ?? {}) as Record<string, any>
@@ -93,21 +203,156 @@ export async function enqueueAvatarCompositionForProject(
   if (!compositionId) return { ok: false, skipped: "no target_composition_id — not a composition request" }
   if (!project.brokerage_id) return { ok: false, skipped: "project has no brokerage_id" }
 
-  // Prefer the CLEAN (un-branded) D-ID render as the avatar track — Remotion
-  // applies its own brand chrome, so a pre-branded source would double-brand.
-  const avatarVideoUrl = (meta.clean_video_url as string | null) ?? project.video_url
+  const avatarVideoUrl = pickAvatarTrackUrl(meta, project.video_url)
   if (!avatarVideoUrl) return { ok: false, skipped: "no avatar video URL on completed project" }
+
+  // ── THE `target_render_id` READER (built 2026-09-01; §1.2) ────────────────
+  // Both presentation lanes (section-narration-orchestrator + the buyer
+  // consultation-render) stage a photo-PIP render FIRST — the guaranteed
+  // deliverable — and stamp its id here when they request the avatar track.
+  // Until this reader existed the key was a writer with no reader: this
+  // function always inserted a NEW render row, presentation_sections.render_id
+  // kept pointing at the avatar-less one, and the avatar-led cut was an orphan
+  // the drip never delivered.
+  //
+  // SHAPE CHOSEN: merge-into-the-staged-row when it is still 'queued' (no
+  // duplicate row, the section already points at it, the queue renders it once
+  // WITH the avatar); when the staged row has moved past 'queued' (rendering /
+  // terminal — its props are already baked), fall through to the existing
+  // new-row insert SEEDED WITH THE STAGED ROW'S OWN input_props (an empty
+  // extraInputProps would stage the Studio sample data and be cancelled by the
+  // content contract), then REPOINT the section at the avatar-led render.
+  // Both writes are counted (§3): an UPDATE that matches nothing also resolves.
+  const targetRenderId =
+    typeof meta.target_render_id === "string" && meta.target_render_id.trim().length > 0
+      ? (meta.target_render_id as string)
+      : null
+  // Named type on purpose: `stagedRow as typeof staged` would cast against the
+  // control-flow-NARROWED type (null at that point, since only null had been
+  // assigned), collapsing every later property access to `never`.
+  type StagedRender = {
+    id: string
+    render_status: string | null
+    input_props: Record<string, unknown> | null
+    // m312's living identity (scripts/schema-snapshot.ts remotion_composition_renders:
+    // living_kind, facts_key, facts) — read so the fallback row below can carry
+    // it; see AvatarRenderRowParams.
+    living_kind: string | null
+    facts_key: string | null
+    facts: Record<string, unknown> | null
+  }
+  let staged: StagedRender | null = null
+  if (targetRenderId) {
+    const { data: stagedRow, error: stagedErr } = await supabase
+      .from("remotion_composition_renders")
+      .select("id, render_status, input_props, living_kind, facts_key, facts")
+      .eq("id", targetRenderId)
+      .eq("brokerage_id", project.brokerage_id)
+      .maybeSingle()
+    if (stagedErr) {
+      // A refused read is not "no staged render" — say so and take the
+      // new-row path, which cannot lose the avatar.
+      console.warn(`[avatar-render-orchestrator] staged render ${targetRenderId} unreadable (${stagedErr.message}) — falling back to a fresh avatar-led render`)
+    } else {
+      staged = (stagedRow as StagedRender | null) ?? null
+    }
+
+    if (staged && staged.render_status === "queued") {
+      // Same gate as buildAvatarRenderRow: a voiceover is merged (and flagged)
+      // only when the target composition actually plays it — on any other
+      // composition `used_voiceover: true` would assert a narration that plays
+      // nowhere (BuyerConsultationSlide, this lane's staged row, has no
+      // voiceoverUrl prop).
+      const voiceover = consumesVoiceover(compositionId)
+        ? ((meta.voiceover_url as string | null) ?? null)
+        : null
+      const mergedProps: Record<string, unknown> = {
+        ...(staged.input_props ?? {}),
+        avatarVideoUrl,
+        // Never blank a voiceover the staging lane already synthesized onto
+        // the row — merge ours only when the request actually carried one.
+        ...(voiceover ? { voiceoverUrl: voiceover } : {}),
+      }
+      const { data: updated, error: updErr } = await supabase
+        .from("remotion_composition_renders")
+        .update({
+          input_props:     mergedProps,
+          used_did_avatar: true,
+          ...(voiceover ? { used_voiceover: true } : {}),
+        })
+        .eq("id", staged.id)
+        // Atomic guard: if the queue claimed the row between the read above
+        // and this write, its props are already being rendered — do not
+        // retouch it; the fallthrough repoints instead.
+        .eq("render_status", "queued")
+        .select("id")
+      if (!updErr && (updated?.length ?? 0) === 1) {
+        return { ok: true, renderId: staged.id }
+      }
+      if (updErr) {
+        console.warn(`[avatar-render-orchestrator] avatar merge onto staged render ${staged.id} refused (${updErr.message}) — falling back to a fresh avatar-led render`)
+      }
+      // zero rows = the queue raced us past 'queued' — fall through.
+    }
+  }
+
+  // buildAvatarRenderRow fills remotion_composition_renders.agent_user_id (and
+  // scope_id), which is users-class — /v/[slug] reads it straight into a users
+  // lookup for the public page's agent attribution. ai_video_projects.agent_id is
+  // agents-class since m366, so it crosses here. Null ⇒ the render is enqueued
+  // unattributed rather than stamped with an id from the other space.
+  // Client-agnostic resolver on purpose — this module declares itself "not
+  // server-only" above, so it must never drag `server-only` into a bundle.
+  const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+  const agentUserId = project.agent_id ? await resolveUserIdForAgentRecord(supabase, project.agent_id) : null
+  if (project.agent_id && !agentUserId) {
+    console.warn(`[avatar-render-orchestrator] no users row behind agents.id=${project.agent_id} (project ${projectId}) — render enqueued unattributed`)
+  }
 
   const row = buildAvatarRenderRow({
     brokerageId:     project.brokerage_id,
-    agentId:         project.agent_id ?? null,
+    agentId:         agentUserId,
     compositionId,
     avatarVideoUrl,
-    voiceoverUrl:    (meta.voiceover_url as string | null) ?? null,
-    extraInputProps: (meta.input_props as Record<string, unknown>) ?? {},
+    // buildAvatarRenderRow writes voiceoverUrl unconditionally, so a null here
+    // would BLANK a voiceover the staging lane already synthesized onto the
+    // staged row — prefer the request's, then the staged row's own.
+    voiceoverUrl:    (meta.voiceover_url as string | null)
+      ?? ((staged?.input_props?.voiceoverUrl as string | undefined) ?? null),
+    // The staged render's own props win over meta.input_props: they are the
+    // slide as it was actually staged (title/body/brand/…), which the
+    // replacement row must carry or the content contract cancels it.
+    extraInputProps: staged?.input_props ?? (meta.input_props as Record<string, unknown>) ?? {},
     entityType:      (meta.entity_type as string | null) ?? null,
     entityId:        (meta.entity_id as string | null) ?? null,
+    // The replacement inherits the staged row's LIVING identity, or the
+    // staleness sweep never sees the cut that actually rendered. Null for a
+    // non-living staged row and for the intro lane (no staged row at all), in
+    // which case buildAvatarRenderRow writes none of the three columns.
+    livingKind:      staged?.living_kind ?? null,
+    factsKey:        staged?.facts_key ?? null,
+    facts:           staged?.facts ?? null,
   })
+
+  // THE CONTENT GATE, on the payload that will actually be staged — the same
+  // question the render backstop (render-composition/route.ts) asks before it
+  // cancels, asked HERE first. This file already asks it for the two REQUEST
+  // builders (buildIntroCompositionRequest, buildBuyerSlideCompositionRequest),
+  // but the row those requests are assembled into on completion — this one —
+  // was inserted unchecked: `meta.input_props` is whatever the D-ID submit
+  // stamped (an older producer, a hand-driven /api/did/generate-video call, a
+  // staged row whose props were thinned since), and an under-supplied payload
+  // does not render blank, it renders the Studio sample data as this client's.
+  // The row inserted, this function returned ok + a renderId, and the backstop
+  // cancelled it a minute later with nobody told — the paid D-ID cut then sat
+  // behind an assembly that was never coming. Refusing by NAME is what turns
+  // that invisible cancellation into a reason poll-did-videos can log and the
+  // composite state machine can read (no render row ⇒ 'abandoned' at the wait
+  // bound, and the D-ID cut ships honestly).
+  const missing = missingContentProps(compositionId, row.input_props as Record<string, unknown>)
+  if (missing.length > 0) {
+    return { ok: false, skipped: describeMissingContent(compositionId, missing) }
+  }
 
   const { data: inserted, error } = await supabase
     .from("remotion_composition_renders")
@@ -115,6 +360,453 @@ export async function enqueueAvatarCompositionForProject(
     .select("id")
     .single()
   if (error || !inserted) return { ok: false, skipped: `insert failed: ${error?.message ?? "unknown"}` }
+  const newRenderId = (inserted as { id: string }).id
 
-  return { ok: true, renderId: (inserted as { id: string }).id }
+  // Second half of the reader: the staged row could not take the avatar, so the
+  // SECTION must follow the avatar-led render or the drip delivers the
+  // photo-PIP cut forever. Counted (§3) — and zero matches is a legitimate
+  // outcome, not a failure: a target render without a section (or one whose
+  // section was already repointed by a retry) has nothing to move.
+  if (targetRenderId) {
+    const { data: repointed, error: repErr } = await supabase
+      .from("presentation_sections")
+      .update({ render_id: newRenderId })
+      .eq("render_id", targetRenderId)
+      .eq("brokerage_id", project.brokerage_id)
+      .select("id")
+    if (repErr) {
+      console.warn(`[avatar-render-orchestrator] section repoint ${targetRenderId} → ${newRenderId} refused: ${repErr.message}`)
+    } else if ((repointed?.length ?? 0) === 0) {
+      console.warn(`[avatar-render-orchestrator] section repoint matched no rows for staged render ${targetRenderId} (no section carries it, or already repointed)`)
+    }
+  }
+
+  return { ok: true, renderId: newRenderId }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE REQUEST SIDE — what a producer stamps onto provider_metadata so the
+// handoff above will fire.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The composition an avatar-led PERSONAL video is assembled through.
+ *
+ * CHOSEN ON EVIDENCE, not invented. lib/video/finish-spec.ts classifies
+ * `AgentTalkingHeadReel` as AVATAR_LED and says why in the file: "The talking
+ * head is for PERSONAL messages (the agent speaking TO one person); explainers
+ * + narrated slide decks use the CIRCLE avatar so the material stays the star."
+ * A welcome video from the assigned agent to one newly-converted contact is
+ * exactly that case. The composition is registered and active for every tier in
+ * `remotion_compositions`, its Remotion entry has existed since Wave 39
+ * (remotion/Root.tsx), and it already frames a D-ID avatar track in brokerage
+ * chrome: brand cover → avatar video with a caption strip → CTA + EHO outro.
+ * Nothing new was built for this; the intro lane simply never asked for it.
+ *
+ * Same constant shape as lib/agents/seller-update-reel-producer.ts
+ * `SELLER_UPDATE_COMPOSITION` — one name per lane, one composition behind it.
+ */
+export const INTRO_VIDEO_COMPOSITION = "AgentTalkingHeadReel"
+
+/**
+ * The eyebrow and the call to action are FIXED TEMPLATE CHROME, not authored
+ * copy. They say nothing about the recipient, so there is nothing for a fair
+ * housing scan to find in them and nothing for a model to get wrong — which is
+ * the point: §5 requires the spoken script to be compliance-first, and the way
+ * to keep that true through the assembly step is for the assembly step to add no
+ * new claims at all.
+ *
+ * ONE TABLE, KEYED BY THE TRIGGER (§6). Both rows of `agent_intro_videos` are
+ * avatar-led personal pieces to camera from the assigned agent, so both ride the
+ * SAME composition; only the eyebrow and the CTA differ, and they differ as
+ * DATA, not as a second builder. Neither string mentions the recipient, a
+ * property, a neighbourhood or a price, so neither can carry a fair-housing or a
+ * value claim the gate never saw.
+ *
+ * Every key is a live value of the `agent_intro_videos.trigger` CHECK
+ * (contact_agent_assigned | home_anniversary) — a trigger with no row here
+ * cannot be assembled, which is the safe direction.
+ */
+const AVATAR_VIDEO_CHROME: Record<string, { hook: string; cta: string }> = {
+  contact_agent_assigned: { hook: "MEET YOUR AGENT",         cta: "Reply to set up a time" },
+  home_anniversary:       { hook: "HAPPY HOME ANNIVERSARY",  cta: "Reply any time" },
+}
+
+/** The trigger a composition request defaults to when a caller names none. */
+export const DEFAULT_AVATAR_TRIGGER = "contact_agent_assigned"
+
+/**
+ * The on-screen caption strip, cut VERBATIM from the script that already passed
+ * `evaluateOutbound` (and, on a violation, the one redraft).
+ *
+ * NOT A SECOND DRAFT. The composition puts this sentence on screen while the
+ * avatar speaks, so it is read by muted viewers as the message itself. Authoring
+ * it separately would be a line of client-facing copy that no compliance gate
+ * ever saw — the exact hole §5 exists to close. Taking the first sentence of the
+ * gated script means the caption cannot say anything the script did not.
+ *
+ * PURE. The 12-word cap is the composition's own readability limit
+ * (remotion/AgentTalkingHeadReel.tsx: "Capped to ~12 words for readability at
+ * 1080px").
+ */
+function captionFromScript(script: string, maxWords = 12): string {
+  const flat = (script ?? "").replace(/\s+/g, " ").trim()
+  if (!flat) return ""
+  const firstSentence = (flat.match(/^[^.!?]+[.!?]?/)?.[0] ?? flat).trim()
+  const words = firstSentence.split(" ").filter(Boolean)
+  const kept = words.slice(0, maxWords).join(" ").replace(/[\s.,;:—-]+$/, "")
+  return words.length > maxWords ? `${kept}…` : kept
+}
+
+/** What a producer merges into `ai_video_projects.provider_metadata`. */
+export interface IntroCompositionRequest {
+  target_composition_id: string
+  input_props: Record<string, unknown>
+  /** Threads the composite back onto the PROJECT row — see below. */
+  entity_type: "video_project"
+  entity_id: string
+}
+
+export interface IntroCompositionParams {
+  /** ai_video_projects.id. */
+  projectId: string
+  /** The COMPLIANCE-CLEAN script. The caption is cut from it, never redrafted. */
+  script: string
+  /** The agent's display name (resolveDirectorIdentity). Blank ⇒ no request. */
+  agentName: string
+  /** Cover/outro chip. Cosmetic — absence never blocks the request. */
+  agentPhotoUrl?: string | null
+  /** brandBlock() over the tenant's live brand rows. */
+  brand?: Record<string, unknown> | null
+  /**
+   * `agent_intro_videos.trigger` — picks the eyebrow + CTA out of
+   * AVATAR_VIDEO_CHROME. Omitted ⇒ the assignment chrome, so every call written
+   * before the anniversary lane was wired keeps its exact previous output.
+   * A trigger with no chrome row yields NO request rather than a guessed one.
+   */
+  trigger?: string
+}
+
+/**
+ * The composition request for a personal avatar video, or NULL when this render
+ * would be refused anyway.
+ *
+ * WHY IT CAN RETURN NULL. render-composition runs `missingContentProps` as a
+ * hard backstop and CANCELS any render whose required content props are absent,
+ * because Remotion merges input props over each composition's Studio defaults —
+ * an unstaged prop does not render blank, it renders the sample data as if it
+ * were this client's. `AgentTalkingHeadReel` requires hook + agentName + caption.
+ * So the producer asks the SAME question the renderer will ask, using the same
+ * function, and simply does not request an assembly that cannot be honoured. The
+ * D-ID cut then stands as the deliverable, which is honest; a request that is
+ * guaranteed to be cancelled would instead park the welcome email behind a
+ * composite that was never coming.
+ *
+ * `entity_type` / `entity_id` are not decoration. buildAvatarRenderRow copies
+ * them onto the render row, and render-composition's runPostRenderCoordination
+ * fires ONLY for `entity_type='video_project'` — that is the line that stamps the
+ * finished composite onto `ai_video_projects.video_url`. Without it the assembled
+ * video would land in `remotion_composition_renders.output_url` and nowhere the
+ * welcome email or the portal card reads: a writer with no reader.
+ *
+ * PURE.
+ */
+export function buildIntroCompositionRequest(
+  p: IntroCompositionParams,
+): IntroCompositionRequest | null {
+  if (!p.projectId) return null
+  const chrome = AVATAR_VIDEO_CHROME[p.trigger ?? DEFAULT_AVATAR_TRIGGER]
+  if (!chrome) return null
+  const input_props: Record<string, unknown> = {
+    hook:      chrome.hook,
+    agentName: (p.agentName ?? "").trim(),
+    caption:   captionFromScript(p.script ?? ""),
+    ctaLabel:  chrome.cta,
+    // avatarVideoUrl is deliberately ABSENT: enqueueAvatarCompositionForProject
+    // merges it in on completion, preferring meta.clean_video_url so Remotion's
+    // brand chrome is not stacked on top of the D-ID attribution band.
+    agentPhotoUrl: p.agentPhotoUrl ?? null,
+    ...(p.brand ? { brand: p.brand } : {}),
+  }
+  if (missingContentProps(INTRO_VIDEO_COMPOSITION, input_props).length > 0) return null
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // AgentTalkingHeadReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so the render endpoint renders a still beside the assembled cut and
+  // writes it to thumbnail_url — the og:image and the player poster on
+  // /v/[slug]. This request staged none, so a personal welcome from a real agent
+  // carried VideoCoverThumb's Studio fixture ("Just Listed — 123 Main Street")
+  // as its share image.
+  //
+  // Same rule as the caption strip directly above: NOTHING NEW IS AUTHORED. The
+  // eyebrow is the fixed chrome, the title is the agent's own name, the subtitle
+  // is the caption already cut from the gated script, and the hint is whole
+  // leading sentences of THAT SAME SCRIPT. The card is staged only when it is
+  // complete — a request with no brand block has no brokerage name to attribute
+  // to, and an incomplete card would be finished from the fixture.
+  const card = companionCard(VIDEO_COVER_THUMB, {
+    kind:     "agent_avatar",
+    title:    input_props.agentName,
+    subtitle: input_props.caption,
+    eyebrow:  chrome.hook,
+    agentName: input_props.agentName,
+    agentPhotoUrl: p.agentPhotoUrl ?? null,
+    ...(p.brand ? { brand: p.brand } : {}),
+    seoHint:  seoHintFromNarration(p.script ?? ""),
+  })
+  if (card.card) input_props.thumbnail_props = card.card
+  return {
+    target_composition_id: INTRO_VIDEO_COMPOSITION,
+    input_props,
+    entity_type: "video_project",
+    entity_id:   p.projectId,
+  }
+}
+
+/** The prop names `buildIntroCompositionRequest` could not supply — for the log
+ *  line that explains a skipped assembly instead of leaving it silent. */
+export function describeIntroCompositionGap(p: IntroCompositionParams): string[] {
+  const chrome = AVATAR_VIDEO_CHROME[p.trigger ?? DEFAULT_AVATAR_TRIGGER]
+  if (!chrome) return [`no assembly chrome is registered for trigger '${p.trigger}'`]
+  return missingContentProps(INTRO_VIDEO_COMPOSITION, {
+    hook:      chrome.hook,
+    agentName: (p.agentName ?? "").trim(),
+    caption:   captionFromScript(p.script ?? ""),
+  })
+}
+
+/** What a buyer-consultation slide producer merges into
+ *  `ai_video_projects.provider_metadata`. */
+export interface BuyerSlideCompositionRequest {
+  target_composition_id: string
+  input_props: Record<string, unknown>
+  /** The buyer deck's presentation row — buildAvatarRenderRow copies these onto
+   *  the render, so the avatar-led cut stays discoverable per presentation.
+   *  Deliberately NOT 'video_project': runPostRenderCoordination's write-back
+   *  onto ai_video_projects.video_url is the intro lane's contract, not this
+   *  one's. */
+  entity_type: "listing_presentation"
+  entity_id: string
+}
+
+/**
+ * The composition request for ONE BuyerConsultationSlide avatar track — the
+ * thin builder beside buildIntroCompositionRequest, for the same reason it
+ * exists: producers must not hand-roll `target_composition_id` writes (the
+ * request side of the contract lives HERE, beside the read that consumes it —
+ * see the module header). The finish spec classifies BuyerConsultationSlide as
+ * AVATAR_LED circle_pip (lib/video/finish-spec.ts), so the avatar arrives as a
+ * PIP inside the slide, not as the frame.
+ *
+ * NULL when the render would be refused anyway: the same missingContentProps
+ * question render-composition asks, asked before a D-ID render is paid for.
+ * The caller passes the FULL slide input_props (kind/title/body/agentName/…)
+ * so the completion-side render assembled by enqueueAvatarCompositionForProject
+ * is the complete slide with `avatarVideoUrl` merged over it — an empty
+ * extraInputProps here would stage the composition's Studio sample data.
+ *
+ * PURE.
+ */
+export function buildBuyerSlideCompositionRequest(p: {
+  presentationId: string
+  inputProps: Record<string, unknown>
+}): BuyerSlideCompositionRequest | null {
+  if (!p.presentationId) return null
+  if (missingContentProps(BUYER_SLIDE_COMPOSITION, p.inputProps).length > 0) return null
+  return {
+    target_composition_id: BUYER_SLIDE_COMPOSITION,
+    input_props: p.inputProps,
+    entity_type: "listing_presentation",
+    entity_id:   p.presentationId,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IS A COMPOSITE OWED, AND HAS IT LANDED?
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Does this project owe an assembled cut? PURE. */
+export function declaresAvatarComposition(providerMetadata: unknown): boolean {
+  const meta = (providerMetadata ?? {}) as Record<string, unknown>
+  const id = meta.target_composition_id
+  return typeof id === "string" && id.trim().length > 0
+}
+
+/**
+ * How long a reader waits for the assembly before shipping the avatar track.
+ *
+ * NOT A STYLE CHOICE. Waiting forever is the failure mode that matters here: if
+ * the composition render is cancelled by the content contract, fails in ffmpeg,
+ * or was never enqueued because the insert was refused, then "wait for the
+ * composite" means the welcome email is never sent at all — worse than sending
+ * the un-assembled cut. Every non-terminal state is therefore bounded, and the
+ * bound is the same 2 hours the video pipeline's reaper already uses for a
+ * render nobody picked up.
+ */
+export const COMPOSITE_WAIT_MS = 2 * 60 * 60 * 1000
+
+export type AvatarCompositeState =
+  /** No assembly was ever requested — the D-ID cut IS the deliverable. */
+  | { state: "not_requested" }
+  /** Still coming. A reader must NOT ship the avatar track yet. */
+  | { state: "pending"; reason: string }
+  /** The assembled cut exists. */
+  | { state: "landed"; outputUrl: string | null }
+  /** It will not arrive. Ship what exists, and say why. */
+  | { state: "abandoned"; reason: string }
+
+/** One `remotion_composition_renders` row, as much of it as the question needs. */
+export interface CompositeRenderProbe {
+  render_status: string | null
+  output_url:    string | null
+}
+
+/**
+ * PURE classifier — the whole decision, with no I/O, so both sides of it can be
+ * proved without a database.
+ *
+ * `ageMs` is how long the avatar track has been sitting on the project
+ * (`completed_at` → now). Null means "not established", which is treated as
+ * fresh: a project whose D-ID job has not completed yet cannot have missed a
+ * deadline.
+ */
+function classifyAvatarComposite(args: {
+  declared: boolean
+  render:   CompositeRenderProbe | null
+  ageMs:    number | null
+  waitMs?:  number
+}): AvatarCompositeState {
+  if (!args.declared) return { state: "not_requested" }
+  const waitMs = args.waitMs ?? COMPOSITE_WAIT_MS
+  const status = args.render?.render_status ?? null
+
+  if (status === "succeeded") {
+    return args.render?.output_url
+      ? { state: "landed", outputUrl: args.render.output_url }
+      : { state: "abandoned", reason: "the composition render succeeded with no output URL" }
+  }
+  if (status === "failed" || status === "cancelled") {
+    return { state: "abandoned", reason: `the composition render is '${status}' — no assembled cut will arrive` }
+  }
+
+  const overdue = args.ageMs !== null && args.ageMs > waitMs
+  if (overdue) {
+    return {
+      state:  "abandoned",
+      reason: status
+        ? `the composition render has been '${status}' for over ${Math.round(waitMs / 60000)} minutes`
+        : `no composition render was ever enqueued within ${Math.round(waitMs / 60000)} minutes of the avatar track landing`,
+    }
+  }
+  return {
+    state:  "pending",
+    reason: status
+      ? `the Remotion assembly is '${status}'`
+      : "the Remotion assembly has not been enqueued yet",
+  }
+}
+
+/**
+ * WHAT THE ANNIVERSARY SWEEP DOES WITH ONE LEDGER ROW — the whole decision with
+ * no I/O, so every arm is provable without a database or a provider.
+ *
+ * It lives beside the composite state machine because it is the same question
+ * asked for the other delivery channel: the welcome email waits for the assembly
+ * and then releases the mail; the anniversary waits for the assembly and then
+ * stamps the portal card. One state machine, two consumers, no third copy (§6).
+ *
+ * EVERY ARM IS TERMINAL OR EXPLICITLY RETRIED. A row that can only ever be
+ * 'wait' is the failure this exists to prevent — that is exactly what the
+ * anniversary lane did before it had a sweep at all, sitting at 'rendering'
+ * forever with a paid D-ID render behind it.
+ */
+export type AnniversaryPortalAction =
+  /** Nothing to do this tick; the caller leaves the row where it is. */
+  | { action: "wait"; reason: string }
+  /** Stamp the clip onto the card and mark the ledger delivered. */
+  | { action: "stamp"; assembled: boolean; reason: string }
+  /** Terminal, and not a delivery — the ledger takes this status. */
+  | { action: "close"; ledgerStatus: "suppressed" | "failed"; reason: string }
+
+export function classifyAnniversaryPortalDelivery(args: {
+  /** ai_video_projects.video_url — null while the D-ID job is still in flight. */
+  hasRenderedUrl: boolean
+  /** resolveAvatarCompositeState's verdict, or null when not yet asked. */
+  composite: AvatarCompositeState["state"] | null
+  /** contacts.video_opt_out, re-read at delivery time. */
+  videoOptOut: boolean
+  /** Is there a visible equity_report card to attach the clip to? */
+  hasPortalCard: boolean
+}): AnniversaryPortalAction {
+  // OPT-OUT WINS OVER EVERYTHING, including a finished render. A contact who
+  // turned video off between the render starting and it landing must not have it
+  // pushed onto their portal because we had already paid for it.
+  if (args.videoOptOut) {
+    return { action: "close", ledgerStatus: "suppressed", reason: "video_opt_out flipped during render" }
+  }
+  if (!args.hasRenderedUrl) {
+    return { action: "wait", reason: "the D-ID avatar track has not landed yet" }
+  }
+  if (args.composite === "pending") {
+    return { action: "wait", reason: "the Remotion assembly is still coming" }
+  }
+  // No card means the play that owns the anniversary never got as far as its
+  // portal push, so there is nothing to attach to and nothing honest to invent.
+  if (!args.hasPortalCard) {
+    return {
+      action: "close",
+      ledgerStatus: "failed",
+      reason: "no visible equity_report portal card to attach the anniversary video to",
+    }
+  }
+  const assembled = args.composite === "landed"
+  return {
+    action: "stamp",
+    assembled,
+    reason: assembled
+      ? "the assembled composite is the deliverable"
+      : "no assembly will arrive — the D-ID cut is the deliverable",
+  }
+}
+
+/**
+ * The same question against the live render row.
+ *
+ * supabase-js RESOLVES a refused read, so the read is destructured and a refusal
+ * is carried into the classifier as "no render row" rather than swallowed. That
+ * FAILS CLOSED in the direction that matters — a reader waits instead of
+ * shipping the un-assembled cut — and it still self-heals, because the age bound
+ * turns a permanently unreadable render into 'abandoned' rather than a stall.
+ *
+ * Costs nothing on a project that never asked for an assembly: the declaration
+ * is checked before any query runs.
+ */
+export async function resolveAvatarCompositeState(
+  project: { id: string; provider_metadata?: unknown; completed_at?: string | null },
+  client?: ReturnType<typeof createServiceClient>,
+  nowMs: number = Date.now(),
+): Promise<AvatarCompositeState> {
+  if (!declaresAvatarComposition(project.provider_metadata)) return { state: "not_requested" }
+
+  const supabase = client ?? createServiceClient()
+  const { data, error } = await supabase
+    .from("remotion_composition_renders")
+    .select("id, render_status, output_url, created_at")
+    .eq("entity_type", "video_project")
+    .eq("entity_id", project.id)
+    .order("created_at", { ascending: false })
+    .limit(5)
+
+  const rows = (error ? [] : ((data ?? []) as CompositeRenderProbe[]))
+  // A retry can leave more than one row. A SUCCEEDED one wins over a newer
+  // queued one — the assembled cut exists either way.
+  const render = rows.find((r) => r.render_status === "succeeded" && !!r.output_url) ?? rows[0] ?? null
+
+  const completedMs = project.completed_at ? Date.parse(project.completed_at) : NaN
+  const ageMs = Number.isFinite(completedMs) ? nowMs - completedMs : null
+
+  const verdict = classifyAvatarComposite({ declared: true, render, ageMs })
+  if (error && verdict.state === "pending") {
+    return { state: "pending", reason: `${verdict.reason} (render row unreadable: ${error.message})` }
+  }
+  return verdict
 }

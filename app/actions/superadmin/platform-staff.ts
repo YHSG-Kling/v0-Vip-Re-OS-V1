@@ -13,7 +13,9 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import {
   validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES,
-  PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, type CapabilityOverride,
+  PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, isOverridablePlatformRole,
+  type CapabilityOverride, type OverridablePlatformRole, type PlatformCapability,
+  isPlatformSuperadminIdentity,
 } from "@/lib/platform/platform-staff-roster"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
 
@@ -34,7 +36,7 @@ async function requireSuperadmin(): Promise<{ ok: true; userId: string; email: s
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }
@@ -57,7 +59,14 @@ export async function listPlatformStaffAction(): Promise<{ ok: true; staff: any[
   const { data, error } = await svc
     .from("users")
     .select("id, email, first_name, last_name, user_type, platform_role, status, created_at")
-    .or(`user_type.in.(superadmin,support),platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
+    // The user_type half is the LEGACY 'superadmin' MARKER ONLY. It used to read
+    // `user_type.in.(superadmin,support)`, which listed every TENANT user carrying
+    // user_type='support' — a legal tenant role with no platform employment — as a
+    // member of platform staff on the staff-management console, where a superadmin
+    // could then change their "platform role". platform_role is the roster column;
+    // user_type participates solely through the legacy marker, exactly as
+    // isPlatformStaffIdentity() and public.is_platform_staff() define it.
+    .or(`user_type.eq.superadmin,platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
   return { ok: true, staff: data ?? [] }
@@ -275,19 +284,26 @@ export async function listCapabilityOverridesAction(): Promise<{ ok: true; overr
 }
 
 export async function setCapabilityOverrideAction(input: {
-  role: string
-  capability: string
+  /** Tightened string → the roster's own types (2026-08-31). This is a public endpoint, so the
+   *  runtime payload is untrusted regardless of the annotation — the checks below stay the gate;
+   *  the types are their compile-time echo for the matrix editor. */
+  role: OverridablePlatformRole
+  capability: PlatformCapability
   /** null = clear back to the code-map default (DELETES the row). */
   override: { allowed: boolean; access: "read" | "write" } | null
 }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
-  if (input.role === "superadmin") return { ok: false, error: "superadmin is never overridable" }
-  if (!(OVERRIDABLE_PLATFORM_ROLES as readonly string[]).includes(input.role)) {
+  // Widened back to plain strings for the runtime validation — the annotation cannot vouch for
+  // a hand-crafted request body, and 'superadmin' must keep its named refusal.
+  const role: string = input.role
+  const capability: string = input.capability
+  if (role === "superadmin") return { ok: false, error: "superadmin is never overridable" }
+  if (!isOverridablePlatformRole(role)) {
     return { ok: false, error: `Role must be one of: ${OVERRIDABLE_PLATFORM_ROLES.join(", ")}` }
   }
-  if (!(PLATFORM_CAPABILITIES as readonly string[]).includes(input.capability)) {
-    return { ok: false, error: `Unknown capability '${input.capability}'` }
+  if (!(PLATFORM_CAPABILITIES as readonly string[]).includes(capability)) {
+    return { ok: false, error: `Unknown capability '${capability}'` }
   }
 
   const svc = createServiceClient()

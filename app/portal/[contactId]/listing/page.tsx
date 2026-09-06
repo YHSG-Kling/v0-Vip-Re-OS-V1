@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSummary } from "@/lib/portal/resolve-seller-context"
@@ -6,7 +7,7 @@ import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import { getSellerDocuments } from "@/app/actions/portal-seller"
 import { resolvePersonaContext } from "@/lib/agents/persona-context"
 import { buildListingMarketingChannels } from "@/lib/listings/marketing-channels"
-import { FileText, Download, ExternalLink } from "lucide-react"
+import { FileText, ExternalLink } from "lucide-react"
 import {
   SellerJourneyMeaningCard,
   ListingActivityCard,
@@ -26,6 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Home, ArrowLeft, MapPin, DollarSign, Calendar } from "lucide-react"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 export default async function ListingPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -127,14 +129,19 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           .limit(1)
           .maybeSingle()
       : Promise.resolve({ data: null }),
-    // Latest seller update
+    // Latest seller update ADDRESSED TO THIS CONTACT. materializeSellerUpdate stamps
+    // contact_id with the listing's seller contact (lib/agents/seller-update-reel-producer.ts:625);
+    // filtering on listing_id alone served a co-seller the update recorded for the
+    // OTHER seller. A window + the addressee filter applied below on `latestUpdate`,
+    // rather than a `.or()` string, so the route param never enters PostgREST
+    // filter grammar.
+    // NULL contact_id = listing-wide, which every seller on the listing may see.
     supabase
       .from("seller_updates")
-      .select("id, subject, body, video_url, thumbnail_url, created_at")
+      .select("id, subject, body, video_url, thumbnail_url, created_at, contact_id")
       .eq("listing_id", listing.id)
       .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(10),
     // Seller documents
     getSellerDocuments(contactId, context.transactionId ?? null),
   ])
@@ -154,7 +161,20 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     ? [(agent.users as any)?.first_name, (agent.users as any)?.last_name].filter(Boolean).join(" ") || null
     : null
   const nextMilestone = nextMilestoneResult.data
-  const latestUpdate = updatesResult.data
+  // The newest row this contact is entitled to: addressed to them, or listing-wide.
+  type SellerUpdateRow = {
+    id: string
+    subject: string | null
+    body: string | null
+    video_url: string | null
+    thumbnail_url: string | null
+    created_at: string | null
+    contact_id: string | null
+  }
+  const latestUpdate =
+    ((updatesResult.data ?? []) as unknown as SellerUpdateRow[]).find(
+      (u) => u.contact_id === null || u.contact_id === contactId,
+    ) ?? null
 
   // Calculate days on market
   const listingDate = listing.listing_date ? new Date(listing.listing_date) : null
@@ -169,25 +189,51 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .select("id", { count: "exact", head: true })
     .eq("listing_id", listing.id)
     .eq("status", "live")
-  // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports). Latest week.
-  const { data: weeklyReportRow } = await supabase
+  // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports).
+  // contact_id is the ADDRESSEE the runner stamped (lib/listings/seller-weekly-report-runner.ts:80
+  // writes listings.seller_contact_id); reading only listing_id served a co-seller the
+  // digest recorded for the other seller. NULL = listing-wide.
+  // generated_at is WHEN the digest was compiled (runner.ts:84) — the week label comes
+  // from report_week_start, but "compiled on" is what tells the seller whether the
+  // numbers are this morning's or six days stale. Both were written and never read.
+  const { data: weeklyReportRows, error: weeklyReportErr } = await supabase
     .from("seller_weekly_reports")
-    .select("report_content")
+    .select("report_content, generated_at, report_week_start, contact_id")
     .eq("listing_id", listing.id)
     .order("report_week_start", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  const weeklyReport = (weeklyReportRow?.report_content as Record<string, unknown> | null) ?? null
+    .limit(10)
+  if (weeklyReportErr) console.warn("[portal/listing] seller_weekly_reports read refused:", weeklyReportErr.message)
+  type WeeklyReportRow = {
+    report_content: Record<string, unknown> | null
+    generated_at: string | null
+    report_week_start: string | null
+    contact_id: string | null
+  }
+  const weeklyReportRow =
+    ((weeklyReportRows ?? []) as unknown as WeeklyReportRow[]).find(
+      (r) => r.contact_id === null || r.contact_id === contactId,
+    ) ?? null
+  const weeklyReport = weeklyReportRow?.report_content ?? null
+  const weeklyReportGeneratedAt = weeklyReportRow?.generated_at ?? null
 
   // National "Market Pulse" — what buyers are prioritizing now (market_pulse, written weekly).
+  // generated_at + source_count are the card's provenance line: WHEN the pulse
+  // was distilled and from HOW MANY buyer-forum threads (market-pulse-runner.ts:51
+  // writes both). A dated "what buyers want now" with no date is a claim the
+  // seller cannot weigh; insights.generated===false is the evergreen fallback
+  // floor, whose source_count is the threads that were too few to distill.
   const { data: pulseRow } = await supabase
     .from("market_pulse")
-    .select("insights")
+    .select("insights, generated_at, source_count")
     .eq("scope", "national")
     .order("pulse_week", { ascending: false })
     .limit(1)
     .maybeSingle()
   const marketPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+  const marketPulseHasInsights = Array.isArray(marketPulse?.insights) && (marketPulse!.insights as unknown[]).length > 0
+  const marketPulseGeneratedAt = (pulseRow?.generated_at as string | null) ?? null
+  const marketPulseSourceCount = typeof pulseRow?.source_count === "number" ? (pulseRow.source_count as number) : 0
+  const marketPulseIsDistilled = marketPulse?.generated !== false
 
   const marketingChannels = buildListingMarketingChannels({
     mlsNumber: (listingOwnerCheck?.mls_number as string | null) ?? null,
@@ -202,7 +248,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .from("ai_video_projects")
     .select("id", { count: "exact", head: true })
     .eq("contact_id", contactId)
-    .eq("status", "completed")
+    .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
   const sellerTeam = buildSellerTeamActivity({
     listingLive: listing.status === "active" || (listing as any).lifecycle_stage === "MLS_ACTIVE",
     marketingChannelsLive: marketingChannels.filter((c) => c.status === "live").length,
@@ -332,10 +378,18 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         <SellerTeamActivityCard team={sellerTeam} timeline={sellerTeamTimeline} />
 
         {/* Weekly digest — this week's real activity, client-safe */}
-        <SellerWeeklyReportCard report={weeklyReport as any} />
+        <SellerWeeklyReportCard report={weeklyReport as any} generatedAt={weeklyReportGeneratedAt} />
 
         {/* Market Pulse — what buyers are prioritizing now (the novel buyer-sentiment differentiator) */}
         <SellerMarketPulseCard pulse={marketPulse as any} />
+        {marketPulseHasInsights && marketPulseGeneratedAt && (
+          <p className="text-[11px] text-muted-foreground px-1 -mt-4">
+            Pulse as of {new Date(marketPulseGeneratedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            {marketPulseIsDistilled && marketPulseSourceCount > 0
+              ? ` · distilled from ${marketPulseSourceCount} buyer-forum thread${marketPulseSourceCount === 1 ? "" : "s"}`
+              : " · evergreen guidance (too few fresh threads to distill this week)"}
+          </p>
+        )}
 
         {/* Open House Alert if upcoming */}
         {upcomingOpenHouse && (
@@ -550,7 +604,9 @@ function extractPositivePatterns(feedback: any[]): string[] {
         patternCounts[feature] = (patternCounts[feature] || 0) + 1
       }
     }
-    if (fb.overall_impression === "loved_it" || fb.overall_impression === "liked_it") {
+    // m568: overall_impression speaks the ONE showing-verdict vocabulary
+    // (love_it | like_it | maybe | no); the ladder's positive set owns the split.
+    if (isPositiveShowingInterest(fb.overall_impression)) {
       if (fb.presentation_rating >= 4) patternCounts["Great presentation"] = (patternCounts["Great presentation"] || 0) + 1
       if (fb.cleanliness_rating >= 4) patternCounts["Clean & well-maintained"] = (patternCounts["Clean & well-maintained"] || 0) + 1
     }

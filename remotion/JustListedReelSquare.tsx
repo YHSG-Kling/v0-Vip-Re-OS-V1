@@ -26,14 +26,9 @@
  * reuse the same data payload across organic and paid renders.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -89,7 +84,7 @@ const CTA    = 2  * FPS                          // 10-12s
  *  image, lively enough that the feed scroll doesn't read it as a
  *  static frame and skip past. */
 function kenBurnsScale(localFrame: number, span: number): number {
-  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
 }
 
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
@@ -115,18 +110,18 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
         }}>
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
-            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1]),
+            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}
@@ -135,7 +130,7 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
             position: "absolute", top: 40, left: 40, color: "#fff", opacity: 0.85,
             fontSize: 22, fontWeight: 600, letterSpacing: 2,
           }}>
-            {brand.logoUrl ? <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
+            {brand.logoUrl ? <SafeImg src={brand.logoUrl} style={{ height: 56, objectFit: "contain" }} /> : null}
           </div>
         </AbsoluteFill>
       </Sequence>
@@ -236,11 +231,11 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const scale = kenBurnsScale(frame, span)
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

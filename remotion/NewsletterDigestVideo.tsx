@@ -22,14 +22,9 @@
  * and passes inputProps.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface NewsletterDigestVideoProps {
@@ -86,11 +81,11 @@ export const NewsletterDigestVideo: React.FC<NewsletterDigestVideoProps> = (prop
 
 const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.9], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.9], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 220, height: "auto", marginBottom: 48 }} />
       )}
       <p style={{ color: brand.accentColor, fontSize: 38, fontWeight: 600, marginBottom: 12 }}>
         {brand.brokerageName}
@@ -104,15 +99,15 @@ const IntroFrame: React.FC<NewsletterDigestVideoProps> = ({ subject, brand }) =>
 
 const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand }) => {
   const frame = useCurrentFrame()
-  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateRight: "clamp" })
-  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: "clamp" })
+  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff", padding: 80, justifyContent: "center" }}>
       <div style={{
         backgroundColor: brand.primaryColor,
         padding: 64,
         borderRadius: 24,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         <p style={{ color: brand.accentColor, fontSize: 32, fontWeight: 700, marginBottom: 24, textTransform: "uppercase", letterSpacing: 2 }}>
@@ -131,7 +126,7 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
   const slideFrames = 70 // ~2.3s per title
   const idx = Math.min(titles.length - 1, Math.floor(frame / slideFrames))
   const localFrame = frame - idx * slideFrames
-  const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateRight: "clamp" })
+  const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const t = titles[idx] ?? ""
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center" }}>
@@ -147,11 +142,11 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
 
 const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 180, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 180, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 72, margin: 0, fontWeight: 800, lineHeight: 1.1 }}>
         Open the email

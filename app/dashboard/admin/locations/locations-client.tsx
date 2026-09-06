@@ -8,10 +8,11 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
-import { Building2, MapPin, Plus, Trash2, Users } from "lucide-react"
+import { Building2, MapPin, Plus, Trash2, Users, Pencil } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  createLocationAction, deleteLocationAction, assignAgentToLocationAction,
+  createLocationAction, deleteLocationAction, assignUserToLocationAction,
+  updateLocationAction,
   type OfficeLocation, type BrokerageAgentRow,
 } from "@/app/actions/admin/locations"
 
@@ -32,13 +33,45 @@ export function LocationsClient({
   const unassignedCount = useMemo(() => agents.filter((a) => !a.locationId).length || initialUnassigned, [agents, initialUnassigned])
   const countFor = (locId: string) => agents.filter((a) => a.locationId === locId).length
 
-  async function handleAssign(agentId: string, value: string) {
+  async function handleAssign(userId: string, value: string) {
     const locationId = value === UNASSIGNED ? null : value
     const prev = agents
-    setAgents((cur) => cur.map((a) => (a.id === agentId ? { ...a, locationId } : a)))
-    const r = await assignAgentToLocationAction(agentId, locationId)
+    setAgents((cur) => cur.map((a) => (a.userId === userId ? { ...a, locationId } : a)))
+    const r = await assignUserToLocationAction(userId, locationId)
     if (!r.ok) { setAgents(prev); toast({ title: "Could not reassign", description: r.error, variant: "destructive" }) }
     else toast({ title: "Agent reassigned" })
+  }
+
+  // EDIT — the surface had Add, Delete and Reassign but no way to correct an
+  // office. Renaming or fixing an address meant deleting the office (which
+  // unassigns every agent in it) and rebuilding it. updateLocationAction already
+  // existed, admin-gated and brokerage-scoped; it just had no caller.
+  async function handleEdit(loc: OfficeLocation, patch: { name: string; address: string; city: string; state: string }) {
+    const prev = locations
+    const next: OfficeLocation = {
+      ...loc,
+      name: patch.name.trim(),
+      address: patch.address.trim() || null,
+      city: patch.city.trim() || null,
+      state: patch.state.trim() || null,
+    }
+    setLocations((cur) => cur.map((l) => (l.id === loc.id ? next : l)).sort((a, b) => a.name.localeCompare(b.name)))
+    const r = await updateLocationAction(loc.id, {
+      name: patch.name,
+      address: patch.address,
+      city: patch.city,
+      state: patch.state,
+    })
+    if (!r.ok) {
+      // Roll the optimistic edit back — the action refuses an empty name and a
+      // row outside the caller's brokerage, and the list must not keep showing a
+      // change the database rejected.
+      setLocations(prev)
+      toast({ title: "Could not update office", description: r.error, variant: "destructive" })
+      return false
+    }
+    toast({ title: "Office updated" })
+    return true
   }
 
   async function handleDelete(loc: OfficeLocation) {
@@ -91,9 +124,12 @@ export function LocationsClient({
                         </p>
                       )}
                     </div>
-                    <Button variant="ghost" size="sm" onClick={() => handleDelete(loc)} className="text-red-600 hover:text-red-700">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <EditOfficeDialog location={loc} onSave={(patch) => handleEdit(loc, patch)} />
+                      <Button variant="ghost" size="sm" onClick={() => handleDelete(loc)} className="text-red-600 hover:text-red-700">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -116,7 +152,7 @@ export function LocationsClient({
                       <p className="font-medium truncate">{a.name}</p>
                       {a.email && <p className="text-xs text-muted-foreground truncate">{a.email}</p>}
                     </div>
-                    <Select value={a.locationId ?? UNASSIGNED} onValueChange={(v) => handleAssign(a.id, v)}>
+                    <Select value={a.locationId ?? UNASSIGNED} onValueChange={(v) => handleAssign(a.userId, v)}>
                       <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
@@ -182,6 +218,67 @@ function NewOfficeDialog({ onCreated }: { onCreated: (loc: OfficeLocation) => vo
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
           <Button onClick={submit} disabled={submitting}>{submitting ? "Creating…" : "Create Office"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function EditOfficeDialog({
+  location,
+  onSave,
+}: {
+  location: OfficeLocation
+  onSave: (patch: { name: string; address: string; city: string; state: string }) => Promise<boolean>
+}) {
+  const { toast } = useToast()
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState(location.name)
+  const [address, setAddress] = useState(location.address ?? "")
+  const [city, setCity] = useState(location.city ?? "")
+  const [state, setState] = useState(location.state ?? "")
+  const [submitting, setSubmitting] = useState(false)
+
+  function openChange(v: boolean) {
+    // Re-seed from the row each time it opens so a cancelled edit does not linger.
+    if (v) {
+      setName(location.name)
+      setAddress(location.address ?? "")
+      setCity(location.city ?? "")
+      setState(location.state ?? "")
+    }
+    setOpen(v)
+  }
+
+  async function submit() {
+    if (!name.trim()) { toast({ title: "Office name required", variant: "destructive" }); return }
+    setSubmitting(true)
+    try {
+      const ok = await onSave({ name, address, city, state })
+      if (ok) setOpen(false)
+    } finally { setSubmitting(false) }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={openChange}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" aria-label={`Edit ${location.name}`}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit office</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1"><Label htmlFor={`e-name-${location.id}`}>Office name</Label><Input id={`e-name-${location.id}`} value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <div className="space-y-1"><Label htmlFor={`e-addr-${location.id}`}>Address</Label><Input id={`e-addr-${location.id}`} value={address} onChange={(e) => setAddress(e.target.value)} /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1"><Label htmlFor={`e-city-${location.id}`}>City</Label><Input id={`e-city-${location.id}`} value={city} onChange={(e) => setCity(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor={`e-state-${location.id}`}>State</Label><Input id={`e-state-${location.id}`} value={state} onChange={(e) => setState(e.target.value)} /></div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={submit} disabled={submitting}>{submitting ? "Saving…" : "Save changes"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

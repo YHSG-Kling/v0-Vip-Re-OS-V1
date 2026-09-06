@@ -26,15 +26,9 @@
  * cleanly with 1-3.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
@@ -130,22 +124,22 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 5, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Neighborhood spotlight
           </div>
           <div style={{
             fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.98,
-            opacity: interpolate(frame, [12, 32], [0, 1]),
+            opacity: interpolate(frame, [12, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             textShadow: "0 4px 24px rgba(0,0,0,0.45)",
           }}>
             {neighborhood}
@@ -164,7 +158,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
             fontSize: 44, fontWeight: 700, color: "#fff", lineHeight: 1.2,
             textAlign: "center", maxWidth: 880, marginLeft: "auto", marginRight: "auto",
             textShadow: "0 4px 16px rgba(0,0,0,0.45)",
-            opacity: interpolate(frame, [6, 24], [0, 1]),
+            opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {tagline}
           </div>
@@ -178,10 +172,23 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl} startFrom={COVER} endAt={COVER + BODY}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER}> has already offset this child's clock —
+                // so trimBefore={COVER} here skipped the clip's first 3s TWICE.
+                // The D-ID pipeline's clips start speaking at source frame 0
+                // (the convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0} trimAfter={BODY}); no producer authors a
+                // full-reel-spanning avatar mp4 for this composition
+                // (remotion_compositions.requires_did_avatar=false, and every
+                // producer stages avatarVideoUrl:null). MarketUpdateReel /
+                // ExplainerAnimReel legitimately differ: they slice ONE
+                // continuous narration track across consecutive sequences by
+                // absolute frame ranges, which is why their PIPs trim by
+                // startFrame/endFrame and this one must not.
+                <Video src={avatarVideoUrl} objectFit="cover" trimBefore={0} trimAfter={BODY}
+                  style={{ width: "100%", height: "100%" }} />
               ) : (
-                <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <SafeImg src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}
             </div>
           )}
@@ -194,7 +201,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
                 padding: "16px 24px", borderRadius: 8,
                 backgroundColor: "rgba(0,0,0,0.65)",
                 color: "#fff", minWidth: 180,
-                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1]),
+                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
               }}>
                 <div style={{ fontSize: 36, fontWeight: 900, color: brand.accentColor, lineHeight: 1 }}>
                   {h.value}

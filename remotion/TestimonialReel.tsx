@@ -25,15 +25,9 @@
  * composition trusts that consent.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  useCurrentFrame,
-} from "remotion"
+import { Audio, Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { ContextCueRow } from "./_BrollLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
@@ -92,7 +86,7 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
     <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
       {Array.from({ length: 5 }).map((_, i) => {
         const filled = i < safe
-        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateRight: "clamp" })
+        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
         return (
           <span key={i} style={{
             fontSize: 36, lineHeight: 1, opacity: fade,
@@ -129,21 +123,21 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "10px 24px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             5-Star Review
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             letterSpacing: 2, fontWeight: 600,
           }}>
             {clientRole}
@@ -160,7 +154,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           {showStars && <StarRow stars={stars ?? 5} accentColor={brand.accentColor} />}
           <div style={{
             fontSize: 48, lineHeight: 1.25, fontWeight: 700, fontStyle: "italic",
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             maxWidth: 920,
             position: "relative",
           }}>
@@ -172,7 +166,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           </div>
           <div style={{
             marginTop: 36, fontSize: 24, color: brand.accentColor, fontWeight: 700, letterSpacing: 2,
-            opacity: interpolate(frame, [40, 60], [0, 1]),
+            opacity: interpolate(frame, [40, 60], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             — {clientName}
             {closingLabel && <span style={{ opacity: 0.7, marginLeft: 12 }}> · {closingLabel}</span>}
@@ -194,14 +188,26 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
               marginBottom: 28,
             }}>
               {avatarVideoUrl ? (
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER + QUOTE}> already offsets this child's
+                // clock — trimBefore={COVER + QUOTE} therefore skipped 9s of a
+                // reaction clip that is itself only ~3s. The avatar prop is a
+                // short reaction CLIP whose content starts at source frame 0
+                // (the D-ID convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0}); no producer authors a full-reel-spanning
+                // avatar for this composition (requires_did_avatar=false in the
+                // registry). MarketUpdateReel / ExplainerAnimReel differ on
+                // purpose — they slice one continuous narration track across
+                // consecutive sequences by absolute ranges.
                 <Video
+                  objectFit="cover"
                   src={avatarVideoUrl}
-                  startFrom={COVER + QUOTE}
-                  endAt={COVER + QUOTE + REACT}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  trimBefore={0}
+                  trimAfter={REACT}
+                  style={{ width: "100%", height: "100%" }}
                 />
               ) : (
-                <Img
+                <SafeImg
                   src={agentPhotoUrl as string}
                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
                 />

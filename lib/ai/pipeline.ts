@@ -18,6 +18,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   generateAIResponse,
   type AIRequest,
@@ -153,68 +154,74 @@ async function resolvePersonaContext(
 
 // ─── BRAND VOICE INJECTION ────────────────────────────────────────────────────
 
+const BV_SELECT = "brokerage_id, team_id, agent_id, tone, formality_level, key_brand_messages, prohibited_words, preferred_words, tagline, mission_statement"
+
+/** Format one brand_voice_profile row into labeled lines (empty when no profile). */
+function formatVoiceProfileLines(profile: any, label: string): string[] {
+  if (!profile) return []
+  const lines: string[] = [`${label}:`]
+  if (profile.tagline) lines.push(`Tagline: "${profile.tagline}"`)
+  if (profile.tone) lines.push(`Tone: ${profile.tone}`)
+  if (profile.formality_level) lines.push(`Formality: ${profile.formality_level}`)
+  if (profile.key_brand_messages?.length) lines.push(`Key Messages: ${profile.key_brand_messages.join(" | ")}`)
+  if (profile.preferred_words?.length) lines.push(`Preferred Words: ${profile.preferred_words.join(", ")}`)
+  if (profile.prohibited_words?.length) lines.push(`Never Use: ${profile.prohibited_words.join(", ")}`)
+  return lines.length > 1 ? lines : []
+}
+
+/**
+ * resolveBrandVoice — CASCADE: the brokerage brand voice is ALWAYS the base (the
+ * tenant of record whose voice content pulls from), then the TEAM's voice and the
+ * AGENT's own voice layer on top (their tone/tagline/preferred+prohibited words
+ * refine the base). Mirrors resolveBrandContext's brokerage → team → agent cascade
+ * so brand SETTINGS and brand VOICE resolve the same way. brand_voice_profile is
+ * scoped by brokerage_id / team_id / agent_id (scripts 524 + 1049).
+ */
 async function resolveBrandVoice(
-  brokerageId: string,
+  scope: { brokerageId: string; teamId?: string | null; agentId?: string | null },
   brandVoiceOverride?: BrandVoiceContext
 ): Promise<string> {
-  // Inline override takes precedence
-  if (brandVoiceOverride?.inlineBrandVoice) {
-    return brandVoiceOverride.inlineBrandVoice
-  }
+  if (brandVoiceOverride?.inlineBrandVoice) return brandVoiceOverride.inlineBrandVoice
 
-  // Check cache
-  const cached = brandVoiceCache.get(brokerageId)
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.snippet
-  }
+  const cacheKey = `${scope.brokerageId}:${scope.teamId ?? ""}:${scope.agentId ?? ""}`
+  const cached = brandVoiceCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) return cached.snippet
 
   try {
-    const supabase = await createClient()
+    // SERVICE client — the cascade reads the brokerage-BASE and TEAM voice rows
+    // (scoped by brokerage_id / team_id, not the caller's agent_id), which the
+    // user-scoped RLS client silently drops. Mirrors resolveBrandContext, the
+    // brand SETTINGS resolver, which reads the same cross-scope rows via service.
+    const supabase = createServiceClient()
 
-    const { data: brokerage } = await supabase
-      .from("brokerages")
-      .select(`
-        id,
-        name,
-        brand_voice_profile (
-          tone,
-          formality_level,
-          key_brand_messages,
-          prohibited_words,
-          preferred_words,
-          tagline,
-          mission_statement
-        )
-      `)
-      .eq("id", brokerageId)
-      .single()
-
+    const { data: brokerage } = await supabase.from("brokerages").select("id, name").eq("id", scope.brokerageId).single()
     if (!brokerage) return ""
 
-    const profile = (brokerage as any).brand_voice_profile
-    let snippetLines: string[] = []
+    // Base: the brokerage-scoped voice (team_id + agent_id null).
+    const [baseRes, teamRes, agentRes] = await Promise.all([
+      supabase.from("brand_voice_profile").select(BV_SELECT)
+        .eq("brokerage_id", scope.brokerageId).is("team_id", null).is("agent_id", null)
+        .order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      scope.teamId
+        ? supabase.from("brand_voice_profile").select(BV_SELECT).eq("team_id", scope.teamId)
+            .order("updated_at", { ascending: false }).limit(1).maybeSingle()
+        : Promise.resolve({ data: null }),
+      scope.agentId
+        ? supabase.from("brand_voice_profile").select(BV_SELECT).eq("agent_id", scope.agentId)
+            .order("updated_at", { ascending: false }).limit(1).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ])
 
-    if (profile) {
-      snippetLines.push(`BRAND VOICE (${brokerage.name}):`)
-      if (profile.tagline) snippetLines.push(`Tagline: "${profile.tagline}"`)
-      if (profile.tone) snippetLines.push(`Tone: ${profile.tone}`)
-      if (profile.formality_level) snippetLines.push(`Formality: ${profile.formality_level}`)
-      if (profile.key_brand_messages?.length) {
-        snippetLines.push(`Key Messages: ${profile.key_brand_messages.join(" | ")}`)
-      }
-      if (profile.preferred_words?.length) {
-        snippetLines.push(`Preferred Words: ${profile.preferred_words.join(", ")}`)
-      }
-      if (profile.prohibited_words?.length) {
-        snippetLines.push(`Never Use: ${profile.prohibited_words.join(", ")}`)
-      }
-    } else {
-      snippetLines.push(`Brokerage: ${brokerage.name}`)
-    }
+    const snippetLines: string[] = [
+      ...formatVoiceProfileLines(baseRes.data, `BRAND VOICE — ${brokerage.name} (brokerage base)`),
+      ...formatVoiceProfileLines((teamRes as any).data, "TEAM VOICE OVERLAY"),
+      ...formatVoiceProfileLines((agentRes as any).data, "AGENT VOICE OVERLAY"),
+    ]
+    // No profile at any scope → still name the brokerage so content is grounded.
+    if (snippetLines.length === 0) snippetLines.push(`Brokerage: ${brokerage.name}`)
 
-    const snippet = snippetLines.length ? snippetLines.join("\n") : ""
-
-    brandVoiceCache.set(brokerageId, { snippet, expiresAt: Date.now() + BRAND_VOICE_CACHE_TTL_MS })
+    const snippet = snippetLines.join("\n")
+    brandVoiceCache.set(cacheKey, { snippet, expiresAt: Date.now() + BRAND_VOICE_CACHE_TTL_MS })
     return snippet
   } catch (error) {
     console.error("[pipeline] Brand voice resolution failed:", error)
@@ -247,7 +254,10 @@ function buildEnrichedSystem(
 export async function runPipeline(request: PipelineRequest): Promise<PipelineResponse> {
   const [personaContext, brandVoice] = await Promise.all([
     resolvePersonaContext(request.metadata.agentId, request.persona),
-    resolveBrandVoice(request.metadata.brokerageId, request.brandVoice),
+    resolveBrandVoice(
+      { brokerageId: request.metadata.brokerageId, teamId: request.metadata.teamId, agentId: request.metadata.agentId },
+      request.brandVoice,
+    ),
   ])
 
   const enrichedSystem = buildEnrichedSystem(request.system, personaContext, brandVoice)

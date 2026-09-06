@@ -21,7 +21,6 @@
  *   - report_sent_at is set (the agent has explicitly sent it to the buyer)
  */
 
-import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"

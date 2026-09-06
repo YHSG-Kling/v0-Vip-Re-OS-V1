@@ -4,7 +4,6 @@ import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
   Video,
@@ -23,6 +22,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 
 interface VideoProject {
   id: string
@@ -82,7 +82,7 @@ export function VideosDashboard() {
       const { data: inProgress } = await supabase
         .from("ai_video_projects")
         .select("*")
-        .in("status", ["script_generating", "script_ready", "generating"])
+        .in("status", [...VIDEO_IN_PROGRESS_STATUSES])
         .order("created_at", { ascending: false })
         .limit(5)
 
@@ -90,18 +90,25 @@ export function VideosDashboard() {
       const { data: recent } = await supabase
         .from("ai_video_projects")
         .select("*")
-        .eq("status", "video_ready")
+        .in("status", [...VIDEO_FINISHED_STATUSES])
         .order("created_at", { ascending: false })
         .limit(5)
 
       if (inProgress) setInProgressVideos(inProgress)
       if (recent) setRecentVideos(recent)
 
-      // Real views from video_performance_tracking — no synthetic data
-      const { data: perf } = await supabase
-        .from("video_performance_tracking")
-        .select("total_views")
-        .eq("brokerage_id", user?.id ?? "")
+      // Real views from video_performance_tracking — no synthetic data.
+      // This filtered brokerage_id BY AN AUTH USER ID (and fell back to ""),
+      // so it matched nothing even on the happy path: the "real views" figure
+      // was a guaranteed 0 sitting under a comment promising it was real.
+      const { data: viewerRow } = await supabase
+        .from("users").select("brokerage_id").eq("id", user?.id ?? "").maybeSingle()
+      const { data: perf } = viewerRow?.brokerage_id
+        ? await supabase
+            .from("video_performance_tracking")
+            .select("total_views")
+            .eq("brokerage_id", viewerRow.brokerage_id)
+        : { data: null }
       const totalViews = (perf ?? []).reduce((s: number, p: { total_views?: number }) => s + (p.total_views ?? 0), 0)
       setWeeklyViews(totalViews > 0 ? Math.round(totalViews / 4) : 0)
       setLoadError(false)
@@ -117,14 +124,23 @@ export function VideosDashboard() {
     }
   }
 
+  // Cases are the canonical vocabulary (lib/video/video-status). A case on a
+  // retired spelling is a branch the CHECK constraint guarantees can never run.
   function getStatusIcon(status: string) {
     switch (status) {
-      case "video_ready":
+      case "completed":
+      case "published":
         return <CheckCircle className="h-4 w-4 text-green-500" />
       case "failed":
         return <AlertCircle className="h-4 w-4 text-red-500" />
+      case "scripting":
       case "generating":
         return <Loader2 className="h-4 w-4 text-amber-500 animate-spin" />
+      case "draft":
+      case "script_ready":
+      case "queued":
+      case "awaiting_presenter_setup":
+        return <Clock className="h-4 w-4 text-blue-500" />
       default:
         return <Clock className="h-4 w-4 text-blue-500" />
     }
@@ -132,14 +148,22 @@ export function VideosDashboard() {
 
   function getStatusText(status: string) {
     switch (status) {
-      case "script_generating":
+      case "draft":
+        return "Draft"
+      case "scripting":
         return "Writing script..."
       case "script_ready":
         return "Script ready"
+      case "queued":
+        return "Queued for generation"
       case "generating":
         return "Generating video..."
-      case "video_ready":
+      case "awaiting_presenter_setup":
+        return "Waiting on presenter setup"
+      case "completed":
         return "Ready"
+      case "published":
+        return "Published"
       case "failed":
         return "Failed"
       default:
@@ -265,9 +289,25 @@ export function VideosDashboard() {
                       {new Date(video.created_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <Play className="h-4 w-4" />
-                  </Button>
+                  {/* Had no handler — the play control on a finished video did
+                      nothing, and the click fell through to the row, which
+                      navigates to the library instead of playing anything. Only
+                      render it when there is actually a rendered file to play,
+                      and stop the row navigation from swallowing it. */}
+                  {video.video_url && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label={`Play ${video.project_name}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        window.open(video.video_url, "_blank", "noopener,noreferrer")
+                      }}
+                    >
+                      <Play className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>

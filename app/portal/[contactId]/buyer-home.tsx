@@ -8,7 +8,6 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { selectClientMilestones } from "@/lib/kernel/portal"
-import { BUYER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-inference"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
@@ -21,9 +20,10 @@ import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorT
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
 import { BuyerPulseCard } from "@/app/components/portal/BuyerPulseCard"
+import { BuyerBrokerAgreementSignCard } from "@/app/components/portal/BuyerBrokerAgreementSignCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Card, CardContent } from "@/app/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import {
   Home,
@@ -31,16 +31,14 @@ import {
   Calendar,
   FileText,
   MessageSquare,
-  Eye,
   BookOpen,
-  Briefcase,
   ArrowRight,
-  Building,
   Bell,
-  MapPin,
   Clock,
 } from "lucide-react"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ClientActionCard } from "./components/ClientActionCard"
+import { isBuyerStage, type BuyerStage } from "@/lib/contacts/buyer-stage"
 
 interface BuyerHomeProps {
   contactId: string
@@ -166,11 +164,16 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       .limit(3),
     // Education - resolved outside Promise.all via learning_assignments
     Promise.resolve({ data: [] }),
-    // Vendor assignments
+    // Vendor assignments. `vendors` has NO business_name / vendor_type — the
+    // live columns are `name` and `category` (m355 absorbed vendor_directory
+    // into vendors, so there is no other relation those names belonged to).
+    // PostgREST rejected the whole query. Aliased to the same keys
+    // app/actions/portal-seller.ts:getSellerVendors returns, so both portals
+    // hand the render an identical vendor shape.
     activeTransaction
       ? supabase
           .from("vendor_assignments")
-          .select("id, vendor_id, assignment_type, status, scheduled_date, vendor:vendors(id, business_name, vendor_type)")
+          .select("id, vendor_id, assignment_type, status, scheduled_date, vendor:vendors(id, business_name:name, vendor_type:category)")
           .eq("transaction_id", activeTransaction.id)
           .limit(3)
       : Promise.resolve({ data: [] }),
@@ -184,7 +187,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     // milestones fire (LISTING_UNDER_CONTRACT, OFFER_ACCEPTED, etc.)
     supabase
       .from("transparency_updates")
-      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id, metadata")
       .eq("contact_id", contactId)
       .eq("is_visible_to_client", true)
       .order("created_at", { ascending: false })
@@ -199,14 +202,36 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   // National "Buyer Pulse" — what fellow buyers are prioritizing now, distilled (buyer lens) from the
   // SAME weekly market_pulse row the seller portal reads. Net-new buyer-engagement surface; reuses the
   // scraper + gateway + table (no new infra). Renders nothing until the weekly pulse exists.
+  // Same provenance line as the seller card (listing/page.tsx): generated_at
+  // and source_count from market-pulse-runner.ts:51 say when and from how
+  // many threads; insights.generated===false marks the evergreen fallback.
   const { data: pulseRow } = await supabase
     .from("market_pulse")
-    .select("insights")
+    .select("insights, generated_at, source_count")
     .eq("scope", "national")
     .order("pulse_week", { ascending: false })
     .limit(1)
     .maybeSingle()
   const buyerPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+  const buyerPulseHasInsights = Array.isArray(buyerPulse?.insights) && (buyerPulse!.insights as unknown[]).length > 0
+  const buyerPulseGeneratedAt = (pulseRow?.generated_at as string | null) ?? null
+  const buyerPulseSourceCount = typeof pulseRow?.source_count === "number" ? (pulseRow.source_count as number) : 0
+  const buyerPulseIsDistilled = buyerPulse?.generated !== false
+
+  // Buyer broker agreement awaiting THIS buyer's signature. NAR 2024 blocks
+  // showings and offers until one is active (lib/buyer-broker/gate.ts fails
+  // closed), and the click-through path is the one most buyers take.
+  const { data: unsignedAgreement, error: unsignedAgreementError } = await supabase
+    .from("buyer_broker_agreements")
+    .select("id, agreement_type, commission_percentage, commission_flat_amount, commission_payer, expiration_date")
+    .eq("buyer_contact_id", contactId)
+    .in("status", ["draft", "pending_signature"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (unsignedAgreementError) {
+    console.error("[buyer-home] unsigned BBA lookup failed:", unsignedAgreementError.message)
+  }
 
   // Post-1043: completion is on learning_assignments (status='completed').
   // The variable name "completedLessonKeys" is kept for downstream stability
@@ -239,6 +264,16 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   const savedProperties = savedPropertiesResult.data ?? []
   const messages = messagesResult.data ?? []
   const hasCompletedLessons = completedLessonKeys.length > 0
+  // Destructured via the settled result — supabase-js RESOLVES a refused read,
+  // so without this a denial is indistinguishable from "no vendors assigned".
+  // NOTE: `vendorAssignments` is currently read by nothing in this render; the
+  // buyer's vendor surface is <ContactVendorToolkitCard/> below, which fetches
+  // its own data. The query is left correct rather than deleted so the block it
+  // was fetched for can be wired up without re-deriving the shape.
+  const vendorAssignmentsError = (vendorAssignmentsResult as any).error ?? null
+  if (vendorAssignmentsError) {
+    console.error("[buyer-home] vendor assignments read failed:", vendorAssignmentsError.message ?? vendorAssignmentsError)
+  }
   const vendorAssignments = vendorAssignmentsResult.data ?? []
   const financialProfile = financialProfileResult.data ?? null
   const recentUpdates = (recentUpdatesResult as any).data ?? []
@@ -256,8 +291,14 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     daysUnderContract = Math.floor((today.getTime() - contractDate.getTime()) / (1000 * 60 * 60 * 24))
   }
 
-  // Stage meaning map for buyer journey
-  const STAGE_MEANING: Record<string, { headline: string; whatMeans: string; whatNext: string; responsible: string }> = {
+  // Stage meaning map for buyer journey.
+  //
+  // TOTAL over the ladder (lib/contacts/buyer-stage.ts:32 — the canonical
+  // contacts.buyer_stage vocabulary), so `tsc` refuses a stage with no copy. It
+  // used to be `Record<string, …>` with eight of the thirteen states filled in,
+  // and the five it omitted — SEARCH_CONFIGURED, SEARCHING, ON_HOLD, DISENGAGED,
+  // LIFETIME — silently fell through to the generic "Your Journey" placeholder.
+  const STAGE_MEANING: Record<BuyerStage, { headline: string; whatMeans: string; whatNext: string; responsible: string }> = {
     BUYER_CONTACT_CREATED: {
       headline: 'Getting Started',
       whatMeans: "You've been connected with your agent. They're ready to help you find your perfect home.",
@@ -268,6 +309,18 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       headline: 'Financially Ready',
       whatMeans: "Your purchasing power is confirmed. This gives you a real competitive advantage when you find the right home.",
       whatNext: "Now it's time to search — you can make offers immediately when you find the one.",
+      responsible: 'You + Your Agent',
+    },
+    BUYER_SEARCH_CONFIGURED: {
+      headline: 'Your Search Is Set',
+      whatMeans: "Your criteria are saved, so new listings that match get to you first instead of after everyone else has seen them.",
+      whatNext: "Browse your AI picks and save the ones worth a closer look — your agent works from what you save.",
+      responsible: 'You + Your Agent',
+    },
+    BUYER_SEARCHING: {
+      headline: 'Actively Searching',
+      whatMeans: "You're reviewing homes as they come on. This is where a clear yes-or-no on each one moves things fastest.",
+      whatNext: "Tell your agent which homes you want to see and they'll get showings on the calendar.",
       responsible: 'You + Your Agent',
     },
     BUYER_TOUR_ELIGIBLE: {
@@ -300,15 +353,36 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       whatNext: "Inspection, appraisal, and financing are the key milestones ahead. Your team is on it.",
       responsible: 'Your Agent + Team',
     },
+    BUYER_ON_HOLD: {
+      headline: 'On Hold',
+      whatMeans: "Your search is paused. Nothing is lost — your saved homes, criteria and history are all still here.",
+      whatNext: "Message your agent whenever you're ready to pick it back up.",
+      responsible: 'You',
+    },
+    BUYER_DISENGAGED: {
+      headline: 'Search Paused',
+      whatMeans: "We haven't heard from you in a while, so your agent has stopped sending new homes rather than filling your inbox.",
+      whatNext: "One message restarts everything exactly where you left off.",
+      responsible: 'You',
+    },
     BUYER_CLOSED: {
       headline: "You're a Homeowner!",
       whatMeans: "Congratulations — the home is yours. Your agent stays in your corner as a trusted resource for years ahead.",
       whatNext: "Move in, get settled, and know your agent is always here if you need anything.",
       responsible: 'You',
     },
+    BUYER_LIFETIME: {
+      headline: 'Your Agent, For Life',
+      whatMeans: "You're settled in. Your agent keeps an eye on your home's value and the market around it so you're never guessing.",
+      whatNext: "Ask anything — a value check, a vendor recommendation, or when it makes sense to move again.",
+      responsible: 'Your Agent',
+    },
   }
 
-  const stageCtx = STAGE_MEANING[contact.buyer_stage || ''] || {
+  // isBuyerStage narrows before the lookup, so a row carrying a stage the ladder
+  // does not know (a widened CHECK the cache has not absorbed) falls through to
+  // the generic copy instead of indexing the map with an unknown key.
+  const stageCtx = (isBuyerStage(contact.buyer_stage) ? STAGE_MEANING[contact.buyer_stage] : undefined) || {
     headline: 'Your Journey',
     whatMeans: "Your agent is working to make this process smooth and successful for you.",
     whatNext: "Check in with your agent to understand the current status.",
@@ -337,29 +411,48 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
           <h2 className="font-semibold text-base mb-1 text-foreground">{"What's Next For You"}</h2>
           <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{stageCtx.whatNext}</p>
           <div className="flex flex-wrap gap-2">
-            {contact.buyer_stage === 'BUYER_RESEARCHING' && (
+            {/* THREE PHANTOM STAGES. These branches used to compare buyer_stage against
+                BUYER_RESEARCHING, BUYER_ACTIVELY_SEARCHING and BUYER_PREPARING_TO_CLOSE —
+                none of which contacts_buyer_stage_check admits, so no buyer has ever seen
+                one of these buttons and the panel showed only "Message My Agent". Repointed
+                to the canonical ladder (lib/contacts/buyer-stage.ts:32):
+                  BUYER_RESEARCHING        → BUYER_SEARCH_CONFIGURED  (criteria saved, browsing)
+                  BUYER_ACTIVELY_SEARCHING → BUYER_SEARCHING          (same state, real spelling)
+                  BUYER_PREPARING_TO_CLOSE → folded into BUYER_UNDER_CONTRACT; the ladder has
+                                             no separate closing-prep state for a buyer, and
+                                             documents + closing checklist are exactly what
+                                             an under-contract buyer needs. */}
+            {contact.buyer_stage === 'BUYER_SEARCH_CONFIGURED' && (
               <Button size="sm" asChild>
                 <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
               </Button>
             )}
-            {contact.buyer_stage === 'BUYER_ACTIVELY_SEARCHING' && activeTransaction && (
+            {contact.buyer_stage === 'BUYER_SEARCHING' && (
               <>
                 <Button size="sm" asChild>
-                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
+                  <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
                 </Button>
                 <Button size="sm" variant="outline" asChild>
-                  <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
                 </Button>
               </>
             )}
-            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
+            {(contact.buyer_stage === 'BUYER_TOURING' || contact.buyer_stage === 'BUYER_TOUR_ELIGIBLE') && (
               <Button size="sm" asChild>
-                <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+                <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
               </Button>
             )}
-            {contact.buyer_stage === 'BUYER_PREPARING_TO_CLOSE' && (
+            {(contact.buyer_stage === 'BUYER_OFFER_ELIGIBLE' || contact.buyer_stage === 'BUYER_OFFER_SUBMITTED') && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
               <>
                 <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
                   <Link href={`/portal/${contactId}/documents`}>My Documents</Link>
                 </Button>
                 <Button size="sm" variant="outline" asChild>
@@ -372,6 +465,13 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             </Button>
           </div>
         </div>
+
+        {/* CLIENT-AS-ACTOR (manager-registry.ts:778) — the buyer makes a real
+            request (tour a home, find more homes) that flows into the SAME
+            manager bench + BBA/approval gates the agent uses, via the gated
+            /api/portal/client-action route. Sits beside "What's Next" because
+            it IS the next step made actionable. */}
+        <ClientActionCard contactId={contactId} audience="buyer" />
 
         {/* Your Agent Is Working On — transparency section */}
         {activeTransaction && (
@@ -458,6 +558,23 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             Auto-renders for buyer view; auth-gated to the contact's own portal user. */}
         <BuyerFinancialUploadCard contactId={contactId} />
 
+        {/* Buyer representation agreement awaiting signature — click-through e-sign. */}
+        {unsignedAgreement && (
+          <BuyerBrokerAgreementSignCard
+            agreementId={unsignedAgreement.id}
+            agreementType={unsignedAgreement.agreement_type ?? null}
+            commissionLine={
+              unsignedAgreement.commission_percentage != null
+                ? `Compensation: ${unsignedAgreement.commission_percentage}% paid by ${unsignedAgreement.commission_payer ?? "the party named in the document"}.`
+                : unsignedAgreement.commission_flat_amount != null
+                  ? `Compensation: $${Number(unsignedAgreement.commission_flat_amount).toLocaleString()} paid by ${unsignedAgreement.commission_payer ?? "the party named in the document"}.`
+                  : "Compensation terms are set out in the document."
+            }
+            expirationDate={unsignedAgreement.expiration_date ?? null}
+            agentName={primaryAgent?.full_name ?? null}
+          />
+        )}
+
         {/* Immediate needs */}
         {(upcomingShowings.length > 0 || offers.filter((o:any) => ['pending','countered'].includes(o.status)).length > 0) && (
           <div className="space-y-3">
@@ -494,6 +611,34 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             ))}
           </div>
         )}
+
+        {/*
+          THE BUYER'S OWN OFFER LEDGER. OfferStatusCard
+          (app/components/portal/OfferStatusCard.tsx:76) was imported by this page
+          and rendered by nothing — a built component with no surface. The strip
+          above it only ever shows offers in `pending`/`countered`, so a buyer
+          whose offer was submitted, countered-and-withdrawn, expired or ACCEPTED
+          saw no record of it anywhere on their home screen; the accepted case is
+          the one that matters most and the one the card leads with.
+
+          COLUMN NAMES ARE MAPPED, NOT ASSUMED. The query above selects
+          `offer_price` because that is the live column (see the note at the
+          select); the card's Offer contract says `offer_amount`. Handing the raw
+          row over would have rendered "N/A" for every price — the card would
+          have looked wired and been wrong.
+        */}
+        <OfferStatusCard
+          contactId={contactId}
+          offers={(offers as any[]).map((o) => ({
+            id: o.id,
+            listing_id: o.listing_id ?? null,
+            transaction_id: o.transaction_id ?? null,
+            offer_amount: o.offer_price ?? null,
+            status: o.status,
+            created_at: o.created_at,
+            listing: o.listing ?? null,
+          }))}
+        />
 
         {/* Journey navigation */}
         <div>
@@ -560,6 +705,14 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
         {/* Buyer Pulse — community sentiment (buyer lens) from the weekly national market_pulse.
              Arms the buyer with what fellow buyers prioritize so they search + compete with confidence. */}
         <BuyerPulseCard pulse={buyerPulse as any} />
+        {buyerPulseHasInsights && buyerPulseGeneratedAt && (
+          <p className="text-[11px] text-muted-foreground px-1 -mt-4">
+            Pulse as of {new Date(buyerPulseGeneratedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            {buyerPulseIsDistilled && buyerPulseSourceCount > 0
+              ? ` · distilled from ${buyerPulseSourceCount} buyer-forum thread${buyerPulseSourceCount === 1 ? "" : "s"}`
+              : " · evergreen guidance (too few fresh threads to distill this week)"}
+          </p>
+        )}
 
         {/* Agent Contact Card */}
         {agentInfo && (

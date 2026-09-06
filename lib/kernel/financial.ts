@@ -8,7 +8,11 @@
 // Kernel Ownership Rules:
 //   - NO direct DB writes for financial data outside this file
 //   - Every mutation emits a KernelEvent via lifecycle_events
-//   - business_expenses has NO brokerage_id column — filter by agent_id only
+//   - business_expenses HAS a brokerage_id column (and team_id). CORRECTED
+//     2026-08-22: this line claimed the opposite, and createExpenseRecord below
+//     already contradicts it. brokerage_id is NOT NULL since m516 and is stamped
+//     from ctx.brokerageId; trigger business_expenses_derive_tenant is the DB
+//     backstop for writers that omit it. Scope reads by tenant AND agent_id.
 //   - agent_commissions.status transitions: pending → approved → paid
 //   - agent_cap_tracking is source of truth for cap state (not agents.cap_progress)
 //   - All functions are pure async — no global state, no module-level DB calls
@@ -27,8 +31,24 @@
 //   11. emailFinancialReport — send report via email_queue
 
 import { createServiceClient } from "@/lib/supabase/service"
+// BROKERAGE-WIDE MONEY GATES: every role check in this file guards commission /
+// expense / report surfaces backed by the SERVICE client (RLS bypassed), so the
+// app predicate is the only gate. Repointed from inline
+// ["broker","admin","superadmin"] literals to THE finance roster
+// (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin, m472):
+// 'superadmin' was dead (0 live rows store that user_type; the platform's
+// superadmin is user_type='admin' + platform_role='superadmin'), and
+// broker_owner — a storable seat that OWNS the brokerage — was wrongly refused.
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
+import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
+import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
+import { resolveLedTeamId } from "./resolve-user-team"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { readCapProgress } from "@/lib/finance/cap-progress"
+import type { SupabaseClient } from "@supabase/supabase-js"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -60,6 +80,43 @@ export interface FinancialActorContext {
   agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
+  /**
+   * `users.platform_role` — the OTHER half of staff identity, and the half this
+   * shape was missing. Same reason it exists on AuthResult in
+   * lib/kernel/api-auth.ts: staff identity is DUAL-COLUMN, and the platform's
+   * only superadmin on this database is (user_type='admin',
+   * platform_role='superadmin'). A context carrying `userType` alone cannot
+   * represent that person, so `ctx.userType === "superadmin"` was a test no live
+   * account could ever pass.
+   *
+   * OPTIONAL AND NULL-BY-DEFAULT ON PURPOSE. Callers that legitimately do not
+   * know the column simply omit it; `undefined` means "unknown", and
+   * loadFinancialWorkspace then resolves the FACT from `users` rather than
+   * assuming one. `null` means "known, and this person is not staff" — every
+   * tenant user. Neither value ever grants anything on its own.
+   */
+  platformRole?: string | null
+  /**
+   * m526 — IS THIS ACTOR THE PRINCIPAL OF A TEAM-SCALE TENANT?
+   *
+   * OWNER RULING: on TEAM and SOLO tier the tenant's money IS the team's money,
+   * so its lead reads and administers its books; on BROKERAGE tier the same
+   * person is one of several leads in a larger office and m472/m473 stand — own
+   * team only, never the office's P&L.
+   *
+   * RESOLVED ONCE, at context build, by
+   * `lib/auth/resolve-user-role.ts#resolveTenantPrincipalTeamLead` — the app-side
+   * twin of `public.is_tenant_principal_team_lead()`. It is carried here for the
+   * same reason `platformRole` is: the eight gates below run on the SERVICE
+   * client (RLS bypassed), so the app predicate is the ONLY gate, and they are
+   * sync and cannot await a two-query lookup eight times.
+   *
+   * OPTIONAL AND FAIL-CLOSED. `undefined` means "nobody resolved this" and
+   * `null` means "resolved, and no"; only an explicit `true` widens anybody.
+   * A caller that cannot run the resolution therefore gets today's behaviour
+   * exactly, never a free grant.
+   */
+  isTenantPrincipal?: boolean | null
 }
 
 export interface KernelFinancialResult<T = void> {
@@ -118,6 +175,15 @@ export interface FinancialWorkspace {
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"
+  /**
+   * The team this actor LEADS (`teams.team_lead_id = userId`), or null. It is
+   * returned because `accessLevel: "team"` is otherwise an unusable answer — it
+   * says "scope this to your team" without naming the team, which is what forced
+   * every team surface to re-derive it from `users.team_id` and get a different
+   * answer. Null for everyone who leads no team, including brokerage/system
+   * actors whose wider scope does not come from a team link.
+   */
+  teamId:       string | null
   validatedAt:  string
 }
 
@@ -192,6 +258,11 @@ export interface FinancialExportResult {
 }
 
 // ─── INPUT CONTRACTS ──────────────────────────────────────────────────────────
+/** The deal side a commission was earned on. agent_commissions.side holds it and
+ *  loadAgentCommissions returns it; until wave 26 nothing WROTE it. Same three
+ *  values the duplicate creator in app/actions/agents.ts offered (§6). */
+export type CommissionSide = "listing" | "buying" | "both"
+
 export interface CreateCommissionRecordInput {
   ctx: FinancialActorContext
   agentId: string
@@ -201,6 +272,26 @@ export interface CreateCommissionRecordInput {
   brokerageFee?: number
   franchiseFee?: number
   additionalFees?: Array<{ name: string; amount: number }>
+  /** The deal's REAL close date, "YYYY-MM-DD" or an ISO timestamp.
+   *
+   *  PORTED IN WAVE 26 from app/actions/agents.ts:addAgentCommission, the
+   *  never-surfaced duplicate that carried it. This creator used to hardcode
+   *  `close_date: new Date()` — "closed today" — for every row it wrote, while
+   *  loadAgentCommissions ORDERS BY close_date and returns it to callers. So the
+   *  one commission ledger was ordered and reported on a date that was really
+   *  "when the button was pressed": a deal filed a week after closing sorted
+   *  ahead of one filed the same day it closed, and a backdated close was
+   *  unrepresentable.
+   *
+   *  OPTIONAL, and the fallback is stated rather than hidden: when a caller has
+   *  no close date on hand the write still falls back to today's date, which is
+   *  what every existing caller was already getting. It is a fallback, not a
+   *  fact — pass the real date whenever the deal has one. */
+  closeDate?: string | null
+  /** Which side of the deal earned this. Optional: null is honest ("not
+   *  recorded"), and is what every row carried before this field existed —
+   *  never guessed from the transaction. */
+  side?: CommissionSide | null
 }
 
 export interface CreatedCommissionRecord {
@@ -293,6 +384,39 @@ export interface EmailFinancialReportInput {
 // ─── COMMAND IMPLEMENTATIONS ──────────────────────────────────────────────────
 
 /**
+ * `users.platform_role` for one actor — the half of staff identity a caller may
+ * not have been able to supply.
+ *
+ * MODULE-PRIVATE. It exists so a context built by a caller that never read the
+ * column (`ctx.platformRole === undefined`) degrades to READING THE FACT rather
+ * than to assuming the person is not staff — which is precisely how the live
+ * superadmin was being refused. A caller that HAS read the column passes it
+ * (including as an explicit `null`) and no second query happens.
+ *
+ * The error is DESTRUCTURED: supabase-js resolves a refused read, so `const
+ * { data }` alone would report "permission denied" as "not staff". A refusal
+ * here returns null, which is fail-CLOSED — it can only ever narrow somebody to
+ * the scope their user_type already earns them, never widen them — but it is
+ * logged, because null is otherwise indistinguishable from a genuine tenant user.
+ */
+async function resolveActorPlatformRole(
+  client: SupabaseClient<any, any, any>,
+  userId: string,
+): Promise<string | null> {
+  const { data, error } = await client
+    .from("users")
+    .select("platform_role")
+    .eq("id", userId)
+    .maybeSingle()
+
+  if (error) {
+    console.error(`[financial] users.platform_role read REFUSED for ${userId}: ${error.message}`)
+    return null
+  }
+  return (data as { platform_role?: string | null } | null)?.platform_role ?? null
+}
+
+/**
  * loadFinancialWorkspace — Verify actor identity + determine access level
  */
 export async function loadFinancialWorkspace(
@@ -302,11 +426,62 @@ export async function loadFinancialWorkspace(
   const supabase = createServiceClient()
 
   try {
-    // Determine access level first — broker/admin users may not have an agents row
+    // ── ACCESS LEVEL — resolved from FACTS, not from the `user_type` label ────
+    //
+    // This block used to read:
+    //
+    //     if (ctx.userType === "team_lead")  accessLevel = "team"
+    //     if (ctx.userType === "superadmin") accessLevel = "system"
+    //
+    // and both tests were inverted against the live database.
+    //
+    // TEAM. The owner's ruling is "a team lead is an agent that runs their own
+    // team". Measured live, teamlead@vip.demo is user_type='agent' and LEADS one
+    // team — so the label test gave the real lead accessLevel="personal" and they
+    // never saw their team's numbers — while buyer@yourbrokerage.com is
+    // user_type='team_lead' and leads NOTHING, so the label test handed them a
+    // team scope for a team that does not exist. The fact is the
+    // `teams.team_lead_id` FK, which is what RLS was moved onto in m444 via
+    // public.current_user_led_team_id(). resolveLedTeamId() is that function's
+    // app-side twin, so the app and the database now give the same answer.
+    //
+    // SYSTEM. Staff identity is DUAL-COLUMN and the platform's only superadmin is
+    // (user_type='admin', platform_role='superadmin') — `ctx.userType ===
+    // "superadmin"` alone described nobody. Both columns are read, which is the
+    // same shape public.is_platform_admin() uses in RLS and requireSuperadmin()
+    // uses in app/actions/superadmin/platform-staff.ts. platform_role='superadmin'
+    // is written solely by the superadmin-gated staff CRUD, so this widens to the
+    // genuine superadmin and to nobody else.
+    //
+    // BROKER/ADMIN IS DELIBERATELY UNTOUCHED — 'broker' and 'admin' are real
+    // user_type values held by real brokerage users, and brokerage scope is still
+    // exactly what they get.
+    //
+    // ORDER IS PRECEDENCE, WIDEST LAST: a broker who also leads a team keeps
+    // brokerage scope (wider), and the superadmin keeps system scope, rather than
+    // being narrowed to one team by the lead link.
+    const platformRole =
+      ctx.platformRole !== undefined
+        ? ctx.platformRole
+        : await resolveActorPlatformRole(supabase, ctx.userId)
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    const isSuperadmin = isPlatformSuperadminIdentity(ctx.userType, platformRole)
+
+    const ledTeamId = await resolveLedTeamId(supabase, ctx.userId)
+
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
-    if (ctx.userType === "team_lead") accessLevel = "team"
+    if (ledTeamId) accessLevel = "team"
+    // m526 — ON A TEAM-SCALE TENANT THE LEAD'S TEAM SCOPE *IS* THE TENANT SCOPE.
+    // Placed above broker/admin and below superadmin, keeping the "ORDER IS
+    // PRECEDENCE, WIDEST LAST" rule this block already documents: it can only
+    // ever WIDEN a lead from "team" to "brokerage", never narrow a broker who
+    // also happens to lead a team. On BROKERAGE tier `isTenantPrincipal` is
+    // false and the lead stays on "team" — m472/m473 untouched. `undefined`
+    // (unresolved) is not `true`, so a caller that never resolved the fact gets
+    // exactly today's answer (§4, fail closed).
+    if (ctx.isTenantPrincipal === true) accessLevel = "brokerage"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
-    if (ctx.userType === "superadmin") accessLevel = "system"
+    if (isSuperadmin) accessLevel = "system"
 
     if (ctx.agentId) {
       // Agent path: verify identity via agents table
@@ -352,6 +527,7 @@ export async function loadFinancialWorkspace(
         brokerageId: ctx.brokerageId,
         userType:    ctx.userType,
         accessLevel,
+        teamId:      ledTeamId,
         validatedAt: new Date().toISOString(),
       },
     }
@@ -401,7 +577,11 @@ export async function loadAgentFinancialSummary(
         capAmount:        capData?.cap_amount ?? 0,
         capPaidToDate:    capData?.cap_paid_to_date ?? 0,
         capIsCapped:      capData?.is_capped ?? false,
-        capProgressPct:   capData ? (capData.cap_paid_to_date / capData.cap_amount) * 100 : 0,
+        // ONE READING of the cap, shared with the earnings rollup that now
+        // stamps agent_earnings.cap_progress_pct — see lib/finance/cap-progress.ts.
+        // The inline `(paid / amount) * 100` this replaces divided by zero for an
+        // uncapped agent and handed the progress bar NaN, which renders as "NaN%".
+        capProgressPct:   readCapProgress(capData).pct ?? 0,
         anniversaryStart: capData?.anniversary_start ?? "",
         anniversaryEnd:   capData?.anniversary_end ?? "",
       },
@@ -539,15 +719,91 @@ export async function loadCommissionDistributions(
       query = query.eq("agent_id", agentId)
     }
 
-    const { data: distributions } = await query
+    const { data: distributions, error: distError } = await query
+    if (distError) {
+      return { success: false, error: distError.message }
+    }
+
+    // ── RESOLVE RECIPIENT NAMES (2026-08-27, lane CB — §1.2 the missing half) ──
+    // recipientName was hardcoded null after the recipient_id/recipient_name
+    // tombstone below, and the one UI consumer
+    // (app/dashboard/financials/agent/agent-financials-client.tsx:639 renders
+    // `recipientName ?? recipientId`) therefore showed a RAW UUID in the
+    // recipient cell. The recipient the engine stamps is agent_id / team_id, so
+    // the name is resolvable: agents.id → agents.user_id → users.first/last name
+    // (agents.id and users.id are DISJOINT classes — never fed to each other,
+    // CLAUDE.md §3), and teams.id → teams.name. Batched, error-READ, and
+    // display-only: a refused name read logs and falls back to null (the UI then
+    // shows the id) rather than failing the money list — the amounts are the
+    // load-bearing data, the label is not.
+    const agentIds = [...new Set((distributions ?? []).map((d) => d.agent_id).filter(Boolean))] as string[]
+    const teamIds = [...new Set((distributions ?? []).map((d) => d.team_id).filter(Boolean))] as string[]
+    const agentNameById = new Map<string, string>()
+    const teamNameById = new Map<string, string>()
+
+    if (agentIds.length > 0) {
+      const { data: agentRows, error: agentErr } = await supabase
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+        .eq("brokerage_id", brokerageId)
+      if (agentErr) {
+        console.error("[financial-kernel] distribution agent lookup refused:", agentErr.message)
+      } else if (agentRows && agentRows.length > 0) {
+        const userIds = [...new Set(agentRows.map((a) => a.user_id).filter(Boolean))] as string[]
+        const { data: userRows, error: userErr } = await supabase
+          .from("users")
+          .select("id, first_name, last_name")
+          .in("id", userIds)
+        if (userErr) {
+          console.error("[financial-kernel] distribution user-name lookup refused:", userErr.message)
+        } else {
+          const userNameById = new Map(
+            (userRows ?? []).map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ").trim()]),
+          )
+          for (const a of agentRows) {
+            const name = a.user_id ? userNameById.get(a.user_id) : undefined
+            if (name) agentNameById.set(a.id, name)
+          }
+        }
+      }
+    }
+
+    if (teamIds.length > 0) {
+      const { data: teamRows, error: teamErr } = await supabase
+        .from("teams")
+        .select("id, name")
+        .in("id", teamIds)
+        .eq("brokerage_id", brokerageId)
+      if (teamErr) {
+        console.error("[financial-kernel] distribution team lookup refused:", teamErr.message)
+      } else {
+        for (const t of teamRows ?? []) {
+          if (t.name) teamNameById.set(t.id, t.name)
+        }
+      }
+    }
 
     return {
       success: true,
       data: (distributions ?? []).map((d) => ({
         id:               d.id,
         agentId:          d.agent_id,
-        recipientId:      d.recipient_id,
-        recipientName:    d.recipient_name ?? "",
+        // TOMBSTONE (2026-08-27, §1.1): this used to read `d.recipient_id` and
+        // `d.recipient_name`. recipient_id is writer-less — the engine's ONLY
+        // insert (lib/commission/waterfall/11-validate-persist.ts:164
+        // distributionRows) writes distribution_type + agent_id / team_id and
+        // has never named it; live-verified 2026-08-27 on hrvaqgvukzxfskkcrwbt:
+        // 0 rows, no trigger, no pg_proc, no FK, no view touches it (m571
+        // retires the column). recipient_name was worse: NOT A COLUMN on
+        // commission_distributions at all, so `?? ""` rendered every recipient
+        // cell as an empty string and masked the null id behind it. SURVIVORS:
+        // agent_id / team_id + distribution_type — the columns the engine
+        // actually stamps the recipient with, now resolved to display names above.
+        recipientId:      d.agent_id ?? d.team_id ?? null,
+        recipientName:    (d.agent_id ? agentNameById.get(d.agent_id) : undefined)
+                            ?? (d.team_id ? teamNameById.get(d.team_id) : undefined)
+                            ?? null,
         type:             d.distribution_type,
         calculatedAmount: d.calculated_amount,
         status:           d.status,
@@ -680,7 +936,7 @@ export async function markCommissionApproved(
 
   try {
     // Guard: only brokerage users can approve
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to approve commissions" }
     }
 
@@ -706,13 +962,26 @@ export async function markCommissionApproved(
 
     // Update status
     const approvedAt = new Date().toISOString()
-    await supabase
+    // A refused status transition used to return { success: true } — the caller,
+    // the splits mirror and the deal stamp all then proceeded as if the
+    // commission had been approved while the row stayed 'pending'.
+    const { error: approveError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, approved_at: approvedAt, approved_by: approvedBy })
       .eq("id", commissionId)
+    if (approveError) {
+      return { success: false, error: `Could not approve the commission: ${approveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
+
+    // …and onto the deal stamp, so approval is visible on the retained record too.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+    })
 
     // Emit lifecycle event
     await supabase
@@ -746,7 +1015,7 @@ export async function markCommissionPaid(
 
   try {
     // Guard: only brokerage users can mark paid
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to mark commissions as paid" }
     }
 
@@ -772,14 +1041,29 @@ export async function markCommissionPaid(
 
     const paidAt = paidAtInput ?? new Date().toISOString()
 
-    // Update status
-    await supabase
+    // Update status. THIS IS THE PAYOUT RECORD. A refused write here previously
+    // returned success, and the splits ledger and the seven-year deal stamp were
+    // then mirrored to 'paid' against a row still reading 'pending'.
+    const { error: payError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, paid_at: paidAt, payment_method: method ?? null })
       .eq("id", commissionId)
+    if (payError) {
+      return { success: false, error: `Could not mark the commission paid: ${payError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
+
+    // Mirror onto the DEAL STAMP (transaction_commissions) — the record real-estate
+    // retention keeps for seven years. Paying the agent here without stamping the
+    // deal leaves that record saying "pending" forever, which is a false record.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+      paid_at:        paidAt,
+    })
 
     // Emit lifecycle event
     await supabase
@@ -873,7 +1157,7 @@ export async function markCommissionDisputed(input: {
 
     // Gate: the owning agent, or a broker/admin.
     const isOwner = ctx.agentId != null && ctx.agentId === commission.agent_id
-    const isBroker = ["broker", "admin", "superadmin"].includes(ctx.userType)
+    const isBroker = isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })
     if (!isOwner && !isBroker) return { success: false, error: "Only the owning agent or a broker can dispute this commission" }
 
     if (!COMMISSION_STATUS_TRANSITIONS[commission.status]?.includes("disputed")) {
@@ -881,10 +1165,15 @@ export async function markCommissionDisputed(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // A dispute that reports success without landing leaves the agent believing
+    // their objection is on the record when the row is untouched.
+    const { error: disputeError } = await supabase
       .from("agent_commissions")
       .update({ status: "disputed", dispute_reason: trimmed, disputed_at: now, disputed_by: ctx.userId, dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
+    if (disputeError) {
+      return { success: false, error: `Could not file the dispute: ${disputeError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId)
@@ -916,7 +1205,7 @@ export async function resolveCommissionDispute(input: {
   const { ctx, commissionId, brokerageId, resolution, notes } = input
   const supabase = createServiceClient()
   try {
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Only a broker can resolve a dispute" }
     }
     const { data: commission } = await supabase
@@ -934,7 +1223,9 @@ export async function resolveCommissionDispute(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // Resolving a dispute moves money back into the payable lifecycle; a refused
+    // write reported as resolved leaves the commission stuck on 'disputed'.
+    const { error: resolveError } = await supabase
       .from("agent_commissions")
       .update({
         status: nextStatus,
@@ -945,6 +1236,9 @@ export async function resolveCommissionDispute(input: {
         updated_at: now,
       })
       .eq("id", commissionId)
+    if (resolveError) {
+      return { success: false, error: `Could not resolve the dispute: ${resolveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId)
@@ -972,8 +1266,26 @@ export async function createExpenseRecord(
   const supabase = createServiceClient()
 
   try {
-    // Guard: owner can only create own expenses (unless broker/admin)
-    if (ctx.agentId !== agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    // Guard: owner can only create own expenses (unless broker/admin).
+    //
+    // THIS IS NOT THE WHOLE GATE, and saying so here is the point. `agentId`
+    // arrives as a PARAMETER and this function writes on the SERVICE-ROLE client,
+    // so the roster check below answers "may this rank book someone else's cost"
+    // but NOT "is that someone in the caller's brokerage" — without which a
+    // finance admin could name an agent in ANOTHER tenant while brokerage_id
+    // downstream is stamped with the CALLER's, filing one brokerage's cost onto
+    // another's books.
+    //
+    // The tenant half lives ONE layer up, at
+    // app/actions/financial-kernel.ts#authorizeAgentScope, which every other
+    // agentId-taking action already calls and which createExpenseRecordAction now
+    // calls too (added 2026-08-22). It is not re-implemented here: docs/wave4-slice3.md
+    // rules that authorization belongs in the action layer and that these kernel
+    // functions trust the ctx they are handed, and a second dialect of the same
+    // clause is the drift CLAUDE.md §6 forbids. Any NEW caller of
+    // createExpenseRecord that does not come through that action must apply the
+    // same helper before calling.
+    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Can only create expenses for yourself" }
     }
 
@@ -990,15 +1302,34 @@ export async function createExpenseRecord(
     const now = new Date().toISOString()
     const recordDate = expenseDate ?? new Date().toISOString().split("T")[0]
 
-    // Insert expense record
-    // NOTE: business_expenses has NO brokerage_id column — only agent_id
+    // business_expenses.description is NOT NULL in the live schema, so
+    // `description ?? null` did not write an anonymous expense — it made the
+    // whole insert fail, and the caller learned that only from a raw Postgres
+    // message. Ask for the description instead.
+    const expenseDescription = description?.trim()
+    if (!expenseDescription) {
+      return { success: false, error: "A description is required for an expense" }
+    }
+
+    // Insert expense record.
+    //
+    // The comment here used to read "business_expenses has NO brokerage_id
+    // column — only agent_id". That is false against the live schema: the table
+    // carries brokerage_id AND team_id. Believing it meant every expense written
+    // through the kernel was tenant-orphaned, while logScopedExpense in
+    // app/actions/financials.ts set them — two writers, two shapes, and reports
+    // that scope by brokerage silently missed the kernel's rows.
     const { data: expense, error: insertError } = await supabase
       .from("business_expenses")
       .insert({
         agent_id:     agentId,
+        brokerage_id: ctx.brokerageId,
+        // team_id is left to the DB: FinancialActorContext does not carry a
+        // team, and guessing one from the actor would mis-file an expense a
+        // broker recorded for an agent on a different team.
         category,
         amount,
-        description:  description ?? null,
+        description:  expenseDescription,
         receipt_url:  receiptUrl ?? null,
         expense_date: recordDate,
         created_at:   now,
@@ -1042,7 +1373,7 @@ export async function createExpenseRecord(
 export async function createCommissionRecord(
   input: CreateCommissionRecordInput
 ): Promise<KernelFinancialResult<CreatedCommissionRecord>> {
-  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees } = input
+  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees, closeDate, side } = input
   const supabase = createServiceClient()
 
   try {
@@ -1107,7 +1438,14 @@ export async function createCommissionRecord(
         transaction_id: transactionId,
         gross_commission: grossCommission,
         agent_split_percent: agentSplit,
-        close_date: new Date().toISOString(),
+        // THE DEAL'S CLOSE DATE WHEN THE CALLER HAS ONE. The `?? new Date()`
+        // fallback is the OLD behaviour preserved for callers that pass nothing
+        // — it means "we were not told when this closed, so we recorded when it
+        // was filed". It is not a claim about the deal. See closeDate on
+        // CreateCommissionRecordInput.
+        close_date: closeDate ?? new Date().toISOString(),
+        // Null = not recorded. Never inferred from the transaction.
+        side: side ?? null,
         status: "pending",
       })
       .select("id")
@@ -1117,16 +1455,42 @@ export async function createCommissionRecord(
       return { success: false, error: error?.message || "Failed to create commission record" }
     }
 
+    // OFFICE OF RECORD for the PRODUCING agent — `agentId`, not `ctx.userId`,
+    // because a broker may be creating this record on an agent's behalf and the
+    // deal was closed out of the AGENT's office. Resolved through the ONE
+    // precedence rule (./resolve-user-office: users.location_id wins over
+    // agents.location_id); an agent with no linked user takes the pure form of
+    // that same rule rather than a second one written out here. Stamped on the
+    // split below so a later office transfer cannot drag closed history with it
+    // (owner ruling; see the OfficeProduction comment in
+    // lib/intelligence/brokerage-pnl.ts, which reads this stamp).
+    const { data: agentRow, error: agentOfficeErr } = await supabase
+      .from("agents").select("user_id, location_id").eq("id", agentId).maybeSingle()
+    if (agentOfficeErr) {
+      // Never silently becomes "no office": that would file real money under
+      // "No office assigned" on the owner's report and read as a real finding.
+      console.error(`[createCommissionRecord] agent office read REFUSED for ${agentId}: ${agentOfficeErr.message}`)
+    }
+    const agentOffice = (agentRow as { user_id?: string | null; location_id?: string | null } | null) ?? null
+    const office = agentOffice?.user_id
+      ? await resolveUserOffice(supabase, agentOffice.user_id)
+      : pickUserOffice(null, agentOffice?.location_id ?? null)
+
     // COMMISSION SPLITS LEDGER (burn-down round 4): the agent financials page
     // and brokerage-P&L intelligence read commission_splits — writer-less until
     // now, so both rendered empty forever. One split row per commission with
     // the SAME numbers the waterfall computed (fees + cap credit in metadata);
     // status mirrors the commission lifecycle (live CHECK: pending/approved/
     // paid/disputed/cancelled). Best-effort: the commission is already the
-    // source of truth — a split-ledger failure never blocks the close.
-    await supabase.from("commission_splits").insert({
+    // source of truth — a split-ledger failure never blocks the close. But it is
+    // never SILENT either: supabase-js resolves a refused write, so an
+    // undestructured insert would swallow a real failure — including the one
+    // ordering hazard this row now has, a deploy that lands ahead of m427 and so
+    // writes `location_id` to a column that does not exist yet.
+    const { error: splitErr } = await supabase.from("commission_splits").insert({
       agent_id: agentId,
       brokerage_id: ctx.brokerageId,
+      location_id: office.locationId,
       transaction_id: transactionId,
       commission_id: commission.id,
       agent_amount: agentNet,
@@ -1134,6 +1498,9 @@ export async function createCommissionRecord(
       status: "pending",
       metadata: { fee_breakdown: feeBreakdown, capped_amount: cappedAmount, agent_split_percent: agentSplit },
     })
+    if (splitErr) {
+      console.error(`[createCommissionRecord] commission_splits ledger write FAILED for commission ${commission.id}: ${splitErr.message}`)
+    }
 
     if (capRow && !cappedAmount) {
       await supabase
@@ -1210,7 +1577,7 @@ export async function exportFinancialReport(
 
   try {
     // Guard: only authorized users can export
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
 
@@ -1282,7 +1649,7 @@ export async function emailFinancialReport(
 
   try {
     // Guard: only authorized users can email reports
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to email reports" }
     }
 
@@ -1427,7 +1794,7 @@ export async function loadAgentFinancialDashboardSummary(
         .from("transactions")
         .select("*")
         .eq("agent_id", input.agentId)
-        .in("status", ["active", "pending"]),
+        .in("status", [...TRANSACTION_STATUSES_OPEN]),
 
       service
         .from("agent_commissions")

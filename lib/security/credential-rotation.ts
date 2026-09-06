@@ -27,12 +27,34 @@ export function credentialRotationStatus(
   return "ok"
 }
 
-// The OAuth credential tables that carry token_expires_at + a refresh_token.
-const CREDENTIAL_SOURCES: Array<{ table: string; providerCol: string }> = [
-  { table: "platform_credentials", providerCol: "platform" },
-  { table: "agent_api_credentials", providerCol: "service_type" },
-  { table: "social_media_accounts", providerCol: "platform" },
-  { table: "calendar_provider_accounts", providerCol: "provider" },
+/**
+ * The credential tables that carry token_expires_at.
+ *
+ * THE COLUMN NAMES ARE PER-TABLE AND THEY ARE NOT INTERCHANGEABLE. This list
+ * declared calendar_provider_accounts' provider column as `provider`; the column
+ * is `provider_type`, and that table has NO refresh_token column at all
+ * (verified live). So the scan below selected two columns that do not exist,
+ * PostgREST answered with an error, and — because the query result is
+ * destructured as `{ data }` with the error discarded — `data` came back null
+ * and the loop ran zero times. The try/catch could not help either: supabase-js
+ * RESOLVES a failed query rather than throwing.
+ *
+ * The effect is the one that matters for a security monitor: it reported on
+ * three of the four sources it claims to cover, and a silently-expired calendar
+ * token was never once flagged. A monitor with a hole in it is worse than no
+ * monitor, because the green result is trusted.
+ *
+ * `hasRefreshToken` marks which tables actually store a token to exchange.
+ * calendar_provider_accounts stamps an expiry but holds no tokens — the real
+ * OAuth material lives in platform_credentials / agent_api_credentials — so it
+ * can be WATCHED for staleness but can never be auto-refreshed. It needs a
+ * human to reconnect, and saying so is the point.
+ */
+const CREDENTIAL_SOURCES: Array<{ table: string; providerCol: string; hasRefreshToken: boolean }> = [
+  { table: "platform_credentials", providerCol: "platform", hasRefreshToken: true },
+  { table: "agent_api_credentials", providerCol: "service_type", hasRefreshToken: true },
+  { table: "social_media_accounts", providerCol: "platform", hasRefreshToken: true },
+  { table: "calendar_provider_accounts", providerCol: "provider_type", hasRefreshToken: false },
 ]
 
 export interface RotationRisk {
@@ -53,20 +75,38 @@ export async function loadRotationRisks(client?: Svc, now: Date = new Date(), wa
   const risks: RotationRisk[] = []
   const horizon = new Date(now.getTime() + warnDays * 86_400_000).toISOString()
 
-  for (const { table, providerCol } of CREDENTIAL_SOURCES) {
+  for (const { table, providerCol, hasRefreshToken } of CREDENTIAL_SOURCES) {
     try {
-      const { data } = await svc
+      // Only ask for refresh_token where the column exists — selecting a column
+      // a table does not have fails the WHOLE query, taking the rows that do
+      // exist down with it.
+      const columns = ["id", "brokerage_id", "token_expires_at", providerCol]
+      if (hasRefreshToken) columns.push("refresh_token")
+
+      const { data, error } = await svc
         .from(table)
-        .select(`id, brokerage_id, token_expires_at, refresh_token, ${providerCol}`)
+        .select(columns.join(", "))
         .not("token_expires_at", "is", null)
         .lte("token_expires_at", horizon)   // expired OR within the warn window
         .limit(1000)
+
+      // READ THE ERROR. supabase-js RESOLVES a failed query instead of throwing,
+      // so the catch below never sees a bad column name — which is exactly how
+      // one of the four sources went unscanned without a single log line. A
+      // monitor that cannot tell "no risks" from "the query failed" reports
+      // healthy either way.
+      if (error) {
+        console.error(`[credential-rotation] scan of ${table} FAILED (source not covered):`, error.message)
+        continue
+      }
+
       for (const r of (data ?? []) as any[]) {
         const status = credentialRotationStatus({ tokenExpiresAt: r.token_expires_at }, now, warnDays)
         if (status === "expired" || status === "expiring_soon") {
           risks.push({
             table, id: r.id, brokerageId: r.brokerage_id ?? null, provider: r[providerCol] ?? null,
-            status, tokenExpiresAt: r.token_expires_at, hasRefreshToken: !!r.refresh_token,
+            status, tokenExpiresAt: r.token_expires_at,
+            hasRefreshToken: hasRefreshToken ? !!r.refresh_token : false,
           })
         }
       }

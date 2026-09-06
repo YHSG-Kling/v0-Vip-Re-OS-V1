@@ -2,7 +2,8 @@
 //
 // SKILL-FRESHNESS RADAR (recruiting_manager) — the live side of the continuing-competency loop. Per
 // active agent it reads the REAL last-practice signal for each skill (objection_training_sessions,
-// agent_quiz_attempts, agent_courses), scores freshness, and when a skill has gone STALE (or a tenured
+// agent_quiz_attempts, learning_assignments — the canonical agent-module completion rail), scores
+// freshness, and when a skill has gone STALE (or a tenured
 // agent has never proven it) proposes ONE gated, short "refresher" nudge to the agent so their edge
 // doesn't dull. Reuses the gated proposal rail (nothing auto-sends); deduped per (agent, skill, month).
 // Best-effort; never throws into a caller.
@@ -30,7 +31,12 @@ async function gatherSkillSignals(svc: Svc, agent: { id: string; user_id: string
       ? svc.from("objection_training_sessions").select("completed_at, total_score").eq("agent_user_id", agent.user_id).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle()
       : Promise.resolve({ data: null }),
     svc.from("agent_quiz_attempts").select("created_at, score, passed").eq("agent_id", agent.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    svc.from("agent_courses").select("completed_at, score").eq("agent_id", agent.id).eq("status", "passed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
+    // Coursework = the agent's most recent COMPLETED learning_modules assignment (the canonical
+    // agent-education rail). The legacy agent_courses table had no runtime writer, so this signal was
+    // permanently null; learning_assignments is the live, writeable completion source.
+    agent.user_id
+      ? svc.from("learning_assignments").select("completed_at, quiz_score").eq("agent_user_id", agent.user_id).eq("status", "completed").is("contact_id", null).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle()
+      : Promise.resolve({ data: null }),
   ])
   const objData = (obj as any).data
   const quizData = (quiz as any).data
@@ -39,13 +45,13 @@ async function gatherSkillSignals(svc: Svc, agent: { id: string; user_id: string
     { area: "objection_handling", lastPracticedDays: daysSince(objData?.completed_at, now), lastScore: objData?.total_score ?? null },
     // A failed quiz counts as a weak score even if recent.
     { area: "product_knowledge", lastPracticedDays: daysSince(quizData?.created_at, now), lastScore: quizData ? (quizData.passed === false ? Math.min(quizData.score ?? 0, 50) : quizData.score ?? null) : null },
-    { area: "coursework", lastPracticedDays: daysSince(courseData?.completed_at, now), lastScore: courseData?.score ?? null },
+    { area: "coursework", lastPracticedDays: daysSince(courseData?.completed_at, now), lastScore: courseData?.quiz_score ?? null },
   ]
 }
 
 /** ACADEMY → BRIEFING LOOP: one agent's freshness report, for the morning
  *  briefing's skill line. Same signals the radar uses (objection drills,
- *  quizzes, PASSED courses) — the briefing and the radar can never disagree. */
+ *  quizzes, COMPLETED modules) — the briefing and the radar can never disagree. */
 export async function loadAgentSkillFreshness(
   svc: Svc, agent: { id: string; user_id: string | null }, now: Date = new Date(),
 ) {
@@ -54,6 +60,25 @@ export async function loadAgentSkillFreshness(
 }
 
 export interface SkillRadarResult { scanned: number; nudged: number; staleSkills: number }
+
+/**
+ * The refresher CTA for each skill area — a TOTAL map, not an if/else chain.
+ *
+ * This was written as `skill.area === "objection_handling" ? … : skill.area ===
+ * "product_knowledge" ? … : <coursework copy>`, which types as `string` no matter
+ * what `SkillArea` says. Add a fourth area to the union
+ * (lib/education/skill-freshness.ts:13) and every agent in it silently receives
+ * the COURSEWORK line — a nudge about the wrong skill, sent to a real agent,
+ * with nothing anywhere to report it. `Record<SkillArea, string>` makes the
+ * compiler refuse the build until the new area has its own copy, which is what
+ * CLAUDE.md §6 means by one vocabulary per function: the union and the copy
+ * cannot drift apart because they are checked against each other.
+ */
+const SKILL_REFRESH_CTA: Record<SkillArea, string> = {
+  objection_handling: "Run a 5-minute objection drill — I've queued a fresh scenario for you.",
+  product_knowledge: "Take a quick knowledge check to lock it back in.",
+  coursework: "Revisit the course refresher — a short review keeps it current.",
+}
 
 /** Score a brokerage's active agents' skill freshness and propose gated refreshers on decayed skills. */
 export async function runSkillFreshnessRadar(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<SkillRadarResult> {
@@ -86,11 +111,7 @@ export async function runSkillFreshnessRadar(svc: Svc, params: { brokerageId: st
       if (prior) continue
 
       const label = SKILL_LABEL[skill.area]
-      const cta = skill.area === "objection_handling"
-        ? "Run a 5-minute objection drill — I've queued a fresh scenario for you."
-        : skill.area === "product_knowledge"
-          ? "Take a quick knowledge check to lock it back in."
-          : "Revisit the course refresher — a short review keeps it current."
+      const cta = SKILL_REFRESH_CTA[skill.area]
       try {
         const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
         const res = await proposeClientMessage({

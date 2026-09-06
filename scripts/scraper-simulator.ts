@@ -85,7 +85,10 @@ import { manifestToMcpTools, inputsToJsonSchema, toToolName } from "../lib/agent
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { scopeCascade, isConnectionAllowed, writeScopeFor, isProviderAllowedForScope, domainsForScope, selectableConnectionsForScope, CONNECTOR_PROVIDERS } from "../lib/connections/scope"
 import { buildCredentialWrite, isOAuthConnection, oauthStartPath, connectionScopeForUserType, isConnectSupported, selfConnectableDomains } from "../lib/connections/field-spec"
-import { isPlatformStaff } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "../lib/platform/platform-staff-roster"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { matchTriggersForEvent, isCooldownActive, type LifecycleTrigger } from "../lib/marketing/trigger-match"
 import { findReusableRun, type ExistingRun } from "../lib/workflow-orchestrator/run-dedupe"
 
@@ -105,6 +108,49 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 const MARKET = { city: "Tampa", state: "FL" }
+
+// ── 0. Diagnostics honesty ───────────────────────────────────────────────────
+// STRUCTURAL, and deliberately so. loadScrapingDiagnostics needs a service-role
+// client and six live tables; there is no fixture that makes a Postgres read
+// FAIL on demand, so the thing worth proving is the shape of the code, not a
+// round trip. What is asserted is the CONSTRUCT — that every one of the six
+// reads has its `error` inspected and that the page has somewhere to say so —
+// never a particular variable name or message string.
+//
+// The defect this pins: all six reads were `result.data ?? []`. supabase-js
+// RESOLVES a failed query, so a refused read rendered as an empty panel and a
+// zero in the stat cards — a DIAGNOSTICS page reporting health for an outage,
+// with nothing thrown and nothing logged. Empty is a legitimate answer for this
+// page today, which is exactly why it could not be told apart from a failure.
+function testDiagnosticsHonesty() {
+  console.log("\n[scrape diagnostics — a refused read is stated, not rendered as empty]")
+  const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+
+  const kernel = src("lib/kernel/scraping.ts")
+  const client = src("app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx")
+
+  // The loader must CARRY the failures out, not just log them: a console line on
+  // a server render is invisible to the operator looking at the page.
+  check("ScrapingDiagnosticsData carries the failed dimensions to the surface",
+    /readErrors\s*:\s*Array<\{[^}]*dimension[^}]*message[^}]*\}>/.test(kernel))
+  check("the loader returns readErrors (not only computes it)",
+    /return\s*\{[\s\S]{0,800}?\breadErrors\b/.test(kernel))
+
+  // Six reads, six inspections. Counted rather than named, so renaming a
+  // dimension does not turn this red while dropping one still does.
+  const inspected = [...kernel.matchAll(/collect\(\s*['"][a-zA-Z]+['"]\s*,/g)].length
+  check(`every diagnostic read has its error inspected (${inspected} of 6)`, inspected === 6,
+    `found ${inspected}`)
+  check("the inspection reads `.error`, so a RESOLVED failure is still caught",
+    /if\s*\(\s*result\.error\s*\)/.test(kernel))
+
+  // A failure the page cannot render is a failure nobody sees.
+  check("the page renders the failed dimensions instead of an empty state",
+    /data\.readErrors\.length\s*>\s*0/.test(client) &&
+    /data\.readErrors\.map/.test(client))
+  check("the banner warns the counts below are partial, not a healthy zero",
+    /incomplete|partial/i.test(client) && /readErrors/.test(client))
+}
 
 // ── 1. Zillow JSON parse ─────────────────────────────────────────────────────
 function testZillow() {
@@ -530,10 +576,26 @@ async function testVendorGateway() {
   check("zero/invalid budget falls back to default ceiling", evaluateVendorBudget(0, 0, 1).budget === MONTHLY_VENDOR_BUDGET_USD.solo_agent)
 
   // ── Role-scoped visibility (PRIVACY: brokerages never see vendor names/$) ───
-  check("support is platform staff", isPlatformStaff("support"))
-  check("superadmin is platform staff", isPlatformStaff("superadmin"))
-  check("broker is NOT platform staff", !isPlatformStaff("broker"))
-  check("agent is NOT platform staff", !isPlatformStaff("agent"))
+  // The ROSTER — one definition, four roles (lib/platform/platform-staff-roster.ts),
+  // the same four as users_platform_role_check and public.is_platform_staff() (m408).
+  check("support is platform staff", isPlatformStaffRole("support"))
+  check("superadmin is platform staff", isPlatformStaffRole("superadmin"))
+  check("admin is platform staff", isPlatformStaffRole("admin"))
+  check("marketing is platform staff", isPlatformStaffRole("marketing"))
+  check("broker is NOT platform staff", !isPlatformStaffRole("broker"))
+  check("agent is NOT platform staff", !isPlatformStaffRole("agent"))
+  check("ai_isa_system is NOT platform staff (service account, not a person)", !isPlatformStaffRole("ai_isa_system"))
+  // DUAL-COLUMN IDENTITY. The gate takes (user_type, platform_role) because the two
+  // columns hold different vocabularies. These four cases are the ones the old
+  // single-column isPlatformStaff(user_type) got wrong on live data.
+  check("live superadmin shape (user_type=admin, platform_role=superadmin) IS staff",
+    isPlatformStaffIdentity("admin", "superadmin"))
+  check("marketing staff shape (user_type=system, platform_role=marketing) IS staff",
+    isPlatformStaffIdentity("system", "marketing"))
+  check("TENANT user_type=support with no platform_role is NOT staff",
+    !isPlatformStaffIdentity("support", null))
+  check("legacy user_type=superadmin marker alone IS staff",
+    isPlatformStaffIdentity("superadmin", null))
 
   check("budgetLevel ok/approaching/paused", budgetLevel({ allowed: true, softWarning: false }) === "ok" && budgetLevel({ allowed: true, softWarning: true }) === "approaching" && budgetLevel({ allowed: false, softWarning: false }) === "paused")
 
@@ -884,10 +946,22 @@ async function testVendorGateway() {
   const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
   const platformNoBrokerage = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }
   check("availability: api_key supported when actor can own + has a brokerage (esign docusign)", isConnectSupported("esign", "docusign", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
-  check("availability: stripe Connect available to any owner; quickbooks needs brokerage manager", isConnectSupported("financial", "stripe", vendorCaps).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  // QuickBooks is OWNER-scoped, not brokerage-only. These two assertions predate
+  // the scope-aware accounting layer ("QuickBooks/Stripe options at every level"),
+  // which made every scope in lib/connections/accounting-scopes.ts —
+  // platform | brokerage | team | agent | VENDOR — able to connect its OWN
+  // QuickBooks company, stored under its own (owner_type, owner_id). A vendor
+  // connecting their books is the designed behaviour, not a leak: the platform's
+  // own company stays unreachable behind the distinct 'platform_quickbooks' key.
+  check("availability: stripe Connect AND quickbooks are available to any owner-capable actor",
+    isConnectSupported("financial", "stripe", vendorCaps).available
+    && isConnectSupported("financial", "quickbooks", vendorCaps).available)
   check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
   check("availability: email/calendar OAuth available to any owner with a brokerage (incl vendor/contact)", isConnectSupported("calendar", "gmail", agentCaps).available && isConnectSupported("email", "gmail", vendorCaps).available && !isConnectSupported("email", "gmail", platformNoBrokerage).available)
-  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: QuickBooks needs only an owner — NOT a brokerage manager, and not even a brokerage anchor (platform connects its own books)",
+    isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available
+    && isConnectSupported("financial", "quickbooks", platformNoBrokerage).available
+    && !isConnectSupported("financial", "quickbooks", noOwnCaps).available)
   check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("esign", "docusign", platformNoBrokerage).available && !isConnectSupported("transaction", "dotloop", platformNoBrokerage).available)
   check("availability: nothing is connectable without an owner id", !isConnectSupported("esign", "docusign", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }
@@ -1288,12 +1362,25 @@ function testRentcastMarketStats() {
 // ── 19e. Neighborhood intelligence — tier gate, livability, Fair-Housing ─────
 function testNeighborhoodIntelligence() {
   console.log("\n[Neighborhood intelligence — tier gate + livability + Fair-Housing]")
-  // Tier gate: only the most advanced plans.
+  // TIER PARITY (owner ruling) — this block asserted the OPPOSITE until the
+  // ruling landed: "tier gate denies solo_agent / team / null" pinned a
+  // brokerage-and-up floor. OWNER, verbatim: "when we have the team and solo
+  // agent subscription tiers, those subscriptions get the same level of
+  // features as brokerages." Tiers differ by SEAT COUNT, not by feature set,
+  // so those three assertions were pinning a policy that no longer exists and
+  // they are INVERTED here rather than deleted — the direction of the change is
+  // the finding (CLAUDE.md §2), and a silent deletion would leave no record
+  // that this gate was ever closed.
+  //
+  // The AI cost of the report is platform-covered with per-tier overage
+  // (CLAUDE.md §5); that is the lever that scales with plan, not this gate.
+  // Enforcement of the parity lives in scripts/tier-entitlement-simulator.ts
+  // alongside its positive controls.
   check("tier gate allows brokerage", isNeighborhoodReportAllowed("brokerage"))
   check("tier gate allows multi_location", isNeighborhoodReportAllowed("multi_location"))
-  check("tier gate denies solo_agent", !isNeighborhoodReportAllowed("solo_agent"))
-  check("tier gate denies team", !isNeighborhoodReportAllowed("team"))
-  check("tier gate denies null", !isNeighborhoodReportAllowed(null))
+  check("tier parity: solo_agent is ALLOWED (was denied)", isNeighborhoodReportAllowed("solo_agent"))
+  check("tier parity: team is ALLOWED (was denied)", isNeighborhoodReportAllowed("team"))
+  check("tier parity: an unreadable/NULL tier no longer denies either", isNeighborhoodReportAllowed(null))
 
   const rich = {
     lat: 27.95, lon: -82.45,
@@ -1342,6 +1429,7 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" SCRAPER SIMULATOR — parse / normalize / gate / client")
   console.log("══════════════════════════════════════════════════")
+  testDiagnosticsHonesty()
   testZillow()
   testRealtor()
   testRedfin()

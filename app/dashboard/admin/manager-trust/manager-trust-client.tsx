@@ -6,10 +6,10 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote } from "lucide-react"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote, Archive, RotateCcw } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
+  setManagerAutonomy, setManagerRetired, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
   type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
@@ -19,11 +19,23 @@ import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
 import type { AccuracyGateVerdict, AccuracyHoldRollup } from "@/lib/managers/accuracy-gate"
 import type { TeamArgumentSeat } from "@/lib/managers/team-argument-map"
+import type { ReaperCoverage } from "@/lib/intelligence/reaper-net"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
 const FOLLOW_REC = "__recommended__"
+
+/** One manager's OWNED PROOFS — the maintenance domains resolveMaintenanceManager holds
+ *  it accountable for, and the proofs (npm scripts) that keep them green. Computed
+ *  server-side in page.tsx from the registry; this surface only renders it. */
+export interface OwnedProofSeat {
+  key: ManagerKey
+  label: string
+  accent: string
+  domains: Array<{ domain: string; proof: string }>
+  proofs: string[]
+}
 
 const TIER_META: Record<TrustTier, { label: string; className: string; icon: typeof ShieldCheck }> = {
   trusted: { label: "Trusted", className: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: ShieldCheck },
@@ -39,10 +51,15 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [], ownedProofs = [], reaperCoverage = null,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
+  /** OWNED PROOFS per manager (maintenance ownership made visible) — see page.tsx. */
+  ownedProofs?: OwnedProofSeat[]
+  /** REAPER COVERAGE — which managers a "nothing falls through" reaper actually
+   *  covers (dedicated / predictor-backed / none). Registry-derived in page.tsx. */
+  reaperCoverage?: ReaperCoverage | null
   learned?: LearnedAdjustmentView[]
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
@@ -64,6 +81,9 @@ export function ManagerTrustClient({
   const [referralRows, setReferralRows] = useState<CrossManagerReferralView[]>(referrals)
   const [saving, setSaving] = useState<string | null>(null)
   const [vetoing, setVetoing] = useState<string | null>(null)
+  /** Which manager's RETIRE confirmation is open (retirement is never one click). */
+  const [confirmRetire, setConfirmRetire] = useState<string | null>(null)
+  const [retiring, setRetiring] = useState<string | null>(null)
   const [completingReview, setCompletingReview] = useState<string | null>(null)
   const hasData = team.total > 0
 
@@ -91,6 +111,44 @@ export function ManagerTrustClient({
     setVetoing(null)
     if (!r.ok) { setLearned(prev); toast({ title: "Could not update", description: r.error, variant: "destructive" }) }
     else { toast({ title: vetoed ? "Learned behavior vetoed" : "Veto cleared", description: vetoed ? "This adjustment no longer affects any manager." : "This adjustment is active again." }) }
+  }
+
+  /**
+   * RETIRE / RESTORE a manager (lane W3). The action writes managed_agents.archived_at,
+   * counted and audited; this only mirrors the result onto the board. On success the row
+   * stays visible and is LABELLED retired — a governance surface that silently drops a
+   * manager is how a retirement goes unnoticed — and its policy control goes dead,
+   * because an archived row is invisible to every `.is("archived_at", null)` reader,
+   * including the one setManagerAutonomy writes through.
+   */
+  async function changeRetired(m: ManagerTrustRow, retired: boolean) {
+    setRetiring(m.agentKind)
+    const r = await setManagerRetired(m.agentKind, retired)
+    setRetiring(null)
+    setConfirmRetire(null)
+    if (!r.ok) {
+      toast({ title: retired ? "Could not retire this manager" : "Could not restore this manager", description: r.error, variant: "destructive" })
+      return
+    }
+    const nowIso = new Date().toISOString()
+    setManagers((cur) => cur.map((x) => (x.agentKind === m.agentKind
+      ? {
+          ...x,
+          isActive: !retired,
+          isRetired: retired,
+          retiredAt: retired ? nowIso : null,
+          // The broker override lived on the row that has just been archived; it is no
+          // longer the policy of record, so the board must stop showing one.
+          overrideAutonomy: retired ? null : x.overrideAutonomy,
+          effectiveAutonomy: retired ? x.score.autonomy : x.effectiveAutonomy,
+        }
+      : x)))
+    toast({
+      title: retired ? `${m.label} retired` : `${m.label} restored`,
+      description: retired
+        ? "Its identity row is archived and its stored policy is no longer in force. This is not a stop switch — use the tenant autonomy halt if sends must stop."
+        : "Its archived row is live again, with the policy it carried.",
+    })
   }
 
   async function changeAutonomy(m: ManagerTrustRow, value: string) {
@@ -220,6 +278,96 @@ export function ManagerTrustClient({
         </CardContent>
       </Card>
 
+      {/* OWNED PROOFS — maintenance ownership, per manager. Every burn/maintenance domain
+          in the registry is held by exactly one accountable manager (resolveMaintenanceManager),
+          and each domain names the proof that keeps it green. Rendered from registry data
+          handed down by the server page; nothing here can drift from the law. */}
+      {ownedProofs.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><CheckCircle2 className="h-4 w-4" />Owned proofs — what each manager keeps green</CardTitle>
+            <CardDescription>
+              {ownedProofs.reduce((n, s) => n + s.domains.length, 0)} maintenance domains across {ownedProofs.filter((s) => s.domains.length > 0).length} managers, each backed by a named proof.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {ownedProofs.map((seat) => (
+              <details key={seat.key} className="rounded-lg border p-3">
+                <summary className="cursor-pointer flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${seat.accent}`}>{seat.label}</span>
+                  <span className="text-sm font-medium">{seat.domains.length} domain{seat.domains.length === 1 ? "" : "s"}</span>
+                  <span className="text-xs text-muted-foreground">{seat.proofs.length} proof{seat.proofs.length === 1 ? "" : "s"}</span>
+                </summary>
+                {seat.domains.length === 0 ? (
+                  <p className="text-xs text-muted-foreground mt-2">No maintenance domain is held by this seat yet.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1 max-h-64 overflow-y-auto">
+                    {seat.domains.map((d) => (
+                      <li key={d.domain} className="text-xs flex items-center justify-between gap-3">
+                        <span className="font-mono truncate" title={d.domain}>{d.domain}</span>
+                        <Badge variant="outline" className="text-[10px] shrink-0">{d.proof}</Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* REAPER COVERAGE — the honest map of which managers a "nothing falls through"
+          reaper stands behind. Dedicated reapers (REAPER_NET), predictor-backed coverage
+          (a stall predictor → gated handler chain with the handoff reaper as the safety
+          net), and — named, never padded — the managers NO reaper covers yet. */}
+      {reaperCoverage && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2"><Archive className="h-4 w-4" />Nothing falls through — reaper coverage</CardTitle>
+            <CardDescription>
+              {reaperCoverage.effectiveCoveredManagers.length} of {reaperCoverage.totalManagers} managers have a reaper behind them
+              ({reaperCoverage.coveredManagers.length} dedicated, {reaperCoverage.predictorBackedManagers.length} predictor-backed).
+              {reaperCoverage.uncoveredManagers.length > 0
+                ? ` ${reaperCoverage.uncoveredManagers.length} covered by nothing yet.`
+                : " Every manager is covered."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-1.5">
+              {reaperCoverage.coveredManagers.map((m) => (
+                <span key={m} className={`inline-flex items-center rounded px-2 py-0.5 text-xs ${MANAGERS[m]?.accent ?? "bg-slate-100 text-slate-700"}`} title="dedicated reaper">
+                  {MANAGERS[m]?.label ?? m}
+                </span>
+              ))}
+              {reaperCoverage.predictorBackedManagers.map((m) => (
+                <span key={m} className="inline-flex items-center rounded border px-2 py-0.5 text-xs text-muted-foreground" title="predictor → handler chain (safety net: handoff reaper)">
+                  {MANAGERS[m]?.label ?? m} · predictor-backed
+                </span>
+              ))}
+            </div>
+            {reaperCoverage.uncoveredManagers.length > 0 && (
+              <p className="text-xs text-amber-900 flex items-start gap-1">
+                <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                <span>
+                  No reaper covers: {reaperCoverage.uncoveredManagers.map((m) => MANAGERS[m]?.label ?? m).join(", ")} — stuck work in
+                  those domains is caught by nothing automatic today.
+                </span>
+              </p>
+            )}
+            <ul className="space-y-1">
+              {reaperCoverage.domains.map((d) => (
+                <li key={d.domain} className="text-xs flex items-center justify-between gap-3">
+                  <span className="font-mono truncate" title={d.protects}>{d.domain}</span>
+                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] shrink-0 ${MANAGERS[d.manager]?.accent ?? "bg-slate-100 text-slate-700"}`}>
+                    {MANAGERS[d.manager]?.label ?? d.manager}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">The Management Team</CardTitle>
@@ -230,7 +378,7 @@ export function ManagerTrustClient({
             const meta = TIER_META[m.score.tier]
             const TierIcon = meta.icon
             return (
-              <div key={m.agentKind} className="p-3 rounded-lg border space-y-2">
+              <div key={m.agentKind} className={`p-3 rounded-lg border space-y-2 ${m.isRetired ? "opacity-60 bg-muted/40" : ""}`}>
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div>
                     <p className="font-medium flex items-center gap-2">
@@ -239,6 +387,12 @@ export function ManagerTrustClient({
                     <p className="text-xs text-muted-foreground mt-1">{m.domain}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {m.isRetired && (
+                      <Badge className="bg-gray-200 text-gray-700 border-gray-300 text-[11px] gap-1">
+                        <Archive className="h-3 w-3" />
+                        retired{m.retiredAt ? ` ${new Date(m.retiredAt).toLocaleDateString()}` : ""}
+                      </Badge>
+                    )}
                     <Badge className={`${meta.className} gap-1`}><TierIcon className="h-3 w-3" />{meta.label}</Badge>
                     <Badge variant={m.overrideAutonomy ? "default" : "outline"} className="text-xs gap-1">
                       {m.overrideAutonomy && <Lock className="h-3 w-3" />}
@@ -246,6 +400,54 @@ export function ManagerTrustClient({
                     </Badge>
                   </div>
                 </div>
+
+                {/* RETIRE / RESTORE (lane W3) — the writer managed_agents.archived_at never had.
+                    Retirement is never one click: the confirm below states what it does AND
+                    what it does not do, because an archived manager's autonomy posture reads
+                    as absent, and absent fails OPEN at the dispatch gate. */}
+                {(m.isActive || m.isRetired) && (
+                  <div className="pt-1">
+                    {m.isRetired ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-muted-foreground">
+                          Retired — its stored policy is out of force, and a dispatch of this kind would spawn a fresh manager.
+                        </span>
+                        <Button size="sm" variant="outline" className="h-7 text-xs" disabled={retiring === m.agentKind}
+                          onClick={() => changeRetired(m, false)}>
+                          <RotateCcw className="h-3.5 w-3.5 mr-1" />Restore
+                        </Button>
+                      </div>
+                    ) : confirmRetire === m.agentKind ? (
+                      <div className="rounded-md border border-amber-200 bg-amber-50/50 p-2 space-y-2">
+                        <p className="text-xs text-amber-900">
+                          <strong>Retire {m.label}?</strong> Its identity row is archived, it leaves this board&apos;s
+                          active roster, and the broker policy stored on it stops being the policy of record.
+                        </p>
+                        <p className="text-[11px] text-amber-900">
+                          <strong>This is not a stop switch.</strong> A retired manager has no stored posture, and the
+                          dispatch gate reads an absent posture as <em>allowed</em> — and the next dispatch of this kind
+                          would spawn a brand-new manager with no policy at all. If sends must STOP, use the tenant
+                          autonomy halt instead. Work already running is protected: retirement is refused while any
+                          session of this manager is running or idle.
+                        </p>
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" variant="ghost" onClick={() => setConfirmRetire(null)} disabled={retiring === m.agentKind}>Cancel</Button>
+                          <Button size="sm" variant="destructive" disabled={retiring === m.agentKind}
+                            onClick={() => changeRetired(m, true)}>
+                            <Archive className="h-3.5 w-3.5 mr-1" />Yes, retire this manager
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex justify-end">
+                        <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive"
+                          onClick={() => setConfirmRetire(m.agentKind)}>
+                          <Archive className="h-3.5 w-3.5 mr-1" />Retire this manager
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Broker governance: override the autonomy posture (policy of record) */}
                 <div className="flex items-center justify-between gap-3 pt-1">
@@ -287,6 +489,20 @@ export function ManagerTrustClient({
                   <span>{m.score.satisfied}/{m.score.total} satisfied</span>
                   <span>{m.sessionCount} session{m.sessionCount === 1 ? "" : "s"}</span>
                   {m.lastEvaluatedAt && <span>last graded {new Date(m.lastEvaluatedAt).toLocaleDateString()}</span>}
+                  {/* The PROVIDER's reference for that last grade — what a broker quotes when
+                      disputing it. Truncated for the line; the full id is on the title. */}
+                  {m.lastOutcomeRef && (
+                    <span className="font-mono" title={`Anthropic outcome id ${m.lastOutcomeRef}`}>
+                      outcome {m.lastOutcomeRef.length > 14 ? `${m.lastOutcomeRef.slice(0, 14)}…` : m.lastOutcomeRef}
+                    </span>
+                  )}
+                  {/* VERSION AXIS — a pass-rate is only comparable within one agent version. */}
+                  {m.anthropicVersions.length === 1 && <span>agent v{m.anthropicVersions[0]}</span>}
+                  {m.anthropicVersions.length > 1 && (
+                    <span className="text-amber-700" title={m.anthropicVersions.map((v) => `v${v}`).join(", ")}>
+                      mixed agent versions ({m.anthropicVersions.length}) — scores span more than one
+                    </span>
+                  )}
                   {m.tokensIn + m.tokensOut > 0 && <span>{(m.tokensIn + m.tokensOut).toLocaleString()} tokens</span>}
                   {m.score.byResult.needs_revision ? <span>{m.score.byResult.needs_revision} needed revision</span> : null}
                   {m.score.byResult.failed ? <span className="text-red-600">{m.score.byResult.failed} failed</span> : null}

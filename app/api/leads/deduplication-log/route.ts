@@ -2,19 +2,40 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { resolveLeadVisibility, resolveScopedLeadIds } from "@/lib/auth/lead-visibility"
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
-  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. The dedup log is
-  // lead-pipeline metadata (lead ids + raw_record ids) — restricted to
-  // brokerage-LEVEL roles + platform staff. Previously any authenticated
-  // brokerage user (agent / TC / compliance) could read it.
-  const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "superadmin", "support"]
-  if (!leadVisibleRoles.includes(auth.userType)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  // TOMBSTONE (lead-visibility consolidation): the inline `leadVisibleRoles`
+  // array is DELETED. The survivor is
+  // lib/auth/lead-visibility.ts:resolveLeadVisibility.
+  //
+  //   · team_lead ADMITTED, per the owner's ruling, and TEAM-SCOPED — the dedup
+  //     log carries `lead_id` but no `agent_id`, so the scope cannot be written
+  //     as a column filter here. resolveScopedLeadIds resolves the in-scope lead
+  //     ids first and the log read keys off those. A team lead therefore sees
+  //     dedup metadata for their own team's leads only.
+  //   · 'support' REMOVED as a user_type comparison. The old note called it "a
+  //     storable platform-staff user_type" — it is a storable TENANT user_type,
+  //     unconnected to platform employment, so the entry admitted tenant users
+  //     named 'support' and still missed real platform support (whose answer is
+  //     in platform_role). The survivor reads platform_role.
+  //   · 'broker_admin' REMOVED — not a storable user_type; the comparison
+  //     matched nothing.
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: auth.userId,
+    userType: auth.userType,
+    platformRole: auth.platformRole,
+    brokerageId: auth.brokerageId,
+  })
+  if (!vis.allowed) {
+    return NextResponse.json(
+      { error: vis.status === "forbidden" ? "Forbidden" : vis.reason },
+      { status: vis.status === "forbidden" ? 403 : 500 },
+    )
   }
 
   try {
@@ -27,12 +48,28 @@ export async function GET(request: NextRequest) {
 
     const svc = createServiceClient()
 
+    // TEAM ROW SCOPE, resolved through the leads table because this one has no
+    // agent column. `null` = no restriction needed (brokerage / platform scope);
+    // an ARRAY = the team's leads; a refusal fails CLOSED rather than degrading
+    // to an unrestricted read.
+    const scopedIds = await resolveScopedLeadIds(supabase, vis.scope)
+    if (!scopedIds.ok) {
+      return NextResponse.json({ error: "Could not resolve your lead scope" }, { status: 500 })
+    }
+
     let query = svc
       .from("lead_deduplication_log")
       .select("*")
       .eq("brokerage_id", auth.brokerageId)  // always scope to caller's brokerage
       .order("created_at", { ascending: false })
       .limit(limit)
+
+    if (scopedIds.leadIds !== null) {
+      query = scopedIds.leadIds.length > 0
+        ? query.in("lead_id", scopedIds.leadIds)
+        // A team with no in-scope leads gets NO rows, not every row.
+        : query.eq("lead_id", "00000000-0000-0000-0000-000000000000")
+    }
 
     if (lead_id) {
       query = query.eq("lead_id", lead_id)

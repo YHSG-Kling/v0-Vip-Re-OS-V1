@@ -198,12 +198,36 @@ export const CONNECTOR_REGISTRY: Readonly<Record<string, ConnectorSpec>> = Objec
     docsUrl:   "https://dev.socrata.com/",
     tags:      ["public-records", "permits", "code-violations", "probate", "open-data"],
   },
+  // ── Public city / county open data (ArcGIS FeatureServer) — the SECOND permit provider ──
+  // Registered 2026-08-20 alongside `socrata`, because a great many county permit and code
+  // systems publish an ArcGIS FeatureServer and NOT a Socrata portal — including three markets
+  // socrata-market-registry.ts had marked dead for exactly that reason. Read by
+  // lib/external/arcgis-permits.ts; first live market is Miami-Dade County.
+  //
+  // NO envKey, and that is a fact rather than an omission: these are anonymous public layers and
+  // there is no token to supply. The healer should not go looking for a credential to rotate.
+  //
+  // HEALER NOTE — this connector fails UNLIKE every other one in this registry. A FeatureServer
+  // answers its own errors with HTTP 200 and an `error` object in the body, so status-code health
+  // checks read a deleted layer as a successful empty response. arcgis-permits.ts::readArcgisError
+  // is the check that makes a failure legible; anything else probing this connector needs it too.
+  arcgis: {
+    connector: "arcgis",
+    category:  "scraper",
+    baseUrl:   "https://services.arcgis.com",  // example host; real layer URL is per-call
+    auth:      "none",
+    docsUrl:   "https://developers.arcgis.com/rest/services-reference/enterprise/query-feature-service-layer/",
+    tags:      ["public-records", "permits", "code-violations", "open-data", "gis"],
+  },
 })
 
 export function getConnectorSpec(name: string): ConnectorSpec | null {
   return (CONNECTOR_REGISTRY as Record<string, ConnectorSpec>)[name] ?? null
 }
 
+/** CENSUS NOTE: proof-only by design — scripts/connector-healer-simulator.ts:55-58 pins the
+ *  category contract (≥3 ai, ≥1 mls, lob=letters, peopledata=enrichment). No product surface
+ *  lists by category (provider-posture groups its OWN rows via resolveCategory). */
 export function listConnectorsByCategory(category: ConnectorSpec["category"]): ConnectorSpec[] {
   return Object.values(CONNECTOR_REGISTRY).filter(c => c.category === category)
 }

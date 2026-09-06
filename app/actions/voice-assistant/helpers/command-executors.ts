@@ -39,7 +39,12 @@ export const COMMAND_EXECUTORS: Record<keyof typeof COMMAND_MAP, CommandExecutor
   activate_mls:                 (p) => activateMLS(p as any),
   schedule_open_house:          (p) => scheduleOpenHouse(p as any),
   approve_open_house_marketing: (p) => approveOpenHouseMarketing(p as any),
-  query_buyer_stage:            (p) => getBuyerJourney({ contactId: p.contactId ?? p.buyer_id, userId: p.userId ?? p.user_id }),
+  // No `?? p.user_id` identity fallback here any more: dispatchCommand STRIPS every
+  // identity key out of caller/LLM input and re-applies the session's, and
+  // getBuyerJourney derives its actor from the session regardless. A fallback that
+  // reached for a caller-supplied id would only be there to read one that can no
+  // longer exist, while implying identity is something params can carry.
+  query_buyer_stage:            (p) => getBuyerJourney({ contactId: p.contactId ?? p.buyer_id, source: 'voice_assistant' }),
   configure_buyer_search:       (p) => agentConfigureBuyerSearch(p as any),
   lender_confirm_financials:    (p) => lenderConfirmBuyerFinancials(p as any),
   admin_override_financial_gate:(p) => adminOverrideFinancialVerification(p as any),

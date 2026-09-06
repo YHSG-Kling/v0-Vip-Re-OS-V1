@@ -20,8 +20,15 @@
  * conflict signal — then clean to count==0.
  */
 import { readFileSync, existsSync } from "fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+// The ONE correct scanner (CLAUDE.md §2 — never hand-roll a comment stripper).
+// Needed because an absence assertion below hunts for a code pattern that this
+// file's own explanatory comment necessarily QUOTES; scanning raw source would
+// match the prose describing the defect and report the defect as still present.
+import { stripComments } from "./strip-comments"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
 import { decideStageCandidate } from "../lib/documents/stage-candidates"
@@ -37,6 +44,40 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+
+// TOMBSTONE (orphan doctrine §1.1) — this file carried SEVEN private readdirSync
+// walkers (walkDemo, walkSecret, walk, walk13, walk9, walk3, walk2), one per pass, each a
+// copy of the same recursion. The survivor is scripts/runtime-roots.ts:61
+// (`walkTs`), imported above; they are replaced by the single corpus below.
+//
+// Seven copies meant seven chances to be wrong in the same way, and they all were:
+// each enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was in none of their corpora.
+// Every pass that swept "app/ and lib/" for a forbidden shape reported green over
+// a file it had never opened, and the demo-roster and public-bearer sweeps below
+// are precisely the kind that should be reading the auth gate.
+const REPO_TS_FILES: string[] = [
+  ...walkTs(join(ROOT, "app")),
+  ...walkTs(join(ROOT, "lib")),
+  ...rootRuntimeFiles(ROOT),
+].map((f) => f.slice(ROOT.length + 1))
+/** Text of each `.from("<table>")` chain, cut at the next `.from(` — so an
+ *  assertion about one table cannot be tripped by a sibling table's query in the
+ *  same file. */
+function fromWindows(text: string, table: string): string[] {
+  const out: string[] = []
+  const needle = `.from("${table}")`
+  let i = text.indexOf(needle)
+  while (i !== -1) {
+    const rest = text.slice(i + needle.length)
+    const next = rest.search(/\.from\(/)
+    out.push(next >= 0 ? rest.slice(0, next) : rest.slice(0, 1500))
+    i = text.indexOf(needle, i + 1)
+  }
+  return out
+}
+
 const src = (p: string) => (existsSync(join(ROOT, p)) ? readFileSync(join(ROOT, p), "utf-8") : "")
 
 async function main() {
@@ -366,9 +407,9 @@ async function main() {
       netSheetConfidence({ ...base, mortgagePayoff: "confirmed" }) === "medium"
       && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).decision === "amber"
       && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).needsConfirmation.includes("countyCityTaxes")
-      && netSheetConfidence({ commissionRate: "template", mortgagePayoff: "confirmed", countyCityTaxes: "public_record", hoaDuesProration: "confirmed", otherProratedFees: "default" }) === "high")
+      && netSheetConfidence({ commissionRate: "template", mortgagePayoff: "confirmed", countyCityTaxes: "public_record", hoaDuesProration: "confirmed", otherProratedFees: "default", transactionFee: "template" }) === "high")
     const cs = counterScenario({ offerPrice: 500_000, buyerClosingCredit: 5_000 }, 515_000,
-      { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000 })
+      { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000, transactionFee: 0 })
     check("counter what-if: recomputed net + honest delta + risk-aware explanation (no persuasion on a downside)",
       cs.deltaVsOffer === Math.round(15_000 * 0.94) && cs.explanation.includes("if the buyer accepts"))
     check("the records parser adopts ONLY positive finite figures across BatchData's shapes; garbage yields nulls",
@@ -730,8 +771,14 @@ async function main() {
       coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-20T00:00:00Z" }, now2) === "a-2"
       && coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-10T00:00:00Z" }, now2) === null
       && coverageRedirect({ coveringAgentId: null, coverageUntil: "2026-07-20T00:00:00Z" }, now2) === null
-      && src("lib/lead-assignment/assignment-engine.ts").includes("redirectForCoverage")
-      && src("lib/lead-assignment/assignment-engine.ts").includes("_coverage")
+      // THE SINGLE TERMINAL MOVED, and "single" is the half worth asserting. The tier-aware
+      // pick now lives in lib/lead-assignment/tier-routing.ts and assignment-engine.ts
+      // delegates to it, so pointing these two greps at the new file is not enough: the
+      // property this check is named for is that coverage is enforced in ONE place. Hence
+      // the negative clause — the delegating engine must not carry a second copy.
+      && src("lib/lead-assignment/tier-routing.ts").includes("redirectForCoverage")
+      && src("lib/lead-assignment/tier-routing.ts").includes("_coverage")
+      && !src("lib/lead-assignment/assignment-engine.ts").includes("redirectForCoverage")
       && src("app/actions/coverage-mode.ts").includes("cannot cover themselves")
       && src("app/dashboard/admin/command-center/coverage-card.tsx").includes("They're back")
       && src("app/components/contact/StrategySessionCard.tsx").includes("Set the floor")
@@ -776,9 +823,18 @@ async function main() {
       ...Array.from({ length: 6 }, () => ({ page: "/neighborhood-guide", seconds: 180, source: "google" })),
     ]
     const si = composeSiteInsights(siteRows)
-    check("SITE TRAFFIC LEARNING (owner rule) — the write-only visitor tables now READ BACK: stickiest page found by time-on-page (5+ visit sample gate), ONE concrete adjustment composed ('feature it before they bounce'), weekly GATED notification (nothing auto-mutates), riding proactive-intelligence",
+    // §4 fail-closed control: time_on_page_seconds has NO writer today (the
+    // pixel upserts without it), so all-NULL dwell must produce NO dwell
+    // verdict — the old `?? 0` coercion made 0>=0×3 fire "stays 0× longer".
+    const siNoDwell = composeSiteInsights([
+      ...Array.from({ length: 8 }, () => ({ page: "/home", seconds: null, source: "google" })),
+      ...Array.from({ length: 6 }, () => ({ page: "/neighborhood-guide", seconds: null, source: "google" })),
+    ])
+    check("SITE TRAFFIC LEARNING (owner rule) — the write-only visitor tables now READ BACK: stickiest page found by time-on-page (5+ visit sample gate), ONE concrete adjustment composed ('feature it before they bounce'), weekly GATED notification (nothing auto-mutates), riding proactive-intelligence; NULL dwell (unwritten beacon) yields NO dwell verdict",
       si.stickiest?.page === "/neighborhood-guide" && si.bounciest?.page === "/home"
       && Boolean(si.adjustment?.includes("/neighborhood-guide")) && Boolean(si.adjustment?.includes("before they bounce"))
+      && siNoDwell.stickiest === null && siNoDwell.bounciest === null
+      && !(siNoDwell.adjustment ?? "").includes("longer on")
       && composeSiteInsights([]).adjustment === null
       && src("app/api/cron/proactive-intelligence/route.ts").includes("runSiteTrafficInsights")
       && src("lib/kernel/site-traffic-insights.ts").includes("rows.length < 10")
@@ -853,8 +909,8 @@ async function main() {
     const vrBad = validateVendorRequest({ requestType: "demand", details: "utilities on please and the gate code" })
     const vrThin = validateVendorRequest({ requestType: "access", details: "keys" })
     const vrOk = validateVendorRequest({ requestType: "access", details: "Need utilities on and the lockbox code for Thursday inspection" })
-    const vrTask = composeVendorRequestTask({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "Need utilities on and the lockbox code", propertyAddress: "12 Oak Ln", neededBy: "2026-07-16" })
-    const vrBody = composeClientRequestBody({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "utilities on for Thursday", neededBy: null })
+    const vrTask = composeVendorRequestTask({ vendorName: "Apex Inspections", vendorCategory: "inspector", requestType: "access", details: "Need utilities on and the lockbox code", propertyAddress: "12 Oak Ln", neededBy: "2026-07-16" })
+    const vrBody = composeClientRequestBody({ vendorName: "Apex Inspections", vendorCategory: "inspector", requestType: "access", details: "utilities on for Thursday", neededBy: null })
     check("VENDOR REQUEST RAIL (owner rule generalized) — typed vocabulary with honest refusals (unknown type + too-thin details both refused with the WHY), the agent's task names who/what/where/by-when, property-side asks route to the OCCUPANT while paperwork asks route to the buyer (gated either way), and the client draft is warm + vendor-attributed; auth mirrors the lender gate and the jobs surface carries the dialog; registered to deal_coordinator",
       vrBad.ok === false && Boolean(!vrBad.ok && vrBad.error.includes("document"))
       && vrThin.ok === false
@@ -946,6 +1002,142 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("esign_packet_completion:")
       && src("lib/kernel/manager-registry.ts").includes("os_self_audit:")
       && src("lib/kernel/manager-registry.ts").includes("demo_login_hard_gate:"))
+
+    // ── The hard gate is only hard if there is ONE demo-auth surface ─────────
+    //
+    // demo_login_hard_gate claims demo sign-in is hardened "at the single
+    // source (DEMO_CONFIG.ENABLED)". That claim was FALSE: three more surfaces
+    // existed and none of them consulted DEMO_CONFIG.
+    //   · app/api/auth/login/route.ts       — POST an email, no password, and it
+    //     minted a base64 (UNSIGNED) {userId, email, role} blob into an
+    //     `auth-token` cookie. `/api/auth` is a PUBLIC_ROUTES prefix, so it was
+    //     internet-reachable. Nothing read the cookie, so it was not yet an
+    //     escalation — it was one `cookies().get("auth-token")` away from one.
+    //   · app/api/auth/demo-users/route.ts  — unauthenticated GET returning the
+    //     whole 20-user roster with roles and brokerages.
+    //   · app/actions/demo-login.ts         — a second demoSignIn.
+    // All four deleted (the ungated logout too). Asserting the CONSTRUCT rather
+    // than the filenames: the demo roster lives in exactly one gated place, and
+    // nothing anywhere mints a self-signed role cookie.
+    {
+      const ROSTER_HOME = new Set(["app/constants/auth.ts", "app/actions/demo-auth.ts"])
+      const rosterCopies: string[] = []
+      const cookieMinters: string[] = []
+      for (const rel of REPO_TS_FILES) {
+        {
+          const text = readFileSync(join(ROOT, rel), "utf-8")
+          // A roster copy is what lets a surface answer "who are the demo
+          // users" without ever asking DEMO_CONFIG whether demo mode is on.
+          // Count, don't merely detect: the deleted routes carried twenty
+          // addresses each, while a doc comment naming the domain once is not
+          // a roster and must not read as one.
+          if (!ROSTER_HOME.has(rel) && (text.match(/@vipos\.com/g) ?? []).length >= 3) rosterCopies.push(rel)
+          // The role-bearing cookie the deleted route invented. Real sessions
+          // are Supabase's `sb-<ref>-auth-token`; anything hand-setting a
+          // cookie literally named auth-token is minting its own authority.
+          if (/name:\s*["']auth-token["']/.test(text)) cookieMinters.push(rel)
+        }
+      }
+      check(`DEMO-AUTH SINGLE SURFACE (the hard gate is only hard if nothing routes around it) — the demo roster exists ONLY in the DEMO_CONFIG-gated source, no surface mints a self-signed \`auth-token\` role cookie, and the four ungated auth routes are gone. Roster copies: [${rosterCopies.join(", ") || "none"}] · cookie minters: [${cookieMinters.join(", ") || "none"}]`,
+        rosterCopies.length === 0
+        && cookieMinters.length === 0
+        && !existsSync(join(ROOT, "app/api/auth/login/route.ts"))
+        && !existsSync(join(ROOT, "app/api/auth/demo-users/route.ts"))
+        && !existsSync(join(ROOT, "app/api/auth/logout/route.ts"))
+        && !existsSync(join(ROOT, "app/actions/demo-login.ts"))
+        && src("app/actions/demo-auth.ts").includes("DEMO_CONFIG.ENABLED"))
+    }
+
+    // ── "Log Out" has to end the session, not clear two unrelated cookies ────
+    //
+    // Both logout controls in the product were inert in the way that matters.
+    // The dashboard one POSTed /api/auth/logout, which expired cookies named
+    // `auth-token` and `supabase-auth-token` — neither is the session, which
+    // Supabase SSR keeps in `sb-<ref>-auth-token`. The portal one cleared
+    // localStorage and redirected to "/". In both cases the user was told they
+    // were signed out while the session cookie survived, so navigating back in
+    // still worked — on a shared computer that is the entire point of the
+    // button. Both now call the one real signOut() and report a failure
+    // instead of redirecting on a lie.
+    check("LOGOUT ACTUALLY SIGNS OUT (dashboard + portal) — both menus call the canonical signOut() server action, read its outcome, and only navigate on success; neither pretends by clearing a cookie that was never the session",
+      src("app/components/layout/user-menu.tsx").includes("await signOut()")
+      && src("app/components/layout/user-menu.tsx").includes("if (!res.success)")
+      && !/fetch\(\s*['"]\/api\/auth\/logout/.test(src("app/components/layout/user-menu.tsx"))
+      && src("app/components/features/portal/base/PortalUserMenu.tsx").includes("await signOut()")
+      && src("app/components/features/portal/base/PortalUserMenu.tsx").includes("if (!res.success)")
+      && src("app/actions/auth.ts").includes("supabase.auth.signOut()"))
+
+    // ── Password reset was a capability with no way in and no way out ────────
+    //
+    // /api/auth/reset-password worked and sent a real Supabase recovery email,
+    // but NOTHING called it — no login page offered "Forgot password" — and the
+    // redirectTo it has always used, /auth/reset-password-confirm, was a route
+    // that did not exist, so every reset link in the product landed on a 404.
+    // Both halves are wired, and the landing route is PUBLIC because the
+    // recovery session arrives in the URL fragment the edge never sees.
+    check("PASSWORD RESET IS REACHABLE END TO END — the login page can request the reset, the route the email points at exists, it sets the password through updateUser, and the landing path is public so the edge cannot bounce a valid link",
+      src("app/login/page.tsx").includes("/api/auth/reset-password")
+      && src("app/login/page.tsx").includes("Forgot password?")
+      && existsSync(join(ROOT, "app/auth/reset-password-confirm/page.tsx"))
+      && src("app/auth/reset-password-confirm/page.tsx").includes("updateUser({ password })")
+      && src("app/api/auth/reset-password/route.ts").includes("/auth/reset-password-confirm")
+      && src("app/constants/auth.ts").includes("'/auth/reset-password-confirm'"))
+
+    // ── The KB admin wrote from the browser with a secret that never matched ──
+    //
+    // The knowledge-base admin inserted/updated/deleted help_topics_kb straight
+    // from the client, then POSTed /api/intelligence/kb/embed with
+    // `Bearer ${NEXT_PUBLIC_INTERNAL_API_SECRET}`. That route validates
+    // INTERNAL_API_SECRET — a DIFFERENT, server-only variable — so the header
+    // could not match and every embed 401'd. The client only checked
+    // `response.ok` on the way UP, so the admin read "Article created
+    // successfully" while the article stayed unembedded and therefore invisible
+    // to the brand-voice brain that is the entire reason for uploading it.
+    // Meanwhile a complete, tenant-scoped, synchronously-embedding CRUD sat in
+    // app/actions/knowledge/search.ts with no callers.
+    //
+    // Repointed at the actions. Asserting the CONSTRUCT: no NEXT_PUBLIC_ secret
+    // is used as a bearer token anywhere, and the admin reports whether the
+    // embedding actually landed instead of only its own success.
+    {
+      const bearerPublic: string[] = []
+      for (const rel of REPO_TS_FILES) {
+        const text = readFileSync(join(ROOT, rel), "utf-8")
+        if (/Bearer \$\{\s*process\.env\.NEXT_PUBLIC_/.test(text)) bearerPublic.push(rel)
+      }
+      const kb = src("app/dashboard/settings/knowledge-base/knowledge-base-client.tsx")
+      check(`KB ADMIN GOES THROUGH THE SERVER ACTIONS (a secret shipped to the browser is not a secret, and an embed that 401s is not a save) — no NEXT_PUBLIC_ value is used as a bearer token, the admin calls createHelpTopic/updateHelpTopic/deleteHelpTopic, and it tells the admin when the embedding did NOT land. Public-secret bearers: [${bearerPublic.join(", ") || "none"}]`,
+        bearerPublic.length === 0
+        && kb.includes("await createHelpTopic(")
+        && kb.includes("await updateHelpTopic(")
+        && kb.includes("await deleteHelpTopic(")
+        && !/fetch\(\s*['"]\/api\/intelligence\/kb\/embed/.test(kb)
+        && kb.includes("res.embedded")
+        // ONE embed path: the actions go through embedAndStore, which is what
+        // emits KB_ARTICLE_EMBEDDED. Calling updateHelpTopicEmbedding directly
+        // embedded the row but skipped the kernel event.
+        && src("app/actions/knowledge/search.ts").includes("await embedAndStore(id)")
+        // Platform scope is a platform-staff decision, refused rather than
+        // silently downgraded to the caller's own tenant.
+        && src("app/actions/knowledge/search.ts").includes("Only platform staff can publish a platform-wide article"))
+    }
+
+    // ── The portal's own message could never be sent by the portal's user ────
+    //
+    // sendPortalMessage resolved the caller with resolveAgentId and returned
+    // "Agent profile not found" when that came back null. A buyer signed into
+    // the consumer portal has no agents row, so client_to_agent — the one
+    // direction the portal exists for — refused every time, while the UI showed
+    // a fully wired Contact Agent button. The client lane resolves the thread's
+    // agent from contacts.agent_id (already an agents.id — a RESOLVE, never a
+    // substitution of the caller's user id) and pins the direction so a client
+    // cannot post as their agent.
+    check("PORTAL MESSAGE HAS A CLIENT LANE (the audience it was built for could not use it) — a caller with no agents row is authorised as the contact themselves via requireContactAccess, the thread agent is resolved from contacts.agent_id, and the direction is forced to client_to_agent",
+      src("app/actions/portal-messages.ts").includes("await requireContactAccess(contactId)")
+      && src("app/actions/portal-messages.ts").includes("agentId = contact.agent_id")
+      && src("app/actions/portal-messages.ts").includes('direction = "client_to_agent"')
+      && src("app/actions/portal-messages.ts").includes("access.isContactSelf")
+      && !src("app/actions/portal-messages.ts").includes('return { success: false, error: "Agent profile not found" }'))
     const { computeDecisionVelocity, composeVelocityLine, MIN_SAMPLES } = await import("../lib/intelligence/decision-velocity")
     const velT = new Date("2026-07-14T12:00:00Z")
     const vel = computeDecisionVelocity([
@@ -1058,12 +1250,22 @@ async function main() {
     const appr = { zip: "78701", oldYear: 2018, newYear: 2022, oldValue: 400_000, newValue: 520_000, totalPct: 30, annualPct: 6.8 }
     const lensHot = composeFutureLens({ zip: "78701", appreciation: appr, permitCount: 10 })
     const lensNone = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 0 })
+    // THE PLACE NAME HAS A READER NOW. `loadFutureLensSignals` took `city` and
+    // `state` from the offers page and read neither — two inert parameters on a
+    // call that already had the values in hand (opposite-missing census cat. 4).
+    // The composer names the place instead of saying "nearby", so these three
+    // assert the wire in all three states rather than the happy one only.
+    const lensPlaced = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 10, city: "Austin", state: "TX" })
+    const lensCityOnly = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 10, city: "Austin", state: null })
     const { composeColdStartCareer } = await import("../lib/intelligence/career-architect")
     const coldCareer = composeColdStartCareer({ topTouchedZip: { zip: "78701", count: 6 }, contactCount: 6 })
     check("FUTURE LENS + NEW-AGENT COLD START (owner corrections: free public records + new solos hold no history) — Census two-vintage appreciation + OSINT permit density compose honest source-cited signals (30% up + 10 permits = 2 signals, each labeled forecast-not-fact; no data = no signal, never invented), the cold-start seller line fills the null band with clearly-labeled AREA data, and a new agent gets the touched-ZIP farm instead of silence; registered",
       lensHot.hasSignal === true && lensHot.signals.length === 2
       && Boolean(lensHot.signals[0].includes("U.S. Census")) && Boolean(lensHot.signals.some((s) => s.includes("building permits")))
       && lensNone.hasSignal === false && lensNone.signals.length === 0
+      && Boolean(lensPlaced.signals[0].includes("pulled in Austin, TX in the last year"))
+      && Boolean(lensCityOnly.signals[0].includes("pulled in Austin in the last year"))
+      && Boolean(lensHot.signals[1].includes("pulled nearby in the last year"))
       && PERMIT_HOT_COUNT === 8
       && Boolean(composeColdStartBandLine(appr as any)?.includes("area data, not a specific-home valuation"))
       && composeColdStartBandLine(null) === null
@@ -1558,7 +1760,7 @@ async function main() {
       && financed.pctLow > 0 && financed.pctHigh >= financed.pctLow
       && Boolean(financed.lines.find((l) => l.label.includes("Lender fees"))!.note!.includes("0.5%"))
       && Boolean(financed.disclaimer.includes("Loan Estimate")) && Boolean(financed.disclaimer.includes("Closing Disclosure"))
-      && cash.isCash === true && cash.lines.every((l) => !l.label.includes("Lender") || l.label.includes("Lender's title") === false)
+      && cash.isCash === true && cash.lines.every((l) => !l.label.includes("lender") || l.label.includes("Lender's title") === false)
       && cash.lines.length < financed.lines.length
       && src("app/actions/buyer-closing-costs.ts").includes("isParty")
       && src("app/actions/buyer-closing-costs.ts").includes("No purchase price")
@@ -1578,8 +1780,11 @@ async function main() {
       && !src("app/actions/ai-isa/initiate-engagement.ts").includes("from('messages').insert")      // no dead writes remain
       && src("app/actions/ai-isa/initiate-engagement.ts").includes("isa_outreach_log")              // the status read now hits the real ledger
       && src("lib/ai-isa/email-generator.ts").includes("entity_id: leadId")
-      && src("app/actions/referrals/referral-actions.ts").includes("actor_user_id: userId")
-      && src("app/actions/neighborhood-reports.ts").includes("actor_user_id: userId")
+      // 2026-09-03: both sites now emit through emitKernelEvent, whose input spells the
+      // users-class actor `actorUserId` (→ lifecycle_events.actor_user_id). Assert the
+      // RULE — the actor is `userId`, never `agentId` — not the column spelling (§2).
+      && /actor(?:_user_id|UserId):\s*userId\b/.test(src("app/actions/referrals/referral-actions.ts"))
+      && /actor(?:_user_id|UserId):\s*userId\b/.test(src("app/actions/neighborhood-reports.ts"))
       && src("app/actions/content-studio.ts").includes("agent_user_id: userId")
       && src("lib/kernel/stalled-deferrals-runner.ts").includes('select("user_id")')
       && src("lib/kernel/manager-signals.ts").includes("resolve-or-keep")
@@ -1603,7 +1808,7 @@ async function main() {
       && src("app/dashboard/communications/inbox/components/ConversationList.tsx").includes("Lead · AI ISA")
       && src("app/api/voice/twilio/inbound/route.ts").includes('.is("contact_id", null)')          // lead match precedes new-contact capture
       && src("app/api/voice/twilio/inbound/route.ts").includes("lead_id: leadId")
-      && src("app/api/voice/twilio/turn/route.ts").includes("maybeRouteLeadIntent")
+      && src("app/api/voice/twilio/turn/route.ts").includes("maybeRoutePostCall")
       && src("app/api/voice/twilio/turn/route.ts").includes('entityType: (call as any).contact_id ? "contact" : "lead"')
       && src("app/api/voice/twilio/status/route.ts").includes("routeLeadCallIntent")
       && src("app/api/voice/twilio/status/route.ts").includes('.select("id, lead_id")')            // transition-gated, no double-fire
@@ -1630,18 +1835,11 @@ async function main() {
       && src("app/actions/ai-isa/engage-contact.ts").includes("ensureConversationForContact"))
     // ── PASS 4: THE WRITE SENTINEL (the silencer class becomes self-reporting) ──
     {
-      const { readdirSync, statSync } = await import("fs")
       const silencerRe = /\.then\((undefined|\(\) *=> *(null|\{\})), *\(\) *=> *(null|\{\}|undefined)\)/g
       let silencerCount = 0
-      const walk = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          const full = join(ROOT, rel)
-          if (statSync(full).isDirectory()) { if (name !== "node_modules") walk(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) silencerCount += (readFileSync(full, "utf-8").match(silencerRe) ?? []).length
-        }
+      for (const rel of REPO_TS_FILES) {
+        silencerCount += (readFileSync(join(ROOT, rel), "utf-8").match(silencerRe) ?? []).length
       }
-      walk("lib"); walk("app")
       // RATCHET: 195 is the frozen baseline. New best-effort writes must use
       // sentinelWrite (which ledgers every loss) — this check FAILS if the
       // silencer population GROWS. Converting old sites only shrinks it.
@@ -1675,10 +1873,16 @@ async function main() {
         && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_card"')
         && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_bell"'))
       // ── PASS 10: UPSERT onConflict INTEGRITY + rpc EXISTENCE + phantom table ──
-      check("PASS 10 — UPSERT onConflict INTEGRITY (every .upsert onConflict target must match a UNIQUE index or the write ERRORS on EVERY call — 'no unique or exclusion constraint matching the ON CONFLICT specification'): the live pg_index map cross-checked against every onConflict target found 21 broken upserts across the codebase, each erroring on 100% of calls. TWO fix classes: onConflict CORRECTED to an existing unique (agent_goals dropped the redundant brokerage_id; buyer_fatigue_scores → contact_id; calendar_provider_accounts added brokerage_id; vendor_ratings → vendor_id; social_media_accounts both callers + platform_credentials idx-broker → their real owner/account-scoped uniques; open_house_invitations → event_id,contact_id,channel; agent_step_completions → agent_id,step_id) and UNIQUE INDEX CREATED where the onConflict cols ARE the business identity but the index was never migrated (call_analyses/call_transcriptions on voice_call_id, fatigue_alerts, market_data, neighborhood_reports, property_interests, timeline_transparency, transaction_milestones, website_visitors — l72-s07, zero live dupes). PHANTOM TABLE: the team-heatmap cron upserted to team_activity_snapshots — a table the code AND the schema-readiness route reference but that was never created (team_heatmap_snapshots is a different per-agent-per-zip shape) — created with its real (brokerage_id, snapshot_date) rollup shape + unique + RLS. user_invitations' only unique is a PARTIAL EXPRESSION index that a plain onConflict can't target → converted to an explicit find-pending→update-or-insert. RPC EXISTENCE: 22/23 rpc() names verified live; increment_knowledge_article_view was missing → created (SECURITY DEFINER, bumps knowledge_articles.view_count)",
+      check("PASS 10 — UPSERT onConflict INTEGRITY (every .upsert onConflict target must match a UNIQUE index or the write ERRORS on EVERY call — 'no unique or exclusion constraint matching the ON CONFLICT specification'): the live pg_index map cross-checked against every onConflict target found 21 broken upserts across the codebase, each erroring on 100% of calls. TWO fix classes: onConflict CORRECTED to an existing unique (agent_goals dropped the redundant brokerage_id; buyer_fatigue_scores → contact_id (now on the surviving fatigue-calculator); calendar_provider_accounts added brokerage_id; vendor_ratings → vendor_id; social_media_accounts both callers + platform_credentials idx-broker → their real owner/account-scoped uniques; open_house_invitations → event_id,contact_id,channel; agent_step_completions → agent_id,step_id) and UNIQUE INDEX CREATED where the onConflict cols ARE the business identity but the index was never migrated (call_analyses/call_transcriptions on voice_call_id, fatigue_alerts, market_data, neighborhood_reports, property_interests, timeline_transparency, transaction_milestones, website_visitors — l72-s07, zero live dupes). PHANTOM TABLE: the team-heatmap cron upserted to team_activity_snapshots — a table the code AND the schema-readiness route reference but that was never created (team_heatmap_snapshots is a different per-agent-per-zip shape) — created with its real (brokerage_id, snapshot_date) rollup shape + unique + RLS. user_invitations' only unique is a PARTIAL EXPRESSION index that a plain onConflict can't target → converted to an explicit find-pending→update-or-insert. RPC EXISTENCE: 22/23 rpc() names verified live; increment_knowledge_article_view was missing → created (SECURITY DEFINER, bumps knowledge_articles.view_count)",
         src("app/actions/ai-agent-goals.ts").includes('onConflict: "agent_id,year,goal_type"')
-        && src("lib/fatigue/fatigue-scorer.ts").includes('onConflict: "contact_id"')
-        && src("app/actions/vendor-marketplace.ts").includes('onConflict: "vendor_id"')
+        // fatigue-scorer.ts was retired (a duplicate scorer whose risk vocabulary the
+        // buyer_fatigue_scores CHECK rejected); the surviving calculator carries the
+        // same corrected onConflict target.
+        && src("lib/fatigue/fatigue-calculator.ts").includes('onConflict: "contact_id"')
+        // The vendor_ratings rollup (and its corrected onConflict) moved to the
+        // ONE shared module when the client-rating door landed (§6, 2026-09-01);
+        // vendor-marketplace.ts delegates to it. Pin the construct at its home.
+        && src("lib/vendor-marketplace/vendor-ratings.ts").includes('onConflict: "vendor_id"')
         && src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         && src("app/api/social/oauth/[platform]/route.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         && src("app/dashboard/settings/integrations/idx-broker/page.tsx").includes('onConflict: "owner_id,owner_type,platform"')
@@ -1696,7 +1900,15 @@ async function main() {
         && !src("app/api/internal/voice-command/route.ts").includes('.eq("agent_id", user.id)')
         && src("lib/kernel/morning-standup.ts").includes("standupAgentId")
         && src("app/dashboard/financials/expenses/page.tsx").includes("expenseAgentId")
-        && src("app/api/chat/stream/route.ts").includes("streamAgentId"))
+        // #178 SUPERSEDED pass 11's fix here, so this clause pins the construct
+        // rather than the local name pass 11 introduced. The chat-stream route
+        // no longer takes a `userId` from the POST body at all: it resolves the
+        // tenant from the SESSION (getAgentContext) and anchors the conversation
+        // to it, which fixes the same "403'd out of your own chat" symptom by a
+        // strictly stronger means — the body's id was also an IDOR. Asserting
+        // `streamAgentId` would have gone red on that better code.
+        && src("app/api/chat/stream/route.ts").includes("getAgentContext")
+        && !src("app/api/chat/stream/route.ts").includes('.eq("agent_id", userId)'))
 
       // ── PASS 12: OWNER-CHALLENGED FINANCE + MARKETING IDENTITY DOUBLE-CHECK ──
       check("PASS 12 — FINANCE + MARKETING identity double-check (owner challenged pass 11: 'the user logs in by users.id and user_type routes the dashboard — are you sure?'). The login model was CONFIRMED (getAgentContext: auth.uid()=users.id → user_type routes → agents.id resolved via agents.user_id) and the double-check found NINE more genuine class bugs, all live-FK-verified. FINANCE: aiCalculateCommission looked up agents by user_id with an agents.id in hand (profile null → cap tracking NEVER engaged, cap_progress frozen) — now .eq('id', …); BOTH QuickBooks syncs resolved brokerage via users-by-agents.id (always null → sync permanently dead) — now via agents, and the commission sync was handed the kernel's camelCase result so every column read was undefined — now a real payload; the expenses page passed raw user.id into AddExpenseDialog + ExportCSVButton (kernel write gate ctx.agentId!==agentId REJECTED every agent's own expense; CSV exported empty) — now expenseAgentId; the brokerage P&L panel got users.id (financial_reports.agent_id FKs agents → insert FK-THREW) — now resolved+conditional. MARKETING: getMarketingStudioDashboard filtered marketing_campaigns/assets.agent_user_id (a USERS-class column, every insert stamps userId) with agents.id → 'yours' KPIs always empty — now userId; section-narration-orchestrator queried agent_voice_profiles/agent_avatar_assets (agents-FK) by pres.agent_user_id → every presentation lost its voice clone + avatar — now resolves like intro-video-reactor; video-identity loadHumanIdentity same class miss → resolves agents.id first; book-seller-appointment stamped calendar_events.agent_user_id (USERS-class: coaching + no-show autopilot key it on users) with agents.id — resolves before scheduling, and voice-assistant's get_schedule read the same column with agents.id → 'no appointments' every time — now caller.userId. CROSS: generateDailyBriefing receives MIXED classes from its 3 callers (agents.id from dashboard+cron, users.id from user-type-briefs) while writing ai_daily_briefings.user_id (users FK) and reading tasks/deals/leads/listings (agents FKs) — one tolerant resolve at the top now feeds each column its own class (the agents.id save path FK-THREW before: briefings regenerated + re-billed AI on every view); generateDailyGameplan filtered contacts + video_scripts_library (agents FKs) by users.id — now agentIdForUser; loadMortgageBrokers filtered referral_partners.agent_id (agents FK) by ctx.userId — now ctx.agentId",
@@ -1710,18 +1922,59 @@ async function main() {
         && src("app/dashboard/financials/brokerage/page.tsx").includes("brokerAgentId && <ProfitLossReportPanel")
         && src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", userId)')
         && !src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", agentId)')
-        && src("lib/listing-presentation/section-narration-orchestrator.ts").includes('eq("user_id", pres.agent_user_id)')
+        // WAS PINNED TO THE LITERAL `eq("user_id", pres.agent_user_id)` INLINE IN
+        // THE ORCHESTRATOR, and went red when that line moved into the named
+        // resolver `resolveAgentNarrationAssets` — i.e. it failed BECAUSE the
+        // work finished, which is §2's waypoint trap. The two hand-rolled copies
+        // of this lookup were merged onto one exported survivor (§1.1), and the
+        // merged version is STRONGER than the line this used to match: it reads
+        // the error on the agents lookup rather than treating a refused read as
+        // "this agent has no voice clone" (§3 — supabase-js resolves refusals).
+        //
+        // So assert the RULE the clause was always about: the presentation
+        // crosses users -> agents FIRST, and then keys the two agents-FK asset
+        // tables by that agents id — never by the users-class agent_user_id,
+        // which is the miss that cost every presentation its voice and avatar.
+        && /\.from\("agents"\)\s*\.select\("id"\)\.eq\("user_id",\s*agentUserId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")).replace(/\s*\n\s*/g, ""))
+        && /from\("agent_voice_profiles"\)[\s\S]{0,120}\.eq\("agent_id", agentId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
+        && /from\("agent_avatar_assets"\)[\s\S]{0,160}\.eq\("agent_id", agentId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
+        && !/agent_voice_profiles[\s\S]{0,120}\.eq\("agent_id",\s*\w*[aA]gent_?[uU]ser_?[iI]d\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
         && src("lib/video/video-identity.ts").includes("agentRecordId")
-        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId ?? params.agentId")
+        // m362: this froze `agentId: agentUserId ?? params.agentId` — a resolved
+        // USERS id falling back to the AGENTS id it was resolved FROM, on the
+        // column pass 12 itself identified as users-class. Assert the resolve
+        // and the refusal, not the expression that undid them.
+        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId,")
+        && src("lib/ai-isa/book-seller-appointment.ts").includes("the appointment was not scheduled")
         && src("app/actions/voice-assistant.ts").includes("getTodayAppointments(caller.userId)")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("const briefingUserId = identityRow?.user_id ?? agentId")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("user_id: briefingUserId")
         && src("app/actions/copilot.ts").includes("gameplanAgentId")
-        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? ctx.userId)'))
+        // m361: this assertion used to encode `.eq("agent_id", ctx.agentId ?? ctx.userId)`
+        // as the FIXED state. Pass 12's own note says the fix was "now ctx.agentId" —
+        // but the code it froze kept the `?? ctx.userId` fallback, so the guard
+        // protected the anti-pattern it was written to remove. referral_partners
+        // .agent_id FKs agents; a users id there matches nothing. Same shape as the
+        // `.or(id.eq,user_id.eq)` assertion m346 had to unwind.
+        //
+        // ...and then m361's replacement froze the next spelling, `?? ""`, which is
+        // the SAME class of mistake one step down: WriteContext.agentId is null for
+        // broker/admin/TC sessions, and `?? ""` turns "I have no agent" into a filter
+        // that matches nothing, so those roles read "this brokerage has no lenders".
+        // A silent zero is not better than a wrong row. So assert the CONSTRUCT this
+        // has always been about — the filter is agents-class with NO users fallback,
+        // and the absent case is REFUSED rather than coerced — never the spelling.
+        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId)')
+        && !/\.eq\("agent_id", ctx\.agentId \?\?/.test(src("app/actions/buyer-financial.ts"))
+        && !src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.userId')
+        && /if \(!ctx\.agentId\)[\s\S]{0,400}success: false/.test(src("app/actions/buyer-financial.ts")))
 
       // ── PASS 13: GLOBAL agent_user_id CLASS AUDIT + CAP-LEDGER CONSOLIDATION + E2E-IN-GUARD ──
       {
-        const { readdirSync, statSync } = await import("fs")
         // The class-crossing shape: an agents-FK row field stamped straight into a
         // users-class agent_user_id column. Live DB proof: ALL 36 agent_user_id
         // columns are users-class. Zero of these may exist anywhere in app/ or lib/.
@@ -1732,17 +1985,25 @@ async function main() {
             crossers.push(`${rel}: agent_user_id ← ${m[1]}.agent_id`)
           }
         }
-        const walk13 = (dir: string) => {
-          for (const name of readdirSync(join(ROOT, dir))) {
-            const rel = `${dir}/${name}`
-            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk13(rel) }
-            else if (/\.(ts|tsx)$/.test(name)) scan13(rel)
-          }
-        }
-        walk13("lib"); walk13("app")
-        check(`PASS 13 — GLOBAL agent_user_id CLASS AUDIT (items 1-3 approved after pass 12). Live census: ALL 36 agent_user_id columns are USERS-class (30 FK users, 6 no-FK same convention) — so the global rule is simple: agent_user_id never meets an agents.id. The sweep found the filters CLEAN (50/50 users-class) and SIX class-crossing STAMPS, each FK-throwing in production: the 'offer received' activity (listing.agent_id), EVERY buyer fatigue alert (contact.agent_id), promote-to-asset in the campaign registry (getAgentContext agents.id), the CMA presentation + net-sheet events AND the net-sheet's users-table brokerage lookup (presentation tab passes listing.agent_id — net sheets errored outright), the auto-on-live listing packet job, and the brand-voice agent profile read (agents-FK filtered by users.id). BONUS CATCH: aiGenerateClosingChecklist wrote FIVE PHANTOM COLUMNS (agent_user_id/phase/item_label/owner/due_date don't exist on closing_checklist_items) — every checklist generate THREW and the tab rendered the same phantom fields; both now speak the live schema (item_name/category/notes with owner+due embedded). CONSOLIDATION (item 2): agent_cap_tracking is the ONE cap ledger (CapProgressBar, CDA portal, waterfall, kernel) — aiCalculateCommission now reads it and its parallel agents.cap_progress ratchet is REMOVED (the kernel owns the ratchet). E2E-IN-GUARD (item 3): the lifecycle harness rides the guard chain, credential-gated. MANAGER COVERAGE: all 14 managers own ≥1 maintenance domain, zero domains point at unknown managers. In-code sweep offenders now: [${crossers.join("; ") || "none"}]`,
+        for (const rel of REPO_TS_FILES) scan13(rel)
+        check(`PASS 13 — GLOBAL agent_user_id CLASS AUDIT (items 1-3 approved after pass 12). Live census: ALL 36 agent_user_id columns are USERS-class (30 FK users, 6 no-FK same convention) — so the global rule is simple: agent_user_id never meets an agents.id. The sweep found the filters CLEAN (50/50 users-class) and SIX class-crossing STAMPS, each FK-throwing in production: the 'offer received' activity (listing.agent_id), EVERY buyer fatigue alert (contact.agent_id), promote-to-asset in the campaign registry (getAgentContext agents.id), the CMA presentation + net-sheet events AND the net-sheet's users-table brokerage lookup (presentation tab passes listing.agent_id — net sheets errored outright), the auto-on-live listing packet job, and the brand-voice agent profile read (agents-FK filtered by users.id). BONUS CATCH: aiGenerateClosingChecklist wrote FIVE PHANTOM COLUMNS (agent_user_id/phase/item_label/owner/due_date don't exist on closing_checklist_items) — every checklist generate THREW and the tab rendered the same phantom fields; both now speak the live schema (item_name/category/notes with owner+due embedded). CONSOLIDATION (item 2): agent_cap_tracking is the ONE cap ledger (CapProgressBar, CDA portal, waterfall, kernel) — aiCalculateCommission now reads it and its parallel agents.cap_progress ratchet is REMOVED (the kernel owns the ratchet). E2E-IN-GUARD (item 3): the lifecycle harness rides the guard chain, credential-gated. MANAGER COVERAGE: all 14 managers own ≥1 maintenance domain, zero domains point at unknown managers. SINCE-THEN: the 'offer received' fix's host function (ai-offer-creation.ts:submitCompleteOffer) was deleted as a duplicate offer writer — survivor app/actions/buyer-offers.ts:createOffer — so this pass now asserts the class through the global sweep plus the surviving listing-side notification, not through the vanished line. In-code sweep offenders now: [${crossers.join("; ") || "none"}]`,
           crossers.length === 0
-          && src("app/actions/ai-offer-creation.ts").includes("listingAgentRow?.user_id ?? null")
+          // The 'offer received' stamp this pass fixed lived inside
+          // ai-offer-creation.ts:submitCompleteOffer, which has since been
+          // DELETED as a duplicate offer writer (survivor:
+          // app/actions/buyer-offers.ts:createOffer). The clause used to freeze
+          // that function's resolve line, so the deletion read as a regression.
+          // What the pass is actually about survives in two places and both are
+          // asserted instead of the vanished spelling: the global `crossers`
+          // sweep above still forbids `agent_user_id ← listing.agent_id`
+          // ANYWHERE in app/ or lib/, and the surviving listing-side
+          // notification (offer-form-wizard.tsx:notifyListingSide) writes the
+          // agents-class column with the agents-class id AND supplies the
+          // NOT NULL tenant the deleted copy omitted.
+          && !src("app/actions/ai-offer-creation.ts").includes("export async function submitCompleteOffer")
+          && src("app/actions/ai-offer-creation.ts").includes("app/actions/buyer-offers.ts:createOffer")
+          && src("app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx").includes("agent_id:      listingRow.agent_id")
+          && src("app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx").includes("brokerage_id:  brokerageId")
           && src("lib/fatigue/fatigue-calculator.ts").includes("fatigueAgentUserId")
           && src("lib/marketing/campaign-registry.ts").includes("agent_user_id: userId")
           && src("app/actions/cma-presentation/presentation-assembler.ts").includes("presAgentUserId")
@@ -1838,14 +2099,15 @@ async function main() {
       // ── PASS 15: ASSET + RECRUITING + ACADEMY DOMAIN DRILL (owner-directed) ──
       {
         const { toLibraryScriptType } = await import("../app/types/video-generation")
-        check("PASS 15 — ASSET / RECRUITING / ACADEMY DOMAIN DRILL (owner: 'identities and data flow correctly; academy on-demand works'). METHOD: manager table inventory (34 asset + 61 recruiting tables from TABLE_MANAGER) → live FK census → code sweep → seeded live-fire of each COMPLETE flow → residue 0. FK census: academy (agent_courses/quiz_attempts/step_completions/ce_completions → agents; learning_assignments.agent_user_id → users) · recruiting (mentor/mentee/recruited_agent_id/leaderboard/points → agents) · assets (video_assets/content/scripts/completion_tracking → agents; studio_sessions + created_by → users). CODE SWEEP verdicts: recruiting CLEAN (zero class-crossings); assets + academy writers use getAgentContext/resolveAgentId correctly — THREE genuine bugs found and fixed: (1) the onboarding PERFORMANCE REPORT route filtered agent_onboarding + video_completion_tracking + agent_quiz_attempts (all agents-FK) with raw user.id — every agent's report read zeros → resolveAgentId; (2) skill-freshness radar AND board filtered agent_courses.status='completed' — a value the live CHECK FORBIDS (vocabulary is not_started/in_progress/passed/failed; the certification engine gates on 'passed') → both read empty forever → 'passed'; (3) video_scripts_library.script_type CHECK admits ONLY five canonical types but THREE writers bypassed the one mapper — generateVideoFromScript wrote literal 'video' (every script record silently unpersisted, error only console.warned), generate-script wrote raw videoType ('listing_tour'/'custom' → 23514, saveToLibrary silently dead), and the mapper itself was file-local in video-content — KEEP-ONE: toLibraryScriptType exported from the types module, all three writers ride it. LIVE-FIRE (residue 0): academy on-demand (course→module→assignment-by-users.id→PASSED completion; fixed read=1, phantom 'completed' read=0), recruiting (recruit→hired analytics; pitch-kit ROI predicate found 1 agent/$18,500), assets (training video→canonical script→asset→100% completion; /api/videos agents.id predicate=1; fixed report read=1, old users.id read=0)",
+        check("PASS 15 — ASSET / RECRUITING / ACADEMY DOMAIN DRILL (owner: 'identities and data flow correctly; academy on-demand works'). METHOD: manager table inventory (34 asset + 61 recruiting tables from TABLE_MANAGER) → live FK census → code sweep → seeded live-fire of each COMPLETE flow → residue 0. FK census: academy (agent_courses/quiz_attempts/step_completions/ce_completions → agents; learning_assignments.agent_user_id → users) · recruiting (mentor/mentee/recruited_agent_id/leaderboard/points → agents) · assets (video_assets/content/scripts/completion_tracking → agents; studio_sessions + created_by → users). CODE SWEEP verdicts: recruiting CLEAN (zero class-crossings); assets + academy writers use getAgentContext/resolveAgentId correctly — THREE genuine bugs found and fixed: (1) the onboarding PERFORMANCE REPORT route filtered agent_onboarding + video_completion_tracking + agent_quiz_attempts (all agents-FK) with raw user.id — every agent's report read zeros → resolveAgentId; (2) skill-freshness radar AND board read the coursework signal from the write-dead agent_courses (never written by any runtime code → the signal was empty forever) → RE-POINTED onto the canonical learning_assignments rail (agent-side completed modules, status='completed' + quiz_score) so a completed Academy module is a real freshness signal; the legacy agent_courses/training_courses/training_course_steps spine was then physically retired (see legacy_tables_retired); (3) video_scripts_library.script_type CHECK admits ONLY five canonical types but THREE writers bypassed the one mapper — generateVideoFromScript wrote literal 'video' (every script record silently unpersisted, error only console.warned), generate-script wrote raw videoType ('listing_tour'/'custom' → 23514, saveToLibrary silently dead), and the mapper itself was file-local in video-content — KEEP-ONE: toLibraryScriptType exported from the types module, all three writers ride it. LIVE-FIRE (residue 0): academy on-demand (course→module→assignment-by-users.id→PASSED completion; fixed read=1, phantom 'completed' read=0), recruiting (recruit→hired analytics; pitch-kit ROI predicate found 1 agent/$18,500), assets (training video→canonical script→asset→100% completion; /api/videos agents.id predicate=1; fixed report read=1, old users.id read=0)",
           toLibraryScriptType("listing_tour") === "property_tour"
           && toLibraryScriptType("custom") === "property_tour"
           && toLibraryScriptType("presentation_chapter") === "listing_presentation"
           && src("app/api/onboarding/performance-report/route.ts").includes("resolveAgentId")
-          && src("lib/education/skill-freshness-radar.ts").includes('.eq("status", "passed")')
-          && src("lib/intelligence/skill-freshness-board.ts").includes('.eq("status", "passed")')
-          && !src("lib/education/skill-freshness-radar.ts").includes('"completed"')
+          && src("lib/education/skill-freshness-radar.ts").includes('from("learning_assignments")')
+          && src("lib/education/skill-freshness-radar.ts").includes('.eq("status", "completed")')
+          && src("lib/intelligence/skill-freshness-board.ts").includes('.eq("status", "completed")')
+          && !src("lib/education/skill-freshness-radar.ts").includes('from("agent_courses")')
           && src("app/actions/video-generation.ts").includes('toLibraryScriptType("custom")')
           && src("app/actions/video/generate-script.ts").includes("toLibraryScriptType(params.videoType)")
           && src("app/actions/video-content.ts").includes("toLibraryScriptType(params.video_type)")
@@ -1892,7 +2154,13 @@ async function main() {
       check("WRITER-LESS BURN-DOWN ROUND 2 (approved campaigns 1+2). FINANCIALS: the BROKER'S MONEY PAGE read brokerage_earnings (mtd/ytd KPIs, 12-month trend, forecast proxy) and brokerage_p_l — writer-less, so every broker's P&L dashboard rendered zeros forever. runBrokerageEarningsRollup now rides the nightly brokerage-pl-rollup cron, folding the SAME canonical agent_commissions source as the per-agent and team snapshots so all three altitudes reconcile exactly; operating-expense lines stay honest-NULL (no ledger source — never fabricated) and net_profit is the provable brokerage-side number. LIVE-FIRE CAUGHT A DOUBLE-SIDED VOCABULARY BUG: brokerage_earnings.period_type CHECK admits monthly/quarterly/annual, but the PAGE read 'mtd'/'ytd' — values that can never exist (the reader itself was phantom-vocabulary). Writer writes monthly/annual; all three reader files fixed to match. Delete-then-insert per tenant (pass-10 rule: no onConflict without a real unique). PRESETS: seven campaign-bundle preset shelves (email/sms/voicedrop/social/portal-push/podcast/ad-retarget) were READ by the bundle dispatcher with NO writer — upsertCampaignPreset is the ONE canonical writer for all seven channels, mirroring the direct-mail preset discipline exactly (tenant-guarded, scope-anchored — scope_id NOT-NULL live-caught, compliance-GATED at save time on every content-carrying channel via evaluateOutbound, field whitelist so caller input never spreads into rows). Sweep learns VARIABLE_TABLE_WRITERS (auditable exemptions naming the writer module). Baseline 54 → 45; remaining campaigns: legacy twins + ingress-expected",
         src("lib/finance/brokerage-earnings-writer.ts").includes("runBrokerageEarningsRollup")
         && src("lib/finance/brokerage-earnings-writer.ts").includes('period_type: "monthly"')
-        && !src("app/dashboard/financials/brokerage/page.tsx").includes('"mtd"')
+        // Scoped to the brokerage_earnings CHAINS, not the whole file: the same
+        // page also reads team_earnings, whose vocabulary really is
+        // (mtd|ytd|all_time). A blanket !includes('"mtd"') here forbade a value
+        // that is correct for the sibling table — and it fired the moment
+        // team_earnings was fixed off its own phantom 'monthly'.
+        && !fromWindows(src("app/dashboard/financials/brokerage/page.tsx"), "brokerage_earnings")
+             .some((w) => w.includes('"mtd"') || w.includes('"ytd"'))
         && src("app/dashboard/financials/brokerage/page.tsx").includes('.eq("period_type", "monthly")')
         && src("app/api/cron/brokerage-pl-rollup/route.ts").includes("runBrokerageEarningsRollup")
         && src("app/actions/campaign-presets.ts").includes("CHANNEL_TABLE")
@@ -1950,10 +2218,19 @@ async function main() {
     // ── BURN-DOWN ROUND 4: MONEY-TRUTH SPINE + VOICE-ADMIN WRITERS + HEAVY REPOINTS ──
     {
       const baseline4 = JSON.parse(src("scripts/writerless-read-baseline.json")) as string[]
-      check("BURN-DOWN ROUND 4 (32 → 18) — approved items 1, 3, 4. MONEY-TRUTH SPINE (item 1): commission_splits finally has its writer — the kernel commission creation persists one split row per commission with the SAME waterfall numbers (fees + cap credit in metadata) and the approve/pay/dispute/resolve transitions MIRROR onto the ledger by commission_id (live CHECK pending/approved/paid/disputed/cancelled), so the agent money page and brokerage-P&L intelligence read real rows; addAgentCommission writes the twin row too. transaction_cost_breakdown persists at the offer→deal bridge (UNIQUE(transaction_id) live-verified → upsert): buyer side carries CONTRACT facts, seller side rides the SAME net-sheet math as the offer comparison with every line marked default_estimate (provenance discipline — never an estimate dressed as a fact). runUsageMeteringRollup folds the raw usage streams (usage_events/usage_logs/ai_tool_usage) into meter_readings + cost_allocation per brokerage per month on the nightly finance cron (no unique indexes — pass-10 delete-then-insert; agent and team allocations are SEPARATE rows, books never cross-roll). VOICE-ADMIN WRITERS (item 3): four 'tell the admin and it's done' tables get their ONE writer (app/actions/intent-writers.ts) dispatched by voice — request_document (document_requests, the assistant's overdue alert can finally fire), assign_vendor (contact_vendors — the vendor-messaging gate can finally pass; NULL-transaction dedupe via check-then-update because Postgres unique treats NULLs as distinct), log_upgrade (property_upgrades → seller CMA valuation), set_portal_milestones (contact_portal_preferences UNIQUE(contact_id) upsert). LIVE-FIRE CAUGHT: vendors.name is the live column (NOT business_name) and vendors.category is CHECK'd (Lender/Inspector/Title Company/Contractor/Stager/Other). All shapes live-fired, residue 0",
+      check("BURN-DOWN ROUND 4 (32 → 18) — approved items 1, 3, 4. MONEY-TRUTH SPINE (item 1): commission_splits finally has its writer — the kernel commission creation persists one split row per commission with the SAME waterfall numbers (fees + cap credit in metadata) and the approve/pay/dispute/resolve transitions MIRROR onto the ledger by commission_id (live CHECK pending/approved/paid/disputed/cancelled), so the agent money page and brokerage-P&L intelligence read real rows (WAVE 27: the second writer app/actions/agents.ts:addAgentCommission, which wrote a twin row, is retired onto that same kernel creator — one writer, tombstoned at its old site). transaction_cost_breakdown persists at the offer→deal bridge (UNIQUE(transaction_id) live-verified → upsert): buyer side carries CONTRACT facts, seller side rides the SAME net-sheet math as the offer comparison with every line marked default_estimate (provenance discipline — never an estimate dressed as a fact). runUsageMeteringRollup folds the raw usage streams (usage_events/usage_logs/ai_tool_usage) into meter_readings + cost_allocation per brokerage per month on the nightly finance cron (no unique indexes — pass-10 delete-then-insert; agent and team allocations are SEPARATE rows, books never cross-roll). VOICE-ADMIN WRITERS (item 3): four 'tell the admin and it's done' tables get their ONE writer (app/actions/intent-writers.ts) dispatched by voice — request_document (document_requests, the assistant's overdue alert can finally fire), assign_vendor (contact_vendors — the vendor-messaging gate can finally pass; NULL-transaction dedupe via check-then-update because Postgres unique treats NULLs as distinct), log_upgrade (property_upgrades → seller CMA valuation), set_portal_milestones (contact_portal_preferences UNIQUE(contact_id) upsert). LIVE-FIRE CAUGHT: vendors.name is the live column (NOT business_name) and vendors.category is CHECK'd (Lender/Inspector/Title Company/Contractor/Stager/Other). All shapes live-fired, residue 0",
         src("lib/kernel/financial.ts").includes('from("commission_splits")')
         && src("lib/kernel/financial.ts").includes('.eq("commission_id", commissionId)')
-        && src("app/actions/agents.ts").includes("commission_splits")
+        // RETARGETED IN WAVE 27. This conjunct read `src("app/actions/agents.ts")
+        // .includes("commission_splits")` — the "addAgentCommission writes the twin
+        // row too" half of the claim above. That second writer was the duplicate of
+        // lib/kernel/financial.ts:createCommissionRecord and is retired (tombstone in
+        // app/actions/agents.ts). The conjunct is re-anchored on the SURVIVOR's
+        // ledger INSERT rather than dropped — and on the insert specifically, which
+        // is a stronger fact than the mere mention of the table name the first
+        // conjunct already covers. NOTE: `src` here is RAW source, so this must stay
+        // pinned to a construct a tombstone cannot spell.
+        && src("lib/kernel/financial.ts").includes('await supabase.from("commission_splits").insert({')
         && src("lib/transactions/offer-bridge.ts").includes("transaction_cost_breakdown")
         && src("lib/transactions/offer-bridge.ts").includes('{ onConflict: "transaction_id" }')
         && src("lib/finance/usage-metering.ts").includes("runUsageMeteringRollup")
@@ -1979,8 +2256,23 @@ async function main() {
         && src("app/api/cron/listing-presentation-prep/route.ts").includes('from("calendar_events")')
         && src("app/api/cron/listing-presentation-prep/route.ts").includes('"listing_appointment"')
         && src("app/dashboard/vendors/page.tsx").includes('from("vendors")')
-        && src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
-        && src("lib/communications/vendor-communications.tsx").includes("vendors(*)")
+        // The marketing-package embed now NAMES its vendor columns. A starred
+        // embed resolves against the right table but hides WHICH columns the
+        // consumer reads, so a column the bench does not have stays undefined
+        // forever instead of failing — assert the named shape, and that the
+        // star has not crept back. (test:phantom-embed proves the ranking.)
+        && /vendor:vendors\(\s*id\s*,/.test(src("app/actions/marketing-package-automation.ts"))
+        && !src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
+        // vendor-communications.tsx now names its embedded columns too. This
+        // line used to assert the STAR was present, which recorded the state of
+        // the file rather than a property worth keeping — and it contradicted
+        // the rule stated two comments up. Both of its embeds were checked
+        // against the live schema (one FK each: vendor_id→vendors,
+        // transaction_id→transactions, listing_id→listings, so no PGRST200/201)
+        // and narrowed to exactly the columns the two emails read. Asserted as
+        // the claim — named, and no starred embed left anywhere in the file.
+        && src("lib/communications/vendor-communications.tsx").includes("vendors(id, name, email)")
+        && !/\w+\(\*\)/.test(src("lib/communications/vendor-communications.tsx"))
         && src("app/dashboard/isa/calling/page.tsx").includes("ai_identity_profiles")
         && src("lib/auth/permissions-client.ts").includes("user_role_assignments")
         && src("lib/data/brokerKPIs.ts").includes('from("agents")')
@@ -2092,7 +2384,15 @@ async function main() {
         && writeBaseline.length <= 63
         && src("scripts/orphan-write-sweep.ts").includes("AUDIT_EXEMPT")
         && src("lib/application/compliance-monitoring.ts").includes('"fair_housing_violation"')
-        && src("app/api/generate/newsletter/route.ts").includes('from("ai_generated_content")')
+        // The RULE Round 9 recorded is "the newsletter writer lands in the
+        // canonical ai_generated_content ledger, not the orphan generated_content
+        // twin". The writer it named — the auth-less /api/generate/newsletter
+        // route — was deleted (lane N3a 2026-09-01) after its artifact write was
+        // merged onto the survivor per §1.1, so the assertion follows the
+        // capability to app/actions/ai-newsletter.ts::aiWriteNewsletterContent
+        // rather than pinning to a file that finished its life (§2: assert the
+        // rule, not the waypoint).
+        && src("app/actions/ai-newsletter.ts").includes('from("ai_generated_content")')
         && src("lib/billing/stripe-subscription-ops.ts").includes("stripeRefundLatestInvoice")
         && src("app/actions/superadmin/brokerage-management.ts").includes("issueRefundAction")
         && src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx").includes("issueRefundAction")
@@ -2143,7 +2443,7 @@ async function main() {
     }
     // ── ROUND 12: ALL LOOPS CLOSED — PUSH CONNECTOR + QR VOCAB CATCH + LAST STUBS ──
     {
-      check("ROUND 12 — THE OPEN-LOOP LEDGER CLOSES. WAR-ROOM DRILL CATCH (the round's headline): live-firing all seven Launch War Room lanes against production constraints exposed that qr_codes.purpose's CHECK admitted NONE of the values the writers use (lead_magnet / lead_capture / campaign / listing_inquiry) — production qr_codes was EMPTY because every QR the platform ever tried to mint silently failed; migration l72_s13 widened the vocabulary, and the playbook installer's brief-as-purpose bug died with it. PUSH CONNECTOR: the drain's honest no_push_provider_configured gap is now REAL egress — push_subscriptions registry (l72_s12, RLS own-rows, data_steward owner) + VAPID web-push adapter that soft-disables gone endpoints, service worker + permission toggle on the notification settings, and the drain marks real deliveries 'delivered' (the live CHECK vocabulary — 'sent' would have violated it). STALENESS RULE: pending emails older than 7 days expire at drain time, so a drain outage can never end in a backlog blast of weeks-late mail. LAST STUBS: the workflow engine's appointment + document steps write REAL calendar_events / document_requests rows (requested_by resolved agents→users class, the identity census); neighborhood data rides the AI rail labeled ai_estimated (never mock); open-house weather is a REAL Open-Meteo forecast scored + stored; certificates render actual PDFs through the board-packet rail into storage (null + honest copy when rendering fails — never a dead link); the SkySlope webhook comment was stale (provider fully implemented) and now says so",
+      check("ROUND 12 — THE OPEN-LOOP LEDGER CLOSES. WAR-ROOM DRILL CATCH (the round's headline): live-firing all seven Launch War Room lanes against production constraints exposed that qr_codes.purpose's CHECK admitted NONE of the values the writers use (lead_magnet / lead_capture / campaign / listing_inquiry) — production qr_codes was EMPTY because every QR the platform ever tried to mint silently failed; migration l72_s13 widened the vocabulary, and the playbook installer's brief-as-purpose bug died with it. PUSH CONNECTOR: the drain's honest no_push_provider_configured gap is now REAL egress — push_subscriptions registry (l72_s12, RLS own-rows, data_steward owner) + VAPID web-push adapter that soft-disables gone endpoints, service worker + permission toggle on the notification settings, and the drain marks real deliveries 'delivered' (the live CHECK vocabulary — 'sent' would have violated it). STALENESS RULE: pending emails older than 7 days expire at drain time, so a drain outage can never end in a backlog blast of weeks-late mail. LAST STUBS: appointment scheduling writes REAL calendar_events (ai-isa/meeting-recap) and document requests write REAL document_requests rows (intent-writers) — no stubs (the vestigial Engine A's inline steps that once did this were retired in the workflow-engine consolidation); neighborhood data rides the AI rail labeled ai_estimated (never mock); open-house weather is a REAL Open-Meteo forecast scored + stored; certificates render actual PDFs through the board-packet rail into storage (null + honest copy when rendering fails — never a dead link); the SkySlope webhook comment was stale (provider fully implemented) and now says so",
         src("lib/providers/web-push.ts").includes("endpoint_gone")
         && src("app/actions/push-subscriptions.ts").includes("subscribePush")
         && src("app/components/shared/push-permission-toggle.tsx").includes("urlBase64ToUint8Array")
@@ -2152,8 +2452,8 @@ async function main() {
         && src("lib/agentic-os/connector-probe.ts").includes("web_push")
         && src("lib/kernel/manager-registry.ts").includes("push_subscriptions")
         && src("app/actions/creative-playbooks.ts").includes('purpose: "lead_capture"')
-        && src("lib/orchestrator/workflow-engine.ts").includes("requestedByUserId")
-        && src("lib/orchestrator/workflow-engine.ts").includes('from("calendar_events")')
+        && src("lib/ai-isa/meeting-recap.ts").includes('from("calendar_events")')
+        && src("app/actions/intent-writers.ts").includes('from("document_requests")')
         && src("lib/onboarding/certificate-pdf.ts").includes("renderCertificatePdf")
         && src("app/actions/open-house-automation.ts").includes("open-meteo")
         && !src("app/actions/ai-content-generation.tsx").includes("returning structured mock data"))
@@ -2178,7 +2478,7 @@ async function main() {
     }
     // ── ROUND 14: EVERY ROLE ITS COCKPIT + ALL STATES + CTV LANE + MLS B-ROLL RULE ──
     {
-      check("ROUND 14 — EVERY ROLE GETS ITS COCKPIT, EVERY STATE ITS REGULATOR, AND TV. LICENSE REGISTRY: full 50-state + DC coverage (51), every entry the REAL regulator (LARA/DBPR/IDFPR/PALS/DIAL/DELPROS/DPOR/DSPS…) — no invented scrape patterns; unconfident portals are manual_portal landing links feeding the reviewer's one-click. PLATFORM STAFF COMMAND HOME: one role-aware hub driven from the SAME platformStaffCan map the page gates use (home and gates cannot disagree), staff land there after login (fixing brokerage-less staff mis-routed to onboarding); create-user-in-any-tenant carded (the audited rail already existed); SUBSCRIBER REFERRAL FEES ride the growth-funnel rail (platform_prospects source 'referral:<who>' + the previously-dormant converted_brokerage_id link; mark-paid writes AND reads the append-only superadmin audit ledger — the audit table IS the payment ledger); staff ANNOUNCEMENTS ride the existing notifyPlatformStaff fan-out behind a new 'announcements' capability. TENANT STAFF COMPLETENESS: admins/brokers grant admin/broker (superadmin-only list narrowed to superadmin itself), the unanchored-caller scope hole is closed, and THE CATCH — users.status='suspended' had two writers and zero readers, deactivation was a NO-OP until rejectIfSuspended gated both login paths; tenant admins get ticket threads + replies on the existing support rail; the admin hub links Users/Support/Reports/P&L/Usage/Recruiting. MLS RULE: b-roll never rides a walkthrough (cutaways would cover the very footage being toured) — explicit video_type guard atop the structural usage_intent gate. CTV (vibe.co): the streaming-TV lane stages REAL launch packages (spec-checked creative, targeting, budget, checklist, deep link) as ad_campaigns platform 'vibe_ctv' (CHECK widened by m271 — live-fired; its constraint sweep matches ONLY the platform column, sparing visibility_scope whose array contains the word 'platform'); dispatch is HONESTLY not-configured until Vibe API access exists — never a simulated launch",
+      check("ROUND 14 — EVERY ROLE GETS ITS COCKPIT, EVERY STATE ITS REGULATOR, AND TV. LICENSE REGISTRY: full 50-state + DC coverage (51), every entry the REAL regulator (LARA/DBPR/IDFPR/PALS/DIAL/DELPROS/DPOR/DSPS…) — no invented scrape patterns; unconfident portals are manual_portal landing links feeding the reviewer's one-click. PLATFORM STAFF COMMAND HOME: one role-aware hub driven from the SAME platformStaffCan map the page gates use (home and gates cannot disagree), staff land there after login (fixing brokerage-less staff mis-routed to onboarding); create-user-in-any-tenant carded (the audited rail already existed); SUBSCRIBER REFERRAL FEES ride the growth-funnel rail (platform_prospects source 'referral:<who>' + the previously-dormant converted_brokerage_id link; mark-paid writes AND reads the append-only superadmin audit ledger — the audit table IS the payment ledger); staff ANNOUNCEMENTS ride the existing notifyPlatformStaff fan-out behind a new 'announcements' capability. TENANT STAFF COMPLETENESS: admins/brokers grant admin/broker (superadmin-only list narrowed to superadmin itself), the unanchored-caller scope hole is closed, and THE CATCH — users.status='suspended' had two writers and zero readers, deactivation was a NO-OP until rejectIfSuspended gated both login paths; tenant admins get ticket threads + replies on the existing support rail; the admin hub links Users/Support/Reports/P&L/Usage/Recruiting. MLS RULE: b-roll never rides a walkthrough (cutaways would cover the very footage being toured) — explicit video_type guard atop the structural usage_intent gate. CTV (vibe.co): the streaming-TV lane stages REAL launch packages (spec-checked creative, targeting, budget, checklist, deep link) as ad_campaigns platform 'vibe_ctv' (CHECK widened by m271 — live-fired; its constraint sweep matches ONLY the platform column, sparing visibility_scope whose array contains the word 'platform'); dispatch is now a REAL OAuth2 Vibe API integration (lib/providers/vibe.ts — token → advertiser → upload creative → campaign → strategy → PUBLISH), dispatched:true ONLY on a Vibe-confirmed publish, honest error otherwise — still never a simulated launch",
         src("lib/onboarding/state-license-registry.ts").split("state:").length > 51
         && src("app/dashboard/superadmin/home/page.tsx").includes("platformStaffCan")
         && src("lib/kernel/role-routes.ts").includes("/dashboard/superadmin/home")
@@ -2189,7 +2489,7 @@ async function main() {
         && src("app/actions/support.ts").includes("replyToBrokerageTicket")
         && src("app/api/cron/poll-did-videos/route.ts").includes("isWalkthrough")
         && src("lib/ads/ctv-campaign.ts").includes('"vibe_ctv"')
-        && src("lib/providers/vibe.ts").includes("vibe_api_dispatch_pending_vendor_contract")
+        && src("lib/providers/vibe.ts").includes("/oauth2/token") && src("lib/providers/vibe.ts").includes("Published on Vibe")
         && src("app/dashboard/campaigns/ads/ctv-lane.tsx").length > 0
         && src("supabase/migrations/m271-ad-campaigns-vibe-ctv-platform.sql").includes("platform = ANY"))
     }
@@ -2199,12 +2499,36 @@ async function main() {
       //  no broker — and SEATS are the constraint (2/5/unlimited); lender is a
       //  vendor CATEGORY, not a partner role. Assertions updated to that model.)
       const { TIER_INVITABLE_ROLES, tierAllowsRole, TIER_SEAT_LIMITS, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
-      check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE (every tier was offered the full role list) — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride), solo=one seat + partners only, team adds team structure, brokerage/multi add governance roles, honest upgrade-naming errors, legacy null tiers fail OPEN to the brokerage set; (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
-        !tierAllowsRole("solo_agent", "broker") && tierAllowsRole("solo_agent", "agent") && tierAllowsRole("solo_agent", "admin")
+      check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride). ROUND 17 SUPERSEDED ITS ROLE HALF: the owner seated a BROKER on TEAM tier ('takes up 3 of 5 seats'), so a tier restricts HOW MANY seats, never WHICH user types fill them — all four tiers now share ONE menu and the tier's only say is the seat cap (2/5/50/unlimited, brokerage moved to 50 per 'a brokerage should be changed to 50 seats'). m518's team_lead lead desk SURVIVES that: is_lead_visible_role() is per-user with no tier clause, so seating a broker only adds someone who passes. The fail-closed duty moved off the role menu onto the seat axis, where an unreadable tier floors to the smallest cap and seatGate refuses outright on an unreadable tenant/count/catalogue; and the menu is intersected with the live users_user_type_check vocabulary so a user type the column cannot store is never offered (broker_admin, pending m530); (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
+        // ── SUPERSEDED IN FULL (lane A, 2026-08-22) ──────────────────────────
+        //
+        // Both halves above are gone. This used to assert that solo AND team
+        // withheld broker/broker_owner. OWNER, seating a broker on TEAM tier and
+        // counting it as one of the five:
+        //
+        //   "a team is a team tier subscription with 5 seats so can have a team
+        //    lead user type given permission roles, then an agent as a user type
+        //    with permission roles, then a broker as a user type with different
+        //    permisson roles which that takes up 3 of 5 seats"
+        //
+        // A TIER RESTRICTS HOW MANY SEATS, NEVER WHICH USER TYPES FILL THEM. The
+        // earlier "team tier … don't have a broker in the subscription" sentence
+        // described the PACKAGE; m518's team_lead lead-desk grant does not depend
+        // on it (is_lead_visible_role() is per-user with no tier clause), so both
+        // rulings hold and m518 is untouched.
+        tierAllowsRole("solo_agent", "broker") && tierAllowsRole("solo_agent", "broker_owner")
+        && tierAllowsRole("solo_agent", "agent") && tierAllowsRole("solo_agent", "admin")
         && tierAllowsRole("team", "broker") && tierAllowsRole("team", "team_lead")
-        && TIER_INVITABLE_ROLES.brokerage.slice().sort().join(",") === TIER_INVITABLE_ROLES.multi_location.slice().sort().join(",")
+        && tierAllowsRole("brokerage", "broker_admin") && tierAllowsRole("brokerage", "agent")
+        // …and it is ONE menu, identical across all four tiers.
+        && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) =>
+          TIER_INVITABLE_ROLES[t].slice().sort().join(",") ===
+          TIER_INVITABLE_ROLES.brokerage.slice().sort().join(","))
+        // SEATS are the whole of the tier's say — 2 / 5 / 50 / unlimited.
+        // brokerage moved null → 50 (owner: "a brokerage should be changed to 50
+        // seats"), matching the live catalogue m529 already set.
         && TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-        && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null
+        && TIER_SEAT_LIMITS.brokerage === 50 && TIER_SEAT_LIMITS.multi_location === null
         && PARTNER_ROLES.join(",") === "vendor"
         && src("app/actions/admin/invite-user.ts").includes("tierAllowsRole")
         && src("app/actions/superadmin/tenant-users.ts").includes("tier_matrix_override")
@@ -2226,16 +2550,59 @@ async function main() {
         && routeBaseline.length <= 42
         && src("package.json").includes("test:orphan-routes")
         && src("app/config/navigation-config.ts").includes("/dashboard/gifts")
-        && src("app/dashboard/admin/users/page.tsx").includes("effectiveSeatLimit") // round 31: seatLimitForTier evolved into effectiveSeatLimit (tier default + staff override, ONE math for meter + invite gate)
+        // ROUND 31 asserted this page names `effectiveSeatLimit` directly. The
+        // CLAIM was never about that identifier — it was ONE MATH shared by the
+        // meter and the invite gate. The page has since stopped re-deriving and
+        // now calls `seatCheck`, which computes through `seatDecision` (which is
+        // what resolves effectiveSeatLimit). So the claim is MORE true and the
+        // old spelling is gone; asserting the identifier would now fail on an
+        // improvement, which is a proof measuring the wrong thing.
+        //
+        // Assert the SHARED CALL, not the inner identifier — and assert the
+        // absence of the hand-rolled comparison that used to sit here, because
+        // that inline copy was a THIRD spelling of at-capacity and the reason a
+        // tenant's meter could report room after the gate began refusing.
+        && src("app/dashboard/admin/users/page.tsx").includes("seatCheck(")
+        && !/seatCount\s*>=\s*seatLimit/.test(stripComments(src("app/dashboard/admin/users/page.tsx")))
         && src("app/dashboard/onboarding/OnboardingDashboardClient.tsx").includes("YourWebsiteCard")
         && src("app/components/settings/YourWebsiteCard.tsx").includes("getMyPublicSiteLinks"))
     }
     // ── ROUND 18: THREE ZEROS + THE NIGHTLY TRUTH LANE ──
     {
       const routeBaseline18 = JSON.parse(src("scripts/orphan-route-baseline.json")) as string[]
-      check("ROUND 18 — THE THIRD ZERO, AND THE DATABASE WATCHES ITSELF NIGHTLY. ROUTE BURN 42 → 0: the honest branch mattered — ROUTE_ALIASES turned out to be runtime-DEAD (no middleware consumes it), so the 14 legacy redirect stubs ARE the bookmark-compatibility layer and were kept + exempted with named targets instead of aliased-and-deleted into 404s; the 14 hardcoded journey mock pages and 4 superseded surfaces were deleted after zero-ref verification; 9 more real surfaces got their links — including the client portal's Full Deal Dashboard (the buyer loan-condition rail) and the FIRST public privacy-request footer on the tenant sites. All three rot classes now sit at ZERO with shrink-only guards: writes nothing reads, reads nothing writes, pages nothing links. NIGHTLY TRUTH LANE: the per-push drift guard proves code vs the committed snapshot; the new creds-gated check proves the snapshot vs the LIVE database (service-role-only live_schema_json RPC, l72_s14) — DDL applied between deploys is caught within a day, with the diff shown and the committed snapshot restored so regens are always deliberate; the nightly workflow now also runs the FULL guard chain against main. FLEET DRILL ran live: all four tiers provisioned with real shapes, the seat gate's exact predicate proven (solo at its 2-seat cap, vendor partner not counting, suspension freeing the seat), residue 0",
-        routeBaseline18.length === 0
+      check("ROUND 18 — THE THIRD ZERO, AND THE DATABASE WATCHES ITSELF NIGHTLY. ROUTE BURN 42 → 0: the honest branch mattered — ROUTE_ALIASES turned out to be runtime-DEAD (no middleware consumes it), so the 14 legacy redirect stubs ARE the bookmark-compatibility layer and were kept + exempted with named targets instead of aliased-and-deleted into 404s; the 14 hardcoded journey mock pages and 4 superseded surfaces were deleted after zero-ref verification; 9 more real surfaces got their links — including the client portal's Full Deal Dashboard (the buyer loan-condition rail) and the FIRST public privacy-request footer on the tenant sites. TWO of the three rot classes sit at ZERO with shrink-only guards (writes nothing reads, reads nothing writes); THE THIRD ZERO WAS A GUARD ARTEFACT AND IS WITHDRAWN — the 'pages nothing links' sweep carried three false passes (revalidatePath counted as a reference, a page counted as a reference to itself, and a bare ${…} segment satisfied a literal route segment), and with those closed the honest count is 32 unlinked pages, now the shrink-only baseline. NIGHTLY TRUTH LANE: the per-push drift guard proves code vs the committed snapshot; the new creds-gated check proves the snapshot vs the LIVE database (service-role-only live_schema_json RPC, l72_s14) — DDL applied between deploys is caught within a day, with the diff shown and the committed snapshot restored so regens are always deliberate; the nightly workflow now also runs the FULL guard chain against main. FLEET DRILL ran live: all four tiers provisioned with real shapes, the seat gate's exact predicate proven (solo at its 2-seat cap, vendor partner not counting, suspension freeing the seat), residue 0",
+        // ── THE THIRD ZERO WAS NOT REAL, and this assertion is corrected rather
+        //    than restored. `routeBaseline18.length === 0` held only because the
+        //    sweep that produced it had THREE false passes, each measured and
+        //    each now fixed in scripts/orphan-route-sweep.ts:
+        //      · `revalidatePath("/x")` counted as a reference — a cache
+        //        invalidation is not a way for a human to reach a page;
+        //      · a page.tsx counted as a reference to ITSELF, so a breadcrumb or
+        //        a self-referencing tab made a route "linked";
+        //      · a pure `${…}` reference segment satisfied a LITERAL route
+        //        segment, so `/portal/${id}/listings` "linked"
+        //        /portal/[contactId]/assistant.
+        //    With those closed the honest count is 32 unlinked pages, which is
+        //    what the baseline now holds. The claim in the narrative above —
+        //    "pages nothing links" at zero — was a guard artefact, so the ratchet
+        //    below asserts the SHRINK-ONLY property that is actually true and no
+        //    longer asserts a zero the product never had. The other two zeros
+        //    (orphan-write-baseline, writerless reads) are untouched and still
+        //    asserted at zero below.
+        // TIGHTENED 32 → 30 in the same pass that burned two of them down:
+        // /settings/direct-mail and /settings/services now have tiles on the
+        // settings hub, which is the only way into /settings/* (the sidebar
+        // carries one "Settings" link). Both had been reachable ONLY by typing
+        // the URL — their sole references in the whole tree were revalidatePath
+        // calls, which is precisely the false pass removed above. A ratchet that
+        // is not lowered when the number drops is not a ratchet.
+        routeBaseline18.length <= 30
         && src("scripts/orphan-route-sweep.ts").includes("legacy redirect stub")
+        // The two identifiers the false-pass fixes introduced: selfDirOf (a page
+        // no longer counts as a reference to itself) and resolveLocalBasePaths
+        // (a `${basePath}/x` template resolves instead of being read as a host).
+        && src("scripts/orphan-route-sweep.ts").includes("selfDirOf")
+        && src("scripts/orphan-route-sweep.ts").includes("resolveLocalBasePaths")
         && src("scripts/check-live-schema-drift.ts").includes("live_schema_json")
         && src("scripts/check-live-schema-drift.ts").includes("skipped (no Supabase credentials")
         && src(".github/workflows/e2e.yml").includes("check-live-schema-drift")
@@ -2475,7 +2842,12 @@ async function main() {
         && src("lib/managers/autonomy-gate.ts").includes("loadTenantAutonomyHalt")
         && src("app/dashboard/admin/command-center/autonomy-halt-banner.tsx").length > 0
         && src("lib/kernel/tier-role-matrix.ts").includes("effectiveSeatLimit")
-        && src("app/actions/admin/invite-user.ts").includes("effectiveSeatLimit"))
+        // seat-cap lane: the invite gate reaches effectiveSeatLimit through
+        // seatGate now — the ONE gate every add path shares (lib/kernel/seat-usage.ts),
+        // which is where the override resolution moved. Same single resolution,
+        // one caller instead of five.
+        && src("app/actions/admin/invite-user.ts").includes("seatGate")
+        && src("lib/kernel/seat-usage.ts").includes("parseSeatOverride"))
     }
     // ── ROUND 30: THE PLATFORM CERTIFICATION — COVERAGE, CLOSED LOOPS, AND THE HONEST 'NEARLY' ──
     {
@@ -2483,7 +2855,9 @@ async function main() {
         src("lib/kernel/manager-registry.ts").includes("PLATFORM_MANAGERS")
         && src("lib/kernel/manager-registry.ts").includes("resolvePlatformManager")
         && src("lib/kernel/manager-registry.ts").includes("platform_coupons: \"finance_manager\"")
-        && src("app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx").includes("PLATFORM_MANAGERS.platform_sentinel")
+        // 2026-09-03: the queue reads the persona THROUGH resolvePlatformManager (the
+        // registry's contract) instead of indexing PLATFORM_MANAGERS directly.
+        && /resolvePlatformManager\(\s*['"]platform_sentinel['"]\s*\)/.test(src("app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx"))
         && src("lib/kernel/event-fanout.ts").includes("MILESTONE_COMPLETED")
         && src("lib/platform/changelog.ts").includes("2026-07-19")
         && !src("lib/services/social-publishing.service.ts").includes("Math.random")
@@ -2677,16 +3051,22 @@ async function main() {
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
-      const { readdirSync, statSync } = await import("fs")
       const NS_VOCAB: Record<string, string[]> = {
         "client_portal_messages.direction": ["agent_to_client","client_to_agent"],
         "message_provider_logs.direction": ["inbound","outbound"],
         "voice_calls.direction": ["inbound","outbound"],
-        "voice_calls.call_type": ["agent_call","ai_isa_call","vapi_inbound","warm_transfer"],
+        "voice_calls.call_type": ["agent_call","ai_isa_call","ai_inbound","warm_transfer"],
         "notifications.priority": ["low","medium","high","critical"],
         "smart_assistant_suggestions.priority": ["low","medium","high"],
         "vendor_messages.sender_type": ["vendor","contact","agent"],
-        "contacts.contact_type": ["lead","prospect","client","lifetime","lifetime_customer","past_client","sphere","vendor","referral_partner","investor","buyer","seller","both","other"],
+        // DERIVED, NOT TYPED (CLAUDE.md §2 — do not pin an assertion to a waypoint).
+        // This entry was a hand-kept 12-value copy and m563 made it a 11-value one
+        // by removing 'client'; a stale copy here would have gone on ADMITTING a
+        // literal the database now refuses, which is a sweep reporting "none" while
+        // blind to the exact defect it exists to catch. scripts/check-vocabularies.ts
+        // is GENERATED from pg_get_constraintdef, so reading it makes this arm move
+        // with the CHECK instead of with an editor.
+        "contacts.contact_type": CHECK_VOCABULARIES.contacts?.contact_type ?? [],
       }
       const nsOffenders: string[] = []
       const scanNs = (rel: string) => {
@@ -2699,14 +3079,7 @@ async function main() {
           }
         }
       }
-      const walk9 = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk9(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) scanNs(rel)
-        }
-      }
-      walk9("lib"); walk9("app")
+      for (const rel of REPO_TS_FILES) scanNs(rel)
       check(`PASS 9 — NON-STATUS ENUM CHECK SWEEP (the columns passes 3/6 didn't cover: direction / priority / call_type / sender_type / contact_type; live pg_constraint map × every write literal): the headline catch — client_portal_messages.direction admits ONLY 'agent_to_client'/'client_to_agent', but TEN portal-message writes across the seller-update, listing-lifecycle, tour, title, lender, vendor, ISA and video-distribution rails wrote 'outbound'/'inbound' — every client-facing portal message was SILENTLY REJECTED and never reached the client's portal thread; all ten mapped to the real vocabulary (outbound→agent_to_client, inbound→client_to_agent) WITH the one reader that filtered the old value; notifications.priority rejected 'normal' (widget intake) → 'medium'. Re-runs the sweep in-code — offenders now: [${nsOffenders.join(", ") || "none"}]`,
         nsOffenders.length === 0
         && src("app/actions/seller-updates.ts").includes('direction: "agent_to_client"')
@@ -2718,7 +3091,6 @@ async function main() {
     {
       // Re-run the exact sweep predicates in-code so regressions fail the sim:
       // every lifecycle_events / tasks insert literal must carry its required columns.
-      const { readdirSync, statSync } = await import("fs")
       const offenders: string[] = []
       const checkFile = (rel: string) => {
         const text = readFileSync(join(ROOT, rel), "utf-8")
@@ -2730,14 +3102,7 @@ async function main() {
           if (!m[1].includes("brokerage_id") && !m[1].includes("...fields")) offenders.push(`${rel}:tasks`)
         }
       }
-      const walk2 = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk2(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) checkFile(rel)
-        }
-      }
-      walk2("lib"); walk2("app")
+      for (const rel of REPO_TS_FILES) checkFile(rel)
       // ── PASS 8: PORTAL-IDENTITY RLS (the family-collaboration surface) ──
       check("PASS 8 — PORTAL-IDENTITY RLS (the pass-7 deferral, closed): investigation found portal visitors are AUTHENTICATED Supabase users identified by EMAIL (the portal layout matches auth email → contacts.email; family members are invited by email and may not be contacts at all) — so the scoping identity is the JWT email, not a token scheme. THE HOLE WAS WORSE THAN A READ LEAK: collaborative_search_members/properties, property_family_ratings and property_consensus had USING(true) on SELECT *and UPDATE and INSERT* — any authenticated user of ANY tenant could read AND MODIFY any family's members, shortlist, ratings and consensus; meanwhile the tenant-scoped parent DENIED portal clients their own search (they have no brokerage membership). RESOLUTION (migration l72-s06): ONE SECURITY DEFINER helper portal_member_searches() (owner-contact by email ∪ invited-member by email) + a portal read lane on the parent beside the tenant policies + every child verb scoped to (portal member of the search OR tenant member of its brokerage), with family ratings tightened to OWN-ROW writes (member_email must equal the JWT email — a member can never rewrite another member's vote; tenant staff may moderate). Live four-persona proof: the invited family member sees the whole search and updated their OWN rating (4→3) while the other member's stayed untouched; the stranger saw ZERO rows and their attack update hit ZERO rows; the tenant agent sees everything via the brokerage lane; service-role rails unchanged",
         src("lib/kernel/manager-registry.ts").includes("portal_member_searches")
@@ -2773,7 +3138,13 @@ async function main() {
           "newsletter_sends.status": ["queued","sent","failed","bounced","opened","clicked","suppressed"],
           "newsletter_subscribers.status": ["subscribed","unsubscribed","bounced","complained"],
           "offers.ai_extraction_status": ["pending","extracting","completed","failed","manual"],
-          "open_house_events.status": ["scheduled","marketing","active","completed","cancelled"],
+          // "draft" added by m543, which consolidated the retired `open_houses` onto
+          // this table. The war room stages an open house with NO DATE on purpose, and
+          // the survivor's vocabulary had no word for that; m543 also pins the dateless
+          // state to this one value with a CHECK. This is the THIRD-COPY case the note
+          // above warns about — the live CHECK and scripts/check-vocabularies.ts (a
+          // GENERATED cache, regeneration owed to the integrator) are the other two.
+          "open_house_events.status": ["draft","scheduled","marketing","active","completed","cancelled"],
           "repurposed_content_log.approval_status": ["draft","pending_review","approved","rejected"],
           "repurposed_content_log.status": ["generated","scheduled","published","failed"],
           "scheduled_touchpoints.status": ["scheduled","sent","completed","skipped","failed"],
@@ -2781,7 +3152,13 @@ async function main() {
           "social_publish_log.publish_status": ["queued","published","failed","cancelled"],
           "transaction_compliance_log.status": ["pending","pass","fail","waived","needs_review"],
           "transaction_documents.status": ["missing","requested","uploaded","under_review","approved","rejected","pending_signature"],
-          "transaction_vendor_services.status": ["ordered","scheduled","in_progress","completed","cancelled","quote_requested","pending_approval","approved"],
+          // "bound" added by m385 — the buyer's hazard policy is IN FORCE, which is
+          // not the same as "approved" (the client accepted a quote). A lender will
+          // not fund on the latter. NOTE: this inline table is a THIRD copy of a
+          // vocabulary that also lives in the live CHECK and in
+          // scripts/check-vocabularies.ts. Three copies drift by construction —
+          // when you widen a CHECK, all three have to move together.
+          "transaction_vendor_services.status": ["ordered","scheduled","in_progress","completed","cancelled","quote_requested","pending_approval","approved","bound"],
           "transactions.status": ["lead","qualifying","active","under_contract","closing","closed","lost","archived"],
           "vendor_assignments.status": ["pending","confirmed","in_progress","completed","cancelled"],
           "wealth_advisor_recommendations.status": ["open","reviewed","presented","converted","dismissed","stale"],
@@ -2797,14 +3174,7 @@ async function main() {
             }
           }
         }
-        const walk3 = (dir: string) => {
-          for (const name of readdirSync(join(ROOT, dir))) {
-            const rel = `${dir}/${name}`
-            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk3(rel) }
-            else if (/\.(ts|tsx)$/.test(name)) scanVocab(rel)
-          }
-        }
-        walk3("lib"); walk3("app")
+        for (const rel of REPO_TS_FILES) scanVocab(rel)
         check(`PASS 6 — STATUS-VOCABULARY SWEEP over UPDATE + INSERT paths (the sibling passes 3 promised; live pg_constraint dump of ~180 status CHECKs cross-checked against every write literal): SIXTY-THREE drifted sites found — every one silently rejected: the ghost-recovery ladder's reengagement states, the sequence engine's cancel/unenroll, the direct-mail drain's failure terminals, the e-sign doc state, the vendor procurement ladder, manager-signal consumption, compliance pass/fail stamps, ISA draft approvals, newsletter suppression refusals, audience sync states, onboarding progress and more. RESOLUTION: 39 write literals normalized to the canonical vocabulary + 9 CHECKs widened where the code's vocabulary is a REAL business state (l72-s03: reengagement ladder, procurement ladder, pending_signature, suppressed, superseded, archived, deleted, cancel/unenroll, mail failure terminals) + 13 READERS aligned (including the two manager-signal outcome resolvers whose skip-filter watched a status that could never exist, and the newsletter subscriber counts filtering a value never written). This block re-runs the sweep with the post-migration vocabulary — offenders now: [${vocabOffenders.join(", ") || "none"}]`,
           vocabOffenders.length === 0
           && src("lib/kernel/transactions.ts").includes('.eq("status", "fail")')
@@ -2980,7 +3350,7 @@ async function main() {
       && src("app/api/cron/onboarding-reminders/route.ts").includes("runTenantCheckIns")
       && src("lib/onboarding/checkin-cadence.ts").includes('priority: "medium"'))
     const { composeClientWelcome } = await import("../lib/kernel/client-welcome")
-    const welcome = composeClientWelcome({ side: "buyer", addressAs: "Bill", agentName: "Dana Reed" })
+    const welcome = composeClientWelcome({ journey: "buyer", addressAs: "Bill", agentName: "Dana Reed" })
     check("CLIENT WELCOME (client #1–2) — the warm intro + numbered journey map + the here's-what's-next promise, addressed by preferred name; proposed as ONE gated draft on the canonical rail from BOTH capture paths",
       welcome.body.startsWith("Bill, welcome") && welcome.body.includes("1. ") && welcome.body.includes("here's what's next")
       && src("lib/kernel/client-welcome.ts").includes("proposeClientMessage")
@@ -3007,8 +3377,8 @@ async function main() {
     const { classifyCardTarget } = await import("../lib/contacts/card-classifier")
     check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
       classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).target === "vendor"
-      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "Inspector"
-      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "Lender"
+      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "inspector"
+      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "lender"
       && classifyCardTarget({ title: null, company: null }).target === "contact"
       && src("app/actions/business-card/business-card-actions.ts").includes('status: "pending"')
       && src("app/actions/business-card/business-card-actions.ts").includes("classifyCardTarget")

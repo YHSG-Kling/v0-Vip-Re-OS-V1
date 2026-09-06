@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
-import { Button } from "@/app/components/ui/button"
 
 export function EducationLibrary({ brokerageId }: { brokerageId: string }) {
   const [resources, setResources] = useState<any[]>([])

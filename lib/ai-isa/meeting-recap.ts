@@ -74,7 +74,7 @@ export const MEETING_EVENT_TYPES = [
 
 /** How close (hours, either side) a calendar appointment must sit to the call
  *  start for the call to count as that meeting. */
-export const MEETING_EVENT_LINK_WINDOW_HOURS = 3
+const MEETING_EVENT_LINK_WINDOW_HOURS = 3
 
 /** Pure meeting gate: zoom meetings ALWAYS; phone calls ONLY when tied to a
  *  calendar appointment (be conservative — an unlinked phone call gets

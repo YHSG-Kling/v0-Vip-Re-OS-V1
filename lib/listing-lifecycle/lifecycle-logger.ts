@@ -90,19 +90,23 @@ function resolveStageMilestoneEvent(toStage: string): string {
 /**
  * Log failed transition attempt.
  *
- * Writes directly to lifecycle_events — no state change occurs,
- * so transitionLifecycle() is NOT called and processKernelEvent() is NOT fired.
+ * No state change occurs, so transitionLifecycle() is NOT called — but the
+ * FAILURE is itself a KernelEvent (LISTING_STAGE_TRANSITION_FAILED), and a
+ * notification_rule keyed on it is entitled to hear it. emitKernelEvent writes
+ * the audit row AND fans out; the bare insert it replaces did only the former.
  */
 export async function logFailedTransition(
-  supabase: SupabaseClient,
+  _supabase: SupabaseClient,
   event: LifecycleEventData & { failureReason: string }
 ): Promise<void> {
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  event.brokerageId,
-    entity_type:   'listing_stage_machine',
-    entity_id:     event.listingId,
-    event_type:    KernelEvent.LISTING_STAGE_TRANSITION_FAILED,
-    actor_user_id: event.userId,
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    brokerageId:  event.brokerageId,
+    entityType:   'listing_stage_machine',
+    entityId:     event.listingId,
+    listingId:    event.listingId,
+    event:        KernelEvent.LISTING_STAGE_TRANSITION_FAILED,
+    actorUserId:  event.userId,
     metadata: {
       from_stage:       event.fromStage,
       to_stage:         event.toStage,
@@ -111,7 +115,6 @@ export async function logFailedTransition(
       is_override:      false,
     },
   })
-  // processKernelEvent NOT called — no state change occurred
 }
 
 /**
@@ -128,7 +131,10 @@ export async function logSystemGateEnabled(
     gateDescription?: string
   }
 ): Promise<void> {
-  await supabase.from("activities").insert({
+  // A GATE DECISION on a listing — the record that a system gate opened, and
+  // when. This function returns void, so the error has nowhere to go but the
+  // log; silence would make a logger that logs nothing look identical.
+  const { error: gateActivityError } = await supabase.from("activities").insert({
     activity_type: "listing_lifecycle_gate_enabled",
     title: `System Gate Enabled: ${data.gateName}`,
     description: data.gateDescription || `System gate "${data.gateName}" is now enabled for this listing at stage "${data.stage}"`,
@@ -143,6 +149,9 @@ export async function logSystemGateEnabled(
       timestamp: new Date().toISOString(),
     }),
   })
+  if (gateActivityError) {
+    console.error(`[lifecycle-logger] gate-enabled activity REJECTED for listing ${data.listingId} (${data.gateName}):`, gateActivityError.message)
+  }
 }
 
 /**
@@ -190,12 +199,21 @@ export async function getLifecycleHistory(
   isOverride: boolean
   notes: string | null
 }>> {
-  const { data } = await supabase
+  // `const { data }` here returned `data ?? []`, so a REFUSED read was
+  // indistinguishable from a listing with no history — and the caller that
+  // matters, checkStageDurationLimit, reads "no history" as "nothing has been
+  // exceeded". A failed read therefore reported every listing as healthy. It
+  // throws now: a duration gate that cannot read must not pass.
+  const { data, error } = await supabase
     .from('lifecycle_events')
     .select('*')
     .eq('entity_type', 'listing_stage_machine')
     .eq('entity_id', listingId)
     .order('created_at', { ascending: true })
+
+  if (error) {
+    throw new Error(`[listing-lifecycle] history read failed for listing ${listingId}: ${error.message}`)
+  }
 
   return (data ?? []).map(e => ({
     id:         e.id,
@@ -215,21 +233,38 @@ export async function getCurrentLifecycleStage(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ListingStage | null> {
+  // THE PHANTOM READ. This resolved the stage from `activities` where
+  // activity_type = 'listing_lifecycle_transition' — a row NOTHING has ever
+  // written. Live count: 0, while listings sit at real non-default stages. So it
+  // returned null for every listing, forever, and its callers read null as a
+  // benign state rather than a broken one:
+  //
+  //   · exception-recovery-limits.ts:checkStageDurationLimit returns
+  //     { exceeded: false } on a null stage — so THE STAGE-DURATION ESCALATION
+  //     NET NEVER FIRED. A listing parked in one stage indefinitely was never
+  //     escalated, and the surface looked like a working safety net.
+  //   · multi-listing-priority.ts ranked every listing with stageIndex -1, so
+  //     the priority ordering carried no information at all.
+  //   · the agent-assistant tool call answered "no stage" for every listing.
+  //
+  // The authoritative value is listings.lifecycle_stage — NOT NULL and
+  // CHECK-constrained to the canonical stage set, written by transitionLifecycle
+  // on every transition. Same fix already applied inside
+  // app/actions/listing-lifecycle-core.ts; this closes the lib copy that three
+  // other callers still went through.
   const { data, error } = await supabase
-    .from("activities")
-    .select("notes")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "listing_lifecycle_transition")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .single()
-  
-  if (error || !data) {
-    return null
+    .from("listings")
+    .select("lifecycle_stage")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  // A read that FAILED is not a listing without a stage. Conflating them is what
+  // turned a broken query into a clean-looking answer for every caller above.
+  if (error) {
+    throw new Error(`[listing-lifecycle] stage read failed for listing ${listingId}: ${error.message}`)
   }
-  
-  const parsed = data.notes ? JSON.parse(data.notes) : {}
-  return parsed.to_stage || null
+
+  return ((data?.lifecycle_stage as ListingStage | null) ?? null)
 }
 
 /**

@@ -8,14 +8,12 @@ import { PortalFinancialTools } from "./portal-financial-tools"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
 import {
   ArrowLeft,
   Star,
   Phone,
   Globe,
   Mail,
-  Search,
   Wrench,
   Zap,
   Droplets,
@@ -100,8 +98,9 @@ export default async function ResourcesPage({
     redirect(`/portal/${contactId}`)
   }
 
-  // contactId is the authoritative identity — getCalculatorHistory takes it as leadId
-  // because the action parameter predates the portal contact model
+  // contactId is the authoritative identity — getCalculatorHistory reads on BOTH
+  // calculator_history columns (lead_id, contact_id), so a contacts.id finds the
+  // portal's own saves (written to contact_id since lane W3 2026-09-01)
   const [vendors, calcHistory] = await Promise.all([
     getVendorResources(contactId),
     getCalculatorHistory(contactId),

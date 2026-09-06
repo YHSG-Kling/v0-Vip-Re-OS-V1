@@ -5,8 +5,8 @@
 // No auth required — rate-limited by session token.
 
 import { NextRequest } from 'next/server'
-import { streamText, convertToModelMessages, UIMessage } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+import { convertToModelMessages, UIMessage } from 'ai'
+import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 
@@ -43,11 +43,27 @@ export async function POST(req: NextRequest) {
     const supabase = createServiceClient()
 
     // ── Validate session ──────────────────────────────────────────────────
-    const { data: session } = await supabase
+    // The token is the ONLY identity this route accepts: opaque, server-issued
+    // by /api/widget/session, and unique (chat_sessions_widget_token_idx). The
+    // tenant and the agent are read OFF THE ROW, never off the body — a body
+    // that named a brokerage next to this token would reopen the hole the
+    // session mint just closed.
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
       .select('id, brokerage_id, agent_id, status, capture_state')
       .eq('widget_session_token', session_token)
       .maybeSingle()
+
+    // supabase-js resolves a failed query, so a bare `!session` reported a
+    // read failure as "invalid session" and told the visitor their chat was
+    // closed when the database was simply unreachable.
+    if (sessionError) {
+      console.error('[Widget/message] session lookup failed:', sessionError.message)
+      return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
 
     if (!session || session.status === 'closed') {
       return new Response(JSON.stringify({ error: 'Invalid or closed session' }), {
@@ -121,31 +137,67 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
 
-    const result = streamText({
-      model: resolveModel('openai/gpt-4o-mini'),
-      system,
-      messages: await convertToModelMessages(recentMessages),
-      temperature: 0.7,
-      maxOutputTokens: 512,
-      onFinish: async ({ text }) => {
-        // Persist assistant turn
-        await supabase.from('chat_messages').insert({
-          session_id: session.id,
-          role: 'assistant',
-          content: text,
-          metadata: { widget: true, assistant_name: assistantName },
-        })
+    // Ledger identity for this anonymous lane: the cost lands on the TENANT
+    // (the session row's brokerage — the only identity this route accepts,
+    // never the body), attributed to the ASSIGNED AGENT's user when one
+    // exists. No assigned agent → the row still lands, with a null user =
+    // anonymous tenant traffic (#187). Metered and capped either way.
+    let ledgerUserId: string | null = null
+    if (session.agent_id) {
+      const { data: agentRow, error: agentErr } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('id', session.agent_id)
+        .maybeSingle()
+      if (agentErr) {
+        // A refused read only costs us the ledger row — never the visitor's chat.
+        console.error('[Widget/message] agent user lookup failed:', agentErr.message)
+      }
+      ledgerUserId = agentRow?.user_id ?? null
+    }
 
-        // Detect lead capture keywords in assistant reply
-        const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
-        if (captureHit && session.capture_state !== 'captured') {
-          await supabase
-            .from('chat_sessions')
-            .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
-            .eq('id', session.id)
-        }
-      },
-    })
+    // Routed streaming entry: routing table model, tenant fair-use cap checked
+    // BEFORE the first byte, cost ledger written on finish.
+    let result: Awaited<ReturnType<typeof streamTextRouted>>
+    try {
+      result = await streamTextRouted({
+        feature: 'widget_visitor_chat',
+        system,
+        messages: await convertToModelMessages(recentMessages),
+        temperature: 0.7,
+        maxTokens: 512,
+        userId: ledgerUserId,
+        brokerageId: session.brokerage_id,
+        agentId: session.agent_id,
+        onFinish: async ({ text }) => {
+          // Persist assistant turn
+          await supabase.from('chat_messages').insert({
+            session_id: session.id,
+            role: 'assistant',
+            content: text,
+            metadata: { widget: true, assistant_name: assistantName },
+          })
+
+          // Detect lead capture keywords in assistant reply
+          const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
+          if (captureHit && session.capture_state !== 'captured') {
+            await supabase
+              .from('chat_sessions')
+              .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
+              .eq('id', session.id)
+          }
+        },
+      })
+    } catch (err) {
+      // Tenant hit its monthly AI cap — refuse cleanly instead of streaming.
+      if (err instanceof AIFairUseError) {
+        return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw err
+    }
 
     return result.toUIMessageStreamResponse()
   } catch (err: any) {

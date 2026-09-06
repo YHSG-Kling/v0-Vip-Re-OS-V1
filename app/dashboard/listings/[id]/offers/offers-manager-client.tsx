@@ -1,22 +1,24 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
-import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown, CheckCircle2, ShieldAlert, RotateCcw } from "lucide-react"
+import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown, CheckCircle2, ShieldAlert, RotateCcw, Eye, EyeOff } from "lucide-react"
 import {
   evaluateSellerDecisionReadiness,
   validateSellerDecisionReversal,
   logSellerDecisionTransition,
+  logSellerDecisionReversal,
 } from "@/app/actions/seller-decision-governance"
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
 import { ComplianceBridgePanel } from "./components/compliance-bridge-panel"
 import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
+import CounterOfferDiffModal from "./components/counter-offer-diff-modal"
 import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
 import {
   SellerMeaningCard,
@@ -31,15 +33,22 @@ import {
   generateSellerPortalLink,
   acceptOffer,
   rejectOffer,
+  getOffersForListing,
   getTransactionByListingId,
   getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
+import {
+  presentOfferToSeller,
+  unpresentOfferFromSeller,
+  getOfferPresentationStates,
+} from "@/app/actions/offers/present-to-seller"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { negotiationCoPilot } from "@/app/actions/negotiation-copilot"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Offer = {
   id: string
@@ -104,13 +113,118 @@ interface Props {
   currentUserId: string
   brokerageId: string
   userRole: string
+  /**
+   * May this caller override a failing seller-decision gate?
+   *
+   * Resolved on the SERVER (page.tsx) because it is not answerable here: it is
+   * users.user_type OR a role GRANT pinned to the caller's own brokerage, and the
+   * grant half needs I/O a render path cannot do. Deriving it client-side from
+   * `userRole` alone would hide the button from the grant-only admin the server
+   * would have admitted — a courtesy gate NARROWER than the real gate, which
+   * refuses a legitimate person for a reason they cannot see.
+   *
+   * Overriding this gate is BROKERAGE-WIDE MONEY, not an admin surface: it
+   * suppresses a failing check on the CMA and the net sheet, the two documents
+   * the seller's money decision rests on. m472 holds team_lead out of that tier,
+   * so this is deliberately narrower than `canApprove`.
+   */
+  canOverrideDecisionGate: boolean
 }
 
-export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole }: Props) {
+export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole, canOverrideDecisionGate }: Props) {
   const [offers, setOffers] = useState<Offer[]>(initialOffers)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+
+  // RE-READ FROM TRUTH after a state transition. Accept / reject / counter each
+  // used to patch local React state only — splicing the row out, or flipping
+  // is_winning_offer client-side — so the screen showed the outcome the caller
+  // INTENDED rather than the one the database recorded. If a server-side
+  // transition half-succeeded, the UI still claimed it worked, and stayed wrong
+  // until a full page reload.
+  // app/actions/seller-offers.ts:getOffersForListing is the authoritative reader
+  // for exactly this (auth + listing-in-caller's-brokerage + tenant-anchored
+  // query, same columns this page renders) and had no caller at all.
+  const refreshOffers = useCallback(async () => {
+    const res = await getOffersForListing(listing.id)
+    if (!res.success) {
+      // Do NOT silently keep stale rows on screen — say the list is stale.
+      setRefreshError(res.error ?? "Could not refresh the offer list")
+      return
+    }
+    setRefreshError(null)
+    setOffers(res.offers as unknown as Offer[])
+  }, [listing.id])
+  // ── SELLER RELEASE STATE (wave 12, R4a) ────────────────────────────────────
+  // `offers.presented_to_seller_at` is the gate on the seller portal: NULL means
+  // the seller must not see the offer. The reader that loads the rows above
+  // predates the column, so the release state is read separately, through the
+  // same authenticated gate that writes it.
+  const [presentation, setPresentation] = useState<Record<string, { presentedAt: string | null; note: string | null }>>({})
+  const [presentationError, setPresentationError] = useState<string | null>(null)
+  const [releasingOfferId, setReleasingOfferId] = useState<string | null>(null)
+
+  const refreshPresentation = useCallback(async () => {
+    const res = await getOfferPresentationStates(listing.id)
+    if (!res.success) {
+      // A refused read must never render as "not released yet" — that would show
+      // an agent a Release button for an offer the seller can already see.
+      setPresentationError(res.error ?? "Could not read which offers your seller can see")
+      return
+    }
+    setPresentationError(null)
+    const next: Record<string, { presentedAt: string | null; note: string | null }> = {}
+    for (const s of res.states) next[s.offerId] = { presentedAt: s.presentedAt, note: s.note }
+    setPresentation(next)
+  }, [listing.id])
+
+  useEffect(() => { void refreshPresentation() }, [refreshPresentation])
+
+  function handleRelease(offerId: string) {
+    setReleasingOfferId(offerId)
+    startTransition(async () => {
+      const result = await presentOfferToSeller({ offerId, listingId: listing.id })
+      setReleasingOfferId(null)
+      if (!result.success) {
+        toast({ title: "Not released", description: result.error, variant: "destructive" })
+        return
+      }
+      await refreshPresentation()
+      const warning = (result.warnings ?? [])[0]
+      toast({
+        title: result.alreadyPresented ? "Already visible to your seller" : "Released to your seller",
+        description: warning ?? "It is on their portal now, with the interactive net sheet.",
+        variant: warning ? "destructive" : undefined,
+      })
+    })
+  }
+
+  function handleUnrelease(offerId: string) {
+    setReleasingOfferId(offerId)
+    startTransition(async () => {
+      const result = await unpresentOfferFromSeller({ offerId, listingId: listing.id })
+      setReleasingOfferId(null)
+      if (!result.success) {
+        toast({ title: "Not retracted", description: result.error, variant: "destructive" })
+        return
+      }
+      await refreshPresentation()
+      const warning = (result.warnings ?? [])[0]
+      toast({
+        title: "Hidden from your seller again",
+        description: warning ?? "The offer and its portal alert are no longer on their screen.",
+        variant: warning ? "destructive" : undefined,
+      })
+    })
+  }
+
   const [activeTab, setActiveTab] = useState("overview")
   const [counterTarget, setCounterTarget] = useState<Offer | null>(null)
   const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
+  /** Who generated the HYDRATED comparison (offer_comparison.agent_id). Null while
+   *  none has loaded, and never set for a comparison run in this session. */
+  const [comparisonAuthor, setComparisonAuthor] = useState<
+    { name: string | null; state: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" } | null
+  >(null)
   const [isPending, startTransition] = useTransition()
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null)
 
@@ -152,6 +266,10 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     loadLatestOfferComparison(listing.id).then((res) => {
       if (cancelled || !res.success || !res.comparison) return
       const comparison = res.comparison as Record<string, any>
+      setComparisonAuthor({
+        name: comparison.generatedByName ?? null,
+        state: comparison.generatedByState ?? "not_recorded",
+      })
       const matrix = Array.isArray(comparison.comparison_matrix) ? comparison.comparison_matrix : []
       // comparison_matrix is persisted sorted best → worst by net_to_seller,
       // so its order doubles as the ranking the matrix badges expect.
@@ -171,7 +289,28 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   }, [listing.id])
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
-  const canApprove = ["admin", "broker", "owner"].includes(userRole)
+  const canApprove = isAdminOrBroker({ user_type: userRole })
+
+  // A counter is PERSISTED as its own offers row pointing back at the original
+  // (offers.parent_offer_id). That means the "what did they send back" side of a
+  // diff is real stored data — the agent never re-keys the counter terms. Index
+  // the newest counter per parent so each original offer can offer a diff.
+  const counterByParent = useMemo(() => {
+    const map = new Map<string, Offer>()
+    for (const o of offers) {
+      if (!o.parent_offer_id) continue
+      const prev = map.get(o.parent_offer_id)
+      // Latest negotiation round wins; submitted_at breaks ties when a
+      // brokerage never populated current_round.
+      const isNewer =
+        !prev ||
+        (o.current_round ?? 0) > (prev.current_round ?? 0) ||
+        ((o.current_round ?? 0) === (prev.current_round ?? 0) &&
+          (o.submitted_at ?? "") > (prev.submitted_at ?? ""))
+      if (isNewer) map.set(o.parent_offer_id, o)
+    }
+    return map
+  }, [offers])
 
   function handleUploadComplete(newOffer: Offer) {
     setOffers((prev) => [newOffer, ...prev])
@@ -209,13 +348,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     startTransition(async () => {
       const result = await acceptOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
       if (result.success) {
-        setOffers((prev) =>
-          prev.map((o) =>
-            o.id === offerId
-              ? { ...o, is_winning_offer: true, status: "accepted" }
-              : { ...o, is_winning_offer: false }
-          )
-        )
+        await refreshOffers()
         toast({ title: "Offer accepted", description: "Listing moved to Under Contract" })
       } else {
         toast({ title: "Accept failed", description: result.error, variant: "destructive" })
@@ -244,17 +377,62 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   }
 
   // Called after readiness check passes (or override confirmed)
-  function handleProceedAccept(offerId: string, isOverride: boolean, reason: string) {
-    startTransition(async () => {
-      await logSellerDecisionTransition({
-        listing_id: listing.id,
-        to_state: "SELLER_DECISION_READY" as any,
-        authority_role: "agent",
-        override_flag: isOverride,
-        override_reason: isOverride ? reason : undefined,
-        metadata: { offerId, action: "accept_offer" },
+  //
+  // THE ENGINE IS THE AUTHORITY, NOT THE BUTTON. This used to log
+  // `override_flag: true` and proceed — no authority test anywhere on the path.
+  // The seller-decision override suppresses a FAILING check on the CMA and the
+  // net sheet, which m472 places in the brokerage-wide money tier, so an override
+  // now goes back through evaluateSellerDecisionReadiness with requestOverride
+  // set; that action resolves the caller's real authority server-side (user_type
+  // OR a role grant pinned to their own brokerage) and refuses if it is absent.
+  // The button below is gated too, but a client-side gate is a courtesy — this
+  // await is the gate.
+  async function handleProceedAccept(offerId: string, isOverride: boolean, reason: string) {
+    if (isOverride) {
+      const authorized = await evaluateSellerDecisionReadiness({
+        listingId: listing.id,
+        targetState: "SELLER_DECISION_READY" as any,
+        requestOverride: true,
+        overrideReason: reason,
       })
+      if (!authorized?.success) {
+        toast({ title: "Override refused", description: authorized?.error ?? "Not authorised to override this gate.", variant: "destructive" })
+        return
+      }
+      if (!authorized.data?.isReady) {
+        // Authorised, but the override did not reach these blockers — the
+        // presentation checks have no override path at all. Say which remain,
+        // rather than proceeding on an override that cleared nothing.
+        toast({
+          title: "Override did not clear the blockers",
+          description: (authorized.data?.blockers ?? []).join("; ") || "The listing is still not decision-ready.",
+          variant: "destructive",
+        })
+        return
+      }
+    }
+    // authority_role is NOT passed: the server stamps the session's seat. A
+    // client-supplied actor in an audit trail is not an audit trail, and this
+    // call site is why — it passed the literal "agent" for every user.
+    const logged = await logSellerDecisionTransition({
+      listing_id: listing.id,
+      to_state: "SELLER_DECISION_READY" as any,
+      override_flag: isOverride,
+      override_reason: isOverride ? reason : undefined,
+      metadata: { offerId, action: "accept_offer" },
     })
+    if (!logged?.success) {
+      // An OVERRIDE whose record was not written is an override with no
+      // justification on file — halt, because the record IS the authority for it.
+      // A normal acceptance is gated server-side by acceptOffer's compliance
+      // check, so a governance-log outage must not strand the user there; it is
+      // reported loudly and the acceptance goes on.
+      if (isOverride) {
+        toast({ title: "Override NOT recorded — acceptance halted", description: logged?.error ?? "The override could not be written to the audit trail, so it has no justification on file.", variant: "destructive" })
+        return
+      }
+      toast({ title: "Decision not written to the audit trail", description: logged?.error ?? "The acceptance is proceeding, but this transition was not recorded.", variant: "destructive" })
+    }
     handleAccept(offerId)
     setEvalOfferId(null)
     setDecisionEval(null)
@@ -279,15 +457,29 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   // Commits the reversal and logs the audit trail
   async function handleProceedReversal(isOverride: boolean) {
     if (!reversalOffer) return
-    await logSellerDecisionTransition({
+    // The toast below claims a COMPLIANCE RECORD exists. This action reports
+    // failure by return, so that claim was made without ever checking that the
+    // audit row was written. Never assert a record you did not confirm.
+    //
+    // A REVERSAL, not a transition. This used to log a degenerate
+    // SELLER_DECISION_READY → SELLER_DECISION_READY "transition" with the real
+    // meaning buried in metadata.action, so the audit trail recorded a state change
+    // that never happened and the reversal itself had no event type of its own.
+    // logSellerDecisionReversal writes `seller.decision.reversed` with the state
+    // being reversed OUT OF and the reason as first-class fields — which is what
+    // queryDecisionHistory (and the Decision History panel) reads back.
+    const r = await logSellerDecisionReversal({
       listing_id: listing.id,
       from_state: "SELLER_DECISION_READY" as any,
-      to_state: "SELLER_DECISION_READY" as any,
-      authority_role: "agent",
-      override_flag: isOverride,
-      override_reason: reversalReason || undefined,
-      metadata: { offerId: reversalOffer.id, action: "decision_reversal", reason: reversalReason },
+      reversal_reason: reversalReason || "No reason given",
+      // authority_role is stamped from the session server-side — this used to
+      // pass the literal "agent" for every user, including the broker.
+      metadata: { offerId: reversalOffer.id, override_flag: isOverride },
     })
+    if (!r?.success) {
+      toast({ title: "Reversal NOT logged", description: (r as any)?.error ?? "The audit trail was not written — do not treat this reversal as recorded.", variant: "destructive" })
+      return
+    }
     toast({ title: "Decision reversal logged to audit trail" })
     setReversalOffer(null)
     setReversalReason("")
@@ -298,7 +490,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     startTransition(async () => {
       const result = await rejectOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
       if (result.success) {
-        setOffers((prev) => prev.filter((o) => o.id !== offerId))
+        await refreshOffers()
         toast({ title: "Offer rejected" })
       } else {
         toast({ title: "Reject failed", description: result.error, variant: "destructive" })
@@ -436,12 +628,44 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
           {/* Decision History — last 20 decisions for this listing */}
           <DecisionHistoryPanel listingId={listing.id} />
 
+      {/* A failed re-read must be visible: the rows on screen are then the
+          PRE-transition list, and silently keeping them is how a UI ends up
+          asserting a state the database never reached. */}
+      {refreshError && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          This list may be out of date — could not reload offers after the last change: {refreshError}
+        </div>
+      )}
+
+      {presentationError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          Could not read which of these offers your seller can see: {presentationError}. Treat the release state below as
+          unknown until this loads.
+        </div>
+      )}
+
       {/* AI recommendation banner */}
       {aiResult && (
         <AIRecommendationBanner
           result={aiResult}
           offers={activeOffers}
         />
+      )}
+
+      {/* WHO RAN IT — offer_comparison.agent_id, read back by
+          loadLatestOfferComparison. Only shown for a hydrated comparison somebody
+          ELSE generated: attributing a colleague's analysis to the agent reading it
+          is the thing this line exists to stop. An id that does not resolve inside
+          this brokerage, and a refused name lookup, each say so rather than
+          borrowing a name or going quiet. */}
+      {aiResult && comparisonAuthor && comparisonAuthor.state !== "not_recorded" && (
+        <p className="text-xs text-muted-foreground">
+          {comparisonAuthor.state === "resolved"
+            ? `This comparison was generated by ${comparisonAuthor.name}.`
+            : comparisonAuthor.state === "unresolved"
+              ? "This comparison was generated by an agent outside this brokerage."
+              : "This comparison's author could not be looked up."}
+        </p>
       )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -487,6 +711,25 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                   />
                   {/* Source badge + buyer's agent — cross-side routing metadata */}
                   <div className="flex items-center gap-2 flex-wrap px-1">
+                    {/* Diff & advise — only for an offer that actually HAS a
+                        counter on file. The slide-over above CREATES a counter;
+                        this ANALYZES the one that came back, so the agent reads
+                        the changed terms instead of the whole contract. */}
+                    {(() => {
+                      const counter = counterByParent.get(offer.id)
+                      if (!counter) return null
+                      return (
+                        <CounterOfferDiffModal
+                          offerId={offer.id}
+                          counterPayload={counterPayloadOf(counter)}
+                          buttonLabel={
+                            counter.current_round
+                              ? `Diff round ${counter.current_round}`
+                              : "Diff & advise"
+                          }
+                        />
+                      )
+                    })()}
                     {offer.form_source === "in_app" && (
                       <Badge className="bg-blue-100 text-blue-800 border-blue-200 text-xs font-normal">
                         Via Buyer Portal
@@ -513,6 +756,51 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                       )
                     })()}
                   </div>
+
+                  {/* SELLER RELEASE — the owner's gate. Until this is clicked the
+                      offer is invisible on the seller's portal, whatever its
+                      status says. Reversible: an offer released by mistake is
+                      retracted here and its portal alert goes with it. */}
+                  {(() => {
+                    const state = presentation[offer.id]
+                    const released = !!state?.presentedAt
+                    const busy = releasingOfferId === offer.id
+                    return (
+                      <div className="mx-1 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2">
+                        {released ? (
+                          <span className="flex items-center gap-1.5 text-xs font-medium text-green-800">
+                            <Eye className="h-3.5 w-3.5" />
+                            Visible to your seller since{" "}
+                            {new Date(state!.presentedAt as string).toLocaleDateString()}
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                            <EyeOff className="h-3.5 w-3.5" />
+                            Not released — your seller cannot see this offer
+                          </span>
+                        )}
+                        {state?.note && (
+                          <span className="text-xs text-muted-foreground italic">&ldquo;{state.note}&rdquo;</span>
+                        )}
+                        <Button
+                          size="sm"
+                          variant={released ? "ghost" : "default"}
+                          className="h-7 text-xs ml-auto"
+                          disabled={busy || isPending || !!presentationError}
+                          onClick={() => (released ? handleUnrelease(offer.id) : handleRelease(offer.id))}
+                        >
+                          {busy ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : released ? (
+                            "Hide from seller"
+                          ) : (
+                            "Release to seller portal"
+                          )}
+                        </Button>
+                      </div>
+                    )
+                  })()}
+
                   <SellerNetSheetCard
                     offer={offer}
                     listing={{
@@ -741,14 +1029,16 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                             </ul>
                           )}
                           <div className="flex gap-2 pt-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-xs h-7"
-                              onClick={() => setShowOverrideInput((v) => !v)}
-                            >
-                              Override & Accept Anyway
-                            </Button>
+                            {canOverrideDecisionGate && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-7"
+                                onClick={() => setShowOverrideInput((v) => !v)}
+                              >
+                                Override & Accept Anyway
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant="ghost"
@@ -758,6 +1048,11 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                               Cancel
                             </Button>
                           </div>
+                          {!canOverrideDecisionGate && (
+                            <p className="text-xs text-amber-800 pt-1 border-t border-amber-200">
+                              Only a broker, brokerage owner or admin may override these checks — ask one of them to review.
+                            </p>
+                          )}
                           {showOverrideInput && (
                             <div className="space-y-2 pt-1 border-t border-amber-200">
                               <Textarea
@@ -1216,6 +1511,28 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       )}
     </div>
   )
+}
+
+// ── Counter payload for the diff ──────────────────────────────────────────────
+//
+// buildCounterOfferDiff compares EXACTLY these eight keys against the original
+// offer row, and treats an UNDEFINED key as "unchanged". So a column the counter
+// never set must be omitted, not passed as null — passing null would render as
+// "Price 450,000 → —" and read as a concession the buyer never made.
+function counterPayloadOf(counter: Offer): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  const put = (key: string, value: unknown) => {
+    if (value !== null && value !== undefined) payload[key] = value
+  }
+  put("offer_price", counter.offer_price)
+  put("earnest_money", counter.earnest_money)
+  put("closing_date", counter.closing_date)
+  put("closing_cost_contribution", counter.closing_cost_contribution)
+  put("down_payment_percent", counter.down_payment_percent)
+  put("financing_type", counter.financing_type)
+  put("contingencies", counter.contingencies)
+  put("escalation_cap", counter.escalation_cap)
+  return payload
 }
 
 // ── Shared result renderer for both negotiation advisor scenarios ─────────────

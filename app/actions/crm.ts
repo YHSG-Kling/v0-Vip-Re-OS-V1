@@ -13,51 +13,49 @@ import {
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
 
 /**
  * CRM-specific actions - uses consolidated contact service
  * Maintains backward compatibility for existing components
  */
 
-export async function updateContactStage(params: {
-  contactId: string
-  newStage: string
-  agentId: string
-  notes?: string
-}) {
-  try {
-    // Update contact stage using consolidated service
-    const result = await updateContactService({
-      contactId: params.contactId,
-      agentId: params.agentId,
-      updates: { stage: params.newStage } as any
-    })
-
-    if (!result.success) {
-      return result
-    }
-
-    if (params.notes) {
-      const supabase = await createClient()
-      await supabase.from("activities").insert({
-        contact_id:    params.contactId,
-        activity_type: "stage_change",
-        title:         `Stage changed to ${params.newStage}`,
-        notes:         params.notes,
-        outcome:       "completed",
-        status:        "completed",
-      })
-    }
-
-    revalidatePath("/crm/contacts")
-    revalidatePath(`/crm/contacts/${params.contactId}`)
-    revalidatePath("/dashboard")
-
-    return result
-  } catch (error) {
-    return handleError(error, "updateContactStage")
-  }
-}
+// ── DELETED: updateContactStage ─────────────────────────────────────────────
+//
+// IT COULD NEVER HAVE WORKED, AND THE FUNCTIONALITY LIVES ELSEWHERE.
+//
+// It called updateContactService with `{ stage: params.newStage }`. THERE IS NO
+// `stage` COLUMN ON `contacts` — verified against the live database, whose
+// stage-ish columns are buyer_stage, lifecycle_state, status, nurture_status
+// and credit_pipeline_stage, and none of them is `stage`. The write therefore
+// failed PGRST204 ("column contacts.stage does not exist") on every call, which
+// updateContactService turns into a thrown DatabaseError, so this action's only
+// possible outcomes were the catch block and an error result. No contact stage
+// has ever moved through it. The `as any` on the updates object is what let it
+// compile.
+//
+// WHERE THE JOB LIVES NOW:
+//   · MOVING a contact through the lifecycle:
+//     lib/buyer-lifecycle/lifecycle-logger.ts:53 `emitLifecycleTransition`
+//     → transitionLifecycle → lifecycle_events. That is this function's exact
+//     stated purpose ("move a contact to a new pipeline stage, AND record that
+//     it happened") against tables that exist, and it does it better: from-state
+//     and to-state, actor + authority role, source system, override reason, and
+//     it returns the activity id of the audit row it wrote. Its reader
+//     (getCurrentBuyerState / buyer_lifecycle_current_states) is live.
+//   · EDITING any other contact field: `updateContact` immediately below, the
+//     same updateContactService passthrough this wrapped.
+//
+// NOTHING WAS MERGED FORWARD, because nothing here worked to merge: the stage
+// write was impossible, and the `activities` audit row it wrote alongside is a
+// strictly poorer version of the lifecycle_events row emitLifecycleTransition
+// already writes (which additionally carries from_state and the actor's
+// authority). The free-text `notes` argument has an equivalent in that path's
+// `metadata` / `overrideReason`.
+//
+// Deliberately NOT touched on the way out: nothing here read or wrote
+// `contacts.timeline`, so no timeline vocabulary moved with it.
 
 // Re-export consolidated service functions for backward compatibility
 export async function updateContact(contactId: string, agentId: string, updates: any) {
@@ -94,8 +92,6 @@ export async function createContact(contact: {
  * delegating to the service layer (which uses the admin client and would
  * otherwise blindly trust the IDs passed from the client).
  */
-const CRM_ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
-
 export async function deleteContact(contactId: string, agentId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -109,7 +105,7 @@ export async function deleteContact(contactId: string, agentId: string) {
   ])
   if (!contact) return { success: false, error: "Contact not found" }
 
-  const isAdmin = callerRow && CRM_ADMIN_ROLES.has((callerRow.user_type ?? "") as string)
+  const isAdmin = callerRow && isAdminOrBroker({ user_type: (callerRow.user_type ?? "") as string })
   const isOwner = callerAgent?.id && callerAgent.id === contact.agent_id
   const sameBrokerage = callerRow?.brokerage_id === contact.brokerage_id
 
@@ -149,61 +145,31 @@ export async function searchContacts(params: { agentId: string; query: string })
   }
 }
 
-export async function getContactTimeline(contactId: string) {
-  try {
-    const supabase = await createClient()
-
-    const [interactions, tasks, communications, notes] = await Promise.all([
-      supabase
-        .from("activities")
-        .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("tasks")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("messages")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("contact_notes")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
-    ])
-
-    // Combine all timeline events
-    const timeline = [
-      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.created_at })),
-      ...(tasks.data || []).map((t: any) => ({ ...t, type: "task", date: t.created_at })),
-      ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.created_at })),
-      ...(notes.data || []).map((n: any) => ({ ...n, type: "note", date: n.created_at }))
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-
-    return { success: true, timeline }
-  } catch (error) {
-    return handleError(error, "getContactTimeline")
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getContactTimeline` deleted.
+// SURVIVOR: app/actions/contact-details.ts:getContactActivity (wired at
+// app/crm/page.tsx:417), which is the gated, tenant-checked, error-honest
+// contact timeline. What this twin had that the survivor lacked — the
+// `contact_notes` source — was merged onto the survivor first. This copy had
+// no auth gate at all (a bare contact uuid returned another tenant's history
+// up to RLS), and a stripped-source census found zero callers outside the
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MERGE / DEDUPE
 //
 // COMPLETENESS VERDICT on the original lib/services/contact-management.service
 // mergeContacts: it merged the contact ROW (phone/budget/cities/tags/notes,
-// primary wins) and moved only TWO child tables (property_interactions,
-// transactions.contact_id) before soft-deleting the duplicate — every other
-// child row (activities, tasks, messages, notes, leads, conversations, portal
-// invites/messages/access logs, showings, offers, property alerts, interests,
-// segments, agent client messages, transactions' buyer/seller contact columns)
-// stayed pointed at the soft-deleted duplicate: STRANDED history. The action
-// below EXTENDS the merge — it moves the full child set FIRST with checked
+// primary wins) and moved only TWO child tables (buyer_behavior_log,
+// transactions.contact_id — the behavior re-key was property_interactions until
+// m598 retired that zero-writer twin onto buyer_behavior_log, the live table
+// carrying the per-contact behavior trail) before soft-deleting the duplicate —
+// every other child row (activities, tasks, messages, notes, leads, conversations,
+// portal invites/messages/access logs, showings, offers, property alerts,
+// interests, segments, agent client messages, transactions' buyer/seller contact
+// columns) stayed pointed at the soft-deleted duplicate: STRANDED history. The
+// action below EXTENDS the merge — it moves the full child set FIRST with checked
 // writes and honest per-table counters, then delegates the field merge +
-// property_interactions/transactions.contact_id move + soft delete to the
+// buyer_behavior_log/transactions.contact_id move + soft delete to the
 // existing service, then audits via the activities idiom.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -238,7 +204,7 @@ async function requireMergeAuthority(primaryContact: { agent_id: string | null; 
   if (primaryContact.brokerage_id !== ctx.brokerageId || duplicateContact.brokerage_id !== ctx.brokerageId) {
     return { ok: false as const, error: "Forbidden: cross-brokerage merge" }
   }
-  const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+  const isManager = isAdminOrBroker({ user_type: ctx.role })
   const ownsBoth = !!ctx.agentId && primaryContact.agent_id === ctx.agentId && duplicateContact.agent_id === ctx.agentId
   if (!isManager && !ownsBoth) return { ok: false as const, error: "Forbidden: not your contacts" }
   return { ok: true as const, ctx }
@@ -256,7 +222,7 @@ export interface MergeContactsResult {
 /**
  * mergeContacts — EXTENDED complete merge. Moves every known child row from
  * the duplicate to the survivor (checked writes, honest counters), then runs
- * the existing service merge (field union + property_interactions +
+ * the existing service merge (field union + buyer_behavior_log +
  * transactions.contact_id + soft delete of the duplicate), then audits.
  * A child-move failure ABORTS before the duplicate is deleted — we never
  * soft-delete a contact whose history didn't fully move.
@@ -312,7 +278,7 @@ export async function mergeContacts(params: {
       }
     }
 
-    // ── 2. Field merge + property_interactions + transactions.contact_id +
+    // ── 2. Field merge + buyer_behavior_log + transactions.contact_id +
     //       soft delete — the existing service (survivor's fields win). The
     //       service checks agent_id, so pass the contacts' actual owner. ──
     const serviceRes = await mergeContactsService({
@@ -329,21 +295,25 @@ export async function mergeContacts(params: {
     }
 
     // ── 3. Audit — the activities idiom (same as updateContactStage) ──
-    await svc.from("activities").insert({
-      contact_id:    params.primaryContactId,
-      brokerage_id:  (primary as any).brokerage_id,
-      agent_id:      (primary as any).agent_id,
-      activity_type: "contact_merged",
-      title:         "Duplicate contact merged",
-      description:   `Merged duplicate ${params.duplicateContactId} into this contact. Moved: ${
-        Object.entries(moved).map(([t, n]) => `${t}(${n})`).join(", ") || "no child rows"
-      }.`,
-      status:        "completed",
-      metadata:      { duplicate_contact_id: params.duplicateContactId, moved, by: auth.ctx.userId },
-    }).then(() => {}, (e: unknown) => console.error("[mergeContacts] audit failed:", e))
+    await bestEffort(
+      svc.from("activities").insert({
+        contact_id:    params.primaryContactId,
+        brokerage_id:  (primary as any).brokerage_id,
+        agent_id:      (primary as any).agent_id,
+        activity_type: "contact_merged",
+        title:         "Duplicate contact merged",
+        description:   `Merged duplicate ${params.duplicateContactId} into this contact. Moved: ${
+          Object.entries(moved).map(([t, n]) => `${t}(${n})`).join(", ") || "no child rows"
+        }.`,
+        status:        "completed",
+        metadata:      { duplicate_contact_id: params.duplicateContactId, moved, by: auth.ctx.userId },
+      }),
+      "the merge is already done and irreversible by the time this runs — child rows moved, fields merged; failing the caller here would report a rollback that did not happen. The old rejection handler could not see a REFUSED row at all; bestEffort logs both.",
+    )
 
     revalidatePath("/crm")
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted — no page.tsx at
+    // that path, so the call was a no-op. Survivor: the /crm line above.
     return { success: true, moved }
   } catch (error) {
     return handleError(error, "mergeContacts") as MergeContactsResult
@@ -384,7 +354,7 @@ export async function findDuplicateContacts(contactId: string): Promise<
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
     if (!me) return { success: false, error: "Contact not found" }
-    const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+    const isManager = isAdminOrBroker({ user_type: ctx.role })
     if (!isManager && (!ctx.agentId || (me as any).agent_id !== ctx.agentId)) {
       return { success: false, error: "Forbidden: not your contact" }
     }
@@ -434,4 +404,73 @@ export async function findDuplicateContacts(contactId: string): Promise<
 export async function addContactNote(contactId: string, note: string) {
   const { addContactNote: addNoteWithSync } = await import("./communications")
   return addNoteWithSync({ contactId, note })
+}
+
+/**
+ * Record an explicit FUTURE-INTENT re-contact date on a contact.
+ *
+ * "Call me after the school year." Until now the platform had nowhere to put
+ * that: `lib/lead-pipeline/schedule-followup.ts:setEntityFollowup` is the only
+ * writer of `contacts.next_followup_at` / `next_followup_reason` outside the
+ * demo seed, and it had NO CALLER. The READ side has always been live —
+ * `lib/lead-pipeline/reactivation-enroller.ts` calls `followupSuppresses(
+ * c.next_followup_at, now)` on every contact and lead before enrolling them in
+ * a reactivation cadence — so the suppression check ran against a column
+ * nothing could ever set, and a stated future timeline could not stop the
+ * nurture drip from nagging.
+ *
+ * This is the contact-side entry point for it. Gated: the caller must be
+ * authenticated and the contact must be in the caller's brokerage, proved
+ * through the cookie client so RLS applies to the check itself — setEntityFollowup
+ * runs on the service client and filters on `id` alone, so this is the only
+ * tenant boundary on the write.
+ *
+ * The lead-side equivalent is deliberately NOT exposed here: agents work
+ * contacts, not raw leads.
+ */
+export async function scheduleContactFollowup(params: {
+  contactId: string
+  /** ISO timestamp to next reach out. */
+  at: string
+  /** What they said, in their words — shown to the agent when the date comes round. */
+  reason?: string | null
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!isValidUUID(params.contactId)) {
+      return { success: false, error: "Invalid contact id" }
+    }
+
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
+    const supabase = await createClient()
+    const { data: contact, error: scopeError } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+
+    // supabase-js RESOLVES a refused query, so an unchecked error here would be
+    // indistinguishable from "no such contact" — and both must refuse.
+    if (scopeError) return { success: false, error: "Could not verify that contact" }
+    if (!contact) return { success: false, error: "Contact not found" }
+
+    const { setEntityFollowup } = await import("@/lib/lead-pipeline/schedule-followup")
+    const result = await setEntityFollowup({
+      entity: "contact",
+      id:     params.contactId,
+      at:     params.at,
+      reason: params.reason ?? null,
+    })
+    if (!result.ok) return { success: false, error: result.error ?? "Follow-up not saved" }
+
+    revalidatePath(`/crm/contacts/${params.contactId}`)
+    revalidatePath("/crm")
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "scheduleContactFollowup") as { success: boolean; error?: string }
+  }
 }

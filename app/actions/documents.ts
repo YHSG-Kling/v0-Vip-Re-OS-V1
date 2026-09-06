@@ -1,15 +1,21 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { parseStorageObjectUrl } from "@/lib/storage/parse-object-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { revalidatePath } from "next/cache"
-import { put, del } from "@vercel/blob"
+// Was `import { put, del } from "@vercel/blob"`. The upload half already moved
+// to lib/storage/put-and-sign.ts#putAndSign (see below); this removes the last
+// Vercel Blob call, the DELETE half, per the owner ruling that all file storage
+// lives in Supabase buckets.
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { handleError } from "@/lib/errors"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {
@@ -64,30 +70,76 @@ export async function getDocuments(params?: { contactId?: string; transactionId?
 
 export async function deleteDocument(documentId: string) {
   try {
+    // SESSION GATE + TENANT ANCHOR (added when this was wired to the
+    // transaction detail page's document list, lane E2 2026-08-28). Deleting a
+    // record's bytes on the strength of a raw uuid, gated only by RLS, is the
+    // shape this codebase has been burned by; the document's transaction must
+    // belong to the caller's brokerage or the delete is refused.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
-    
-    // Get document to delete blob
-    const { data: doc } = await supabase
+
+    // Get document to check tenancy and delete blob
+    const { data: doc, error: docErr } = await supabase
       .from("transaction_documents")
-      .select("storage_url")
+      .select("storage_url, brokerage_id")
       .eq("id", documentId)
       .single()
+    if (docErr) {
+      return { success: false, error: docErr.message }
+    }
+    if (((doc as any)?.brokerage_id ?? null) !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
+    // DELETE THE OBJECT, NOT A BLOB. `del(url)` was a Vercel Blob call against a
+    // URL that is now a Supabase object URL — it could never have matched, so
+    // every deleted transaction document has been leaving its bytes behind.
+    //
+    // supabase-js RESOLVES a remove() that matched NOTHING with error=null and
+    // an empty array — byte-identical to a delete that worked (CLAUDE.md §3).
+    // So the result is `.select()`-equivalent here: the returned array is
+    // COUNTED, and a zero-length removal is reported rather than read as
+    // success. Best-effort by design (the row must still go), but never silent.
     if (doc?.storage_url) {
-      try {
-        await del(doc.storage_url)
-      } catch (blobError) {
-        console.error("Error deleting blob:", blobError)
+      const target = parseStorageObjectUrl(doc.storage_url)
+      if (!target) {
+        console.error(
+          `[documents] storage_url for ${documentId} is not a Supabase object URL; ` +
+          "leaving it alone rather than guessing a bucket:", doc.storage_url,
+        )
+      } else {
+        const { data: removed, error: rmErr } = await supabase.storage
+          .from(target.bucket)
+          .remove([target.objectPath])
+        if (rmErr) {
+          console.error(`[documents] ${target.bucket}/${target.objectPath} remove refused:`, rmErr.message)
+        } else if (!removed || removed.length === 0) {
+          console.error(
+            `[documents] ${target.bucket}/${target.objectPath} matched NOTHING — the row is being ` +
+            "deleted but the object is still in the bucket.",
+          )
+        }
       }
     }
 
-    // Delete from database
-    const { error } = await supabase
+    // Delete from database. `.select()` and COUNT — a delete that matches
+    // nothing resolves with error=null exactly like one that worked (§3), and
+    // here a zero-row delete means RLS refused or the row is already gone;
+    // either way the caller must not be told the delete happened.
+    const { data: deletedRows, error } = await supabase
       .from("transaction_documents")
       .delete()
       .eq("id", documentId)
+      .select("id")
 
     if (error) throw error
+    if (!deletedRows || deletedRows.length === 0) {
+      return { success: false, error: "Document row was not deleted (not found, or access refused)" }
+    }
 
     revalidatePath("/dashboard")
     return { success: true }
@@ -159,18 +211,29 @@ Provide detailed analysis including document type classification, key informatio
       processed_at: new Date().toISOString(),
     })
 
-    // Log activity (fire-and-forget, never throw on audit failure)
-    supabase.from("activities").insert({
-      brokerage_id: document.brokerage_id,
-      agent_id: document.brokerage_id, // best-effort; no agent_id on transaction_documents
-      activity_type: "document_action",
-      title: "Document analyzed",
-      description: `AI analysis of document: ${document.doc_label ?? documentId}`,
-      notes: JSON.stringify({ action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" }),
-      status: "completed",
-      entity_type: "transaction",
-      transaction_id: document.transaction_id ?? null,
-    }).then(() => {}, () => {})
+    // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+    // (m483): the gate above (getAgentContext + tenant check on the document) is
+    // the authorization; the caller may be a portal CONSUMER session whose RLS
+    // seat the tightened activities policies rightly refuse, and an audit row
+    // must not depend on the caller's own RLS. The old shape also stuffed a
+    // brokerages.id into agent_id (FK → agents.id), so the insert was REFUSED
+    // 23503 on every analysis and `.then(() => {}, () => {})` swallowed it.
+    {
+      const svcAudit = createServiceClient()
+      const { error: activityError } = await svcAudit.from("activities").insert({
+        brokerage_id: document.brokerage_id,
+        activity_type: "document_action",
+        title: "Document analyzed",
+        description: `AI analysis of document: ${document.doc_label ?? documentId}`,
+        notes: JSON.stringify({ action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" }),
+        status: "completed",
+        entity_type: "transaction",
+        transaction_id: document.transaction_id ?? null,
+      })
+      if (activityError) {
+        console.error(`[documents] document_action (analyzed) NOT logged for ${documentId}:`, activityError.message)
+      }
+    }
 
     return { success: true, analysis }
   } catch (error) {
@@ -219,26 +282,73 @@ export async function uploadDocument(
   // Decode base64 and upload to storage
   const fileBuffer = Buffer.from(file.base64, "base64")
 
+  // THE SIZE GATE, which this action — the universal document lane every portal
+  // and contact upload rides — did not have. Unbounded here is not "no limit":
+  // the base64 payload rides a Server Action body behind Vercel's 4.5 MB
+  // function cap, so the real ceiling is ~3.4 MB of file. Worse, the failure
+  // path below FALLS BACK to writing a truncated base64 data: URL into the row,
+  // so an oversized upload would not have failed loudly — it would have written
+  // a document record pointing at 100 characters of the file.
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+  const sizeGate = checkUpload({
+    bucket: "client-documents",
+    transport: "server_action_base64",
+    bytes: fileBuffer.length,
+    contentType: file.type,
+  })
+  if (!sizeGate.ok) return { success: false, error: sizeGate.reason }
+
   let publicUrl: string
+  // Non-null once the bytes are really in the bucket — the compensating handle
+  // for the failure paths BELOW this point, which used to leave the file behind.
+  let storedObjectPath: string | null = null
 
-  // Try to upload to storage bucket
-  const { data: uploadData, error: uploadError } = await supabase.storage
-    .from("client-documents")
-    .upload(filePath, fileBuffer, {
-      contentType: file.type,
-      upsert: false,
-    })
+  // Store and sign as ONE step. client-documents is a PRIVATE bucket (m278), so
+  // a public URL 403s; and when the signing failed the previous shape carried on
+  // with an empty URL, writing a client_documents row pointing nowhere while the
+  // uploaded file stayed in the bucket forever. putAndSign undoes the upload
+  // instead, which leaves us in exactly the same state as an upload that never
+  // happened — so BOTH failure stages take the existing database fallback.
+  const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+  const stored = await putAndSign(supabase, {
+    bucket:      "client-documents",
+    path:        filePath,
+    body:        fileBuffer,
+    contentType: file.type,
+    brokerageId: ctx.brokerageId,
+    reason:      "client_document_upload",
+  })
 
-  if (uploadError) {
-    console.error("[v0] Storage upload error:", uploadError)
-    // If bucket doesn't exist or upload fails, store base64 directly in database
-    // This is a fallback - recommend setting up storage bucket properly
-    publicUrl = `data:${file.type};base64,${file.base64.substring(0, 100)}...` // Truncated for DB
-    console.log("[v0] Using database fallback for document storage")
+  if (!stored.ok) {
+    // 🐛 THE FALLBACK HERE FABRICATED A DOCUMENT THAT DOES NOT EXIST.
+    //
+    // It wrote `data:<type>;base64,<first 100 chars>...` into document_url and
+    // carried on to insert the client_documents row — so a storage failure
+    // rendered, to the client and to the agent, as a successfully uploaded
+    // document. Opening it yields a hundred characters of base64 and an ellipsis.
+    // Its own comment ("recommend setting up storage bucket properly") says it was
+    // a development stopgap; it reached production and stayed.
+    //
+    // It cannot be salvaged by widening the truncation either — client-documents
+    // is PRIVATE (m278), the bytes are gone by this point because putAndSign
+    // already undid the upload, and a base64 blob in a text column is not a
+    // document. §4: fail closed. A storage failure must not render as a stored file.
+    //
+    // This mirrors the row-refused path forty lines below, which already throws
+    // after compensating — same contract, same shape, for the same reason: the
+    // bytes are not there, so no row may claim they are.
+    //
+    // The size half of this defect was closed upstream by the upload ceiling
+    // (lib/storage/file-limits.ts), but the ceiling only stops files that are too
+    // BIG. This branch still fires on a missing bucket, an RLS refusal, or a
+    // network fault, so gating the size did not make it unreachable.
+    console.error(`[v0] Storage ${stored.stage} error:`, stored.error)
+    throw new Error(
+      `Failed to store document: ${stored.error ?? stored.stage}. The file was not saved — please try again.`,
+    )
   } else {
-    // Get public URL from storage
-    const { data } = supabase.storage.from("client-documents").getPublicUrl(filePath)
-    publicUrl = data.publicUrl
+    publicUrl = stored.signedUrl
+    storedObjectPath = stored.path
   }
 
   // Create document record - supports both contact_id (clients) and user_id (agents)
@@ -259,21 +369,43 @@ export async function uploadDocument(
 
   if (docError) {
     console.error("Document record error:", docError)
+    // The bytes landed but the row that would have referenced them was refused.
+    // Service client: the worklist fallback is service-role only.
+    if (storedObjectPath) {
+      await removeOrRecordOrphan(svc, {
+        bucket:      "client-documents",
+        objectPath:  storedObjectPath,
+        reason:      "client_document_row_refused",
+        detail:      docError.message,
+        brokerageId: ctx.brokerageId,
+      })
+    }
     throw new Error("Failed to create document record")
   }
 
-  // Log activity (fire-and-forget)
-  supabase.from("activities").insert({
-    brokerage_id: document.brokerage_id ?? null,
-    agent_id: document.brokerage_id ?? null, // best-effort; no direct agent_id on client_documents
-    contact_id: contactId ?? null,
-    activity_type: "document_action",
-    title: `Document uploaded: ${file.name}`,
-    description: `Uploaded via portal: ${file.name}`,
-    notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, () => {})
+  // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+  // (m483): the auth gate + brokerage checks at the top of this action are the
+  // authorization, and the caller can be a portal CONSUMER session whose seat
+  // the tightened activities policies refuse. The document write above keeps
+  // the caller's own client; only this audit row rides service. The old shape
+  // stuffed a brokerages.id into agent_id (FK → agents.id) — refused 23503,
+  // swallowed by `.then(() => {}, () => {})`.
+  {
+    const { error: activityError } = await svc.from("activities").insert({
+      brokerage_id: document.brokerage_id ?? ctx.brokerageId,
+      contact_id: contactId || null,
+      transaction_id: transactionId || null,
+      activity_type: "document_action",
+      title: `Document uploaded: ${file.name}`,
+      description: `Uploaded via portal: ${file.name}`,
+      notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
+      status: "completed",
+      entity_type: "contact",
+    })
+    if (activityError) {
+      console.error(`[documents] document_action (uploaded) NOT logged for ${document.id}:`, activityError.message)
+    }
+  }
 
   // Queue for AI processing (async)
   processDocumentWithAI(document.id, publicUrl, file.type).catch(console.error)
@@ -285,9 +417,57 @@ export async function uploadDocument(
 // AI DOCUMENT PROCESSING
 // ============================================
 
-export async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
+/**
+ * `fileType` — THE UPLOAD'S MIME TYPE — WAS ACCEPTED HERE AND READ BY NOTHING until
+ * 2026-08-24, and the two model calls below both attached the file as
+ * `{ type: "image", image: fileUrl }`. A PURCHASE AGREEMENT IS A PDF. Handing a PDF
+ * URL to a provider under an `image` content part does not read the PDF; the model
+ * answers from the prompt alone, and its answer was then stored as this document's
+ * classification AND fed to the signature-completeness compliance scan, which writes
+ * a `compliance_checks` row and an activity entry an agent is meant to act on.
+ * A confident verdict about a document nothing read is exactly the "nobody checked"
+ * rendering as "checked and fine" that CLAUDE.md §4 forbids.
+ *
+ * The part shape now follows the mime type, and a type neither branch can read is
+ * REFUSED BEFORE the paid call rather than after it — `ai_tool_usage` is the cost
+ * ledger (§5), and a call that could not have worked is a wrong invoice as well as a
+ * wrong answer.
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT, and
+ * this one was never meant to be a door: its ONE call site is the fire-and-forget
+ * hand-off at :410 in THIS file, immediately after the upload that produced the
+ * URL. As an export it took a caller-supplied `fileUrl` and handed it to three
+ * PAID model calls billed to `spendActor.brokerageId` — which is two separate
+ * problems at once:
+ *   · §5, the invoice. `ai_tool_usage` is the cost ledger; an arbitrary caller
+ *     could spend a tenant's AI budget on documents that tenant never uploaded,
+ *     and a wrong number there is a wrong invoice.
+ *   · SSRF. A URL the caller controls, fetched (by us or by the provider on our
+ *     behalf) from the server side, with no origin check.
+ * Lowered to module-private; the in-file caller is unchanged.
+ */
+async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
+  // Tenant for the AI cost ledger — SESSION (§4). Three model calls below.
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
   const startTime = Date.now()
+
+  const mime = (fileType ?? "").toLowerCase().split(";")[0].trim()
+  const isImage = mime.startsWith("image/")
+  const isPdf = mime === "application/pdf"
+  if (!isImage && !isPdf) {
+    console.warn(
+      `[documents] Skipping AI processing for document ${documentId}: ` +
+      `mime "${mime || "unknown"}" is neither an image nor a PDF, so no model can read it.`,
+    )
+    return { success: false, error: `Unsupported document type for AI reading: ${mime || "unknown"}` }
+  }
+
+  /** The file as a content part the provider will actually OPEN. */
+  const documentPart = isImage
+    ? { type: "image" as const, image: fileUrl }
+    : { type: "file" as const, data: fileUrl, mediaType: "application/pdf" }
 
   try {
     // Get document to get brokerage_id
@@ -299,6 +479,8 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
 
     // Step 1: Extract text and classify document
     const classificationResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o",
       messages: [
         {
@@ -316,10 +498,7 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
   }
 }`,
             },
-            {
-              type: "image",
-              image: fileUrl,
-            },
+            documentPart,
           ] as any),
         },
       ],
@@ -339,6 +518,8 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
 
     // Step 2: Generate plain English explanation
     const explanationResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are a helpful real estate assistant explaining documents to first-time homebuyers.
 
@@ -409,6 +590,8 @@ Use simple language, avoid jargon, and be reassuring.`,
           : "Standard state requirements apply."
 
         const scanResult = await generateText({
+          brokerageId: spendActor.brokerageId,
+          userId: spendActor.userId || null,
           model: "openai/gpt-4o",
           messages: [
             {
@@ -438,7 +621,7 @@ Return this exact structure:
 
 Set overallStatus to "blocking_issues" only if missing signatures would invalidate the contract.`,
                 },
-                { type: "image", image: fileUrl },
+                documentPart,
               ] as any),
             },
           ],
@@ -470,6 +653,16 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           .insert({
             check_type: "signature_completeness",
             status: scan.overallStatus,
+            // The TENANT goes on the COLUMN, not only inside the findings jsonb.
+            // Until 2026-08-27 this insert wrote brokerage_id only inside
+            // `findings`, so the column was NULL on every row — and the
+            // compliance-officer brief (lib/intelligence/user-type-briefs/
+            // tc-compliance-lender-vendor.ts) filters
+            // `.or(brokerage_id.eq.<tenant>, brokerage_id.is.null)`, which made
+            // EVERY tenant's scans count into every brokerage's brief. The
+            // findings copy stays as payload provenance; the column is the
+            // filterable fact.
+            brokerage_id: docRecord?.brokerage_id ?? null,
             findings: {
               ...scan,
               document_id: documentId,
@@ -480,28 +673,42 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           })
           .then(() => {}, (err) => console.error("[v0] compliance_checks insert error:", err))
 
-        // Activity log entry — surfaces issues to agent
+        // Activity log entry — surfaces issues to agent. POST-AUTHORIZATION
+        // AUDIT WRITE, service client on purpose (m483): this function runs in
+        // the uploading caller's request context, and uploadDocument is
+        // portal-reachable, so `supabase` here can be a CONSUMER seat the
+        // tightened activities policies refuse. The old shape also stuffed a
+        // brokerages.id into agent_id (FK → agents.id) — refused 23503,
+        // swallowed by `.then(() => {}, () => {})`. brokerage_id is NOT NULL
+        // on activities: no tenant on the document, no row, said out loud.
         const issueCount =
           scan.signatureCompleteness.missingSignatures.length +
           scan.signatureCompleteness.missingInitials.length +
           scan.stateComplianceIssues.filter((i: any) => i.status === "fail").length
-        supabase
-          .from("activities")
-          .insert({
-            brokerage_id: docRecord?.brokerage_id ?? null,
-            agent_id: docRecord?.brokerage_id ?? null,
-            contact_id: docRecord?.contact_id ?? null,
-            activity_type: "compliance_scan",
-            title:
-              scan.overallStatus === "pass"
-                ? `Compliance scan passed: ${classification.document_type}`
-                : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
-            description: `State-specific signature/initial scan ran on uploaded document.`,
-            notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
-            status: scan.overallStatus === "pass" ? "completed" : "needs_review",
-            entity_type: "document",
-          })
-          .then(() => {}, () => {})
+        if (!docRecord?.brokerage_id) {
+          console.error(
+            `[documents] compliance_scan activity NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+          )
+        } else {
+          const { error: scanActivityError } = await createServiceClient()
+            .from("activities")
+            .insert({
+              brokerage_id: docRecord.brokerage_id,
+              contact_id: docRecord?.contact_id ?? null,
+              activity_type: "compliance_scan",
+              title:
+                scan.overallStatus === "pass"
+                  ? `Compliance scan passed: ${classification.document_type}`
+                  : `Compliance scan found ${issueCount} issue(s): ${classification.document_type}`,
+              description: `State-specific signature/initial scan ran on uploaded document.`,
+              notes: JSON.stringify({ scan_status: scan.overallStatus, issue_count: issueCount }),
+              status: scan.overallStatus === "pass" ? "completed" : "needs_review",
+              entity_type: "document",
+            })
+          if (scanActivityError) {
+            console.error(`[documents] compliance_scan activity NOT logged for document ${documentId}:`, scanActivityError.message)
+          }
+        }
       } catch (scanErr) {
         console.error("[v0] Signature compliance scan error:", scanErr)
       }
@@ -516,7 +723,12 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
             .from("transactions")
             .select("id, status")
             .eq("contact_id", docRecord.contact_id)
-            .in("status", ["pending", "under_contract", "active"])
+            // Canonical open-deal set. This read ["under_contract", "active"],
+            // which is exactly the gap lib/transactions/transaction-status.ts
+            // documents: it misses `pending` and `clear_to_close`, so a contract
+            // whose contingencies had cleared found NO open transaction and the
+            // document was filed against nothing.
+            .in("status", [...TRANSACTION_STATUSES_OPEN])
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle()
@@ -574,57 +786,33 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           zipCode: classification.key_fields?.zip_code ?? null,
         }
 
-        if (classification.document_type === "listing_agreement") {
-          // A listing agreement is EXECUTABLE only when BOTH the listing agent AND
-          // the seller have completed signatures AND initials. overallStatus="pass"
-          // is an aggregate and can pass with one party missing, so enforce per-role
-          // from the scan before auto-creating the listing.
-          const sc = (signatureScan as any)?.signatureCompleteness ?? {}
-          const PARTIES = ["agent", "seller"]
-          const roleOf = (m: any) => String(m?.signer_role ?? "").toLowerCase()
-          const sigGap = (sc.missingSignatures ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
-          const initGap = (sc.missingInitials ?? []).some((m: any) => PARTIES.includes(roleOf(m)))
-          const bothPartiesExecuted =
-            sc.allRequiredSignaturesPresent === true &&
-            sc.allRequiredInitialsPresent === true &&
-            !sigGap && !initGap
-
-          if (!bothPartiesExecuted) {
-            console.warn(
-              `[v0] Listing agreement ${docRecord.id} not fully executed by agent + seller (signatures/initials incomplete) — listing NOT auto-created`
-            )
-          } else {
-            // Executable also requires ALL required listing documents present
-            // (state/federal/brokerage checklist), not just the signed agreement.
-            const { auditListingDocuments } = await import("@/lib/compliance/required-documents")
-            const docAudit = await auditListingDocuments(supabase as any, {
-              brokerageId:     docRecord.brokerage_id,
-              sellerContactId: docRecord.contact_id ?? null,
-              stateCode:       baseExtracted.state ?? null,
-            })
-
-            if (docAudit.missing_blocking.length > 0) {
-              console.warn(
-                `[v0] Listing agreement ${docRecord.id} executed but required documents missing (${docAudit.missing_blocking.join(", ")}) — listing NOT auto-created`
-              )
-            } else {
-              await triggerChainsForEvent({
-                eventType: "compliance.listing_agreement_passed",
-                brokerageId: docRecord.brokerage_id,
-                contactId: docRecord.contact_id ?? null,
-                metadata: {
-                  document_id: docRecord.id,
-                  extracted: baseExtracted,
-                  signature_scan: signatureScan,
-                  required_docs_audit: {
-                    present: docAudit.present,
-                    missing_warning: docAudit.missing_warning,
-                  },
-                },
-              })
-            }
-          }
-        } else if (classification.document_type === "purchase_agreement") {
+        // CONSOLIDATED AWAY — the listing-agreement gate that used to live here.
+        //
+        // It was UNREACHABLE. This function's own classifier prompt offers a fixed enum:
+        // purchase_agreement|addendum|inspection_report|appraisal|proof_of_funds|
+        // closing_disclosure|title_report|disclosure_form|bank_statement|drivers_license|other
+        // — `listing_agreement` is not in it, so `document_type === "listing_agreement"`
+        // could never be true here and the gate never ran from this path.
+        //
+        // It was also on the WRONG path even if it had: this function writes
+        // client_documents, and auditListingDocuments reads `documents`. A gate that fired
+        // here would have judged "are all required listing documents present?" against a
+        // table the audit does not consult.
+        //
+        // Named survivor: lib/documents/listing-agreement-gate.ts:runListingAgreementGate,
+        // called unconditionally from lib/documents/scan-uploaded-document.ts (whose
+        // classifier DOES offer listing_agreement, generated from the canonical taxonomy in
+        // lib/compliance/document-classifications.ts). It keys the emitted
+        // compliance.listing_agreement_passed on the document id so a re-scan reuses the run,
+        // and shares one client-safe execution predicate
+        // (lib/compliance/signature-completeness.ts) so "is it signed" has one answer
+        // everywhere. Nothing is lost: the survivor enforces the same owner rule — a listing
+        // agreement executed by BOTH agent and seller, with every required document present,
+        // before a listing is taken on — on the path that can actually reach it.
+        //
+        // Widening this enum instead would have created a SECOND gate emitting the same
+        // event from the wrong table. See MAINTENANCE_DOMAINS.listing_completed_documents.
+        if (classification.document_type === "purchase_agreement") {
           // Only auto-create transaction when there is an offer record but
           // no transaction yet; otherwise existing applyContractExtraction
           // path above updates the existing transaction.
@@ -645,18 +833,30 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
       }
     }
 
-    // Log activity (fire-and-forget)
-    supabase.from("activities").insert({
-      brokerage_id: docRecord?.brokerage_id ?? null,
-      agent_id: docRecord?.brokerage_id ?? null, // best-effort
-      contact_id: docRecord?.contact_id ?? null,
-      activity_type: "document_action",
-      title: `Document AI analysis: ${classification.document_type}`,
-      description: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
-      notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
-      status: "completed",
-      entity_type: "contact",
-    }).then(() => {}, () => {})
+    // Log activity — POST-AUTHORIZATION AUDIT WRITE, service client on purpose
+    // (m483): same rationale as the compliance_scan row above — this runs in
+    // the (possibly consumer) uploader's request context, and the audit row
+    // must not depend on that seat. The old shape stuffed a brokerages.id into
+    // agent_id (FK → agents.id) — refused 23503, swallowed.
+    if (!docRecord?.brokerage_id) {
+      console.error(
+        `[documents] document_action (ai analysis) NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+      )
+    } else {
+      const { error: analysisActivityError } = await createServiceClient().from("activities").insert({
+        brokerage_id: docRecord.brokerage_id,
+        contact_id: docRecord?.contact_id ?? null,
+        activity_type: "document_action",
+        title: `Document AI analysis: ${classification.document_type}`,
+        description: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
+        notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
+        status: "completed",
+        entity_type: "contact",
+      })
+      if (analysisActivityError) {
+        console.error(`[documents] document_action (ai analysis) NOT logged for document ${documentId}:`, analysisActivityError.message)
+      }
+    }
 
     return { success: true, classification, explanation: explanationResult.text, signatureScan }
   } catch (error) {
@@ -704,30 +904,86 @@ async function validateDocumentFields(
 // DOCUMENT RETRIEVAL
 // ============================================
 
-export async function getContactDocuments(contactId: string) {
+export interface ContactDocumentsResult {
+  /** false = the documents were NOT read. `documents` is empty and means nothing. */
+  ok: boolean
+  error?: string
+  documents: any[]
+}
+
+/**
+ * A contact's uploaded documents (`client_documents`), for the back office.
+ *
+ * TWO DEFECTS CLOSED HERE (wave 26, lane SEC3):
+ *
+ * 1. NO ROLE TEST. The gate read the caller's brokerage and the contact's
+ *    brokerage and admitted on EQUALITY ALONE. `users.user_type` can hold
+ *    `contact`, `vendor` and `lender`, and those rows carry a brokerage_id — so
+ *    a vendor seat could pull any client's pre-approval letters, bank
+ *    statements and inspection reports out of the whole brokerage. CLAUDE.md §5:
+ *    contacts, lenders and vendors see no financials, and see only their own.
+ *    The roster is now asked explicitly, before the service client is built.
+ *
+ *    Deliberately NOT `isContactSelf`: this is the back-office reader, and the
+ *    documents it returns are the ones the AGENT filed. The portal's own
+ *    document surfaces gate on lib/portal/require-contact-access.ts, which is
+ *    where a contact's route to their own record lives.
+ *
+ * 2. EVERY REFUSAL RENDERED AS "NO DOCUMENTS". All four exits returned a bare
+ *    `[]` — unauthenticated, forbidden, a refused ownership read, and a refused
+ *    documents read were indistinguishable from a contact who has uploaded
+ *    nothing. supabase-js RESOLVES a refused query (§3), so the last two never
+ *    even surfaced an error to discard. "Nobody could check" must never render
+ *    as "checked, and there is nothing here" (§4). `ok` is now the discriminant
+ *    and BOTH reads destructure `error`.
+ *
+ * NOTE for the reviewer: this export has no caller in the tree (it is in
+ * scripts/orphan-export-baseline.json), which is why the return shape could be
+ * corrected rather than worked around. It is still a `"use server"` export and
+ * therefore a live public HTTP endpoint (§1: unreferenced is not dead), which is
+ * exactly why it is gated rather than deleted. Its same-named sibling
+ * app/actions/contact-details.ts:getContactDocuments reads a DIFFERENT table
+ * (`documents`) and is a different function, not a duplicate of this one.
+ */
+export async function getContactDocuments(contactId: string): Promise<ContactDocumentsResult> {
   // AUTH GATE — previously returned every document for any caller-supplied
   // contact id with no tenant scope.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return []
+    return { ok: false, error: "Unauthorized", documents: [] }
+  }
+
+  // THE TEST THAT WAS MISSING — asked before the service client exists.
+  if (!isCrmContactStaff(ctx.userType)) {
+    return { ok: false, error: "Forbidden", documents: [] }
   }
 
   const svc = createServiceClient()
-  const { data: c } = await svc
+  const { data: c, error: contactError } = await svc
     .from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
-  if (!c || c.brokerage_id !== ctx.brokerageId) {
-    return []
+  if (contactError) {
+    return { ok: false, error: "Access check failed", documents: [] }
+  }
+  if (!c || !c.brokerage_id) {
+    return { ok: false, error: "Contact not found", documents: [] }
+  }
+  if (c.brokerage_id !== ctx.brokerageId) {
+    return { ok: false, error: "Forbidden", documents: [] }
   }
 
   const supabase = await createClient()
-  const { data: documents } = await supabase
+  const { data: documents, error: documentsError } = await supabase
     .from("client_documents")
     .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
-  return documents || []
+  if (documentsError) {
+    return { ok: false, error: documentsError.message, documents: [] }
+  }
+
+  return { ok: true, documents: documents ?? [] }
 }
 
 export async function getDocumentWithAnalysis(documentId: string) {
@@ -779,18 +1035,34 @@ export async function getDocumentWithAnalysis(documentId: string) {
   const docType = document.doc_type ?? document.document_type ?? document.doc_category
   const educationalOverlay = await getEducationalOverlay(docType)
 
-  // Log view activity (fire-and-forget)
-  supabase.from("activities").insert({
-    brokerage_id: document.brokerage_id ?? null,
-    agent_id: document.brokerage_id ?? null, // best-effort
-    contact_id: document.contact_id ?? null,
-    activity_type: "document_action",
-    title: "Document viewed",
-    description: `Document viewed: ${document.doc_label ?? document.document_name ?? documentId}`,
-    notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, () => {})
+  // Log view activity — POST-AUTHORIZATION AUDIT WRITE, service client on
+  // purpose (m483): the document itself was just read with the CALLER'S OWN RLS
+  // client, so reaching this line proves the caller can see the record — that
+  // read is the gate. The audit row must not additionally depend on the
+  // caller's seat passing the tightened activities policies (portal consumer
+  // sessions do not). The old shape stuffed a brokerages.id into agent_id
+  // (FK → agents.id) — refused 23503, swallowed by `.then(() => {}, () => {})`.
+  // activities.brokerage_id is NOT NULL: an untenanted document gets no row,
+  // said out loud, rather than a guessed tenant.
+  if (!document.brokerage_id) {
+    console.error(
+      `[documents] document_action (viewed) NOT logged for ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+    )
+  } else {
+    const { error: viewActivityError } = await createServiceClient().from("activities").insert({
+      brokerage_id: document.brokerage_id,
+      contact_id: document.contact_id ?? null,
+      activity_type: "document_action",
+      title: "Document viewed",
+      description: `Document viewed: ${document.doc_label ?? document.document_name ?? documentId}`,
+      notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
+      status: "completed",
+      entity_type: "contact",
+    })
+    if (viewActivityError) {
+      console.error(`[documents] document_action (viewed) NOT logged for ${documentId}:`, viewActivityError.message)
+    }
+  }
 
   return { document, extractionLog, educationalOverlay }
 }
@@ -1078,8 +1350,8 @@ export async function getDocumentFolders(contactId: string) {
 }
 
 export async function askDocumentQuestion(documentId: string, question: string) {
-  const supabase = await createClient()
-
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   // Get document
   const { document, extractionLog } = await getDocumentWithAnalysis(documentId)
 
@@ -1089,6 +1361,8 @@ export async function askDocumentQuestion(documentId: string, question: string) 
 
   // Generate answer using AI
   const result = await generateText({
+    brokerageId: spendActor.brokerageId,
+    userId: spendActor.userId || null,
     model: "openai/gpt-4o-mini",
     prompt: `You are a helpful real estate assistant. A client is asking about their ${document.doc_type ?? document.document_type ?? "document"}.
 
@@ -1100,13 +1374,51 @@ Client question: ${question}
 Provide a clear, helpful answer in plain English. If you're not sure about something specific to their document, say so and suggest they ask their agent.`,
   })
 
-  // Log activity (fire-and-forget)
-  supabase.from("activities").insert({
-    activity_type: "document_action",
-    entity_type: "document",
-    entity_id: documentId,
-    metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
-  }).then(() => {}, () => {})
+  // Log activity.
+  //
+  // `activities` is covered by `activities_set_brokerage` (BEFORE INSERT), which
+  // is why every census treated this table as netted — but the net has no
+  // `document` branch. `entity_type: "document"` matched nothing, and this row
+  // carries no contact/listing/transaction/agent anchor either, so
+  // `brokerage_id` stayed NULL. It is NOT NULL in the schema, so this was never a
+  // hidden row: the insert was **refused, 23502**, on every client question ever
+  // asked — and the `.then(() => {}, () => {})` above swallowed both the refusal
+  // AND its error, so the action returned an answer either way.
+  //
+  // TENANT: the document's own brokerage. `getDocumentWithAnalysis` already
+  // `select("*")`s the row from `client_documents` or `transaction_documents`, so
+  // this is the record the activity is filed against and it costs no extra read.
+  // `brokerage_id` is NULLABLE on both tables, so an untenanted document is a
+  // real outcome — say so and write nothing rather than guess the asker's
+  // brokerage onto someone else's document.
+  const documentBrokerageId = (document as { brokerage_id?: string | null }).brokerage_id ?? null
+  if (!documentBrokerageId) {
+    console.error(
+      `[documents] document_action NOT logged for document ${documentId}: the document carries no brokerage_id, and activities.brokerage_id is NOT NULL`,
+    )
+  } else {
+    // POST-AUTHORIZATION AUDIT WRITE, service client on purpose (m483): the
+    // document was fetched above with the CALLER'S OWN RLS client
+    // (getDocumentWithAnalysis) — that read is the gate; a caller who cannot
+    // see the document never reaches this line. The audit row itself must not
+    // depend on the caller's seat: portal consumer sessions fail the tightened
+    // activities policies, and this row is the record that the question was
+    // asked. contact_id is stamped where the flow knows it (client_documents
+    // rows carry it; transaction_documents rows do not).
+    const { error: activityError } = await createServiceClient().from("activities").insert({
+      brokerage_id: documentBrokerageId,
+      contact_id: (document as { contact_id?: string | null }).contact_id ?? null,
+      activity_type: "document_action",
+      entity_type: "document",
+      entity_id: documentId,
+      metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
+    })
+    // Destructured: supabase-js RESOLVES a refused insert, and the previous
+    // fire-and-forget handler discarded the rejection as well as the resolution.
+    if (activityError) {
+      console.error(`[documents] document_action NOT logged for document ${documentId}:`, activityError.message)
+    }
+  }
 
   return { answer: result.text }
 }

@@ -1,0 +1,82 @@
+{
+  "generated": "2026-09-04",
+  "counts": {
+    "col-write-no-read": 11,
+    "col-read-no-write": 5,
+    "dead-import": 1,
+    "orphan-type-export": 0,
+    "inert-param": 3,
+    "broken-dynamic-import": 0,
+    "dynamic-import-missing-export": 0,
+    "fetch-no-route": 0,
+    "route-no-caller": 4,
+    "route-external-caller": 14,
+    "route-unresolved-door": 8
+  },
+  "keys": {
+    "col-write-no-read": [
+      "agent_client_messages.managed_agent_session_id",
+      "agent_intro_videos.trigger_year",
+      "ai_search_citation_observations.agent_id",
+      "ai_search_citation_observations.team_id",
+      "client_portal_activity.agent_id",
+      "communications.contact_id",
+      "communications.direction",
+      "generated_documents.agent_id",
+      "listing_landing_pages.template_id",
+      "mail_response_tracking.response_metadata",
+      "vendor_payouts.stripe_transfer_id"
+    ],
+    "col-read-no-write": [
+      "agent_reviews.source_url",
+      "listing_marketing_services.estimated_cost",
+      "platform_contract_templates.body_storage_path",
+      "raw_scraped_leads.dedupe_status",
+      "raw_scraped_leads.source_origin"
+    ],
+    "dead-import": [
+      "app/api/cron/lead-scraping/route.ts::ingestRawSourceBatch"
+    ],
+    "orphan-type-export": [],
+    "inert-param": [
+      "app/actions/lead-intelligence.ts::parseNextdoorPosts::html",
+      "app/actions/lead-intelligence.ts::parseNextdoorPosts::location",
+      "app/actions/lead-intelligence.ts::syncIDXBrokerActivity::contactId"
+    ],
+    "broken-dynamic-import": [],
+    "dynamic-import-missing-export": [],
+    "fetch-no-route": [],
+    "route-no-caller": [
+      "/api/admin/scrape-test",
+      "/api/leads/process-pipeline",
+      "/api/leads/raw",
+      "/api/videos/listing-voiceover"
+    ],
+    "route-external-caller": [
+      "/api/admin/health-status",
+      "/api/agentic-os/actions",
+      "/api/agentic-os/actions/[capability]",
+      "/api/agentic-os/connectivity",
+      "/api/agentic-os/mcp",
+      "/api/errors/collect",
+      "/api/intelligence/classify",
+      "/api/intelligence/coordinate",
+      "/api/intelligence/kb/embed",
+      "/api/intelligence/memory/update",
+      "/api/showings/showingtime-webhook",
+      "/api/voice/relay/plan",
+      "/api/voice/twilio/intelligence",
+      "/api/workflow/trigger"
+    ],
+    "route-unresolved-door": [
+      "/api/lead-magnets/qr/[magnetId]",
+      "/api/lead-magnets/submissions",
+      "/api/video/projects",
+      "/api/video/projects/[projectId]/generate",
+      "/api/video/projects/[projectId]/preview",
+      "/api/video/projects/[projectId]/publish",
+      "/api/video/projects/[projectId]/script",
+      "/api/widget/capture"
+    ]
+  }
+}

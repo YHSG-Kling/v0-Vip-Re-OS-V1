@@ -67,7 +67,10 @@ async function main() {
     await svc.from("marketing_campaign_touchpoints").insert({ brokerage_id: brokerageId, sequence_id: seqId, contact_id: contactId, channel: "email", status: "sent", sent_at: new Date().toISOString(), source: "sequence", metadata: { manager: "ai_isa", ai_intent: "ZZ re-engage" } })
 
     const summary = await summarizeManagerTouches(svc, brokerageId, 7)
-    const isaLive = summary.find((s) => s.manager === "ai_isa")
+    // null = the read was REFUSED (§3). It is NOT "no touches" — the standup keys on that
+    // distinction to avoid printing zero touches as a fact, so the simulator asserts it too.
+    check("read succeeded (null would mean REFUSED, not empty)", summary !== null)
+    const isaLive = (summary ?? []).find((s) => s.manager === "ai_isa")
     check("live summary includes the seeded ai_isa touch + intent", !!isaLive && isaLive.touchCount >= 1 && isaLive.sampleIntents.length >= 1, JSON.stringify(isaLive))
   } finally {
     await svc.from("marketing_campaign_touchpoints").delete().eq("sequence_id", seqId).then(() => {}, () => {})

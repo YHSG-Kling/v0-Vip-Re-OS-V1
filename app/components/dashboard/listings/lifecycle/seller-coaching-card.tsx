@@ -1,13 +1,12 @@
 "use client"
 
-import { Component, type ReactNode, useEffect, useState } from "react"
-import { getListingCoaching, refreshSellerCoaching } from "@/app/actions/seller-coaching"
+import { Component, type ReactNode, useEffect, useState, useRef } from "react"
+import { getListingCoaching, refreshSellerCoaching, dismissCoachingCard } from "@/app/actions/seller-coaching"
 import type { SellerCoachingContent, SellerPersona } from "@/lib/seller-coaching"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button }   from "@/components/ui/button"
 import { cn }       from "@/lib/utils"
 import {
-  ChevronDown,
   ChevronUp,
   RefreshCw,
   Target,
@@ -95,6 +94,26 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
   const [refreshing,  setRefreshing]  = useState(false)
   const [error,       setError]       = useState(false)
   const [collapsed,   setCollapsed]   = useState(false)
+  /**
+   * `dismissCoachingCard` records the `coaching.dismissed` activity that tells us
+   * whether this AI coaching is worth generating at all — it is the only signal of
+   * "the agent didn't want this". It had no caller, so the analytics lane was empty
+   * while the card's collapse control (its actual dismissal) stayed purely local.
+   *
+   * Fire-and-forget: the collapse must never wait on, or be blocked by, an analytics
+   * write. Recorded at most once per mount so repeatedly collapsing/expanding does
+   * not inflate the signal.
+   */
+  const dismissRecorded = useRef(false)
+
+  function collapseCard() {
+    setCollapsed(true)
+    if (dismissRecorded.current) return
+    dismissRecorded.current = true
+    void dismissCoachingCard(listingId).catch((err) => {
+      console.error("[seller-coaching] dismissal not recorded:", err)
+    })
+  }
 
   const load = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true)
@@ -207,7 +226,7 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
             Refresh
           </Button>
           <button
-            onClick={() => setCollapsed(true)}
+            onClick={collapseCard}
             className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             title="Collapse"
           >

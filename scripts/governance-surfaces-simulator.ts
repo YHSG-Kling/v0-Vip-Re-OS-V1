@@ -58,7 +58,11 @@ function testPure() {
   const pc = CONTENT_SOURCES.podcast
   const poa = pc.toAction({ id: "p1", brokerage_id: "b", title: "Episode 7", description: "Market chat", audio_url: "https://x/ep7.mp3", created_at: now.toISOString() }, now)
   check("podcast → approve_podcast_episode + audio in preview", poa.actionType === "approve_podcast_episode" && poa.actionInput.audio_url === "https://x/ep7.mp3")
-  check("podcast pending=completed; approve→scheduled, reject→draft", (pc.approve("u") as any).status === "scheduled" && (pc.reject("u") as any).status === "draft")
+  // Canonical: the review gate is approval_status (the distributor ships
+  // status='completed' AND approval_status='approved'). The patch is the
+  // column-correct fallback; the real approve/reject DELEGATE to the one
+  // canonical marketing transition (see approveContentSource → podcast).
+  check("podcast approve→approval_status=approved, reject→rejected (canonical column)", (pc.approve("u") as any).approval_status === "approved" && (pc.reject("u") as any).approval_status === "rejected")
 }
 
 async function testLive() {

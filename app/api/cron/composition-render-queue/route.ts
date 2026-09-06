@@ -19,6 +19,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -37,14 +38,35 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient()
 
+  // Determinism sweep (m310) — this is the video-ops cron, so it is where the
+  // Asset Manager learns that a composition can never reuse a render. Runs
+  // whether or not there is a queued row, because a leak is a standing
+  // condition and an empty queue is when the tick has time for it. Never
+  // throws; a sweep failure must not stop the queue from draining.
+  const { sweepDeterminismLeaks } = await import("@/lib/remotion/render-cache")
+  const leakSweep = await sweepDeterminismLeaks({ limit: 200 })
+
+  // LIVING-VIDEO REFRESH (m312) — a delivered video whose facts have moved is a
+  // video that now says something untrue. Runs BEFORE the queue drain so a
+  // refresh staged this tick is picked up on the next one. Cheap by design: a
+  // few indexed reads per living video and an early exit on an unchanged key,
+  // so the steady state finds nothing and costs nothing. Never throws.
+  const { refreshLivingVideos } = await import("@/lib/video/living-video-sweep")
+  const livingRefresh = await refreshLivingVideos({ limit: 200 })
+
   // Oldest queued row first (idx_remotion_renders_queued covers this).
   const { data: rows, error } = await svc.from("remotion_composition_renders")
     .select("id, composition_id, brokerage_id")
-    .eq("render_status", "queued")
+    .eq("render_status", PICKABLE_RENDER_STATUS)
     .order("created_at", { ascending: true })
     .limit(1)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!rows || rows.length === 0) return NextResponse.json({ ran_at: new Date().toISOString(), processed: 0 })
+  if (!rows || rows.length === 0) {
+    return NextResponse.json({
+      ran_at: new Date().toISOString(), processed: 0,
+      leak_sweep: leakSweep, living_refresh: livingRefresh,
+    })
+  }
 
   const row = rows[0] as { id: string; composition_id: string; brokerage_id: string }
 
@@ -69,6 +91,8 @@ export async function GET(req: NextRequest) {
       composition_id: row.composition_id,
       render_status:  r.status,
       render_body:    renderBody,
+      leak_sweep:     leakSweep,
+      living_refresh: livingRefresh,
     })
   } catch (e) {
     return NextResponse.json({

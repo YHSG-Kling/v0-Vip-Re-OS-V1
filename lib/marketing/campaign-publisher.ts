@@ -141,19 +141,21 @@ export async function publishMarketingCampaignSafe(
     )
   }
 
-  // Lifecycle event — fan-out to portal_event_stream via projector
+  // Kernel event — audit row + reactor (the bare insert reached neither the staff
+  // bell nor any notification_rule keyed on marketing_campaign_launched).
   if (newStatus === "live") {
-    await svc.from("lifecycle_events").insert({
-      event_type:   KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
-      entity_type:  "marketing_campaign",
-      entity_id:    c.id,
-      brokerage_id: c.brokerage_id,
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    await emitKernelEvent({
+      event:       KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
+      entityType:  "marketing_campaign",
+      entityId:    c.id as string,
+      brokerageId: c.brokerage_id as string,
       metadata: {
         campaign_name: c.campaign_name,
         campaign_type: c.campaign_type,
         audience_size: resolved.contactIds.length,
       },
-      created_at: launchAt,
+      createdAt: launchAt,
     })
   }
 

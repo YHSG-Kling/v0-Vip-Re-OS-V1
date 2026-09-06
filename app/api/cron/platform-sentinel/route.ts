@@ -275,11 +275,17 @@ async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
     }))
 
   // ── Support SLA: the support console's own pure clock over open tickets ────
-  const { data: tickets } = await svc
+  // LANE-FILTERED. The platform sentinel reports on the PLATFORM's obligations, and
+  // a user_to_brokerage ticket is a conversation between a brokerage and its own
+  // agents that the platform neither answers nor can answer. Counting those here
+  // made the sentinel report breaches nobody at the platform could clear.
+  const { data: tickets, error: ticketErr } = await svc
     .from("support_tickets")
     .select("id, subject, brokerage_id, created_at, priority, status, first_response_at, resolved_at")
+    .eq("lane", "tenant_to_platform")
     .in("status", ["open", "in_progress"])
     .limit(500)
+  if (ticketErr) console.error("[platform-sentinel] support ticket read refused:", ticketErr.message)
   const slaBreaches = ((tickets ?? []) as any[])
     .map((t) => ({ t, sla: evaluateTicketSla(t, now) }))
     .filter(({ sla }) => sla.breaches.length > 0)

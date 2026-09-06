@@ -8,15 +8,47 @@
 // client-message deliverable gate. A human approves/edits in the Command Center;
 // approving sends it. Nothing reaches the seller autonomously.
 //
-//   requestSellerUpdateReel ── enqueues AgentTalkingHeadReel (used_did_avatar) ──▶
-//     remotion_composition_renders ── D-ID poll cron renders it ──▶ output_url
+//   requestSellerUpdateReel
+//     ├─ remotion_composition_renders (AgentTalkingHeadReel, agent-photo cut)
+//     │    THE GUARANTEED DELIVERABLE. used_did_avatar/used_voiceover are FALSE
+//     │    on it, because at insert time it holds neither.
+//     └─ when the agent actually HAS a usable twin: D-ID /talks submit →
+//          ai_video_projects(status='generating', provider_job_id,
+//            provider_metadata.target_composition_id + .target_render_id)
+//          ── poll-did-videos ──▶ enqueueAvatarCompositionForProject, which
+//          MERGES avatarVideoUrl onto the render row above (and flips
+//          used_did_avatar there, where it becomes true) or, if the queue
+//          already claimed it, enqueues the avatar-led cut beside it.
 //       deliverSellerUpdateReels ── proposeClientMessage(audience='seller') ──▶ GATE
 //
-// Both halves idempotent (one render + one proposal per listing per 7-day window).
+// THE DEFECT THIS SHAPE CLOSES. The insert used to stamp `usedDidAvatar: true,
+// usedVoiceover: true` as LITERALS while this file staged `avatarVideoUrl: null`
+// and no voiceover of any kind, and nothing here created an ai_video_projects
+// row — so the D-ID→Remotion handoff, which fires ONLY off
+// `ai_video_projects.provider_metadata.target_composition_id`, was never asked
+// for. Every seller's "avatar talking head" rendered as the static agent-photo
+// fallback, silently, while the ledger claimed an avatar AND a narration and
+// lib/marketing/capture-render-asset.ts:61 tagged the finished asset "avatar".
+// Both halves are fixed below: the flags DERIVE from what the props actually
+// carry, and the handoff is staged when — and only when — the agent has a ready
+// avatar asset (plus a verified D-ID consent where the asset's source_type
+// requires one). Absent either, the reel is the photo cut and SAYS SO.
+//
+// Both halves are idempotent, but NOT on the same key (m312). The CADENCE is
+// guarded per 7-day window so the scheduled sweep cannot render or propose twice
+// in a week. A LIVING REFRESH — a re-render triggered because a fact the seller
+// cares about actually moved — is exempt from both windows and instead
+// de-duplicates per VIDEO: one proposal per distinct cut. Keying delivery on the
+// calendar would have meant the refresh burned a real render every time and the
+// seller never saw it, which is the same defect one stage further downstream.
 // Pure builders (props + copy) are unit-tested; the producers are live-probed.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
+import { missingContentProps, describeMissingContent, isSupplied } from "@/lib/remotion/content-contract"
+// PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
+import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 
 export const SELLER_UPDATE_COMPOSITION = "AgentTalkingHeadReel"
 /** Tags the render's input_props so delivery can distinguish seller updates from
@@ -25,7 +57,7 @@ export const SELLER_UPDATE_KIND = "seller_weekly_update"
 /** Distinct entity_type for the gated VIDEO seller-update message — so it (a) doesn't share an
  *  idempotency window with the separate TEXT seller-update (both were entity_type='listing',
  *  silently de-duping each other) and (b) lets approval materialize the rich seller_updates card. */
-export const SELLER_UPDATE_ENTITY_TYPE = "seller_update_video"
+const SELLER_UPDATE_ENTITY_TYPE = "seller_update_video"
 
 export interface SellerUpdateStats {
   listingAddress: string
@@ -40,9 +72,27 @@ export interface SellerUpdateStats {
   videoScans?: number
 }
 
-/** Pure: coarse interest label from completed-showing interest levels. */
+/**
+ * Pure: coarse interest label from completed-showing interest levels.
+ *
+ * ONE VOCABULARY (CLAUDE.md §6). WAS:
+ *   levels.filter((l) => l === "interested" || l === "very_interested")
+ * — a byte-identical copy of the dead comparison in
+ * lib/listing-health/health-scorer.ts:182, against the SAME column. Its caller
+ * reads `showings.buyer_interest_level`, whose live CHECK admits love_it |
+ * like_it | maybe | no, so `interested` was structurally 0 and the ratio
+ * structurally 0. This function therefore returned "light" for every listing that
+ * had ANY showing feedback and "none" for one that had none — meaning the weekly
+ * seller VIDEO has told every seller their listing drew light buyer interest, no
+ * matter what the buyers actually said. That is a customer-facing untruth, not a
+ * dashboard rounding error.
+ *
+ * SURVIVOR: lib/behavior-learning/signal-mapping.ts::isPositiveShowingInterest —
+ * the declared owner of this vocabulary, deriving the positive set from the ladder
+ * rather than restating four literals.
+ */
 export function interestLabelFor(levels: Array<string | null>): SellerUpdateStats["interestLabel"] {
-  const interested = levels.filter((l) => l === "interested" || l === "very_interested").length
+  const interested = levels.filter((l) => isPositiveShowingInterest(l)).length
   if (levels.length === 0) return "none"
   const ratio = interested / levels.length
   if (ratio >= 0.5) return "strong"
@@ -65,7 +115,14 @@ export function buildSellerUpdateReelProps(
     agentName: safeAgent,
     caption: showingLine.slice(0, 90),
     ctaLabel: "Review the full update",
-    avatarVideoUrl: null,   // filled by the D-ID render pipeline
+    // DELIBERATELY ABSENT, and it is absent when this row is INSERTED: the D-ID
+    // job has not been submitted yet at this point, so there is no avatar URL to
+    // stage. enqueueAvatarCompositionForProject merges it in on completion
+    // (preferring provider_metadata.clean_video_url, so Remotion's chrome is not
+    // stacked on D-ID's attribution band). Until it does, the composition renders
+    // the agent-photo fallback — which is why `used_did_avatar` on the row is
+    // derived from this value rather than asserted.
+    avatarVideoUrl: null,
     agentPhotoUrl: identity.agentPhotoUrl ?? null,
     brand: {
       primaryColor: "#0F172A",
@@ -148,12 +205,72 @@ async function gatherSellerUpdateStats(supabase: Svc, brokerageId: string, listi
 }
 
 /**
+ * THE FACTS this video asserts — read-only, no side effects (no QR minting, no
+ * identity lookups, no writes), so the living-video sweep can re-derive them on
+ * every tick for pennies and tell whether the delivered video has started saying
+ * something untrue.
+ *
+ * Kept deliberately narrow. The video's input_props also carry a QR data URL, a
+ * photo array, and the agent's phone — cosmetics that change for reasons a
+ * seller would never call "my video is out of date". Only what is asserted
+ * on screen is a fact.
+ */
+export async function sellerUpdateFacts(
+  supabase: Svc, brokerageId: string, listingId: string,
+): Promise<import("@/lib/video/living-video").LivingFacts | null> {
+  const gathered = await gatherSellerUpdateStats(supabase, brokerageId, listingId)
+  if (!gathered) return null
+
+  // The AVATAR is a fact about the video, not a setting beside it: the agent
+  // onboards by recording one from a photo or a video, it lands in our storage
+  // bucket, and when they re-record it every already-delivered living video is
+  // still fronted by the old face until it re-renders.
+  let avatarId: string | null = null
+  if (gathered.agentId) {
+    try {
+      const { data: a } = await supabase.from("agents").select("user_id").eq("id", gathered.agentId).maybeSingle()
+      const uid = (a as { user_id: string | null } | null)?.user_id ?? null
+      if (uid) {
+        const { resolveSelfAvatar } = await import("@/lib/voice/voice-resolver")
+        avatarId = (await resolveSelfAvatar(uid)).avatarId
+      }
+    } catch { /* an unresolvable avatar is recorded as null, not as a change */ }
+  }
+
+  return {
+    listingAddress:    gathered.stats.listingAddress,
+    listPrice:         gathered.stats.listPrice,
+    showingsThisWeek:  gathered.stats.showingsThisWeek,
+    interestLabel:     gathered.stats.interestLabel,
+    daysOnMarket:      gathered.stats.daysOnMarket,
+    // Optional on the stats type; absent and zero mean the same thing to a
+    // seller, and collapsing them here keeps the key stable across the two.
+    videoScans:        gathered.stats.videoScans ?? 0,
+    avatarId,
+  }
+}
+
+/**
  * Enqueue a weekly seller-update avatar render for a listing. Idempotent: skips if a
  * seller-update render for this listing was queued/rendered in the last 7 days.
+ *
+ * `force` exists for the LIVING-VIDEO refresh. The weekly window is a spam guard
+ * against the cadence cron, not a rule that the seller must live with a stale
+ * number: when the facts have materially moved (a price change on Tuesday), the
+ * sweep passes force and the seller gets the true video instead of waiting until
+ * Monday for one that opens with the old price.
  */
 export async function requestSellerUpdateReel(
   brokerageId: string, listingId: string, client?: Svc,
-): Promise<{ queued: boolean; renderId?: string; reason?: string }> {
+  opts: { force?: boolean; refreshedFromRenderId?: string | null } = {},
+): Promise<{
+  queued: boolean; renderId?: string; reason?: string
+  /** Was a D-ID avatar track actually asked for? */
+  avatarRequested?: boolean
+  /** Why not, when it was not. Never blank on a skip — a silent skip is the
+   *  defect this whole lane exists to stop repeating. */
+  avatarReason?: string
+}> {
   const supabase = client ?? createServiceClient()
   if (!brokerageId || !listingId) return { queued: false, reason: "missing ids" }
 
@@ -173,7 +290,7 @@ export async function requestSellerUpdateReel(
   const already = ((recent ?? []) as Array<{ input_props: Record<string, unknown> | null }>)
     .some((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND
       && (r.input_props as { listing_id?: string } | null)?.listing_id === listingId)
-  if (already) return { queued: false, reason: "already queued this week" }
+  if (already && !opts.force) return { queued: false, reason: "already queued this week" }
 
   // Agent + brokerage identity for the avatar card.
   let agentName = "Your Agent", agentPhone = "", agentUserId: string | null = null, agentPhotoUrl: string | null = null
@@ -191,19 +308,89 @@ export async function requestSellerUpdateReel(
   const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
 
+  // The seller-safe narration, composed ONCE (§6) — the avatar speaks it below
+  // and the companion card's seoHint is cut from it, so the two cannot drift
+  // into two different accounts of the same week.
+  const sellerScript = buildSellerUpdateMessage(gathered.stats, agentName).body
+
   const props: Record<string, unknown> = {
     ...buildSellerUpdateReelProps(gathered.stats, { agentName, brokerageName, agentPhone, agentPhotoUrl }),
     listing_id: listingId,
     seller_contact_id: gathered.sellerContactId,
   }
 
+  // ── THE COMPANION SHARE CARD (§1.2) ────────────────────────────────────────
+  // AgentTalkingHeadReel declares thumbnail_composition_id='VideoCoverThumb'
+  // (m168), so render-composition renders a still beside the video and writes it
+  // to thumbnail_url — the og:image and the player poster on /v/[slug]. This
+  // producer staged none, so the card was completed from VideoCoverThumb's
+  // Studio fixture: "Just Listed — 123 Main Street", "$625K · 3 bd · 2 ba ·
+  // Brickell, FL", "Your Agent", published as the share image of a real
+  // seller's weekly update. Every value below is re-read from props this
+  // function already resolved from the listing row.
+  //
+  // THE HINT IS CAPPED AT THE FIRST SENTENCE. The second sentence reads the
+  // week's showing count and days-on-market — the seller's own marketing
+  // position, which belongs to the seller and not to a public summary of their
+  // address. The opening line is the whole honest description of the video.
+  //
+  // `agentName` refuses the literal "Your Agent" — which is BOTH this producer's
+  // own fallback (buildSellerUpdateReelProps) and VideoCoverThumb's sample
+  // value, so staging it would satisfy isSupplied while being byte-identical to
+  // the default the contract exists to keep off a client's card. The brokerage
+  // name takes its place; with neither, companionCard refuses and the video
+  // ships without a share image. (The same rule as the render-just-listed
+  // producer and consultation-render — one spelling of "a placeholder is not an
+  // attribution", §6.)
+  const cardAgentName = agentName && agentName !== "Your Agent" ? agentName : brokerageName
+  const card = companionCard(VIDEO_COVER_THUMB, {
+    kind: "agent_avatar",
+    title:    gathered.stats.listingAddress,
+    subtitle: props.caption,
+    eyebrow:  "WEEKLY UPDATE",
+    agentName: cardAgentName,
+    agentPhotoUrl,
+    brand: props.brand,
+    seoHint: seoHintFromNarration(sellerScript, SEO_HINT_MAX_CHARS, 1),
+  })
+  if (card.card) props.thumbnail_props = card.card
+  else console.warn(`[seller-update-reel] listing ${listingId} ships without a share card — ${describeMissingContent(VIDEO_COVER_THUMB, card.missing)}`)
+
   // B-ROLL (owner rule: avatar videos carry cutaway footage) — the seller's OWN
   // listing photos behind the floating avatar; the most personal b-roll there is.
   try {
     const { data: lphotos } = await supabase.from("listings").select("photos, primary_photo_url").eq("id", listingId).maybeSingle()
     const photoList = Array.isArray((lphotos as any)?.photos) ? ((lphotos as any).photos as unknown[]) : []
-    const urls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
-      .filter((u): u is string => typeof u === "string" && u.startsWith("http")).slice(0, 5)
+    // ── PHOTOS ONLY, AND THAT IS WHY THERE IS NO DURATION HERE ─────────────
+    // A carried finding read: "this producer builds brollClips from BARE URLs with
+    // no measurement, so AgentTalkingHeadReel keeps the even slot division and sits
+    // outside the rule test:broll-slot enforces." True as written — and the harm it
+    // implies does not apply, which is worth writing down so the next reader does
+    // not go measuring things that have nothing to measure.
+    //
+    // These are LISTING PHOTOS. _BrollLayer picks its primitive by extension:
+    // .mp4/.webm/.mov/.m4v mount `<Video>`, everything else mounts `<Img>`. A still
+    // has no timeline, so there is no "past its end" to freeze on and an even
+    // division is exactly right for it. durationSeconds would be a number invented
+    // to satisfy a rule rather than to describe anything.
+    //
+    // THE REAL RISK, WHICH IS NARROWER: nothing guarantees listings.photos holds
+    // only images. A video-tour URL from an MLS feed or an upload lands in the same
+    // array, and it WOULD mount `<Video>` — in an evenly divided slot, with no
+    // measured length, which is precisely the frozen-still defect the slot rule
+    // exists to prevent, arriving through the one producer that supplies no
+    // measurements. So a video URL is EXCLUDED here rather than passed along
+    // unmeasured, using the RENDERER'S OWN predicate so the two cannot drift (§6).
+    const { isVideoUrl } = await import("@/remotion/_BrollLayer")
+    const allUrls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
+      .filter((u): u is string => typeof u === "string" && u.startsWith("http"))
+    const videoUrls = allUrls.filter(isVideoUrl)
+    if (videoUrls.length > 0) {
+      console.warn(
+        `[seller-update-reel] listing ${listingId}: ${videoUrls.length} video URL(s) in listings.photos were EXCLUDED from the b-roll. This producer supplies stills, which need no measured duration; an unmeasured video would be given an evenly divided slot and would freeze on its last frame.`,
+      )
+    }
+    const urls = allUrls.filter((u) => !isVideoUrl(u)).slice(0, 5)
     if (urls.length > 0) props.brollClips = urls.map((url) => ({ url }))
   } catch { /* no photos → the solid-brand layout stands */ }
 
@@ -217,20 +404,170 @@ export async function requestSellerUpdateReel(
     }
   } catch { /* QR is additive */ }
 
+  // The LIVING identity: what this video asserts, so the refresh sweep can
+  // re-derive the same facts later and diff them.
+  const { computeFactsKey, LIVING_KINDS } = await import("@/lib/video/living-video")
+  const facts = await sellerUpdateFacts(supabase, brokerageId, listingId)
+
+  // THE SAME QUESTION THE RENDER BACKSTOP WILL ASK, ASKED FIRST. Remotion merges
+  // input props over the composition's Studio defaults, so an unsupplied required
+  // prop does not render blank — render-composition cancels the render instead.
+  // Asking here means the refusal names the prop and no queue row, D-ID submit or
+  // render spend exists for a cut that could not have shipped.
+  const missing = missingContentProps(SELLER_UPDATE_COMPOSITION, props)
+  if (missing.length > 0) {
+    const why = describeMissingContent(SELLER_UPDATE_COMPOSITION, missing)
+    console.warn(`[seller-update-reel] listing ${listingId} refused: ${why}`)
+    return { queued: false, reason: why }
+  }
+
+  // ── THE LEDGER RECORDS WHAT THE ROW HOLDS, NOT WHAT WE HOPE FOR ────────────
+  // These were literal `true`s. They are now DERIVED from the staged props, so
+  // they cannot drift from reality again: nothing on this row carries an avatar
+  // track or a narration mp3 at insert time, so both are false, and they become
+  // true at the moment the thing becomes true —
+  // enqueueAvatarCompositionForProject sets used_did_avatar when it merges the
+  // avatar URL in. `isSupplied` is the contract's own definition of "actually
+  // supplied" (null/""/[] are not), reused rather than restated (§6).
+  const stagedAvatar   = isSupplied(props.avatarVideoUrl)
+  const stagedVoiceover = isSupplied(props.voiceoverUrl) || isSupplied((props as { voiceover_url?: unknown }).voiceover_url)
+
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId, compositionId: SELLER_UPDATE_COMPOSITION, agentUserId,
     entityType: "contact", entityId: gathered.sellerContactId,
-    usedDidAvatar: true, usedVoiceover: true,
+    usedDidAvatar: stagedAvatar, usedVoiceover: stagedVoiceover,
     inputProps: props, scopeType: "brokerage", scopeId: brokerageId, requestedVia: "cron",
+    livingKind: facts ? LIVING_KINDS.seller_weekly_update.kind : null,
+    factsKey: facts ? computeFactsKey(LIVING_KINDS.seller_weekly_update.kind, facts) : null,
+    facts: facts ?? null,
+    refreshedFromRenderId: opts.refreshedFromRenderId ?? null,
   })
-  return r.ok ? { queued: true, renderId: r.renderId } : { queued: false, reason: r.error }
+  if (!r.ok || !r.renderId) return { queued: false, reason: r.error }
+
+  // THE OTHER HALF (§1.2). The render row above is the guaranteed deliverable;
+  // this asks for the avatar the product promises. Best-effort by construction —
+  // a skip degrades the seller's video to the agent-photo cut, which is honest,
+  // and NEVER un-queues the render.
+  const avatar = await stageSellerUpdateAvatar(supabase, {
+    brokerageId, listingId,
+    sellerContactId: gathered.sellerContactId,
+    agentRecordId: gathered.agentId,
+    agentUserId,
+    renderId: r.renderId,
+    props,
+    script: sellerScript,
+  })
+  if (!avatar.requested) {
+    console.warn(`[seller-update-reel] listing ${listingId} render ${r.renderId} ships as the agent-photo cut — ${avatar.reason}`)
+  }
+  return { queued: true, renderId: r.renderId, avatarRequested: avatar.requested, avatarReason: avatar.reason }
+}
+
+/**
+ * ── THE D-ID → REMOTION HANDOFF FOR THE SELLER UPDATE (built 2026-09-01, §1.2) ─
+ *
+ * TOMBSTONE (§1.1): the body of this function — preconditions, consent rule,
+ * fair-housing screen, D-ID submit, project insert — MOVED to
+ * `lib/video/avatar-track-submit.ts::submitAvatarTrack`, which is now the ONE
+ * home for the submit side of the handoff. It was lifted there, not copied,
+ * when the two presentation lanes turned out to need the identical procedure
+ * (their `ai_video_projects` rows were written at status='draft' with no
+ * provider_job_id, so `poll-did-videos` never adopted them and both avatar lanes
+ * were dark). Three hand-rolled copies of one procedure is the §6 defect, and
+ * the line most likely to drift between copies is the agents/users identity
+ * cross that §3 records as a 23503 waiting to happen.
+ *
+ * WHAT STAYS HERE is only what is TRUE OF THIS LANE:
+ *
+ * WHY THE SUBMIT IS NOT ROUTED THROUGH director-reel-render. That cron drains
+ * staged `ai_video_projects` rows and does the D-ID submit for the Director
+ * rail, and it would have been the smaller diff — but it HARDCODES
+ * `entity_type: 'video_project'` / `entity_id: <project id>` into the metadata it
+ * stamps. Those two keys are copied onto whatever render row the handoff
+ * eventually creates, and render-composition's runPostRenderCoordination fires
+ * ONLY for `entity_type='video_project'`. A seller-update cut carried through
+ * that door would therefore have raised `contact_outreach_ready` to the Campaign
+ * Orchestrator — a SECOND gated proposal to the same seller about the same
+ * video, on top of the one deliverSellerUpdateReels already makes. Submitting
+ * through the shared helper keeps the entity fields OURS: `contact` / the
+ * seller's contact id, which is what the delivery sweep reads and what keeps
+ * the fan-out silent.
+ *
+ * WHY video_type IS NULL. The live CHECK admits sixteen words and none of them
+ * is this product; `avatar_explainer` in particular is a member of
+ * PERSONAL_WELCOME_VIDEO_TYPES, so a seller's weekly update wearing that label
+ * could be served to a brand-new client as their welcome video. NULL passes the
+ * CHECK, matches no consumer's `.in(...)`, and the intent rides
+ * video_metadata.video_type_intent. Widening the CHECK is a migration, which
+ * this lane does not write.
+ *
+ * NO VOICEOVER URL IS PASSED. The avatar track carries the agent's cloned voice
+ * (the ElevenLabs voice id goes to D-ID at submit), so there is no separate
+ * `<Audio>` mp3 — passing one would play the same sentence twice over itself,
+ * which is the trap the section-narration lane had to be rescued from.
+ */
+async function stageSellerUpdateAvatar(
+  supabase: Svc,
+  args: {
+    brokerageId: string
+    listingId: string
+    sellerContactId: string
+    /** agents.id — ai_video_projects.agent_id FKs agents(id) and is DISJOINT
+     *  from users.id (§3). listings.agent_id is already this class. */
+    agentRecordId: string | null
+    /** users.id — what the D-ID renderer and presenter resolver speak. */
+    agentUserId: string | null
+    renderId: string
+    props: Record<string, unknown>
+    script: string
+  },
+): Promise<{ requested: boolean; reason: string }> {
+  const { submitAvatarTrack } = await import("@/lib/video/avatar-track-submit")
+  const res = await submitAvatarTrack(supabase, {
+    brokerageId:    args.brokerageId,
+    agentRecordId:  args.agentRecordId,
+    agentUserId:    args.agentUserId,
+    script:         args.script,
+    targetRenderId: args.renderId,
+    title:          `Weekly seller update — ${String(args.props.caption ?? "").slice(0, 60) || args.listingId}`,
+    videoType:      null,
+    videoTypeIntent: SELLER_UPDATE_KIND,
+    listingId:      args.listingId,
+    contactId:      args.sellerContactId,
+    request: {
+      target_composition_id: SELLER_UPDATE_COMPOSITION,
+      input_props:           args.props,
+      entity_type:           "contact",
+      entity_id:             args.sellerContactId,
+    },
+  })
+  return { requested: res.submitted, reason: res.reason }
 }
 
 /**
  * Sweep finished seller-update renders and PROPOSE each to the seller through the
- * client-message gate (audience='seller', Listing Concierge). Idempotent: skips a
- * render whose seller already has a seller-update proposal this week.
+ * client-message gate (audience='seller', Listing Concierge).
+ *
+ * ── THE OTHER HALF OF THE LIVING-VIDEO LOOP (m312) ──────────────────────────
+ * The refresh sweep re-renders a seller's video when the facts move, and this is
+ * where that work either reaches the seller or dies. It nearly died here, in
+ * three ways, all fixed below:
+ *
+ *   1. THE SAME WINDOW, ONE STAGE LATER. Idempotency was "one proposal per
+ *      listing per WEEK", so a video re-rendered because the price changed on
+ *      Tuesday was silently skipped until the following Monday. Closing the
+ *      seven-day window on the render side and leaving it on the delivery side
+ *      would have moved the defect, not fixed it — the sweep would burn a real
+ *      render every time and the seller would never see it.
+ *      Idempotency is now per VIDEO: has THIS output_url already been proposed?
+ *      The cadence guard stays for non-refresh renders, so nothing spams.
+ *   2. IT PROPOSED AN ARBITRARY CUT. The read took EVERY succeeded seller-update
+ *      render with no ordering. The moment a refresh exists there are two for
+ *      one listing, and which one got proposed depended on row order — so the
+ *      OS could have mailed the seller the SUPERSEDED video. Worse than not
+ *      refreshing at all. Now: newest completed cut per (listing, seller).
+ *   3. UNBOUNDED. No limit on a table that grows with every render.
  */
 export async function deliverSellerUpdateReels(
   brokerageId: string, client?: Svc,
@@ -240,14 +577,32 @@ export async function deliverSellerUpdateReels(
 
   const { data: renders } = await supabase
     .from("remotion_composition_renders")
-    .select("id, brokerage_id, entity_id, agent_user_id, output_url, input_props")
+    .select("id, brokerage_id, entity_id, agent_user_id, output_url, input_props, completed_at, refreshed_from_render_id")
     .eq("brokerage_id", brokerageId)
     .eq("composition_id", SELLER_UPDATE_COMPOSITION)
     .eq("render_status", "succeeded").not("output_url", "is", null)
-  const rows = ((renders ?? []) as Array<{
+    .order("completed_at", { ascending: false })
+    .limit(500)
+  type RenderRow = {
     id: string; entity_id: string | null; agent_user_id: string | null
     output_url: string | null; input_props: Record<string, unknown> | null
-  }>).filter((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND)
+    completed_at: string | null; refreshed_from_render_id: string | null
+  }
+  const all = ((renders ?? []) as RenderRow[])
+    .filter((r) => (r.input_props as { kind?: string } | null)?.kind === SELLER_UPDATE_KIND)
+
+  // NEWEST cut per (listing, seller). The query is already newest-first, so the
+  // first sighting wins — a superseded video is never the one proposed.
+  const rows: RenderRow[] = []
+  const seen = new Set<string>()
+  for (const r of all) {
+    const listingId = (r.input_props as { listing_id?: string } | null)?.listing_id ?? null
+    if (!listingId || !r.entity_id) continue
+    const k = `${listingId}:${r.entity_id}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    rows.push(r)
+  }
 
   let proposed = 0
   const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
@@ -258,15 +613,32 @@ export async function deliverSellerUpdateReels(
     const sellerContactId = r.entity_id
     if (!listingId || !sellerContactId || !r.output_url) continue
 
-    // Idempotency — one VIDEO proposal per seller per listing per week (distinct entity_type so it
-    // doesn't collide with the separate text seller-update).
-    const { data: existing } = await supabase
+    // Idempotency, per VIDEO. The proposal body embeds the video URL, so "has
+    // this exact cut already been offered to this seller?" is answerable without
+    // a new column — and it is the right question, because the thing we must not
+    // duplicate is a VIDEO, not a calendar week.
+    const { data: sameVideo } = await supabase
       .from("agent_client_messages")
       .select("id")
       .eq("brokerage_id", brokerageId).eq("entity_type", SELLER_UPDATE_ENTITY_TYPE).eq("entity_id", listingId)
       .eq("agent_kind", "listing_concierge").eq("audience", "seller")
-      .gte("created_at", weekAgo).limit(1).maybeSingle()
-    if (existing) continue
+      .ilike("body", `%${r.output_url}%`)
+      .limit(1).maybeSingle()
+    if (sameVideo) continue
+
+    // The weekly cadence guard still applies to an ORDINARY render, so the
+    // scheduled sweep cannot propose twice in a week. A REFRESH is exempt: it
+    // exists precisely because something the seller cares about changed, and
+    // making them wait for the calendar is the defect this closes.
+    if (!r.refreshed_from_render_id) {
+      const { data: recentProposal } = await supabase
+        .from("agent_client_messages")
+        .select("id")
+        .eq("brokerage_id", brokerageId).eq("entity_type", SELLER_UPDATE_ENTITY_TYPE).eq("entity_id", listingId)
+        .eq("agent_kind", "listing_concierge").eq("audience", "seller")
+        .gte("created_at", weekAgo).limit(1).maybeSingle()
+      if (recentProposal) continue
+    }
 
     const gathered = await gatherSellerUpdateStats(supabase, brokerageId, listingId)
     if (!gathered) continue
@@ -281,7 +653,9 @@ export async function deliverSellerUpdateReels(
       brokerageId, agentKind: "listing_concierge", entityType: SELLER_UPDATE_ENTITY_TYPE, entityId: listingId,
       recipientContactId: sellerContactId, audience: "seller",
       subject: msg.subject, body: msg.body,
-      rationale: `Weekly seller-update video for ${gathered.stats.listingAddress} — review/edit before it reaches the seller.`,
+      rationale: r.refreshed_from_render_id
+        ? `REFRESHED seller-update video for ${gathered.stats.listingAddress} — the facts changed since the last one, so this cut is the current truth. Review/edit before it reaches the seller.`
+        : `Weekly seller-update video for ${gathered.stats.listingAddress} — review/edit before it reaches the seller.`,
       channel: "portal",
     }, supabase)
     if (res.ok) proposed += 1

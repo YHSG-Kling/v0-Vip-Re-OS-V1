@@ -22,6 +22,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -102,7 +103,7 @@ export async function runTeamQuery(
     supabase.from("showings").select("id, scheduled_date").eq("contact_id", contact.id).gte("scheduled_date", now.toISOString().slice(0, 10)).limit(5),
     supabase.from("transactions").select("id, deal_name, stage, listing_id, inspection_deadline, appraisal_deadline, financing_deadline")
       .or(`buyer_contact_id.eq.${contact.id},seller_contact_id.eq.${contact.id},contact_id.eq.${contact.id}`)
-      .in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(5),
+      .in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(5),
     supabase.from("agent_client_messages").select("id, subject").eq("recipient_contact_id", contact.id).eq("status", "proposed").limit(5),
     supabase.from("agent_client_messages").select("sent_at").eq("recipient_contact_id", contact.id).eq("status", "sent").not("sent_at", "is", null).order("sent_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("manager_signals").select("message, from_manager").eq("contact_id", contact.id).order("created_at", { ascending: false }).limit(2),

@@ -55,7 +55,7 @@ async function emitOfferEvent(params: {
   // Resolve buyer (offer.contact_id) + seller (listing.seller_contact_id) so the
   // canonical fan-out can reach both sides' portals. Only events with a portal
   // template (e.g. OFFER_OS_SUBMITTED) produce a client card; others stay
-  // staff-only (fanOutKernelEvent still runs processKernelEvent internally).
+  // staff-only (emitKernelEvent still runs processKernelEvent internally).
   //
   // REPRESENTATION GATE: on OUR listing an offer can come from an OUTSIDE buyer
   // (another brokerage's client, logged via mail/upload intake as a bare contact).
@@ -92,8 +92,9 @@ async function emitOfferEvent(params: {
     }
   } catch { /* best-effort enrichment */ }
 
-  const { fanOutKernelEvent } = await import("./event-fanout")
-  await fanOutKernelEvent({
+  // Row already written above → skipInsert (fan-out only).
+  const { emitKernelEvent } = await import("./emit")
+  await emitKernelEvent({
     event,
     brokerageId,
     entityType:      "offer",
@@ -105,6 +106,7 @@ async function emitOfferEvent(params: {
     transactionId,
     agentUserId:     actorUserId,
     metadata,
+    skipInsert:      true,
   }).catch(() => {})
 }
 

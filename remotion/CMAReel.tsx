@@ -13,7 +13,8 @@
  * producer supply it). Charts are deterministic SVG (lib/charts/geometry).
  */
 import React from "react"
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate, Audio } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion"
 import { PriceTrendLine } from "./charts/PriceTrendLine"
 import { CompsBar, type CompRow } from "./charts/CompsBar"
 import { DaysOnMarketBars } from "./charts/DaysOnMarketBars"
@@ -58,7 +59,7 @@ const SlideBody: React.FC<{ title: string; accent: string; children: React.React
   const op = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ padding: 70, justifyContent: "flex-start" }}>
-      <div style={{ transform: `translateY(${titleY}px)`, opacity: op, marginBottom: 24 }}>
+      <div style={{ translate: `0 ${titleY}px`, opacity: op, marginBottom: 24 }}>
         <div style={{ width: 56, height: 6, background: accent, borderRadius: 3, marginBottom: 16 }} />
         <div style={{ color: "#fff", fontSize: 40, fontWeight: 800, fontFamily: "system-ui", letterSpacing: -0.5 }}>{title}</div>
       </div>

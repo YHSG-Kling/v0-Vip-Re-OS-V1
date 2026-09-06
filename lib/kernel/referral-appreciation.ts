@@ -160,7 +160,12 @@ export async function runReferralAppreciation(brokerageId: string, svc: any): Pr
 
   for (const r of rows) {
     if (!r.referrer_contact_id) { out.skippedNoReferrerLink++; continue }
-    const stage = r.status as ReferralUpdateStage
+    // The module's own type GUARD, not a cast: the query filters on REFERRAL_UPDATE_STAGES,
+    // but a cast would let a row outside the vocabulary compose STAGE_LINE[undefined];
+    // such a row is skipped instead of proposing an empty update.
+    const status: string | null = r.status ?? null
+    if (!isUpdateStage(status)) continue
+    const stage = status
 
     const [{ data: referrer }, { data: referred }, { data: agentRow }] = await Promise.all([
       svc.from("contacts").select("id, first_name, agent_id, team_id").eq("id", r.referrer_contact_id).maybeSingle(),

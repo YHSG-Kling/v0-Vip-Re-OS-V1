@@ -21,7 +21,19 @@ import { normalizeEmail, normalizePhoneE164, sha256Hex, hashMatchKey, hashAudien
 import { deriveMetrics } from "../lib/ads/connectors/types"
 import { mapInsights } from "../lib/ads/connectors/meta"
 import { mapReport } from "../lib/ads/connectors/google"
-import { toAdPerformanceRow } from "../lib/ads/ad-performance-ingest"
+// ad-performance-ingest became `server-only` when the creative-fatigue runner was
+// wired beside its insert (wave 26), and `server-only` THROWS outside a Server
+// Component. Neutralize the marker in the require cache BEFORE importing anything
+// that pulls it — the accounting-scopes / deadline-watcher idiom — then reach the
+// pure mapper through a DYNAMIC import, because a static one would hoist above
+// the shim.
+import { createRequire } from "node:module"
+const _require = createRequire(import.meta.url)
+try {
+  const soPath = _require.resolve("server-only")
+  _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+} catch { /* server-only not resolvable — nothing to shim */ }
+const { toAdPerformanceRow } = await import("../lib/ads/ad-performance-ingest")
 
 let passed = 0, failed = 0
 const failures: string[] = []

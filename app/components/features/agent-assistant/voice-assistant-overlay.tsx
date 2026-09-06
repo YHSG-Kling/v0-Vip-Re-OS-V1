@@ -19,7 +19,14 @@
  * Lifecycle:
  *   open → POST /session → start Conv-AI session → contextual update
  *        → user talks → conversation messages stream into the transcript
- *   close → endSession() → component unmounts
+ *   close → endSession() → PATCH /session (stamp ended_at) → component unmounts
+ *
+ * THE CLOSE HALF USED TO BE MISSING. `agent_assistant_sessions.ended_at` was
+ * read by the tool-call webhook and written by nobody, so every session this
+ * overlay opened stayed open forever — and the webhook's unattributed-session
+ * fallback attributes an incoming ElevenLabs conversation to "the most recent
+ * OPEN session", with no user predicate available to it. An ever-growing pile of
+ * never-closed sessions is precisely the pile that fallback searches.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react"
@@ -44,12 +51,59 @@ interface TranscriptLine {
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
+/** One row of GET /api/agent-assistant/session — the caller's own history. */
+interface RecentSession {
+  id: string
+  startedAt: string
+  endedAt: string | null
+  toolCallCount: number
+  contextUrl: string | null
+  contextContactId: string | null
+  contextListingId: string | null
+  contextTransactionId: string | null
+  contextLabel: string | null
+}
+
+/** Where a recent session's context lives. Rows with no context at all are
+ *  skipped by the caller — a link to nowhere is not a shortcut. */
+function recentSessionHref(s: RecentSession): string | null {
+  if (s.contextContactId) return `/crm/contacts/${s.contextContactId}`
+  if (s.contextListingId) return `/dashboard/listings/${s.contextListingId}`
+  if (s.contextTransactionId) return `/dashboard/transactions/${s.contextTransactionId}`
+  return s.contextUrl
+}
+
+/** Stamp `ended_at` on the assistant session row. Fire-and-forget on purpose:
+ *  the user has already closed the overlay and there is nothing to tell them,
+ *  and it runs on unmount, where an unresolved promise would be dropped by the
+ *  browser — `keepalive` is what lets it survive the teardown (and a page
+ *  navigation) long enough to land. Idempotent server-side, so the two teardown
+ *  paths firing together is safe. */
+function closeAssistantSession(sessionId: string | null) {
+  if (!sessionId) return
+  try {
+    void fetch("/api/agent-assistant/session", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    // The conversation is already torn down; a failed close is recoverable by
+    // the session's own staleness bound in the tool-call webhook.
+  }
+}
+
 export function VoiceAssistantOverlay() {
   const { voiceOverlayOpen, setVoiceOverlayOpen } = useShell()
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
   const conversationRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null)
+  /** The agent_assistant_sessions row this overlay opened, so teardown can close
+   *  it. A ref, not state: the cleanup function must see the id without the
+   *  effect re-running (which would restart the voice session). */
+  const sessionIdRef = useRef<string | null>(null)
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
   const [softWarning, setSoftWarning] = useState<string | null>(null)
@@ -57,12 +111,36 @@ export function VoiceAssistantOverlay() {
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [agentSpeaking, setAgentSpeaking] = useState(false)
 
+  // "Recent" panel — the caller's own last sessions (GET is user+tenant scoped
+  // server-side). null = not loaded / load refused; the panel simply doesn't
+  // render then — a refused read must not paint as "no recent sessions".
+  const [recent, setRecent] = useState<RecentSession[] | null>(null)
+  const [recentOpen, setRecentOpen] = useState(false)
+
+  useEffect(() => {
+    if (!voiceOverlayOpen) return
+    let cancelled = false
+    fetch("/api/agent-assistant/session")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (!cancelled && body && Array.isArray(body.sessions)) {
+          setRecent(body.sessions as RecentSession[])
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [voiceOverlayOpen])
+
   // ── Open / close lifecycle ───────────────────────────────────────────────
   useEffect(() => {
     if (!voiceOverlayOpen) {
-      // Closing: tear down any active conversation.
+      // Closing: tear down any active conversation AND close the ledger row.
       conversationRef.current?.endSession().catch(() => {})
       conversationRef.current = null
+      closeAssistantSession(sessionIdRef.current)
+      sessionIdRef.current = null
       setStatus("idle")
       setTranscript([])
       setError(null)
@@ -91,7 +169,15 @@ export function VoiceAssistantOverlay() {
           return
         }
         const session = (await res.json()) as SessionResult
-        if (cancelled) return
+        if (cancelled) {
+          // The overlay closed while the session was minting. The row exists on
+          // the server whether or not this component still wants it, so it is
+          // closed here rather than left open for the webhook's recency-based
+          // attribution fallback to find.
+          closeAssistantSession(session.sessionId)
+          return
+        }
+        sessionIdRef.current = session.sessionId
         if (session.softWarning) setSoftWarning(session.softWarning)
 
         const conversation = await Conversation.startSession({
@@ -157,6 +243,8 @@ export function VoiceAssistantOverlay() {
       cancelled = true
       conversationRef.current?.endSession().catch(() => {})
       conversationRef.current = null
+      closeAssistantSession(sessionIdRef.current)
+      sessionIdRef.current = null
     }
     // We intentionally don't depend on pathname/searchParams here — the user
     // opened the overlay on a specific page; navigation while the overlay is
@@ -275,6 +363,53 @@ export function VoiceAssistantOverlay() {
             )}
           </div>
         )}
+
+        {/* Recent sessions — collapsed by default, only while there is nothing
+            live to show (idle/ended, empty transcript). Rows with NO context at
+            all are skipped — nothing to jump back to. Raw Tailwind on the
+            overlay's own palette; ui/card stays out of this component. */}
+        {(status === "idle" || status === "ended") &&
+          transcript.length === 0 &&
+          recent !== null &&
+          recent.filter((s) => recentSessionHref(s) !== null).length > 0 && (
+            <div className="mt-4 border-t border-gray-200 pt-3">
+              <button
+                onClick={() => setRecentOpen((v) => !v)}
+                className="w-full flex items-center justify-between text-xs font-medium text-gray-600 hover:text-purple-600"
+              >
+                <span>Recent</span>
+                <span className="text-gray-400">{recentOpen ? "Hide" : "Show"}</span>
+              </button>
+              {recentOpen && (
+                <ul className="mt-2 space-y-1.5">
+                  {recent
+                    .filter((s) => recentSessionHref(s) !== null)
+                    .map((s) => (
+                      <li key={s.id}>
+                        <a
+                          href={recentSessionHref(s)!}
+                          className="flex items-center justify-between gap-2 rounded-lg bg-white border border-gray-200 px-3 py-1.5 text-sm hover:border-purple-600"
+                        >
+                          <span className="truncate text-gray-900">
+                            {s.contextLabel ?? "Page context"}
+                          </span>
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            {s.toolCallCount > 0 && (
+                              <span className="rounded-full bg-purple-100 text-purple-900 px-2 py-0.5 text-[10px]">
+                                {s.toolCallCount} action{s.toolCallCount === 1 ? "" : "s"}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-gray-500">
+                              {new Date(s.startedAt).toLocaleDateString()}
+                            </span>
+                          </span>
+                        </a>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
       </div>
 
       {/* Footer controls */}

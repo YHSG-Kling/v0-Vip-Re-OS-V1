@@ -11,44 +11,36 @@ export const directMailAdapter: ChannelAdapter = {
   channel: "direct_mail",
 
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentId } = ctx
+    // agentId is no longer destructured here: the QR modifier reads it off ctx itself.
+    const { contact, step, brokerageId } = ctx
 
     if (!contact?.mailing_address) {
       return { status: "error", providerKey: "lob", error: "No mailing address on contact" }
     }
 
-    // Generate QR code if the modifier is enabled
-    let qrInfo: { id: string; slug: string; scanUrl: string } | undefined
-    if (step.qr_attached && step.qr_target_url_pattern) {
-      try {
-        const { createQrCodeAction } = await import("@/app/actions/ai-direct-mail")
-          .then(() => ({ createQrCodeAction: null as any })) // fallback if not exported
-          .catch(() => ({ createQrCodeAction: null }))
-
-        // createQrCodeAction is in marketing-studio, not ai-direct-mail
-        const { createQrCodeAction: createQr } = await import("@/app/actions/marketing-studio")
-          .then(m => ({ createQrCodeAction: (m as any).createQrCodeAction as Function | undefined }))
-          .catch(() => ({ createQrCodeAction: undefined }))
-
-        if (createQr && agentId) {
-          const origin = process.env.NEXT_PUBLIC_APP_URL ?? ""
-          const qrResult = await createQr({
-            brokerageId,
-            agentId,
-            label: step.qr_label ?? step.step_name ?? "Campaign QR",
-            targetUrl: `${origin}/api/qr/scan?slug=__placeholder__`,
-            purpose: "campaign",
-          })
-          if (qrResult?.success && qrResult?.qrCode) {
-            qrInfo = {
-              id: qrResult.qrCode.id,
-              slug: qrResult.qrCode.slug,
-              scanUrl: `${origin}/api/qr/scan?slug=${qrResult.qrCode.slug}`,
-            }
-          }
-        }
-      } catch { /* QR generation failure should not block mail */ }
-    }
+    // THE UNIVERSAL QR MODIFIER — one implementation, called here.
+    //
+    // This adapter carried its own inline copy of the modifier, and every part
+    // of it was broken: it imported `createQrCodeAction` from a module that does
+    // not export it and discarded the result, then imported the real one and
+    // called it from CRON — where there is no session, so now that the action is
+    // the session gate it is refused outright. It also minted against a
+    // `__placeholder__` target and read `qrResult.qrCode` fields the action never
+    // returned. All of it sat inside a silent `catch {}`, so the postcard shipped
+    // with no QR and nothing said so.
+    //
+    // lib/workflow/qr-modifier.ts:resolveQrCode is the survivor: it mints through
+    // the one minter with the step's own tenant and a per-(enrollment, step)
+    // idempotency key, so a retried step re-uses its code instead of printing a
+    // second one.
+    const { resolveQrCode } = await import("../qr-modifier")
+    const resolvedQr = await resolveQrCode(step, ctx, {
+      defaultLabel:   step.qr_label ?? step.step_name ?? "Campaign QR",
+      defaultPurpose: "campaign",
+    })
+    const qrInfo = resolvedQr
+      ? { id: resolvedQr.qrCodeId, slug: resolvedQr.slug, scanUrl: resolvedQr.scanUrl }
+      : undefined
 
     const result = await dispatchDirectMail({
       brokerageId,

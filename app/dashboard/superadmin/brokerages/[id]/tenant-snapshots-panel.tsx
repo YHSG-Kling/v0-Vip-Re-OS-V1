@@ -16,6 +16,17 @@ import {
 // SELF-SERVE FUNNEL rule (mirrors lib/platform/trial-funnel resolveNewestPerTier —
 // kept inline because that module is server-only): per tier, the NEWEST snapshot
 // recommending it is what a self-serve signup on that tier gets applied.
+/** WHO captured it — platform surface, so an unresolvable id means the users
+ *  row is no longer on file (there is no tenant line to be "outside" of). */
+function capturedByText(s: SnapshotRow): string {
+  switch (s.capturedByState) {
+    case 'resolved':       return `captured by ${s.capturedByName}`
+    case 'unresolved':     return 'captured by an account no longer on file'
+    case 'lookup_refused': return 'capturer lookup refused'
+    case 'not_recorded':   return 'capturer not recorded'
+  }
+}
+
 function liveFunnelIds(snapshots: SnapshotRow[]): Map<string, string> {
   const live = new Map<string, string>() // tier → winning snapshot id
   for (const s of snapshots) {
@@ -100,6 +111,7 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
                       <span className="font-medium">{s.name}</span>
                       <span className="ml-2 text-[11px] text-muted-foreground">
                         {s.counts.global + s.counts.brand} brand · {s.counts.voice} voice · {s.counts.site} site · {s.counts.features} features
+                        {' · '}{capturedByText(s)} · {new Date(s.createdAt).toLocaleDateString()}
                       </span>
                       {s.recommendedTier && <Badge variant="secondary" className="ml-2 text-[9px]">recommended: {s.recommendedTier}</Badge>}
                       {isLive && (

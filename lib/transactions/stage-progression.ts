@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
@@ -105,7 +106,7 @@ export async function canAdvanceStage(
       .select("id, flag_type:violation_type, severity, status")
       .eq("contact_id", txn.contact_id)
       .eq("severity", "deal_breaker")
-      .in("status", ["unresolved", "flagged"])
+      .in("status", ["flagged"])
 
     if (dealBreakerFlags && dealBreakerFlags.length > 0) {
       for (const flag of dealBreakerFlags) {
@@ -404,7 +405,7 @@ export async function advanceStage(params: {
     // 1. Get transaction to find seller_contact_id and listing_id
     const { data: closedTxn } = await supabase
       .from("transactions")
-      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date")
+      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date, brokerage_id")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
@@ -439,13 +440,27 @@ export async function advanceStage(params: {
     //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
     //    recognizes them. Writing the legacy 'lifetime' here drifted from the listing close path.
     if (closedTxn?.seller_contact_id) {
-      await supabase
+      // The error is READ. The past-client journey, the reel persona, the referral
+      // radar and the portal role all branch on contact_type — a refusal left the
+      // seller of a CLOSED deal outside every one of them, silently.
+      const { error: lifetimePromotionError } = await supabase
         .from("contacts")
         .update({
           contact_type: LIFETIME_CUSTOMER_TYPE,
+          // The other half of the same fact — see the note at lib/kernel/transactions.ts.
+          // contact_type and lifecycle_state are one idea in two columns; the promotion
+          // writers are what keep them agreeing now that m539 has retired the spelling
+          // the old cross-column CHECK policed.
+          lifecycle_state: LIFETIME_CUSTOMER_TYPE,
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
+      if (lifetimePromotionError) {
+        console.error(
+          `[stage-progression] lifetime-customer promotion REFUSED for seller contact ${closedTxn.seller_contact_id}:`,
+          lifetimePromotionError.message,
+        )
+      }
 
       // Promote the past client into the FB retargeting audiences (brokerage + agent) —
       // past clients are the highest-ROI referral/repeat + lookalike-seed audience, and the
@@ -466,13 +481,21 @@ export async function advanceStage(params: {
       } catch { /* best-effort */ }
 
       // 3. Grant portal access to the sold listing view if not already enabled
+      //    Tenant comes from the TRANSACTION record this grant hangs off —
+      //    closedTxn.brokerage_id, which the select above already constrained
+      //    to params.brokerageId, so the row cannot carry a tenant the deal
+      //    doesn't belong to. Unstamped it would be readable AND writable by
+      //    every brokerage (`brokerage_id IS NULL OR …` policy), which for a
+      //    portal-access grant means any tenant could toggle a client's portal.
       await supabase
         .from("contact_portal_modules")
         .upsert({
+          brokerage_id: closedTxn.brokerage_id,
           contact_id: closedTxn.seller_contact_id,
           module_key: "sold_listing",
           is_enabled: true,
-          enabled_by_agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          enabled_by_agent_id: await resolveAgentId(supabase, params.userId),
           enabled_at: new Date().toISOString(),
         }, { onConflict: "contact_id,module_key" })
     }
@@ -489,25 +512,44 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
+
+      // A newly-closed listing grades the listing_price accuracy rail — drop the
+      // accuracy-gate's cached verdicts so autonomy reflects the new track record
+      // without waiting out the TTL or a process restart. Best-effort.
+      try {
+        const { __clearAccuracyGateCache } = await import("@/lib/managers/accuracy-gate")
+        __clearAccuracyGateCache()
+      } catch { /* cache invalidation is never load-bearing */ }
     }
 
     // 5. Auto-schedule review request draft (5 days post-close)
     // Creates a draft in review_requests so it's ready; agent is notified via task at day 5
     void (async () => {
       try {
-        const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
-        await aiGenerateReviewRequest({
-          transactionId: params.transactionId,
-          agentId: params.userId,
-          platform: "google",
-          channel: "email",
-        })
+        // ai-review-automation takes an AGENTS id (m346). This passed
+        // params.userId, so the action's `.from("agents").eq("id", …).single()`
+        // found nothing and threw — the draft was never generated, and the catch
+        // below swallowed it as "non-blocking". The activities insert three lines
+        // down already resolved the right id; it is now resolved once, for both.
+        const agentRecordId = await resolveAgentId(supabase, params.userId)
+        if (agentRecordId) {
+          const { aiGenerateReviewRequest } = await import("@/app/actions/ai-review-automation")
+          await aiGenerateReviewRequest({
+            transactionId: params.transactionId,
+            agentId: agentRecordId,
+            platform: "google",
+            channel: "email",
+          })
+        }
 
         // Schedule an agent notification 5 days from now to send the review
         const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-        await supabase.from("activities").insert({
+        // The identity-class note below is exactly the kind of rejection the
+        // catch cannot see: supabase-js resolves an FK refusal as { error }.
+        const { error: reviewScheduledActivityError } = await supabase.from("activities").insert({
           brokerage_id: params.brokerageId,
-          agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          agent_id: agentRecordId,
           activity_type: "review_request_scheduled",
           title: "Review request ready to send",
           notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,
@@ -516,6 +558,9 @@ export async function advanceStage(params: {
           status: "pending",
           scheduled_at: sendDate.toISOString(),
         })
+        if (reviewScheduledActivityError) {
+          console.error("[stage-progression] review_request_scheduled activity REJECTED — the draft exists but nothing reminds the agent to send it:", reviewScheduledActivityError.message)
+        }
       } catch {
         // Non-blocking — review request draft failure doesn't affect close
       }

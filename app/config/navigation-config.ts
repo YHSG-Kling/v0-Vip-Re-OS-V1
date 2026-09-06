@@ -3,6 +3,87 @@
 import { UserRole } from '@/app/types/roles'
 import { NavigationConfig, NavItem } from '@/app/types/navigation'
 
+// ─── CROSS-ROLE SURFACE GROUPS ───────────────────────────────────────────────
+//
+// OWNER RULING, verbatim: "a tc needs to see compliance and marketing;
+// compliance officer needs to see transactions and marketing… the compliance
+// manager is the one that deals with marketing."
+//
+// Neither of those was true. MEASURED before this change:
+//   tc                 7 sidebar items — transactions only. NO compliance, NO marketing.
+//   compliance_officer 14 sidebar items — compliance only. NO transactions, NO marketing.
+//
+// These three consts exist so the shared surfaces have ONE definition. The
+// alternative — pasting the items into each role's array — is how the same link
+// ends up with two hrefs and one of them rots; this file already carries scars
+// from that (several `Nav-parity:` and `Orphan-route sweep:` comments below mark
+// links that had gone missing from one role and not another).
+//
+// Every href here is COPIED VERBATIM from the role that already owned it, not
+// invented: the transaction items from `tc`, the compliance items from
+// `compliance_officer`, the marketing group from the broker/admin `content`
+// group. A new href would be a route nobody has built.
+//
+// getNavigationForRole() dedupes by `id || href` when it merges several roles, so
+// a user holding BOTH tc and compliance_officer sees each of these once, not twice.
+
+/** Deal-coordination surfaces. Source of truth: the `tc` role's own sidebar. */
+const TRANSACTION_ITEMS: readonly NavItem[] = [
+  { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badgeKey: 'active_deals' },
+  { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
+  { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
+  { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
+] as const
+
+/**
+ * Compliance surfaces a NON-compliance-officer role needs in order to do its own
+ * job — deliberately NARROWER than the compliance officer's own sidebar.
+ *
+ * A TC needs to know what is BLOCKING a file: the queue, and the violations
+ * raised against it. A TC does not need Policies, Audit Logs, AI Quality or Comm
+ * Intelligence — those are the officer's instruments, not a coordinator's, and
+ * handing them over would make the two roles identical.
+ *
+ * "Required Documents" is deliberately ABSENT. The only route of that name is
+ * /dashboard/settings/required-documents, which is where a BROKERAGE CONFIGURES
+ * which documents it demands — an admin surface, not a per-deal one. The
+ * coordinator's per-deal equivalent is Checklists, which they already have. (I
+ * first wrote this const with a /compliance/required-documents entry; that route
+ * does not exist. Checking every href against app/ before shipping is why it is
+ * not in here.)
+ */
+const COMPLIANCE_ITEMS_FOR_COORDINATION: readonly NavItem[] = [
+  { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
+  { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
+] as const
+
+/**
+ * The marketing group, verbatim from the broker/admin `content` group.
+ *
+ * Given to BOTH tc and compliance_officer by the ruling. For the compliance
+ * officer it is not a courtesy: they are "the one that deals with marketing", so
+ * Review Queue is their approval surface — the place brand/fair-housing review
+ * actually happens — and it was unreachable for them before this.
+ */
+const MARKETING_GROUP: NavItem = {
+  id: 'content',
+  label: 'Marketing & Content',
+  icon: 'Palette',
+  children: [
+    { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+    // Content OS: the AI content workspace (drafts, SEO, experiments, plan). Was a nav orphan — the page existed, the palette deep-linked it (guarded by test:ai-content-wiring), and NO role's navigation carried it, so the role-filtered palette correctly hid it from everyone. The nav entry is the fix; the palette inherits it.
+    { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
+    { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
+    { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+    { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
+    { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
+    { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
+    { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
+    { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
+    { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
+  ],
+}
+
 export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   agent: {
     sidebarItems: [
@@ -23,8 +104,32 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'listing-health', label: 'Listing Health', href: '/dashboard/listings/health', icon: 'ShieldCheck' },
       { id: 'open-houses', label: 'Open Houses', href: '/dashboard/open-houses', icon: 'CalendarDays' },
+      // Calendar OS: unified working-day schedule (showings, tours, transaction
+      // milestones, open houses — CalendarShell with per-domain role filters).
+      // Was the last deliberate nav orphan from L3's sweep: the page existed,
+      // three palette "Today's …" entries deep-linked it, and NO role's nav
+      // carried it — so the role-filtered palette correctly hid all three
+      // (same fail-closed collision as Content OS, commit 0e932214). The nav
+      // entry is the fix; the palette inherits it, zero palette-local change.
+      // Working-day roles only (agent / broker / team_lead — the page anchors
+      // on the caller's agents row and redirects to onboarding without one).
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'showing-prep', label: 'Showing Prep', href: '/dashboard/showings/prep', icon: 'Sparkles' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
+      // Orphan-route sweep (lane G): the STAGE BOARD (TransactionPipelineView —
+      // under contract / inspection / appraisal / financing / closing prep /
+      // closed, with overdue milestones surfaced per card) was reachable from
+      // nothing. It is NOT a duplicate of Transactions above it: that page is a
+      // status-grouped LIST, this is the per-stage board, and each answers a
+      // different question.
+      //
+      // NOTE FOR THE INTEGRATOR — the href is `/transactions/pipeline`, not
+      // `/dashboard/…`, because the page lives in the route GROUP
+      // app/(dashboard)/transactions/pipeline and route groups vanish from the
+      // URL. That group holds this one page and has no layout.tsx, so the board
+      // renders OUTSIDE the dashboard shell. Reported, not silently "fixed":
+      // relocating the page is a move another lane owns.
+      { id: 'transaction-pipeline', label: 'Transaction Pipeline', href: '/transactions/pipeline', icon: 'Columns' },
       { id: 'closing-concierge', label: 'Closing Concierge', href: '/dashboard/transactions/closing-concierge', icon: 'ShieldCheck' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       // Orphan-route sweep: AI contract review existed with zero inbound links.
@@ -51,18 +156,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
-          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -71,7 +174,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Megaphone',
         children: [
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
-          { id: 'workflow-builder', label: 'Workflow Builder', href: '/dashboard/campaigns/workflows' },
           { id: 'workflow-reports', label: 'Workflow Reports', href: '/dashboard/campaigns/workflow-reports' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
@@ -85,6 +187,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Communications',
         icon: 'MessageCircle',
         children: [
+          // Orphan-route sweep (lane G): every CHILD of /dashboard/communications
+          // was in this menu and the HUB ITSELF was not — the unified inbox +
+          // AI-prioritised queue across email, SMS and the eight social DM
+          // channels (getConversations + prioritizeInbox) was reachable from
+          // nothing. Listed first because it is the parent of the four below it.
+          { id: 'communications-os', label: 'Communications OS', href: '/dashboard/communications' },
           { id: 'inbox', label: 'Inbox', href: '/dashboard/communications/inbox', badgeKey: 'unread_notifications' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
@@ -94,9 +202,19 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns', icon: 'Activity' },
       { id: 'stale', label: 'Stale Queue', href: '/dashboard/stale', icon: 'AlertCircle' },
-      { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
-      // Orphan-route sweep: open brokerage-fee charges page was unreachable.
-      { id: 'financials-fees', label: 'My Fees', href: '/dashboard/financials/agent/fees', icon: 'DollarSign' },
+      // One "Financials" umbrella — earnings/commissions and the fees you owe the
+      // brokerage were two separate top-level items; grouped so money lives in one place.
+      {
+        id: 'financials',
+        label: 'Financials',
+        icon: 'DollarSign',
+        href: '/dashboard/financials/agent',
+        children: [
+          { id: 'my-financials', label: 'Earnings & Commissions', href: '/dashboard/financials/agent' },
+          // Orphan-route sweep: open brokerage-fee charges page must stay reachable.
+          { id: 'financials-fees', label: 'My Fees', href: '/dashboard/financials/agent/fees' },
+        ],
+      },
       { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline', icon: 'CreditCard' },
       {
         id: 'sphere',
@@ -107,7 +225,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          // The Referral & Advocacy Engine (/referrals) was the target here all along.
+          // This pointed at the lifetime-customers `radar` tab, which carries none of
+          // the ROI rollup, referrer leaderboard, review-request, gifting or anniversary
+          // flows — so the whole engine was unreachable from every nav in the product.
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
@@ -137,7 +259,21 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'reporting-center', label: 'Pipeline Analytics', href: '/dashboard/reporting', icon: 'BarChart3' },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
       { id: 'practice', label: 'Objection Practice', href: '/dashboard/coaching/practice', icon: 'Sparkles' },
+      // Orphan-route sweep (lane G): /dashboard/coaching/sessions is the surface
+      // the two coaching handlers in app/actions/copilot.ts were written for —
+      // `handleCoachingSessionBooked` (the ONLY writer of a coaching booking) and
+      // `handleSuggestionAccepted` (the ONLY writer of the `accepted` status on
+      // smart_assistant_suggestions). The page exists and was reachable from
+      // nothing, so neither verb had ever been exercisable by a human. Its own
+      // docblock said the missing piece was one nav line; this is that line.
+      { id: 'coaching-sessions', label: 'Coaching Sessions', href: '/dashboard/coaching/sessions', icon: 'CalendarCheck' },
       { id: 'goals', label: 'My Goals', href: '/dashboard/goals', icon: 'Target' },
+      // Orphan-route sweep (lane G): the Income Truth surface — the income-engine
+      // gap projection plus its per-action disposition verbs
+      // (computeAndPersistGapAction / getLatestGapAction) — had no nav entry.
+      // Filed beside My Goals: it is the same question ("am I going to make it?")
+      // answered from the ledger rather than from a target.
+      { id: 'income-truth', label: 'Income Truth', href: '/dashboard/income-truth', icon: 'DollarSign' },
       { id: 'voice-intelligence', label: 'Voice Intelligence', href: '/dashboard/voice-intelligence', icon: 'Mic' },
       { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
       // Orphan-route sweep: challenges gamification surface was unreachable.
@@ -158,16 +294,34 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell' },
       { id: 'divider3', divider: true },
+      // Walkthrough [44/45] "Profile goes settings / Settings goes to settings" — My
+      // Profile was filed INSIDE the Settings group, so both nav paths landed in
+      // settings and the agent had no distinct place that was about them. Their
+      // identity (name, license, bio, photo, voice) is not app configuration, so it
+      // sits at the top level beside Settings rather than inside it.
+      { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile', icon: 'User' },
       {
         id: 'settings',
         label: 'Settings',
         icon: 'Settings',
         children: [
-          { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile' },
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },
-          { id: 'settings-integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
+          // Owner: "settings sets territories covered." subscriber_service_areas — the
+          // per-zip roster lib/platform/distribution-engine.ts routes platform leads
+          // through — had no settings surface at all; its only writer was a side effect
+          // of creating a lead-SCRAPING market. It is listed HERE as well as under
+          // Brokerage Settings because the table's grain is brokerage / team / agent and
+          // an agent may set their own coverage: one destination, and the page itself
+          // decides from the SESSION which grains that particular viewer may write.
+          { id: 'settings-territories', label: 'Territories', href: '/dashboard/settings/territories' },
+          // Walkthrough [28]: this AGENT entry pointed at the brokerage's provider
+          // CREDENTIAL surface (platform_credentials API keys, provider overrides) — a
+          // broker/admin responsibility, not an individual agent's. Agents connect their
+          // own accounts in the Connection Center; the credential surface stays in the
+          // admin navigation, where it is reached by roles that may actually manage it.
+          { id: 'settings-connections', label: 'Connections', href: '/settings/connections' },
           { id: 'settings-isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
           { id: 'settings-notification-rules', label: 'Notification Rules', href: '/dashboard/settings/notification-rules' },
           { id: 'settings-assistant', label: 'Assistant Voice', href: '/dashboard/settings/assistant' },
@@ -214,8 +368,17 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      // The funnel cockpit (raw→gate→promoted aggregates + hot seller-intent). The
+      // page shows funnel + promoted leads to broker/broker_admin but withholds the
+      // RAW review bench (platform-staff only via its isPlatform gate), so this is
+      // a "view the leads, not the raw" surface for the brokerage-admin family.
+      { id: 'lead-funnel', label: 'Lead Funnel', href: '/dashboard/admin/lead-intake', icon: 'Filter' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
+      // Calendar OS — working-day surface (see the agent block's entry for the
+      // orphan history). A broker runs a day too; the page anchors on their
+      // agents row and self-gates (redirects to onboarding without one).
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       { id: 'overdue', label: 'Overdue', href: '/dashboard/overdue', icon: 'AlertCircle' },
@@ -264,18 +427,22 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          // Nav-parity: the QR manager was in the AGENT sidebar only, so a broker
+          // had no way to see the codes their brokerage prints. Same page, same
+          // href — it scopes its own data to the caller (see
+          // app/actions/qr-management.ts), so a broker lands on the whole
+          // brokerage's board rather than an empty personal one.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
-          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -283,6 +450,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Communications',
         icon: 'MessageCircle',
         children: [
+          // Nav-parity with the agent block (orphan-route sweep, lane G): the
+          // Communications OS hub itself, not just its four children.
+          { id: 'communications-os', label: 'Communications OS', href: '/dashboard/communications' },
           { id: 'broker-inbox', label: 'Inbox', href: '/dashboard/communications/inbox' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
@@ -317,15 +487,15 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
           { id: 'sphere-gift-studio', label: 'Gift Studio', href: '/dashboard/gifts' },
         ],
       },
-      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
-      { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
+      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/motivation', icon: 'Award' },
+      { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/dashboard/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
@@ -337,7 +507,23 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'branding', label: 'Branding', href: '/dashboard/settings/branding' },
+          // Owner's ruling: "command strip is fine but you should still be able to find
+          // it on navigation." The Prohibited Words panel shipped reachable only from the
+          // settings command strip (settings-command-strip.tsx → /compliance/settings).
+          // It is a SETTINGS surface, so it is filed with the other per-area settings
+          // pages rather than under the Compliance dashboard entry above (which points at
+          // the violations/monitoring surface, /dashboard/compliance — a different page).
+          // The destination is /compliance/settings and NOT /dashboard/settings: that page
+          // redirects any user_type outside broker/admin, and it is the whole-settings
+          // Control Center, not a compliance surface. One destination, one entry — the
+          // compliance_officer block's own Settings item already points here and is not
+          // duplicated.
+          { id: 'compliance-settings', label: 'Compliance & Prohibited Words', href: '/compliance/settings' },
           { id: 'team-mgmt', label: 'Team Management', href: '/dashboard/settings/teams' },
+          // The brokerage-wide grain — the ONLY grain the platform lead rotation reads
+          // (distribution-engine filters .is(agent_user_id,null).is(team_id,null)) — is
+          // settable only by a brokerage admin, so this entry is the primary one.
+          { id: 'territories', label: 'Territories', href: '/dashboard/settings/territories' },
           { id: 'integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
           { id: 'isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
           { id: 'widget-settings', label: 'Widget & AI Setup', href: '/dashboard/settings/widget' },
@@ -421,15 +607,28 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      // Orphan-route sweep: the agent roster's ONLY link lived in RootRoleShortcuts,
+      // a component that was never rendered — so the page was already unreachable
+      // and the dead file was merely hiding it from the orphan-route guard. The
+      // per-agent detail route IS linked (revenue-protection-rollup-widget), so
+      // the index was the one surface with no way in.
+      { id: 'agent-roster', label: 'Agent Roster', href: '/dashboard/admin/agents', icon: 'Users' },
       // Orphan-route sweep: onboarding-step editor was unreachable from any nav.
       { id: 'onboarding-steps', label: 'Onboarding Steps', href: '/dashboard/admin/onboarding-steps', icon: 'ListChecks' },
       { id: 'education', label: 'Education Content', href: '/dashboard/admin/education', icon: 'GraduationCap' },
+      // Orphan-route sweep (lane G): the multi-channel learning-module AUTHOR
+      // (listLearningModulesForBrokerageAction) and its AI-draft APPROVAL queue
+      // (listPendingApprovalModulesAction) were both built, both admin-gated and
+      // both unreachable from any nav. Filed beside Education Content — the same
+      // subject, one seat.
+      { id: 'learning-modules', label: 'Learning Modules', href: '/dashboard/admin/learning-modules', icon: 'BookOpen' },
+      { id: 'learning-module-approvals', label: 'Learning Module Approvals', href: '/dashboard/admin/learning-modules/approvals', icon: 'CheckSquare' },
       { id: 'brokerage-fees', label: 'Brokerage Fees', href: '/dashboard/admin/fees', icon: 'DollarSign' },
       { id: 'phone-settings', label: 'Phone & ISA Voice', href: '/dashboard/admin/phone-settings', icon: 'Phone' },
       { id: 'ai-call-setup', label: 'AI Call Handling', href: '/dashboard/onboarding/ai-call-setup', icon: 'PhoneCall' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
-      { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
+      { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/settings/knowledge-base', icon: 'BookOpen' },
       { id: 'lead-lineage', label: 'Lead Lineage', href: '/dashboard/admin/lead-lineage', icon: 'GitBranch' },
       { id: 'locations', label: 'Office Locations', href: '/dashboard/admin/locations', icon: 'Building2' },
       { id: 'manager-trust', label: 'Manager Trust', href: '/dashboard/admin/manager-trust', icon: 'ShieldCheck' },
@@ -467,18 +666,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Brokerage Ops & Insights',
         icon: 'Gauge',
         children: [
-          { id: 'brokerage-pnl', label: 'Brokerage P&L', href: '/dashboard/admin/brokerage-pnl', icon: 'TrendingUp' },
+          { id: 'brokerage-pnl', label: 'Brokerage P&L', href: '/dashboard/financials/brokerage', icon: 'TrendingUp' },
           { id: 'agent-scorecard', label: 'Agent Scorecard', href: '/dashboard/admin/agent-scorecard', icon: 'Award' },
           { id: 'transaction-propensity', label: 'Transaction Propensity', href: '/dashboard/admin/transaction-propensity', icon: 'Target' },
           { id: 'strategy-insights', label: 'Strategy Insights', href: '/dashboard/admin/strategy-insights', icon: 'Lightbulb' },
           { id: 'direct-mail-performance', label: 'Direct Mail Performance', href: '/dashboard/admin/direct-mail-performance', icon: 'Mail' },
-          { id: 'lead-intake', label: 'Lead Intake', href: '/dashboard/admin/lead-intake', icon: 'Inbox' },
-          { id: 'scrape-diagnostics', label: 'Scrape Diagnostics', href: '/dashboard/admin/scrape-diagnostics', icon: 'Radar' },
-          // Round 42: the markets SETUP surface (diagnostics only VIEWS them) — the scrape pipeline no-ops without one.
-          { id: 'lead-markets', label: 'Lead Markets', href: '/dashboard/admin/markets', icon: 'Map' },
+          // Lead Intake, Scrape Diagnostics, Cron Health are PLATFORM-only (the
+          // scraping/cron machinery is platform-owned infrastructure, not a
+          // tenant concern) — they live in the superadmin tree, not here.
           { id: 'ai-identity', label: 'AI Identity', href: '/dashboard/admin/ai-identity', icon: 'Bot' },
           { id: 'ai-disclosures', label: 'AI Disclosures', href: '/dashboard/admin/compliance/ai-disclosures', icon: 'FileCheck' },
-          { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
           // Orphan-route sweep: vendor approval queue was unreachable from any nav.
           { id: 'vendor-approvals', label: 'Vendor Approvals', href: '/dashboard/admin/vendor-approvals', icon: 'ShieldCheck' },
         ],
@@ -492,17 +689,33 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
-          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          // Nav-parity: the QR manager was agent-only. Same page, scoped by the
+          // caller's role — the admin seat sees the whole brokerage's codes.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
+          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/marketing/lead-magnets' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
+          // ── Orphan-route sweep (lane G) ────────────────────────────────────
+          // Four BUILT admin marketing surfaces with no nav entry anywhere. Each
+          // page gates on `isAdminOrBroker` (or getAgentContext) and each has a
+          // live server action behind it, so this is a wire, not a new feature:
+          //   · content-studio        → loadContentStudio + ApproveReelButton
+          //   · marketing-approvals   → listPendingMarketingAssetsAction
+          //   · marketing-agent-actions → getPendingMarketingActions
+          //   · content-intel         → listContentSources (brokerage-scoped)
+          // Filed under Marketing & Content because all four are the APPROVAL /
+          // SOURCE half of the studio above them; the two CAMPAIGN surfaces went
+          // to the Campaigns group instead.
+          { id: 'content-studio', label: 'Content Studio', href: '/dashboard/admin/content-studio' },
+          { id: 'marketing-approvals', label: 'Asset Approvals', href: '/dashboard/admin/marketing-approvals' },
+          { id: 'marketing-agent-actions', label: 'Marketing Agent Actions', href: '/dashboard/admin/marketing-agent-actions' },
+          { id: 'content-intel', label: 'Content Intelligence', href: '/dashboard/marketing/content-intel' },
         ],
       },
       {
@@ -511,13 +724,17 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Megaphone',
         children: [
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
-          { id: 'workflow-builder', label: 'Workflow Builder', href: '/dashboard/campaigns/workflows' },
           { id: 'workflow-reports', label: 'Workflow Reports', href: '/dashboard/campaigns/workflow-reports' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
           { id: 'competitive', label: 'Competitive Intel', href: '/dashboard/campaigns/competitive' },
           { id: 'roi', label: 'Campaign ROI', href: '/dashboard/campaigns/roi' },
+          // Orphan-route sweep (lane G): the campaign AUTHORING page
+          // (listMarketingCampaignsAction) and the cross-channel APPROVAL feed
+          // (loadCampaignCenter) were both unreachable from any nav.
+          { id: 'marketing-campaigns', label: 'Marketing Campaigns', href: '/dashboard/admin/marketing-campaigns' },
+          { id: 'campaign-center', label: 'Campaign Command Center', href: '/dashboard/admin/campaign-center' },
         ],
       },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
@@ -526,12 +743,34 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'education', label: 'Education Library', href: '/dashboard/education', icon: 'GraduationCap' },
       { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
+      // Markets are part of the BRAND: a brokerage's target markets decide where
+      // the platform-owned scrapers hunt leads FOR that brand — so the tenant's
+      // market/territory setup lives here, beside Brand, not in the platform ops group.
+      { id: 'brand-markets', label: 'Markets', href: '/dashboard/admin/markets', icon: 'Map' },
       { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
+      // Orphan-route sweep (lane G): the DSAR queue — the surface a brokerage
+      // works its statutory data-subject requests on (listDSARQueueAction, with
+      // per-row accept/fulfil/deny verbs and an OVERDUE badge) — had no nav entry
+      // at all, which for a privacy obligation with a legal clock on it is the
+      // worst place for a page to be invisible. Filed with the compliance items.
+      { id: 'privacy-requests', label: 'Privacy Requests (DSAR)', href: '/dashboard/admin/privacy/requests', icon: 'ShieldCheck' },
+      // Owner's ruling: "command strip is fine but you should still be able to find it on
+      // navigation." Same entry as the broker's (see the Brokerage Settings group there);
+      // this sidebar has no settings group — its settings-shaped pages sit at the top
+      // level beside the compliance items (cf. 'required-documents' below) — so it is
+      // filed with the other compliance entries. Destination /compliance/settings, the one
+      // surface every role that may write a phrase can reach.
+      { id: 'compliance-settings', label: 'Compliance & Prohibited Words', href: '/compliance/settings', icon: 'ShieldAlert' },
       // Orphan-route sweep: per-state required-document settings were unreachable from any nav.
       { id: 'required-documents', label: 'Required Documents', href: '/dashboard/settings/required-documents', icon: 'FileCheck' },
-      { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
-      { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
+      // Feature Governance is PLATFORM-owned (enrollment flags aren't tenant-editable) —
+      // it lives in the superadmin tree, not the brokerage admin's sidebar. (2026-07 walkthrough)
+      { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
+      // Orphan-route sweep (lane G): the brokerage's video TEMPLATE library
+      // (getVideoTemplates, admin/broker-gated) sat beside Video Analytics in the
+      // tree and beside nothing in the nav.
+      { id: 'video-templates', label: 'Video Templates', href: '/dashboard/videos/templates', icon: 'Video' },
       { id: 'sla-monitor', label: 'SLA Monitor', href: '/dashboard/admin/sla-monitor', icon: 'Clock' },
       { id: 'visitor-tracking', label: 'Visitor Tracking', href: '/dashboard/admin/visitor-tracking', icon: 'Eye' },
       { id: 'divider2', divider: true },
@@ -547,7 +786,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'logs', label: 'Audit Trail', href: '/compliance/audits', icon: 'Eye' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Sparkles' },
       { id: 'error-handler', label: 'Error Handler', href: '/dashboard/admin/error-handler', icon: 'AlertTriangle' },
-      { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
+      // "What's New & Status" is a PLATFORM release/status surface — held out of the tenant
+      // admin nav until the OS launches; it lives in the superadmin tree. (2026-07 walkthrough)
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -566,7 +806,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'system-status', label: 'System Health', href: '/dashboard/system' },
       { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
       { id: 'ai-quality', label: 'AI Quality', href: '/dashboard/ai-quality' },
-      { id: 'workflows', label: 'Workflows', href: '/workflows' },
+      { id: 'workflows', label: 'Workflow Monitor', href: '/workflows' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding' },
     ],
   },
@@ -583,6 +823,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'invoices', label: 'Invoices', href: '/vendor/invoices', icon: 'Receipt' },
       // Orphan-route sweep: the vendor connection center was unreachable from any nav.
       { id: 'connections', label: 'Connections', href: '/vendor/connections', icon: 'Plug' },
+      // DIRECTION CORRECTED (m497). This comment used to read "the vendor's OWN plan catalogue
+      // (vendor_plans) — what brokerages subscribe to", which had the money running backwards.
+      // A vendor package is a BROKERAGE charging a VENDOR for marketplace access and placement:
+      // money flows VENDOR → BROKERAGE. So this page is the PAYER's read-only view of the
+      // packages a brokerage offers and what this vendor is enrolled in — the catalogue is
+      // authored on the brokerage side (/dashboard/vendors). Still distinct from /vendor/billing,
+      // which is the platform tier the vendor pays US; the difference between the two is the
+      // PAYEE, not the direction. Label says Packages so the surface does not re-teach the
+      // inverted model. See lib/vendors/vendor-money-directions.ts.
+      { id: 'plans', label: 'Packages', href: '/vendor/plans', icon: 'Layers' },
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
@@ -634,7 +884,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'audits', label: 'Audit Logs', href: '/compliance/audits', icon: 'Eye' },
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
-      { id: 'full-compliance', label: 'Full Compliance Center', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
       { id: 'comm-intel', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'approvals', label: 'Approvals Queue', href: '/approvals', icon: 'CheckSquare' },
@@ -643,6 +892,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // a dead "Forbidden" link for tenant compliance officers. AI Audit is their tenant-scoped
       // audit surface (page allows compliance_officer); /compliance/audits covers the rest above.
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Database' },
+      // OWNER RULING: "compliance officer needs to see transactions and marketing…
+      // the compliance manager is the one that deals with marketing." Both were
+      // missing entirely — the officer could audit a deal's paperwork without ever
+      // being able to open the deal, and Review Queue, which IS their approval
+      // surface for brand and fair-housing review, was unreachable.
+      ...TRANSACTION_ITEMS,
+      MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
@@ -672,6 +928,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
       { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
+      // OWNER RULING: "a tc needs to see compliance and marketing". Neither was
+      // reachable. A coordinator whose whole job is clearing what blocks a file
+      // could not see the compliance queue that holds the blocks, and could not
+      // see the listing marketing they are coordinating.
+      // Narrower than the officer's own compliance sidebar on purpose — see
+      // COMPLIANCE_ITEMS_FOR_COORDINATION.
+      ...COMPLIANCE_ITEMS_FOR_COORDINATION,
+      MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },
@@ -767,13 +1031,31 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'coordination', label: 'AI Coordination', href: '/dashboard/coordination', icon: 'Network' },
       { id: 'divider2', divider: true },
       { id: 'billing', label: 'Billing Administration', href: '/dashboard/superadmin/subscriptions', icon: 'CreditCard' },
+      // Orphan-route sweep (lane G): the subscription-CONTRACT console — where
+      // platform staff author the agreement a tenant signs to activate their
+      // subscription (m481; listSubscriptionContractTemplatesAction +
+      // listTenantContractSignaturesAction, read-gated on the 'billing'
+      // capability) — had no nav entry. It belongs beside Billing Administration:
+      // same capability, and a tenant cannot activate until it is used.
+      { id: 'subscription-contracts', label: 'Subscription Contracts', href: '/dashboard/superadmin/contracts', icon: 'FileSignature' },
+      // Orphan-route sweep (lane G): the Deal Room — the presenter's runbook for
+      // the flagship sales demo on the sanctioned demo tenant, gated by the
+      // superadmin layout plus the 'tenants' capability on both its mutations.
+      { id: 'demo-room', label: 'Demo Deal Room', href: '/dashboard/superadmin/demo-room', icon: 'Presentation' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/dashboard/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
-      { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
+      { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'divider3', divider: true },
+      // Platform-owned scraping/cron infrastructure — moved off the tenant admin
+      // tree; these are the platform's machinery, not a brokerage's concern.
+      { id: 'lead-intake', label: 'Lead Intake', href: '/dashboard/admin/lead-intake', icon: 'Inbox' },
+      { id: 'scrape-diagnostics', label: 'Scrape Diagnostics', href: '/dashboard/admin/scrape-diagnostics', icon: 'Radar' },
+      { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
       { id: 'system-health', label: 'System Health', href: '/dashboard/superadmin/observability', icon: 'Activity' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Eye' },
+      // Platform release/status surface — relocated out of the tenant admin nav (kept reachable here).
+      { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
       { id: 'system-providers', label: 'API Providers', href: '/dashboard/admin/system/providers', icon: 'Server' },
       { id: 'integrations', label: 'Integrations', href: '/dashboard/superadmin/connectors', icon: 'Plug' },
       { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },
@@ -810,8 +1092,18 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // team's CONTACTS, the lead desk is broker/admin + platform staff only.
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'agent-roster', label: 'My Team', href: '/dashboard/team', icon: 'UserCheck' },
+      // Orphan-route sweep (lane G): the TEAM-scope AI Identity Studio was
+      // reachable from nothing. It is not a duplicate of the admin block's
+      // 'ai-identity' (/dashboard/admin/ai-identity): that one edits the
+      // BROKERAGE profile, this one edits the team's override of it (scope="team",
+      // scopeId=teams.team_id, with the brokerage profile shown as the parent).
+      // Its gate demands a team_id, so this sidebar is the only one it belongs in.
+      { id: 'team-ai-identity', label: 'Team AI Identity', href: '/dashboard/team/ai-identity', icon: 'Bot' },
+      // Calendar OS — working-day surface (see the agent block's entry for the
+      // orphan history). Team leads produce as agents; same self-gating page.
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap', icon: 'Map' },
-      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
+      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/motivation', icon: 'Award' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
       // Tenant-parity: a team-tier principal (team lead) owns the subscription's
       // operations — Command Center + Monthly Intelligence Report are their surfaces
@@ -838,16 +1130,20 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           // Nav-parity: these marketing pages exist and are open to the team tier,
           // but were unreachable from the team_lead sidebar.
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          // Nav-parity: the QR manager was agent-only. The same page narrows a
+          // team lead to their OWN team's codes (#191 — teams see only their own
+          // board), so this is the team's QR board, not the brokerage's.
+          { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -892,7 +1188,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-all', label: 'All Sphere Contacts', href: '/lifetime-customers' },
           { id: 'sphere-resonance', label: 'Resonance — Life Events', href: '/dashboard/sphere' },
           { id: 'sphere-wealth', label: 'Wealth Opportunities', href: '/dashboard/wealth' },
-          { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
+          { id: 'sphere-referrals', label: 'Referrals', href: '/referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
           // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
@@ -922,15 +1218,141 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   },
 }
 
-export function getNavigationForRole(role: string | string[]): NavigationConfig {
-  const roles = Array.isArray(role) ? role : [role]
-  const primaryRole = roles[0]
-  return NAVIGATION_BY_ROLE[primaryRole as UserRole] || NAVIGATION_BY_ROLE.contact
+/**
+ * STAFF roles, in the order their navigation is merged.
+ *
+ * THIS ORDER IS THE POINT. A user's roles arrive from user_role_assignments with
+ * NO ordering — the table is UNIQUE on (user_id, role), so the rows come back in
+ * whatever order the planner produced. The old resolver took `roles[0]` from that
+ * unordered set, which meant the sidebar a multi-role user saw could differ
+ * between two logins. Merging in a FIXED precedence removes the arbitrariness:
+ * the same role set always produces the same navigation.
+ *
+ * Widest-governing first, so when two roles both define an item the more
+ * responsible role's label/href wins the dedupe.
+ */
+const STAFF_NAV_PRECEDENCE: readonly UserRole[] = [
+  'broker', 'admin', 'team_lead', 'compliance_officer', 'tc', 'isa', 'agent',
+] as unknown as readonly UserRole[]
+
+/**
+ * EXTERNAL personas. These are people the brokerage works WITH, not staff of it,
+ * and their navigation is a portal rather than a workspace.
+ *
+ * They are deliberately NOT merged into a staff union. Measured on the live
+ * database, one account holds BOTH `contact` and `team_lead` — a client who is
+ * also a team lead. Merging those would put the staff workspace and the client
+ * portal in one sidebar, which is not "one person wearing several business
+ * hats"; it is two different relationships to the brokerage in one nav. If a
+ * user holds ANY staff role, staff navigation is what they get.
+ */
+const EXTERNAL_NAV_ROLES: ReadonlySet<string> = new Set([
+  'contact', 'vendor', 'lender', 'title_agent',
+])
+
+/**
+ * The single role to name when a surface genuinely needs ONE (a page-context
+ * label, an analytics tag). Resolved by the SAME fixed precedence the navigation
+ * merge uses, so "which role am I acting as" and "what can I see" never disagree.
+ *
+ * Callers must not hand-roll `roles[0]` for this — that is the arbitrary pick
+ * this module exists to remove.
+ */
+export function resolvePrimaryRole(roles: string[] | undefined | null): string {
+  const held = new Set(roles ?? [])
+  const staff = STAFF_NAV_PRECEDENCE.find((r) => held.has(r as string))
+  if (staff) return staff as string
+  for (const r of held) if (NAVIGATION_BY_ROLE[r as UserRole]) return r
+  return 'contact'
 }
 
-export function filterNavItemsByPermissions(items: NavItem[], userPermissions: string[]): NavItem[] {
-  return items.filter((item) => {
-    if (!item.requiredPermissions) return true
-    return item.requiredPermissions.some((perm) => userPermissions.includes(perm))
-  })
+/** Merge nav item lists, first occurrence wins. Keyed on id, falling back to
+ *  href so two roles listing the same destination under different ids collapse. */
+function mergeNavItems(lists: NavItem[][]): NavItem[] {
+  const seen = new Set<string>()
+  const out: NavItem[] = []
+  for (const list of lists) {
+    for (const item of list ?? []) {
+      const key = item.id || item.href
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      out.push(item)
+    }
+  }
+  return out
 }
+
+/**
+ * The navigation for everything this person is.
+ *
+ * OWNER'S RULING, which this implements: a solo tenant has two seats — the
+ * producing agent, and a second user who carries everything else the business
+ * needs (transactions, compliance, support, admin, marketing). Business roles
+ * are ASSIGNED to a user, so ONE USER HOLDING SEVERAL ROLES IS THE DESIGNED
+ * CASE. The signature already accepted an array; it then read `roles[0]` and
+ * threw the rest away, so that second user only ever saw one role's surfaces —
+ * the exact capability the seat model exists to provide was unreachable.
+ *
+ * Unknown role strings are ignored rather than defaulting, so a typo cannot
+ * silently widen somebody. A user with no recognised role still lands on the
+ * contact portal, as before.
+ */
+export function getNavigationForRole(role: string | string[]): NavigationConfig {
+  const held = new Set(Array.isArray(role) ? role : [role])
+
+  const staff = STAFF_NAV_PRECEDENCE.filter((r) => held.has(r as string))
+  if (staff.length > 0) {
+    const configs = staff.map((r) => NAVIGATION_BY_ROLE[r]).filter(Boolean)
+    if (configs.length === 1) return configs[0]
+    return {
+      sidebarItems:        mergeNavItems(configs.map((c) => c.sidebarItems)),
+      topNavItems:         mergeNavItems(configs.map((c) => c.topNavItems)),
+      mobileBottomNav:     mergeNavItems(configs.map((c) => c.mobileBottomNav)),
+      commandPaletteItems: mergeNavItems(configs.map((c) => c.commandPaletteItems)),
+    }
+  }
+
+  // No staff role: a single external persona, unmerged.
+  for (const r of held) {
+    if (EXTERNAL_NAV_ROLES.has(r) && NAVIGATION_BY_ROLE[r as UserRole]) {
+      return NAVIGATION_BY_ROLE[r as UserRole]
+    }
+  }
+  // superadmin and any other non-staff, non-external role still resolve directly.
+  for (const r of held) {
+    if (NAVIGATION_BY_ROLE[r as UserRole]) return NAVIGATION_BY_ROLE[r as UserRole]
+  }
+  return NAVIGATION_BY_ROLE.contact
+}
+
+// TOMBSTONE (orphan burn-down, lane E): `filterNavItemsByPermissions` DELETED.
+//
+// It filtered nav items on `NavItem.requiredPermissions`. MEASURED: not one item
+// in NAVIGATION_BY_ROLE — 1,100+ lines across every role — ever sets that field.
+// The only two occurrences of `requiredPermissions` in this file were inside the
+// function itself. So the filter's predicate was `if (!item.requiredPermissions)
+// return true` for every item on every call: a no-op by construction, which is
+// worse than unwired, because a reviewer reading a call to it would reasonably
+// believe navigation was being permission-gated when nothing was being filtered.
+//
+// SURVIVOR: navigation is gated by ROLE, and that gate is live —
+// `getNavigationForRole` (:1175 above), called by
+// app/components/layout/app-shell.tsx:145 and rendered by Sidebar, Header and
+// MobileBottomNav. It merges every STAFF role a multi-role user holds, deduped
+// by id then href in a fixed STAFF_NAV_PRECEDENCE, and holds external personas
+// (contact / vendor / lender / title_agent) out of the staff union. That rule,
+// its order-independence and the external-persona boundary are proven by
+// `npm run test:role-union-nav`.
+//
+// Nothing merged: the deleted function enforced nothing to carry over. Adding a
+// SECOND, permission-based vocabulary over the same surface is also what the
+// owner ruling quoted at lib/auth/resolve-user-role.ts:107 forbids — "having
+// more than one vocab over the same function or feature is dangerous". If
+// per-item permissions are ever genuinely wanted, the work is to author them on
+// the items first, against the `Permission` union in lib/security/types.ts:347
+// rather than the bare `string[]` this took; a filter with nothing to filter is
+// not a head start on that.
+//
+// `NavItem.requiredPermissions` is left declared in app/types/navigation.ts:22:
+// it is an optional field, costs nothing, and removing it belongs with whoever
+// decides that question rather than with a burn-down pass.

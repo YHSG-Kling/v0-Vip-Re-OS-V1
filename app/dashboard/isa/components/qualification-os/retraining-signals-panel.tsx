@@ -9,8 +9,6 @@ import {
   TrendingDown,
   AlertTriangle,
   Lightbulb,
-  MessageSquare,
-  Users,
 } from "lucide-react"
 
 interface RetrainingSignal {

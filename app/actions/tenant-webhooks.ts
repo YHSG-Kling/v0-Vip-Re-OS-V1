@@ -25,7 +25,9 @@ import {
   generateWebhookSecret,
   isKnownWebhookEvent,
   maskWebhookSecret,
+  signWebhookPayload,
   validateTenantScopes,
+  verifyWebhookSignature,
 } from "@/lib/platform/tenant-webhooks-core"
 import { postSignedWebhook } from "@/lib/platform/tenant-webhooks"
 
@@ -37,14 +39,15 @@ async function principalGate(): Promise<{ svc: Svc; brokerageId: string; userId:
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const { data: me } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).maybeSingle()
+  // user_type, never legacy users.role — PRINCIPAL_ROLES is user_type vocabulary.
+  const { data: me } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   if (!brokerageId) return null
   const svc = createServiceClient()
   const principal = await isTenancyPrincipal(svc, {
     userId: user.id,
     brokerageId,
-    role: String((me as { role?: string | null } | null)?.role ?? ""),
+    role: String((me as { user_type?: string | null } | null)?.user_type ?? ""),
   })
   return principal ? { svc, brokerageId, userId: user.id } : null
 }
@@ -384,12 +387,83 @@ export interface DevelopersDocsData {
   catalog: Array<{ event: string; description: string }>
   samplePayloadJson: string
   signatureHeaderExample: string
+  /**
+   * A REAL, self-checked signature test vector the tenant can run their verifier
+   * against — see the comment on getDevelopersDocsData.
+   */
+  signatureTestVector: {
+    secret: string
+    /** The exact bytes signed. Byte-for-byte: whitespace changes the HMAC. */
+    rawBody: string
+    /** The full X-Webhook-Signature header value for that secret + body. */
+    header: string
+    /** Unix seconds baked into the header, so the tolerance check can be pinned. */
+    timestampSec: number
+    /** Null when the vector verified; the reason when it did not. */
+    error: string | null
+  } | null
 }
 
+// A FIXED, PUBLISHED, NEVER-USED secret. It signs nothing but the documentation
+// vector below: it is not minted, not stored, and matches no subscription — the
+// real secrets are generated per-subscription by generateWebhookSecret() and
+// shown once. Fixed rather than random so the vector is stable across page
+// loads, which is what makes it usable as a regression fixture on the tenant's
+// side.
+const DOC_VECTOR_SECRET = "whsec_documentation_example_never_used_to_sign_real_traffic"
+const DOC_VECTOR_TIMESTAMP = 1752857112
+
+/**
+ * Docs data for the Developers page.
+ *
+ * THE SIGNATURE EXAMPLE IS NOW REAL (orphan burn-down, lane E).
+ *
+ * `signatureHeaderExample` used to be a hand-typed string containing
+ * `v1=5f2ab6…9c41` — an ellipsis. A tenant implementing verification could read
+ * the scheme from it but could not TEST anything against it, so the first
+ * evidence their HMAC code was wrong was a production endpoint rejecting every
+ * real delivery, or worse, accepting them for the wrong reason. There is exactly
+ * one thing a verifier author needs and this page did not give: a known-good
+ * (secret, body, header) triple.
+ *
+ * So the header is now COMPUTED, by the same signWebhookPayload() that signs
+ * every outbound delivery (lib/platform/tenant-webhooks.ts:64), over the sample
+ * payload shown verbatim in the docs block — which means the documented example
+ * cannot drift from the implementation the way a typed constant silently does.
+ *
+ * And it is CHECKED before it ships, with verifyWebhookSignature() — the
+ * receiver-side half of the pair (lib/platform/tenant-webhooks-core.ts:217),
+ * which had no caller anywhere in the tree. Its whole reason to exist is "what a
+ * receiver runs"; running it here is the one place in this codebase that is a
+ * receiver. If the two ever disagree — a change to the signing string, the digest,
+ * or the header grammar that touches one and not the other — this returns the
+ * failure instead of publishing a vector that cannot verify. A test vector nobody
+ * verified is the same class of thing as the ellipsis it replaces.
+ *
+ * The timestamp is pinned rather than `now` so the vector is reproducible; that
+ * makes it older than the 300s tolerance, which is exactly why the docs tell the
+ * reader to check the HMAC alone against it. Tolerance is still mandatory on
+ * real traffic and is stated as such next to it.
+ */
 export async function getDevelopersDocsData(): Promise<DevelopersDocsData> {
+  const rawBody = JSON.stringify(SAMPLE_WEBHOOK_PAYLOAD)
+  const header = signWebhookPayload(DOC_VECTOR_SECRET, rawBody, DOC_VECTOR_TIMESTAMP)
+  const verified = verifyWebhookSignature(DOC_VECTOR_SECRET, rawBody, header, {
+    nowSec: DOC_VECTOR_TIMESTAMP,
+  })
+
   return {
     catalog: WEBHOOK_EVENT_CATALOG.map((d) => ({ event: d.event, description: d.description })),
     samplePayloadJson: JSON.stringify(SAMPLE_WEBHOOK_PAYLOAD, null, 2),
-    signatureHeaderExample: "X-Webhook-Signature: t=1752857112,v1=5f2ab6…9c41 (hex HMAC-SHA256 over `${t}.${rawBody}`)",
+    signatureHeaderExample: `X-Webhook-Signature: ${header}`,
+    signatureTestVector: {
+      secret: DOC_VECTOR_SECRET,
+      rawBody,
+      header,
+      timestampSec: DOC_VECTOR_TIMESTAMP,
+      error: verified
+        ? null
+        : "This example failed our own verifier — do not test against it. Signing and verification have diverged; please report this.",
+    },
   }
 }

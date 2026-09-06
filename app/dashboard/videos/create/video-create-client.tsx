@@ -3,13 +3,12 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -23,7 +22,6 @@ import {
   FileText,
   Sparkles,
   Wand2,
-  Play,
   Loader2,
   ArrowLeft,
   ArrowRight,
@@ -32,7 +30,6 @@ import {
   Save,
   AlertTriangle,
   CheckCircle2,
-  Clock,
   Shield,
   Mic,
   Palette,
@@ -55,11 +52,56 @@ import {
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
+import { improveScript, type ScriptImprovement } from "@/app/actions/video/create-video-project"
+import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
+import { savePrivateScript, generateScriptContent } from "@/app/actions/workflows"
+import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
+import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
+import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
+import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+/** ai_video_projects.video_type — exactly the column's CHECK. */
+const VIDEO_TYPES = [
+  { value: "listing_tour",         label: "Listing Tour" },
+  { value: "listing_promo",        label: "Listing Promo" },
+  { value: "just_listed",          label: "Just Listed" },
+  { value: "coming_soon",          label: "Coming Soon" },
+  { value: "just_sold",            label: "Just Sold" },
+  { value: "open_house_promo",     label: "Open House Promo" },
+  { value: "market_update",        label: "Market Update" },
+  { value: "agent_intro",          label: "Agent Intro" },
+  { value: "education",            label: "Education" },
+  { value: "avatar_explainer",     label: "Avatar Explainer" },
+  { value: "social_reel",          label: "Social Reel" },
+  { value: "testimonial",          label: "Testimonial" },
+  { value: "welcome",              label: "Welcome" },
+  { value: "pre_appointment",      label: "Pre-Appointment" },
+  { value: "presentation_chapter", label: "Presentation Chapter" },
+  // TOMBSTONE (orphan doctrine §1.3) — REMOVED from this menu: "memory_video".
+  //
+  // This wizard's whole job is to have a MODEL write the script: the chosen
+  // video type is handed straight to generateVideoScript (app/actions/video/
+  // generate-script.ts) below. The owner's ruling makes that the one thing a
+  // memory video may never be — "a seller dictated video going over the history
+  // of the house so the family has it". A model that writes a family's history
+  // is inventing it, and offering the option here is what would let that happen
+  // by accident.
+  //
+  // WHERE THE FUNCTIONALITY WENT (it is BUILT, not dropped):
+  //   · lib/video/memory-video-gate.ts     — eligibility (>20 years in the home)
+  //                                          + the seller-dictated boundary and
+  //                                          the pure assembler of the seller's
+  //                                          own captured words.
+  //   · lib/video/memory-video.ts          — the offer and the capture rail.
+  //   · app/actions/video/memory-video.ts  — the agent-facing surface.
+  // 'home_anniversary' is deliberately absent too: that value is stamped by
+  // lib/video/intro-video-reactor.ts and the Director, never chosen by hand.
+] as const
 
 const SCRIPT_TYPES = [
   {
@@ -173,14 +215,75 @@ export default function VideoCreatePage() {
 
   // AI Script generation (Step 1 custom tab)
   const [aiScriptDescription, setAiScriptDescription] = useState<string>("")
-  const [aiScriptVideoType, setAiScriptVideoType] = useState<string>("custom")
+  // ai_video_projects.video_type and video_scripts_library.script_type are TWO
+  // DIFFERENT vocabularies, and the library branch used to pipe one straight
+  // into the other — wrong for three of its five values. "custom" and "tips"
+  // were offered here too and the column accepts neither, so the form's own
+  // DEFAULT ("custom") made every AI-script video fail to insert.
+  const SCRIPT_TYPE_TO_VIDEO_TYPE: Record<string, string> = {
+    property_tour:        "listing_tour",
+    buyer_education:      "education",
+    market_update:        "market_update",
+    agent_intro:          "agent_intro",
+    listing_presentation: "presentation_chapter",
+  }
+  const toVideoType = (v: string | null | undefined): string =>
+    (v && SCRIPT_TYPE_TO_VIDEO_TYPE[v]) || (v && VIDEO_TYPES.some((t) => t.value === v) ? v : "listing_tour")
+
+  const [aiScriptVideoType, setAiScriptVideoType] = useState<string>("listing_tour")
   const [aiScriptTone, setAiScriptTone] = useState<"professional" | "friendly" | "luxury" | "educational">("professional")
   const [aiScriptDuration, setAiScriptDuration] = useState<number>(60)
   const [isAiGenerating, setIsAiGenerating] = useState(false)
   const [aiScriptError, setAiScriptError] = useState<string | null>(null)
+  // Advisory compliance notes from the post-generation gate. The action has
+  // always returned these; nothing displayed them, so a script that tripped
+  // brand voice or Fair Housing reached the render with no warning at all.
+  const [scriptComplianceWarnings, setScriptComplianceWarnings] = useState<string[]>([])
+
+  // "Save to library" — the library's empty state sends the agent here to
+  // "create your first AI-generated script", but nothing on this page ever wrote
+  // one back to video_scripts_library.
+  const [isSavingScript, setIsSavingScript] = useState(false)
+  const [saveScriptMessage, setSaveScriptMessage] = useState<string | null>(null)
+  const [saveScriptError, setSaveScriptError] = useState<string | null>(null)
+
+  // "Save as my private script" — the OTHER save door (#186, m429): the agent's
+  // own `public.scripts` row, visibility 'private'. No approval queue — it is
+  // immediately selectable in the Library tab's saved-scripts picker above, and
+  // lib/video/viral-script-share.ts shares it to the whole brokerage only if a
+  // video rendered from it goes viral.
+  const [isSavingPrivate, setIsSavingPrivate] = useState(false)
+  const [savePrivateMessage, setSavePrivateMessage] = useState<string | null>(null)
+  const [savePrivateError, setSavePrivateError] = useState<string | null>(null)
+
+  // "Generate new private script" — the generate-and-store composite of the
+  // same m429 private lane (app/actions/workflows.ts:generateScriptContent).
+  // Unlike the wizard's Generate Script above (generateVideoScript — text only,
+  // stored only when the agent presses a save door), this one writes AND stores
+  // in one step through the same fused compliance gate + `scripts` INSERT
+  // (gateAndStorePrivateScript), so the result lands in the saved-scripts
+  // picker immediately.
+  const [isGeneratingPrivate, setIsGeneratingPrivate] = useState(false)
+  const [generatePrivateMessage, setGeneratePrivateMessage] = useState<string | null>(null)
+  const [generatePrivateError, setGeneratePrivateError] = useState<string | null>(null)
+
+  // "Improve this script" — rewrites the script already in the box. The wizard
+  // could only ever generate a script FROM SCRATCH; there was no way to nudge
+  // one that was nearly right, so agents regenerated and lost their edits.
+  const [improvingAs, setImprovingAs] = useState<ScriptImprovement | null>(null)
+  const [improveError, setImproveError] = useState<string | null>(null)
+  // Keeps the previous draft so an unwanted rewrite is one click away from
+  // being undone — the rewrite replaces the textarea in place.
+  const [scriptBeforeImprove, setScriptBeforeImprove] = useState<string | null>(null)
 
   // Step 2: Avatar & Voice
-  const [selectedAvatar, setSelectedAvatar] = useState<string>("")
+  // TOMBSTONE (orphan doctrine §1.3) — `selectedAvatar` / `setSelectedAvatar`
+  // stood here and were never set and never read: one occurrence each in the
+  // whole file. SURVIVOR: `selectedDidAssetId` (video-create-client.tsx:302) is
+  // what the avatar picker that actually runs writes and reads — the picker
+  // itself is the "Ready library avatars" grid at video-create-client.tsx:1671,
+  // which maps over `readyAssets`. Nothing merged: the deleted pair carried no
+  // value the D-ID asset-row selection does not.
   const [selectedVoice, setSelectedVoice] = useState<string>("")
   // D-ID-specific selections
   const [selectedElevenLabsVoiceId, setSelectedElevenLabsVoiceId] = useState<string | null>(null)
@@ -197,12 +300,8 @@ export default function VideoCreatePage() {
   }>>([])
   // Which asset row (or "photo" for the legacy photo fallback) the agent selected
   const [selectedDidAssetId, setSelectedDidAssetId] = useState<string | "photo" | null>(null)
-  // Inline "add avatar" upload state
-  const [showAddAvatar, setShowAddAvatar] = useState(false)
-  const [newAvatarFile, setNewAvatarFile] = useState<File | null>(null)
-  const [newAvatarLabel, setNewAvatarLabel] = useState("")
-  const [isAddingAvatar, setIsAddingAvatar] = useState(false)
-  const [addAvatarError, setAddAvatarError] = useState<string | null>(null)
+  // (the inline "add avatar" state went with the uploader — avatars are
+  //  created in Twin Studio, and this step only picks one)
 
   // Step 3: Style & Output
   const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
@@ -216,6 +315,16 @@ export default function VideoCreatePage() {
     bRollUrls:     string[]
   }>({ introVideoUrl: null, outroVideoUrl: null, bRollUrls: [] })
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
+
+  // Step 3: Shared image library backgrounds (platform-curated marketing_assets
+  // + this tenant's saved images). Selecting one sets backgroundStyle="library"
+  // + libraryBgUrl. Merged here 2026-09-01 from the deleted BackgroundPicker
+  // (see tombstone at the Background Style section below).
+  const [bgLibrary, setBgLibrary] = useState<LibraryAssetRow[] | null>(null)
+  const [libraryBgUrl, setLibraryBgUrl] = useState<string>("")
+  useEffect(() => {
+    listImageLibraryAction().then((r) => setBgLibrary(r.ok ? r.assets : []))
+  }, [])
 
   // Step 3: Custom background upload / webcam capture
   const [customBgUrl, setCustomBgUrl] = useState<string>("")
@@ -236,8 +345,20 @@ export default function VideoCreatePage() {
 
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
-  const [avatars, setAvatars] = useState<any[]>([])
-  const [voiceProfiles, setVoiceProfiles] = useState<any[]>([])
+  // TOMBSTONE (orphan doctrine §1.3) — `avatars` / `setAvatars` stood here,
+  // never filled and never rendered (one occurrence each in the file). SURVIVOR:
+  // `didAvatarAssets` (loaded from agent_avatar_assets) and the `readyAssets`
+  // slice of it the picker renders at video-create-client.tsx:1671; selection
+  // lands in `selectedDidAssetId` (video-create-client.tsx:302). Nothing merged
+  // — this list was never populated, so it held nothing to carry over.
+  // Every voice the agent can present with — their own clones AND the curated
+  // ElevenLabs assistant voices. Both are real ElevenLabs voice ids down the
+  // same TTS path, so having no clone yet is not a reason to be locked out.
+  const [voiceOptions, setVoiceOptions] = useState<{
+    standardVoices: GenerationVoiceOption[]
+    voiceClones: GenerationVoiceOption[]
+    defaultVoiceClone: GenerationVoiceOption | null
+  }>({ standardVoices: [], voiceClones: [], defaultVoiceClone: null })
   const [brandingPresets, setBrandingPresets] = useState<any[]>([])
   const [connectedPlatforms, setConnectedPlatforms] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -255,7 +376,16 @@ export default function VideoCreatePage() {
 
   useEffect(() => {
     async function loadData() {
-      if (!brokerage?.id) return
+      // The whole wizard is gated on `loading` (initialised true). If we return
+      // here WITHOUT clearing it, the page hangs on the spinner forever — which is
+      // exactly what happened when brokerage.id hadn't resolved yet or the account
+      // was brokerage-less ("New Video → infinite spinner" from the walkthrough).
+      // Clear the gate on every early exit; the effect re-runs (dep: brokerage?.id)
+      // and loads the real data once the brokerage resolves.
+      if (!brokerage?.id) {
+        setLoading(false)
+        return
+      }
 
       try {
         // Platform video engine is D-ID + ElevenLabs ONLY (HeyGen removed).
@@ -272,7 +402,31 @@ export default function VideoCreatePage() {
           .order("created_at", { ascending: false })
           .limit(50)
 
-        setScripts(scriptsData || [])
+        // ALSO the agent's SAVED scripts (#186). The owner ruled agent-authored
+        // scripts save to `scripts` — but this picker only read the curated
+        // video_scripts_library, so nothing an agent saved was ever renderable.
+        // RLS scopes this read (own + brokerage-shared + platform catalogue);
+        // rows are NORMALIZED into the library shape so every downstream
+        // consumer (preview, validation, submit) works unchanged, and marked
+        // __saved so the submit can stamp source_script_id lineage.
+        const { data: savedScripts, error: savedErr } = await supabase
+          .from("scripts")
+          .select("id, title, content, category")
+          .order("created_at", { ascending: false })
+          .limit(50)
+        if (savedErr) console.error("[video-create] saved scripts read refused:", savedErr.message)
+
+        setScripts([
+          ...(scriptsData || []),
+          ...((savedScripts || []).map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            script_content: r.content,
+            script_type: r.category,
+            duration_target_seconds: null,
+            __saved: true,
+          }))),
+        ])
 
         // Load agent voice profiles (maps to agents.id, not users.id)
         // First get agent record for current user
@@ -282,26 +436,26 @@ export default function VideoCreatePage() {
           .eq("user_id", user?.id)
           .maybeSingle()
 
-        let clonedVoiceProfiles: any[] = []
+        let clonedVoiceProfiles: GenerationVoiceOption[] = []
         if (agentData?.id) {
           setResolvedAgentId(agentData.id)
 
-          const { data: voiceData } = await supabase
-            .from("agent_voice_profiles")
-            .select("*")
-            .eq("agent_id", agentData.id)
-            .eq("training_status", "completed")
-            .order("is_default", { ascending: false })
+          // ONE source for what this agent can speak with: their ready clones
+          // plus the curated ElevenLabs assistant voices. The raw select this
+          // replaced knew only about clones, which is why an agent without one
+          // could not reach step 3 at all.
+          const options = await getVoiceOptionsForGeneration(agentData.id)
+          setVoiceOptions(options)
+          clonedVoiceProfiles = options.voiceClones
 
-          clonedVoiceProfiles = voiceData || []
-          setVoiceProfiles(clonedVoiceProfiles)
-
-          // Load D-ID profile for the agent (used when platform provider = "did")
-          const { data: didProfileData } = await supabase
-            .from("agent_voice_profiles")
-            .select("elevenlabs_voice_id, did_photo_url, did_video_url")
-            .eq("agent_id", agentData.id)
-            .maybeSingle()
+          // Load D-ID profile for the agent (used when platform provider = "did").
+          // Server action rather than a client select: it also scopes the row to
+          // the caller's brokerage, which the raw agent_id-only read did not.
+          const didProfileData = (await getAgentVideoProfile(agentData.id)) as {
+            elevenlabs_voice_id: string | null
+            did_photo_url: string | null
+            did_video_url: string | null
+          } | null
           setAgentDIDProfile(didProfileData ?? null)
 
           // Load avatar library for this agent
@@ -316,11 +470,12 @@ export default function VideoCreatePage() {
           setDidAvatarAssets(assets)
 
           // Auto-select defaults for D-ID path
-          // Voice: pick the default profile's elevenlabs_voice_id
-          const defaultVoice = (voiceData ?? []).find((v: any) => v.is_default && v.elevenlabs_voice_id)
-            ?? (voiceData ?? []).find((v: any) => v.elevenlabs_voice_id)
-          if (defaultVoice?.elevenlabs_voice_id) {
-            setSelectedElevenLabsVoiceId(defaultVoice.elevenlabs_voice_id)
+          // Voice: the agent's default clone, else any clone. No clone yet ->
+          // left unset so the assistant-voice picker below is a real choice
+          // rather than a silent substitution of someone else's voice.
+          const defaultVoice = options.defaultVoiceClone ?? options.voiceClones[0] ?? null
+          if (defaultVoice) {
+            setSelectedElevenLabsVoiceId(defaultVoice.id)
           }
 
           // Avatar: prefer default ready video avatar from library, then photo fallback
@@ -398,7 +553,7 @@ export default function VideoCreatePage() {
       if (platformProvider === "did") {
         if (!selectedElevenLabsVoiceId) {
           throw new Error(
-            "Voice clone not set up. Visit Settings → Voice & Avatar to record your voice before generating videos."
+            "No voice selected. Pick an assistant voice in step 2, or record your own under Avatar & Voice Setup."
           )
         }
         const selectedAsset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
@@ -419,11 +574,20 @@ export default function VideoCreatePage() {
           agent_id: resolvedAgentId,
           brokerage_id: brokerage.id,
           title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
+          // Lineage (#186): when the pick came from the agent's SAVED scripts,
+          // the project records which script it renders — the same
+          // source_script_id create-video-project stamps on its path.
+          source_script_id:
+            scriptSource === "library" && scripts.find((s) => s.id === selectedScript)?.__saved
+              ? selectedScript
+              : null,
           script_content: script,
-          video_type: scriptSource === "library"
-            ? scripts.find((s: any) => s.id === selectedScript)?.script_type ?? "custom"
-            : aiScriptVideoType ?? "custom",
-          status: "pending",
+          video_type: toVideoType(
+            scriptSource === "library"
+              ? scripts.find((s: any) => s.id === selectedScript)?.script_type
+              : aiScriptVideoType,
+          ),
+          status: "draft",
           provider_status: "pending",
           provider_avatar_id: null,
           provider_voice_id: null,
@@ -458,6 +622,8 @@ export default function VideoCreatePage() {
       // for any preset whose color isn't a usable hex or http(s) URL.
       const didBackground = backgroundStyle === "custom" && customBgUrl
         ? { type: "image" as const, value: customBgUrl }
+        : backgroundStyle === "library" && libraryBgUrl
+        ? { type: "image" as const, value: libraryBgUrl }
         : (() => {
             const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
             const bgColorValue = bgPreset?.color
@@ -510,6 +676,21 @@ export default function VideoCreatePage() {
       const result = await response.json()
 
       if (!response.ok) {
+        // ── A COMPLIANCE HOLD IS NOT A RENDER FAILURE ───────────────────────
+        // /api/did/generate-video answers 422 + compliance_hold when a hard
+        // Fair Housing finding (or a script that could not be checked at all)
+        // holds the video for a human. The route has already stamped the
+        // project compliance_status='needs_review' / approval_status=
+        // 'pending_review', which is what puts it in Marketing Approvals —
+        // overwriting status='failed' here would dress a hold up as a broken
+        // render and tell the agent to retry something a person has to clear.
+        if (result?.compliance_hold) {
+          const lines: string[] = Array.isArray(result.violations) ? result.violations : []
+          throw new Error(
+            [result.error, ...lines.slice(1)].filter(Boolean).join("\n") ||
+              "This video is held for human compliance review.",
+          )
+        }
         // Update project status on failure
         await supabase
           .from("ai_video_projects")
@@ -560,7 +741,8 @@ export default function VideoCreatePage() {
       }
       case 3:
         return !!backgroundStyle && !!qualityPreset && !!outputOrientation &&
-          (backgroundStyle !== "custom" || !!customBgUrl)
+          (backgroundStyle !== "custom" || !!customBgUrl) &&
+          (backgroundStyle !== "library" || !!libraryBgUrl)
       default:
         return true
     }
@@ -727,6 +909,7 @@ export default function VideoCreatePage() {
       }
 
       setCustomScript(result.script!)
+      setScriptComplianceWarnings(result.complianceWarnings ?? [])
       setScriptSource("custom")
       setScriptTitle(`${selectedPurpose.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
       setCurrentStep(1)
@@ -772,6 +955,7 @@ export default function VideoCreatePage() {
       }
 
       setCustomScript(result.script!)
+      setScriptComplianceWarnings(result.complianceWarnings ?? [])
       if (!scriptTitle) {
         setScriptTitle(`AI Script — ${aiScriptVideoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
       }
@@ -779,6 +963,184 @@ export default function VideoCreatePage() {
       setAiScriptError(err.message ?? "Script generation failed")
     } finally {
       setIsAiGenerating(false)
+    }
+  }
+
+  // Rewrite the working script through improveScript. The action derives the
+  // brokerage and the (users-class) actor from the session — nothing here is
+  // trusted to name a tenant — and returns an explicit verdict, so a refusal or
+  // an empty model response is reported rather than silently blanking the box.
+  const handleImproveScript = async (improvement: ScriptImprovement) => {
+    if (!customScript.trim()) return
+    setImprovingAs(improvement)
+    setImproveError(null)
+    try {
+      const result = await improveScript({
+        currentScript: customScript,
+        improvement,
+      })
+      if (!result.success || !result.script) {
+        setImproveError(result.error ?? "Could not improve this script.")
+        return
+      }
+      setScriptBeforeImprove(customScript)
+      setCustomScript(result.script)
+    } catch (err: any) {
+      setImproveError(err?.message ?? "Could not improve this script.")
+    } finally {
+      setImprovingAs(null)
+    }
+  }
+
+  const handleUndoImprove = () => {
+    if (scriptBeforeImprove === null) return
+    setCustomScript(scriptBeforeImprove)
+    setScriptBeforeImprove(null)
+  }
+
+  // Save the working custom script into the shared script library so it can be
+  // approved and reused. Enters as `pending_review` — the library's approval
+  // control decides whether it becomes selectable in this wizard.
+  const handleSaveScriptToLibrary = async () => {
+    if (!customScript.trim()) return
+    setIsSavingScript(true)
+    setSaveScriptError(null)
+    setSaveScriptMessage(null)
+    try {
+      await saveVideoScript({
+        // agentId is agents.id (resolved on load) — never the auth user id.
+        agentId: resolvedAgentId ?? undefined,
+        listingId: selectedContextType === "listing" && selectedContextId ? selectedContextId : undefined,
+        scriptType: toLibraryScriptType(aiScriptVideoType),
+        title: scriptTitle || `Script — ${new Date().toLocaleDateString()}`,
+        scriptContent: customScript,
+        durationTargetSeconds: aiScriptDuration,
+        brandVoiceTone: aiScriptTone,
+        approvalStatus: "pending_review",
+        aiGenerated: true,
+      })
+      setSaveScriptMessage("Saved to your script library — approve it there to reuse it.")
+    } catch (err: any) {
+      setSaveScriptError(err?.message ?? "Could not save this script to the library")
+    } finally {
+      setIsSavingScript(false)
+    }
+  }
+
+  // Save the working script as the agent's OWN private script — the m429 lane
+  // (`public.scripts`, visibility 'private'), NOT the curated approval queue.
+  // The action post-checks the text through the shared compliance gate: advisory
+  // findings come back in complianceWarnings (surfaced in the alert above) and
+  // the save proceeds; a hard fair-housing red flag refuses the save and the
+  // refusal is shown, never swallowed.
+  const handleSavePrivateScript = async () => {
+    if (!customScript.trim()) return
+    setIsSavingPrivate(true)
+    setSavePrivateError(null)
+    setSavePrivateMessage(null)
+    try {
+      const savedTitle = scriptTitle || `My script — ${new Date().toLocaleDateString()}`
+      const savedType = toLibraryScriptType(aiScriptVideoType)
+      const result = await savePrivateScript({
+        title: savedTitle,
+        scriptType: savedType,
+        content: customScript,
+      })
+      if (result.complianceWarnings?.length) {
+        setScriptComplianceWarnings(result.complianceWarnings)
+      }
+      if (!result.success || !result.scriptId) {
+        setSavePrivateError(result.error ?? "Could not save this as a private script")
+        return
+      }
+      // Immediately selectable from the Library tab — same normalized shape the
+      // loader gives rows read back from `scripts`.
+      setScripts((prev) => [
+        {
+          id: result.scriptId,
+          title: savedTitle,
+          script_content: customScript,
+          script_type: savedType,
+          duration_target_seconds: null,
+          __saved: true,
+        },
+        ...prev,
+      ])
+      setSavePrivateMessage(
+        "Saved as your private script — it's in the Library tab now. It stays yours unless a video made from it goes viral, which shares it with your brokerage.",
+      )
+    } catch (err: any) {
+      setSavePrivateError(err?.message ?? "Could not save this as a private script")
+    } finally {
+      setIsSavingPrivate(false)
+    }
+  }
+
+  // Generate a NEW private script from the wizard's current inputs, in one step.
+  // generateScriptContent derives the tenant and the actor from the session,
+  // pre-checks the description for Fair Housing before spending tokens, writes
+  // with the compliance blocks in the prompt, post-checks the result, and stores
+  // it through the same fused gate as savePrivateScript. The working script is
+  // REPLACED with the returned content; the previous text is backed up through
+  // the same scriptBeforeImprove slot the Improve buttons use, so "Undo rewrite"
+  // restores it. Advisory warnings and errors surface exactly like the
+  // savePrivateScript handler's; a hard red flag means NOT saved — the flagged
+  // text is still shown so the agent can see what tripped it and fix it.
+  const handleGeneratePrivateScript = async () => {
+    if (!aiScriptDescription.trim()) return
+    setIsGeneratingPrivate(true)
+    setGeneratePrivateError(null)
+    setGeneratePrivateMessage(null)
+    try {
+      const savedType = toLibraryScriptType(aiScriptVideoType)
+      const result = await generateScriptContent(savedType, {
+        description: aiScriptDescription,
+        tone: aiScriptTone,
+        targetDurationSeconds: aiScriptDuration,
+      })
+      if (result.complianceWarnings?.length) {
+        setScriptComplianceWarnings(result.complianceWarnings)
+      }
+      if (result.content) {
+        if (customScript.trim()) setScriptBeforeImprove(customScript)
+        setCustomScript(result.content)
+        setScriptSource("custom")
+        if (!scriptTitle) {
+          setScriptTitle(`${savedType.replace(/_/g, " ")} script — ${new Date().toLocaleDateString()}`)
+        }
+      }
+      if (!result.success) {
+        // Hard compliance flag (text returned, store refused) or generation
+        // failure — either way, not saved, and the agent is told why.
+        setGeneratePrivateError(result.error ?? "Could not generate a private script")
+        return
+      }
+      if (!result.scriptId) {
+        // Generated but the store was refused — the text is in the box, the
+        // refusal is shown, and nothing pretends a script row exists.
+        setGeneratePrivateError(result.error ?? "Script generated but not saved")
+        return
+      }
+      // Immediately selectable from the Library tab — same normalized shape the
+      // loader gives rows read back from `scripts`.
+      setScripts((prev) => [
+        {
+          id: result.scriptId,
+          title: scriptTitle || `${savedType.replace(/_/g, " ")} script — ${new Date().toLocaleDateString()}`,
+          script_content: result.content,
+          script_type: savedType,
+          duration_target_seconds: null,
+          __saved: true,
+        },
+        ...prev,
+      ])
+      setGeneratePrivateMessage(
+        "Generated and saved as your private script — it's in the Library tab now. It stays yours unless a video made from it goes viral, which shares it with your brokerage.",
+      )
+    } catch (err: any) {
+      setGeneratePrivateError(err?.message ?? "Could not generate a private script")
+    } finally {
+      setIsGeneratingPrivate(false)
     }
   }
 
@@ -973,9 +1335,9 @@ export default function VideoCreatePage() {
                     {scripts.length === 0 ? (
                       <Alert>
                         <AlertTriangle className="h-4 w-4" />
-                        <AlertTitle>No Approved Scripts</AlertTitle>
+                        <AlertTitle>No Scripts Yet</AlertTitle>
                         <AlertDescription>
-                          You need at least one approved script to generate a video.
+                          Approve a library script or save one of your own to generate a video.
                           <Button variant="link" className="p-0 h-auto ml-1" onClick={() => router.push("/dashboard/videos/library")}>
                             Go to Script Library
                           </Button>
@@ -990,10 +1352,12 @@ export default function VideoCreatePage() {
                           {scripts.map((script) => (
                             <SelectItem key={script.id} value={script.id}>
                               <div className="flex items-center gap-2">
-                                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                {script.__saved
+                                  ? <FileText className="h-4 w-4 text-blue-600" />
+                                  : <CheckCircle2 className="h-4 w-4 text-green-600" />}
                                 {script.title}
                                 <span className="text-muted-foreground text-xs">
-                                  ({script.duration_target_seconds || "~"}s)
+                                  {script.__saved ? "(my saved script)" : `(${script.duration_target_seconds || "~"}s)`}
                                 </span>
                               </div>
                             </SelectItem>
@@ -1044,12 +1408,9 @@ export default function VideoCreatePage() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {SCRIPT_TYPES.map(t => (
-                                  <SelectItem key={t.id} value={t.id} className="text-xs">{t.label}</SelectItem>
+                                {VIDEO_TYPES.map(t => (
+                                  <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
                                 ))}
-                                <SelectItem value="tips" className="text-xs">Tips</SelectItem>
-                                <SelectItem value="testimonial" className="text-xs">Testimonial</SelectItem>
-                                <SelectItem value="custom" className="text-xs">Custom</SelectItem>
                               </SelectContent>
                             </Select>
                           </div>
@@ -1092,7 +1453,7 @@ export default function VideoCreatePage() {
 
                         <Button
                           onClick={handleAiGenerateFromStep1}
-                          disabled={isAiGenerating || !aiScriptDescription.trim()}
+                          disabled={isAiGenerating || isGeneratingPrivate || !aiScriptDescription.trim()}
                           size="sm"
                           className="w-full"
                         >
@@ -1102,16 +1463,66 @@ export default function VideoCreatePage() {
                             <><Sparkles className="h-3 w-3 mr-2" />Generate Script</>
                           )}
                         </Button>
+
+                        {/* The OTHER generate door: writes AND saves in one step
+                            as the agent's own private script (m429 lane), through
+                            the same fused compliance gate as "Save as my private
+                            script" below. Replaces the working script; the prior
+                            text is one "Undo rewrite" away. */}
+                        <Button
+                          onClick={handleGeneratePrivateScript}
+                          disabled={isGeneratingPrivate || isAiGenerating || !aiScriptDescription.trim()}
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                        >
+                          {isGeneratingPrivate ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Generating &amp; saving…</>
+                          ) : (
+                            <><Sparkles className="h-3 w-3 mr-2" />Generate new private script</>
+                          )}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          Generate new private script writes a script from the description above and
+                          saves it straight to your own private scripts — no approval queue. It
+                          replaces the script in the box below (Undo rewrite brings the old one back).
+                        </p>
+                        {generatePrivateMessage && (
+                          <p className="text-xs text-muted-foreground">{generatePrivateMessage}</p>
+                        )}
+                        {generatePrivateError && (
+                          <p className="text-xs text-destructive">{generatePrivateError}</p>
+                        )}
                       </CardContent>
                     </Card>
 
-                    <Alert>
-                      <Shield className="h-4 w-4" />
-                      <AlertTitle>Script Compliance</AlertTitle>
-                      <AlertDescription>
-                        All scripts (AI and manual) are checked against Fair Housing and brand compliance before video generation.
-                      </AlertDescription>
-                    </Alert>
+                    {scriptComplianceWarnings.length > 0 ? (
+                      <Alert variant="destructive">
+                        <Shield className="h-4 w-4" />
+                        <AlertTitle>
+                          Compliance notes on this script ({scriptComplianceWarnings.length})
+                        </AlertTitle>
+                        <AlertDescription>
+                          <p className="mb-2">
+                            The script generated, but the compliance gate flagged the following.
+                            Edit the script below or regenerate before continuing.
+                          </p>
+                          <ul className="list-disc space-y-1 pl-4 text-xs">
+                            {scriptComplianceWarnings.map((warning, i) => (
+                              <li key={i}>{warning}</li>
+                            ))}
+                          </ul>
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      <Alert>
+                        <Shield className="h-4 w-4" />
+                        <AlertTitle>Script Compliance</AlertTitle>
+                        <AlertDescription>
+                          All scripts (AI and manual) are checked against Fair Housing and brand compliance before video generation.
+                        </AlertDescription>
+                      </Alert>
+                    )}
 
                     <div className="space-y-2">
                       <Label>Script Title</Label>
@@ -1137,6 +1548,104 @@ export default function VideoCreatePage() {
                         className="font-mono text-sm"
                       />
                     </div>
+
+                    {/* Improve the script that is already written, in place. */}
+                    <div className="space-y-2 rounded-lg border p-3">
+                      <div className="flex items-center gap-2">
+                        <Wand2 className="h-4 w-4 text-primary" />
+                        <span className="text-sm font-medium">Improve this script</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {([
+                          { id: "flow",          label: "Better flow" },
+                          { id: "shorter",       label: "Make it shorter" },
+                          { id: "more_engaging", label: "More engaging" },
+                          { id: "luxury",        label: "Luxury tone" },
+                          { id: "friendly",      label: "Friendlier" },
+                        ] as { id: ScriptImprovement; label: string }[]).map((opt) => (
+                          <Button
+                            key={opt.id}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={!!improvingAs || customScript.trim().length < 20}
+                            onClick={() => handleImproveScript(opt.id)}
+                          >
+                            {improvingAs === opt.id ? (
+                              <><Loader2 className="h-3 w-3 mr-2 animate-spin" />{opt.label}…</>
+                            ) : (
+                              opt.label
+                            )}
+                          </Button>
+                        ))}
+                        {scriptBeforeImprove !== null && !improvingAs && (
+                          <Button type="button" variant="ghost" size="sm" onClick={handleUndoImprove}>
+                            <RefreshCw className="h-3 w-3 mr-2" />
+                            Undo rewrite
+                          </Button>
+                        )}
+                      </div>
+                      {customScript.trim().length < 20 && (
+                        <p className="text-xs text-muted-foreground">
+                          Write or generate a script first — there is nothing to improve yet.
+                        </p>
+                      )}
+                      {improveError && <p className="text-xs text-destructive">{improveError}</p>}
+                    </div>
+
+                    {/* Two save doors, honest about the difference:
+                        · Library — the brokerage's CURATED queue: enters
+                          pending_review and a reviewer approves it before it
+                          becomes selectable for anyone.
+                        · Private — the agent's OWN scripts (m429 lane): saved
+                          immediately, no queue, selectable right away in the
+                          Library tab picker; shared to the whole brokerage
+                          ONLY if a video made from it goes viral. */}
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isSavingScript || customScript.trim().length < 20}
+                          onClick={handleSaveScriptToLibrary}
+                        >
+                          {isSavingScript ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
+                          ) : (
+                            <><Save className="h-3 w-3 mr-2" />Save to Script Library</>
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isSavingPrivate || customScript.trim().length < 20}
+                          onClick={handleSavePrivateScript}
+                        >
+                          {isSavingPrivate ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
+                          ) : (
+                            <><Save className="h-3 w-3 mr-2" />Save as my private script</>
+                          )}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Library sends this script to your brokerage&apos;s approval queue for everyone to
+                        reuse once approved. A private script is yours alone and usable right away —
+                        it&apos;s shared with the brokerage only if a video made from it goes viral.
+                      </p>
+                      {saveScriptMessage && (
+                        <p className="text-xs text-muted-foreground">{saveScriptMessage}</p>
+                      )}
+                      {saveScriptError && (
+                        <p className="text-xs text-destructive">{saveScriptError}</p>
+                      )}
+                      {savePrivateMessage && (
+                        <p className="text-xs text-muted-foreground">{savePrivateMessage}</p>
+                      )}
+                      {savePrivateError && (
+                        <p className="text-xs text-destructive">{savePrivateError}</p>
+                      )}
+                    </div>
                   </TabsContent>
                 </Tabs>
               </div>
@@ -1149,81 +1658,62 @@ export default function VideoCreatePage() {
                   <h2 className="text-xl font-semibold mb-2">Choose Avatar & Voice</h2>
                   <p className="text-muted-foreground">
                     {platformProvider === "did"
-                      ? "Your video uses your own face and cloned voice"
+                      ? "Your video uses your own face, and your own voice or an assistant voice"
                       : "Select who will present your video and which voice to use"}
                   </p>
                 </div>
 
                 {/* D-ID: Voice clone + avatar gallery */}
                 {platformProvider === "did" && (() => {
-                  const elVoiceProfiles = voiceProfiles.filter((v: any) => v.elevenlabs_voice_id)
+                  const elVoiceProfiles = voiceOptions.voiceClones
+                  const assistantVoices = voiceOptions.standardVoices
                   const hasPhoto = !!agentDIDProfile?.did_photo_url
                   const readyAssets = didAvatarAssets.filter((a) => a.status === "ready")
                   const pendingAssets = didAvatarAssets.filter((a) => a.status === "pending" || a.status === "processing")
                   const hasAnyAvatar = readyAssets.length > 0 || hasPhoto
                   const hasAnyVoice = elVoiceProfiles.length > 0
 
-                  async function handleAddAvatar() {
-                    if (!newAvatarFile || !resolvedAgentId) return
-                    setIsAddingAvatar(true)
-                    setAddAvatarError(null)
-                    try {
-                      const form = new FormData()
-                      form.append("file", newAvatarFile)
-                      form.append("bucket", "agent-photos")
-                      const uploadRes = await fetch("/api/storage/upload-temp", { method: "POST", body: form })
-                      const uploadData = uploadRes.ok ? await uploadRes.json() : null
-                      if (!uploadData?.url) throw new Error("Upload failed — please try again.")
-
-                      const createRes = await fetch("/api/did/create-avatar", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          source_url: uploadData.url,
-                          label: newAvatarLabel || "My Avatar",
-                          set_as_default: readyAssets.length === 0,
-                        }),
-                      })
-                      const createData = await createRes.json()
-                      if (!createRes.ok) throw new Error(createData.error ?? "Avatar creation failed.")
-
-                      // Refresh avatar list
-                      const { data: refreshed } = await supabase
-                        .from("agent_avatar_assets")
-                        .select("id, label, source_type, did_avatar_id, status, thumbnail_url, is_default")
-                        .eq("agent_id", resolvedAgentId)
-                        .order("is_default", { ascending: false })
-                        .order("created_at", { ascending: false })
-                      setDidAvatarAssets(refreshed ?? [])
-                      setShowAddAvatar(false)
-                      setNewAvatarFile(null)
-                      setNewAvatarLabel("")
-                    } catch (err: any) {
-                      setAddAvatarError(err.message)
-                    } finally {
-                      setIsAddingAvatar(false)
-                    }
-                  }
+                  // handleAddAvatar was REMOVED here (Wave 3, criterion 1:
+                  // "twin studio is supposed to be where the user creates their
+                  // avatar for video").
+                  //
+                  // SURVIVOR: app/dashboard/settings/twin-studio/components/twin-wizard.tsx
+                  //
+                  // It was not merely a duplicate, it was a broken one. It
+                  // POSTed /api/did/create-avatar with NO `source_type`, and the
+                  // route defaults that to "video" — so the upload was always
+                  // submitted as a V3 Instant Avatar and always refused 428 by
+                  // the consent gate, on a page with no consent recorder. The
+                  // affordance could not succeed for anybody. The survivor
+                  // sends source_type, records consent first for a video
+                  // source, ties the job to a twin row, and applies the
+                  // brokerage approval gate. Nothing was lost: the avatar
+                  // PICKER below (choose which ready twin presents this video)
+                  // is selection, not creation, and is untouched.
 
                   return (
                     <div className="space-y-6">
-                      {/* Voice Clone Selection */}
+                      {/* Voice Selection — the agent's own clone, or an assistant voice */}
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <Label>Voice Clone</Label>
+                          <Label>Voice</Label>
                           <a href="/dashboard/videos/voice" className="text-xs text-muted-foreground underline hover:text-foreground">
                             Manage voice setup
                           </a>
                         </div>
-                        {hasAnyVoice ? (
+
+                        {hasAnyVoice && (
                           <div className="space-y-2">
-                            {elVoiceProfiles.map((voice: any) => (
+                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                              Your voice
+                            </p>
+                            {elVoiceProfiles.map((voice) => (
                               <div
-                                key={voice.id}
-                                onClick={() => setSelectedElevenLabsVoiceId(voice.elevenlabs_voice_id)}
+                                key={voice.profileId ?? voice.id}
+                                onClick={() => setSelectedElevenLabsVoiceId(voice.id)}
                                 className={cn(
                                   "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-center gap-4",
-                                  selectedElevenLabsVoiceId === voice.elevenlabs_voice_id
+                                  selectedElevenLabsVoiceId === voice.id
                                     ? "border-primary bg-primary/5"
                                     : "border-border hover:border-primary/50"
                                 )}
@@ -1232,32 +1722,69 @@ export default function VideoCreatePage() {
                                   <Mic className="h-5 w-5 text-muted-foreground" />
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="font-medium">{voice.profile_name}</p>
+                                  <p className="font-medium">{voice.name}</p>
                                   <div className="flex items-center gap-2 mt-0.5">
-                                    {voice.is_default && (
+                                    {voice.isDefault && (
                                       <Badge variant="secondary" className="text-xs">Default</Badge>
                                     )}
-                                    {voice.quality_score && (
+                                    {voice.qualityScore != null && (
                                       <span className="text-xs text-muted-foreground">
-                                        Quality: {(voice.quality_score * 100).toFixed(0)}%
+                                        Quality: {Number(voice.qualityScore).toFixed(0)}%
                                       </span>
                                     )}
                                   </div>
                                 </div>
-                                {selectedElevenLabsVoiceId === voice.elevenlabs_voice_id && (
+                                {selectedElevenLabsVoiceId === voice.id && (
                                   <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
                                 )}
                               </div>
                             ))}
                           </div>
-                        ) : (
-                          <Alert variant="destructive">
-                            <AlertTriangle className="h-4 w-4" />
-                            <AlertTitle>No voice clone set up</AlertTitle>
+                        )}
+
+                        {/* Assistant voices — always offered. An agent who has not
+                            recorded a clone still gets to publish video today. */}
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            {hasAnyVoice ? "Or use an assistant voice" : "Assistant voices"}
+                          </p>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {assistantVoices.map((voice) => (
+                              <div
+                                key={voice.id}
+                                onClick={() => setSelectedElevenLabsVoiceId(voice.id)}
+                                className={cn(
+                                  "p-3 rounded-lg border-2 cursor-pointer transition-all flex items-start gap-3",
+                                  selectedElevenLabsVoiceId === voice.id
+                                    ? "border-primary bg-primary/5"
+                                    : "border-border hover:border-primary/50"
+                                )}
+                              >
+                                <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+                                  <Sparkles className="h-4 w-4 text-muted-foreground" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium">{voice.name}</p>
+                                  {voice.style && (
+                                    <p className="text-xs text-muted-foreground">{voice.style}</p>
+                                  )}
+                                </div>
+                                {selectedElevenLabsVoiceId === voice.id && (
+                                  <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {!hasAnyVoice && (
+                          <Alert>
+                            <Mic className="h-4 w-4" />
+                            <AlertTitle>Want the video in your own voice?</AlertTitle>
                             <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                              <span>Upload a voice recording in Avatar & Voice Setup to clone your voice.</span>
+                              <span>Record a few short phrases and we'll clone your voice — it takes a couple of minutes.</span>
                               <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
-                                Set Up Voice
+                                Set Up My Voice
                               </Button>
                             </AlertDescription>
                           </Alert>
@@ -1272,48 +1799,12 @@ export default function VideoCreatePage() {
                             size="sm"
                             variant="outline"
                             className="text-xs h-7 gap-1"
-                            onClick={() => setShowAddAvatar((v) => !v)}
+                            onClick={() => router.push("/dashboard/settings/twin-studio")}
                           >
                             <Upload className="h-3 w-3" />
-                            Add Avatar
+                            Add Avatar in Twin Studio
                           </Button>
                         </div>
-
-                        {/* Inline add-avatar form */}
-                        {showAddAvatar && (
-                          <div className="p-4 rounded-lg border bg-muted/50 space-y-3">
-                            <p className="text-sm font-medium">Upload a new avatar video clip (5–15 sec)</p>
-                            <input
-                              type="text"
-                              placeholder="Avatar name (e.g. Outdoor Casual)"
-                              value={newAvatarLabel}
-                              onChange={(e) => setNewAvatarLabel(e.target.value)}
-                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                            />
-                            <input
-                              type="file"
-                              accept="video/mp4,video/webm"
-                              onChange={(e) => setNewAvatarFile(e.target.files?.[0] ?? null)}
-                              className="block text-sm"
-                            />
-                            {addAvatarError && (
-                              <p className="text-xs text-destructive">{addAvatarError}</p>
-                            )}
-                            <div className="flex gap-2">
-                              <Button
-                                size="sm"
-                                disabled={!newAvatarFile || isAddingAvatar}
-                                onClick={handleAddAvatar}
-                              >
-                                {isAddingAvatar ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
-                                {isAddingAvatar ? "Uploading…" : "Upload & Create Avatar"}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => { setShowAddAvatar(false); setAddAvatarError(null) }}>
-                                Cancel
-                              </Button>
-                            </div>
-                          </div>
-                        )}
 
                         {/* Processing avatars banner */}
                         {pendingAssets.length > 0 && (
@@ -1391,11 +1882,14 @@ export default function VideoCreatePage() {
                         ) : (
                           <Alert variant="destructive">
                             <AlertTriangle className="h-4 w-4" />
-                            <AlertTitle>No avatar uploaded</AlertTitle>
+                            <AlertTitle>You don&apos;t have an avatar yet</AlertTitle>
                             <AlertDescription className="flex items-center justify-between gap-4 flex-wrap">
-                              <span>Upload a video clip above or go to Avatar & Voice Setup.</span>
-                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/videos/voice")}>
-                                Set Up Avatar
+                              <span>
+                                Build one in Twin Studio from a photo or a short video — it takes a
+                                few minutes and you only do it once.
+                              </span>
+                              <Button size="sm" variant="outline" className="shrink-0" onClick={() => router.push("/dashboard/settings/twin-studio")}>
+                                Open Twin Studio
                               </Button>
                             </AlertDescription>
                           </Alert>
@@ -1419,13 +1913,25 @@ export default function VideoCreatePage() {
                 </div>
 
                 {/* Background Style */}
+                {/* TOMBSTONE (orphan doctrine §1.1, 2026-09-01):
+                    app/dashboard/videos/components/BackgroundPicker.tsx (+ its
+                    BackgroundValue type) deleted — it was never imported by any
+                    rendered surface. Its one capability the live flow lacked,
+                    loading virtual backgrounds from the SHARED IMAGE LIBRARY
+                    (listImageLibraryAction: platform-curated marketing_assets +
+                    the tenant's own saved images), was merged HERE first: the
+                    bgLibrary state above, the "From your image library" grid
+                    below, the "library" arm of didBackground, and the step-3
+                    validation. Its solid-color swatches and upload lane already
+                    existed here (BACKGROUND_STYLES presets + the custom
+                    upload/webcam lane below), so nothing else moved. */}
                 <div className="space-y-3">
                   <Label>Background Style</Label>
                   <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                     {BACKGROUND_STYLES.map((bg) => (
                       <div
                         key={bg.id}
-                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setBackgroundStyle(bg.id) }}
+                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setLibraryBgUrl(""); setBackgroundStyle(bg.id) }}
                         className={cn(
                           "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
                           backgroundStyle === bg.id
@@ -1441,6 +1947,44 @@ export default function VideoCreatePage() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Virtual backgrounds from the shared image library */}
+                  {bgLibrary !== null && bgLibrary.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <Label className="text-sm font-normal text-muted-foreground">
+                        From your image library
+                      </Label>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                        {bgLibrary.map((bg) => (
+                          <div
+                            key={bg.id}
+                            onClick={() => { stopWebcam(); setBackgroundStyle("library"); setLibraryBgUrl(bg.url) }}
+                            className={cn(
+                              "relative overflow-hidden rounded-lg border-2 aspect-video cursor-pointer transition-all",
+                              backgroundStyle === "library" && libraryBgUrl === bg.url
+                                ? "border-primary"
+                                : "border-border hover:border-primary/50"
+                            )}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={bg.thumbnailUrl ?? bg.url}
+                              alt={bg.name}
+                              className="h-full w-full object-cover"
+                            />
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-2 py-1 text-xs text-white truncate">
+                              {bg.name}
+                            </div>
+                            {backgroundStyle === "library" && libraryBgUrl === bg.url && (
+                              <div className="absolute top-1 right-1 rounded-full bg-primary p-0.5">
+                                <Check className="h-3 w-3 text-primary-foreground" />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Custom Background Upload (shown when "Custom Upload" is selected) */}
@@ -1596,12 +2140,15 @@ export default function VideoCreatePage() {
                 {brandingPresets.length > 0 && (
                   <div className="space-y-3">
                     <Label>Branding Preset (Optional)</Label>
-                    <Select value={brandingPresetId} onValueChange={setBrandingPresetId}>
+                    <Select
+                      value={brandingPresetId || "__none__"}
+                      onValueChange={(v) => setBrandingPresetId(v === "__none__" ? "" : v)}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Select a branding preset" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">No branding</SelectItem>
+                        <SelectItem value="__none__">No branding</SelectItem>
                         {brandingPresets.map((preset) => (
                           <SelectItem key={preset.id} value={preset.id}>
                             <div className="flex items-center gap-2">
@@ -1676,7 +2223,12 @@ export default function VideoCreatePage() {
                       </p>
                       <p className="text-sm">
                         <strong>Voice:</strong>{" "}
-                        {voiceProfiles.find(v => v.elevenlabs_voice_id === selectedElevenLabsVoiceId)?.profile_name || "ElevenLabs voice"}
+                        {(() => {
+                          const chosen = [...voiceOptions.voiceClones, ...voiceOptions.standardVoices]
+                            .find(v => v.id === selectedElevenLabsVoiceId)
+                          if (!chosen) return "No voice selected"
+                          return chosen.type === "clone" ? `${chosen.name} (your voice)` : `${chosen.name} (assistant voice)`
+                        })()}
                       </p>
                     </CardContent>
                   </Card>
@@ -1691,7 +2243,9 @@ export default function VideoCreatePage() {
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm">
-                        <strong>Background:</strong> {BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
+                        <strong>Background:</strong> {backgroundStyle === "library"
+                          ? (bgLibrary?.find(b => b.url === libraryBgUrl)?.name ?? "Library Image")
+                          : BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
                       </p>
                       <p className="text-sm">
                         <strong>Orientation:</strong> {OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.label} ({OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect})

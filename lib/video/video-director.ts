@@ -30,9 +30,14 @@
  *           of the way.
  *
  * Reused (NOT rebuilt) — referenced by ID-string + capability, never hard-deps:
- *   · the 24 registered Remotion compositions (remotion/Root.tsx) — by ID string,
+ *   · every registered Remotion composition (remotion/Root.tsx) — by ID string,
  *     read through lib/remotion/registry getComposition so the registry row is the
- *     source of truth for supports_bookends / requires_did_avatar / requires_voiceover.
+ *     source of truth for supports_bookends / requires_did_avatar. (The count is
+ *     deliberately not written here; a number in prose goes stale on the next
+ *     registration, and scripts/remotion-setup-guard.ts derives it. NOT
+ *     requires_voiceover: that column is a mirror of the content contract's
+ *     VOICEOVER_CONSUMING_COMPOSITIONS and the Director consulted it for nothing
+ *     — see the tombstone at commissionVideo step 2.)
  *   · lib/video/composite-attribution concatIntroOutro (intro+main+outro stitch).
  *   · lib/video/video-qr mintVideoQr + qrDestinationForKind (tracked outro QR).
  *   · lib/kernel/video createVideoProject contract (the ai_video_projects shape).
@@ -55,6 +60,8 @@ import type { VideoQrKind } from "@/lib/video/video-qr"
 // value here — selectVideoFormatLearned uses recommendFormatAdjustment directly,
 // and selectVideoFormat itself never touches it (backward-compat preserved).
 import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
+import { finishForVideo } from "@/lib/video/finish-spec"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -81,6 +88,12 @@ export type SituationKind =
   // Asset Manager (video director). Avatar-led + persona-matched; CTA is "book a consult"
   // (book_meeting QR), NOT a listing. Never broadcast — it distributes 1:1 over email only.
   | "lead_intro"
+  // The ANIMATED concept explainer — the same teaching job as "explainer", but the
+  // concept is DRAWN rather than narrated by an avatar: an equity curve, a rate-buydown
+  // payment comparison, a closing timeline, animated from lib/charts/explainer-diagram.ts.
+  // Distinct kind rather than a flag on "explainer" because the treatment differs at every
+  // layer (no avatar, charts on, no b-roll) — the same reason lead_intro is its own kind.
+  | "concept_animation"
 
 export type CompositionTierLite =
   | "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
@@ -308,6 +321,15 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
         aspect: "square",
         targetChannels: socialFeed,
       }
+
+    case "concept_animation":
+      return {
+        compositionId: "ExplainerAnimReel",
+        needsAvatar: false,  // the animation IS the visual (finish-spec: CHART_REEL, broll none)
+        needsBroll: false, needsCharts: true, needsSlides: false,
+        aspect: "square",
+        targetChannels: socialFeed,
+      }
   }
 }
 
@@ -444,6 +466,7 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "market_update":
     case "anniversary":
     case "explainer":
+    case "concept_animation":  // teaching cut — music must never fight the narration
     case "lead_intro":    return "calm"
     case "cma":
     case "presentation":  return "none"
@@ -468,7 +491,10 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "coming_soon":   return "coming_soon"
     case "market_update": return "market_update"
     case "cma":           return "cma"
-    case "explainer":     return "explainer"
+    case "explainer":
+    // Same teaching destination as the avatar-led explainer — NOT the listing page
+    // the default falls back to.
+    case "concept_animation": return "explainer"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "neighborhood"
     case "photo_walkthrough":
@@ -487,6 +513,7 @@ export function qrCaptionForSituation(kind: SituationKind): string {
     case "market_update":  return "Scan for the full market report"
     case "cma":            return "Scan for your home value"
     case "explainer":      return "Scan to book a consult"
+    case "concept_animation": return "Scan to book a consult"
     case "lead_intro":     return "Scan to book a consult"
     case "presentation":   return "Scan for the full tour"
     case "anniversary":    return "Scan for your equity report"
@@ -505,7 +532,9 @@ export function qrCaptionForSituation(kind: SituationKind): string {
 export function defaultHookForSituation(kind: SituationKind): string {
   switch (kind) {
     case "new_listing":   return "Just Listed"
-    case "price_drop":    return "Pricing Update"
+    // PUBLIC (§6) — this is the reel's cover hook, so it speaks the owner's
+    // public word; the `price_drop` SituationKind itself is unchanged.
+    case "price_drop":    return priceImprovementLabel("badge")
     case "just_sold":     return "Just Sold"
     case "open_house":    return "Open House This Weekend"
     case "coming_soon":   return "Coming Soon"
@@ -513,6 +542,7 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "Step Inside"
     case "cma":           return "What Your Home Is Worth"
     case "explainer":     return "What You Should Know"
+    case "concept_animation": return "Let Me Show You"
     case "presentation":  return "Your Listing Strategy"
     case "anniversary":   return "A Year In Your Home"
     case "testimonial":   return "What Clients Say"
@@ -675,9 +705,17 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "listing_promo"
     case "cma":           return "pre_appointment"
     case "explainer":     return "education"
+    // Reuses the SAME video_type CHECK value as the avatar-led explainer — this maps
+    // to a DB enum, so a new literal here would be rejected by the constraint.
+    case "concept_animation": return "education"
     case "lead_intro":    return "education"
     case "presentation":  return "presentation_chapter"
-    case "anniversary":   return "memory_video"
+    // m565 — NOT 'memory_video'. That word names a different product (a
+    // seller-dictated family history for a 20-year-plus homeowner —
+    // lib/video/memory-video-gate.ts). The anniversary/equity moment got its own
+    // CHECK value, spelled the way agent_intro_videos.trigger and
+    // contacts.home_anniversary already spell it (§6, one vocabulary).
+    case "anniversary":   return "home_anniversary"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "social_reel"
   }
@@ -694,7 +732,8 @@ function formatForAspect(aspect: VideoAspect): string {
 
 export interface CommissionOpts {
   brokerageId: string
-  /** users.id of the agent (ai_video_projects.agent_id FK → users.id). */
+  /** users.id of the agent. Resolved to the agents.id that
+   *  ai_video_projects.agent_id wants before anything is staged. */
   agentUserId: string
   /** Listing this video promotes — drives QR listing_detail + idempotency entity. */
   listingId?: string | null
@@ -771,6 +810,18 @@ export async function commissionVideo(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
 
+  // 0. Identity before spend. ai_video_projects.agent_id is a NOT NULL FK to
+  //    agents(id). The CLIENT-AGNOSTIC resolver, not agent-identity-resolver:
+  //    this module is deliberately not server-only (the simulator imports the
+  //    pure selectors), so it must resolve through whatever client it was handed
+  //    — including the injected test client. Refuse before minting QRs or
+  //    burning gateway tokens on a hook nobody can own.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
   // 1. Resolve the format + assembly structure (pure).
   //    Learning is ON BY DEFAULT: we consult the SELF-IMPROVING layer, which still
   //    returns the expert default unless REAL per-brokerage outcomes clear the
@@ -804,21 +855,48 @@ export async function commissionVideo(
     formatWhy = "Expert default (learning disabled for this commission)."
   }
   const spec = assemblySpec(situation, format)
+  // THE FINISH SPEC, CONSULTED (wired 2026-09-03). lib/video/finish-spec.ts is
+  // the owner's one definition of which category gets which stitching; until
+  // now it was asserted against the registry in CI and read by nothing at
+  // runtime, so the QR was minted for compositions the spec says carry none
+  // (TeammateExplainerReel bakes its own; internal report shows skip it) and a
+  // music mood was staged for narrated slide decks the spec keeps silent.
+  const finish = finishForVideo(format.compositionId)
 
   // 2. Read the composition's capabilities from the registry (source of truth).
   //    When the row is absent (e.g. EquityReportReel mid-registration by the
-  //    sibling agent) we fall back to the format's own flags so the Director
+  //    sibling agent) we fall back to the FINISH SPEC's bookend decision, so
   //    never hard-deps any single composition existing yet.
-  let supportsBookends = true
+  //
+  // TOMBSTONE (§1.3, 2026-09-03): `requiresVoiceover` DELETED from both this
+  // function and commissionVideoExperiment. It was seeded from
+  // `format.needsAvatar || format.needsCharts`, overwritten from the row's
+  // `requires_voiceover`, and then read by NOTHING — no local, no
+  // video_metadata key, no provider_metadata key (the experiment twin had to
+  // write `void requiresVoiceover` to keep tsc quiet, which is the shape of a
+  // value nobody wants). It was also a read with NO CODE WRITER: the whole tree
+  // writes `remotion_compositions.requires_voiceover` only from migration SQL
+  // (m168's hand-seeded guess, corrected by m601), so this was the Director
+  // consulting a hand-seeded mirror and discarding the answer.
+  //
+  // THE SURVIVOR, which supplies the same fact and is what every live decision
+  // already uses: lib/remotion/content-contract.ts `consumesVoiceover` (does
+  // this composition render <Audio src={voiceoverUrl}>?) and `stagesVoiceover`
+  // (…and do THESE props carry one?). Read by lib/remotion/render-coordinator.ts
+  // and lib/agents/asset-manager-actions.ts to stamp `used_voiceover`; the
+  // column is that set's live mirror (m601), never its source. Nothing was
+  // ported: the deleted variable held no value the survivor lacks.
+  //
+  // If the Director ever needs to know, the call is
+  // `consumesVoiceover(format.compositionId)` — pure, no registry round-trip.
+  let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
       requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
     }
   } catch { /* registry read is best-effort — the format flags are the fallback */ }
 
@@ -845,9 +923,11 @@ export async function commissionVideo(
   }
 
   // 4. Mint the OUTRO QR (idempotent per entity×kind; null = render without QR).
-  //    Skipped on MLS-clean cuts (a tracked agent QR is branding).
+  //    Skipped on MLS-clean cuts (a tracked agent QR is branding) and on
+  //    compositions whose finish spec carries no QR — minting one there filed a
+  //    qr_codes row the reel never rendered.
   let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-  if (!opts.mlsClean) {
+  if (!opts.mlsClean && finish.qr) {
     try {
       const { mintVideoQr } = await import("@/lib/video/video-qr")
       qr = await mintVideoQr({
@@ -870,12 +950,13 @@ export async function commissionVideo(
   let hookLine = fallbackHook
   let complianceStatus: "passed" | "failed" = "passed"
   let violations: string[] = []
+  // Declared OUTSIDE the try: the same bounded fact set is stamped onto
+  // video_metadata.facts below so the eval harness can ground-check the reel.
+  const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
   try {
     const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
-
-    const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -997,9 +1078,17 @@ export async function commissionVideo(
     target_channels: format.targetChannels,
     intro: introProps,
     outro: outroProps,
-    music_mood: effectiveMood,
+    // null when the finish spec keeps this composition silent (narrated slide
+    // decks, the teammate explainer) — the coordinator then mixes no bed.
+    music_mood: finish.music ? effectiveMood : null,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // THE BOUNDED FACT SET (stamped 2026-09-03) — the ONLY facts the hook was
+    // allowed to assert. lib/agents/manager-outbound-eval.ts
+    // evalBrokerageDirectorReels reads it so the Director eval harness can
+    // ground-check a staged reel's numbers/addresses instead of judging
+    // superlatives alone.
+    facts,
     // Lead-addressed intro reel: stamp the lead + audience so the completion publisher
     // (lib/kernel/video-coordination) routes the finished reel 1:1 to the Campaign
     // Orchestrator (campaign_orchestrator:lead_outreach_ready) instead of a SOCIAL
@@ -1016,12 +1105,82 @@ export async function commissionVideo(
     broll_sourced_scope: brollSourcedScope,
   }
 
+  // 6b. THE CONTENT. Everything above this line is CHROME — the bookends, the
+  //     tracked QR, the music mood, the b-roll. None of it is what the video
+  //     SAYS. The staged props used to stop there, and Remotion merges input
+  //     props over each composition's Studio defaults, so the unsupplied half
+  //     did not render blank: the equity reel reported $600,000 against
+  //     $500,000 paid, the listing reel advertised 123 Main Street at $625,000,
+  //     the testimonial published a five-star review from a client who does not
+  //     exist. The callers were already handing over real facts (equity-trigger
+  //     passes a RentCast valuation and the closed transaction's basis price;
+  //     video-plays passes a real agent_reviews row) — the Director read them
+  //     only for the hook's fact list and dropped them here.
+  const { resolveDirectorContentProps } = await import("@/lib/video/director-content")
+  const contentProps = await resolveDirectorContentProps(svc, situation, format.compositionId, {
+    brokerageId: opts.brokerageId,
+    agentUserId: opts.agentUserId,
+    listingId: opts.listingId ?? null,
+    contactId: opts.contactId ?? null,
+    hookLine,
+  })
+
+  // 6c. REFUSE rather than fabricate. A commission whose composition still has
+  //     unsupplied content props would render the Studio sample data as this
+  //     client's facts. Blocked here rather than at render time so the manager
+  //     sees WHICH facts could not be established, and no queue row, no render
+  //     spend and no delivery is created. render-composition enforces the same
+  //     contract as the backstop for every producer that does not come through
+  //     the Director.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(format.compositionId, contentProps)
+  if (missing.length > 0) {
+    return {
+      ok: false, status: "blocked",
+      compositionId: format.compositionId,
+      reason: describeMissingContent(format.compositionId, missing),
+      violations: missing.map((m) => `content_prop_missing:${m}`),
+    }
+  }
+
+  // 6d. THE COMPANION SHARE CARD (§1.2 — the other half of the thumbnail
+  //     contract). Every composition the Director commissions declares a
+  //     thumbnail_composition_id, so render-composition renders a VideoCoverThumb
+  //     still beside the video and that PNG becomes thumbnail_url — the og:image
+  //     and the player poster on /v/[slug]. The Director staged no
+  //     thumbnail_props, so the card was completed from the composition's Studio
+  //     fixture: a fabricated address and price as the share image of a real
+  //     client's video. The backstop now SKIPS such a card instead of publishing
+  //     it, which is correct and leaves the reel with no share image at all —
+  //     so the facts are staged HERE, where they already exist. Nothing is
+  //     authored: the two lines are re-read from contentProps (resolved from
+  //     live rows above) and the seoHint is cut verbatim from the gated hook.
+  //     A refusal is a LOG, never a block: a video with no share image is a
+  //     degraded preview; a video that cannot be made is a missing deliverable,
+  //     and these are not the same failure.
+  //
+  //     ONE SPELLING of the audience rule (§6) — the row's audience_type below
+  //     reads this same const instead of restating the condition.
+  const audienceType: "customer_facing" | "in_house" =
+    situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing"
+  const { directorShareCard } = await import("@/lib/video/director-content")
+  const share = directorShareCard(format.compositionId, contentProps, { hookLine, audienceType })
+  if (share.skipReason) {
+    console.warn(`[video-director] no companion share card for ${format.compositionId} — ${share.skipReason}`)
+  }
+
   const providerMetadata = {
     composition_id: format.compositionId,
     // music_mood rides input_props so buildRenderIntent threads it to the
     // coordinator's mood-matched music pick. brollClips rides input_props so the
     // render path feeds the composition's brollClips prop the real clips.
     input_props: {
+      ...contentProps,
+      // Rides under the ONE key render-decision.ts resolveThumbnailProps reads,
+      // which is also where lib/geo/video-landing.ts seoHintFromRenderProps
+      // reads the hint back for the landing page's og:description. Absent when
+      // the card was refused — an absent key is what makes the backstop skip.
+      ...(share.card ? { thumbnail_props: share.card } : {}),
       intro: introProps,
       outro: outroProps,
       // FLAT outro-QR props — the compositions read qrCodeDataUrl/qrCaption/mlsClean at the TOP level
@@ -1030,29 +1189,28 @@ export async function commissionVideo(
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption: qrCaptionForSituation(situation.kind),
       mlsClean: opts.mlsClean ?? false,
-      music_mood: effectiveMood,
+      music_mood: finish.music ? effectiveMood : null,
       ...(format.needsBroll ? { brollClips } : {}),
     },
   }
 
   // 7. STAGE the row — mirrors createVideoProject's shape, compliance-gated,
   //    NEVER auto-publishes (approval_status stays 'pending_review'; status
-  //    'remotion_pending' so the existing composition-render cron drains it).
+  //    'queued' so the existing composition-render cron drains it).
   const now = new Date().toISOString()
   const { data: inserted, error } = await svc
     .from("ai_video_projects")
     .insert({
       brokerage_id: opts.brokerageId,
-      agent_id: opts.agentUserId,
+      agent_id: directorAgentId,
       listing_id: opts.listingId ?? null,
       contact_id: opts.contactId ?? null,
       title: opts.title ?? `${hookLine} — ${format.compositionId}`,
       script_content: hookLine,
-      status: "remotion_pending",
+      status: "queued",
       video_type: videoTypeForSituation(situation.kind),
       format: formatForAspect(format.aspect),
-      audience_type: situation.kind === "cma" || situation.kind === "presentation"
-        ? "in_house" : "customer_facing",
+      audience_type: audienceType,
       is_ai_generated: true,
       approval_status: "pending_review", // gated — a human approves before send
       compliance_status: "passed",       // hook pre-cleared the gate above
@@ -1207,27 +1365,40 @@ export async function commissionVideoExperiment(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc: AnyClient = client ?? createServiceClient()
 
+  // Same identity gate as commissionVideo, and for the same reason — but here it
+  // guards N variant rows, so resolving once up front is what keeps a half-staged
+  // experiment from happening.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const directorAgentId = await resolveAgentIdInBrokerage(svc, opts.agentUserId, opts.brokerageId)
+  if (!directorAgentId) {
+    return { ok: false, status: "failed", reason: "no agent profile for this user in this brokerage" }
+  }
+
   const variantCount = Math.max(2, Math.min(HOOK_ANGLE_ORDER.length, Math.floor(cfg.variants ?? 3) || 3))
 
   // 1. Resolve the format + assembly structure (pure expert default — the A/B is
   //    about the HOOK, not the format; the format stays the deterministic choice).
   const format = selectVideoFormat(situation)
   const spec = assemblySpec(situation, format)
+  const finish = finishForVideo(format.compositionId) // same rule as commissionVideo
 
-  // 2. Read composition capabilities (registry is source of truth; format flags fallback).
-  let supportsBookends = true
+  // 2. Read composition capabilities (registry is source of truth; finish-spec fallback).
+  // TOMBSTONE (2026-09-03): `requiresVoiceover` deleted here too — same read,
+  // same reason. See commissionVideo's tombstone above; the survivor is
+  // lib/remotion/content-contract.ts consumesVoiceover / stagesVoiceover.
+  // This site is the one that PROVED it dead: the value's only remaining use
+  // was the `void requiresVoiceover` on the line after the try, written to
+  // silence the unused-variable error rather than to do anything.
+  let supportsBookends = finish.bookends
   let requiresAvatar = format.needsAvatar
-  let requiresVoiceover = format.needsAvatar || format.needsCharts
   try {
     const { getComposition } = await import("@/lib/remotion/registry")
     const comp = await getComposition(format.compositionId)
     if (comp) {
       supportsBookends = comp.supports_bookends
       requiresAvatar = comp.requires_did_avatar
-      requiresVoiceover = comp.requires_voiceover
     }
   } catch { /* registry read best-effort */ }
-  void requiresVoiceover
 
   // 3. Idempotency — one experiment per (entity, situation kind). Deterministic
   //    experiment_id so a re-run reuses the staged experiment instead of duplicating.
@@ -1312,7 +1483,7 @@ export async function commissionVideoExperiment(
     // Mint this variant's OWN tracked QR (idempotent per (entity, kind, variant) via
     // a variant-suffixed campaignId-free label — distinct QR so scans attribute per variant).
     let qr: import("@/lib/video/video-qr").MintedVideoQr | null = null
-    if (!opts.mlsClean) {
+    if (!opts.mlsClean && finish.qr) {
       try {
         const { mintVideoQr } = await import("@/lib/video/video-qr")
         qr = await mintVideoQr({
@@ -1356,7 +1527,7 @@ export async function commissionVideoExperiment(
       target_channels: format.targetChannels,
       intro: introProps,
       outro: outroProps,
-      music_mood: spec.music.mood,
+      music_mood: finish.music ? spec.music.mood : null,
       qr_code_id: qr?.qrCodeId ?? null,
       requested_via: "asset_manager",
       format_source: "default" as const,
@@ -1371,7 +1542,7 @@ export async function commissionVideoExperiment(
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
         qrCaption: qrCaptionForSituation(situation.kind),
         mlsClean: opts.mlsClean ?? false,
-        music_mood: spec.music.mood,
+        music_mood: finish.music ? spec.music.mood : null,
       },
     }
 
@@ -1379,12 +1550,12 @@ export async function commissionVideoExperiment(
       .from("ai_video_projects")
       .insert({
         brokerage_id: opts.brokerageId,
-        agent_id: opts.agentUserId,
+        agent_id: directorAgentId,
         listing_id: opts.listingId ?? null,
         contact_id: opts.contactId ?? null,
         title: opts.title ? `${opts.title} — ${v.angle}` : `${hookLine} — ${format.compositionId} (${v.angle})`,
         script_content: hookLine,
-        status: "remotion_pending",
+        status: "queued",
         video_type: videoTypeForSituation(situation.kind),
         format: formatForAspect(format.aspect),
         audience_type: situation.kind === "cma" || situation.kind === "presentation" ? "in_house" : "customer_facing",

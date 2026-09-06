@@ -125,7 +125,65 @@ async function main() {
     && JSON.stringify(MANAGER_COLLABORATIONS.assignment_policy_outcomes.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
     && JSON.stringify(MANAGER_COLLABORATIONS.referral_fee_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "sphere_of_influence"])
     && JSON.stringify(MANAGER_COLLABORATIONS.sequence_touch_cadence.managers.slice().sort()) === JSON.stringify(["ai_isa", "campaign_orchestrator"])
-    && Object.keys(MANAGER_COLLABORATIONS).length === 15)
+    && JSON.stringify(MANAGER_COLLABORATIONS.public_records_seller_signals.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
+    // 16 → 18. The count is here so an edge cannot be MINTED SILENTLY — a new
+    // collaboration widens canRefer, so the total is a tripwire, not decoration.
+    // But the claim this check makes is about DRIFT, and the two additions do
+    // not drift anything: every per-edge membership asserted above is unchanged,
+    // and the nine-deliberative-domain check directly above still passes, which
+    // is the substantive half. Both new edges are NON-deliberative — a handoff
+    // with no tradeoff to argue — so neither can reach the deliberation path:
+    //
+    //   tenant_principal_books            finance_manager + data_steward + recruiting_manager
+    //     Whether a team-scale tenant's lead reads its books. Money is
+    //     finance_manager's; the tier/identity facts the condition is built from
+    //     (brokerages, subscriptions, users) are data_steward's; `teams` — the
+    //     leadership anchor — is recruiting_manager's. The owner ruled the
+    //     boundary ("yes to the team lead and agents"), so there is nothing to
+    //     deliberate; the edge exists so the seam has a named owner.
+    //
+    //   seller_signal_education_routing   data_steward + ai_isa + shopping_agent + listing_concierge
+    //     A protected-class-derived seller signal reaching the education channel
+    //     selector. Again a handoff: the signal's steward hands a fact to the
+    //     selector. No REFERRAL_EMITTERS raiser exists for it, so flagging it
+    //     deliberative would be aspirational — an edge that declares an argument
+    //     nothing can raise.
+    //
+    // Adding an edge is the CORRECT response to a cross-manager seam (the
+    // repo's ownership model is cross-cooperative by design). Bumping this
+    // number without naming the edges would turn the tripwire off.
+    //
+    // 18 → 19. NAMED, per the rule directly above — bumping the number without
+    // naming the edge is how the tripwire gets turned off:
+    //
+    //   ad_audience_basis                 ads_manager + compliance_officer
+    //     What an ad audience is segmented ON. facebook_custom_audiences.source_rule
+    //     is written and read by ads_manager's commands; the rules deciding whether
+    //     that jsonb may be acted on are compliance_officer's (the protected-class
+    //     refusal and the owner's positive persona rule). The vocabularies OVERLAP by
+    //     construction — four canonical Persona members (senior, probate, divorce,
+    //     military) are also PROTECTED_CLASS_TOKENS — so the seam needs a named owner.
+    //     NON-deliberative: the owner ruled both halves, so there is nothing to argue,
+    //     and no REFERRAL_EMITTERS raiser exists for it.
+    // 19 → 20. NAMED, per the rule above — bumping the number without naming
+    // the edge is how the tripwire gets turned off:
+    //
+    //   benefit_offerings                 recruiting_manager + finance_manager + compliance_officer
+    //     OWNER RULING (2026-08-27): brokerages mark residual income / medical /
+    //     retirement in settings. The marks are written by the finance-gated
+    //     settings home, READ by recruiting surfaces (pitch kit, careers page,
+    //     retention lever), and WORDED under compliance's offered-never-promised
+    //     rule — a mark flipped on the finance side silently changes what
+    //     recruiting advertises, which is exactly the seam that must be declared.
+    //     NON-deliberative: the broker declares, finance gates, compliance words —
+    //     a settled handoff chain with no live raiser that could stage an argument.
+    && Object.keys(MANAGER_COLLABORATIONS).length === 20
+    && !isDeliberativeDomain("tenant_principal_books")
+    && !isDeliberativeDomain("seller_signal_education_routing")
+    && !isDeliberativeDomain("ad_audience_basis")
+    && !isDeliberativeDomain("benefit_offerings")
+    && JSON.stringify(MANAGER_COLLABORATIONS.benefit_offerings.managers.slice().sort()) === JSON.stringify(["compliance_officer", "finance_manager", "recruiting_manager"])
+    && JSON.stringify(MANAGER_COLLABORATIONS.ad_audience_basis.managers.slice().sort()) === JSON.stringify(["ads_manager", "compliance_officer"]))
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 
@@ -387,9 +445,12 @@ async function main() {
 
   console.log("\n[Layer 1h · wiring — the referral handler escalates deliberative domains (source check, doc-kernel idiom)]")
   const handlerSrc = src("lib/kernel/manager-signals.ts")
-  check("handleCrossManagerReferral escalates on domain.deliberate === true via runDeliberation",
-    handlerSrc.includes("domain.deliberate === true") && handlerSrc.includes("runDeliberation")
-    && handlerSrc.includes("summarizeDeliberation"))
+  // 2026-09-03 (lane L6): the handler reads the registry's ONE predicate,
+  // isDeliberativeDomain (lib/managers/deliberation.ts), not a re-spelled
+  // `domain.deliberate === true`; the pin follows the survivor.
+  check("handleCrossManagerReferral escalates on isDeliberativeDomain(...) via runDeliberation",
+    /isDeliberativeDomain\(/.test(handlerSrc) && !handlerSrc.includes("domain.deliberate === true")
+    && handlerSrc.includes("runDeliberation") && handlerSrc.includes("summarizeDeliberation"))
   check("the escalation reuses the referral's own payload (idempotent — a retry never re-argues)",
     handlerSrc.includes("existingPayload: signal.payload"))
   check("the governance surface renders the argument (positions, winner, why, dissent, rebuttals) + the teamwork card",

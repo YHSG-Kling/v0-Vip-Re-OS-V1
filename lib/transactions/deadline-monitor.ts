@@ -1,5 +1,4 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import type { TransactionStage } from "./transaction-stages"
 import { ActivityFactory } from "./activity-factory"
 import { NotificationService } from "./notification-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"

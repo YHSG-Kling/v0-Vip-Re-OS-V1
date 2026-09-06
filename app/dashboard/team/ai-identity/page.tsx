@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
 import { getAIIdentityProfile, getParentAIIdentityProfile } from "@/app/actions/ai-identity"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -16,6 +18,13 @@ export default async function TeamAIIdentityPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("id, user_type, brokerage_id, team_id")
@@ -23,7 +32,7 @@ export default async function TeamAIIdentityPage() {
     .maybeSingle()
 
   // Role gate: team_lead + admin + broker
-  if (!profile?.brokerage_id || !profile.team_id || !["team_lead", "admin", "broker"].includes(profile.user_type || "")) {
+  if (!profile?.brokerage_id || !profile.team_id || !isAdminOrBroker({ user_type: profile.user_type || "" })) {
     redirect("/dashboard")
   }
 

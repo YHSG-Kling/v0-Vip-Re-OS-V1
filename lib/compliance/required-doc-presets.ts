@@ -40,6 +40,29 @@ const US_BASELINE: RequiredDocPreset[] = [
   { classification: "id_document",          block_on_missing: false, description: "Buyer ID for compliance file (warning)." },
 ]
 
+// ── SELLER baseline (m356) ─────────────────────────────────────────────────
+//
+// The preset library was buyer-only, but the seeder has always accepted
+// dealType: "seller" — so seeding a seller scope installed the BUYER stack
+// (pre-approval letter, proof of funds, buyer-broker agreement) under a seller
+// deal_type. A seller has no pre-approval letter, so those rules could never be
+// satisfied and every seller file would sit permanently blocked.
+//
+// Owner's ruling drives the two anchors here: the LISTING AGREEMENT must be
+// signed to take on a listing, and the SELLER BROKER AGREEMENT is a DIFFERENT
+// document — both are separately requirable.
+const SELLER_BASELINE: RequiredDocPreset[] = [
+  { classification: "listing_agreement",             block_on_missing: true,  description: "Signed listing agreement — the listing cannot be taken on without it." },
+  { classification: "seller_broker_agreement",       block_on_missing: false, description: "Seller broker agreement. DISTINCT from the listing agreement; required by some brokerages in addition to it." },
+  { classification: "agency_disclosure",             block_on_missing: true,  description: "Seller-side agency disclosure (state-form specific)." },
+  { classification: "disclosure",                    block_on_missing: true,  description: "Seller's property condition disclosure." },
+  { classification: "commission_agreement",          block_on_missing: true,  description: "Listing-side commission terms on file." },
+  { classification: "title_report",                  block_on_missing: false, description: "Preliminary title / ownership report (warning until ordered)." },
+  { classification: "hoa_documents",                 block_on_missing: false, description: "HOA docs where the property is in an association." },
+  { classification: "id_document",                   block_on_missing: false, description: "Seller ID for the compliance file (warning)." },
+  { classification: "preliminary_closing_statement", block_on_missing: false, description: "Preliminary HUD / settlement statement from title or the closing attorney — the trigger to prepare the CDA." },
+]
+
 // ── State-specific additions on top of the baseline ───────────────────────
 // Each state's "Additional" rows are STACKED with the baseline by the seeder.
 
@@ -119,13 +142,33 @@ const STATE_ADDITIONS: Record<string, RequiredDocPreset[]> = {
  * REPLACE baseline rows for the same classification when both exist
  * (state-specific descriptions are more useful for the broker).
  */
-export function getRequiredDocPresetsForState(stateCode: string | null | undefined): RequiredDocPreset[] {
+export function getRequiredDocPresetsForState(
+  stateCode: string | null | undefined,
+  /** WHICH SIDE of the deal. The seeder has always taken a dealType, but this
+   *  resolver ignored it and returned the buyer stack regardless — so seeding a
+   *  seller scope installed pre_approval_letter and proof_of_funds as BLOCKING
+   *  requirements a seller can never satisfy. Defaulted to "buyer" so existing
+   *  callers are unchanged. */
+  dealType: "buyer" | "seller" | "dual" = "buyer",
+): RequiredDocPreset[] {
   const upperState = (stateCode ?? "").toUpperCase()
   const stateRows  = STATE_ADDITIONS[upperState] ?? []
-  // Per-classification merge: state row overrides baseline for the same key
+  // Per-classification merge: state row overrides baseline for the same key.
+  // A "dual" scope legitimately wants both sides' paperwork on file.
   const merged = new Map<string, RequiredDocPreset>()
-  for (const p of US_BASELINE) merged.set(p.classification, p)
-  for (const p of stateRows)   merged.set(p.classification, p)
+  if (dealType === "buyer" || dealType === "dual") {
+    for (const p of US_BASELINE) merged.set(p.classification, p)
+  }
+  if (dealType === "seller" || dealType === "dual") {
+    for (const p of SELLER_BASELINE) merged.set(p.classification, p)
+  }
+  // State additions are written against the buyer stack today; they still apply
+  // to a dual scope, and to a seller scope only where the classification is one
+  // the seller side actually carries (agency_disclosure, disclosure, title…).
+  for (const p of stateRows) {
+    if (dealType === "seller" && !SELLER_BASELINE.some((s) => s.classification === p.classification)) continue
+    merged.set(p.classification, p)
+  }
   return Array.from(merged.values())
 }
 

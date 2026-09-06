@@ -1,7 +1,11 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { put } from "@vercel/blob"
+import { createServiceClient } from "@/lib/supabase/service"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media` (published
+// audio and cover art are fetched unauthenticated by podcast clients).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
@@ -15,6 +19,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 
 /**
  * AI Podcast Generation Actions
@@ -86,7 +91,7 @@ export async function createPodcastEpisode(params: {
     })
 
     // If template provided, load template settings
-    let templateData = null
+    let templateData: { use_count?: number | null; [k: string]: unknown } | null = null
     if (params.templateId) {
       const { data: template } = await supabase
         .from("podcast_templates")
@@ -186,8 +191,7 @@ export async function createPodcastEpisode(params: {
       .from("podcast_episodes")
       .insert({
         brokerage_id: brokerageId,
-        // podcast_episodes.agent_id FKs to users (content/business action), not agents.
-        agent_id: userId,
+        agent_id: agentId,
         template_id: params.templateId || null,
         marketing_campaign_id: params.marketingCampaignId || null,
         source_video_project_id: params.sourceVideoProjectId || null,
@@ -209,6 +213,33 @@ export async function createPodcastEpisode(params: {
       })
       .select()
       .single()
+
+    // ── THE TEMPLATE'S USE COUNTER ─────────────────────────────────────────
+    // `podcast_templates.use_count` is ORDERED BY in getPodcastTemplates
+    // (this file) and RENDERED verbatim — "Used {n} times" —
+    // app/dashboard/marketing/podcast/components/templates-tab.tsx:204. Nothing
+    // incremented it, so every template read "Used 0 times" for ever and the
+    // most-used ordering was arbitrary. Creating an episode FROM a template is
+    // the use.
+    //
+    // Read-then-write: PostgREST cannot express `col = col + 1` and there is no
+    // increment RPC for this table, so two simultaneous generations can cost one
+    // tick. That is acceptable for a popularity counter and is stated rather
+    // than hidden. Never blocks the episode — an unbumped counter must not lose
+    // a podcast the tenant already paid to generate.
+    if (params.templateId && !error) {
+      const { data: bumped, error: bumpErr } = await supabase
+        .from("podcast_templates")
+        .update({ use_count: Number(templateData?.use_count ?? 0) + 1 })
+        .eq("id", params.templateId)
+        .eq("agent_id", agentId)
+        .eq("brokerage_id", brokerageId)
+        .select("id")
+      if (bumpErr) console.error("[podcast] template use_count not bumped:", bumpErr.message)
+      else if ((bumped ?? []).length === 0) {
+        console.error(`[podcast] template ${params.templateId} matched no row in this tenant when bumping use_count`)
+      }
+    }
 
     if (error) throw error
 
@@ -368,7 +399,7 @@ export async function generatePodcastAudio(episodeId: string) {
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -416,16 +447,20 @@ export async function generatePodcastAudio(episodeId: string) {
           provider.providerKey
         )
 
-        // Upload to Vercel Blob
-        const fileName = `podcast-${episodeId}-segment-${index}.mp3`
-        const blob = await put(fileName, audioBuffer, {
-          access: "public",
-          contentType: "audio/mpeg",
-        })
+        // The old key was a BARE `podcast-…-segment-N.mp3` at the store root,
+        // shared by every tenant. Now brokerage-prefixed like every other
+        // object we write.
+        const segUrl = await hostRenderedMedia(
+          createServiceClient(),
+          `${brokerageId}/podcast/segments/${episodeId}-${index}.mp3`,
+          audioBuffer,
+          "audio/mpeg",
+          "media",
+        )
 
         // No podcast_segments row: intermediate render artifacts retired —
         // episodes carry the consumable audio (open-loop sweep).
-        return { url: blob.url, duration: segment.estimatedDuration }
+        return { url: segUrl, duration: segment.estimatedDuration }
       })
     )
 
@@ -571,14 +606,17 @@ async function synthesizeVoice(
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!userId || !brokerageId) {
     return { success: false, error: "Missing agent context", episodes: [] }
   }
+  // Authenticated but no agent profile ⇒ no episodes are yours. Empty list,
+  // not a filter on null.
+  if (!agentId) return { success: true, episodes: [] }
   const supabase = await createClient()
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", userId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -656,7 +694,7 @@ export async function publishPodcastEpisode(
       .single()
 
     if (episodeError) throw episodeError
-    if (episode.agent_id !== userId) {
+    if (episode.agent_id !== agentId) {
       return { success: false, error: "Unauthorized" }
     }
 
@@ -691,7 +729,7 @@ export async function publishPodcastEpisode(
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -815,14 +853,16 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // Templates are owned by an agents row; without one the honest answer is none.
+  if (!agentId) return { success: true, templates: [] }
   const supabase = await createClient()
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
@@ -845,7 +885,8 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — the template was not created." }
   const supabase = await createClient()
 
   try {
@@ -853,7 +894,7 @@ export async function createPodcastTemplate(params: {
       .from("podcast_templates")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: userId,
+        agent_id: agentId,
         name: params.name,
         description: params.description || "",
         template_type: params.templateType,
@@ -886,7 +927,8 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "No agent profile for this user — nothing to update." }
   const supabase = await createClient()
 
   try {
@@ -903,7 +945,7 @@ export async function updatePodcastTemplate(
         updated_at: new Date().toISOString(),
       })
       .eq("id", templateId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .select()
       .single()
@@ -973,17 +1015,34 @@ export async function updateDistributionChannel(
   }
 }
 
-// Create a distribution channel for the brokerage
+// Create a PERSONAL distribution channel for the calling agent.
+//
+// Lane fix (2026-09-01): the only caller is the settings page's
+// "Set Up My Channels" button (app/dashboard/settings/podcast-channels/
+// podcast-channels-client.tsx:127), whose whole purpose is the personal
+// override lane — yet this insert never stamped agent_user_id, so every
+// "personal" channel landed in the brokerage lane (agent_user_id NULL) and
+// the page's my-channels query (.eq("agent_user_id", user.id)) was
+// structurally empty forever. Worse, the duplicate check was lane-blind:
+// an existing BROKERAGE spotify channel made the personal setup return
+// alreadyExists and create nothing. Both now speak the personal lane;
+// agent_user_id FKs users(id) and getAgentContext().userId is that class.
 export async function createDistributionChannel(channelName: string) {
-  const { brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
+  if (!userId || !brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
   const supabase = await createClient()
 
   try {
-    // Check if channel already exists to prevent duplicates
+    // Check if a PERSONAL channel already exists to prevent duplicates —
+    // a brokerage-level channel of the same name is the inherited default,
+    // not a duplicate of the caller's own.
     const { data: existing } = await supabase
       .from("podcast_distribution_channels")
       .select("id")
       .eq("brokerage_id", brokerageId)
+      .eq("agent_user_id", userId)
       .eq("channel_name", channelName)
       .maybeSingle()
 
@@ -995,6 +1054,7 @@ export async function createDistributionChannel(channelName: string) {
       .from("podcast_distribution_channels")
       .insert({
         brokerage_id: brokerageId,
+        agent_user_id: userId,
         channel_name: channelName,
         is_enabled: false,
         created_at: new Date().toISOString(),
@@ -1014,7 +1074,17 @@ export async function createDistributionChannel(channelName: string) {
 
 // Get video scripts library for episode sourcing
 export async function getVideoScriptsLibrary() {
-  const { brokerageId } = await getAgentContext()
+  // `getAgentContext()` never throws: an unauthenticated caller gets the safe
+  // default, whose `brokerageId` is NULL. `.eq("brokerage_id", null)` is not the
+  // no-op it looks like — postgrest renders it as `brokerage_id=eq.null`, which
+  // Postgres tries to cast to uuid and rejects with 22P02. The error was then
+  // routed into the `catch` and reported as a generic failure, so an
+  // unauthenticated call and a real database problem looked identical. Refuse
+  // explicitly instead.
+  const { isAuthenticated, brokerageId } = await getAgentContext()
+  if (!isAuthenticated || !brokerageId) {
+    return { success: false, error: "Unauthorized", scripts: [] }
+  }
   const supabase = await createClient()
 
   try {
@@ -1037,7 +1107,8 @@ export async function getVideoScriptsLibrary() {
 
 // Get video projects for episode sourcing
 export async function getVideoProjects() {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) return { success: true, projects: [] }
   const supabase = await createClient()
 
   try {
@@ -1045,8 +1116,8 @@ export async function getVideoProjects() {
       .from("ai_video_projects")
       .select("id, title, script_content, video_type, duration_seconds, status, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_id", userId)
-      .in("status", ["completed", "published"])
+      .eq("agent_id", agentId)
+      .in("status", VIDEO_FINISHED_STATUSES as unknown as string[])
       .order("created_at", { ascending: false })
       .limit(50)
 
@@ -1081,68 +1152,35 @@ export async function getPodcastEpisode(episodeId: string) {
   }
 }
 
-// Get real podcast analytics aggregated from podcast_analytics_events + podcast_episodes
-export async function getPodcastAnalytics() {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  try {
-    // Total plays (play events)
-    const { count: totalPlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("*", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    // Total listen time in minutes
-    const { data: listenData } = await supabase
-      .from("podcast_analytics_events")
-      .select("duration_listened_seconds")
-      .eq("brokerage_id", brokerageId)
-    const totalListenMinutes = Math.round(
-      (listenData ?? []).reduce((s: number, r: { duration_listened_seconds?: number }) => s + (r.duration_listened_seconds ?? 0), 0) / 60
-    )
-
-    // Per-episode play counts
-    const { data: episodePlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("episode_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    const playsByEpisode: Record<string, number> = {}
-    for (const row of episodePlays ?? []) {
-      playsByEpisode[row.episode_id] = (playsByEpisode[row.episode_id] ?? 0) + 1
-    }
-
-    // Episode titles
-    const { data: episodes } = await supabase
-      .from("podcast_episodes")
-      .select("id, title")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "published")
-
-    const episodeStats = (episodes ?? []).map((ep: { id: string; title: string }) => ({
-      id: ep.id,
-      title: ep.title,
-      plays: playsByEpisode[ep.id] ?? 0,
-    })).sort((a, b) => b.plays - a.plays)
-
-    return {
-      success: true,
-      totalPlays: totalPlays ?? 0,
-      totalListenMinutes,
-      episodeStats,
-    }
-  } catch (error: any) {
-    console.error("[v0] Error fetching podcast analytics:", error)
-    return { success: false, error: error.message, totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
-  }
-}
+// ─── getPodcastAnalytics — MERGED-THEN-DELETED (orphan burn-down lane C) ──────
+//
+// SURVIVOR: getPodcastAdvancedAnalytics at app/actions/podcast-generation.ts:1443
+// — the read the Podcast dashboard's Analytics tab actually calls
+// (app/dashboard/marketing/podcast/components/analytics-tab.tsx:71). It computes
+// this one's whole result set (totalPlays, totalListenMinutes, per-episode plays)
+// from a SINGLE podcast_analytics_events read instead of three, and adds the
+// per-channel breakdown, the daily trend, subscriber growth and the platform deep
+// links on top.
+//
+// MERGED FIRST, then deleted. Two axes this had and the survivor did not:
+//   · per-episode rows SORTED by plays descending — an episode list in arbitrary
+//     Postgres order is not a leaderboard;
+//   · the ability to tell a published episode from a draft — this filtered
+//     status='published'; the survivor already SELECTED `status` and dropped it,
+//     so the column is now returned and the caller can filter or label.
+// Both now live on getPodcastAdvancedAnalytics.
+//
+// NOT merged (deliberately): this one's `.select("*", { head: true, count })` for
+// totalPlays. A head-count destructured without `error` resolves to count: null on
+// a refusal, and `?? 0` renders that as a confident "0 plays". The survivor counts
+// rows it actually read, so there is no count it can fail to compute silently.
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId } = await getAgentContext()
+  // The ownership filter is agents-class; with no agent profile there is no row
+  // this caller owns, so refuse rather than issue a delete that matches nothing.
+  if (!agentId) return { success: false, error: "No agent profile for this user." }
   const supabase = await createClient()
 
   try {
@@ -1154,7 +1192,7 @@ export async function deletePodcastEpisode(episodeId: string) {
       .from("podcast_episodes")
       .delete()
       .eq("id", episodeId)
-      .eq("agent_id", userId)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 
     if (error) throw error
@@ -1176,6 +1214,9 @@ export async function generatePodcastEpisodeDescription(params: {
     if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
 
     const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "podcast_description_generation",
       maxTokens: 200,
       temperature: 0.7,
@@ -1249,12 +1290,28 @@ export async function uploadPodcastCoverArt(formData: FormData) {
   if (!file) return { success: false, error: "No file provided" }
   if (!file.type.startsWith("image/")) return { success: false, error: "File must be an image" }
   try {
-    const ext = file.name.split(".").pop() ?? "png"
-    const blob = await put(`podcast-cover-art/${agentId}-${Date.now()}.${ext}`, file, {
-      access: "public",
+    // THE SIZE GATE. This is a Server Action taking the File in the request
+    // body, so the bytes DO cross a Vercel Function and the 4.5 MB body cap
+    // applies — `server_action`, not `direct_to_storage`. Without this the
+    // upload 413s at the edge with no message this code chose.
+    const { checkUpload } = await import("@/lib/storage/file-limits")
+    const gate = checkUpload({
+      bucket: "media",
+      transport: "server_action",
+      bytes: file.size,
       contentType: file.type,
     })
-    return { success: true, url: blob.url }
+    if (!gate.ok) return { success: false, error: gate.reason }
+
+    const ext = file.name.split(".").pop() ?? "png"
+    const url = await hostRenderedMedia(
+      createServiceClient(),
+      `${brokerageId}/podcast/cover-art/${agentId}-${Date.now()}.${ext}`,
+      Buffer.from(await file.arrayBuffer()),
+      file.type,
+      "media",
+    )
+    return { success: true, url }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
@@ -1312,7 +1369,7 @@ export async function testDistributionChannelConnection(channelId: string): Prom
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function generatePodcastSnippetSuggestions(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", snippets: [] }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1325,6 +1382,9 @@ export async function generatePodcastSnippetSuggestions(params: { episodeId: str
   if (!episode.script) return { success: false, error: "Episode has no script to extract from", snippets: [] }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_snippet_suggestions",
       maxTokens: 800,
       temperature: 0.7,
@@ -1365,6 +1425,9 @@ export async function generatePodcastBlogPost(params: { episodeId: string }) {
   if (!episode.script) return { success: false, error: "Episode has no script" }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_blog_post",
       maxTokens: 1500,
       temperature: 0.6,
@@ -1404,7 +1467,7 @@ ${episode.script.slice(0, 6000)}`,
 }
 
 export async function generatePodcastNewsletterTeaser(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1416,6 +1479,9 @@ export async function generatePodcastNewsletterTeaser(params: { episodeId: strin
   if (!episode) return { success: false, error: "Episode not found" }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_newsletter_teaser",
       maxTokens: 220,
       temperature: 0.65,
@@ -1465,12 +1531,99 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
   const since60 = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
   try {
-    const { data: events } = await supabase
+    const { data: events, error: eventsError } = await supabase
       .from("podcast_analytics_events")
-      .select("event_type, episode_id, platform, duration_listened_seconds, created_at")
+      .select("event_type, episode_id, platform, duration_listened_seconds, timestamp_seconds, listener_contact_id, created_at")
       .eq("brokerage_id", brokerageId)
+    if (eventsError) {
+      // §3 — a refused read used to fall through as "no events" and the tab
+      // rendered zeros over a refusal.
+      return { success: false, error: `podcast_analytics_events read refused: ${eventsError.message}` }
+    }
 
     const rows = events ?? []
+
+    // ── Per-contact listening — THE CRM SIGNAL (wave 26 columns) ─────────────
+    // trackPodcastEvent (:832) stamps listener_contact_id and timestamp_seconds
+    // on every event, and nothing read either: the tab could say "412 plays"
+    // and never WHO — so a past client who listened to every episode this
+    // quarter was indistinguishable from an anonymous RSS hit, and the one
+    // fact an agent can act on (this named person is engaging with my show)
+    // never reached them. Collapsed per contact, named from the contacts
+    // table (tenant-scoped), ranked by minutes. `anonymousEvents` is the
+    // denominator's blind spot published beside it: events with no
+    // listener_contact_id (RSS / directory plays) cannot be attributed.
+    type Listener = {
+      plays: number; seconds: number; ctaClicks: number
+      episodes: Set<string>; lastListenedAt: string | null
+    }
+    const byContact = new Map<string, Listener>()
+    let anonymousEvents = 0
+    for (const r of rows) {
+      const cid = (r as { listener_contact_id?: string | null }).listener_contact_id ?? null
+      if (!cid) { anonymousEvents++; continue }
+      const l = byContact.get(cid) ?? { plays: 0, seconds: 0, ctaClicks: 0, episodes: new Set<string>(), lastListenedAt: null }
+      if (r.event_type === "play") l.plays++
+      if (r.event_type === "cta_click") l.ctaClicks++
+      l.seconds += r.duration_listened_seconds ?? 0
+      if (r.episode_id) l.episodes.add(r.episode_id)
+      const ts = (r.created_at as string | null) ?? null
+      if (ts && (!l.lastListenedAt || ts > l.lastListenedAt)) l.lastListenedAt = ts
+      byContact.set(cid, l)
+    }
+    const listenerIds = Array.from(byContact.keys())
+    const listenerName = new Map<string, string | null>()
+    let listenerNameLookupError: string | null = null
+    if (listenerIds.length > 0) {
+      const { data: contactRows, error: contactErr } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name")
+        .eq("brokerage_id", brokerageId)
+        .in("id", listenerIds)
+      if (contactErr) {
+        listenerNameLookupError = contactErr.message
+      } else {
+        for (const c of (contactRows ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+          const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim()
+          listenerName.set(c.id, name || null)
+        }
+      }
+    }
+    const topListeners = Array.from(byContact.entries())
+      .map(([contactId, l]) => ({
+        contactId,
+        name: listenerName.get(contactId) ?? null,
+        plays: l.plays,
+        minutes: Math.round(l.seconds / 60),
+        episodesHeard: l.episodes.size,
+        ctaClicks: l.ctaClicks,
+        lastListenedAt: l.lastListenedAt,
+      }))
+      .sort((a, b) => b.minutes - a.minutes || b.plays - a.plays)
+      .slice(0, 25)
+
+    // ── Drop-off point (timestamp_seconds) ───────────────────────────────────
+    // A `pause` event's timestamp_seconds is where the listener stopped. The
+    // median of those per episode is the drop-off point; with no pause events
+    // it is null ("not measured"), never 0. `play` events carry a 0 timestamp
+    // by construction and are excluded so they cannot drag the median down.
+    const pauseByEpisode = new Map<string, number[]>()
+    const allPauses: number[] = []
+    for (const r of rows) {
+      if (r.event_type !== "pause") continue
+      const t = Number((r as { timestamp_seconds?: number | null }).timestamp_seconds ?? 0)
+      if (!Number.isFinite(t) || t <= 0) continue
+      const arr = pauseByEpisode.get(r.episode_id) ?? []
+      arr.push(t); pauseByEpisode.set(r.episode_id, arr)
+      allPauses.push(t)
+    }
+    const median = (xs: number[]): number | null => {
+      if (xs.length === 0) return null
+      const s = [...xs].sort((a, b) => a - b)
+      const mid = Math.floor(s.length / 2)
+      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2)
+    }
+    const medianDropOffSeconds = median(allPauses)
 
     // Total plays
     const totalPlays = rows.filter((r: any) => r.event_type === "play").length
@@ -1480,13 +1633,17 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       rows.reduce((s: number, r: any) => s + (r.duration_listened_seconds ?? 0), 0) / 60
     )
 
-    // Avg completion rate (only for events that record completion_pct)
-    const completionRows = rows.filter((r: any) => typeof r.completion_pct === "number")
-    const avgCompletionRate = completionRows.length
-      ? Math.round(
-          (completionRows.reduce((s: number, r: any) => s + (r.completion_pct ?? 0), 0) / completionRows.length) * 100
-        ) / 100
-      : 0
+    // Avg completion rate — HONESTLY ABSENT, not zero.
+    //
+    // This filtered `typeof r.completion_pct === "number"`, but there is no
+    // completion_pct column on podcast_analytics_events (live-verified: id,
+    // brokerage_id, episode_id, event_type, timestamp_seconds,
+    // duration_listened_seconds, platform, listener_contact_id, created_at) and it
+    // was not in the select either. The filter was false for every row that will
+    // ever exist, so the branch always fell through to 0 and the Analytics tab
+    // rendered a confident "0%" for a number nobody had computed. Null says
+    // "not measured" — the tab renders a dash.
+    const avgCompletionRate: number | null = null
 
     // Subscriber growth: new subscribe events over last 30 days vs prior 30 days
     const subs30 = rows.filter(
@@ -1562,14 +1719,21 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       else if (n === "rss") platformLinks.rss = ch.external_show_id
     }
 
+    // MERGED from getPodcastAnalytics (see its tombstone above): `status` is
+    // returned rather than selected-and-dropped, so a caller can tell a published
+    // episode from a draft, and the list is SORTED by plays descending so it reads
+    // as a leaderboard instead of whatever order Postgres returned.
     const perEpisode = (episodeRows ?? []).map((ep: any) => ({
       id: ep.id,
       title: ep.title,
+      status: ep.status as string | null,
       plays: playsByEpisode[ep.id] ?? 0,
+      /** Median pause position in seconds, or null when no listener paused. */
+      dropOffSeconds: median(pauseByEpisode.get(ep.id) ?? []),
       audioUrl: ep.audio_url,
       publishedChannels: ep.publish_channels ?? [],
       platformLinks,
-    }))
+    })).sort((a, b) => b.plays - a.plays)
 
     return {
       success: true,
@@ -1581,6 +1745,12 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       channelBreakdown,
       dailyTrend,
       perEpisode,
+      /** Named listeners ranked by minutes — the per-contact CRM signal. */
+      topListeners,
+      identifiedListeners: byContact.size,
+      anonymousEvents,
+      listenerNameLookupError,
+      medianDropOffSeconds,
     }
   } catch (error: any) {
     return { success: false, error: error.message }

@@ -75,11 +75,14 @@ export async function POST(request: NextRequest) {
   let contactId: string | null = null
   let leadId: string | null = null
   let agentRowId: string | null = null
+  let callerDigits = ""
+  let classification = "unknown"
   try {
     const digits = from.replace(/\D/g, "")
+    callerDigits = digits
     const { data: existing } = await svc.from("contacts").select("id")
       .eq("brokerage_id", ctx.brokerageId).eq("phone_digits", digits).maybeSingle()
-    if (existing) contactId = (existing as any).id
+    if (existing) { contactId = (existing as any).id; classification = "existing_contact" }
     else {
       // Known LEAD calling in? Unconverted leads only (converted leads matched above).
       const { data: lead } = await svc.from("leads").select("id, agent_id")
@@ -104,6 +107,7 @@ export async function POST(request: NextRequest) {
           tcpa_consent_text: "Caller dialed the office line and spoke with the AI reception assistant.",
         })
         contactId = r.contactId
+        classification = "unknown" // a first-time caller — intent is learned in-conversation
       }
     }
     if (!agentRowId && ctx.agentUserId) {
@@ -112,24 +116,123 @@ export async function POST(request: NextRequest) {
     }
   } catch { /* ledger is best-effort */ }
 
+  // INBOUND CALL CLASSIFICATION — the caller-routing decision, keyed to the
+  // resolved contact so it merges into the contact-timeline (seller-lifetime
+  // overview reads resulting_contact_id). The AI answered (ai_handled=true);
+  // transfer_reason is enriched later if the turn route hands off to a human.
+  // Best-effort — never blocks the answer. (This write moved from the retired
+  // Vapi function-tools onto the Twilio-native lane.)
+  if (contactId) {
+    try {
+      await svc.from("inbound_call_classifications").insert({
+        brokerage_id: ctx.brokerageId,
+        caller_phone: from,
+        caller_phone_digits: callerDigits,
+        classification,
+        ai_handled: true,
+        resulting_contact_id: contactId,
+        classified_at: new Date().toISOString(),
+      })
+    } catch { /* best-effort — never block the answer */ }
+  }
+
   if (contactId || leadId) {
-    // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish
-    // silently — now it lands on the self-heal ledger for the repair digest.
-    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
-    await sentinelWrite(svc, svc.from("voice_calls").insert({
-      brokerage_id: ctx.brokerageId,
-      contact_id: contactId,
-      lead_id: leadId,
-      agent_id: agentRowId,
-      direction: "inbound",
-      call_type: "vapi_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
-      status: "in_progress",
-      phone_from: from, phone_to: to,
-      started_at: new Date().toISOString(),
-      vapi_call_id: callSid, // vendor call id (Twilio CallSid here)
-      transcription: appendTranscript(null, null, firstMessage),
-      ai_notes: "engine:twilio",
-    }), { table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId })
+    // ── IDEMPOTENCE (m464) ────────────────────────────────────────────────────
+    // Twilio retries any webhook it believes failed, so this handler must be
+    // safe to run twice for ONE call. It previously was not: a retry inserted a
+    // SECOND ledger row carrying the same vendor call id, and since every later
+    // stage of the call resolves its row with maybeSingle(), the duplicate did
+    // not merely litter the ledger — it broke the rest of that call outright.
+    //
+    // m464's uq_voice_calls_vendor_call_id makes the DATABASE the arbiter
+    // instead of an application check-then-insert, which is a race with a nicer
+    // shape rather than a fix. The second delivery now loses at SQLSTATE 23505.
+    //
+    // 23505 on that index means exactly one thing — "this call is already
+    // recorded" — which is the IDEMPOTENT OUTCOME, not a lost write. It must
+    // therefore never reach the self-heal ledger, or every retried call would
+    // surface in the weekly repair digest as phantom data loss. Every OTHER
+    // error still goes to the sentinel, exactly as before.
+    const { data: insertedCall, error: callInsertError } = await svc
+      .from("voice_calls")
+      .insert({
+        brokerage_id: ctx.brokerageId,
+        contact_id: contactId,
+        lead_id: leadId,
+        agent_id: agentRowId,
+        direction: "inbound",
+        call_type: "ai_inbound", // CHECK value for AI inbound; ai_notes carries the real engine
+        status: "in_progress",
+        phone_from: from, phone_to: to,
+        started_at: new Date().toISOString(),
+        vendor_call_id: callSid, // vendor call id (Twilio CallSid here)
+        transcription: appendTranscript(null, null, firstMessage),
+        ai_notes: "engine:twilio",
+      })
+      .select("id")
+      .maybeSingle()
+
+    const alreadyRecorded = (callInsertError as any)?.code === "23505"
+
+    if (callInsertError && !alreadyRecorded) {
+      // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish
+      // silently — now it lands on the self-heal ledger for the repair digest.
+      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+      await sentinelWrite(svc, Promise.resolve({ error: callInsertError }), {
+        table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId,
+      })
+    }
+
+    // ai_isa_calls lifecycle: an INBOUND AI call gets its scoring row now
+    // (outbound calls get theirs at placement) so the post-call brain can persist
+    // appointment_set + lead_quality_score against it. Best-effort.
+    //
+    // GATED ON "DID THIS DELIVERY CREATE THE CALL?", not on "does a call row
+    // exist?". ai_isa_calls carries no uniqueness of its own, so the old shape —
+    // re-read the call by its vendor id, then insert — moved the fork from one
+    // table to the next: a retry found the FIRST delivery's row and wrote a
+    // second scoring row against it. The insert's own returned id is the only
+    // answer that distinguishes the two cases, and the unique index above is
+    // what makes that answer trustworthy.
+    if (insertedCall?.id && !alreadyRecorded) {
+      // supabase-js RESOLVES a rejected write with { error } — it does not
+      // throw — so the try/catch that used to wrap this could never have seen a
+      // rejected row. Best-effort stays best-effort; the loss becomes observable.
+      const { error: isaError } = await svc.from("ai_isa_calls").insert({
+        brokerage_id: ctx.brokerageId,
+        contact_id: contactId,
+        lead_id: leadId,
+        voice_call_id: insertedCall.id,
+        script_used: "inbound",
+        appointment_set: false,
+      })
+      if (isaError) {
+        const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+        await sentinelWrite(svc, Promise.resolve({ error: isaError }), {
+          table: "ai_isa_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId,
+        })
+      }
+    }
+  }
+
+  // ── RECORDING (opt-in per brokerage, DEFAULT OFF) ───────────────────────────
+  // The greeting we are about to speak already announces recording
+  // (buildReceptionPrompt passes `recorded: true` — the uniform national
+  // posture), so ANNOUNCED ⊇ RECORDED holds either way and arming this can never
+  // record a caller who was not told. <Gather> has no record attribute and
+  // <Record> is a blocking single-shot verb that would replace the conversation,
+  // so an inbound call is recorded by creating a Recording against the LIVE call
+  // — one Twilio round trip, and only for a tenant that opted in. A failure
+  // means the call is simply not recorded; it is logged, never assumed away.
+  if (callSid) {
+    const { resolveCallRecordingPolicy, startCallRecording } = await import("@/lib/voice/call-recording")
+    const recordingPolicy = await resolveCallRecordingPolicy(svc, ctx.brokerageId)
+    if (recordingPolicy.enabled) {
+      const started = await startCallRecording(svc, ctx.brokerageId, callSid, url.replace(/\/api\/voice\/twilio\/inbound$/, ""))
+      if (!started.ok) {
+        console.error(`[voice/inbound] recording NOT armed for CallSid ${callSid}: ${started.error}`)
+      }
+    }
   }
 
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`

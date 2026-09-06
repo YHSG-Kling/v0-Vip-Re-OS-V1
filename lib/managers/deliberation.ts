@@ -54,6 +54,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { AD_CAMPAIGN_RUNNING_STATUSES } from "@/lib/integrations/ad-campaign-vocabulary"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,
 } from "@/lib/kernel/manager-registry"
@@ -144,7 +146,10 @@ export function isDeliberativeDomain(domainKey: string | null | undefined): bool
   return !!domainKey && MANAGER_COLLABORATIONS[domainKey]?.deliberate === true
 }
 
-/** Every deliberative collaboration domain (governance surface / sim). PURE. */
+/** Every deliberative collaboration domain (governance surface / sim). PURE.
+ *  CENSUS NOTE: proof-only by design — read by scripts/manager-deliberation-simulator.ts:105
+ *  (every deliberative domain has a loader + a raiser); no product surface enumerates the set
+ *  (team-argument-map derives per-manager via collaborationsFor). */
 export function deliberativeDomains(): CollaborationDomain[] {
   return Object.values(MANAGER_COLLABORATIONS).filter((d) => d.deliberate === true)
 }
@@ -212,7 +217,10 @@ export function applyPrincipalOverride(
   }
 }
 
-/** PURE: what actually governs — the principal's call when recorded, else the argued winner. */
+/** PURE: what actually governs — the principal's call when recorded, else the argued winner.
+ *  CENSUS NOTE: proof-only by design — scripts/manager-deliberation-simulator.ts:298,551. The
+ *  governance surface (manager-trust-client.tsx DeliberationBlock) deliberately renders the argued
+ *  winner AND the principal's call side by side, so it never collapses them to one value. */
 export function effectiveWinner(record: DeliberationRecord): ManagerKey | null {
   return record.override?.winner ?? record.winner
 }
@@ -354,7 +362,7 @@ const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
   // until that ledger earns a real writer.)
   const { data: open } = await svc.from("transactions")
     .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(200)
   const facts: string[] = [], citations: string[] = []
   const openRows = (open ?? []) as any[]
   if (openRows.length > 0) {
@@ -445,7 +453,7 @@ const loadAdsManagerFacts: FactLoader = async (svc, ctx) => {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: campaigns } = await svc.from("ad_campaigns")
     .select("id, campaign_name, status, daily_budget")
-    .eq("brokerage_id", ctx.brokerageId).in("status", ["live", "active"]).limit(10)
+    .eq("brokerage_id", ctx.brokerageId).in("status", [...AD_CAMPAIGN_RUNNING_STATUSES]).limit(10)
   const facts: string[] = [], citations: string[] = []
   for (const c of (campaigns ?? []) as any[]) {
     const { data: perf } = await svc.from("ad_performance")
@@ -986,7 +994,10 @@ export async function runDeliberation(
   input: RunDeliberationInput, client?: Svc, engine?: DeliberationEngine,
 ): Promise<DeliberationRecord | null> {
   const domain = MANAGER_COLLABORATIONS[input.collabDomain]
-  if (!domain || domain.deliberate !== true) return null
+  // The ONE predicate for "this domain deliberates" (isDeliberativeDomain above) —
+  // the referral handler and the team argument map read the same one, so the
+  // three sites can never disagree about which domains argue.
+  if (!domain || !isDeliberativeDomain(input.collabDomain)) return null
 
   // Idempotent reuse — the argument already happened; never re-argue on a retry.
   const existing = parseDeliberation(input.existingPayload)

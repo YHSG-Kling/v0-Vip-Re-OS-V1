@@ -25,7 +25,6 @@
 import "dotenv/config"
 import { randomUUID } from "node:crypto"
 import { createServiceClient } from "../lib/supabase/service"
-import { resolveBrokerageBrandContext } from "../lib/branding/resolve-brokerage-brand"
 import { resolveBrandContext } from "../lib/branding/resolve-brand-context"
 import { draftPostcardCopy } from "../lib/direct-mail/draft-copy"
 import { renderPostcardBothSides4x6 } from "../lib/direct-mail/render-postcard"
@@ -98,7 +97,10 @@ async function main(): Promise<number> {
     {
       const t0 = Date.now()
       try {
-        const brand = await resolveBrokerageBrandContext(brokerageId)
+        // resolve-brokerage-brand.ts (the deprecated brokerage-only alias) was
+        // deleted 2026-09-03; the brokerage-tier call is the survivor with only
+        // brokerageId supplied.
+        const brand = await resolveBrandContext({ brokerageId })
         results.push({
           stage: "brand_resolver",
           ok:    !!brand.brokerageName && !!brand.visual.primaryColor,

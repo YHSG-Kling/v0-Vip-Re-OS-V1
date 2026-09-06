@@ -51,9 +51,13 @@ import {
   recordMatchesTerritory, calculateSourceScore, resolveSourceKey,
   scoreToUrgencyLevel, getSourceSemantics, expandEnabledSources,
 } from "../lib/lead-pipeline/source-intent-map"
-import { engine2GatePasses, deriveQualificationSignals, qualificationScoreFor } from "../lib/ai-isa/qualification-core"
+import { deriveQualificationSignals, qualificationScoreFor } from "../lib/ai-isa/qualification-core"
+import { stripComments } from "./strip-comments"
 import { validatePromotionEligibility } from "../lib/contact-promotion/promotion-eligibility"
-import { evaluateRuleConditions, pickRoundRobinAgent } from "../lib/lead-assignment/rule-matcher"
+import {
+  evaluateRuleConditions, pickRoundRobinAgent,
+  evaluateAssignmentEligibility, POSITIVE_INTENT_LIFECYCLE_STATES,
+} from "../lib/lead-assignment/rule-matcher"
 import { BROKER_COMMANDS } from "../lib/voice/team-command-names"
 import { parseTeamCommandText } from "../lib/voice/parse-team-command"
 
@@ -87,32 +91,41 @@ function testFuzzyDedup() {
 }
 
 function testEligibilityGate() {
-  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical, round 39: first+last NAME AND (email AND/OR mailing address))]")
+  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical, wave 14: first+last NAME AND (email AND/OR phone AND/OR VERIFIED mailing address))]")
   const full = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142", mailing_address: "PO Box 9", mailing_address_verified: true })
-  check("full identity + email + mailing → eligible via BOTH anchors",
-    full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("mailing_address"))
+  check("full identity + email + phone + verified mailing → eligible via ALL THREE channels",
+    full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("phone")
+      && (full as any).via.includes("verified_mailing_address"))
   const nameAndEmail = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
-  check("name + email (no mailing) → eligible via email",
+  check("name + email (no phone, no mailing) → eligible via email",
     nameAndEmail.eligible === true && (nameAndEmail as any).via.join(",") === "email")
-  const mailingAnchor = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
-  check("name + mailing address (no email) → eligible via mailing (and/or rule)",
-    mailingAnchor.eligible === true && (mailingAnchor as any).via.join(",") === "mailing_address")
-  const verifiedFlagWithName = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address_verified: true })
-  check("verified-mailing flag counts as the mailing anchor", verifiedFlagWithName.eligible === true)
+  const mailingAnchor = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101", mailing_address_verified: true })
+  check("name + VERIFIED mailing address (no email, no phone) → eligible via the address arm",
+    mailingAnchor.eligible === true && (mailingAnchor as any).via.join(",") === "verified_mailing_address")
+  // REFUSAL — the word the owner used is VERIFIED. An address scrap is not one.
+  const unverifiedAddress = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
+  check("REFUSAL · address present but NOT verified → NOT eligible, failing 'contact_anchor'",
+    unverifiedAddress.eligible === false && (unverifiedAddress as any).failing === "contact_anchor")
+  const verifiedFlagNoAddress = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address_verified: true })
+  check("REFUSAL · verified FLAG with no address string is not something you can mail to",
+    verifiedFlagNoAddress.eligible === false && (verifiedFlagNoAddress as any).failing === "contact_anchor")
   const emailNoName = evaluateCanonicalLeadEligibility({ email: "m@x.com" })
-  check("email WITHOUT first+last name → NOT eligible, failing 'name' (retryable — enrichment can supply names)",
+  check("REFUSAL · email WITHOUT first+last name → failing 'name' (retryable — enrichment can supply names)",
     emailNoName.eligible === false && (emailNoName as any).failing === "name")
   const partialName = evaluateCanonicalLeadEligibility({ first_name: "Maria", email: "m@x.com" })
-  check("first name alone does not satisfy the name requirement",
+  check("REFUSAL · first name alone does not satisfy the name requirement",
     partialName.eligible === false && (partialName as any).failing === "name")
+  const lastNameMissing = evaluateCanonicalLeadEligibility({ last_name: "Gonzalez", email: "m@x.com", phone: "3055550142" })
+  check("REFUSAL · last name alone does not satisfy it either, however reachable they are",
+    lastNameMissing.eligible === false && (lastNameMissing as any).failing === "name")
   const phoneOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" })
-  check("name + phone only (no email, no mailing) → NOT eligible (phone is not an owner anchor)",
-    phoneOnly.eligible === false && (phoneOnly as any).failing === "contact_anchor")
+  check("name + PHONE only → eligible via phone (the owner named phone as an anchor)",
+    phoneOnly.eligible === true && (phoneOnly as any).via.join(",") === "phone")
   const nothing = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
-  check("name but no anchors → blocked with the honest owner-rule reason",
-    nothing.eligible === false && /email address and\/or a mailing address/i.test((nothing as any).reason))
-  check("whitespace-only email/mailing do not fabricate an anchor",
-    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", mailing_address: "  " }).eligible === false)
+  check("REFUSAL · name but all three channels absent → blocked with the honest owner-rule reason",
+    nothing.eligible === false && /email address and\/or a phone number and\/or a VERIFIED mailing address/i.test((nothing as any).reason))
+  check("whitespace-only email/phone/mailing do not fabricate an anchor",
+    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", phone: " ", mailing_address: "  ", mailing_address_verified: true }).eligible === false)
   check("whitespace-only names do not fabricate a name",
     (evaluateCanonicalLeadEligibility({ first_name: "  ", last_name: " ", email: "m@x.com" }) as any).failing === "name")
 }
@@ -237,16 +250,17 @@ function testAutoConvertChainLive() {
   // Engine 2 assigns per admin policy then converts + notifies through the canonical handler.
   const engine = src("lib/lead-assignment/assignment-engine.ts")
   check("Engine 2 reads the admin's assignment_rules policy", /from\("assignment_rules"\)/.test(engine))
-  check("Engine 2 converts via handleLeadAssigned (no forked converter)", /handleLeadAssigned\(/.test(engine))
+  // The tier-aware pick MOVED to lib/lead-assignment/tier-routing.ts (one policy, one place);
+  // assignment-engine.ts now DELEGATES to it rather than carrying a second copy. So the
+  // "no forked converter" property is two facts, not one: the survivor calls the canonical
+  // handler, and the delegating engine does not call it a second time of its own.
+  const routing = src("lib/lead-assignment/tier-routing.ts")
+  check("Engine 2 converts via handleLeadAssigned (no forked converter)",
+    /handleLeadAssigned\(/.test(routing) && /import\(["']\.\/tier-routing["']\)/.test(engine) && !/handleLeadAssigned\(/.test(engine))
   const handlers = src("lib/kernel/lead-acquisition-handlers.ts")
   check("handleLeadAssigned converts through THE canonical createContactFromLead", /createContactFromLead/.test(handlers))
   check("handleLeadAssigned emits LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT (agent notification fan-out)",
     /KernelEvent\.LEAD_ASSIGNED/.test(handlers) && /LEAD_CONVERTED_TO_CONTACT/.test(handlers))
-
-  // The REAL pure gate the engine runs (Engine 2 Step 2 semantics).
-  check("engine2 gate: unqualified lead REFUSED", engine2GatePasses("new", "unconsented") === false)
-  check("engine2 gate: qualified but unconsented REFUSED", engine2GatePasses("qualified", "unconsented") === false)
-  check("engine2 gate: qualified + consented passes", engine2GatePasses("qualified", "consented") === true)
 
   // Qualification core still derives readiness the hook keys off.
   const ready = deriveQualificationSignals({
@@ -282,6 +296,175 @@ async function testConversionRefusesUnqualified() {
   const appt = src("lib/ai-isa/book-seller-appointment.ts")
   check("ISA appointment lane stamps lead_stage='qualified' before its safety-convert",
     /lead_stage:\s*"qualified"/.test(appt))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 6 — THE ASSIGNMENT GATE (owner ruling): "The only way to assign a lead to
+// an agent is if the lead has been qualified OR positive intent."
+//
+// It was an AND (`lead_stage='qualified'` AND `lifecycle_state in
+// (consented|assigned)`) written out TWICE — once in the automatic resolver
+// (tier-routing.ts autoAssignLead) and once in the by-hand admin verb
+// (assign-lead.ts manualAssignLead). These checks assert the PROPERTY: the OR
+// semantics, the exact lifecycle vocabulary the OR is defined over, and that both
+// doors consume the SAME predicate rather than each carrying a copy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function testAssignmentGate() {
+  console.log("\n[Layer 6 · assignment gate — QUALIFIED **OR** POSITIVE INTENT, never AND]")
+
+  // ── The OR itself: either arm alone opens the gate.
+  const qualifiedOnly = evaluateAssignmentEligibility("qualified", "unconsented")
+  check("qualified ALONE assigns (the ISA's verdict does not wait for a lifecycle stamp)",
+    qualifiedOnly.ok === true && qualifiedOnly.via === "qualified")
+  const positiveOnly = evaluateAssignmentEligibility("new", "consented")
+  check("positive intent ALONE assigns (a lead who replied yes does not wait for lead_stage)",
+    positiveOnly.ok === true && positiveOnly.via === "positive_intent")
+  check("both arms together still assign, attributed to the qualification",
+    evaluateAssignmentEligibility("qualified", "consented").ok === true)
+
+  // ── Neither arm → refused, and the refusal names both columns it read.
+  const neither = evaluateAssignmentEligibility("new", "unconsented")
+  check("neither qualified nor positive → REFUSED, and the reason names both columns",
+    neither.ok === false && neither.via === null &&
+    /lead_stage='new'/.test(neither.reason) && /lifecycle_state='unconsented'/.test(neither.reason))
+  check("null/absent state → REFUSED (a lead with nothing recorded never reaches an agent)",
+    evaluateAssignmentEligibility(null, null).ok === false &&
+    evaluateAssignmentEligibility(undefined, undefined).ok === false)
+
+  // ── THE VOCABULARY the OR is defined over. leads_lifecycle_state_check admits
+  //    exactly these eight values; each one is classified, none is left to chance.
+  const LIVE_LIFECYCLE_VOCABULARY = [
+    "appointment", "assigned", "consented", "isa_qualifying",
+    "long_term_nurture", "raw", "representation", "unconsented",
+  ]
+  check("every positive-intent state is a LEGAL lifecycle_state (a value the CHECK refuses can never fire)",
+    POSITIVE_INTENT_LIFECYCLE_STATES.every((s) => LIVE_LIFECYCLE_VOCABULARY.includes(s)))
+  // Asserted through the ONE door — lead_stage deliberately held at a non-qualified
+  // value so ONLY the lifecycle arm can open (or fail to open) the gate.
+  const byIntent = (s: string) => evaluateAssignmentEligibility("new", s).via === "positive_intent"
+  check("positive intent = consented | appointment | representation | assigned (the person said yes, or better)",
+    ["consented", "appointment", "representation", "assigned"].every(byIntent))
+  check("raw / unconsented / isa_qualifying / long_term_nurture are NOT positive intent (nothing was said, or the opposite was)",
+    ["raw", "unconsented", "isa_qualifying", "long_term_nurture"].every((s) => !byIntent(s)))
+  check("every one of the eight legal lifecycle_state values is classified — none falls through unjudged",
+    LIVE_LIFECYCLE_VOCABULARY.every((s) => byIntent(s) === POSITIVE_INTENT_LIFECYCLE_STATES.includes(s as never)))
+  check("'qualified' is refused as a lifecycle_state — it is a lead_stage and the CHECK never admitted it",
+    !byIntent("qualified") && !LIVE_LIFECYCLE_VOCABULARY.includes("qualified"))
+
+  // ── ONE PREDICATE, BOTH DOORS. The property is that neither door can carry its
+  //    own copy of the expression — which is how the AND survived in two places.
+  const tier = src("lib/lead-assignment/tier-routing.ts")
+  const manual = src("app/actions/lead-assignment/assign-lead.ts")
+  check("the AUTOMATIC path calls the shared predicate and has no inline gate of its own",
+    /evaluateAssignmentEligibility\(/.test(tier) && !/lead_stage === ["']qualified["']/.test(tier))
+  check("the BY-HAND admin path calls the SAME predicate and has no inline gate of its own",
+    /evaluateAssignmentEligibility\(/.test(manual) && !/lead_stage === ["']qualified["']/.test(manual))
+  check("neither door reimplements the consent half either (no `lifecycle_state ===` comparison survives)",
+    !/lifecycle_state === ["']/.test(tier) && !/lifecycle_state === ["']/.test(manual))
+  check("both doors still refuse a lead that already HAS an agent (the gate is not a re-assignment door)",
+    /alreadyAssigned/.test(tier) && /already has an assigned agent/i.test(manual))
+  check("which ARM opened the gate is recorded in assignment_log.routing_reason (auditable attribution)",
+    /gate:\$\{eligibility\.via\}/.test(tier) && /gate:\$\{eligibility\.via\}/.test(manual))
+
+  // ── The stale third copy is GONE. `engine2GatePasses` was the pre-ruling AND and
+  //    it CONTRADICTED the ruling (it refused a qualified-but-unconsented lead the
+  //    ruling makes assignable). It survived earlier sweeps only because nothing
+  //    called it — a dormant gate that disagrees with the live one is a trap for
+  //    whoever wires it next, so it was deleted with a tombstone naming the
+  //    survivor. Assert the ABSENCE, which is strictly stronger than asserting it
+  //    had no caller: the name must not exist anywhere outside a comment.
+  const engine2Mentions = walkSources()
+    .filter((s) => /\bengine2GatePasses\s*\(/.test(stripComments(s.text)))
+    .map((s) => s.rel)
+  check("the pre-ruling AND (engine2GatePasses) no longer exists in the tree — one gate, one place",
+    engine2Mentions.length === 0, engine2Mentions.join(", "))
+  check("…and its tombstone names the survivor, so the deletion is traceable",
+    /evaluateAssignmentEligibility/.test(src("lib/ai-isa/qualification-core.ts"))
+    && /SURVIVOR/.test(src("lib/ai-isa/qualification-core.ts")))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 7 — AUTO-REOPEN (owner ruling): a positive reply from an opted-out lead
+// REOPENS them automatically, and the reopen is RECORDED, not silent.
+// Static conformance over the one door (lib/lead-intent) — the behaviour itself
+// needs a live DB + a model call, so what is asserted here is the ORDERING and
+// the RECORD, which are the two properties that make it safe.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function testInboundReopen() {
+  console.log("\n[Layer 7 · opted-out lead + clear positive ⇒ AUTO-REOPEN, recorded on the opt-out's own ledger]")
+  const door = src("lib/lead-intent/inbound-lead-intent.ts")
+  const optOut = src("lib/lead-intent/lead-opt-out.ts")
+
+  // 1. OPT-OUT DETECTION STILL WINS. The suppression branch must be positioned
+  //    before the DNC/reopen branch, or "stop" could be read as a reopen.
+  const detect = door.indexOf("const optOut = detectOptOutIntent(body)")
+  const applied = door.indexOf("applyLeadOptOut({")
+  const reopenCall = door.indexOf("reopenLeadOnInboundConsent({")
+  check("opt-out detection + suppression run BEFORE the reopen branch (a 'stop' can never reopen)",
+    detect > -1 && applied > detect && reopenCall > applied,
+    `detect=${detect} apply=${applied} reopen=${reopenCall}`)
+  check("a MEDIUM-confidence opt-out still ends in held_for_review, never in a reopen",
+    door.indexOf('outcome: "held_for_review", reason: `possible_opt_out_') > -1 &&
+    door.indexOf('outcome: "held_for_review", reason: `possible_opt_out_') < reopenCall)
+
+  // 2. ONLY A CLEAR POSITIVE REOPENS, and it is the EXISTING classifier that says so.
+  check("the reopen branch reuses THE one classifier (inbound-intent-classifier), adding no second one",
+    /@\/lib\/ai-isa\/inbound-intent-classifier/.test(door) &&
+    (door.match(/classifyAndRouteInbound\(/g) ?? []).length === 1)
+  check("ambiguous / negative / failed-conversion leaves the stop standing (held, not reopened)",
+    /lead_is_dnc_no_clear_positive_intent/.test(door) &&
+    /routed\.outcome !== "converted" \|\| !routed\.classified/.test(door))
+  check("a caller that already routed the intent cannot reopen on an unseen verdict",
+    /lead_is_dnc_verdict_not_visible/.test(door))
+
+  // 3. THE RECORD. Same ledger the opt-out writes (lifecycle_events), carrying the
+  //    message that justified it, what reopened, and when — and NOT best-effort.
+  check("the reopen writes to the SAME ledger applyLeadOptOut writes (lifecycle_events — no second ledger invented)",
+    /event_type: isGlobal \? "LEAD_DNC_SET" : "LEAD_CHANNEL_OPT_OUT"/.test(optOut) &&
+    /event_type: "LEAD_REOPENED_ON_INBOUND_INTENT"/.test(optOut))
+  const reopenFn = optOut.slice(optOut.indexOf("export async function reopenLeadOnInboundConsent"))
+  check("the record carries the MESSAGE TEXT that justified the reopen",
+    /message: message\.slice\(/.test(reopenFn))
+  check("the record carries WHO/WHAT reopened and WHEN",
+    /reopened_by:/.test(reopenFn) && /reopened_by_kind:/.test(reopenFn) && /reopened_at: now/.test(reopenFn))
+  check("the record carries the suppression it lifted (prior flags + the removed list rows)",
+    /previous_state: before/.test(reopenFn) && /suppression_rows_removed: removed\.rows/.test(reopenFn))
+  check("the audit insert is CHECKED, not bestEffort — a reopen must not be silent",
+    /const \{ error: auditError \} = await supabase\.from\("lifecycle_events"\)\.insert/.test(reopenFn) &&
+    !/bestEffort\(\s*supabase\.from\("lifecycle_events"\)/.test(reopenFn))
+  check("a refused reopen is reported, never reported as honoured (the decisive write is destructured)",
+    /const \{ error: updateError \} = await supabase\s*\n?\s*\.from\("leads"\)/.test(reopenFn) &&
+    /return fail\(`leads reopen update refused/.test(reopenFn) &&
+    /reason: "reopen_write_failed"/.test(door))
+
+  // 4. THE REOPEN ACTUALLY UN-SUPPRESSES. dnc_status is Rule 1 of
+  //    evaluateOutboundCompliance (a global hard block), and the address-keyed
+  //    contact_suppression_list is the ONLY arm of checkSuppression that fires for
+  //    a lead — a reopen that clears one and not the other reopens nothing.
+  check("the reopen clears the lead-row flags every lead-side gate reads (dnc_status + call_stop + per-channel + opt_out_channels)",
+    /dnc_status: false/.test(reopenFn) && /call_stop_flag: false/.test(reopenFn) &&
+    /opt_out_channels: \[\]/.test(reopenFn) &&
+    /for \(const ch of ALL_CHANNELS\) updates\[CHANNEL_FLAG_COLUMN\[ch\]\] = false/.test(reopenFn))
+  check("the reopen takes the address-keyed suppression rows back off the list (checkSuppression's only lead arm)",
+    /removeSuppressionBridge\(/.test(reopenFn) && /\.from\("contact_suppression_list"\)\s*\n?\s*\.delete\(\)/.test(optOut))
+  check("only rows THIS module wrote are removed — an email-footer / admin suppression survives",
+    /\.in\("source", LEAD_INBOUND_SOURCES\)/.test(optOut))
+  check("removed rows are CAPTURED before the delete (the table has no soft-delete column, so the ledger is the record)",
+    optOut.indexOf('.select("id, channel, email, phone, contact_id, suppression_reason, source, created_at")') <
+      optOut.indexOf('.from("contact_suppression_list")\n    .delete()'))
+  check("the converted twin is mirrored back too (a lead that became a contact is gated on the CONTACT's flags)",
+    /\.from\("contacts"\)\s*\n?\s*\.update\(contactUpdates\)/.test(reopenFn))
+  check("the ISA's terminal 'opted_out' re-engagement status is re-armed (nothing else can re-arm it)",
+    /reengagement_status: "active"/.test(reopenFn))
+
+  // 5. A REOPEN RESTORES REACHABILITY, NEVER CONSENT. tcpa_consent is what Rule 7
+  //    gates sms/phone/voicemail on; an inbound "yes" is not express written consent.
+  check("tcpa_consent is NEVER set by a reopen (sms/phone stay gated by compliance Rule 7)",
+    !/tcpa_consent:\s*true/.test(reopenFn))
+  check("email_unsubscribed / sms_unsubscribed are left alone (another lane's columns, never written here)",
+    !/email_unsubscribed/.test(reopenFn) && !/sms_unsubscribed/.test(reopenFn))
 }
 
 function testAssignmentPolicyConsumed() {
@@ -422,18 +605,34 @@ function testThreeTableDedupAndPromotionConformance() {
   check("enrichment is provider-gated honestly (failure → no fabricated identity; Perplexity gap-fill cost-gated)",
     /catch\(\(\) => \(\{ data: null \}\)\)/.test(pipeline) && /shouldGapFill/.test(pipeline))
 
-  // CANONICAL ELIGIBILITY (round 39: first+last name AND email-and/or-mailing) in both promotion paths.
+  // CANONICAL ELIGIBILITY (wave 14: first+last name AND email-and/or-phone-and/or-VERIFIED-mailing)
+  // in both promotion paths.
   check("pipeline delegates promotion to THE canonical eligibility gate, feeding it the mailing address",
     /evaluateCanonicalLeadEligibility/.test(pipeline) && /mailing_address:\s+resolvedMailingAddress/.test(pipeline))
+  // The candidate is now assembled into `promoCandidate` first, because the gate is
+  // evaluated TWICE — once, and again after the verified-address writer has ruled —
+  // and both evaluations must see the same identity. Anchor on the assembly.
   check("pipeline feeds POST-ENRICH names into the gate (enrichment can SUPPLY a missing name before the pass)",
-    /first_name:\s+enriched\.first_name \?\? firstName,/.test(pipeline.slice(pipeline.indexOf("evaluateCanonicalLeadEligibility({"))))
+    /first_name:\s+enriched\.first_name \?\? firstName,/.test(pipeline.slice(pipeline.indexOf("const promoCandidate = {"))))
+  check("pipeline feeds the PHONE into the gate (the owner's wave-14 anchor)",
+    /phone:\s+enriched\.phone \?\? phone,/.test(pipeline.slice(pipeline.indexOf("const promoCandidate = {"))))
   check("enrichWithPeopleData actually backfills first/last name from the provider (names flow into promotion)",
     /first_name:\s+data\.firstName\s+\|\|\s+fields\.first_name/.test(pipeline) && /last_name:\s+data\.lastName\s+\|\|\s+fields\.last_name/.test(pipeline))
-  const evaluator = src("lib/lead-promotion/eligibility-evaluator.ts")
+  // The evaluator was SPLIT in wave 14: eligibility-evaluator.ts is a "use server"
+  // file, so every export there is a public HTTP endpoint — and this one ran a
+  // service-role client and returned the whole raw_scraped_leads row with no
+  // session and no tenant predicate, a cross-tenant read. The delegation body now
+  // lives in eligibility-core.ts (ungated, for internal callers and simulators)
+  // and the public door is a gated wrapper. Assert BOTH halves, so neither the
+  // delegation nor the gate can quietly go missing.
+  const evaluatorCore = src("lib/lead-promotion/eligibility-core.ts")
+  const evaluatorDoor = src("lib/lead-promotion/eligibility-evaluator.ts")
   check("lead-promotion evaluator delegates to the SAME canonical gate (no drift)",
-    /evaluateCanonicalLeadEligibility/.test(evaluator) && /mailing_address:/.test(evaluator))
+    /evaluateCanonicalLeadEligibility/.test(evaluatorCore) && /mailing_address:/.test(evaluatorCore))
   check("evaluator feeds names first-class-column-first (same resolution chain as the pipeline)",
-    /first_name:\s+rawRecord\.first_name \?\? rawData\.first_name/.test(evaluator))
+    /first_name:\s+rawRecord\.first_name \?\? rawData\.first_name/.test(evaluatorCore))
+  check("the evaluator's PUBLIC door is gated — tenant from the session, compared to the record's own",
+    /getAgentContext\(\)/.test(evaluatorDoor) && /brokerage_id\s*!==\s*brokerageId/.test(evaluatorDoor))
   const gate = src("lib/lead-pipeline/canonical-lead-eligibility.ts")
   check("gate reports name-vs-anchor failures distinctly ('name' is retryable via enrichment, 'contact_anchor' honest)",
     /failing:\s+"name"/.test(gate) && /failing:\s+"contact_anchor"/.test(gate))
@@ -611,8 +810,11 @@ async function testLivePromotion() {
     // 6. Negative cases against the real gates (no promotion should occur).
     check("real gate: out-of-territory record rejected",
       recordMatchesTerritory({ city: "Tampa", state: "FL", zip: "33602" }, market as any) === false)
-    check("real gate: candidate with NO email and NO mailing address not promotable",
-      evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" }).eligible === false)
+    check("real gate: candidate with NO email, NO phone and only an UNVERIFIED address is not promotable",
+      evaluateCanonicalLeadEligibility({
+        first_name: "Maria", last_name: "Gonzalez",
+        mailing_address: "742 Evergreen Ter", mailing_address_verified: false,
+      }).eligible === false)
   } finally {
     // Self-cleanup — reverse order, best-effort, runs even on failure.
     for (const c of [...cleanup].reverse()) {
@@ -643,6 +845,8 @@ async function main() {
   testAutoConvertChainLive()
   await testConversionRefusesUnqualified()
   testAssignmentPolicyConsumed()
+  testAssignmentGate()
+  testInboundReopen()
   testVisibilityGates()
   await testLivePromotion()
   console.log("\n──────────────────────────────────────────────────")

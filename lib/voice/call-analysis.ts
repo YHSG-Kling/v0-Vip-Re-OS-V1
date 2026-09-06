@@ -23,6 +23,17 @@ export const VoiceIntelSchema = z.object({
   urgencyScore: z.number().min(0).max(100).describe("How soon this person intends to act (0=no timeline, 100=this week)"),
   coachingScore: z.number().min(0).max(100).describe("How well the conversation served the caller (clarity, next step secured)"),
   intentPrimary: z.string().describe("One phrase: what the caller wanted (e.g. book showing, price question, sell home, support)"),
+  // SECOND INTENT + NEXT ACTION. Both columns were READ BY CODE AND WRITTEN BY
+  // NOBODY (census 1b): app/dashboard/isa/page.tsx:227 selects
+  // `intent_secondary` on every ISA call row and
+  // app/dashboard/communications/handoffs/page.tsx:77 selects
+  // `suggested_next_action` on every contact's calls — so the ISA console's
+  // second-intent column and the handoff queue's "what to do next" both
+  // rendered a dash on every row, which reads as "the AI had no suggestion"
+  // rather than "nobody ever asked it for one". The extractor already reads the
+  // whole transcript; asking for these two costs no extra call.
+  intentSecondary: z.string().nullable().describe("A SECOND thing the caller wanted, one phrase, or null if the call had only one intent — do not restate the primary"),
+  suggestedNextAction: z.string().describe("The single most useful thing the agent should do next, phrased as an instruction (e.g. 'Send the Maple St disclosure and call back Thursday')"),
   keyTopics: z.array(z.string()).max(6),
 })
 
@@ -54,20 +65,60 @@ DIRECTION: ${direction ?? "unknown"}
 TRANSCRIPT:
 ${transcription.slice(0, 12_000)}
 
-Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; up to 6 key topics.`,
+Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; a SECOND intent in one phrase if the call genuinely had one, otherwise null; the single most useful next action for the agent, phrased as an instruction; up to 6 key topics.`,
   })
   return object
 }
 
+/** The voice_calls.call_type values that are PHONE calls — conversations whose
+ *  kind is fully described by their direction. This is the live vocabulary
+ *  (scripts/check-vocabularies.ts voice_calls.call_type) minus 'zoom_meeting'. */
+const PHONE_CALL_TYPES: ReadonlySet<string> = new Set(["agent_call", "ai_inbound", "ai_isa_call", "warm_transfer"])
+
+/**
+ * PURE: what call_analyses.call_type records for a ledger row (§6 — one
+ * vocabulary per idea).
+ *
+ * call_analyses.call_type has always held the DIRECTION word for phone calls
+ * ("inbound"/"outbound" — the on-demand analyzer in
+ * app/actions/ai-voice-transcription.ts:73 types it exactly so), and that stays.
+ * The Zoom lane used to smuggle "zoom_meeting" in through `direction`, and the
+ * inline `direction === "outbound" ? "outbound" : "inbound"` mapped it to
+ * "inbound" — so every Zoom meeting was recorded as an inbound phone call while
+ * the ledger row one join away said zoom_meeting. No CHECK exists on the column
+ * (verified live 2026-09-02: only sentiment and coaching_score are CHECKed), so
+ * it landed silently.
+ *
+ * The rule, so a THIRD kind cannot be got wrong by omission:
+ *   · a PHONE call type (the closed set above) → its direction word, as before;
+ *   · any OTHER known call type → carried VERBATIM (zoom_meeting → zoom_meeting,
+ *     and a future non-phone kind lands under its own name automatically,
+ *     rather than being disguised as an inbound call by a fallback);
+ *   · no call type at all → the direction word (the legacy inputs).
+ * Chosen over a `"zoom_meeting"` special case because the special case is the
+ * shape that produced this defect: the next meeting kind would have needed a
+ * second special case, and forgetting it would have been silent.
+ */
+export function analysisCallType(call: { call_type?: string | null; direction: string | null }): string {
+  const direction = call.direction === "outbound" ? "outbound" : "inbound"
+  const kind = (call.call_type ?? "").trim()
+  if (!kind || PHONE_CALL_TYPES.has(kind)) return direction
+  return kind
+}
+
 /** Analyze one voice_calls row and write the intelligence columns.
  *  `provenance` stamps call_analyses.analyzed_by — the hourly sweep uses the
- *  default; the Zoom transcript lane passes 'zoom_transcript'. */
+ *  default; the Zoom transcript lane passes 'zoom_transcript'.
+ *  `call_type` is the ledger's own voice_calls.call_type; see analysisCallType. */
 export async function analyzeVoiceCallRow(svc: any, call: {
   id: string
   brokerage_id: string
   contact_id: string | null
   agent_id: string | null // agents.id on the ledger
   direction: string | null
+  /** voice_calls.call_type. Optional only because one un-owned caller
+   *  (app/actions/ai-voice-transcription.ts) predates it; absent → phone rules. */
+  call_type?: string | null
   duration_seconds: number | null
   transcription: string
 }, provenance: string = "voice_intel_sweep"): Promise<{ ok: boolean; error?: string; intel?: { urgencyScore: number; intentPrimary: string; summary: string } }> {
@@ -82,12 +133,12 @@ export async function analyzeVoiceCallRow(svc: any, call: {
 
     const object = await extractVoiceIntel(call.transcription, call.direction)
 
-    const { error } = await svc.from("call_analyses").insert({
+    const { data: analysisRow, error } = await svc.from("call_analyses").insert({
       voice_call_id: call.id,
       brokerage_id: call.brokerage_id,
       contact_id: call.contact_id,
       agent_id: call.agent_id, // call_analyses.agent_id FKs agents(id) — the ledger id, never users.id
-      call_type: call.direction === "outbound" ? "outbound" : "inbound",
+      call_type: analysisCallType(call),
       call_duration: call.duration_seconds,
       transcript: call.transcription.slice(0, 20_000),
       summary: object.summary.slice(0, 2000),
@@ -96,11 +147,75 @@ export async function analyzeVoiceCallRow(svc: any, call: {
       urgency_score: Math.round(object.urgencyScore),
       coaching_score: Math.round(object.coachingScore),
       intent_primary: object.intentPrimary.slice(0, 120),
+      // The two columns the ISA console and the handoff queue read and nobody
+      // wrote — see VoiceIntelSchema above. A single-intent call stores NULL
+      // rather than a repeat of the primary: the console renders a dash for
+      // "there was only one intent", which is true, where a duplicate would be
+      // a fabricated second one.
+      intent_secondary: (object.intentSecondary ?? "").trim() ? object.intentSecondary!.trim().slice(0, 120) : null,
+      suggested_next_action: object.suggestedNextAction.slice(0, 600),
       key_topics: object.keyTopics,
       analyzed_at: new Date().toISOString(),
       analyzed_by: provenance,
     })
+      // The row id is needed to hang the coaching insights off this analysis —
+      // call_coaching_insights.call_analysis_id is NOT NULL.
+      .select("id")
+      .maybeSingle()
     if (error) return { ok: false, error: error.message }
+
+    // THE SUMMARY REACHES THE LEDGER ROW THE CRM READS. The contact timeline
+    // (lib/kernel/communications.ts:376) renders a voice_calls row as
+    // `summary ?? ai_notes ?? "Voice call"`, and nothing wrote voice_calls.summary
+    // from this analysis — it went to call_analyses.summary only — so a fully
+    // analyzed Zoom meeting (and every Twilio-lane call, whose ai_notes carries
+    // an encoded brief or nothing) showed in the CRM as the literal string
+    // "Voice call" while a good summary sat one table over. ONE writer here,
+    // ALL readers served. No human path writes voice_calls.summary (writers
+    // grepped 2026-09-02: only the Twilio Conversational-Intelligence webhook,
+    // which by its own contract fills the column ONLY when empty because "our
+    // own sweep's fields always win"), so this stamp is unconditional and is
+    // the winner that webhook already defers to. Tenant-anchored like the
+    // analysis insert above, COUNTED (§3: a zero-row update resolves with no
+    // error and is byte-identical to success — here zero means the tenant
+    // predicate refused or the row is gone, and it must not pass as "stamped").
+    // Best-effort by design: the analysis is already durable; a failed stamp is
+    // logged, never silent, never a reason to report the analysis as failed.
+    const { data: stamped, error: stampError } = await svc.from("voice_calls")
+      .update({ summary: object.summary.slice(0, 2000) })
+      .eq("id", call.id)
+      .eq("brokerage_id", call.brokerage_id)
+      .select("id")
+    if (stampError) {
+      console.error(`[voice-intel] voice_calls.summary NOT stamped for ${call.id}:`, stampError.message)
+    } else if (((stamped as unknown[] | null) ?? []).length !== 1) {
+      console.error(`[voice-intel] voice_calls.summary stamp matched ${((stamped as unknown[] | null) ?? []).length} rows for ${call.id} in tenant ${call.brokerage_id} (expected 1)`)
+    }
+
+    // COACHING WRITTEN WHERE THE FACT BECOMES KNOWN. call_coaching_insights had
+    // six readers and no writer, so every coaching surface in the OS rendered
+    // "nothing to improve" permanently. The projection is pure and grounded in
+    // the analysis just written — see lib/voice/call-coaching.ts. Best-effort:
+    // a coaching write that fails must not undo a stored analysis, but it is
+    // never silent.
+    const analysisId = (analysisRow as { id?: string } | null)?.id ?? null
+    if (analysisId) {
+      const { writeCallCoachingInsights } = await import("@/lib/voice/call-coaching")
+      const coached = await writeCallCoachingInsights(svc, {
+        callAnalysisId: analysisId,
+        brokerageId: call.brokerage_id,
+        agentId: call.agent_id, // agents.id — the class every coaching reader filters on
+        facts: {
+          objections: object.objections,
+          coachingScore: Math.round(object.coachingScore),
+          sentiment: object.sentiment,
+          urgencyScore: Math.round(object.urgencyScore),
+          suggestedNextAction: object.suggestedNextAction,
+        },
+      })
+      if (coached.error) console.error("[voice-intel] coaching insights NOT written:", coached.error)
+    }
+
     return { ok: true, intel: { urgencyScore: Math.round(object.urgencyScore), intentPrimary: object.intentPrimary, summary: object.summary } }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "analysis failed" }
@@ -146,7 +261,10 @@ async function proposeUrgentCallback(svc: any, call: {
  *  extraction must be high-confidence with at least this many distinct
  *  concrete signals (location+price, beds+location, …). The agent approves in
  *  /approvals — nothing self-activates. */
-export const SPOKEN_ALERT_MIN_SIGNALS = 2
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): the keyword claimed a public entry
+// point no file used; the only reader is proposeSpokenCriteriaAlert below.
+// Re-export WITH a proof if a simulator is ever written for this gate.
+const SPOKEN_ALERT_MIN_SIGNALS = 2
 
 async function proposeSpokenCriteriaAlert(svc: any, call: {
   id: string; brokerage_id: string; contact_id: string | null; agent_id: string | null; transcription: string

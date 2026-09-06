@@ -41,11 +41,13 @@ export async function markCommissionPaid(
     // Real state columns only. Payment metadata (paid_by/method/reference/notes)
     // is captured in the kernel audit trail (lifecycle_events.metadata) below —
     // not duplicated as write-only columns on the commission row.
+    // KEEP-ONE (m283/m284): agent_commissions is the one ledger.
+    // Column translation: commissions.paid_date (DATE) -> paid_at (timestamptz).
     const { error: commissionError } = await supabase
-      .from('commissions')
+      .from('agent_commissions')
       .update({
         status: 'paid',
-        paid_date: paidAt.slice(0, 10), // commissions.paid_date is a DATE
+        paid_at: paidAt,
       })
       .eq('id', params.commissionId)
       .eq('brokerage_id', params.brokerageId)
@@ -163,9 +165,11 @@ export async function getCommissionPaymentStatus(
   const supabase = createServiceClient()
 
   try {
+    // KEEP-ONE (m283/m284): agent_commissions is the one ledger; paid_at is
+    // already the native column name here, so no alias is needed.
     const { data: commission, error: commissionError } = await supabase
-      .from('commissions')
-      .select('status, paid_at:paid_date')
+      .from('agent_commissions')
+      .select('status, paid_at')
       .eq('id', commissionId)
       .eq('brokerage_id', brokerageId)
       .single()

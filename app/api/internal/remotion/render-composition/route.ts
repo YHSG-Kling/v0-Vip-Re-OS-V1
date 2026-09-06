@@ -34,17 +34,28 @@
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 import { getBundle } from "@/lib/remotion/bundle-cache"
-import { getComposition, recordRenderCompleted, type CompositionTier } from "@/lib/remotion/registry"
+import { getComposition, recordRenderCompleted, canAccessComposition, type CompositionTier } from "@/lib/remotion/registry"
 import { finalizeCoordinatedRender } from "@/lib/remotion/render-coordinator"
+import { NO_FINISH } from "@/lib/remotion/composition-cache"
+import {
+  predictFinishInputs, probeRenderCache, serveFromCache, stampRenderKeys,
+} from "@/lib/remotion/render-cache"
 import {
   isStillComposition,
+  outputContentType,
+  outputExtension,
+  PICKABLE_RENDER_STATUS,
   buildRenderIntent,
   resolveInputProps,
   needsThumbnailPass,
   resolveThumbnailProps,
   type QueuedRenderRow,
 } from "@/lib/remotion/render-decision"
+import {
+  missingContentProps, describeMissingContent, contentContractError,
+} from "@/lib/remotion/content-contract"
 import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -81,9 +92,27 @@ export async function POST(req: NextRequest) {
   const claim = await svc.from("remotion_composition_renders")
     .update({ render_status: "rendering" })
     .eq("id", body.render_id)
-    .eq("render_status", "queued")
+    .eq("render_status", PICKABLE_RENDER_STATUS)
     .select("id, brokerage_id, composition_id, agent_user_id, entity_type, entity_id, scope_type, scope_id, input_props")
     .maybeSingle()
+  // A REFUSED CLAIM IS NOT AN EMPTY QUEUE (CLAUDE.md §3). supabase-js RESOLVES
+  // a refusal: a PGRST204 on any column named in the update or the select, a
+  // transient PostgREST 5xx, or a .maybeSingle() that matched more than one row
+  // all come back with data null and error set — byte-identical to "this row is
+  // not queued". Read as the latter, the route answered HTTP 200 `skipped`, the
+  // composition-render-queue cron logged processed:1 and moved on, and the row
+  // stayed 'queued' — so the NEXT tick picked the same oldest row and did it
+  // again, forever: a video that is never rendered, never failed, and never
+  // surfaced to the Asset Manager as anything at all. The row is deliberately
+  // NOT marked failed here: the claim did not happen, so it is not ours to
+  // terminate, and a 500 is what makes the cron's own response carry the reason.
+  if (claim.error) {
+    console.error(`[render-composition] claim REFUSED for render ${body.render_id}: ${claim.error.message}`)
+    return NextResponse.json({
+      ok: false, render_id: body.render_id,
+      error: `claim_refused: ${claim.error.message}`,
+    }, { status: 500 })
+  }
   const row = claim.data as (QueuedRenderRow & { id: string }) | null
   if (!row) {
     return NextResponse.json({ skipped: "render row not in queued state or not found" }, { status: 200 })
@@ -102,19 +131,128 @@ export async function POST(req: NextRequest) {
     }
     const callerTier = await resolveBrokerageTier(svc, row.brokerage_id)
 
+    // 2b. TIER GATE — enforced here because this is the only place it can
+    //     refuse. canAccessComposition existed but was called ONLY from
+    //     beginCoordinatedRender, which had zero callers, so tier_access was
+    //     collected and never honoured: a solo_agent brokerage could queue
+    //     ProductPromoReel (tier_access = {platform}, the platform's own
+    //     product marketing) and it would render. Cancelled rather than failed
+    //     — nothing went wrong, the render was simply not theirs to have.
+    if (!canAccessComposition(callerTier, composition)) {
+      await recordRenderCompleted({
+        renderId: row.id, compositionId: row.composition_id,
+        status: "cancelled",
+        errorMessage: `composition_not_reachable_at_tier:${callerTier}`,
+      })
+      return NextResponse.json({
+        skipped: "composition_not_reachable_at_tier",
+        render_id: row.id, caller_tier: callerTier, tier_access: composition.tier_access,
+      }, { status: 200 })
+    }
+
+    // 2c. CONTENT CONTRACT — the backstop that makes "no demo data" a property
+    //     of the OS rather than a promise each producer keeps. Remotion MERGES
+    //     input props over the composition's Studio defaults, so a render whose
+    //     content props were never staged does not come out blank; it comes out
+    //     confident and wrong (123 Main Street at $625,000, equity of $600,000
+    //     against $500,000 paid, a five-star review from a client who does not
+    //     exist) and reports success. Refused BEFORE the cache probe, so a
+    //     refusal never keys or serves an artifact.
+    //
+    //     This also closes a race the audit turned up: render-just-listed and
+    //     render-newsletter-video render directly and then file an AUDIT row via
+    //     recordRenderQueued, which inserts at render_status='queued'. If the
+    //     coordinator finalize that follows fails — or the queue cron ticks in
+    //     between — that row is drained through here and re-rendered from its
+    //     near-empty props. Before this gate that produced a second, fully
+    //     fabricated cut of a real listing promo.
+    //
+    //     Cancelled, not failed: nothing broke. The render was not renderable.
+    const missingContent = missingContentProps(row.composition_id, row.input_props)
+    if (missingContent.length > 0) {
+      await recordRenderCompleted({
+        renderId: row.id, compositionId: row.composition_id,
+        status: "cancelled",
+        errorMessage: contentContractError(missingContent),
+      })
+      console.warn(`[render-composition] ${describeMissingContent(row.composition_id, missingContent)}`)
+      return NextResponse.json({
+        skipped: "content_props_missing",
+        render_id: row.id, composition_id: row.composition_id,
+        missing: missingContent,
+        detail: describeMissingContent(row.composition_id, missingContent),
+      }, { status: 200 })
+    }
+
+    const inputProps = resolveInputProps(row.input_props)
+    const isStill = isStillComposition(composition.duration_frames)
+
+    // 2c. CACHE PROBE — before the bundle, before Chromium, before any spend.
+    //     Identity is (composition + deploy code revision + geometry + canonical
+    //     props) for the frames, plus the finish inputs the coordinator will mux
+    //     over them. A still has no finish pass, so its finish is the empty one.
+    //     We look up on the PREDICTED finish and stamp on the ACTUAL one, so a
+    //     misprediction costs a wasted render, never a wrong artifact.
+    const cacheScope = {
+      brokerageId: row.brokerage_id,
+      scopeType: (row.scope_type ?? "brokerage") as "agent" | "team" | "brokerage",
+      scopeId: row.scope_id ?? row.brokerage_id,
+    }
+    const predictedFinish = isStill
+      ? NO_FINISH
+      : await predictFinishInputs(svc, cacheScope, composition, {
+          musicMood: ((row.input_props as { music_mood?: unknown } | null)?.music_mood as string | undefined) ?? null,
+          narrationAudioUrl: ((row.input_props as { voiceover_url?: unknown } | null)?.voiceover_url as string | undefined) ?? null,
+        })
+    const probe = await probeRenderCache(svc, {
+      brokerageId: row.brokerage_id,
+      composition,
+      props: row.input_props,
+      finish: predictedFinish,
+    })
+
+    if (probe.hit) {
+      const served = await serveFromCache(svc, row.id, probe)
+      if (served.ok) {
+        // Downstream coordination still runs: the reel is genuinely ready, it
+        // just did not need re-rendering. The marketing_assets capture is the
+        // ONE thing skipped — the origin render already filed this exact file,
+        // and the capture dedupes on render id, not on url.
+        await runPostRenderCoordination(svc, row, served.outputUrl!, probe.hit.thumbnailUrl)
+        return NextResponse.json({
+          ok: true, render_id: row.id, kind: isStill ? "still" : "video",
+          output_url: served.outputUrl, thumbnail_url: probe.hit.thumbnailUrl,
+          cache_hit: true, served_from_render_id: probe.hit.renderId,
+          artifact_key: probe.artifactKey,
+        })
+      }
+      // The serve write was REFUSED. Fall through and render: leaving the row
+      // 'rendering' while reporting a hit is exactly the silent failure this
+      // build exists to remove.
+      console.warn("[render-composition] cache serve refused; rendering instead:", served.reason)
+    }
+
+    // Identity stamped before the heavy work so a concurrent sibling can see
+    // what is already in flight for this key. Skipped when the revision is
+    // unknowable — an unkeyed render is simply never reused, which is the safe
+    // direction.
+    if (probe.cacheable) {
+      await stampRenderKeys(svc, row.id, { frameKey: probe.frameKey, artifactKey: probe.artifactKey })
+    }
+
     // 3. Bundle once (module-cached) + resolve Chromium.
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
     const bundleLocation = await getBundle(entryPoint)
-    const inputProps = resolveInputProps(row.input_props)
     const executablePath = await resolveChromium()
-    const isStill = isStillComposition(composition.duration_frames)
 
     if (isStill) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
       //     have no audio to mix or bookends to concat).
       const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
       const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.png`, bytes, "image/png") }
+      // Extension + content type come from the ONE decision helper the
+      // simulator proves (render-decision.ts), not a literal restated here.
+      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.${outputExtension(composition.duration_frames)}`, bytes, outputContentType(composition.duration_frames)) }
       await recordRenderCompleted({
         renderId: row.id, compositionId: row.composition_id,
         status: "succeeded", outputUrl: uploaded.url, thumbnailUrl: uploaded.url,
@@ -151,7 +289,13 @@ export async function POST(req: NextRequest) {
     await fs.unlink(outPath).catch(() => {})
 
     const intent = buildRenderIntent(row, callerTier)
-    const result = await finalizeCoordinatedRender(intent, row.id, buffer)
+    // The frame key travels into finalize so the artifact key persisted is
+    // computed from the finish inputs that ACTUALLY landed (a bookend whose
+    // ffmpeg concat failed did not change the video and must not change its
+    // key), overwriting the prediction stamped above.
+    const result = await finalizeCoordinatedRender(
+      intent, row.id, buffer, probe.cacheable ? probe.frameKey : null,
+    )
     if (!result.ok) {
       // finalize already marked the row failed.
       return NextResponse.json({ ok: false, render_id: row.id, error: result.error }, { status: 500 })
@@ -163,47 +307,79 @@ export async function POST(req: NextRequest) {
     //     (ChatGPT browse / Perplexity / Google AI Overviews read the card
     //     since they don't index video). Best-effort: the video already
     //     succeeded, so a thumbnail failure must NOT fail the render.
+    //
+    //     THE COMPANION PASS ASKS THE CONTRACT TOO (2026-09-03). The backstop
+    //     at the top of this handler asks missingContentProps about the MOVING
+    //     composition and nothing asked about the CARD, so the one still this
+    //     route renders on its own initiative was the one still nothing gated.
+    //     resolveThumbnailProps returns undefined when a producer staged no
+    //     thumbnail_props, renderStillToBuffer passes `props ?? {}`, and Remotion
+    //     merges {} over defaultProps — so the card came out as VideoCoverThumb's
+    //     Studio fixture: "Just Listed — 123 Main Street", "$625K · 3 bd · 2 ba ·
+    //     Brickell, FL", "Your Agent", and the sample seoHint. That PNG becomes
+    //     remotion_composition_renders.thumbnail_url, which app/v/[slug] publishes
+    //     as og:image and the player poster — a fabricated address and price as
+    //     the share card of a real client's video, and a fabricated summary handed
+    //     to the AI-search surface the hint exists to win.
+    //     PARTIAL cards were the same defect quieter: the five producers that DO
+    //     stage thumbnail_props (partners-meeting, board-packet-reel,
+    //     deal-room-reel, listing-pitch-reel, go-live-readiness) stage a real
+    //     title/subtitle and NO seoHint, so a Board Packet card printed the
+    //     just-listed sample sentence as its summary line.
+    //     SKIPPED, NEVER FAILED: the video already succeeded and the rule above
+    //     stands — a thumbnail problem must not fail a render. The producer is
+    //     named the missing props so the fix lands where the facts are
+    //     (`seoHint: seoHintFromNarration(<gated script>)`, the move
+    //     render-just-listed already makes).
     let thumbnailUrl: string | null = null
+    let thumbnailSkipped: string | null = null
     if (needsThumbnailPass(composition)) {
+      // The whole pass stays inside ONE try, the contract question included:
+      // the outer handler's catch marks the RENDER failed, and the video has
+      // already succeeded by this line. Nothing about a card may reach it.
       try {
+        const thumbComposition = composition.thumbnail_composition_id!
         const thumbProps = resolveThumbnailProps(row.input_props)
-        const thumbBytes = await renderStillToBuffer(
-          bundleLocation, composition.thumbnail_composition_id!, thumbProps, executablePath, `${row.id}-thumb`,
-        )
-        const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-        thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
-        await svc.from("remotion_composition_renders")
-          .update({ thumbnail_url: thumbnailUrl })
-          .eq("id", row.id)
+        const thumbMissing = missingContentProps(thumbComposition, thumbProps)
+        if (thumbMissing.length > 0) {
+          thumbnailSkipped = contentContractError(thumbMissing)
+          console.warn(
+            `[render-composition] ${row.composition_id} render ${row.id}: companion ${thumbComposition} SKIPPED — `
+            + describeMissingContent(thumbComposition, thumbMissing),
+          )
+        } else {
+          const thumbBytes = await renderStillToBuffer(
+            bundleLocation, thumbComposition, thumbProps, executablePath, `${row.id}-thumb`,
+          )
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+          thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
+          const { error: thumbWriteError } = await svc.from("remotion_composition_renders")
+            .update({ thumbnail_url: thumbnailUrl })
+            .eq("id", row.id)
+          // A refused write leaves the PNG hosted and the row pointing at
+          // nothing, so /v/[slug] publishes no og:image over a card that exists.
+          if (thumbWriteError) {
+            console.warn(`[render-composition] thumbnail_url write REFUSED for render ${row.id} (${thumbWriteError.message}); the card at ${thumbnailUrl} is hosted but unreferenced`)
+          }
+        }
       } catch (e) {
         console.warn("[render-composition] thumbnail pass failed; video kept:", (e as Error).message)
       }
     }
 
-    // ── Director reel completion → hand the finished COMPOSITE to the Campaign Orchestrator ──
-    // When this render is the final composite for a Director-commissioned reel
-    // (entity_type='video_project'), flip the linked ai_video_projects to completed with the BRANDED
-    // composite URL, then publish the coordination signal so the Asset Manager → Campaign Orchestrator
-    // 1:1 delivery (contact_outreach_ready) fires on the branded cut. This closes the autonomous loop
-    // that previously died at staging (commissionVideo staged but nothing rendered/announced it).
-    if (row.entity_type === "video_project" && row.entity_id) {
-      try {
-        await svc.from("ai_video_projects")
-          .update({ status: "completed", video_url: result.outputUrl, thumbnail_url: thumbnailUrl ?? undefined, updated_at: new Date().toISOString() })
-          .eq("id", row.entity_id)
-        const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
-        await publishVideoCoordinationSignals(row.entity_id, svc)
-      } catch (e) {
-        console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
-      }
-    }
+    await runPostRenderCoordination(svc, row, result.outputUrl ?? null, thumbnailUrl)
 
     return NextResponse.json({
       ok: true, render_id: row.id, kind: "video", output_url: result.outputUrl,
       thumbnail_url: thumbnailUrl,
+      ...(thumbnailSkipped ? { thumbnail_skipped: thumbnailSkipped } : {}),
       used_intro_asset_id: result.introAssetId,
       used_outro_asset_id: result.outroAssetId,
       used_music_asset_id: result.musicAssetId,
+      cache_hit: false,
+      cacheable: probe.cacheable,
+      frame_key: probe.cacheable ? probe.frameKey : null,
+      artifact_key: result.artifactKey,
     })
   } catch (err) {
     const msg = (err as Error).message
@@ -216,6 +392,149 @@ export async function POST(req: NextRequest) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Director reel completion → hand the finished COMPOSITE to the Campaign
+ * Orchestrator AND to the multi-channel fan-out.
+ *
+ * When this render is the final composite for a Director-commissioned reel
+ * (entity_type='video_project'), flip the linked ai_video_projects to completed
+ * with the BRANDED composite URL, then publish the coordination signal so the
+ * Asset Manager → Campaign Orchestrator 1:1 delivery (contact_outreach_ready)
+ * fires on the branded cut. This closes the autonomous loop that previously
+ * died at staging (commissionVideo staged but nothing rendered/announced it).
+ *
+ * WHAT WAS MISSING — the fan-out. `video.generated` (handleVideoGenerated in
+ * lib/orchestrator/internal) is the handler that turns a finished video into an
+ * email draft, an SMS draft, a listing_media row on the property page, one
+ * social draft per platform, and an embed into every campaign asset. It was
+ * emitted ONLY by poll-did-videos, so a Remotion-rendered video — which is most
+ * of them — reached the signal bus and nothing else. It is emitted here now, on
+ * the SAME dedupe key poll-did-videos uses (`video.generated:<projectId>`), so
+ * a hybrid D-ID→Remotion video fans out exactly once, off the branded composite.
+ *
+ * DELIVERABLE vs INTERNAL-ONLY. The fan-out runs only for
+ * entity_type='video_project' — a render whose delivery intent is an
+ * ai_video_projects row (the Director's commissioned reel, the avatar handoff),
+ * which is where the recipient actually lives: contact_id, listing_id,
+ * marketing_campaign_id, video_type. Every internal reel carries its OWN entity
+ * type and has no project row — 'board_packet_reel', 'partners_meeting_reel',
+ * 'deal_room_reel', 'listing_pitch_reel' (agent-facing), 'listing_presentation'
+ * (the seller drip's section reels, delivered on their own timetable by
+ * deliverDueSections) — so none of them can be fanned out to a client by this
+ * path. That is a structural distinction, not a list to maintain: no project
+ * row, no addressee, no fan-out.
+ *
+ * Extracted so a CACHE HIT runs the identical loop: the reel is genuinely ready
+ * whether or not this particular request had to render it, and a cached reel
+ * that never reached the Campaign Orchestrator would be a delivery the client
+ * silently never got — a caching "win" that loses the actual outcome.
+ */
+async function runPostRenderCoordination(
+  svc: ReturnType<typeof createServiceClient>,
+  row: { id: string; brokerage_id: string; agent_user_id: string | null; entity_type: string | null; entity_id: string | null },
+  outputUrl: string | null,
+  thumbnailUrl: string | null,
+): Promise<void> {
+  if (row.entity_type !== "video_project" || !row.entity_id) return
+  try {
+    await svc.from("ai_video_projects")
+      .update({
+        status: "completed",
+        video_url: outputUrl,
+        thumbnail_url: thumbnailUrl ?? undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.entity_id)
+    const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+    await publishVideoCoordinationSignals(row.entity_id, svc)
+  } catch (e) {
+    console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
+  }
+
+  // ── The multi-channel fan-out (email / SMS / portal / social / campaign) ──
+  try {
+    await emitRemotionVideoGenerated(svc, row)
+  } catch (e) {
+    console.error("[render-composition] video.generated fan-out failed:", (e as Error).message)
+  }
+}
+
+/**
+ * Emit `video.generated` for a finished Remotion composite so handleVideoGenerated
+ * fans it out. Reads the delivery intent off the project row — that row is what
+ * knows WHO the video is for.
+ *
+ * ID SPACES ARE RESOLVED, NEVER SUBSTITUTED. handleVideoGenerated writes
+ * ai_message_drafts.agent_user_id and calls createSocialPost({userId}), both of
+ * which are the USERS class. remotion_composition_renders.agent_user_id is
+ * already users-class; ai_video_projects.agent_id is AGENTS-class (m366), so it
+ * is resolved through agents.user_id rather than passed across. If neither
+ * yields a real users.id the event is emitted WITHOUT one and the handler's
+ * agent-addressed branches skip — better than stamping a draft with an id from
+ * the wrong space.
+ */
+async function emitRemotionVideoGenerated(
+  svc: ReturnType<typeof createServiceClient>,
+  row: { id: string; brokerage_id: string; agent_user_id: string | null; entity_id: string | null },
+): Promise<void> {
+  if (!row.entity_id || !row.brokerage_id) return
+
+  const { data: project, error } = await svc
+    .from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, video_type, listing_id, contact_id, marketing_campaign_id, status")
+    .eq("id", row.entity_id)
+    .maybeSingle()
+  if (error) {
+    console.error(`[render-composition] project ${row.entity_id} unreadable for fan-out: ${error.message}`)
+    return
+  }
+  if (!project) return
+  const p = project as {
+    brokerage_id: string | null
+    agent_id: string | null
+    video_type: string | null
+    listing_id: string | null
+    contact_id: string | null
+    marketing_campaign_id: string | null
+    status: string | null
+  }
+  // Only a project the coordination step actually completed is fanned out — a
+  // render that finished but whose project write failed is not a deliverable.
+  if (p.status !== "completed") return
+
+  let agentUserId: string | null = row.agent_user_id
+  if (!agentUserId && p.agent_id) {
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    agentUserId = await resolveUserIdForAgentRecord(svc, p.agent_id)
+    if (!agentUserId) {
+      console.warn(`[render-composition] no users row behind agents.id=${p.agent_id} — fanning out unattributed`)
+    }
+  }
+
+  const { emitEventFromCron } = await import("@/lib/orchestrator/internal")
+  await emitEventFromCron({
+    brokerage_id: p.brokerage_id ?? row.brokerage_id,
+    user_id:      agentUserId ?? undefined,
+    event_type:   "video.generated",
+    source:       "system",
+    // The SAME key poll-did-videos uses, so a hybrid D-ID→Remotion video is
+    // fanned out once — off whichever cut finished last, which is the composite.
+    dedupe_key:   `video.generated:${row.entity_id}`,
+    payload: {
+      video_id:              row.entity_id,
+      video_type:            p.video_type,
+      // No URL is passed: handleVideoGenerated resolves the playable URL from
+      // the row through lib/video/playable-video, so it cannot ship a snapshot
+      // that the branding/upload steps have since superseded.
+      render_id:             row.id,
+      listing_id:            p.listing_id,
+      contact_id:            p.contact_id,
+      marketing_campaign_id: p.marketing_campaign_id,
+      agent_user_id:         agentUserId,
+    },
+  })
+}
 
 /** Select a still composition by id + render it to a PNG Buffer. Shared by
  *  the still branch (the composition itself) and the moving branch's
@@ -250,12 +569,11 @@ async function resolveBrokerageTier(
   svc: ReturnType<typeof createServiceClient>,
   brokerageId: string,
 ): Promise<CompositionTier> {
-  const { data } = await svc.from("brokerages")
-    .select("subscription_tier")
-    .eq("id", brokerageId)
-    .maybeSingle()
-  const t = (data as { subscription_tier: string | null } | null)?.subscription_tier
-  return (t && (VALID_TIERS as string[]).includes(t)) ? (t as CompositionTier) : "solo_agent"
+  // plan_tier — the column with writers. This read brokerages.subscription_tier,
+  // which nothing maintained, so the tier gating a RENDER came from a stale value
+  // (m306 dropped it). resolvePlanTier falls to the tightest tier when absent.
+  const t = await resolvePlanTier(svc, brokerageId)
+  return (VALID_TIERS as string[]).includes(t) ? (t as CompositionTier) : "solo_agent"
 }
 
 async function resolveChromium(): Promise<string | undefined> {

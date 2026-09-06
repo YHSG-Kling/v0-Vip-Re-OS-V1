@@ -15,6 +15,7 @@ import {
   Loader2, Home, Sparkles,
 } from "lucide-react"
 import { pushListingToSellerPortal } from "@/app/actions/push-listing-to-seller-portal"
+import { getLandingSourceBreakdown } from "@/app/actions/listing-landing"
 import { toast } from "sonner"
 import Image from "next/image"
 
@@ -83,6 +84,10 @@ export default function ListingSharePage() {
   const [isPushing, startPushing] = useTransition()
   const [userId, setUserId] = useState<string | null>(null)
   const [marketingContent, setMarketingContent] = useState<MarketingContentRow[]>([])
+  /** smart_landing_sessions read back per source — which share channel (QR /
+   *  tagged link / direct) is actually driving visits, CTA clicks and showing
+   *  requests for THIS listing's landing page. */
+  const [traffic, setTraffic] = useState<Awaited<ReturnType<typeof getLandingSourceBreakdown>> | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -100,18 +105,33 @@ export default function ListingSharePage() {
       if (!l) return
       setListing(l as Listing)
 
-      // Fetch the auto-generated QR code for this listing
-      const { data: qr } = await supabase
+      // Fetch the auto-generated QR code for this listing.
+      // purpose is "listing" — the value BOTH minters write (launchListing in
+      // app/actions/listings-kernel.ts and mintMarketingQr in
+      // lib/marketing/marketing-qr.ts) and the only listing value the qr_codes
+      // purpose CHECK admits. This read asked for "listing_inquiry", which no
+      // writer has ever produced and the constraint would reject, so the card
+      // below could never render for any listing.
+      const { data: qr, error: qrError } = await supabase
         .from("qr_codes")
         .select("id, slug, target_url, scan_count, lead_count")
         .eq("listing_id", listingId)
-        .eq("purpose", "listing_inquiry")
+        .eq("purpose", "listing")
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle()
+
+      // A refused read is not "no QR code yet" — say which one failed.
+      if (qrError) console.error("[listing-share] QR code lookup failed:", qrError.message)
 
       if (qr) {
         setQrRecord(qr as QrRecord)
-        // Generate QR image client-side using the stored target_url
-        const dataUrl = await QRCode.toDataURL(qr.target_url, {
+        // Encode the TRACKED scan URL, never target_url. /api/qr/scan is what
+        // increments scan_count, writes qr_scan_events and attributes the scan
+        // to its campaign before redirecting to target_url; a printed code that
+        // points straight at target_url is a scan the platform never sees.
+        const origin = process.env.NEXT_PUBLIC_APP_URL ?? window.location.origin
+        const dataUrl = await QRCode.toDataURL(`${origin}/api/qr/scan?slug=${qr.slug}`, {
           width: 300,
           margin: 2,
           color: { dark: "#1e293b", light: "#ffffff" },
@@ -128,6 +148,9 @@ export default function ListingSharePage() {
         .order("generated_at", { ascending: false })
 
       setMarketingContent((marketing as MarketingContentRow[] | null) ?? [])
+
+      // Landing traffic by source — server action (tenancy checked server-side).
+      setTraffic(await getLandingSourceBreakdown(listingId))
     }
 
     load()
@@ -240,6 +263,82 @@ export default function ListingSharePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* LANDING TRAFFIC BY SOURCE — the smart_landing_sessions ledger this
+          page's own share channels write into, read back: every visit lands
+          with its qr_source / utm attribution, and CTA clicks + showing
+          requests flip on the same session row. */}
+      {traffic && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              Landing Page Traffic
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!traffic.success ? (
+              <p className="text-xs text-destructive">Traffic unavailable: {traffic.error}</p>
+            ) : traffic.totals.sessions === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No visits recorded yet — share the link or QR code above to start tracking.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  {traffic.totals.sessions} visit{traffic.totals.sessions === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.pagesViewed} page view{traffic.totals.pagesViewed === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.ctaClicks} CTA click{traffic.totals.ctaClicks === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.showingRequests} showing request{traffic.totals.showingRequests === 1 ? "" : "s"}
+                  {traffic.totals.avgTimeOnPageSeconds != null && ` · avg ${traffic.totals.avgTimeOnPageSeconds}s on page`}
+                </p>
+                {/* listing_page_analytics.unique_visitors — the stored figure, said in
+                    its real unit. It is DISTINCT-PER-DAY, so a repeat visitor counts on
+                    each day they came back; the sentence says that rather than passing
+                    the sum off as a headcount. A refused read prints as unknown, never 0. */}
+                {traffic.totals.uniqueVisitorsUnavailable ? (
+                  <p className="text-xs text-muted-foreground">
+                    Unique visitors unavailable — the daily analytics read was refused, so this is
+                    unknown, not zero.
+                  </p>
+                ) : traffic.totals.uniqueVisitorDays > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {traffic.totals.uniqueVisitorsSummed} unique visitor
+                    {traffic.totals.uniqueVisitorsSummed === 1 ? "" : "s"} across{" "}
+                    {traffic.totals.uniqueVisitorDays} day
+                    {traffic.totals.uniqueVisitorDays === 1 ? "" : "s"} — counted distinct within
+                    each day, so someone who came back on another day is counted again.
+                  </p>
+                ) : null}
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b">
+                      <th className="py-1.5 pr-3 font-medium">Source</th>
+                      <th className="py-1.5 pr-3 font-medium">Medium</th>
+                      <th className="py-1.5 pr-3 font-medium">Campaign</th>
+                      <th className="py-1.5 pr-3 font-medium">Visits</th>
+                      <th className="py-1.5 pr-3 font-medium">CTA</th>
+                      <th className="py-1.5 font-medium">Showings</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {traffic.bySource.map((s) => (
+                      <tr key={`${s.source}|${s.medium ?? ""}|${s.campaign ?? ""}`} className="border-b last:border-0">
+                        <td className="py-1.5 pr-3">{s.source}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{s.medium ?? "—"}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{s.campaign ?? "—"}</td>
+                        <td className="py-1.5 pr-3">{s.sessions}</td>
+                        <td className="py-1.5 pr-3">{s.ctaClicks}</td>
+                        <td className="py-1.5">{s.showingRequests}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* QR Code */}
       <Card>

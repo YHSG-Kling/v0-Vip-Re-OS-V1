@@ -16,13 +16,57 @@ import {
   markBookingComplete,
   rateVendorBooking,
   getSuggestedVendorsByStage,
+  checkVendorAvailability,
+  matchVendorToTransaction,
+  getAssignedVendorsForTransaction,
+  type VendorAvailability,
 } from "@/app/actions/vendor-marketplace"
+import { requestVendorReview } from "@/app/actions/ai-vendor-management"
+import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
 
-const SERVICE_TYPES = [
-  "inspector", "appraiser", "title", "escrow", "lender",
-  "contractor", "plumber", "electrician", "hvac", "roofer",
-  "stager", "photographer", "cleaner", "mover", "surveyor",
-]
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (m561, CLAUDE.md §1.1 / §6). A FOURTH SERVICE-TYPE PICK LIST lived
+// here:
+//
+//   ["inspector","appraiser","title","escrow","lender","contractor","plumber",
+//    "electrician","hvac","roofer","stager","photographer","cleaner","mover",
+//    "surveyor"]
+//
+// Thirteen of the fifteen were real members, which is what made this one
+// dangerous: it looked correct. The two that were not — `escrow` and `surveyor`
+// — fed `searchVendors`, `checkVendorAvailability` and `matchVendorToTransaction`,
+// each of which filtered `category ILIKE '%serviceType%'`, so both returned an
+// EMPTY DIRECTORY that the panel rendered as "no vendors found" rather than as
+// "that is not a trade this platform books". Verified live against the then
+// 39-value vendors_category_check on 2026-08-25: 0 matches for either. (Since
+// m562 `surveyor` IS a member; `escrow` still is not, and still resolves to
+// `title` — see below.)
+//
+// `lender` was the other half of the same bug, in the opposite direction — the
+// substring `%lender%` also matched every `refinance_lender`, silently mixing
+// refinance shops into a purchase-lender search. Those reads are `.eq` now.
+//
+// SURVIVOR: app/components/vendors/vendor-category-select.tsx, built from
+// VENDOR_CATEGORY_GROUPS at lib/kernel/vendor-categories.ts:99.
+//
+// COUNTS THAT MOVED: 15 options → 39 at m561, then → 40 at m562, every one of
+// which matches a bench row (was 13 of 15). `escrow` is not lost — it resolves
+// to `title` through VENDOR_CATEGORY_SYNONYMS, which is what four other writers
+// in this repo already did with it.
+//
+// `surveyor` WAS THE ONE REAL LOSS, AND IT IS NOW CLOSED. m561 refused to paper
+// over it: a land surveyor is its own licensed trade and is not a spelling of
+// any other member, so it was NOT mapped to `other` — that would have filed a
+// surveyor under a catch-all and called the vocabulary complete. It was recorded
+// as UNRESOLVED and put to the owner instead, who ruled "surveyor is a vendor
+// category". m562 widened both twins to 40 and put the trade behind the state
+// licence gate, so this picker offers it again — this time as a value the
+// database actually admits.
+//
+// THAT IS THE POINT OF REFUSING IN WORDS. Had the retired picker's `surveyor`
+// been folded into `other` to make the list "work", the gap would have rendered
+// as a working dropdown forever and no one would have asked the owner anything.
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface Vendor {
   id: string
@@ -67,16 +111,45 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   const [searchLoading, setSearchLoading] = useState(false)
   const [bookError, setBookError] = useState<string | null>(null)
 
+  // Availability + best-match for the chosen service type and date
+  const [urgency, setUrgency] = useState<"routine" | "urgent">("routine")
+  const [availability, setAvailability] = useState<VendorAvailability | null>(null)
+  const [bestMatch, setBestMatch] = useState<Vendor | null>(null)
+  const [matchLoading, setMatchLoading] = useState(false)
+  const [matchError, setMatchError] = useState<string | null>(null)
+  // A refused directory search is its OWN state, not matchError: matchError is
+  // only rendered once a service type AND a date are chosen, so routing a search
+  // failure through it would set a message nobody ever sees.
+  const [searchError, setSearchError] = useState<string | null>(null)
+
   // Rating state
   const [ratingBookingId, setRatingBookingId] = useState<string | null>(null)
   const [ratingValue, setRatingValue] = useState(5)
   const [ratingReview, setRatingReview] = useState("")
   const [ratingPending, setRatingPending] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  // AI-drafted vendor review request, per completed job.
+  const [reviewJobId, setReviewJobId] = useState<string | null>(null)
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({})
 
   // Load fresh bookings on mount
   useEffect(() => {
     getVendorBookingsForTransaction(transactionId)
       .then((data) => setBookings(data as any))
+      .catch(() => null)
+  }, [transactionId])
+
+  // ASSIGNMENTS are a different record from BOOKINGS: assignVendorToTransaction
+  // writes vendor_assignments + a vendor_jobs row and emails the vendor, and
+  // nothing on this screen ever showed them. An agent could assign a vendor from
+  // the vendor rail and then find no trace of it on the deal — including the job
+  // cost the vendor had already quoted.
+  const [assignments, setAssignments] = useState<any[]>([])
+  useEffect(() => {
+    getAssignedVendorsForTransaction(transactionId)
+      .then((data) => setAssignments(data as any[]))
       .catch(() => null)
   }, [transactionId])
 
@@ -88,12 +161,54 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
       .catch(() => null)
   }, [showForm, transactionStage])
 
+  // Once the agent has said WHAT and WHEN, answer the two questions the form
+  // could not previously answer: who is actually free that day, and who should
+  // I pick. Both reads are brokerage-scoped server-side.
+  useEffect(() => {
+    if (!showForm || !serviceType || !scheduledDate) {
+      setAvailability(null)
+      setBestMatch(null)
+      setMatchError(null)
+      return
+    }
+    let cancelled = false
+    setMatchLoading(true)
+    setMatchError(null)
+    Promise.all([
+      checkVendorAvailability({ serviceType, preferredDate: scheduledDate }),
+      matchVendorToTransaction({ serviceType, urgency, neededOn: scheduledDate }),
+    ])
+      .then(([avail, match]) => {
+        if (cancelled) return
+        setAvailability(avail)
+        setBestMatch((match as Vendor | null) ?? null)
+      })
+      .catch((err: any) => {
+        if (cancelled) return
+        // Say so. Reporting nothing here would read as "nobody is available".
+        setAvailability(null)
+        setBestMatch(null)
+        setMatchError(err?.message ?? "Could not check vendor availability.")
+      })
+      .finally(() => { if (!cancelled) setMatchLoading(false) })
+    return () => { cancelled = true }
+  }, [showForm, serviceType, scheduledDate, urgency])
+
   const handleSearch = useCallback(() => {
     if (!searchQuery.trim() && !serviceType) return
     setSearchLoading(true)
+    setSearchError(null)
     searchVendors({ name: searchQuery || undefined, serviceType: serviceType || undefined, limit: 10 })
-      .then((data) => setVendors(data as Vendor[]))
-      .catch(() => null)
+      .then((data) => { setVendors(data as Vendor[]) })
+      // `.catch(() => null)` used to swallow this, leaving the PREVIOUS result
+      // list on screen — so a refused search read as "these are your matches".
+      // m561 gives this call a second way to fail (an unplaceable trade is now
+      // refused instead of silently matching nothing), which makes a silent
+      // catch the difference between "we could not ask" and "there is nobody".
+      .catch((err: any) => {
+        setVendors([])
+        setSearchError(err?.message ?? "Could not search the vendor directory.")
+      })
       .finally(() => setSearchLoading(false))
   }, [searchQuery, serviceType])
 
@@ -131,25 +246,58 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
     })
   }
 
+  // Both of these used to swallow the error and then paint the optimistic
+  // state anyway — the row went green while the write had been refused.
   async function handleMarkComplete(bookingId: string) {
+    setActionError(null)
     try {
       await markBookingComplete(bookingId)
       setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, status: "completed" } : b))
-    } catch {
-      // silent
+    } catch (err: any) {
+      setActionError(err?.message ?? "Could not mark that booking complete.")
     }
   }
 
   async function handleRate(bookingId: string) {
     setRatingPending(true)
+    setActionError(null)
     try {
       await rateVendorBooking({ bookingId, rating: ratingValue, review: ratingReview || undefined })
       setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, agent_rating: ratingValue } : b))
       setRatingBookingId(null)
-    } catch {
-      // silent
+      setRatingReview("")
+    } catch (err: any) {
+      setActionError(err?.message ?? "Could not save that rating.")
     } finally {
       setRatingPending(false)
+    }
+  }
+
+  /**
+   * Draft a review request for a COMPLETED vendor job.
+   *
+   * `requestVendorReview` re-derives the tenant from the session and refuses a
+   * job outside it, so the job id sent here is a request, not an authorization.
+   * Nothing is sent to the vendor: the result is a draft the agent copies, so a
+   * failure must show as a failure, never as an empty draft.
+   */
+  async function handleDraftReviewRequest(jobId: string) {
+    setReviewJobId(jobId)
+    setReviewErrors((prev) => ({ ...prev, [jobId]: "" }))
+    try {
+      const result = await requestVendorReview({ jobId })
+      if ((result as any).success && (result as any).reviewRequest) {
+        setReviewDrafts((prev) => ({ ...prev, [jobId]: String((result as any).reviewRequest) }))
+      } else {
+        setReviewErrors((prev) => ({
+          ...prev,
+          [jobId]: (result as any).error ?? "Could not draft a review request.",
+        }))
+      }
+    } catch (err: any) {
+      setReviewErrors((prev) => ({ ...prev, [jobId]: err?.message ?? "Could not draft a review request." }))
+    } finally {
+      setReviewJobId(null)
     }
   }
 
@@ -158,6 +306,113 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   return (
     <div className="space-y-4">
       {/* Existing Bookings */}
+      {assignments.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Wrench className="h-4 w-4 text-muted-foreground" />
+              Assigned Vendors
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            {assignments.map((assignment) => {
+              const jobs = Array.isArray(assignment.vendor_jobs) ? assignment.vendor_jobs : []
+              return (
+                <div key={assignment.id} className="rounded-md border px-3 py-2.5 text-sm space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-medium leading-tight">{assignment.vendors?.name ?? "Unknown Vendor"}</p>
+                      <p className="text-xs text-muted-foreground capitalize">
+                        {String(assignment.assignment_type ?? "assignment").replace(/_/g, " ")}
+                      </p>
+                      {assignment.scheduled_date && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                          <CalendarDays className="h-3 w-3" />
+                          {new Date(assignment.scheduled_date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      )}
+                      {(assignment.vendors?.phone || assignment.vendors?.email) && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {[assignment.vendors?.phone, assignment.vendors?.email].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                    <Badge variant={
+                      assignment.status === "completed" ? "outline" :
+                      assignment.status === "confirmed" || assignment.status === "in_progress" ? "default" :
+                      assignment.status === "cancelled" ? "destructive" : "secondary"
+                    } className="text-xs shrink-0">
+                      {assignment.status === "completed" && <CheckCircle2 className="h-3 w-3 mr-1 text-green-600" />}
+                      {assignment.status === "cancelled" && <XCircle className="h-3 w-3 mr-1" />}
+                      {String(assignment.status ?? "pending").replace(/_/g, " ")}
+                    </Badge>
+                  </div>
+
+                  {jobs.length > 0 && (
+                    <div className="space-y-1 border-t pt-2">
+                      {jobs.map((job: any) => (
+                        <div key={job.id} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="capitalize">{String(job.job_title ?? "Job").replace(/_/g, " ")}</span>
+                            <span className="text-muted-foreground">
+                              {String(job.status ?? "pending").replace(/_/g, " ")}
+                              {job.cost_actual != null
+                                ? ` · $${Number(job.cost_actual).toLocaleString()}`
+                                : job.cost_estimate != null
+                                  ? ` · est. $${Number(job.cost_estimate).toLocaleString()}`
+                                  : ""}
+                            </span>
+                          </div>
+
+                          {/* Review request — only once the job is COMPLETED, and
+                              only on explicit click: requestVendorReview spends a
+                              model call on the platform key. It returns a DRAFT;
+                              nothing is sent until the agent copies it out. */}
+                          {job.status === "completed" && (
+                            <div className="space-y-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 px-2 text-xs"
+                                disabled={reviewJobId === job.id}
+                                onClick={() => handleDraftReviewRequest(job.id)}
+                              >
+                                {reviewJobId === job.id ? (
+                                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                ) : (
+                                  <Star className="h-3 w-3 mr-1" />
+                                )}
+                                Draft review request
+                              </Button>
+                              {reviewDrafts[job.id] && (
+                                <div className="rounded border bg-muted/50 p-2 space-y-1">
+                                  <p className="text-[11px] whitespace-pre-wrap">{reviewDrafts[job.id]}</p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 px-2 text-[11px]"
+                                    onClick={() => navigator.clipboard.writeText(reviewDrafts[job.id])}
+                                  >
+                                    Copy
+                                  </Button>
+                                </div>
+                              )}
+                              {reviewErrors[job.id] && (
+                                <p className="text-[11px] text-red-600">{reviewErrors[job.id]}</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       {bookings.length > 0 && (
         <Card>
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
@@ -248,6 +503,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 )}
               </div>
             ))}
+            {actionError && <p className="text-xs text-destructive">{actionError}</p>}
           </CardContent>
         </Card>
       )}
@@ -268,16 +524,15 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">Service Type</Label>
-                <Select value={serviceType} onValueChange={setServiceType}>
-                  <SelectTrigger className="h-8 text-xs mt-1">
-                    <SelectValue placeholder="Any service" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SERVICE_TYPES.map((t) => (
-                      <SelectItem key={t} value={t} className="text-xs capitalize">{t}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="mt-1">
+                  {/* The ONE control that authors a vendor trade — see the
+                      tombstone at the top of this file. */}
+                  <VendorCategorySelect
+                    value={serviceType}
+                    onChange={setServiceType}
+                    placeholder="Any service"
+                  />
+                </div>
               </div>
               <div>
                 <Label className="text-xs">Search by name</Label>
@@ -295,6 +550,10 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 </div>
               </div>
             </div>
+
+            {searchError && (
+              <p className="text-xs text-destructive">{searchError}</p>
+            )}
 
             {/* Vendor list */}
             {displayVendors.length > 0 && (
@@ -317,7 +576,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
               <p className="text-xs text-primary font-medium">Selected: {selectedVendor.name}</p>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div>
                 <Label className="text-xs">Scheduled Date *</Label>
                 <Input
@@ -326,6 +585,18 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                   onChange={(e) => setScheduledDate(e.target.value)}
                   className="h-8 text-xs mt-1"
                 />
+              </div>
+              <div>
+                <Label className="text-xs">Urgency</Label>
+                <Select value={urgency} onValueChange={(v) => setUrgency(v as "routine" | "urgent")}>
+                  <SelectTrigger className="h-8 text-xs mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="routine" className="text-xs">Routine</SelectItem>
+                    <SelectItem value="urgent" className="text-xs">Urgent — fastest turnaround</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <Label className="text-xs">Cost (optional)</Label>
@@ -338,6 +609,81 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 />
               </div>
             </div>
+
+            {/* Who is actually free that day, and who to pick. Only shown once
+                the agent has chosen a service type AND a date — before that
+                there is nothing honest to say. */}
+            {serviceType && scheduledDate && (
+              <div className="rounded-md border bg-muted/30 px-3 py-2 space-y-2">
+                {matchLoading ? (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Checking who's available…
+                  </p>
+                ) : matchError ? (
+                  <p className="text-xs text-destructive">{matchError}</p>
+                ) : availability ? (
+                  <>
+                    <p className="text-xs font-medium">
+                      {availability.availableCount} of {availability.consideredCount}{" "}
+                      {serviceType.replace(/_/g, " ")}
+                      {availability.consideredCount === 1 ? " vendor" : " vendors"} free on{" "}
+                      {new Date(`${scheduledDate}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      {availability.busyVendorIds.length > 0 && (
+                        <span className="font-normal text-muted-foreground">
+                          {" "}· {availability.busyVendorIds.length} already booked
+                        </span>
+                      )}
+                    </p>
+
+                    {bestMatch && (
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-muted-foreground">
+                          Best match: <span className="font-medium text-foreground">{bestMatch.name}</span>
+                          {bestMatch.rating ? ` · ${bestMatch.rating}/5` : ""}
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-xs px-2"
+                          onClick={() => setSelectedVendor(bestMatch)}
+                          disabled={selectedVendor?.id === bestMatch.id}
+                        >
+                          {selectedVendor?.id === bestMatch.id ? "Selected" : "Use"}
+                        </Button>
+                      </div>
+                    )}
+
+                    {availability.availableCount > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {availability.availableVendors.slice(0, 6).map((v) => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => setSelectedVendor(v as Vendor)}
+                            className={`text-xs rounded border px-2 py-0.5 transition-colors hover:bg-background ${selectedVendor?.id === v.id ? "border-primary bg-primary/10" : ""}`}
+                          >
+                            {v.name}
+                            {v.preferred ? " ★" : ""}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {availability.consideredCount === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        No active {serviceType.replace(/_/g, " ")} vendors on your brokerage's bench yet.
+                      </p>
+                    )}
+                    {availability.consideredCount > 0 && availability.availableCount === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Everyone is booked that day — pick another date, or book anyway if they've confirmed with you directly.
+                      </p>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )}
 
             <div>
               <Label className="text-xs">Notes (optional)</Label>

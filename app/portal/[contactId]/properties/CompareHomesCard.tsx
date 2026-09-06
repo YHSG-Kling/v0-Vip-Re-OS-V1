@@ -56,9 +56,11 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
     const addresses = comparison.homes.map((h) => h.address)
     start(async () => {
       const r = await requestComparisonReview({ contactId, addresses })
+      // "Your agent will weigh in" used to print whether or not the alert was delivered. r.success
+      // now MEANS it landed; the refusal is the server's own sentence and names the next move.
       toast(r.success
         ? { title: "Your agent will weigh in", description: "They'll help you choose between your finalists." }
-        : { title: "Couldn't send", description: r.error ?? "Pick at least two homes", variant: "destructive" })
+        : { title: "Your agent wasn't reached", description: r.error ?? "Pick at least two homes", variant: "destructive" })
     })
   }
 

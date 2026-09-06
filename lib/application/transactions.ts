@@ -1,13 +1,83 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
+import { MILESTONE_STATUS } from "@/lib/transactions/transaction-stages"
+import { DOCUMENT_OPEN_STATUSES } from "@/lib/transactions/coordination-status"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
+import { TRANSACTION_STATUSES_IN_ESCROW, TRANSACTION_STATUSES_TERMINAL, inPipelineColumn } from "@/lib/transactions/transaction-status"
+import { TXN_STATUSES_AFTER, TXN_STAGES_AFTER } from "@/lib/enrichment/deal-vocabulary"
+import { rosterForPrincipal } from "@/lib/notifications/transaction-parties-packet"
 
 // ============================================
 // HELPERS
 // ============================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ ACT-AS WRITE SEAM — THE TRANSACTIONS KERNEL ★
+//
+// WHAT WAS WRONG. Every function in this file opened its own cookie
+// (RLS-scoped) client with `await createClient()` — 59 sites. That is correct
+// for a tenant user and BROKEN for platform staff operating a tenant under an
+// impersonation grant: the staff user is not a member of the target brokerage,
+// so tenant RLS refuses their write, and supabase-js RESOLVES a refusal
+// (CLAUDE.md §3). An UPDATE that matched nothing comes back `{ data: [], error:
+// null }` — byte-identical to an update that worked — so support "fixed" a deal
+// and nothing changed, with no error anywhere. On a money file that is the worst
+// available failure mode: a commission marked paid that was not marked paid.
+//
+// It also ran the other way. A **read_only** grant had nothing standing between
+// it and a write, because a cookie client carries no concept of a grant mode.
+// §5 says a grant "walks the account and never exceeds it"; a read-only support
+// session that could re-stage a transaction exceeds it.
+//
+// WHAT THIS IS. The ONE gate the WRITERS in this file resolve their client
+// through (§6). It returns:
+//   · the caller's own RLS client for a normal tenant user — byte-identical
+//     behaviour to the `createClient()` it replaces, so no tenant seat changes;
+//   · the SERVICE client under an ACTIVE FULL grant, re-validated on this very
+//     call, so the support write actually lands;
+//   · a REFUSAL under a read_only grant or no session at all.
+// Readers are deliberately NOT converted: `getTransactions`, `loadClientDashboard`
+// and the rest keep the caller's RLS client, which is what lets a read_only grant
+// still SEE the tenant (see the reader/writer split in
+// lib/platform/acting-context.ts).
+//
+// WHY A DYNAMIC IMPORT. Same reason `updateTransactionStage` (below) already
+// uses one: this module is imported by "use server" actions AND by library code,
+// and the seam pulls in `next/headers` through `@/lib/supabase/server`. Keeping
+// it behind one lazy import in one place means a caller that never writes never
+// drags the request-scoped cookie store in. One import site, not forty.
+//
+// AUDIT. `actorUserId` is the REAL human — the staff member when impersonating,
+// the user otherwise. Stamp it wherever the written table carries an actor
+// column; `userId` remains the EFFECTIVE (impersonated) identity.
+// ─────────────────────────────────────────────────────────────────────────────
+type TxnWriteGate =
+  | { ok: true; db: any; userId: string; brokerageId: string | null; userType: string; actorUserId: string }
+  | { ok: false; error: string }
+
+async function actingWriteContext(): Promise<TxnWriteGate> {
+  try {
+    const { resolveWriteContext } = await import("@/lib/platform/acting-context")
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { ok: false, error: ctx.error }
+    return {
+      ok: true,
+      db: ctx.db,
+      userId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+      userType: ctx.userType,
+      actorUserId: ctx.actorUserId,
+    }
+  } catch {
+    // FAIL CLOSED (§4). A gate that cannot run must refuse, not pass. The seam
+    // itself already catches, but a failed dynamic import throws before it does.
+    return { ok: false, error: "Unauthorized" }
+  }
+}
 
 /**
  * Normalize ZIP codes to standard formats:
@@ -105,7 +175,9 @@ export async function createTransaction(transactionData: {
   notes?: string
   commissionPercentage?: number
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   // Map the UI/legacy input contract onto live schema columns. The old code
   // spread the input directly, which wrote columns that don't exist
@@ -118,6 +190,39 @@ export async function createTransaction(transactionData: {
     lease: "dual",
     dual: "dual",
   }
+
+  // ── THE TRANSACTION-CREATION GATE (the MANUAL door) ───────────────────────
+  //
+  // Owner's rule: "when the transaction is created it is only created after the
+  // compliance is good, all documents are present with full signatures and
+  // initials."
+  //
+  // THIS WAS THE LARGEST HOLE. app/dashboard/transactions/components/
+  // create-transaction-sheet.tsx → app/actions/transactions.ts:createTransaction
+  // → here was a live door that inserted a `transactions` row having checked
+  // NOTHING: no compliance state, no required-document list, no signature and no
+  // initial. Every gate on the offer→transaction chain was irrelevant while this
+  // sheet existed beside it.
+  //
+  // The gate refuses a manual create because a hand-typed deal has no offer to
+  // point compliance at — which is precisely the ruling. The refusal is LEGIBLE
+  // (the sheet renders `result.error` verbatim) and names what to do instead:
+  // take the accepted offer through submit-to-compliance.
+  const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+  const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+    // Tenant from the SESSION — app/actions/transactions.ts resolves it from
+    // getAgentContext() and passes it here; it is never read off the form.
+    brokerageId: (transactionData.brokerage_id ?? "") as string,
+    offerId:     null,
+    contactIds:  [transactionData.contact_id ?? null],
+    dealType:    DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
+    stateCode:   transactionData.property_state ?? null,
+    door:        "manual transaction sheet",
+  })
+  if (!creationGate.allowed) {
+    return { success: false, error: creationGate.reason, gate: creationGate.detail }
+  }
+
   const { data, error } = await supabase
     .from("transactions")
     .insert({
@@ -145,24 +250,30 @@ export async function createTransaction(transactionData: {
   }
 
   if (data) {
-    await generateMilestones(data.id, transactionData.transaction_type)
+    // The result is READ. A refused or refused-to-run seeding used to vanish
+    // here, leaving a deal with no journey and nothing saying so.
+    const seeded = await generateMilestones(data.id, transactionData.transaction_type)
+    if (!seeded.success) {
+      console.error(`[createTransaction] deal ${data.id} created but its milestones were NOT seeded:`, seeded.error)
+    }
 
     if (transactionData.commissionPercentage != null) {
-      const { data: userData } = await supabase.auth.getUser()
-      const { data: profile } = await supabase
-        .from("users")
-        .select("brokerage_id")
-        .eq("id", userData.user?.id)
-        .single()
-
-      if (profile?.brokerage_id) {
+      // TENANT + ACTOR FROM THE SEAM, NOT FROM `supabase.auth`. This used to call
+      // `supabase.auth.getUser()` and then re-read that user's `users.brokerage_id`.
+      // Under act-as `supabase` is now the SERVICE client, which carries no session
+      // at all — `auth.getUser()` returns null and the whole branch would have gone
+      // silent, dropping the commission-override lifecycle event on exactly the
+      // support path this conversion exists to make work. The seam already resolved
+      // both values, and it resolved the right ones: `brokerageId` is the TARGET
+      // tenant while acting-as, and `actorUserId` is the REAL human (§ audit).
+      if (gate.brokerageId) {
         await transitionLifecycle({
-          brokerageId: profile.brokerage_id,
+          brokerageId: gate.brokerageId,
           entityType:  "transaction",
           entityId:    data.id,
           fromState:   "active",
           toState:     "commission_overridden",
-          actorUserId: userData.user?.id ?? '',
+          actorUserId: gate.actorUserId,
           actorRole:   "broker",
           eventType:   "commission.overridden",
           metadata:    { commission_percentage: transactionData.commissionPercentage, resolved_from: "deal_override" },
@@ -196,7 +307,9 @@ export async function updateTransaction(
     commissionPercentage: number
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   const updatePayload: any = { ...updates, updated_at: new Date().toISOString() }
   if (updates.commissionPercentage !== undefined) {
@@ -229,8 +342,46 @@ export async function updateTransaction(
 // MILESTONES
 // ============================================
 
-export async function generateMilestones(transactionId: string, transactionType: string) {
-  const supabase = await createClient()
+export async function generateMilestones(
+  transactionId: string,
+  transactionType: string,
+  brokerageId?: string | null,
+) {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+
+  // THE TENANT IS STAMPED, AND WITHOUT IT THIS DOES NOTHING VISIBLE.
+  //
+  // `transaction_milestones.brokerage_id` is NULLABLE with no default (verified
+  // against the live schema), so omitting it did not fail — the rows landed
+  // UNTENANTED. Every hazard reader, including completeHazardMilestone, filters
+  // `.eq("brokerage_id", …)`, so on a directly-created transaction the whole
+  // journey — the client-visible "Homeowner's Insurance Bound" step included —
+  // was written and then invisible to the surfaces that exist to act on it.
+  // Silently, because createTransaction ignored this function's return value.
+  //
+  // Derived from the transaction when the caller does not supply it, so no
+  // existing caller has to change to become correct.
+  let tenantId = brokerageId ?? null
+  if (!tenantId) {
+    const { data: txn, error: txnError } = await supabase
+      .from("transactions")
+      .select("brokerage_id")
+      .eq("id", transactionId)
+      .maybeSingle()
+    if (txnError) {
+      console.error("[generateMilestones] could not read the deal's tenant:", txnError.message)
+      return { success: false, error: `Could not resolve the transaction's brokerage: ${txnError.message}` }
+    }
+    tenantId = (txn?.brokerage_id as string | null) ?? null
+  }
+  if (!tenantId) {
+    // Refuse rather than write a journey nothing can read. An untenanted
+    // milestone is worse than no milestone: it looks seeded and acts absent.
+    console.error(`[generateMilestones] transaction ${transactionId} has no brokerage — milestones NOT seeded`)
+    return { success: false, error: "This transaction has no brokerage, so its milestones would be invisible to every reader." }
+  }
 
   // Build the journey from the SINGLE canonical catalog (milestone-catalog.ts), so a
   // directly-created transaction gets the SAME canonical identities, display names, and
@@ -239,6 +390,7 @@ export async function generateMilestones(transactionId: string, transactionType:
   // the human label; is_client_visible is the curated default (agent-overridable).
   const journey = milestoneJourneyFor(transactionType)
   const milestonesWithTransactionId = journey.map((m) => ({
+    brokerage_id: tenantId,
     transaction_id: transactionId,
     milestone_name: m.name,
     milestone_type: m.id,
@@ -255,7 +407,9 @@ export async function generateMilestones(transactionId: string, transactionType:
 }
 
 export async function completeMilestone(milestoneId: string, completedBy?: string, notes?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   const { data, error } = await supabase
     .from("transaction_milestones")
@@ -297,7 +451,9 @@ export async function updateMilestone(
   milestoneId: string,
   updates: Partial<{ status: string; target_date: string; notes: string; assigned_to: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_milestones")
     .update(updates)
@@ -329,7 +485,9 @@ export async function getClosingChecklist(transactionId: string) {
 }
 
 export async function updateChecklistItem(itemId: string, completed: boolean) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("closing_checklist_items")
     .update({ completed, completed_at: completed ? new Date().toISOString() : null })
@@ -359,7 +517,9 @@ export async function addParticipant(participantData: {
   license_number?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase.from("transaction_participants").insert(participantData).select().single()
 
   if (error) {
@@ -384,7 +544,9 @@ export async function updateParticipant(
     phone: string; license_number: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_participants")
     .update(updates)
@@ -401,7 +563,9 @@ export async function updateParticipant(
 }
 
 export async function removeParticipant(participantId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { error } = await supabase.from("transaction_participants").delete().eq("id", participantId)
 
   if (error) {
@@ -435,7 +599,9 @@ export async function addLender(lenderData: {
   clear_to_close_date?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase.from("transaction_lenders").insert(lenderData).select().single()
 
   if (error) {
@@ -459,7 +625,9 @@ export async function updateLender(
     underwriting_status: string; clear_to_close_date: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_lenders")
     .update(updates)
@@ -501,7 +669,9 @@ export async function addTitleEscrow(data: {
   closing_location?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: result, error } = await supabase.from("transaction_title_escrow").insert(data).select().single()
 
   if (error) {
@@ -510,12 +680,29 @@ export async function addTitleEscrow(data: {
   }
 
   await addTimelineEntry(data.transaction_id, "title_escrow_added", `Title company "${data.title_company_name}" assigned`)
+  // gate.brokerageId is nullable on the act-as seam; a closing without a tenant
+  // cannot be announced to one, so the emit is skipped (and said) rather than
+  // typed away (integrator, 2026-09-03).
+  if (data.closing_scheduled_date && !gate.brokerageId) {
+    console.error(`[addTitleEscrow] CLOSING_SCHEDULED not emitted: no brokerage on the write context for transaction ${data.transaction_id}`)
+  }
+  if (data.closing_scheduled_date && gate.brokerageId) {
+    await emitClosingScheduled({
+      transactionId: data.transaction_id,
+      brokerageId:   gate.brokerageId,
+      actorUserId:   gate.actorUserId ?? gate.userId,
+      closingScheduledDate: data.closing_scheduled_date,
+      closingLocation: data.closing_location ?? null,
+    })
+  }
   revalidatePath("/transactions")
   return { success: true, data: result }
 }
 
 export async function updateTitleEscrow(titleEscrowId: string, updates: Record<string, unknown>) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_title_escrow")
     .update(updates)
@@ -527,8 +714,56 @@ export async function updateTitleEscrow(titleEscrowId: string, updates: Record<s
     console.error("Error updating title/escrow:", error)
     return { success: false, error: error.message }
   }
+  const scheduled = typeof updates.closing_scheduled_date === "string" ? updates.closing_scheduled_date : null
+  if (scheduled && !gate.brokerageId) {
+    console.error(`[updateTitleEscrow] CLOSING_SCHEDULED not emitted: no brokerage on the write context for title/escrow ${titleEscrowId}`)
+  }
+  if (scheduled && gate.brokerageId && (data as { transaction_id?: string } | null)?.transaction_id) {
+    await emitClosingScheduled({
+      transactionId: (data as { transaction_id: string }).transaction_id,
+      brokerageId:   gate.brokerageId,
+      actorUserId:   gate.actorUserId ?? gate.userId,
+      closingScheduledDate: scheduled,
+      closingLocation: typeof updates.closing_location === "string" ? updates.closing_location : null,
+    })
+  }
   revalidatePath("/transactions")
   return { success: true, data }
+}
+
+// THE PRODUCER OF KernelEvent.CLOSING_SCHEDULED at the fact-point. The portal template
+// ("Closing scheduled — bring a government-issued ID…") and the staff-bell label both
+// existed; the only emitters were the title portal's `closing_ready` status flip and the
+// calendar watcher's T-24h reminder — neither is the moment the agent/TC WRITES the
+// date. `transaction_title_escrow.closing_scheduled_date` is that moment (the war room,
+// the health scorer and the deal detail all read it as "closing scheduled"), and this
+// module is its ONE writer. Best-effort: the escrow row is the record. Not exported —
+// this is a `"use server"` module, where every export is a public endpoint.
+async function emitClosingScheduled(args: {
+  transactionId: string
+  brokerageId: string
+  actorUserId: string
+  closingScheduledDate: string
+  closingLocation: string | null
+}): Promise<void> {
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.CLOSING_SCHEDULED,
+      brokerageId: args.brokerageId,
+      entityId:    args.transactionId,
+      actorUserId: args.actorUserId,
+      metadata: {
+        closing_scheduled_date: args.closingScheduledDate,
+        closing_date:           args.closingScheduledDate,
+        closing_location:       args.closingLocation,
+        source:                 "title_escrow_write",
+      },
+    })
+  } catch (err) {
+    console.error("[transactions] CLOSING_SCHEDULED emit failed (escrow row saved):", err)
+  }
 }
 
 // ============================================
@@ -546,7 +781,9 @@ export async function scheduleInspection(inspectionData: {
   cost?: number
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .insert({ ...inspectionData, status: "scheduled" })
@@ -576,7 +813,9 @@ export async function updateInspection(
     report_url: string; issues_found: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .update(updates)
@@ -593,7 +832,9 @@ export async function updateInspection(
 }
 
 export async function completeInspection(inspectionId: string, reportUrl?: string, issuesFound?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .update({
@@ -620,21 +861,28 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
     // milestone_name='inspection_completed' since the enum doesn't have a
     // dedicated INSPECTION_COMPLETED event yet.
     try {
-      const supabaseSvc = await createClient()
-      const { data: { user } } = await supabaseSvc.auth.getUser()
-      const { data: tx } = await supabaseSvc
+      // TOMBSTONE (§1.3) — the SECOND `await createClient()` that stood here is
+      // gone. It was named `supabaseSvc` but was never a service client; it was a
+      // duplicate of the very cookie client this function already held, opened
+      // only to reach `auth.getUser()`. Under act-as `gate.db` IS the service
+      // client and carries no session, so that call would have returned null and
+      // silently skipped the whole portal fan-out. Both values now come from the
+      // seam that already resolved them: `gate.actorUserId` is the REAL human
+      // behind the request (the staff member when impersonating), which is what
+      // an audit column must carry.
+      const { data: tx } = await supabase
         .from("transactions")
         .select("brokerage_id")
         .eq("id", data.transactions.id)
         .maybeSingle()
-      if (tx?.brokerage_id && user?.id) {
+      if (tx?.brokerage_id && gate.actorUserId) {
         const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
         const { KernelEvent } = await import("@/lib/kernel/events")
         await emitTransactionEvent({
           event:        KernelEvent.MILESTONE_COMPLETED,
           brokerageId:  tx.brokerage_id,
           entityId:     data.transactions.id,
-          actorUserId:  user.id,
+          actorUserId:  gate.actorUserId,
           metadata: {
             milestone_name:    "inspection_completed",
             inspection_type:   data.inspection_type,
@@ -665,7 +913,9 @@ export async function orderVendorService(serviceData: {
   scheduled_date?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_vendor_services")
     .insert({ ...serviceData, status: "ordered" })
@@ -690,7 +940,9 @@ export async function updateVendorService(
   serviceId: string,
   updates: Partial<{ status: string; scheduled_date: string; completed_date: string; cost: number; paid: boolean; notes: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_vendor_services")
     .update(updates)
@@ -720,7 +972,9 @@ export async function addTransactionDocument(docData: {
   requires_signature?: boolean
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_documents")
     .insert({ ...docData, status: "requested" })
@@ -738,7 +992,9 @@ export async function addTransactionDocument(docData: {
 }
 
 export async function updateDocumentStatus(documentId: string, status: string, signedAt?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const updates: Record<string, unknown> = { status }
   if (signedAt) updates.signed_at = signedAt
 
@@ -768,7 +1024,16 @@ export async function addTimelineEntry(
   performedBy?: string,
   metadata?: Record<string, unknown>,
 ) {
-  const supabase = await createClient()
+  // This one returns void, so its only refusal channel is the log — same shape
+  // its existing insert-error branch already uses. BRACED deliberately: the
+  // unbraced form makes the `return` unconditional and silently turns the whole
+  // function into a no-op for every caller, tenant seats included.
+  const gate = await actingWriteContext()
+  if (!gate.ok) {
+    console.error("[addTimelineEntry] refused:", gate.error)
+    return
+  }
+  const supabase = gate.db
   const { error } = await supabase.from("transaction_timeline").insert({
     transaction_id: transactionId,
     activity_type: activityType,
@@ -804,7 +1069,9 @@ export async function addDeadline(deadlineData: {
   notes: string
   deadline_date: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .insert({
@@ -835,7 +1102,9 @@ export async function updateDeadline(
   deadlineId: string,
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .update(updates)
@@ -852,7 +1121,9 @@ export async function updateDeadline(
 }
 
 export async function completeDeadline(deadlineId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .update({ status: "completed", completed_at: new Date().toISOString() })
@@ -910,7 +1181,9 @@ export async function addCommission(commissionData: {
   split_percentage?: number
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
     .insert({ ...commissionData, status: "pending" })
@@ -926,7 +1199,9 @@ export async function addCommission(commissionData: {
 }
 
 export async function calculateCommissions(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select("*, transaction_commissions(*)")
@@ -1074,11 +1349,18 @@ export async function calculateCommissions(transactionId: string) {
     await Promise.all(writes)
   }
 
+  // These are the recalculated payout amounts on the seven-year deal stamp. The
+  // loop returned { success: true, data: updatedCommissions } whatever happened,
+  // so a refused write handed the caller the NEW numbers while the stored rows
+  // kept the OLD ones — the caller displayed a recalculation that never landed.
   for (const comm of updatedCommissions) {
-    await supabase
+    const { error: recalcError } = await supabase
       .from("transaction_commissions")
       .update({ calculated_amount: comm.calculated_amount })
       .eq("id", comm.id)
+    if (recalcError) {
+      return { success: false, error: `Could not persist the recalculated commission ${comm.id}: ${recalcError.message}` }
+    }
   }
 
   revalidatePath("/transactions")
@@ -1086,13 +1368,28 @@ export async function calculateCommissions(transactionId: string) {
 }
 
 export async function markCommissionPaid(commissionId: string, paidDate: string, checkNumber?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
     .update({ status: "paid", paid_date: paidDate, check_number: checkNumber })
     .eq("id", commissionId)
     .select()
     .single()
+
+  // The stamp is the seven-year record; the agent's payable ledger has to agree
+  // with it. Before this, marking paid here left agent_commissions on 'pending'
+  // and the two surfaces disagreed about whether the agent had been paid.
+  if (data) {
+    await syncStampToAgentLedger(supabase, {
+      transaction_id: (data as { transaction_id: string }).transaction_id,
+      recipient_type: (data as { recipient_type: string }).recipient_type,
+      recipient_id:   (data as { recipient_id?: string | null }).recipient_id ?? null,
+      status:         "paid",
+      paid_date:      paidDate,
+    })
+  }
 
   if (error) {
     console.error("Error marking commission paid:", error)
@@ -1114,7 +1411,9 @@ export async function submitRepairRequest(requestData: {
   priority?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
     .insert({ ...requestData, status: "requested" })
@@ -1141,7 +1440,9 @@ export async function respondToRepairRequest(
   counterOffer?: number,
   notes?: string,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   // Map response → status CHECK (requested|countered|approved|rejected|withdrawn|completed).
   const RESPONSE_STATUS: Record<"accepted" | "rejected" | "counter", string> = {
     accepted: "approved",
@@ -1180,7 +1481,9 @@ export async function finalizeRepairNegotiation(
   resolution: "repair" | "credit" | "as_is",
   finalAmount?: number,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   // Map resolution → status CHECK; finalAmount→actual_cost; persist the
   // resolution detail in notes (no resolution/final_amount/resolved_at columns).
   const RESOLUTION_STATUS: Record<"repair" | "credit" | "as_is", string> = {
@@ -1239,15 +1542,17 @@ export async function getTransactionStats(agentId?: string) {
   let activeQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
-    .in("status", ["new", "negotiation", "under_contract", "inspection", "financing"])
+    .in("status", ["under_contract"])
   if (agentId) activeQuery = activeQuery.eq("agent_id", agentId)
   if (brokerageId) activeQuery = activeQuery.eq("brokerage_id", brokerageId)
   const { count: activeCount } = await activeQuery
 
   const { count: pendingDocsCount } = await supabase
     .from("transaction_documents")
+    // 'pending' is not a value this ladder has — the writer inserts
+    // 'requested' — so this count was always zero.
     .select("id", { count: "exact", head: true })
-    .eq("status", "pending")
+    .in("status", [...DOCUMENT_OPEN_STATUSES])
 
   const today = new Date().toISOString().split("T")[0]
   let tasksQuery = supabase
@@ -1266,7 +1571,7 @@ export async function getTransactionStats(agentId?: string) {
   let closingQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
-    .eq("status", "closing")
+    .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
     .gte("close_date", startOfMonth.toISOString())
     .lt("close_date", endOfMonth.toISOString())
   if (brokerageId) closingQuery = closingQuery.eq("brokerage_id", brokerageId)
@@ -1285,7 +1590,7 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
   let query = supabase
     .from("transaction_documents")
     .select("*, transactions(id, property_address)")
-    .eq("status", "pending")
+    .in("status", [...DOCUMENT_OPEN_STATUSES])
     .order("created_at", { ascending: false })
     .limit(limit)
 
@@ -1309,8 +1614,17 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
 }
 
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
-  const supabase = await createClient()
-  const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+  const { data: transaction, error: transactionError } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("id", transactionId)
+    .single()
+  // A refused read resolves in supabase-js — without this, "permission denied"
+  // would arrive as `transaction === null` and read as "no such transaction".
+  if (transactionError) return { success: false, error: transactionError.message }
   if (!transaction) return { success: false }
 
   const timelinePrompt = `Generate realistic transaction timeline:
@@ -1336,16 +1650,33 @@ Return JSON array of milestones.`
 
     const timeline = JSON.parse(await runPipelineSimple(timelinePrompt, { feature: "transaction_timeline" }))
 
+  // THE TRANSACTION IS THE MILESTONE'S TENANT, and it is already loaded above.
+  // Every consumer of transaction_milestones narrows on brokerage_id —
+  // lib/transactions/milestone-service (seed/ensure/complete, which also DEDUPES
+  // on it, so unstamped rows get silently duplicated), deadline-monitor,
+  // closing-orchestration, closing-war-room, title-closing-watchtower,
+  // lib/kernel/transactions, copilot, the calendar and the lender portal — so an
+  // AI-generated client timeline written without the stamp was invisible to the
+  // deadline monitor, the war room and the client portal alike, while still
+  // occupying the transaction's milestone list for nobody.
+  if (!transaction.brokerage_id) {
+    return { success: false, error: "Transaction has no brokerage — refusing to write untenanted milestones" }
+  }
+
   if (timeline.data?.milestones) {
     for (const milestone of timeline.data.milestones) {
-      await supabase.from("transaction_milestones").insert({
+      const { error: milestoneError } = await supabase.from("transaction_milestones").insert({
         transaction_id: transactionId,
+        brokerage_id: transaction.brokerage_id,
         milestone_name: milestone.name,
         milestone_type: milestone.type || "date_driven",
         target_date: milestone.target_date,
         status: "pending", // CHECK: pending|completed|overdue|cancelled
         is_client_visible: true,
       })
+      if (milestoneError) {
+        console.error(`[generateClientTimeline] failed to insert milestone "${milestone.name}":`, milestoneError.message)
+      }
     }
   }
 
@@ -1353,7 +1684,9 @@ Return JSON array of milestones.`
 }
 
 export async function generateCostBreakdown(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
   if (!transaction) return { success: false }
 
@@ -1418,7 +1751,9 @@ Return JSON with detailed breakdown.`
 }
 
 export async function generateStatusUpdate(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), transaction_lenders(*)`)
@@ -1427,13 +1762,37 @@ export async function generateStatusUpdate(transactionId: string) {
 
   if (!transaction) return { success: false }
 
-  const recentMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === "completed").slice(-3)
-  const upcomingMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === "upcoming").slice(0, 3)
+  // `upcoming` is not one of the four values transaction_milestones_status_check admits
+  // (cancelled|completed|overdue|pending), so this list was ALWAYS empty and every
+  // AI-written client update said "Upcoming: " with nothing after it. MILESTONE_STATUS
+  // (lib/transactions/transaction-stages.ts:81) is the ONE vocabulary for this column.
+  const recentMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === MILESTONE_STATUS.COMPLETED).slice(-3)
+  const upcomingMilestones = transaction.transaction_milestones?.filter(
+    (m: any) => m.status === MILESTONE_STATUS.PENDING || m.status === MILESTONE_STATUS.OVERDUE,
+  ).slice(0, 3)
+
+  // `transactions.current_stage` and `transactions.days_in_current_stage` DO NOT EXIST —
+  // this prompt rendered "Current Stage: undefined / Days in Stage: 0" on every run.
+  // The stage lives in `transactions.stage`; how long it has been there is recorded by
+  // the lifecycle event the stage engine emits (transitionLifecycle, "stage.advanced").
+  const { data: lastAdvance } = await supabase
+    .from("lifecycle_events")
+    .select("created_at")
+    .eq("entity_type", "transaction")
+    .eq("entity_id", transactionId)
+    .eq("event_type", "stage.advanced")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const stageEnteredAt = lastAdvance?.created_at ?? transaction.updated_at ?? null
+  const daysInStage = stageEnteredAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(stageEnteredAt).getTime()) / (1000 * 60 * 60 * 24)))
+    : 0
 
   const updatePrompt = `Generate client-friendly status update:
 
-Current Stage: ${transaction.current_stage}
-Days in Stage: ${transaction.days_in_current_stage || 0}
+Current Stage: ${transaction.stage ?? transaction.status ?? "unknown"}
+Days in Stage: ${daysInStage}
 Recent Completed: ${recentMilestones?.map((m: any) => m.milestone_name).join(", ")}
 Upcoming: ${upcomingMilestones?.map((m: any) => m.milestone_name).join(", ")}
 
@@ -1463,7 +1822,20 @@ Tone: Honest, reassuring, specific (no vague language)`
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+
+  // Tenant anchor: the checklist rows carry brokerage_id, and the honest place
+  // to get it is the transaction itself (RLS-scoped for a tenant caller, so a
+  // foreign deal reads as absent, not as someone else's).
+  const { data: txnRow, error: txnErr } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  if (txnErr) return { success: false, error: txnErr.message }
+  if (!txnRow) return { success: false, error: "Transaction not found" }
 
   const checklistPrompt = `Generate smart checklist for transaction stage: ${stage}
 
@@ -1487,42 +1859,259 @@ Return JSON array of tasks.`
 
     const checklist = JSON.parse(await runPipelineSimple(checklistPrompt, { feature: "transaction_checklist" }))
 
-  if (checklist.data?.tasks) {
-    const { data: checklistRecord } = await supabase
-      .from("smart_checklists")
-      .insert({
-        transaction_id: transactionId,
-        checklist_type: "stage_specific",
-        total_items: checklist.data.tasks.length,
-        completed_items: 0,
-        percent_complete: 0,
-        auto_generated: true,
-      })
-      .select()
-      .single()
+  // HONESTY CONTRACT (same as ai-coordinator-panel.tsx): report the server's
+  // verdict — proposedCount (what the model suggested) vs createdCount (what the
+  // database now agrees with) plus per-row `skipped` refusals. supabase-js
+  // RESOLVES refusals (§3), so every insert below reads its error; the old loop
+  // discarded them all and this function said { success: true } no matter what.
+  const proposedTasks: any[] = Array.isArray(checklist.data?.tasks) ? checklist.data.tasks : []
+  if (proposedTasks.length === 0) {
+    return { success: false, error: "The model proposed no checklist tasks — nothing was written.", proposedCount: 0, createdCount: 0, skipped: [] as string[] }
+  }
 
-    if (checklistRecord) {
-      for (const task of checklist.data.tasks) {
+  const { data: checklistRecord, error: checklistErr } = await supabase
+    .from("smart_checklists")
+    .insert({
+      transaction_id: transactionId,
+      brokerage_id: txnRow.brokerage_id,
+      checklist_type: "stage_specific",
+      total_items: proposedTasks.length,
+      completed_items: 0,
+      percent_complete: 0,
+      auto_generated: true,
+    })
+    .select()
+    .single()
+
+  if (checklistErr || !checklistRecord) {
+    return {
+      success: false,
+      error: checklistErr?.message ?? "The checklist row was refused — no tasks were written.",
+      proposedCount: proposedTasks.length,
+      createdCount: 0,
+      skipped: [] as string[],
+    }
+  }
+
+  let createdCount = 0
+  const skipped: string[] = []
+  for (const task of proposedTasks) {
         // task_items links to the transaction via checklist_id → smart_checklists,
         // not a direct transaction_id. Real columns: title/description/assigned_to/
         // completed (no status/client_visible).
-        await supabase.from("task_items").insert({
+        //
+        // THE DEADLINE WAS ASKED FOR AND THEN THROWN AWAY. The prompt above
+        // requires `due_date_offset (days from now)` on every task, and this
+        // insert dropped it, so `task_items.due_date` was NULL on every row this
+        // generator has ever written. detectTransactionIssues, ~40 lines below,
+        // reads exactly that column to count OVERDUE TASKS
+        // (`!t.completed && t.due_date && new Date(t.due_date) < new Date()`) and
+        // feeds the count into the transaction-health prompt — so "Overdue Tasks"
+        // was structurally 0 for every deal on the platform and the health score
+        // was computed as if no checklist task were ever late. Deadline tracking
+        // was in the prompt, in the schema and in the reader; only the write was
+        // missing.
+        //
+        // A non-numeric or negative offset is left NULL rather than coerced:
+        // a fabricated deadline on a compliance checklist is worse than an
+        // absent one.
+        const offsetDays = Number(task.due_date_offset)
+        const dueDate = Number.isFinite(offsetDays) && offsetDays >= 0
+          ? new Date(Date.now() + offsetDays * 86_400_000).toISOString()
+          : null
+        const { error: itemErr } = await supabase.from("task_items").insert({
           checklist_id: checklistRecord.id,
+          brokerage_id: txnRow.brokerage_id,
           title: task.task_name,
           description: task.task_description,
           assigned_to: task.assigned_to_role,
           priority: task.priority,
+          due_date: dueDate,
           completed: false,
         })
-      }
-    }
+        if (itemErr) {
+          skipped.push(`${task.task_name ?? "(untitled task)"}: ${itemErr.message}`)
+        } else {
+          createdCount += 1
+        }
   }
 
-  return { success: true }
+  // total_items was written from the PROPOSAL; if the database refused some,
+  // the stored denominator would overstate the checklist. Correct it to what
+  // actually landed — a refusal here is reported, never swallowed.
+  if (createdCount !== proposedTasks.length) {
+    const { error: fixErr } = await supabase
+      .from("smart_checklists")
+      .update({ total_items: createdCount })
+      .eq("id", checklistRecord.id)
+    if (fixErr) skipped.push(`checklist total_items correction refused: ${fixErr.message}`)
+  }
+
+  return {
+    success: createdCount > 0,
+    error: createdCount > 0 ? undefined : "Every proposed task was refused by the database.",
+    checklistId: checklistRecord.id,
+    proposedCount: proposedTasks.length,
+    createdCount,
+    skipped,
+  }
+}
+
+/**
+ * READER for the smart-checklist card (app/dashboard/transactions/[id]/
+ * smart-checklist-panel.tsx). task_items has no direct transaction FK — it
+ * links via checklist_id → smart_checklists.transaction_id (same join the
+ * health counter below uses).
+ *
+ * Deliberately the CALLER'S RLS client, not the write gate: a read_only
+ * support grant may look, and RLS scopes a tenant user to their own deals.
+ * Every read destructures { error } (§3) — a refused read comes back as
+ * { success: false }, never as an empty (and therefore reassuring) checklist.
+ */
+export async function getSmartChecklists(transactionId: string): Promise<
+  | {
+      success: true
+      checklists: Array<{
+        id: string
+        checklist_type: string | null
+        total_items: number | null
+        completed_items: number | null
+        percent_complete: number | null
+        auto_generated: boolean | null
+        created_at: string | null
+      }>
+      items: Array<{
+        id: string
+        checklist_id: string
+        title: string | null
+        description: string | null
+        assigned_to: string | null
+        priority: string | null
+        due_date: string | null
+        completed: boolean | null
+        completed_at: string | null
+        created_at: string | null
+      }>
+    }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: checklists, error: clErr } = await supabase
+    .from("smart_checklists")
+    .select("id, checklist_type, total_items, completed_items, percent_complete, auto_generated, created_at")
+    .eq("transaction_id", transactionId)
+    .order("created_at", { ascending: false })
+  if (clErr) return { success: false, error: clErr.message }
+
+  const checklistIds = (checklists ?? []).map((c: any) => c.id)
+  if (checklistIds.length === 0) return { success: true, checklists: [], items: [] }
+
+  const { data: items, error: itErr } = await supabase
+    .from("task_items")
+    .select("id, checklist_id, title, description, assigned_to, priority, due_date, completed, completed_at, created_at")
+    .in("checklist_id", checklistIds)
+    .order("created_at", { ascending: true })
+  if (itErr) return { success: false, error: itErr.message }
+
+  return { success: true, checklists: checklists ?? [], items: (items ?? []) as any }
+}
+
+/**
+ * The COMPLETION WRITER task_items never had. The card renders a checkbox per
+ * task; this is what the checkbox lands on.
+ *
+ * §3, both traps: the error is read AND the update is `.select()`-counted —
+ * an UPDATE that matched nothing resolves `{ data: [], error: null }`, which is
+ * byte-identical to one that worked. Zero rows here means the tenant/transaction
+ * predicate refused (or the task is gone), and that is reported as a failure,
+ * never as success.
+ *
+ * Tenant scope comes from the SESSION via the write gate (§4); the task is
+ * additionally pinned to the transaction the caller is looking at through the
+ * checklist join, so a valid task id from another deal cannot be flipped from
+ * this page.
+ */
+export async function setTaskItemCompleted(
+  taskItemId: string,
+  transactionId: string,
+  completed: boolean,
+): Promise<{ success: true; rollupError?: string } | { success: false; error: string }> {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+
+  // Pin the task to THIS transaction (task → checklist → transaction).
+  const { data: taskRow, error: taskErr } = await supabase
+    .from("task_items")
+    .select("id, checklist_id")
+    .eq("id", taskItemId)
+    .maybeSingle()
+  if (taskErr) return { success: false, error: taskErr.message }
+  if (!taskRow?.checklist_id) return { success: false, error: "Task not found" }
+
+  const { data: checklistRow, error: clErr } = await supabase
+    .from("smart_checklists")
+    .select("id, transaction_id")
+    .eq("id", taskRow.checklist_id)
+    .maybeSingle()
+  if (clErr) return { success: false, error: clErr.message }
+  if (!checklistRow || checklistRow.transaction_id !== transactionId) {
+    return { success: false, error: "Task does not belong to this transaction" }
+  }
+
+  // Session-tenant check: the transaction must be in the caller's brokerage.
+  const { data: txnRow, error: txnErr } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  if (txnErr) return { success: false, error: txnErr.message }
+  if (!txnRow) return { success: false, error: "Transaction not found" }
+  if (gate.brokerageId && txnRow.brokerage_id !== gate.brokerageId) {
+    return { success: false, error: "Transaction is not in your brokerage" }
+  }
+
+  const { data: updated, error: updErr } = await supabase
+    .from("task_items")
+    .update({ completed, completed_at: completed ? new Date().toISOString() : null })
+    .eq("id", taskItemId)
+    .eq("checklist_id", checklistRow.id)
+    .select("id")
+  if (updErr) return { success: false, error: updErr.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "The update matched no task — nothing was changed." }
+  }
+
+  // Roll the count up onto the checklist so completed_items / percent_complete
+  // (which the health scorer's denominator reads) stay true. A refusal here is
+  // returned beside the success, not swallowed.
+  let rollupError: string | undefined
+  const { data: allItems, error: countErr } = await supabase
+    .from("task_items")
+    .select("completed")
+    .eq("checklist_id", checklistRow.id)
+  if (countErr) {
+    rollupError = countErr.message
+  } else {
+    const total = (allItems ?? []).length
+    const done = (allItems ?? []).filter((t: any) => t.completed).length
+    const { error: rollErr } = await supabase
+      .from("smart_checklists")
+      .update({
+        completed_items: done,
+        percent_complete: total > 0 ? Math.round((done / total) * 100) : 0,
+      })
+      .eq("id", checklistRow.id)
+    if (rollErr) rollupError = rollErr.message
+  }
+
+  return rollupError ? { success: true, rollupError } : { success: true }
 }
 
 export async function detectTransactionIssues(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), transaction_lenders(*)`)
@@ -1571,6 +2160,7 @@ Return:
 {
   "health_score": 85,
   "health_status": "healthy|at_risk|critical",
+  "narrative": "two or three sentences explaining the score in plain language",
   "red_flags": [],
   "warning_signs": [],
   "recommendations": [],
@@ -1580,10 +2170,24 @@ Return:
     const analysis = JSON.parse(await runPipelineSimple(issuePrompt, { feature: "transaction_issue_analysis" }))
 
   if (analysis.data) {
+    // `ai_narrative` is the finding here; `scored_at` is stamped alongside it.
+    //
+    // The deal-health breakdown (app/transactions/[transactionId]/page.tsx:112)
+    // selects `ai_narrative` beside every score and orders on `scored_at`.
+    // MEASURED LIVE against hrvaqgvukzxfskkcrwbt on 2026-08-28
+    // (information_schema.columns): `scored_at` carries DEFAULT now(), so the
+    // ordering was never actually broken — it is stamped explicitly only so the
+    // value is visible to an offline scan instead of resting on a default no
+    // file in this repo records. `ai_narrative` has NO default and NO writer:
+    // the explanation beside every health score has been blank on every deal,
+    // and the model that produced the score is the only thing that can write it,
+    // which is why the prompt above now asks for it.
     await supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: analysis.data.health_score || 100,
+      ai_narrative: typeof analysis.data.narrative === "string" ? analysis.data.narrative : null,
+      scored_at: new Date().toISOString(),
       red_flags: analysis.data.red_flags || [],
       warning_signs: analysis.data.warning_signs || [],
       recommendations: analysis.data.recommendations || [],
@@ -1625,7 +2229,9 @@ Return:
  * contact. The customer portal feed surfaces it from there.
  */
 export async function deliverEducationalContent(transactionId: string, stage: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, message: gate.error }
+  const supabase = gate.db
 
   const { data: transaction } = await supabase
     .from("transactions")
@@ -1688,7 +2294,9 @@ export async function deliverEducationalContent(transactionId: string, stage: st
 // ============================================
 
 export async function monitorTransactionHealth(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     // communications was a writer-less legacy table (burn-down round 6 repoint) — transaction_communications is the WRITTEN per-deal comms log
@@ -1734,6 +2342,7 @@ COMMUNICATION PATTERNS:
 Calculate health scores (0-100):
 {
   "overall_health": 85,
+  "narrative": "two or three sentences explaining the overall health score in plain language",
   "timeline_health": 90,
   "communication_health": 80,
   "documentation_health": 85,
@@ -1759,10 +2368,15 @@ Calculate health scores (0-100):
       })
       .eq("id", transactionId)
 
+    // Same two stamps as the issue-analysis writer above — one vocabulary, so
+    // the breakdown's narrative behaves identically whichever analysis produced
+    // the row.
     await supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: health.data.overall_health,
+      ai_narrative: typeof health.data.narrative === "string" ? health.data.narrative : null,
+      scored_at: new Date().toISOString(),
       red_flags: health.data.risk_factors,
       recommendations: health.data.recommendations,
     })
@@ -1778,7 +2392,9 @@ Calculate health scores (0-100):
 // ============================================
 
 export async function detectTransactionDelays(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), tasks(*)`)
@@ -1847,7 +2463,9 @@ Current Delays: ${JSON.stringify(delays)}
 // ============================================
 
 export async function celebrateMilestone(transactionId: string, milestone: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, message: gate.error }
+  const supabase = gate.db
 
   const celebrations: Record<string, any> = {
     offer_accepted: { message: "Your offer was accepted! This is a huge step. Here's what happens next...", tone: "excited" },
@@ -1874,13 +2492,83 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 // CLIENT PORTAL DASHBOARD DATA
 // ============================================
 
+/** Which side of the deal the portal viewer is on — buyer, seller, or unknown.
+ *  Unknown is deliberate and safe: the roster redaction drops BOTH principals
+ *  rather than guess. */
+function resolveViewerSide(
+  viewerContactId: string | null | undefined,
+  transaction: { buyer_contact_id?: string | null; seller_contact_id?: string | null },
+): "buyer" | "seller" | null {
+  if (!viewerContactId) return null
+  if (viewerContactId === transaction.seller_contact_id) return "seller"
+  if (viewerContactId === transaction.buyer_contact_id)  return "buyer"
+  return null
+}
+
+/**
+ * Stamp the read receipt on a client's unread updates — THE WRITE HALF, MOVED
+ * OUT OF THE LOADER ON PURPOSE.
+ *
+ * `client_friendly_updates.read_at` had three writers of the row and none that
+ * ever marked it seen, so an agent could not tell an update the client had read
+ * from one they had never opened. The stamp was first written inline inside
+ * `loadClientDashboard`, and act-as-read-path-simulator refused it for two
+ * reasons that are really one:
+ *
+ *   · this file's header names `loadClientDashboard` among the READERS
+ *     deliberately left on the caller's RLS client — that is what lets a
+ *     read_only act-as grant still SEE the tenant — and
+ *   · every WRITER in this file must resolve its client from
+ *     actingWriteContext(), because under an act-as grant the caller's client is
+ *     refused by the TARGET tenant's RLS and supabase-js RESOLVES that refusal
+ *     as success (§3). Forty writers were converted for exactly that reason.
+ *
+ * A function cannot be both. So the loader stays a reader and the write lives
+ * here, behind the seam — and the split is not bookkeeping, it is the correct
+ * behaviour: under a READ_ONLY grant the gate refuses and a support seat
+ * previewing a client's dashboard no longer marks that client's mail as read.
+ * For an ordinary client session the seam returns the caller's own client and
+ * the path is byte-identical.
+ *
+ * Returns the refusal rather than throwing: a receipt that could not be stamped
+ * must not cost the client the dashboard they asked for.
+ */
+async function stampClientUpdateReceipts(
+  transactionId: string,
+): Promise<{ stamped: number; refusal: string | null }> {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { stamped: 0, refusal: gate.error }
+  // The predicate is the transaction plus "not already read" — never anything
+  // the caller supplied about WHICH rows to touch; the contact was proven a
+  // party to this transaction by the loader before this is reached. `.select()`
+  // the update and COUNT it: an UPDATE that matches nothing resolves exactly
+  // like one that worked (§3).
+  const { data, error } = await gate.db
+    .from("client_friendly_updates")
+    .update({ read_at: new Date().toISOString() })
+    .eq("transaction_id", transactionId)
+    .is("read_at", null)
+    .select("id")
+  if (error) return { stamped: 0, refusal: error.message }
+  return { stamped: (data ?? []).length, refusal: null }
+}
+
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
-  // Fetch transaction with full relationships - specify which foreign key to use
+  // Fetch transaction with full relationships - specify which foreign key to use.
+  //
+  // BOTH embeds must name their FK. The contacts one always did; agents(*) did
+  // not, and transactions has THREE foreign keys into agents (agent_id,
+  // buyer_agent_id, seller_agent_id — verified live). PostgREST cannot choose
+  // between them and answers an ambiguous many-to-one embed with an error
+  // rather than a row, which lands on the `!transaction` throw below and shows
+  // the client "Transaction not found" for a transaction that exists. The
+  // half-disambiguated select is the tell: whoever hit the contacts ambiguity
+  // fixed the one they were looking at.
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, contacts!transactions_contact_id_fkey(*), agents(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), agents!transactions_agent_id_fkey(*)`)
     .eq("id", transactionId)
     .single()
   
@@ -2003,10 +2691,45 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
   
   const personaConfig = getPersonaConfig(persona, transaction.deal_type || "buyer")
   
-  // Calculate progress from milestones
-  const completedMilestones = milestones.filter((m: any) => m.status === "completed").length
-  const progressPercent = Math.round((completedMilestones / Math.max(milestones.length, 1)) * 100)
+  // Calculate progress from milestones. THE INLINE COPY THAT STOOD HERE IS DELETED —
+  // survivor: calculateOverallProgress in this file (search its JSDoc), which was
+  // declared and called by nothing while this line re-typed its body. The survivor
+  // additionally honours a closed/funded deal, which this copy could not.
+  const progressPercent = calculateOverallProgress(transaction, milestones)
   
+  // ── THE READ RECEIPT NOBODY WAS WRITING ─────────────────────────────────
+  //
+  // `client_friendly_updates.read_at` was selected by this loader (the query
+  // above names it) and READ BY NOBODY DOWNSTREAM, and — the census finding —
+  // WRITTEN BY NOBODY ANYWHERE. Its three writers (this file at :1747 and
+  // :2213, lib/kernel/transactions.ts:1623) all insert the update and none ever
+  // marks it seen, so an agent had no way to tell an update the client had read
+  // from one they had never opened.
+  //
+  // THIS is the moment it is seen: a CLIENT is loading their own transaction
+  // dashboard and these updates are about to render. `contactId` present is what
+  // makes the viewer a client — the staff preview path calls this loader without
+  // one, and a staff preview must never mark a client's mail as read.
+  //
+  // The unread flag is computed BEFORE the stamp so the very load that marks
+  // them read still shows them as new; after that they are not.
+  const isClientView = Boolean(contactId)
+  const updateWasUnread = new Set(
+    clientFriendlyUpdates.filter((u: any) => u.read_at == null).map((u: any) => u.id as string),
+  )
+  if (isClientView && updateWasUnread.size > 0) {
+    // The write itself rides the act-as seam in stampClientUpdateReceipts above
+    // — this loader must keep the caller's RLS client so a read_only grant can
+    // still SEE the tenant, and a writer in this file must NOT. A refusal is
+    // logged and never allowed to cost the client their dashboard.
+    const receipt = await stampClientUpdateReceipts(transactionId)
+    if (receipt.refusal) {
+      console.error("[client-dashboard] read receipts NOT stamped — updates will keep reading as unopened:", receipt.refusal)
+    } else if (receipt.stamped === 0) {
+      console.warn("[client-dashboard] read receipt matched 0 rows for transaction", transactionId, "— the client saw updates the agent will still see as unread")
+    }
+  }
+
   // Combine updates from multiple sources
   const combinedUpdates = [
     ...clientFriendlyUpdates.map((u: any) => ({
@@ -2016,6 +2739,9 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       timestamp: u.created_at,
       icon: getUpdateIcon(u.update_type),
       source: "friendly_update",
+      /** Unread as of the moment this page was opened — see the read-receipt
+       *  note above. Lets the portal badge genuinely-new updates. */
+      is_new: updateWasUnread.has(u.id),
     })),
     ...transparencyUpdates.map((u: any) => ({
       id: u.id,
@@ -2088,14 +2814,66 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     checklistSummary,
     delayInfo,
     updates: combinedUpdates,
-    team: teamContacts.map((p: any) => ({
-      id: p.id,
+    // THE CLIENT'S VIEW OF THE ROSTER, REDACTED AT THE SAME BOUNDARY THE
+    // TRANSACTION-CREATED NOTICE USES (lib/notifications/transaction-parties-packet.ts).
+    // transaction_participants holds BOTH principals with their email + phone, and
+    // this panel handed the whole table to whichever side opened the portal — the
+    // buyer could read the seller's personal email and phone number, and vice versa.
+    // One rule, one implementation: a principal sees the professionals plus their
+    // OWN row; the counterparty principal is dropped whole. When the viewer's side
+    // can't be resolved, BOTH principals are dropped rather than risk the leak.
+    team: rosterForPrincipal(
+      teamContacts.map((p: any) => ({
+        role:    p.role ?? "party",
+        name:    p.name ?? "",
+        company: p.company ?? null,
+        email:   p.email ?? null,
+        phone:   p.phone ?? null,
+      })),
+      // The VIEWER's side — the caller-supplied contactId when the portal knows
+      // who is looking, falling back to the deal's own resolved contact. An
+      // unresolved side yields null, which drops BOTH principals.
+      resolveViewerSide(contactId ?? portalContactId, transaction),
+    ).map((p, i) => ({
+      id: (teamContacts as any[]).find((t: any) => t.role === p.role && t.name === p.name)?.id ?? `party-${i}`,
       role: p.role,
       name: p.name,
-      company: p.company,
-      email: p.email,
-      phone: p.phone,
+      // NORMALISED to null, not left `undefined`. `PartyContact` declares these
+      // optional, so they arrive as `string | null | undefined`; the portal reads
+      // one shape for "absent" and an absent field must not depend on WHICH kind
+      // of absent it is. Redacted and never-supplied both mean "nothing to show".
+      company: p.company ?? null,
+      email: p.email ?? null,
+      phone: p.phone ?? null,
     })),
+    // The ids the page's own controls need. All three are already on the row
+    // above (the select is `*`), so this costs no extra query — their absence
+    // from the returned shape is the only reason "Update Client", "Call Client"
+    // and "Send Email" had nothing to call.
+    //
+    // Classes, verified against the live FKs:
+    //   contact_id   → contacts(id)
+    //   agent_id     → agents(id)     — an agents id, never a session users id
+    //   brokerage_id → brokerages(id)
+    contact_id: (transaction.contact_id as string | null) ?? null,
+    agent_id: (transaction.agent_id as string | null) ?? null,
+    brokerage_id: (transaction.brokerage_id as string | null) ?? null,
+    // The page read this off data.team[0].transactions.health_score — a path
+    // that does not exist on a participant row — so it always fell through to
+    // the literal 75 and rendered it three times as though measured.
+    health_score: (transaction.health_score as number | null) ?? health.overall_health,
+    client: transaction.contacts
+      ? {
+          id: transaction.contacts.id as string,
+          // contacts has no `name` column; compose it.
+          name:
+            [transaction.contacts.first_name, transaction.contacts.last_name]
+              .filter(Boolean)
+              .join(" ") || null,
+          email: (transaction.contacts.email as string | null) ?? null,
+          phone: (transaction.contacts.phone as string | null) ?? null,
+        }
+      : null,
     educationalContent: educationalMoments.length > 0
       ? (() => {
           // Supabase join returns module as an array; pick the first row.
@@ -2153,16 +2931,23 @@ export async function loadAgentDashboard() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const { data: agent } = await supabase
+  // `profiles!inner(brokerage_id)` embedded a table that DOES NOT EXIST, and
+  // `!inner` made PostgREST reject the entire query — so `agent` was always null
+  // and the agent dashboard has always thrown "Agent brokerage not found". The
+  // id-class comment below was correct and was never the reason this failed.
+  // `agents` carries its own `brokerage_id`; there was never a join to make.
+  const { data: agent, error: agentError } = await supabase
     .from("agents")
-    .select("*, profiles!inner(brokerage_id)")
+    .select("id, brokerage_id")
     .eq("user_id", user.id)
     .maybeSingle()
+
+  if (agentError) throw new Error(`Could not resolve the agent's brokerage: ${agentError.message}`)
 
   // agent_id is agents.id, not users.id. For non-agent users there is no agent
   // row → return empty rather than filtering by a users.id (which never matches).
   const agentId = agent?.id ?? null
-  const brokerageId = agent?.profiles?.brokerage_id
+  const brokerageId = agent?.brokerage_id
   if (!brokerageId) throw new Error("Agent brokerage not found")
 
   const { data: transactions } = agentId
@@ -2194,28 +2979,40 @@ export async function getAgentTransactionKanban() {
         .from("transactions")
         .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
         .eq("agent_id", agentId)
-        .neq("status", "closed")
+        // Terminal deals are done — closed/funded/lost/archived, from the ONE vocabulary
+        // (lib/transactions/transaction-status.ts:76). This was `.neq("status","closed")`,
+        // which dragged funded/lost/archived deals onto the board to land in no column.
+        .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
         .order("created_at", { ascending: false })
     : { data: [] as any[] }
 
+  // Columns come from PIPELINE_COLUMN_STATUSES — lib/transactions/transaction-status.ts:83.
+  // These filters used to name `offer`/`negotiation`/`inspection`/`appraisal`/`financing`,
+  // none of which transactions_status_check admits (they are lowercased `stage` values),
+  // so every column but "Leads" was permanently empty.
   return {
-    lead: { title: "Leads", deals: transactions?.filter((t) => t.status === "lead" || !t.status) || [], color: "gray" },
-    offer: { title: "Active Offers", deals: transactions?.filter((t) => t.status === "offer" || t.status === "negotiation") || [], color: "blue" },
+    lead: { title: "Leads", deals: transactions?.filter((t) => inPipelineColumn(t.status, "lead") || !t.status) || [], color: "gray" },
+    offer: { title: "Active Offers", deals: transactions?.filter((t) => inPipelineColumn(t.status, "offer")) || [], color: "blue" },
     contract: {
       title: "Under Contract",
-      deals: transactions?.filter((t) => t.status === "inspection" || t.status === "appraisal" || t.status === "financing") || [],
+      deals: transactions?.filter((t) => inPipelineColumn(t.status, "contract")) || [],
       color: "yellow",
     },
-    closing: { title: "Closing Soon", deals: transactions?.filter((t) => t.status === "clear_to_close") || [], color: "green" },
+    closing: { title: "Closing Soon", deals: transactions?.filter((t) => inPipelineColumn(t.status, "closing")) || [], color: "green" },
   }
 }
 
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
-  // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
-  const { requireWriteContext } = await import("@/lib/kernel")
+  // ACT-AS WRITE SEAM — resolves userId, brokerageId, userType via the canonical chain,
+  // refuses a read_only impersonation grant, and narrows brokerageId to a real tenant.
+  // (Was `requireWriteContext` from the retired lib/kernel/identity.ts; survivor is
+  // lib/platform/acting-context.ts:143. Its `if (!ctx)` could never be true — the old
+  // function either threw or returned an object — so the only thing standing between a
+  // read_only grant and this stage advance was the try/catch. Now the gate says so.)
+  const { resolveWriteContextForTenant } = await import("@/lib/platform/acting-context")
   try {
-    const ctx = await requireWriteContext()
-    if (!ctx) return { success: false, error: "Not authenticated" }
+    const ctx = await resolveWriteContextForTenant()
+    if (!ctx.ok) return { success: false, error: ctx.error }
 
     const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
     const orchestrator = new TransactionOrchestrator({
@@ -2244,15 +3041,31 @@ export async function getClientTasks(transactionId: string) {
 }
 
 export async function autoProgressMilestone(transactionId: string, completedMilestone: string) {
-  const supabase = await createClient()
-  const { data: transaction } = await supabase
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+  // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
+  // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so the
+  // bare `contacts(*)` was ambiguous: PostgREST refused the WHOLE request (PGRST201)
+  // and supabase-js resolved it, so `transaction` was null and this function returned
+  // {success:false} every time — no milestone was ever auto-progressed, no educational
+  // content ever delivered. Named contact_id: the client on this deal, which is the
+  // party whose persona drives the next-stage content (same hint the rest of this file
+  // already uses at lines ~1990/2337/2361). Embed names the column read (#214).
+  const { data: transaction, error: transactionError } = await supabase
     .from("transactions")
-    .select("*, contacts(*)")
+    .select("*, contacts!transactions_contact_id_fkey(id, contact_persona)")
     .eq("id", transactionId)
     .single()
 
+  // Check the error — an unchecked read reports a refusal as an absence.
+  if (transactionError) {
+    console.error("Error loading transaction for milestone auto-progress:", transactionError)
+    return { success: false }
+  }
   if (!transaction) return { success: false }
 
+  // contacts.persona is a phantom; contact_persona is the real column.
   const persona = transaction.contacts?.contact_persona || "buyer"
 
   await supabase
@@ -2324,14 +3137,16 @@ async function getTeamContacts(transactionId: string) {
 }
 
 async function calculatePipeline(transactions: any[], brokerageId: string) {
+  // Same PIPELINE_COLUMN_STATUSES the kanban uses — lib/transactions/transaction-status.ts:83.
+  // Was filtering on `prospecting`/`offer`/`negotiation`/`inspection`/`appraisal`/`financing`,
+  // six literals transactions_status_check does not admit, so four of the five buckets were
+  // permanently empty and conversionRate counted only `closed` (never `funded`).
   const stages = {
-    prospecting: transactions.filter((t) => t.status === "lead" || t.status === "prospecting"),
-    active_offer: transactions.filter((t) => t.status === "offer" || t.status === "negotiation"),
-    under_contract: transactions.filter(
-      (t) => t.status === "inspection" || t.status === "appraisal" || t.status === "financing",
-    ),
-    closing_soon: transactions.filter((t) => t.status === "clear_to_close"),
-    closed: transactions.filter((t) => t.status === "closed"),
+    prospecting: transactions.filter((t) => inPipelineColumn(t.status, "lead")),
+    active_offer: transactions.filter((t) => inPipelineColumn(t.status, "offer")),
+    under_contract: transactions.filter((t) => inPipelineColumn(t.status, "contract")),
+    closing_soon: transactions.filter((t) => inPipelineColumn(t.status, "closing")),
+    closed: transactions.filter((t) => inPipelineColumn(t.status, "closed")),
   }
 
   const totalValue = transactions.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
@@ -2552,7 +3367,36 @@ async function generateFriendlyStatusMessage(transaction: any, persona: string):
     : buyerMessages[transaction.status] || "Your transaction is progressing smoothly."
 }
 
+/**
+ * ONE PROGRESS NUMBER FOR THE CLIENT PORTAL.
+ *
+ * This function was declared here and CALLED BY NOTHING, while the very expression
+ * it wraps was re-typed inline at line 2147 and fed straight into
+ * `hero.progress_percent`. Two copies of one rule, one of them unreachable — the
+ * shape §1 exists to collapse. It is now the survivor and the inline copy CALLS it.
+ *
+ * `transaction` was the parameter that made it a survivor worth keeping, and it was
+ * read by NOTHING: milestone rows are seeded and completed by different code paths
+ * from the one that closes a deal, so a FUNDED transaction whose last milestone was
+ * never ticked showed the client "83% complete" on a house they already own. A deal
+ * the deal-vocabulary partition calls finished-and-won is 100% by definition.
+ *
+ * A LOST or ARCHIVED deal is deliberately NOT forced to 100%: it is past, not
+ * complete, and claiming completion for a deal that fell apart is the same class of
+ * lie in the other direction. The finished-and-won subset is named explicitly against
+ * lib/enrichment/deal-vocabulary.ts (TXN_STATUSES_AFTER / TXN_STAGES_AFTER) so a
+ * value added to that partition cannot silently gain or lose this behaviour.
+ */
+const TXN_WON_STATUSES = new Set<string>(
+  TXN_STATUSES_AFTER.filter((v) => v === "closed" || v === "funded"),
+)
+const TXN_WON_STAGES = new Set<string>(TXN_STAGES_AFTER.filter((v) => v === "CLOSED"))
+
 function calculateOverallProgress(transaction: any, timeline: any[]): number {
+  const status = String(transaction?.status ?? "").trim()
+  const stage = String(transaction?.stage ?? "").trim()
+  if (TXN_WON_STATUSES.has(status) || TXN_WON_STAGES.has(stage)) return 100
+
   const completed = timeline.filter((m) => m.status === "completed").length
   return Math.round((completed / Math.max(timeline.length, 1)) * 100)
 }

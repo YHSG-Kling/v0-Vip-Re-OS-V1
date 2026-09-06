@@ -63,7 +63,7 @@ export async function deliverCompletedReels(
       .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
     if (dup) continue
     const { data: admins } = await svc.from("users").select("id")
-      .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+      .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "admin"]).limit(5)
     for (const u of ((admins ?? []) as any[])) {
       await svc.from("notifications").insert({
         user_id: u.id, brokerage_id: ren.brokerage_id, type: p.notificationType,

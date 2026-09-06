@@ -50,17 +50,18 @@ export type FunnelStage = "pending" | "promoted" | "rejected" | "error"
 /** Every raw processing_status that means "the GATE stopped this row" — each is a
  *  rejection REASON the Steward can act on. Kept verbatim from ProcessingStatus so the
  *  reason text is the pipeline's own truth, not a relabel. */
-export const REJECTION_STATUSES = [
-  "unassigned_no_market",
-  "territory_mismatch",
-  "insufficient_contact_data",
-  "insufficient_identity",
-  "insufficient_identity_for_promotion",
-  "duplicate_pre_enrich",
-  "duplicate_post_enrich",
-] as const
+// `isRejectionStatus` is the vocabulary module's OWN membership test. This file
+// used to build a local `new Set<string>(REJECTION_STATUSES)` and ask it — a
+// second spelling of one question (§6), and the spelling that drifts, because a
+// Set built here is invisible to the guard that pins the vocabulary. The roster
+// is still imported and re-exported for the readers that iterate it.
+import { REJECTION_STATUSES, isRejectionStatus } from "@/lib/lead-pipeline/processing-status"
+export { REJECTION_STATUSES }
 
-export type RejectionStatus = (typeof REJECTION_STATUSES)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `RejectionStatus`
+// deleted — never named by any consumer; readers use the re-exported
+// REJECTION_STATUSES list (and lib/lead-pipeline/processing-status owns the
+// vocabulary). Re-derive there when a typed consumer arrives.
 
 /** The in-flight statuses — the row entered the pipeline but hasn't reached a terminal
  *  (promoted / rejected / error) state yet. */
@@ -100,8 +101,13 @@ export interface LeadRowLite {
   notes: string | null
 }
 
-/** The funnel counts across the four stages plus the rejection breakdown. */
-export interface FunnelCounts {
+/** The funnel counts across the four stages plus the rejection breakdown.
+ *
+ *  `extends Record<FunnelStage, number>` ties the counters to the FunnelStage vocabulary
+ *  declared above (2026-08-31 — the type previously had no consumer): add a fifth stage and
+ *  computeFunnel's initializer stops compiling until it counts it, instead of the new stage
+ *  silently folding into 'pending'. */
+export interface FunnelCounts extends Record<FunnelStage, number> {
   /** Total raw rows scanned. */
   rawTotal: number
   /** Still in-flight (pending/processing/enriching/queued). */
@@ -165,7 +171,6 @@ export interface LeadIntakeCockpitData {
  *  breakdown. Every status maps to exactly one stage; unknown statuses count toward
  *  'pending' (in-flight) rather than being silently dropped. Honest zeros on []. */
 export function computeFunnel(rows: RawRowLite[]): FunnelCounts {
-  const rejectionSet = new Set<string>(REJECTION_STATUSES)
   const pendingSet = new Set<string>(PENDING_STATUSES)
   const counts: FunnelCounts = {
     rawTotal: rows.length,
@@ -181,7 +186,7 @@ export function computeFunnel(rows: RawRowLite[]): FunnelCounts {
       counts.promoted += 1
     } else if (status === "error") {
       counts.error += 1
-    } else if (rejectionSet.has(status)) {
+    } else if (isRejectionStatus(status)) {
       counts.rejected += 1
       counts.rejectionsByReason[status] = (counts.rejectionsByReason[status] ?? 0) + 1
     } else {

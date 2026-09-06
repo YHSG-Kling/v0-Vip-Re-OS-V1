@@ -58,12 +58,26 @@ export async function proposeRetentionSavePlay(
     const { buildSavePlayCopy } = await import("@/lib/recruiting/retention-intervention")
     const copy = buildSavePlayCopy({ agentName: p.agentName, score: p.score, drivers: p.drivers })
     const driverText = p.drivers.filter(Boolean).join("; ") || "engagement is slipping across the board"
+
+    // RETENTION LEVER — the broker-marked benefit offerings (residual income / medical /
+    // retirement, m574 + m264). An at-risk agent weighing a competing offer should be reminded of
+    // the FULL package they'd walk away from, so the save-play tells the broker which marked
+    // offerings to put back on the table. FAIL-CLOSED: loader errors / unset marks → no line at
+    // all — an unoffered benefit must never appear in a retention conversation.
+    let benefitsLever = ""
+    try {
+      const { loadBenefitOfferings, offeredBenefitLabels } = await import("@/lib/recruiting/benefit-offerings")
+      const labels = offeredBenefitLabels(await loadBenefitOfferings(svc, p.brokerageId))
+      if (labels.length > 0) {
+        benefitsLever = `\n\nRetention lever — what ${p.agentName} would be walking away from here:\n${labels.map((l) => `· ${l}`).join("\n")}\nWork these into the conversation as part of the full picture of staying.`
+      }
+    } catch { /* the save-play stands without it */ }
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: p.brokerageId, agentKind: "recruiting_manager", entityType: "agent", entityId: p.agentId,
       recipientContactId: null, audience: "agent",
       subject: copy.subject,
-      body: copy.body,
+      body: copy.body + benefitsLever,
       rationale: `${dedupeTag} — score ${p.score}, intervention ${copy.interventionKey}, drivers: ${driverText}; review before it reaches the agent/broker.`,
       channel: "portal",
     }, svc)

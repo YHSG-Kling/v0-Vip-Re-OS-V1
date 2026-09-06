@@ -2,7 +2,8 @@
  * Resolve the curated vendor list a specific contact should see in their
  * portal — persona-aware, lifecycle-aware, team-aware.
  *
- * The vendor_directory table holds entries scoped by:
+ * The vendors table carries the curation columns (m355 — they used to live on a
+ * separate vendor_directory table) and entries are scoped by:
  *   • brokerage_id (always set)
  *   • team_id (optional — when set, the entry is a team-curated pick)
  *   • audience_tags text[] (intersects contact persona / contact_type)
@@ -57,7 +58,7 @@ export interface ContactVendorContext {
   /** Lifecycle tag derived from contact + transaction state (one of
    *  pre_listing | under_contract | closing_prep | closed | forever). */
   stage:           string | null
-  /** Tags we'll OR-match against vendor_directory.audience_tags. */
+  /** Tags we'll OR-match against vendors.audience_tags. */
   audienceTags:    string[]
 }
 
@@ -69,31 +70,49 @@ export async function resolveContactVendors(
 ): Promise<VendorDirectoryEntry[]> {
   if (!ctx.brokerageId) return []
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // vendors has no preferred/team_id/audience_tags/stage_tags/display_priority/visible_in_portal columns;
-  // broker approval (status='active', the closest real portal-visibility flag) gates surfacing, and the
-  // missing curation columns are filled with their "show to everyone" defaults below.
-  const query = supabase
+  // ONE VENDOR SYSTEM (m355). This used to fork: a "curated" branch reading
+  // vendor_directory with a vendors!inner embed, and an "uncurated" fallback
+  // reading vendors and hardcoding the five curation fields. Both branches
+  // collapse into this single query, because placement now lives on the vendor
+  // row — there is no second table to have or not have an entry in.
+  //
+  // BEHAVIOURAL DELTA, stated rather than buried: the old fallback branch
+  // ignored visible_in_portal (it had no row to read it from, so it hardcoded
+  // `true`). There is no fork now, so a vendor hidden from the portal is hidden
+  // — always, for every brokerage. That is the intended semantics and the point
+  // of the fix, but it IS a change: a brokerage that had never curated used to
+  // show every approved vendor to every contact regardless of the flag.
+  //
+  // The returned `id` is a vendors.id — which is now the only vendor id there
+  // is. Portal bookings FK to vendors(id) and the AfBA config matches on it.
+  const { data, error } = await supabase
     .from("vendors")
-    .select("id, name, category, phone, email, website, rating, notes, brokerage_id")
-    .eq("status", "active")
+    .select("id, name, category, phone, email, website, rating, notes, brokerage_id, team_id, preferred, audience_tags, stage_tags, display_priority, visible_in_portal")
     .eq("brokerage_id", ctx.brokerageId)
+    .eq("status", "active")
+    .neq("visible_in_portal", false)
 
-  const { data, error } = await query
   if (error || !data) return []
 
-  // In-process audience + stage filter. Empty arrays = show-to-everyone.
-  const rows = (data as Array<Omit<VendorDirectoryEntry, "preferred" | "team_id" | "audience_tags" | "stage_tags" | "display_priority" | "visible_in_portal">>).map(
-    (r): VendorDirectoryEntry => ({
-      ...r,
-      preferred: null,
-      team_id: null,
-      audience_tags: [],
-      stage_tags: [],
-      display_priority: null,
-      visible_in_portal: true,
-    }),
-  )
+  const rows: VendorDirectoryEntry[] = (data as Array<Record<string, any>>).map((r): VendorDirectoryEntry => ({
+    id:       r.id as string,
+    name:     r.name as string | null,
+    category: r.category as string | null,
+    phone:    r.phone as string | null,
+    email:    r.email as string | null,
+    website:  r.website as string | null,
+    rating:   r.rating as number | null,
+    notes:    r.notes as string | null,
+    brokerage_id: r.brokerage_id as string | null,
+    // curation — columns on the vendor row since m355
+    team_id:           r.team_id as string | null,
+    preferred:         r.preferred as boolean | null,
+    audience_tags:     Array.isArray(r.audience_tags) ? r.audience_tags : [],
+    stage_tags:        Array.isArray(r.stage_tags) ? r.stage_tags : [],
+    display_priority:  r.display_priority as number | null,
+    visible_in_portal: r.visible_in_portal as boolean | null,
+  }))
+
   const audienceSet = new Set(ctx.audienceTags.filter(Boolean))
   const stageTag    = ctx.stage ?? null
 

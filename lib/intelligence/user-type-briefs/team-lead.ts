@@ -1,4 +1,19 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generateTeamLeadBrief({ userId, brokerageId }) and
+// isTeamLead(userId, brokerageId) as public HTTP doors with no gate: a service
+// client over a caller-supplied brokerageId — section 4's named IDOR shape.
+// Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/intelligence/user-type-briefs/index.ts:16 and :25 (the barrel), whose
+//     value importers are app/actions/briefing-actions.ts:12 ("use server") and
+//     the server pages app/dashboard/{coordinator,brokerage,compliance}/page.tsx,
+//     app/vendor/dashboard/page.tsx, app/lender/dashboard/page.tsx; the two
+//     "use client" importers of the barrel take TYPES only (erased)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
 
 /**
  * Team Lead brief — agents who lead a team get the agent brief PLUS
@@ -82,7 +97,10 @@ export async function generateTeamLeadBrief(params: {
         .from("contacts")
         .select("id", { count: "exact", head: true })
         .in("agent_id", teamAgentIds)
-        .eq("status", "hot"),
+        // 'hot' is a TEMPERATURE, not a status — nothing ever wrote it to
+        // contacts.status, so this team count was permanently 0; the flag lives
+        // on contacts.lead_temperature (live CHECK: cold/hot/warm).
+        .eq("lead_temperature", "hot"),
       // AI ISA manager: overnight qualified handoffs INTO this team (tier-scoped).
       supabase
         .from("assignment_log")
@@ -123,7 +141,11 @@ export async function generateTeamLeadBrief(params: {
         : "All claimed — follow up on first-touch quality",
       severity: unclaimedHandoffs > 0 ? "high" : "medium",
       manager: "ai_isa",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      // /dashboard/team-lead never had a page.tsx. The team console is
+      // app/dashboard/team/page.tsx, whose boardScopeFor() gives user_type
+      // 'team_lead' the TEAM tier — their own board, exactly this brief's reader.
+      // (ROUTE_ALIASES already maps the other misspelling, /dashboard/teams → it.)
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -134,7 +156,7 @@ export async function generateTeamLeadBrief(params: {
       body: `Most critical: ${dealsAtRisk[0].property_address ?? "unknown"} (score ${Math.round(dealsAtRisk[0].overall_score)})`,
       severity: dealsAtRisk[0].risk_level === "critical" ? "critical" : "high",
       manager: "deal_coordinator",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -146,7 +168,7 @@ export async function generateTeamLeadBrief(params: {
         ? `${teamHotContacts} hot contacts across the team — schedule 1:1s with members carrying the most`
         : `Pipeline stable — good time for skill-building 1:1s`,
       severity: "medium",
-      ctas: [{ label: "View team", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "View team", href: "/dashboard/team" }],
     })
   }
 
@@ -161,6 +183,8 @@ export async function generateTeamLeadBrief(params: {
   if (priorities.length > 0) {
     try {
       const { text } = await generateTextRouted({
+        brokerageId: params.brokerageId,
+        userId: params.userId,
         feature: "coaching_insight",
         prompt:
           `One-sentence morning brief for a real estate team lead. ` +

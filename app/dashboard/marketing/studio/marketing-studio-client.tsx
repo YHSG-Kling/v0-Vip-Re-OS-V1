@@ -1,9 +1,11 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { MarketingOpsPanel } from "./components/marketing-ops-panel"
+import { ReadinessTrendsPanel } from "./components/readiness-trends-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -50,10 +52,13 @@ import {
   ExternalLink,
   Newspaper,
   Truck,
+  Activity,
 } from "lucide-react"
 import {
   getCampaigns,
   createCampaign,
+  updateCampaign,
+  generateCampaignContent,
   getCampaignById,
   transitionCampaignStatus,
   getAssets,
@@ -63,23 +68,62 @@ import {
   getCalendarEvents,
   createCalendarEvent,
   updateCalendarEventStatus,
-  getCampaignComments,
+  // TOMBSTONE (dead-import tranche): `getCampaignComments` and
+  // `getCampaignTasks` were imported here and never called, and this is their
+  // only importer in the tree. Survivor: `getCampaignById` (imported above),
+  // whose bundle already carries `campaign.comments` and `campaign.tasks` —
+  // it is what populates the two lists in the detail dialog and what
+  // refreshOpenCampaignDetail re-reads after a write. A second reader of the
+  // same two tables would give one dialog two sources for one list.
   addCampaignComment,
-  getCampaignTasks,
   createCampaignTask,
   updateTaskStatus,
   getMarketingStudioDashboard,
   linkQrToAsset,
   getAssetQrLinks,
+  unlinkQrFromAsset,
+  getQrCodePerformance,
   type CampaignStatus,
   type AssetApprovalStatus,
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
 import { getMailCampaigns } from "@/app/actions/direct-mail"
+import { getMyMarketingCadencePolicies, type MarketingCadencePolicyRow } from "@/app/actions/marketing-cadence-policy"
 import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
+// TYPE-ONLY: lib/marketing/tracked-qr.ts is `server-only` (it holds the service client), so a
+// value import would crash this client component at load. The types are erased at compile time,
+// and they are what keeps the option lists below from drifting out of the live CHECK vocabularies
+// — an option whose value is not in the union is a build error, not a runtime refused insert.
+import type { QrPurpose, QrDestinationType } from "@/lib/marketing/tracked-qr"
+
+/** qr_codes.purpose CHECK — the full live set. */
+const QR_PURPOSE_OPTIONS: Array<{ value: QrPurpose; label: string }> = [
+  { value: "general",         label: "General" },
+  { value: "open_house",      label: "Open House" },
+  { value: "listing",         label: "Listing" },
+  { value: "listing_inquiry", label: "Listing Inquiry" },
+  { value: "lead_capture",    label: "Lead Capture" },
+  { value: "lead_magnet",     label: "Lead Magnet" },
+  { value: "campaign",        label: "Campaign" },
+  { value: "event",           label: "Event" },
+  { value: "business_card",   label: "Business Card" },
+]
+
+/** qr_codes.destination_type CHECK (m148) — what analytics buckets scans by. */
+const QR_DESTINATION_OPTIONS: Array<{ value: QrDestinationType; label: string }> = [
+  { value: "landing_page",      label: "Landing Page" },
+  { value: "listing_detail",    label: "Listing Detail" },
+  { value: "book_meeting",      label: "Book a Meeting" },
+  { value: "cma_form",          label: "CMA / Home Value Form" },
+  { value: "video_avatar_tour", label: "Video Tour" },
+  { value: "podcast_episode",   label: "Podcast Episode" },
+  { value: "anniversary_video", label: "Anniversary Video" },
+  { value: "other",             label: "Other" },
+]
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import {
   CampaignLauncherPanel,
@@ -89,6 +133,7 @@ import {
   PerformanceIntelligencePanel,
   PrelaunchPredictionPanel,
   SellerSafeMarketingSummary,
+  ListingCopyPanel,
 } from "./components/ad-os"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -166,14 +211,48 @@ interface DashboardData {
 
 interface MarketingStudioClientProps {
   userId?: string
+  /** agents(id) — server-resolved. NOT interchangeable with userId. */
+  agentId?: string
   brokerageId?: string
   userRole?: string
   initialTab?: string
+  /** `?campaign=<uuid>` — server-validated (page.tsx). Opens that campaign's
+   *  detail dialog once per mount, on the campaigns tab. */
+  initialCampaignId?: string | null
 }
 
-export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
+/**
+ * One line of honest cadence copy. "off"/no row means the cron will never fire
+ * for this channel — said out loud, because silence reads as "it is handled".
+ */
+function describeCadence(label: string, row: MarketingCadencePolicyRow | null): string {
+  if (!row || row.cadence === "off") return `${label}: manual only`
+  const day = row.fire_day !== null && row.fire_day !== undefined ? ` (day ${row.fire_day})` : ""
+  return `${label}: auto ${row.cadence}${day}`
+}
+
+export default function MarketingStudioClient({ userId: userIdProp, agentId: agentIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview", initialCampaignId = null }: MarketingStudioClientProps) {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState(initialTab)
+  // Once-per-mount guard for the ?campaign= deep-link (pattern:
+  // app/portal/[contactId]/learn/learn-client.tsx focusedRef).
+  const campaignDeepLinkRef = useRef(false)
+  // `?campaign=<uuid>` — minted by MarketingOpsPanel's "Review →" / "Launch →"
+  // links (./components/marketing-ops-panel.tsx) and, until 2026-09-03, read by
+  // nothing. The id arrives server-validated (page.tsx normalizeCampaignId). The
+  // positive control for this shape is app/dashboard/campaigns/mail/
+  // mail-dashboard.tsx (uuid guard + select + tab switch). The detail loader is
+  // the SAME brokerage-scoped reader the eye control uses, so a foreign id opens
+  // the dialog's own "not available on your brokerage" state, never a row.
+  useEffect(() => {
+    if (campaignDeepLinkRef.current || !initialCampaignId) return
+    campaignDeepLinkRef.current = true
+    setActiveTab("campaigns")
+    void openCampaignDetailById(initialCampaignId)
+    // openCampaignDetailById is a stable function declaration in this component;
+    // the ref guard is what makes this once-per-mount, not the dep list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCampaignId])
   const [isLoading, setIsLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
@@ -203,6 +282,50 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [isRegistryOpen, setIsRegistryOpen] = useState(false)
   const [isQrLinkOpen, setIsQrLinkOpen] = useState(false)
   const [selectedAssetForQr, setSelectedAssetForQr] = useState<string | null>(null)
+  const [qrLinkError, setQrLinkError] = useState<string | null>(null)
+  // getAssetQrLinks + unlinkQrFromAsset were IMPORTED BUT NEVER INVOKED: the studio could attach
+  // a QR to an asset and then had no way to see or remove what it had attached, and the Asset
+  // type's `qr_links` field was never populated by anything. Both are now called here.
+  const [assetQrLinks, setAssetQrLinks] = useState<QrLinkInfo[]>([])
+  const [isLoadingQrLinks, setIsLoadingQrLinks] = useState(false)
+  // getQrCodePerformance was an ORPHAN EXPORT — the only reader of per-code scan DETAIL
+  // (unique scans + the recent-scan list from qr_scan_events). Nothing else surfaces it, so it
+  // was wired rather than deleted.
+  const [qrPerformance, setQrPerformance] = useState<Record<string, any>>({})
+  const [loadingQrPerformanceId, setLoadingQrPerformanceId] = useState<string | null>(null)
+
+  // Campaign detail (the eye control on every campaign card)
+  // ── CAMPAIGN COLLABORATION COMPOSERS ───────────────────────────────────────
+  //
+  // BUILT, not tidied. `addCampaignComment` and `createCampaignTask` were
+  // imported by this file and called by NOTHING — and this is the only importer
+  // of either, anywhere in the tree. The campaign detail dialog below RENDERS
+  // "Tasks (n)" and "Comments (n)" and has done all along; there was simply no
+  // way for a human to produce either one, so both lists could only ever read
+  // "No tasks on this campaign yet." / "No comments yet." Confirmed against the
+  // live database (hrvaqgvukzxfskkcrwbt): marketing_campaign_comments and
+  // marketing_campaign_tasks each hold 0 rows — a writer with no caller and a
+  // reader with nothing to read.
+  //
+  // The dead imports named the missing UI precisely: `Popover` /
+  // `PopoverContent` / `PopoverTrigger` and `MessageSquare` were imported by
+  // this file and unused too. They are the task composer and the comment
+  // affordance, which is what the two below now are.
+  const [newCommentBody, setNewCommentBody] = useState("")
+  const [isPostingComment, setIsPostingComment] = useState(false)
+  const [newTaskTitle, setNewTaskTitle] = useState("")
+  const [newTaskDueAt, setNewTaskDueAt] = useState("")
+  const [isCreatingTask, setIsCreatingTask] = useState(false)
+  const [isTaskComposerOpen, setIsTaskComposerOpen] = useState(false)
+  const [collabError, setCollabError] = useState<string | null>(null)
+
+  const [isCampaignDetailOpen, setIsCampaignDetailOpen] = useState(false)
+  const [campaignDetail, setCampaignDetail] = useState<any | null>(null)
+  const [isLoadingCampaignDetail, setIsLoadingCampaignDetail] = useState(false)
+  const [campaignDetailError, setCampaignDetailError] = useState<string | null>(null)
+
+  // Newsletter template preview (the chevron on every template row)
+  const [previewTemplate, setPreviewTemplate] = useState<any | null>(null)
 
   // Registry data
   const [registryItems, setRegistryItems] = useState<ContentSourceItem[]>([])
@@ -221,14 +344,111 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [newsletterTemplates, setNewsletterTemplates] = useState<any[]>([])
   const [localContent, setLocalContent] = useState<any[]>([])
   const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
+  const [newsletterError, setNewsletterError] = useState<string | null>(null)
+  // Newsletter VIDEO renders — the render worker writes video_url/completed_at
+  // on success and error_message on failure into newsletter_video_renders, and
+  // no page linked either: a failed render was indistinguishable from a slow
+  // one. Keyed by newsletter_campaign_id, most recent render wins. Vocabulary
+  // is the composition gate's (lib/kernel/composition-gate.ts): queued /
+  // rendering / completed / failed / suppressed.
+  //
+  // ORPHAN DOCTRINE §1.2 (2026-09-04) — `voiceover_url` and `video_project_id`
+  // joined this shape. Both are written by the render worker
+  // (app/api/internal/remotion/render-newsletter-video/route.ts:470) and were
+  // read by NOBODY. The consequence for a FAILED render is the one that costs
+  // money: the narration is synthesised and hosted BEFORE the composite is
+  // assembled, so a campaign whose video failed still has a finished, paid-for
+  // voiceover sitting in storage — and this page, the only place the render is
+  // managed, could not offer it. `video_project_id` is the same story for the
+  // successful case: the render files an ai_video_projects row (the Video
+  // Studio's own record, where the reel can be re-cut, re-published or
+  // repurposed) and nothing linked to it.
+  const [videoRendersByCampaign, setVideoRendersByCampaign] = useState<
+    Record<string, {
+      status: string
+      video_url: string | null
+      error_message: string | null
+      completed_at: string | null
+      voiceover_url: string | null
+      video_project_id: string | null
+    }>
+  >({})
+  const [videoRendersError, setVideoRendersError] = useState<string | null>(null)
+
+  // EMAIL CAMPAIGN state. The "New Campaign" button on this tab has always
+  // called createEmailCampaign, which writes `email_campaigns` — but the list
+  // beside it read `newsletter_campaigns`, so every campaign created here
+  // vanished on save. These are the email_campaigns rows, read back through
+  // the canonical brokerage-scoped action.
+  const [emailCampaigns, setEmailCampaigns] = useState<any[]>([])
+  const [emailStats, setEmailStats] = useState<{
+    totalCampaigns: number
+    activeCampaigns: number
+    totalSubscribers: number
+    avgOpenRate: number | null
+  } | null>(null)
+  const [emailCampaignsError, setEmailCampaignsError] = useState<string | null>(null)
+  // Per-row schedule pickers, keyed by campaign id, so opening one row's
+  // scheduler does not clobber another's half-entered time.
+  const [emailScheduleDrafts, setEmailScheduleDrafts] = useState<Record<string, string>>({})
+  const [schedulingEmailCampaignId, setSchedulingEmailCampaignId] = useState<string | null>(null)
+  const [deletingEmailCampaignId, setDeletingEmailCampaignId] = useState<string | null>(null)
+  const [editingEmailCampaign, setEditingEmailCampaign] = useState<any | null>(null)
+  const [emailEditorDraft, setEmailEditorDraft] = useState({
+    campaignName: "",
+    subjectLine: "",
+    previewText: "",
+    content: "",
+  })
+  const [isLoadingEmailCampaign, setIsLoadingEmailCampaign] = useState(false)
+  const [isSavingEmailCampaign, setIsSavingEmailCampaign] = useState(false)
+  const [emailEditorError, setEmailEditorError] = useState<string | null>(null)
+  const [isComposingEmail, setIsComposingEmail] = useState(false)
+  const [aiComposeTopic, setAiComposeTopic] = useState("")
+  const [aiComposeAudience, setAiComposeAudience] = useState<
+    "buyers" | "sellers" | "investors" | "lifetime_customers" | "all"
+  >("all")
+
+  // AI newsletter generator (writes a newsletter_campaigns draft through the
+  // canonical createNewsletterCampaign writer — see ai-marketing-automation).
+  const [isAiNewsletterOpen, setIsAiNewsletterOpen] = useState(false)
+  const [aiNewsletter, setAiNewsletter] = useState<{
+    topic: string
+    audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
+    tone: "professional" | "friendly" | "educational" | "urgent"
+    includeMarketData: boolean
+    includeListings: boolean
+    /** Umbrella marketing_campaigns id ("" = standalone issue). Server-verified
+     *  against the session brokerage inside createNewsletterCampaign. */
+    marketingCampaignId: string
+  }>({
+    topic: "",
+    audienceSegment: "all",
+    tone: "friendly",
+    includeMarketData: true,
+    includeListings: true,
+    marketingCampaignId: "",
+  })
+  const [isGeneratingNewsletter, setIsGeneratingNewsletter] = useState(false)
+  const [aiNewsletterError, setAiNewsletterError] = useState<string | null>(null)
+  const [subjectVariants, setSubjectVariants] = useState<string[] | null>(null)
+  const [isGeneratingVariants, setIsGeneratingVariants] = useState(false)
+
+  // Bulk readiness sweep over the loaded marketing assets. Each verdict is
+  // RECORDED against the asset, which is where the ops tab's pass-rate reads.
+  const [isSweepingReadiness, setIsSweepingReadiness] = useState(false)
+  const [readinessSweep, setReadinessSweep] = useState<{
+    results: Array<{ contentId: string; status: "ready" | "blocked"; blockingReasons: string[] }>
+    loggedCount: number
+    logError: string | null
+  } | null>(null)
+  const [readinessSweepError, setReadinessSweepError] = useState<string | null>(null)
 
   // Blog state
   const [blogPosts, setBlogPosts] = useState<any[]>([])
   const [isBlogLoading, setIsBlogLoading] = useState(false)
 
   // Video state
-  const [videoProjects, setVideoProjects] = useState<any[]>([])
-  const [isVideoLoading, setIsVideoLoading] = useState(false)
 
   // Podcast state
   const [podcastEpisodes, setPodcastEpisodes] = useState<any[]>([])
@@ -257,18 +477,39 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
   // Create newsletter dialog state (inline in studio)
   const [isCreateNewsletterOpen, setIsCreateNewsletterOpen] = useState(false)
-  const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "" })
+  const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "", marketingCampaignId: "", audienceSegmentId: "" })
+  // The segments this brokerage actually has. There is no segment catalogue in
+  // the schema (contact_segments.segment_id carries no FK and nothing names a
+  // segment), so the list is derived from live memberships and labelled by id
+  // prefix + member count — the same honest treatment the contact page's
+  // segment badges already use. Without this control
+  // email_campaigns.audience_segment_id had no writer at all and the sender's
+  // segment-targeted path was unreachable.
+  const [audienceSegments, setAudienceSegments] = useState<Array<{ segmentId: string; memberCount: number }>>([])
+  const [audienceSegmentsError, setAudienceSegmentsError] = useState<string | null>(null)
   const [isCreatingNewsletter, setIsCreatingNewsletter] = useState(false)
 
   // Create QR dialog state (inline in studio)
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
-  const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
+  // purpose + destinationType are CHECK-constrained vocabularies on qr_codes; these lists are the
+  // LIVE sets (verified against the database), and a value outside them is a refused insert.
+  const [newQr, setNewQr] = useState<{
+    label: string
+    targetUrl: string
+    purpose: QrPurpose
+    destinationType: QrDestinationType | ""
+    /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id → qr_codes.marketing_campaign_id. */
+    campaignId: string
+    expiresAt: string
+  }>({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
   const [qrError, setQrError] = useState<string | null>(null)
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
-  const [agentId, setAgentId] = useState<string>(userIdProp ?? "")
+  // agents(id), server-resolved. This was seeded from userIdProp — a users id
+  // wearing the name agentId — and every downstream consumer is agents-class.
+  const [agentId, setAgentId] = useState<string>(agentIdProp ?? "")
   const [brokerageId, setBrokerageId] = useState<string>(brokerageIdProp ?? "")
 
   // Form states
@@ -280,6 +521,36 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     scheduledEndAt: "",
     visibilityScope: "agent" as VisibilityScope,
   })
+  // ── EDIT A CAMPAIGN ─────────────────────────────────────────────────────────
+  // A campaign's name, budget and flight dates were write-once from this
+  // screen: createCampaign could set them and transitionCampaignStatus could
+  // move the campaign through its lifecycle, but nothing could correct a typo
+  // or a budget. updateCampaign is the writer that was already there.
+  const [editingCampaign, setEditingCampaign] = useState<any | null>(null)
+  const [editCampaign, setEditCampaign] = useState({
+    campaignName: "",
+    budgetTotal: "",
+    scheduledStartAt: "",
+    scheduledEndAt: "",
+  })
+  const [isSavingCampaign, setIsSavingCampaign] = useState(false)
+  // ── AI COPY FOR AN ASSET, IN THE BRAND VOICE ────────────────────────────────
+  // generateCampaignContent grounds the copy in the campaign (name, type, the
+  // linked listing) AND in the brokerage's brand_voice_profile, then runs the
+  // Fair-Housing / Them-First gates before returning. Writing asset copy by
+  // hand in this dialog skipped all of it.
+  // ── YOUR CONTENT HEARTBEAT ──────────────────────────────────────────────────
+  // The newsletter + social cadence crons publish on a schedule the agent set
+  // once, on a Settings page they had to already know about. Nothing on the
+  // marketing surface said whether anything was scheduled to go out at all —
+  // the same gap the blog dashboard closed with getMyBlogCadencePolicy.
+  const [cadence, setCadence] = useState<{
+    newsletter: MarketingCadencePolicyRow | null
+    social: MarketingCadencePolicyRow | null
+  } | null>(null)
+  const [isWritingAsset, setIsWritingAsset] = useState(false)
+  const [assetCopyPrompt, setAssetCopyPrompt] = useState("")
+  const [assetBrandVoice, setAssetBrandVoice] = useState<{ violations: string[]; notes: string[] } | null>(null)
   const [newAsset, setNewAsset] = useState<{
     assetName: string
     assetType: string
@@ -305,6 +576,15 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
   useEffect(() => {
     loadInitialData()
+    // A REFUSED read is not "no cadence configured" — leave the state null so
+    // the chip simply does not render, rather than telling the agent nothing is
+    // scheduled when we could not check.
+    getMyMarketingCadencePolicies()
+      .then((r) => {
+        if (!r.success) return
+        setCadence({ newsletter: r.newsletter ?? null, social: r.social ?? null })
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -314,7 +594,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (activeTab === "newsletters") loadNewsletterData()
     if (activeTab === "ad-os")       loadAdOsData()
     if (activeTab === "blog")        loadBlogData()
-    if (activeTab === "video")       loadVideoData()
     if (activeTab === "podcast")     loadPodcastData()
     if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
@@ -342,6 +621,20 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     } finally {
       setIsLoading(false)
     }
+  }
+
+  async function loadAudienceSegments() {
+    const { listAudienceSegments } = await import("@/app/actions/email-campaigns")
+    const res = await listAudienceSegments()
+    if (!(res as any).success) {
+      // A refused read is NOT "you have no segments" — say so, or the agent
+      // picks "everyone" believing that is their only option.
+      setAudienceSegmentsError((res as any).error ?? "Could not load your segments")
+      setAudienceSegments([])
+      return
+    }
+    setAudienceSegmentsError(null)
+    setAudienceSegments((res as any).segments ?? [])
   }
 
   async function loadCampaigns() {
@@ -378,9 +671,279 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (result.success) setAvailableQrCodes(result.qrCodes)
   }
 
+  // ─── EMAIL CAMPAIGNS (email_campaigns) ──────────────────────────────────────
+  // Both reads go through the brokerage-scoped server actions, and both report
+  // the SERVER's verdict rather than rendering an empty list on refusal.
+  async function loadEmailCampaigns() {
+    setEmailCampaignsError(null)
+    const { getEmailCampaigns, getEmailCampaignStats } = await import("@/app/actions/email-campaigns")
+    const [listRes, statsRes] = await Promise.all([getEmailCampaigns(), getEmailCampaignStats()])
+    if (listRes.success) {
+      setEmailCampaigns((listRes as any).campaigns ?? [])
+    } else {
+      setEmailCampaigns([])
+      setEmailCampaignsError((listRes as any).error ?? "Could not load email campaigns")
+    }
+    if (statsRes.success) {
+      setEmailStats((statsRes as any).stats ?? null)
+    } else {
+      setEmailStats(null)
+      setEmailCampaignsError(
+        (prev) => prev ?? ((statsRes as any).error ?? "Could not load email campaign stats")
+      )
+    }
+  }
+
+  async function openEmailCampaignEditor(campaignId: string) {
+    setIsLoadingEmailCampaign(true)
+    setEmailEditorError(null)
+    try {
+      const { getEmailCampaign } = await import("@/app/actions/email-campaigns")
+      const res = await getEmailCampaign(campaignId)
+      if (!res.success) {
+        toast({
+          title: "Could not open campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      const campaign = (res as any).campaign
+      setEditingEmailCampaign(campaign)
+      setEmailEditorDraft({
+        campaignName: campaign.campaign_name ?? "",
+        subjectLine: campaign.subject_line ?? "",
+        previewText: campaign.preview_text ?? "",
+        content: campaign.content ?? "",
+      })
+      setAiComposeTopic(campaign.campaign_name ?? "")
+    } finally {
+      setIsLoadingEmailCampaign(false)
+    }
+  }
+
+  // SCHEDULE / DELETE for email_campaigns.
+  //
+  // These two actions existed and were correct, but their only caller was the
+  // NEWSLETTER list, which passed a `newsletter_campaigns` id into actions that
+  // query `email_campaigns` — so both answered "Campaign not found" on every
+  // click. The newsletter list now calls the newsletter lane, which left these
+  // reachable from nowhere. This is the surface they were written for: the list
+  // right here already renders email_campaigns rows.
+  //
+  // This does NOT breach surface/studio-does-not-send. That rule keeps EGRESS
+  // off this screen — no sendEmailCampaign, no dispatchEmail, no sendCampaignNow.
+  // Scheduling performs no send: it writes status='scheduled' + send_date, and
+  // the send-email-campaigns cron does the delivery through the consent-gated
+  // dispatcher. Scheduling IS the consent-gated path. Deleting sends nothing.
+  async function scheduleEmailCampaignRow(campaignId: string) {
+    const when = emailScheduleDrafts[campaignId]
+    if (!when) {
+      toast({ title: "Pick a send date and time first", variant: "destructive" })
+      return
+    }
+    setSchedulingEmailCampaignId(campaignId)
+    try {
+      const { scheduleEmailCampaign } = await import("@/app/actions/email-campaigns")
+      // Second argument is ignored server-side (identity comes from the session).
+      const res = await scheduleEmailCampaign(campaignId, "", new Date(when).toISOString())
+      if (!res.success) {
+        // The server's refusal, verbatim — never an optimistic "Scheduled!".
+        toast({
+          title: "Could not schedule campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      setEmailScheduleDrafts((prev) => {
+        const next = { ...prev }
+        delete next[campaignId]
+        return next
+      })
+      toast({ title: "Campaign scheduled — the send cron will deliver it" })
+      await loadEmailCampaigns()
+    } finally {
+      setSchedulingEmailCampaignId(null)
+    }
+  }
+
+  async function deleteEmailCampaignRow(campaignId: string) {
+    setDeletingEmailCampaignId(campaignId)
+    try {
+      const { deleteEmailCampaign } = await import("@/app/actions/email-campaigns")
+      const res = await deleteEmailCampaign(campaignId)
+      if (!res.success) {
+        toast({
+          title: "Could not delete campaign",
+          description: (res as any).error ?? "Unknown error",
+          variant: "destructive",
+        })
+        return
+      }
+      toast({ title: "Campaign deleted" })
+      await loadEmailCampaigns()
+    } finally {
+      setDeletingEmailCampaignId(null)
+    }
+  }
+
+  async function saveEmailCampaign() {
+    if (!editingEmailCampaign) return
+    setIsSavingEmailCampaign(true)
+    setEmailEditorError(null)
+    try {
+      const { updateEmailCampaign } = await import("@/app/actions/email-campaigns")
+      // The second argument is ignored server-side (identity comes from the
+      // session) — it is kept only for the existing signature.
+      const res = await updateEmailCampaign(editingEmailCampaign.id, "", {
+        campaignName: emailEditorDraft.campaignName.trim(),
+        subjectLine: emailEditorDraft.subjectLine.trim(),
+        previewText: emailEditorDraft.previewText.trim(),
+        content: emailEditorDraft.content,
+      })
+      if (!res.success) {
+        // Report the SERVER's refusal — never an optimistic "Saved!".
+        setEmailEditorError((res as any).error ?? "Save was refused")
+        return
+      }
+      setEditingEmailCampaign(null)
+      toast({ title: "Campaign saved" })
+      await loadEmailCampaigns()
+    } finally {
+      setIsSavingEmailCampaign(false)
+    }
+  }
+
+  async function composeEmailWithAI() {
+    if (!aiComposeTopic.trim()) return
+    setIsComposingEmail(true)
+    setEmailEditorError(null)
+    try {
+      const { aiComposeEmail } = await import("@/app/actions/email-campaigns")
+      const res = await aiComposeEmail({
+        brokerageId: brokerageIdProp || brokerageId,
+        agentId: agentId || undefined,
+        topic: aiComposeTopic.trim(),
+        audience: aiComposeAudience,
+        campaignId: editingEmailCampaign?.id,
+      })
+      if (!res.success) {
+        setEmailEditorError((res as any).error ?? "AI compose failed")
+        return
+      }
+      // Draft only — nothing is persisted or sent until the agent saves.
+      setEmailEditorDraft((prev) => ({
+        ...prev,
+        subjectLine: (res as any).subject ?? prev.subjectLine,
+        previewText: (res as any).preheader ?? prev.previewText,
+        content: (res as any).body ?? prev.content,
+      }))
+    } finally {
+      setIsComposingEmail(false)
+    }
+  }
+
+  // ─── BULK READINESS SWEEP ───────────────────────────────────────────────────
+  async function sweepAssetReadiness() {
+    const candidates = assets
+      .filter((a) => (a.preview_text ?? "").trim().length > 0)
+      .slice(0, 25)
+    if (candidates.length === 0) {
+      setReadinessSweepError("No assets with preview text to evaluate.")
+      setReadinessSweep(null)
+      return
+    }
+    setIsSweepingReadiness(true)
+    setReadinessSweepError(null)
+    setReadinessSweep(null)
+    try {
+      const { runBatchReadinessCheck } = await import("./components/ad-os/ad-os-actions")
+      const res = await runBatchReadinessCheck(
+        candidates.map((a) => ({
+          contentId: a.id,
+          contentText: a.preview_text as string,
+          contentType: a.asset_type,
+          platform: "email",
+        }))
+      )
+      if (!res.success) {
+        setReadinessSweepError(res.error ?? "Readiness sweep failed")
+        return
+      }
+      setReadinessSweep({
+        results: res.results ?? [],
+        loggedCount: res.loggedCount ?? 0,
+        logError: res.logError ?? null,
+      })
+    } finally {
+      setIsSweepingReadiness(false)
+    }
+  }
+
+  // ─── AI NEWSLETTER ──────────────────────────────────────────────────────────
+  async function generateSubjectVariants() {
+    if (!aiNewsletter.topic.trim() || !agentId) return
+    setIsGeneratingVariants(true)
+    setAiNewsletterError(null)
+    setSubjectVariants(null)
+    try {
+      const { generateNewsletterSubjectVariants } = await import(
+        "@/app/actions/ai-marketing-automation"
+      )
+      const res = await generateNewsletterSubjectVariants(
+        agentId,
+        aiNewsletter.topic.trim(),
+        aiNewsletter.audienceSegment
+      )
+      if (!res.success) setAiNewsletterError(res.error ?? "Could not generate subject variants")
+      else setSubjectVariants(res.variants ?? [])
+    } finally {
+      setIsGeneratingVariants(false)
+    }
+  }
+
+  async function generateNewsletterWithAI() {
+    if (!agentId) {
+      setAiNewsletterError("No agent profile resolved for your account.")
+      return
+    }
+    setIsGeneratingNewsletter(true)
+    setAiNewsletterError(null)
+    try {
+      const { generateAINewsletter } = await import("@/app/actions/ai-marketing-automation")
+      const res = await generateAINewsletter({
+        agentId,
+        audienceSegment: aiNewsletter.audienceSegment,
+        topic: aiNewsletter.topic.trim() || undefined,
+        tone: aiNewsletter.tone,
+        includeMarketData: aiNewsletter.includeMarketData,
+        includeListings: aiNewsletter.includeListings,
+        marketingCampaignId: aiNewsletter.marketingCampaignId || undefined,
+      })
+      if (!res.success) {
+        // The server's refusal, verbatim — no optimistic success.
+        setAiNewsletterError(res.error ?? "Newsletter generation failed")
+        return
+      }
+      setIsAiNewsletterOpen(false)
+      setSubjectVariants(null)
+      toast({
+        title: "AI newsletter drafted",
+        description: res.newsletter?.subject ?? "Saved as a draft campaign",
+      })
+      // Re-read so the new draft appears in the list it was written to.
+      await loadNewsletterData()
+    } finally {
+      setIsGeneratingNewsletter(false)
+    }
+  }
+
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
+    setNewsletterError(null)
     try {
+      await loadEmailCampaigns()
       // Use server-resolved props first; fall back to action
       let resolvedBrokerageId = brokerageIdProp
       let resolvedUserId = userIdProp
@@ -401,47 +964,104 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
       const supabase = (await import("@/lib/supabase/client")).createClient()
       
-      // Get newsletter campaigns
-      const { data: campaigns } = await supabase
+      // Get newsletter campaigns. `const { data } = ...` alone turns a REFUSED
+      // read into an empty list — destructure error and surface it.
+      const { data: campaigns, error: campaignsError } = await supabase
         .from("newsletter_campaigns")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
         .limit(10)
+      if (campaignsError) setNewsletterError(campaignsError.message)
       setNewsletterCampaigns(campaigns || [])
 
-      // Get scheduled sends
-      const { data: sends } = await supabase
-        .from("newsletter_scheduled_sends")
-        .select("*, newsletter:newsletter_campaigns(campaign_name)")
-        .eq("agent_id", userId)
-        .order("sent_time", { ascending: false })
-        .limit(10)
-      setScheduledSends(sends || [])
+      // Video render status per campaign. A REFUSED read is surfaced as its
+      // own error — it must not render as "no video", which is what an
+      // optimistic empty map would say.
+      const campaignIds = (campaigns || []).map((c: any) => c.id)
+      if (campaignIds.length === 0) {
+        setVideoRendersByCampaign({})
+        setVideoRendersError(null)
+      } else {
+        const { data: renders, error: rendersError } = await supabase
+          .from("newsletter_video_renders")
+          .select("newsletter_campaign_id, status, video_url, error_message, completed_at, created_at, voiceover_url, video_project_id")
+          .in("newsletter_campaign_id", campaignIds)
+          .order("created_at", { ascending: false })
+        if (rendersError) {
+          setVideoRendersError(rendersError.message)
+          setVideoRendersByCampaign({})
+        } else {
+          setVideoRendersError(null)
+          const byCampaign: Record<string, {
+            status: string
+            video_url: string | null
+            error_message: string | null
+            completed_at: string | null
+            voiceover_url: string | null
+            video_project_id: string | null
+          }> = {}
+          for (const r of renders || []) {
+            // Ordered newest-first; the first row per campaign is the current one.
+            if (!byCampaign[r.newsletter_campaign_id]) {
+              byCampaign[r.newsletter_campaign_id] = {
+                status: r.status,
+                video_url: r.video_url ?? null,
+                error_message: r.error_message ?? null,
+                completed_at: r.completed_at ?? null,
+                voiceover_url: r.voiceover_url ?? null,
+                video_project_id: r.video_project_id ?? null,
+              }
+            }
+          }
+          setVideoRendersByCampaign(byCampaign)
+        }
+      }
+
+      // Get scheduled sends. agent_id here is agents-class — agentIdProp is
+      // already server-resolved; without it, resolve rather than reach for the
+      // users id sitting in the same scope. No agents row ⇒ no sends are yours.
+      const sendsAgentId = agentIdProp || agentId || (await resolveAgentIdInBrokerage(supabase, userId, brokerageId))
+      if (!sendsAgentId) {
+        setScheduledSends([])
+      } else {
+        const { data: sends, error: sendsError } = await supabase
+          .from("newsletter_scheduled_sends")
+          .select("*, newsletter:newsletter_campaigns(campaign_name)")
+          .eq("agent_id", sendsAgentId)
+          .order("sent_time", { ascending: false })
+          .limit(10)
+        if (sendsError) console.error("[v0] Failed to load scheduled sends:", sendsError.message)
+        setScheduledSends(sends || [])
+      }
 
       // Get subscriber count
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from("newsletter_subscribers")
         .select("*", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
         .eq("status", "subscribed")
+      if (countError) setNewsletterError((prev) => prev ?? countError.message)
       setSubscriberCount(count || 0)
 
-      // Get templates
-      const { data: templates } = await supabase
+      // Get templates. A refusal here used to render the "No newsletter
+      // templates yet" empty state — an error disguised as an onboarding hint.
+      const { data: templates, error: templatesError } = await supabase
         .from("newsletter_brokers_templates")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .limit(5)
+      if (templatesError) setNewsletterError((prev) => prev ?? templatesError.message)
       setNewsletterTemplates(templates || [])
 
       // Get local content
-      const { data: content } = await supabase
+      const { data: content, error: contentError } = await supabase
         .from("newsletter_local_content")
         .select("*")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
         .limit(5)
+      if (contentError) setNewsletterError((prev) => prev ?? contentError.message)
       setLocalContent(content || [])
     } catch (error) {
       console.error("[v0] Failed to load newsletter data:", error)
@@ -468,27 +1088,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       console.error("[v0] loadBlogData error:", e)
     } finally {
       setIsBlogLoading(false)
-    }
-  }
-
-  async function loadVideoData() {
-    setIsVideoLoading(true)
-    try {
-      const resolvedBrokerageId = brokerageIdProp || brokerageId
-      if (!resolvedBrokerageId) return
-      const { createClient } = await import("@/lib/supabase/client")
-      const supabase = createClient()
-      const { data } = await supabase
-        .from("ai_video_projects")
-        .select("id, title, status, video_type, video_url, thumbnail_url, created_at")
-        .eq("brokerage_id", resolvedBrokerageId)
-        .order("created_at", { ascending: false })
-        .limit(20)
-      setVideoProjects(data || [])
-    } catch (e) {
-      console.error("[v0] loadVideoData error:", e)
-    } finally {
-      setIsVideoLoading(false)
     }
   }
 
@@ -540,7 +1139,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         }
       }
       if (resolvedUserId && resolvedBrokerageId) {
-        setAgentId(resolvedUserId)
+        // agentId is agents-class and comes from the server prop. It is NOT
+        // recoverable from a users id on the client, so this no longer
+        // overwrites it with resolvedUserId (which it did, unconditionally,
+        // undoing the correct value on every Ad-OS load).
+        if (agentIdProp) setAgentId(agentIdProp)
         setBrokerageId(resolvedBrokerageId)
 
         // Load agent's active listings
@@ -593,11 +1196,119 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     }
   }
 
+  async function handleSaveCampaignEdits() {
+    if (!editingCampaign) return
+    if (!editCampaign.campaignName.trim()) {
+      toast({ title: "Campaign name is required", variant: "destructive" })
+      return
+    }
+    const budget = editCampaign.budgetTotal.trim()
+    if (budget !== "" && !(Number(budget) >= 0)) {
+      toast({ title: "Budget must be a number", variant: "destructive" })
+      return
+    }
+    if (
+      editCampaign.scheduledStartAt &&
+      editCampaign.scheduledEndAt &&
+      editCampaign.scheduledEndAt < editCampaign.scheduledStartAt
+    ) {
+      toast({ title: "End date cannot be before the start date", variant: "destructive" })
+      return
+    }
+    setIsSavingCampaign(true)
+    const result = await updateCampaign({
+      campaignId: editingCampaign.id,
+      campaignName: editCampaign.campaignName.trim(),
+      ...(budget !== "" ? { budgetTotal: Number(budget) } : {}),
+      scheduledStartAt: editCampaign.scheduledStartAt,
+      scheduledEndAt: editCampaign.scheduledEndAt,
+    })
+    setIsSavingCampaign(false)
+    if (result.success) {
+      setEditingCampaign(null)
+      loadCampaigns()
+      loadInitialData()
+      toast({ title: "Campaign updated" })
+    } else {
+      toast({
+        title: "Could not update the campaign",
+        description: (result as any).error ?? "Unknown error",
+        variant: "destructive",
+      })
+    }
+  }
+
+  async function handleWriteAssetCopy() {
+    if (!newAsset.campaignId) {
+      toast({
+        title: "Pick a campaign first",
+        description: "The copy is written from the campaign's name, type and listing — there is nothing to ground it in otherwise.",
+        variant: "destructive",
+      })
+      return
+    }
+    setIsWritingAsset(true)
+    setAssetBrandVoice(null)
+    try {
+      // Asset type → the copy shape the generator writes. Anything not on this
+      // map is prose for a social-style asset.
+      const contentType: "social_caption" | "email_subject" | "email_body" | "ad_copy" =
+        newAsset.assetType === "ad_creative"
+          ? "ad_copy"
+          : newAsset.assetType === "newsletter"
+            ? "email_body"
+            : "social_caption"
+      const result = await generateCampaignContent({
+        campaignId: newAsset.campaignId,
+        contentType,
+        prompt:
+          assetCopyPrompt.trim() ||
+          `Write the ${newAsset.assetType.replace(/_/g, " ")} copy for "${newAsset.assetName || "this asset"}".`,
+      })
+      if (!result.success || !result.content) {
+        toast({
+          title: "Could not write the copy",
+          description: (result as any).error ?? "The AI writer returned nothing.",
+          variant: "destructive",
+        })
+        return
+      }
+      setNewAsset((prev) => ({ ...prev, previewText: result.content as string }))
+      // Brand-voice findings are SHOWN. A violation the writer flagged and the
+      // screen swallowed is the same as no check at all.
+      if (result.brandVoiceViolations?.length || result.brandVoiceNotes?.length) {
+        setAssetBrandVoice({
+          violations: result.brandVoiceViolations ?? [],
+          notes: result.brandVoiceNotes ?? [],
+        })
+      }
+    } catch (err) {
+      toast({
+        title: "Could not write the copy",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setIsWritingAsset(false)
+    }
+  }
+
   async function handleCreateAsset() {
     try {
-      const qrUrl = newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()
-        ? `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(newAsset.qrTargetUrl.trim())}`
-        : undefined
+      // The QR preview image is rendered SERVER-SIDE by the vendored `qrcode` package and stored
+      // as a data: URI. It used to be an api.qrserver.com URL persisted onto the asset row, which
+      // shipped the (often lead-bearing) target URL to a third party and left every saved asset
+      // permanently dependent on an outside host to render its own artwork.
+      let qrUrl: string | undefined
+      if (newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()) {
+        const { renderQrImageAction } = await import("@/app/actions/marketing-studio")
+        const rendered = await renderQrImageAction(newAsset.qrTargetUrl.trim())
+        if (!rendered.success) {
+          toast({ title: "Failed to create asset", description: rendered.error, variant: "destructive" })
+          return
+        }
+        qrUrl = rendered.dataUrl
+      }
       const result = await createAsset({
         ...newAsset,
         assetType: newAsset.assetType as any,
@@ -664,16 +1375,172 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     }
   }
 
+  /**
+   * The eye control on a campaign card. The card only carries the counts it was
+   * listed with; the full record (assets, tasks, comments, listing) comes from
+   * getCampaignById, which is brokerage-scoped server side.
+   */
+  async function handleViewCampaign(campaign: Campaign) {
+    setSelectedCampaign(campaign)
+    await openCampaignDetailById(campaign.id)
+  }
+
+  /**
+   * The id-only half of handleViewCampaign, so the `?campaign=` deep-link —
+   * which holds an id and no listed card — opens the SAME dialog through the
+   * SAME brokerage-scoped reader. A cross-tenant or unknown id resolves to the
+   * dialog's own "no longer available on your brokerage" state, not to a row.
+   */
+  async function openCampaignDetailById(campaignId: string) {
+    setCampaignDetail(null)
+    setCampaignDetailError(null)
+    setIsCampaignDetailOpen(true)
+    setIsLoadingCampaignDetail(true)
+    try {
+      const result = await getCampaignById(campaignId)
+      if (!result.success) {
+        setCampaignDetailError((result as any).error ?? "This campaign could not be loaded.")
+        return
+      }
+      if (!result.campaign) {
+        setCampaignDetailError("This campaign is no longer available on your brokerage.")
+        return
+      }
+      setCampaignDetail(result.campaign)
+    } catch (err) {
+      setCampaignDetailError(err instanceof Error ? err.message : "This campaign could not be loaded.")
+    } finally {
+      setIsLoadingCampaignDetail(false)
+    }
+  }
+
+  /**
+   * Re-read the open campaign after a collaboration write.
+   *
+   * Through `getCampaignById` — the SAME brokerage-scoped reader that opened the
+   * dialog — rather than through `getCampaignComments` / `getCampaignTasks`.
+   * Those two were also imported-and-unused here, and they are a second read of
+   * rows this bundle already carries; using them would have given the dialog two
+   * sources for one list, which is how two lists come to disagree.
+   */
+  async function refreshOpenCampaignDetail(campaignId: string) {
+    try {
+      const result = await getCampaignById(campaignId)
+      if (result.success && result.campaign) setCampaignDetail(result.campaign)
+    } catch {
+      // A failed refresh must not look like a failed WRITE — the write already
+      // returned success. Leave the stale list; the next open re-reads it.
+    }
+  }
+
+  async function handleAddCampaignComment() {
+    const campaignId = campaignDetail?.id ?? selectedCampaign?.id
+    const body = newCommentBody.trim()
+    if (!campaignId || !body) return
+    setIsPostingComment(true)
+    setCollabError(null)
+    try {
+      const result = await addCampaignComment({ campaignId, commentBody: body })
+      if (!result.success) {
+        setCollabError((result as any).error ?? "The comment could not be posted.")
+        return
+      }
+      setNewCommentBody("")
+      await refreshOpenCampaignDetail(campaignId)
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : "The comment could not be posted.")
+    } finally {
+      setIsPostingComment(false)
+    }
+  }
+
+  async function handleCreateCampaignTask() {
+    const campaignId = campaignDetail?.id ?? selectedCampaign?.id
+    const title = newTaskTitle.trim()
+    if (!campaignId || !title) return
+    setIsCreatingTask(true)
+    setCollabError(null)
+    try {
+      const result = await createCampaignTask({
+        campaignId,
+        title,
+        // The input is a date-only control; the column is timestamptz. An empty
+        // box means "no due date", which the writer stores as NULL — never as
+        // an invented one.
+        dueAt: newTaskDueAt ? new Date(`${newTaskDueAt}T12:00:00`).toISOString() : undefined,
+      })
+      if (!result.success) {
+        setCollabError((result as any).error ?? "The task could not be created.")
+        return
+      }
+      setNewTaskTitle("")
+      setNewTaskDueAt("")
+      setIsTaskComposerOpen(false)
+      await refreshOpenCampaignDetail(campaignId)
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : "The task could not be created.")
+    } finally {
+      setIsCreatingTask(false)
+    }
+  }
+
   async function handleLinkQr(assetId: string, qrCodeId: string, placementType: string) {
+    setQrLinkError(null)
     const result = await linkQrToAsset({
       marketingAssetId: assetId,
       qrCodeId,
       placementType: placementType as any,
     })
-    if (result.success) {
-      setIsQrLinkOpen(false)
-      setSelectedAssetForQr(null)
-      loadAssets()
+    // A refusal used to fall out of this `if` and vanish: the dialog stayed
+    // open, the list did not change, and nothing said the link had not been
+    // made. Report what the action reported.
+    if (!result.success) {
+      setQrLinkError((result as any).error ?? "The QR code was not linked to this asset.")
+      return
+    }
+    await loadAssetQrLinks(assetId)
+    loadAssets()
+  }
+
+  /** Show what is ALREADY attached to this asset — the missing half of the link flow. */
+  async function loadAssetQrLinks(assetId: string) {
+    setIsLoadingQrLinks(true)
+    try {
+      const result = await getAssetQrLinks(assetId)
+      if (!result.success) {
+        setQrLinkError(result.error ?? "The linked QR codes could not be loaded.")
+        setAssetQrLinks([])
+        return
+      }
+      setAssetQrLinks(result.links)
+    } finally {
+      setIsLoadingQrLinks(false)
+    }
+  }
+
+  async function handleUnlinkQr(linkId: string, assetId: string) {
+    setQrLinkError(null)
+    const result = await unlinkQrFromAsset(linkId)
+    if (!result.success) {
+      setQrLinkError(result.error ?? "The QR code was not unlinked from this asset.")
+      return
+    }
+    await loadAssetQrLinks(assetId)
+    loadAssets()
+  }
+
+  async function handleLoadQrPerformance(qrCodeId: string) {
+    setLoadingQrPerformanceId(qrCodeId)
+    try {
+      const result = await getQrCodePerformance(qrCodeId)
+      setQrPerformance((prev) => ({
+        ...prev,
+        [qrCodeId]: result.success
+          ? result.performance
+          : { error: result.error ?? "Scan detail could not be loaded." },
+      }))
+    } finally {
+      setLoadingQrPerformanceId(null)
     }
   }
 
@@ -879,6 +1746,15 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   <p className="text-muted-foreground">
                     Unified command center for campaigns, assets, and content scheduling
                   </p>
+                  {cadence && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {describeCadence("Newsletter", cadence.newsletter)} ·{" "}
+                      {describeCadence("Social", cadence.social)}{" "}
+                      <a href="/settings/blog-cadence" className="text-violet-700 hover:underline">
+                        Change
+                      </a>
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1126,13 +2002,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               <span className="text-xs">Blog</span>
             </TabsTrigger>
             <TabsTrigger
-              value="video"
-              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
-            >
-              <Video className="h-4 w-4" />
-              <span className="text-xs">Video</span>
-            </TabsTrigger>
-            <TabsTrigger
               value="podcast"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
             >
@@ -1145,6 +2014,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             >
               <Sparkles className="h-4 w-4" />
               <span className="text-xs">Omnichannel</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="ops"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Activity className="h-4 w-4" />
+              <span className="text-xs">Ops</span>
             </TabsTrigger>
           </TabsList>
 
@@ -1176,7 +2052,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               <PerformanceIntelligencePanel brokerageId={brokerageId} />
             </div>
 
-            {/* Row 4: Seller-Safe Marketing Summary (full width) */}
+            {/* Row 4: Listing Copy Enhancer (read-only rewrite) */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              <ListingCopyPanel agentId={agentId} listings={listings} />
+            </div>
+
+            {/* Row 5: Seller-Safe Marketing Summary (full width) */}
             <SellerSafeMarketingSummary campaigns={campaigns} />
           </TabsContent>
 
@@ -1397,8 +2278,37 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                             Resume
                           </Button>
                         )}
-                        <Button size="sm" variant="ghost">
+                        {/* Had no handler. getCampaignById was imported at the
+                            top of this file and called from nowhere, and the
+                            selectedCampaign state below it was never set — the
+                            join was simply missing. */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`View ${campaign.campaign_name}`}
+                          onClick={() => handleViewCampaign(campaign)}
+                        >
                           <Eye className="h-4 w-4" />
+                        </Button>
+                        {/* Correcting a plan is not the same as moving it through
+                            its lifecycle — a live campaign's own status gate is
+                            handled by transitionCampaignStatus, this only edits
+                            the fields. */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Edit ${campaign.campaign_name}`}
+                          onClick={() => {
+                            setEditingCampaign(campaign)
+                            setEditCampaign({
+                              campaignName: campaign.campaign_name ?? "",
+                              budgetTotal: campaign.budget_total != null ? String(campaign.budget_total) : "",
+                              scheduledStartAt: (campaign.scheduled_start_at ?? "").slice(0, 10),
+                              scheduledEndAt: (campaign.scheduled_end_at ?? "").slice(0, 10),
+                            })
+                          }}
+                        >
+                          <Edit className="h-4 w-4" />
                         </Button>
                       </div>
                     </CardContent>
@@ -1433,6 +2343,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   </SelectContent>
                 </Select>
               </div>
+              <Button
+                variant="outline"
+                disabled={isSweepingReadiness || assets.length === 0}
+                onClick={sweepAssetReadiness}
+              >
+                {isSweepingReadiness ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckSquare className="mr-2 h-4 w-4" />
+                )}
+                Check Readiness
+              </Button>
               <Dialog open={isCreateAssetOpen} onOpenChange={setIsCreateAssetOpen}>
                 <DialogTrigger asChild>
                   <Button className="bg-violet-600 hover:bg-violet-700">
@@ -1510,13 +2432,51 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        <Label>Preview Text</Label>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label>Preview Text</Label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={handleWriteAssetCopy}
+                            disabled={isWritingAsset || !newAsset.campaignId}
+                            title={
+                              newAsset.campaignId
+                                ? "Write this in your brand voice, grounded in the campaign"
+                                : "Pick a campaign — the copy is written from it"
+                            }
+                          >
+                            {isWritingAsset ? (
+                              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            Write with AI
+                          </Button>
+                        </div>
+                        <Input
+                          value={assetCopyPrompt}
+                          onChange={(e) => setAssetCopyPrompt(e.target.value)}
+                          placeholder="What should it say? (optional — e.g. 'lead with the price drop')"
+                        />
                         <Textarea
                           value={newAsset.previewText}
                           onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
                           placeholder="Brief description..."
                           rows={3}
                         />
+                        {assetBrandVoice && (
+                          <div className="rounded-md border bg-muted/40 p-2 text-xs space-y-1">
+                            {assetBrandVoice.violations.length > 0 && (
+                              <p className="text-amber-700">
+                                Brand voice: {assetBrandVoice.violations.join("; ")}
+                              </p>
+                            )}
+                            {assetBrandVoice.notes.length > 0 && (
+                              <p className="text-muted-foreground">{assetBrandVoice.notes.join("; ")}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     <Button onClick={handleCreateAsset} className="w-full bg-violet-600 hover:bg-violet-700">
@@ -1526,6 +2486,47 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 </DialogContent>
               </Dialog>
             </div>
+
+            {readinessSweepError && (
+              <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {readinessSweepError}
+              </div>
+            )}
+
+            {readinessSweep && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <CheckSquare className="h-4 w-4 text-indigo-600" />
+                    Readiness sweep — {readinessSweep.results.filter((r) => r.status === "ready").length} of{" "}
+                    {readinessSweep.results.length} ready
+                  </CardTitle>
+                  <CardDescription>
+                    {readinessSweep.loggedCount} verdict{readinessSweep.loggedCount === 1 ? "" : "s"} recorded
+                    against the assets — feeds the Readiness Pass Rate on the Ops tab.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {readinessSweep.logError && (
+                    <p className="text-xs text-yellow-800 bg-yellow-50 rounded p-2">
+                      Not everything was recorded: {readinessSweep.logError}
+                    </p>
+                  )}
+                  {readinessSweep.results
+                    .filter((r) => r.status === "blocked")
+                    .map((r) => {
+                      const asset = assets.find((a) => a.id === r.contentId)
+                      return (
+                        <div key={r.contentId} className="text-xs rounded border px-2 py-1.5">
+                          <span className="font-medium">{asset?.asset_name ?? r.contentId}</span>
+                          <span className="text-muted-foreground"> — {r.blockingReasons.join("; ") || "blocked"}</span>
+                        </div>
+                      )
+                    })}
+                </CardContent>
+              </Card>
+            )}
 
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {assets
@@ -1736,10 +2737,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="publish">Publish</SelectItem>
+                                  <SelectItem value="send">Send</SelectItem>
+                                  <SelectItem value="launch">Launch</SelectItem>
                                   <SelectItem value="review">Review</SelectItem>
                                   <SelectItem value="deadline">Deadline</SelectItem>
-                                  <SelectItem value="meeting">Meeting</SelectItem>
-                                  <SelectItem value="go_live">Go Live</SelectItem>
+                                  <SelectItem value="podcast_release">Podcast Release</SelectItem>
+                                  <SelectItem value="mail_drop">Mail Drop</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
@@ -1943,6 +2946,164 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
           {/* Newsletters Tab */}
           <TabsContent value="newsletters" className="space-y-6">
+            {newsletterError && (
+              <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                Newsletter data could not be loaded: {newsletterError}
+              </div>
+            )}
+
+            {/* ── EMAIL CAMPAIGNS (email_campaigns) ────────────────────────────
+                The rows the "New Campaign" button on this tab actually creates.
+                Deliberately OUTSIDE the newsletter-template gate below: an
+                email blast does not require an approved newsletter template. */}
+            {!isNewsletterLoading && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Mail className="h-5 w-5 text-violet-600" />
+                        Email Campaigns
+                      </CardTitle>
+                      {/* This used to read "send or schedule from the newsletter
+                          manager". That manager works on newsletter_campaigns and
+                          could never reach these rows — the instruction sent people
+                          to a screen that would answer "Campaign not found". */}
+                      <CardDescription>
+                        Drafts you create here. Compose with AI, then schedule the send —
+                        the delivery cron sends it through the consent-gated dispatcher.
+                      </CardDescription>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="bg-violet-600 hover:bg-violet-700"
+                      onClick={() => setIsCreateNewsletterOpen(true)}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />
+                      New Campaign
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {emailCampaignsError && (
+                    <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0" />
+                      {emailCampaignsError}
+                    </div>
+                  )}
+
+                  {emailStats && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Total Campaigns</p>
+                        <p className="text-xl font-bold">{emailStats.totalCampaigns}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Scheduled</p>
+                        <p className="text-xl font-bold">{emailStats.activeCampaigns}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Subscribers</p>
+                        <p className="text-xl font-bold">{emailStats.totalSubscribers.toLocaleString()}</p>
+                      </div>
+                      <div className="rounded-lg border px-3 py-2">
+                        <p className="text-xs text-muted-foreground">Avg Open Rate</p>
+                        <p className="text-xl font-bold">
+                          {emailStats.avgOpenRate != null ? `${(emailStats.avgOpenRate * 100).toFixed(1)}%` : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {emailCampaigns.length === 0 ? (
+                    <p className="text-muted-foreground text-center py-6 text-sm">
+                      No email campaigns yet — create one to get started.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {emailCampaigns.map((c) => {
+                        // A campaign already sent or mid-send is not editable,
+                        // reschedulable or deletable — rewinding it would hand it
+                        // back to the cron and send it twice.
+                        const inFlight = c.status === "sent" || c.status === "sending"
+                        return (
+                          <div key={c.id} className="p-3 rounded-lg bg-muted/50 space-y-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-medium truncate">{c.campaign_name}</p>
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {c.subject_line}
+                                  {c.send_date ? ` · ${format(new Date(c.send_date), "MMM d, yyyy")}` : ""}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Badge className={getStatusColor(c.status || "draft")}>{c.status || "draft"}</Badge>
+                                <Badge variant="outline" className="text-xs capitalize">
+                                  {(c.approval_status || "pending").replace("_", " ")}
+                                </Badge>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={`Edit ${c.campaign_name}`}
+                                  disabled={isLoadingEmailCampaign || inFlight}
+                                  onClick={() => openEmailCampaignEditor(c.id)}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  aria-label={`Delete ${c.campaign_name}`}
+                                  disabled={deletingEmailCampaignId === c.id || inFlight}
+                                  onClick={() => deleteEmailCampaignRow(c.id)}
+                                >
+                                  {deletingEmailCampaignId === c.id ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-4 w-4" />
+                                  )}
+                                </Button>
+                              </div>
+                            </div>
+                            {!inFlight && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="datetime-local"
+                                  aria-label={`Send date and time for ${c.campaign_name}`}
+                                  className="h-8 w-auto text-xs"
+                                  value={emailScheduleDrafts[c.id] ?? ""}
+                                  onChange={(e) =>
+                                    setEmailScheduleDrafts((prev) => ({ ...prev, [c.id]: e.target.value }))
+                                  }
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-8"
+                                  disabled={
+                                    schedulingEmailCampaignId === c.id || !emailScheduleDrafts[c.id]
+                                  }
+                                  onClick={() => scheduleEmailCampaignRow(c.id)}
+                                >
+                                  {schedulingEmailCampaignId === c.id ? (
+                                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                                  ) : (
+                                    <Clock className="h-3.5 w-3.5 mr-1.5" />
+                                  )}
+                                  {c.status === "scheduled" ? "Reschedule" : "Schedule"}
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {isNewsletterLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -1992,17 +3153,22 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle className="flex items-center gap-2">
-                        <Mail className="h-5 w-5 text-violet-600" />
-                        Recent Campaigns
+                        <Newspaper className="h-5 w-5 text-violet-600" />
+                        Newsletter Campaigns
                       </CardTitle>
+                      {/* The "New Campaign" button used to sit here, but it
+                          creates an email_campaigns row while this list reads
+                          newsletter_campaigns — so nothing it made ever showed
+                          up. It now lives on the Email Campaigns card above,
+                          next to the list it actually populates. */}
                       <div className="flex gap-2">
                         <Button
                           size="sm"
                           className="bg-violet-600 hover:bg-violet-700"
-                          onClick={() => setIsCreateNewsletterOpen(true)}
+                          onClick={() => setIsAiNewsletterOpen(true)}
                         >
-                          <Plus className="h-3.5 w-3.5 mr-1.5" />
-                          New Campaign
+                          <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                          AI Newsletter
                         </Button>
                         <Button variant="outline" size="sm" asChild>
                           <a href="/newsletters">Manage</a>
@@ -2011,12 +3177,21 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     </div>
                   </CardHeader>
                   <CardContent>
+                    {/* Render-ledger refusal is its own line — an empty status
+                        column must mean "no render", never "the read failed". */}
+                    {videoRendersError && (
+                      <p className="text-xs text-red-600 mb-2">
+                        Video render status unavailable — the ledger read was refused: {videoRendersError}
+                      </p>
+                    )}
                     {newsletterCampaigns.length === 0 ? (
                       <p className="text-muted-foreground text-center py-8">No newsletter campaigns yet</p>
                     ) : (
                       <div className="space-y-3">
-                        {newsletterCampaigns.map((campaign) => (
-                          <div key={campaign.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                        {newsletterCampaigns.map((campaign) => {
+                          const render = videoRendersByCampaign[campaign.id]
+                          return (
+                          <div key={campaign.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50 gap-3 flex-wrap">
                             <div>
                               <p className="font-medium">{campaign.campaign_name || campaign.subject_line}</p>
                               <p className="text-sm text-muted-foreground">
@@ -2024,8 +3199,73 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                                   ? format(new Date(campaign.send_date), "MMM d, yyyy")
                                   : "Not scheduled"}
                               </p>
+                              {/* Failed render: the error the worker recorded,
+                                  shown where the campaign is managed. */}
+                              {render?.status === "failed" && (
+                                <p className="text-xs text-red-600 mt-0.5 break-words max-w-md">
+                                  Video render failed: {render.error_message ?? "no error recorded"}
+                                  {/* §1.2 — the narration survived the failure and
+                                      was already paid for. Offer it rather than
+                                      leaving it stranded in storage. */}
+                                  {render.voiceover_url && (
+                                    <>
+                                      {" "}
+                                      <a
+                                        href={render.voiceover_url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="underline"
+                                      >
+                                        The narration finished — play the audio
+                                      </a>
+                                      .
+                                    </>
+                                  )}
+                                </p>
+                              )}
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {/* newsletter_video_renders status — vocabulary
+                                  settled at lib/kernel/composition-gate.ts:
+                                  queued / rendering / completed / failed /
+                                  suppressed. No render row = no video queued. */}
+                              {/* §1.2 — video_project_id: the ai_video_projects row
+                                  this render filed, shown so the reel can be found
+                                  in the Video Studio and re-cut or repurposed.
+                                  Rendered as TEXT, not a link, deliberately: no
+                                  route in this tree accepts an ai_video_projects id
+                                  as a parameter today, and inventing one here would
+                                  ship a 404 in place of a missing page. */}
+                              {render?.video_project_id && (
+                                <span
+                                  className="text-xs text-muted-foreground"
+                                  title={`ai_video_projects.id ${render.video_project_id}`}
+                                >
+                                  Studio project {render.video_project_id.slice(0, 8)}
+                                </span>
+                              )}
+                              {render ? (
+                                render.status === "completed" && render.video_url ? (
+                                  <a
+                                    href={render.video_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-xs text-violet-700 hover:underline flex items-center gap-1"
+                                  >
+                                    <Video className="h-3.5 w-3.5" />
+                                    Play video
+                                  </a>
+                                ) : (
+                                  <Badge
+                                    variant={render.status === "failed" ? "destructive" : "outline"}
+                                    className="text-xs capitalize"
+                                  >
+                                    video: {render.status === "completed" ? "completed (no url)" : render.status}
+                                  </Badge>
+                                )
+                              ) : (
+                                <span className="text-xs text-muted-foreground">no video</span>
+                              )}
                               <Badge className={getStatusColor(campaign.status || "draft")}>
                                 {campaign.status || "draft"}
                               </Badge>
@@ -2041,7 +3281,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                               )}
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </CardContent>
@@ -2100,7 +3341,15 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                         {newsletterTemplates.map((template) => (
                           <div key={template.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
                             <span className="text-sm font-medium">{template.template_name || template.name}</span>
-                            <Button variant="ghost" size="sm">
+                            {/* Had no handler — the only way into a template was
+                                a chevron that did nothing. Opens the template
+                                that was already loaded on this row. */}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`Preview ${template.template_name || template.name}`}
+                              onClick={() => setPreviewTemplate(template)}
+                            >
                               <ChevronRight className="h-4 w-4" />
                             </Button>
                           </div>
@@ -2243,15 +3492,62 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                             <div className="h-16 w-16 bg-white rounded-lg flex items-center justify-center border">
                               <QrCode className="h-10 w-10 text-gray-700" />
                             </div>
-                            <div className="flex-1">
-                              <h4 className="font-medium">{qr.label}</h4>
-                              <p className="text-sm text-muted-foreground">{qr.purpose}</p>
+                            <div className="flex-1 min-w-0">
+                              <h4 className="font-medium truncate">{qr.label}</h4>
+                              <p className="text-sm text-muted-foreground">
+                                {qr.purpose}
+                                {qr.destinationType ? ` · ${qr.destinationType.replace(/_/g, " ")}` : ""}
+                              </p>
                               <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
                                 <span>{qr.scanCount} scans</span>
                                 <span>{qr.leadCount} leads</span>
                                 <span>{qr.linkedAssetCount} linked</span>
                               </div>
                             </div>
+                          </div>
+                          {/* getQrCodePerformance is the ONLY reader of per-code scan DETAIL
+                              (unique scans + the recent-scan list off qr_scan_events); the list
+                              above shows only the rolled-up counters. It was an orphan export —
+                              a real capability with no caller — so it is wired here rather than
+                              deleted. */}
+                          <div className="mt-3 border-t pt-3">
+                            {!qrPerformance[qr.id] ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={loadingQrPerformanceId === qr.id}
+                                onClick={() => handleLoadQrPerformance(qr.id)}
+                              >
+                                {loadingQrPerformanceId === qr.id
+                                  ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" />
+                                  : <Eye className="h-3 w-3 mr-1.5" />}
+                                Scan detail
+                              </Button>
+                            ) : qrPerformance[qr.id].error ? (
+                              <p className="text-xs text-red-600">{qrPerformance[qr.id].error}</p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                <div className="flex items-center gap-3 text-xs">
+                                  <span className="font-medium">{qrPerformance[qr.id].uniqueScans} unique</span>
+                                  <span className="text-muted-foreground">
+                                    {qrPerformance[qr.id].conversionRate}% converted
+                                  </span>
+                                </div>
+                                {qrPerformance[qr.id].recentScans?.length ? (
+                                  <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                                    {qrPerformance[qr.id].recentScans.slice(0, 5).map((s: any, i: number) => (
+                                      <li key={i}>
+                                        {format(new Date(s.scannedAt), "MMM d, h:mm a")}
+                                        {s.isFirstScan ? " · first scan" : ""}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="text-[11px] text-muted-foreground">No scans recorded yet.</p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -2415,109 +3711,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             )}
           </TabsContent>
 
-          {/* Video Tab */}
-          <TabsContent value="video" className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <h3 className="text-lg font-semibold">Video Projects</h3>
-                <p className="text-sm text-muted-foreground">Create and distribute AI-generated video content</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/dashboard/videos/library">
-                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                    Video Library
-                  </a>
-                </Button>
-                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
-                  <a href="/dashboard/videos/create">
-                    <Plus className="h-3.5 w-3.5 mr-1.5" />
-                    New Video
-                  </a>
-                </Button>
-              </div>
-            </div>
-
-            {isVideoLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : videoProjects.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Video className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-                  <p className="font-medium text-muted-foreground">No video projects yet</p>
-                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
-                    <a href="/dashboard/videos/create">Create Your First Video</a>
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {videoProjects.map((project: any) => (
-                  <Card key={project.id} className="hover:shadow-md transition-shadow">
-                    <CardContent className="pt-5">
-                      {project.thumbnail_url ? (
-                        <div className="relative mb-3 rounded-md overflow-hidden bg-black aspect-video">
-                          <img
-                            src={project.thumbnail_url}
-                            alt={project.title}
-                            className="w-full h-full object-cover opacity-80"
-                          />
-                          {project.status === "completed" && project.video_url && (
-                            <a
-                              href={project.video_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="absolute inset-0 flex items-center justify-center"
-                            >
-                              <div className="h-10 w-10 rounded-full bg-white/90 flex items-center justify-center">
-                                <Play className="h-5 w-5 text-violet-600 ml-0.5" />
-                              </div>
-                            </a>
-                          )}
-                        </div>
-                      ) : null}
-                      <div className="flex items-start justify-between mb-2">
-                        <Badge
-                          className={
-                            project.status === "completed"
-                              ? "bg-green-100 text-green-700"
-                              : project.status === "generating"
-                              ? "bg-blue-100 text-blue-700"
-                              : "bg-gray-100 text-gray-700"
-                          }
-                        >
-                          {project.status}
-                        </Badge>
-                        <Badge variant="outline" className="capitalize text-xs">{project.video_type}</Badge>
-                      </div>
-                      <h4 className="font-semibold line-clamp-1 mb-1">{project.title}</h4>
-                      <p className="text-xs text-muted-foreground">
-                        {format(new Date(project.created_at), "MMM d, yyyy")}
-                      </p>
-                      <div className="flex gap-2 mt-4">
-                        <Button size="sm" variant="outline" className="flex-1" asChild>
-                          <a href="/dashboard/videos/board">
-                            <Eye className="h-3.5 w-3.5 mr-1.5" />
-                            View
-                          </a>
-                        </Button>
-                        {project.status === "completed" && project.video_url && (
-                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
-                            <a href={project.video_url} target="_blank" rel="noopener noreferrer">
-                              Distribute
-                            </a>
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
-          </TabsContent>
-
           {/* Podcast Tab */}
           <TabsContent value="podcast" className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-3">
@@ -2526,16 +3719,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 <p className="text-sm text-muted-foreground">Create and distribute AI-powered podcast episodes</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/dashboard/marketing/podcast">
-                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                    Podcast Studio
-                  </a>
-                </Button>
+                {/* One entry point — the Podcast Studio is where episodes are
+                    created; a second "New Episode" button here just navigated to
+                    the same place (duplicate). */}
                 <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
                   <a href="/dashboard/marketing/podcast">
-                    <Plus className="h-3.5 w-3.5 mr-1.5" />
-                    New Episode
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Open Podcast Studio
                   </a>
                 </Button>
               </div>
@@ -2793,6 +3983,14 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             </div>
           </TabsContent>
 
+          {/* Ops — brokerage marketing health (consolidated from the retired Ops Center page) */}
+          <TabsContent value="ops" className="space-y-6">
+            <MarketingOpsPanel />
+            {/* The trend behind the pass-rate tile — brokerage-scoped in
+                app/actions/marketing-ops.ts::getReadinessTrendSnapshot. */}
+            <ReadinessTrendsPanel />
+          </TabsContent>
+
         </Tabs>
 
         {/* Performance Prediction Dialog */}
@@ -2829,7 +4027,17 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Dialog>
 
         {/* Create Newsletter Campaign Dialog */}
-        <Dialog open={isCreateNewsletterOpen} onOpenChange={setIsCreateNewsletterOpen}>
+        <Dialog
+          open={isCreateNewsletterOpen}
+          onOpenChange={(open) => {
+            setIsCreateNewsletterOpen(open)
+            // Segments are loaded on OPEN rather than at mount: the list is
+            // derived by scanning live memberships, so it is worth one query at
+            // the moment an agent is actually choosing an audience and not on
+            // every visit to the studio.
+            if (open) void loadAudienceSegments()
+          }}
+        >
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader>
               <DialogTitle>New Newsletter Campaign</DialogTitle>
@@ -2866,6 +4074,65 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   onChange={(e) => setNewNewsletter((prev) => ({ ...prev, content: e.target.value }))}
                 />
               </div>
+              {/* ★ THE UMBRELLA LINK ★ email_campaigns.marketing_campaign_id.
+                  The column is read by the campaign ROI measurer and by the
+                  video/image fan-out that embeds a finished render into every
+                  asset under the same campaign — and NOTHING wrote it, so an
+                  email created here could never be measured with its campaign
+                  or receive its campaign's video. The campaigns list is already
+                  in state on this page; this is the control that was missing. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-campaign">Part of a campaign (optional)</Label>
+                <Select
+                  value={newNewsletter.marketingCampaignId || "none"}
+                  onValueChange={(v) =>
+                    setNewNewsletter((prev) => ({ ...prev, marketingCampaignId: v === "none" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="nl-campaign">
+                    <SelectValue placeholder="Standalone email" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Standalone email</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.campaign_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* ★ THE AUDIENCE ★ email_campaigns.audience_segment_id. The
+                  sender resolves a segmented campaign's recipients from active
+                  contact_segments memberships — a path that could never run,
+                  because nothing wrote this column. Segments are shown by id
+                  prefix and live member count: contact_segments.segment_id has
+                  no FK and this schema has no segment catalogue to name them
+                  from, and a made-up label would be worse than an honest id. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-segment">Audience segment (optional)</Label>
+                <Select
+                  value={newNewsletter.audienceSegmentId || "all"}
+                  onValueChange={(v) =>
+                    setNewNewsletter((prev) => ({ ...prev, audienceSegmentId: v === "all" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="nl-segment">
+                    <SelectValue placeholder="All subscribers" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All subscribers</SelectItem>
+                    {audienceSegments.map((sg) => (
+                      <SelectItem key={sg.segmentId} value={sg.segmentId}>
+                        {`Segment ${sg.segmentId.slice(0, 8)} — ${sg.memberCount} member${sg.memberCount === 1 ? "" : "s"}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {audienceSegmentsError ? (
+                  <p className="text-xs text-red-600">{audienceSegmentsError}</p>
+                ) : null}
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsCreateNewsletterOpen(false)}>
@@ -2886,11 +4153,15 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       campaignName: newNewsletter.campaignName.trim(),
                       subjectLine: newNewsletter.subjectLine.trim() || newNewsletter.campaignName.trim(),
                       content: newNewsletter.content.trim() || "",
-                      createdBy: resolvedAgentId,
+                      // email_campaigns.created_by FKs users — the actor, not
+                      // the agent record. It was passed the same id as agentId.
+                      createdBy: userIdProp ?? "",
+                      marketingCampaignId: newNewsletter.marketingCampaignId || undefined,
+                      audienceSegmentId: newNewsletter.audienceSegmentId || undefined,
                     })
                     if (result.success) {
                       setIsCreateNewsletterOpen(false)
-                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
+                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "", marketingCampaignId: "", audienceSegmentId: "" })
                       await loadNewsletterData()
                     } else {
                       toast({ title: "Failed to create newsletter", description: (result as any).error ?? "Unknown error", variant: "destructive" })
@@ -2904,6 +4175,297 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               >
                 {isCreatingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 Save Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* AI Newsletter Dialog — generateAINewsletter + generateNewsletterSubjectVariants */}
+        <Dialog
+          open={isAiNewsletterOpen}
+          onOpenChange={(open) => {
+            setIsAiNewsletterOpen(open)
+            if (!open) {
+              setAiNewsletterError(null)
+              setSubjectVariants(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[560px] max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Generate Newsletter with AI</DialogTitle>
+              <DialogDescription>
+                Writes a them-first newsletter from your brand voice, your brokerage&apos;s
+                market data and your active listings, and saves it as a DRAFT newsletter
+                campaign. Nothing is sent.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="ain-topic">Topic</Label>
+                <Input
+                  id="ain-topic"
+                  placeholder="e.g. Spring market outlook for our neighbourhood"
+                  value={aiNewsletter.topic}
+                  onChange={(e) => setAiNewsletter((p) => ({ ...p, topic: e.target.value }))}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Audience</Label>
+                  <Select
+                    value={aiNewsletter.audienceSegment}
+                    onValueChange={(v) =>
+                      setAiNewsletter((p) => ({ ...p, audienceSegment: v as typeof p.audienceSegment }))
+                    }
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Everyone</SelectItem>
+                      <SelectItem value="buyers">Buyers</SelectItem>
+                      <SelectItem value="sellers">Sellers</SelectItem>
+                      <SelectItem value="investors">Investors</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime customers</SelectItem>
+                      <SelectItem value="sphere">Sphere</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Tone</Label>
+                  <Select
+                    value={aiNewsletter.tone}
+                    onValueChange={(v) => setAiNewsletter((p) => ({ ...p, tone: v as typeof p.tone }))}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="friendly">Friendly</SelectItem>
+                      <SelectItem value="professional">Professional</SelectItem>
+                      <SelectItem value="educational">Educational</SelectItem>
+                      <SelectItem value="urgent">Urgent</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* ★ THE UMBRELLA LINK ★ newsletter_campaigns.marketing_campaign_id.
+                  Read by the campaign ROI measurer and the render fan-out, and
+                  written by NOBODY until this wave — an AI-drafted issue could
+                  never be measured with its campaign. Same control the email
+                  campaign dialog above already carries; the campaigns list is
+                  already in state on this page. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="ain-campaign">Part of a campaign (optional)</Label>
+                <Select
+                  value={aiNewsletter.marketingCampaignId || "none"}
+                  onValueChange={(v) =>
+                    setAiNewsletter((p) => ({ ...p, marketingCampaignId: v === "none" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="ain-campaign">
+                    <SelectValue placeholder="Standalone newsletter" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Standalone newsletter</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.campaign_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex flex-wrap gap-4 text-sm">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={aiNewsletter.includeMarketData}
+                    onChange={(e) => setAiNewsletter((p) => ({ ...p, includeMarketData: e.target.checked }))}
+                  />
+                  Include market data
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={aiNewsletter.includeListings}
+                    onChange={(e) => setAiNewsletter((p) => ({ ...p, includeListings: e.target.checked }))}
+                  />
+                  Include my active listings
+                </label>
+              </div>
+
+              {/* Subject-line A/B variants */}
+              <div className="rounded-lg border p-3 space-y-2 bg-muted/30">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isGeneratingVariants || !aiNewsletter.topic.trim() || !agentId}
+                  onClick={generateSubjectVariants}
+                >
+                  {isGeneratingVariants ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  Generate 5 A/B subject lines
+                </Button>
+                {subjectVariants && (
+                  subjectVariants.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No variants returned.</p>
+                  ) : (
+                    <ol className="list-decimal pl-5 space-y-0.5 text-sm">
+                      {subjectVariants.map((v, i) => <li key={i}>{v}</li>)}
+                    </ol>
+                  )
+                )}
+              </div>
+
+              {aiNewsletterError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {aiNewsletterError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsAiNewsletterOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isGeneratingNewsletter || !agentId}
+                onClick={generateNewsletterWithAI}
+              >
+                {isGeneratingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Generate Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit Email Campaign Dialog — getEmailCampaign → aiComposeEmail → updateEmailCampaign */}
+        <Dialog
+          open={!!editingEmailCampaign}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditingEmailCampaign(null)
+              setEmailEditorError(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-[640px] max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Email Campaign</DialogTitle>
+              <DialogDescription>
+                Compose the draft. Saving does NOT send — sending and scheduling stay on the
+                consent-gated dispatcher in the newsletter manager.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              {/* AI compose */}
+              <div className="rounded-lg border p-3 space-y-3 bg-muted/30">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Sparkles className="h-4 w-4 text-violet-600" />
+                  Compose with AI
+                </div>
+                <div className="grid sm:grid-cols-[1fr_180px] gap-2">
+                  <Input
+                    placeholder="What should this email be about?"
+                    value={aiComposeTopic}
+                    onChange={(e) => setAiComposeTopic(e.target.value)}
+                  />
+                  <Select
+                    value={aiComposeAudience}
+                    onValueChange={(v) => setAiComposeAudience(v as typeof aiComposeAudience)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All contacts</SelectItem>
+                      <SelectItem value="buyers">Buyers</SelectItem>
+                      <SelectItem value="sellers">Sellers</SelectItem>
+                      <SelectItem value="investors">Investors</SelectItem>
+                      <SelectItem value="lifetime_customers">Lifetime customers</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isComposingEmail || !aiComposeTopic.trim()}
+                  onClick={composeEmailWithAI}
+                >
+                  {isComposingEmail ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  Draft subject, preheader &amp; body
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Fills the fields below with a draft in your brand voice. Nothing is saved until you press Save.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-name">Campaign Name</Label>
+                <Input
+                  id="ec-name"
+                  value={emailEditorDraft.campaignName}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, campaignName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-subject">Subject Line</Label>
+                <Input
+                  id="ec-subject"
+                  value={emailEditorDraft.subjectLine}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, subjectLine: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-preview">Preview Text</Label>
+                <Input
+                  id="ec-preview"
+                  placeholder="Inbox preheader"
+                  value={emailEditorDraft.previewText}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, previewText: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec-content">Body</Label>
+                <Textarea
+                  id="ec-content"
+                  rows={10}
+                  value={emailEditorDraft.content}
+                  onChange={(e) => setEmailEditorDraft((p) => ({ ...p, content: e.target.value }))}
+                />
+              </div>
+
+              {emailEditorError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {emailEditorError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditingEmailCampaign(null)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isSavingEmailCampaign || !emailEditorDraft.campaignName.trim() || !emailEditorDraft.subjectLine.trim()}
+                onClick={saveEmailCampaign}
+              >
+                {isSavingEmailCampaign ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Save
               </Button>
             </div>
           </DialogContent>
@@ -2944,14 +4506,65 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   id="qr-purpose"
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
                   value={newQr.purpose}
-                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as "listing" | "open_house" | "general" | "campaign" | "lead_capture" }))}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as QrPurpose }))}
                 >
-                  <option value="general">General</option>
-                  <option value="open_house">Open House</option>
-                  <option value="listing">Listing</option>
-                  <option value="lead_capture">Lead Capture</option>
-                  <option value="campaign">Campaign</option>
+                  {QR_PURPOSE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-destination">Destination Type</Label>
+                <select
+                  id="qr-destination"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.destinationType}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, destinationType: e.target.value as QrDestinationType | "" }))}
+                >
+                  <option value="">Not specified</option>
+                  {QR_DESTINATION_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  How analytics buckets this code&apos;s scans. Codes created here never set it before,
+                  so they were invisible in every destination breakdown.
+                </p>
+              </div>
+              {/* ★ TRACKING LINKED TO CAMPAIGN ★ — the write side of the campaign link.
+                  qr_codes.marketing_campaign_id is an FK to marketing_campaigns that had ZERO
+                  writers, which is why the campaign measurer reported 0 QR scans for every
+                  campaign no matter how many codes it had. Attaching the code here is what makes
+                  its scans roll up. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-campaign">Campaign</Label>
+                <select
+                  id="qr-campaign"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.campaignId}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, campaignId: e.target.value }))}
+                >
+                  <option value="">No campaign (standalone code)</option>
+                  {campaigns.map((c) => (
+                    <option key={c.id} value={c.id}>{c.campaign_name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Attach the code to a campaign and its scans, leads and conversions roll up into
+                  that campaign&apos;s results.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-expires">Expires (optional)</Label>
+                <Input
+                  id="qr-expires"
+                  type="date"
+                  value={newQr.expiresAt}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, expiresAt: e.target.value }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  After this date a scan is refused with an explanation instead of routing.
+                </p>
               </div>
               {qrError && (
                 <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
@@ -2972,17 +4585,21 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   setQrError(null)
                   try {
                     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
-                    // Resolve brokerageId and agentId — fall back to user context if props not available
+                    // Resolve brokerageId from user context when the prop is absent.
+                    // IDENTITY CLASS: agentId is NOT recoverable the same way.
+                    // qr_codes.agent_id FKs agents(id) and ctx.userId is a users
+                    // id, so the old `resolvedAgentId || ctx.userId` fallback sent
+                    // a users id into an agents foreign key and every QR code
+                    // created down that path was rejected. Refuse instead.
                     let resolvedBrokerageId = brokerageIdProp || brokerageId
-                    let resolvedAgentId = agentId
-                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                    const resolvedAgentId = agentId
+                    if (!resolvedBrokerageId) {
                       const { getUserContextForPrediction } = await import("@/app/actions/content-prediction")
                       const ctx = await getUserContextForPrediction()
-                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = resolvedBrokerageId || ctx.brokerageId
-                      if (ctx.success && ctx.userId) resolvedAgentId = resolvedAgentId || ctx.userId
+                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = ctx.brokerageId
                     }
                     if (!resolvedBrokerageId || !resolvedAgentId) {
-                      setQrError("Could not determine your account context. Please refresh and try again.")
+                      setQrError("Could not determine your agent profile. Finish Settings → Profile, then refresh and try again.")
                       return
                     }
                     const result = await createQrCodeAction({
@@ -2991,10 +4608,14 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       label: newQr.label.trim(),
                       targetUrl: newQr.targetUrl.trim(),
                       purpose: newQr.purpose,
+                      destinationType: newQr.destinationType || undefined,
+                      // ★ TRACKING LINKED TO CAMPAIGN ★ — stamps qr_codes.marketing_campaign_id.
+                      campaignId: newQr.campaignId || undefined,
+                      expiresAt: newQr.expiresAt ? new Date(newQr.expiresAt).toISOString() : undefined,
                     })
                     if (result.success) {
                       setIsCreateQrOpen(false)
-                      setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      setNewQr({ label: "", targetUrl: "", purpose: "general", destinationType: "", campaignId: "", expiresAt: "" })
                       setQrError(null)
                       await loadQrCodes()
                     } else {
@@ -3015,13 +4636,59 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Dialog>
 
         {/* QR Link Dialog */}
-        <Dialog open={isQrLinkOpen} onOpenChange={setIsQrLinkOpen}>
+        <Dialog
+          open={isQrLinkOpen}
+          onOpenChange={(open) => {
+            setIsQrLinkOpen(open)
+            if (!open) { setQrLinkError(null); setAssetQrLinks([]) }
+            else if (selectedAssetForQr) loadAssetQrLinks(selectedAssetForQr)
+          }}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Link QR Code to Asset</DialogTitle>
               <DialogDescription>Select a QR code and placement type</DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
+              {/* ALREADY LINKED — the other half of the flow. Without this the studio could
+                  attach a QR to an asset and then had no way to see or remove what it attached. */}
+              {isLoadingQrLinks ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading linked codes…
+                </div>
+              ) : assetQrLinks.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Already linked
+                  </p>
+                  {assetQrLinks.map((link) => (
+                    <div key={link.id} className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/30">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <QrCode className="h-6 w-6 text-gray-600 shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{link.qrCode?.label ?? "QR code"}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {link.placementType} · {link.qrCode?.scanCount ?? 0} scans
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => selectedAssetForQr && handleUnlinkQr(link.id, selectedAssetForQr)}
+                      >
+                        Unlink
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {availableQrCodes.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  No QR codes available yet. Create one from the QR Codes tab first.
+                </p>
+              )}
               {availableQrCodes.map((qr) => (
                 <div
                   key={qr.id}
@@ -3035,11 +4702,299 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       <p className="text-sm text-muted-foreground">{qr.scanCount} scans</p>
                     </div>
                   </div>
-                  <Button size="sm" variant="outline">
+                  {/* The row carried the only onClick; this button was decoration
+                      sitting on top of it and did nothing when it was the thing
+                      the user actually aimed at (a click on the button bubbled,
+                      but only by accident of layout). Give it the same call and
+                      stop the row handler from firing it twice. */}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (selectedAssetForQr) handleLinkQr(selectedAssetForQr, qr.id, "flyer")
+                    }}
+                  >
                     Link
                   </Button>
                 </div>
               ))}
+              {qrLinkError && (
+                <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{qrLinkError}</p>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Campaign detail — what the eye control on every campaign card opens */}
+        <Dialog
+          open={isCampaignDetailOpen}
+          onOpenChange={(open) => {
+            setIsCampaignDetailOpen(open)
+            if (!open) { setCampaignDetail(null); setCampaignDetailError(null); setSelectedCampaign(null) }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>
+                {campaignDetail?.campaign_name ?? selectedCampaign?.campaign_name ?? "Campaign"}
+              </DialogTitle>
+              <DialogDescription>
+                {campaignDetail?.listing
+                  ? `${campaignDetail.listing.address}, ${campaignDetail.listing.city}`
+                  : "Assets, tasks and comments on this campaign"}
+              </DialogDescription>
+            </DialogHeader>
+            {isLoadingCampaignDetail ? (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : campaignDetailError ? (
+              <p className="text-sm text-red-600 bg-red-50 rounded-md p-3">{campaignDetailError}</p>
+            ) : campaignDetail ? (
+              <ScrollArea className="max-h-[60vh]">
+                <div className="space-y-5 pr-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={getStatusColor(campaignDetail.status)}>
+                      <span className="capitalize">{String(campaignDetail.status).replace("_", " ")}</span>
+                    </Badge>
+                    <Badge variant="outline" className="capitalize">{campaignDetail.campaign_type}</Badge>
+                    {Number(campaignDetail.budget_total) > 0 && (
+                      <Badge variant="outline">
+                        ${campaignDetail.budget_spent ?? 0} / ${campaignDetail.budget_total} spent
+                      </Badge>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">
+                      Assets ({campaignDetail.assets?.length ?? 0})
+                    </p>
+                    {(campaignDetail.assets ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No assets on this campaign yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {campaignDetail.assets.map((a: any) => (
+                          <div key={a.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
+                            <span className="truncate">{a.asset_name}</span>
+                            <Badge variant="outline" className="capitalize text-xs">{a.approval_status}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-semibold">
+                        Tasks ({campaignDetail.tasks?.length ?? 0})
+                      </p>
+                      {/* THE MISSING WRITER. createCampaignTask existed with no caller. */}
+                      <Popover open={isTaskComposerOpen} onOpenChange={setIsTaskComposerOpen}>
+                        <PopoverTrigger asChild>
+                          <Button size="sm" variant="outline" className="h-7 gap-1 text-xs">
+                            <Plus className="h-3 w-3" /> Add task
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-72 space-y-3">
+                          <div className="space-y-1">
+                            <Label htmlFor="campaign-task-title" className="text-xs">Task</Label>
+                            <Input
+                              id="campaign-task-title"
+                              value={newTaskTitle}
+                              onChange={(e) => setNewTaskTitle(e.target.value)}
+                              placeholder="e.g. Approve the postcard proof"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label htmlFor="campaign-task-due" className="text-xs">Due (optional)</Label>
+                            <Input
+                              id="campaign-task-due"
+                              type="date"
+                              value={newTaskDueAt}
+                              onChange={(e) => setNewTaskDueAt(e.target.value)}
+                            />
+                          </div>
+                          <Button
+                            size="sm"
+                            className="w-full"
+                            disabled={isCreatingTask || newTaskTitle.trim().length === 0}
+                            onClick={handleCreateCampaignTask}
+                          >
+                            {isCreatingTask ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckSquare className="h-3 w-3" />}
+                            <span className="ml-1">Create task</span>
+                          </Button>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    {(campaignDetail.tasks ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No tasks on this campaign yet.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {campaignDetail.tasks.map((t: any) => (
+                          <div key={t.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
+                            {/* `title` is the column (NOT NULL). `task_name` was a
+                                spelling this table has never had. */}
+                            <span className="truncate">{t.title}</span>
+                            <Badge variant="outline" className="capitalize text-xs">{t.status}</Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-sm font-semibold mb-2">
+                      Comments ({campaignDetail.comments?.length ?? 0})
+                    </p>
+                    {(campaignDetail.comments ?? []).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No comments yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {campaignDetail.comments.map((c: any) => (
+                          <div key={c.id} className="rounded-md bg-muted/30 px-2 py-1.5">
+                            <p className="text-xs text-muted-foreground">
+                              {[c.author?.first_name, c.author?.last_name].filter(Boolean).join(" ") || "Team member"}
+                              {c.created_at ? ` · ${format(new Date(c.created_at), "MMM d, h:mm a")}` : ""}
+                            </p>
+                            {/* `comment_body` IS THE COLUMN — the only text column on
+                                marketing_campaign_comments (verified against the live
+                                schema). This read was `c.comment_text ?? c.body ??
+                                c.content`: three spellings, none of which exists, so
+                                every comment would have rendered as a blank line under
+                                its author's name. It never showed because nothing could
+                                write a comment either — the two halves were missing
+                                together, which is why neither was visible. */}
+                            <p className="text-sm">{c.comment_body}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* THE MISSING WRITER. addCampaignComment existed with no caller. */}
+                    <div className="mt-2 space-y-2">
+                      <Textarea
+                        value={newCommentBody}
+                        onChange={(e) => setNewCommentBody(e.target.value)}
+                        placeholder="Leave a note for the team on this campaign…"
+                        rows={2}
+                      />
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          disabled={isPostingComment || newCommentBody.trim().length === 0}
+                          onClick={handleAddCampaignComment}
+                        >
+                          {isPostingComment ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+                          <span className="ml-1">Post comment</span>
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* A refused write must SAY SO. Both writers return
+                      `{ success:false, error }` on an access refusal or a
+                      database error, and a silent failure here would look
+                      exactly like the "nothing to show" this whole panel used
+                      to be. */}
+                  {collabError && (
+                    <p className="text-sm text-destructive">{collabError}</p>
+                  )}
+                </div>
+              </ScrollArea>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        {/* Newsletter template preview — what the chevron on a template row opens */}
+        <Dialog open={!!previewTemplate} onOpenChange={(open) => { if (!open) setPreviewTemplate(null) }}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{previewTemplate?.template_name || previewTemplate?.name || "Template"}</DialogTitle>
+              <DialogDescription>
+                {previewTemplate?.template_description || "Broker newsletter template"}
+              </DialogDescription>
+            </DialogHeader>
+            {previewTemplate && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="capitalize">
+                    {previewTemplate.approval_status ?? previewTemplate.status ?? "unknown"}
+                  </Badge>
+                  {previewTemplate.is_default && <Badge variant="outline">Default</Badge>}
+                  {previewTemplate.version_number != null && (
+                    <Badge variant="outline">v{previewTemplate.version_number}</Badge>
+                  )}
+                </div>
+                <ScrollArea className="h-[45vh] rounded-md border p-3">
+                  {previewTemplate.content ? (
+                    <pre className="text-xs whitespace-pre-wrap break-words font-sans">
+                      {previewTemplate.content}
+                    </pre>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      This template row has no saved content.
+                    </p>
+                  )}
+                </ScrollArea>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* ── EDIT CAMPAIGN ─────────────────────────────────────────────────── */}
+        <Dialog open={!!editingCampaign} onOpenChange={(open) => !open && setEditingCampaign(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Campaign</DialogTitle>
+              <DialogDescription>
+                Name, budget and schedule. Status changes go through the lifecycle buttons on the card.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label>Campaign Name</Label>
+                <Input
+                  value={editCampaign.campaignName}
+                  onChange={(e) => setEditCampaign({ ...editCampaign, campaignName: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Total Budget ($)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={editCampaign.budgetTotal}
+                  onChange={(e) => setEditCampaign({ ...editCampaign, budgetTotal: e.target.value })}
+                  placeholder="Leave blank to keep as is"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Starts</Label>
+                  <Input
+                    type="date"
+                    value={editCampaign.scheduledStartAt}
+                    onChange={(e) => setEditCampaign({ ...editCampaign, scheduledStartAt: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Ends</Label>
+                  <Input
+                    type="date"
+                    value={editCampaign.scheduledEndAt}
+                    onChange={(e) => setEditCampaign({ ...editCampaign, scheduledEndAt: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setEditingCampaign(null)} disabled={isSavingCampaign}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveCampaignEdits} disabled={isSavingCampaign}>
+                  {isSavingCampaign && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Save Changes
+                </Button>
+              </div>
             </div>
           </DialogContent>
         </Dialog>

@@ -34,16 +34,9 @@
  * so it slots into the same render pipeline + bookends + music-mood.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Easing,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
@@ -172,11 +165,11 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
           flexDirection: "column",
           justifyContent: "center",
           height: "100%",
-          transform: `translateY(${rise}px)`,
+          translate: `0 ${rise}px`,
         }}
       >
         {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 92, margin: 0, fontWeight: 800, letterSpacing: -1, fontFamily: FONT }}>
           {hook}
@@ -228,6 +221,7 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
     easing: Easing.bezier(0.45, 0, 0.55, 1),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    output: "perceptual-scale",
   })
   const panX = interpolate(frame, [0, dur], [clip.panFromXY[0], clip.panToXY[0]], {
     easing: Easing.bezier(0.45, 0, 0.55, 1),
@@ -260,12 +254,34 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
 
   return (
     <AbsoluteFill style={{ opacity }}>
-      <Img
+      <SafeImg
         src={clip.url}
         style={{
           width: "100%",
           height: "100%",
           objectFit: "cover",
+          // TWO transform functions on ONE element, so the individual `scale` /
+          // `translate` properties are NOT equivalent here and the Ken Burns pan
+          // would render at the wrong amplitude.
+          //
+          // `transform: scale(s) translate(t)` composes as the matrix S·T, i.e. the
+          // translation is expressed in the ALREADY-SCALED coordinate system — a 6%
+          // pan at scale 1.12 moves 6.72% of the frame. The individual properties
+          // compose in the fixed order translate → rotate → scale (T·S), which
+          // applies the pan in UNSCALED coordinates: the same numbers, a different
+          // picture, on every frame of every walkthrough. Percentage translate also
+          // resolves against the element's own border box, which is the <Img>'s
+          // pre-scale box in both spellings — so the difference is purely the
+          // composition order, and it is real.
+          //
+          // The skill's rule (remotion-markup/REFERENCE.md:50) is about EDITABILITY
+          // in Studio, not correctness; it does not license a render change. Left as
+          // a transform string deliberately. kenBurnsPlan (lib/video/ken-burns-plan.ts)
+          // is the pure producer of `scale` + `panFromXY`/`panToXY`, and its numbers
+          // were chosen against S·T.
+          //
+          // remotion-transform-string: two functions compose in a different order
+          // under the individual properties — converting would change the render.
           transform: `scale(${scale}) translate(${panX}%, ${panY}%)`,
         }}
       />
@@ -322,7 +338,7 @@ const OutroCTA: React.FC<PhotoWalkthroughReelProps> = ({ brand, ctaLabel }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 76, margin: 0, fontWeight: 800, fontFamily: FONT }}>
         {ctaLabel || "DM me to tour."}

@@ -18,6 +18,9 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+// Client-agnostic resolver: this runs against the CALLER's client so the
+// agents lookup stays RLS-scoped exactly like every other read in here.
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
 export interface AgentLearningContext {
   userId:              string
@@ -67,13 +70,10 @@ export async function resolveAgentLearningContext(
   const gapTags: string[] = []
 
   // 1. Open deal-health interventions on this agent's transactions?
-  //    transactions.agent_id is FK to agents(id) — resolve first.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", userId)
-    .maybeSingle()
-  const agentsId = (agentRow?.id as string | null) ?? null
+  //    Brokerage is already known here, so use the SCOPED resolve — a user
+  //    carrying agents rows in two brokerages must not be answered with the
+  //    other tenant's row.
+  const agentsId = await resolveAgentIdInBrokerage(supabase, userId, brokerageId)
 
   if (agentsId) {
     const { count: openDealIv } = await supabase
@@ -89,13 +89,16 @@ export async function resolveAgentLearningContext(
   }
 
   // 2. Open listing-health interventions on this agent's listings?
-  const { count: openListingIv } = await supabase
-    .from("listing_health_interventions")
-    .select("id", { count: "exact", head: true })
-    .eq("resolved", false)
-    .eq("agent_id", userId)
-    .eq("brokerage_id", brokerageId)
-  if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  //    No agents row → no listings of their own → no gap to tag.
+  if (agentsId) {
+    const { count: openListingIv } = await supabase
+      .from("listing_health_interventions")
+      .select("id", { count: "exact", head: true })
+      .eq("resolved", false)
+      .eq("agent_id", agentsId)
+      .eq("brokerage_id", brokerageId)
+    if ((openListingIv ?? 0) >= 1) gapTags.push("open_listing_interventions")
+  }
 
   // 3. NPV touchpoints overdue (>0)? Sphere neglect.
   const today = new Date().toISOString().slice(0, 10)

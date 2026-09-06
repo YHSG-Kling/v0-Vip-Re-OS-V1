@@ -22,6 +22,12 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { buildAgentPresenter, presenterTypeForTwin, type DidPresenterType } from "./agent-presenter"
+
+// Re-exported so the session routes can report the family to the browser
+// without importing this server-only module for a pure lookup.
+export { presenterTypeForTwin } from "./agent-presenter"
+export type { DidPresenterType } from "./agent-presenter"
 
 const DID_API_BASE = "https://api.d-id.com"
 
@@ -43,6 +49,9 @@ export interface EnsureDIDAgentParams {
 export interface EnsureDIDAgentResult {
   ok: true
   didAgentId: string
+  /** Which presenter family this agent is — decides what the live widget may
+   *  offer (microphone / barge-in / sentiment are not uniform across them). */
+  presenterType: DidPresenterType
   /** True when this call created a new D-ID Agent (vs. returning a cached id). */
   created: boolean
 }
@@ -79,7 +88,7 @@ export async function ensureDIDAgent(
       .eq("id", params.twinId)
       .maybeSingle()
     if (twin?.did_agent_id) {
-      return { ok: true, didAgentId: twin.did_agent_id, created: false }
+      return { ok: true, didAgentId: twin.did_agent_id, created: false, presenterType: presenterTypeForTwin(params.presenterId) }
     }
   } else {
     const { data: profile } = await supabase
@@ -88,14 +97,25 @@ export async function ensureDIDAgent(
       .eq("agent_id", params.agentId)
       .maybeSingle()
     if (profile?.did_agent_id) {
-      return { ok: true, didAgentId: profile.did_agent_id, created: false }
+      return { ok: true, didAgentId: profile.did_agent_id, created: false, presenterType: presenterTypeForTwin(params.presenterId) }
     }
   }
 
   // ── 2. Cache miss — create the D-ID Agent ──────────────────────────────
-  // We use a clip-type presenter (works for both photo- and video-derived
-  // avatars) and bind our /api/did/custom-llm as the brain so brand voice +
-  // persona + contact context all stay in our code.
+  // THE PRESENTER FAMILY IS RESOLVED, NOT HARDCODED. This said `type: "clip"`
+  // with the comment "works for both photo- and video-derived avatars", and it
+  // does not: the published ClipAgentPresenter schema says its presenter_id is
+  // "Retrieved from the GET /presenters endpoint" — D-ID's pre-built gallery —
+  // while every avatar this OS creates is an `avt_…` from POST /scenes/avatars,
+  // which is the EXPRESSIVE (V4) family. We were handing a V4 id to a V3 field.
+  //
+  // It also silently darkened the live widget: publishMicrophoneStream is
+  // "supported only with Expressive (V4) agents", and so are sentiment and
+  // should_queue_speaks. See lib/did/agent-presenter.ts for the capability
+  // matrix and the quoted basis for each line of it.
+  //
+  // We bind our /api/did/custom-llm as the brain so brand voice + persona +
+  // contact context all stay in our code.
   //
   // ElevenLabs voice is optional — if the agent hasn't cloned a voice yet,
   // D-ID falls back to a default voice. Voice can be patched in later by
@@ -110,11 +130,7 @@ export async function ensureDIDAgent(
 
   const body = {
     preview_name: params.agentName.slice(0, 40),
-    presenter: {
-      type: "clip" as const,
-      presenter_id: params.presenterId,
-      voice,
-    },
+    presenter: buildAgentPresenter({ presenterId: params.presenterId, voice }),
     llm: {
       provider: "custom" as const,
       type: "basic" as const,
@@ -163,7 +179,7 @@ export async function ensureDIDAgent(
       )
   }
 
-  return { ok: true, didAgentId: data.id, created: true }
+  return { ok: true, didAgentId: data.id, created: true, presenterType: presenterTypeForTwin(params.presenterId) }
 }
 
 export interface IssueClientKeyParams {

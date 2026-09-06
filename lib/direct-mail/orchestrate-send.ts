@@ -48,9 +48,21 @@ export interface OrchestrateSendArgs {
   zip:   string
   pieceType: DirectMailPieceType
   copyCtx:   DirectMailCopyContext
-  /** Optional QR scan URL (already minted by caller) embedded in the
-   *  postcard's QR. Letters typically don't carry QRs. */
+  /** Optional CAMPAIGN-level QR scan URL (already minted by caller, a
+   *  qr_codes slug shared by every recipient of the campaign) embedded in
+   *  the postcard FRONT's response QR. Letters typically don't carry QRs. */
   qrScanUrl?: string | null
+  /**
+   * THIS RECIPIENT's `direct_mail_recipients.unsubscribe_token` — the
+   * credential printed on the piece so the person holding it can stop the
+   * mail. PER-RECIPIENT; the campaign QR above is not.
+   *
+   * The caller that inserts the recipient row is the caller that has this
+   * (campaign-drain selects it back off the insert). Absent, the postcard back
+   * prints no opt-out row and the content contract's REQUIRED `optOutLine` is
+   * unsatisfied — a fact, surfaced, rather than a card with no way to say stop.
+   */
+  unsubscribeToken?: string | null
   /** Fall-back Lob template id when render/copy fails. Required for
    *  the fall-through path to work. */
   fallbackTemplateId: string
@@ -151,6 +163,21 @@ export async function orchestrateRenderAndSend(
         args.copyCtx.copyStyle = pick.copyStyle
       }
     }
+    // KNOWN GAP, SAID OUT LOUD RATHER THAN DROPPED. remotion/PostcardBack6x9
+    // does not yet take the opt-out props, so a 6x9 piece mails with no printed
+    // way to say stop even when we hold this recipient's token. That is the same
+    // defect the 4x6 just closed, one composition over, and it is left visible
+    // here instead of silently discarding the token: the fix is to add
+    // optOutLine/optOutQrDataUrl to PostcardBack6x9 + its Root defaults + its
+    // content contract, then spread `mailOptOutProps(...)` into the 6x9
+    // backInput exactly as renderPostcardBothSides4x6 now does.
+    if (size === "6x9" && args.unsubscribeToken) {
+      console.error(
+        "[orchestrator] 6x9 postcard is mailing WITHOUT a printed opt-out: " +
+        "PostcardBack6x9 does not accept optOutLine/optOutQrDataUrl yet, so this " +
+        "recipient's unsubscribe token cannot reach the piece.",
+      )
+    }
     const r = size === "6x9"
       ? await renderPostcardBothSides6x9({
           brokerageId:      args.brokerageId,
@@ -169,6 +196,9 @@ export async function orchestrateRenderAndSend(
           agentName:     args.agentName ?? null,
           // Future: pull agent photo from agents.did_photo_url / users.avatar_url
           agentPhotoUrl: null,
+          // The per-recipient opt-out. Passed as a TOKEN, not a URL, so it can
+          // never be confused with the campaign-level qrScanUrl above.
+          unsubscribeToken: args.unsubscribeToken ?? null,
         })
     if (r.ok && r.frontUrl && r.backUrl) {
       templateForLob     = r.frontUrl

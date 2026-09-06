@@ -2,10 +2,16 @@
  * AVM/CMA adapter — generates property valuation reports.
  *
  * Routes to the production-grade infrastructure already built:
- *   - lib/cma/ai-cma-orchestrator.runAiCma()  — Perplexity Sonar comps + state
+ *   - lib/cma/ai-cma-orchestrator.runAiCma()  — provider-sourced comps (RentCast
+ *                                               by default, the brokerage's connected
+ *                                               IDX feed for the active side) + state
  *                                               appraiser-guideline adjustments,
  *                                               with investor_arv mode for repair-budget
  *                                               + max-offer formulas
+ *
+ * NOTE on avm_data_source for a CMA: it no longer selects the comp provider —
+ * runAiCma has ONE provider-backed sourcing path for every mode. It still selects
+ * the mode label recorded on the document, and it still routes the AVM path below.
  *   - lib/avm/provider-chain.getCurrentAvm()  — Cached → Perplexity → HouseCanary →
  *                                               BatchData → ZenRows/Zillow → fallback
  *
@@ -90,7 +96,7 @@ export const avmCmaAdapter: ChannelAdapter = {
     try {
       // ── CMA path — runAiCma() ───────────────────────────────────────────
       if (reportType === "cma") {
-        const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
+        const { runAiCma, describeCompProvenance } = await import("@/lib/cma/ai-cma-orchestrator")
         const cmaMode: "standard" | "premium" | "investor_arv" = includeInvestorAdj
           ? "investor_arv"
           : dataSource === "housecannary" || dataSource === "batchdata"
@@ -125,7 +131,15 @@ export const avmCmaAdapter: ChannelAdapter = {
               arv: result.arv ?? null,
               comp_count: result.adjustedComps.length,
               state_guidelines_used: result.stateGuidelinesUsed,
+              // WHICH YEAR'S guidelines, stored with the document. A CMA on file
+              // that cannot say which vintage priced it cannot be audited later.
+              state_guideline_vintage: result.stateGuidelineVintage,
               citations: result.citations,
+              // WHERE the comps came from and how fresh they are, stored with the
+              // document so a CMA on file can be audited later without re-running it —
+              // the structured record plus the one-line human read of it.
+              comp_provenance: result.compProvenance,
+              comp_provenance_summary: describeCompProvenance(result.compProvenance),
             },
           }
           // tenant anchor (scope burn-down): pinned to the doc this run created

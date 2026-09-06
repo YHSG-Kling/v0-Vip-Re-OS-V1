@@ -15,22 +15,26 @@
 //    enabled in its settings (brokerage_settings.settings ->> 'staging_enabled'). Default
 //    OFF when the flag is absent.
 //  · PREFERENCE-FIRST RANKING — the bench is `vendors` (category CHECK Lender|Inspector|
-//    Title Company|Contractor|Stager|Other), which has NO preferred flag (only rating). The
-//    broker's `preferred` choices live in the SEPARATE `vendor_directory` table. These two
-//    tables have no FK, so resolvePreferredVendorIds bridges them by (brokerage, name,
-//    category); the resolved set feeds rankVendors so preference-first is REAL (previously the
-//    orchestrator read only `vendors` and the promise was inert — a real drift, now closed).
+//    Title Company|Contractor|Stager|Other), which has no `preferred` column. The preference
+//    signal is BROKER APPROVAL on that same table: status='active', set only by approveVendor.
+//    The resolved set feeds rankVendors, so preference beats rating.
+//    (History: this used to bridge to a `preferred` flag on the separate vendor_directory
+//    table by (brokerage, name, category). The round-4 burn-down found vendor_directory to be
+//    a writer-less legacy twin for this purpose and repointed onto `vendors` — one table, one
+//    signal, no name-matching. The bridge is deleted; see the note above DirectoryPref's
+//    former home below.)
 //
 // NOT server-only — the simulator drives the pure layer directly; runVendorOrchestration
 // takes an injectable Supabase client + copyGenerator seam so tests spend no tokens.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
+import type { VendorCategory as CanonicalVendorCategory } from "@/lib/kernel/vendor-categories"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** The vendor categories on the bench (vendors.category CHECK). */
-export type VendorCategory = "Lender" | "Inspector" | "Title Company" | "Contractor" | "Stager" | "Other"
+export type VendorCategory = CanonicalVendorCategory
 
 /** Live transaction stages (transactions.stage CHECK). */
 export type DealStage =
@@ -57,41 +61,18 @@ export interface BenchVendor {
   preferred?: boolean | null
 }
 
-/** A brokerage's vendor_directory row — the SINGLE SOURCE OF TRUTH for the `preferred` signal. The
- *  operational bench (`vendors`, FK target of vendor_bookings) has no preferred flag; the broker marks
- *  preference in the directory. These two tables have no FK, so we bridge by (brokerage, name, category). */
-export interface DirectoryPref {
-  name: string | null
-  category: string | null
-  preferred: boolean | null
-}
+// THE vendor_directory PREFERENCE BRIDGE IS GONE (dead since the round-4 repoint).
+// DirectoryPref + resolvePreferredVendorIds existed to bridge the broker's
+// `preferred` flag in vendor_directory onto the `vendors` bench, because the two
+// tables have no FK. That burn-down then found vendor_directory to be a
+// writer-less legacy twin FOR THIS PURPOSE and repointed both the orchestrator
+// and the no-show autopilot onto `vendors` directly, where explicit broker
+// approval (status='active', set only by approveVendor) is the real preference
+// signal — see runVendorOrchestration below. The bridge kept compiling with ZERO
+// production callers; its only remaining caller was its own simulator, which is
+// how a dead function keeps looking alive. (vendor_directory itself is NOT dead —
+// lib/vendors/premium-placement.ts still owns it. Only this bridge is.)
 
-const normVendorKey = (name: string | null | undefined, category: string | null | undefined) =>
-  `${(name ?? "").trim().toLowerCase()}|${(category ?? "").trim().toLowerCase()}`
-
-/**
- * PURE: resolve which BENCH vendor ids are PREFERRED, using vendor_directory as the source of truth.
- * A directory row with preferred=true is matched to a bench vendor by normalized (name, category);
- * name-only is a fallback when categories differ in spelling. Returns the set of bench vendor ids to
- * feed rankVendors — so the orchestrator's documented "preference-first" promise is finally REAL,
- * without duplicating the flag onto `vendors`.
- */
-export function resolvePreferredVendorIds(bench: BenchVendor[], directory: DirectoryPref[]): Set<string> {
-  const preferredKeys = new Set<string>()
-  const preferredNames = new Set<string>()
-  for (const d of directory) {
-    if (d.preferred !== true) continue
-    preferredKeys.add(normVendorKey(d.name, d.category))
-    if (d.name) preferredNames.add(d.name.trim().toLowerCase())
-  }
-  const ids = new Set<string>()
-  for (const v of bench) {
-    if (preferredKeys.has(normVendorKey(v.name, v.category)) || (v.name && preferredNames.has(v.name.trim().toLowerCase()))) {
-      ids.add(v.id)
-    }
-  }
-  return ids
-}
 
 /** A stage gap: the vendor category the stage needs + the service_type + a human label. */
 export interface VendorGap {
@@ -122,19 +103,19 @@ export function vendorGapForStage(stage: DealStage | string | null, coverage: De
     case "UNDER_CONTRACT":
     case "INSPECTION":
       if (!coverage.hasInspection) {
-        return { category: "Inspector", serviceType: "inspection", label: "home inspection" }
+        return { category: "inspector", serviceType: "inspection", label: "home inspection" }
       }
       // inspection covered → if staging is on and no stager, propose the stager next.
       return stagerGap(coverage)
     case "APPRAISAL":
     case "FINANCING_PENDING":
       if (!coverage.hasLender) {
-        return { category: "Lender", serviceType: "lending", label: "financing / lender" }
+        return { category: "lender", serviceType: "lending", label: "financing / lender" }
       }
       return stagerGap(coverage)
     case "CLOSING_PREP":
       if (!coverage.hasTitle) {
-        return { category: "Title Company", serviceType: "title_escrow", label: "title & escrow" }
+        return { category: "title", serviceType: "title_escrow", label: "title & escrow" }
       }
       return stagerGap(coverage)
     default:
@@ -145,13 +126,20 @@ export function vendorGapForStage(stage: DealStage | string | null, coverage: De
 /** Staging gap — ONLY when enabled in settings and not already covered. Default OFF. */
 function stagerGap(coverage: DealCoverage): VendorGap | null {
   if (coverage.stagingEnabled && !coverage.hasStager) {
-    return { category: "Stager", serviceType: "staging", label: "home staging" }
+    return { category: "stager", serviceType: "staging", label: "home staging" }
   }
   return null
 }
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: SLA_MIN_SAMPLE.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Below this many outcomes (completed + no-show), SLA is too thin to demote a vendor on — honest. */
-export const SLA_MIN_SAMPLE = 3
+const SLA_MIN_SAMPLE = 3
 /** On-time % below which a vendor with enough sample is an SLA breach (mirrors lib/kernel/vendor-sla). */
 export const SLA_BREACH_PCT = 75
 
@@ -266,18 +254,23 @@ export async function runVendorOrchestration(
   // (awaiting or denied verification) is never put in front of an agent. Legacy null-status rows are
   // treated as active for backward-compatibility (they predate the verification gate).
   const { data: benchRows } = await supabase.from("vendors")
-    .select("id, name, category, email, rating, estimated_turnaround_days")
+    .select("id, name, category, email, rating, estimated_turnaround_days, preferred")
     .eq("brokerage_id", brokerageId)
     .not("status", "in", "(pending,inactive,archived)").limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
-  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
-  // vendors has no `preferred` flag; explicit broker approval (status='active', set only by approveVendor) is the
-  // closest real flag, so explicitly-approved vendors rank ahead of legacy null-status bench rows.
-  const { data: dirRows } = await supabase.from("vendors")
-    .select("id")
-    .eq("brokerage_id", brokerageId).eq("status", "active").limit(500)
-  const preferredVendorIds = new Set<string>(((dirRows ?? []) as Array<{ id: string }>).map((r) => r.id))
+  // PREFERENCE IS REAL AGAIN. This used to be a SECOND query against `vendors`
+  // standing in for a `preferred` flag the bench did not have — approval status
+  // ("has this vendor been approved at all") wearing preference's name. Every
+  // approved vendor was therefore "preferred", so preference-first ranking sorted
+  // nothing. m355 moved the broker's actual preferred flag onto the vendor row,
+  // so the one read above carries it and the promise the orchestrator has always
+  // made in its docstring is now kept.
+  const preferredVendorIds = new Set<string>(
+    ((benchRows ?? []) as Array<{ id: string; preferred?: boolean | null }>)
+      .filter((r) => r.preferred === true)
+      .map((r) => r.id),
+  )
 
   // OUTCOME AWARENESS — a proven SLA breacher (repeatedly late or a no-show) is auto-demoted so the
   // orchestrator stops auto-picking someone who keeps failing. Reliability = on-time completions +
@@ -311,7 +304,7 @@ export async function runVendorOrchestration(
       if (!gap) {
         // Report metric: a stager WOULD have been the gap had staging been enabled — i.e.
         // the deal's deal-critical vendors are covered and staging is off + uncovered.
-        if (!stagingEnabled && !coverage.hasStager && vendorGapForStage(t.stage, { ...coverage, stagingEnabled: true })?.category === "Stager") {
+        if (!stagingEnabled && !coverage.hasStager && vendorGapForStage(t.stage, { ...coverage, stagingEnabled: true })?.category === "stager") {
           result.stagingSkipped += 1
         }
         continue

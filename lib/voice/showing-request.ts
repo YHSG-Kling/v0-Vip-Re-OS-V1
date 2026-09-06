@@ -22,10 +22,9 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveSpokenDate, resolveSpokenTime } from "./spoken-values"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
-
-const OWNERSHIP_OVERRIDE_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
 export interface VoiceShowingRequestInput {
   brokerageId: string
@@ -104,7 +103,7 @@ export async function voiceRequestShowing(
   if (!contact!.agent_id) {
     return { ok: false, spoken: `${contact!.first_name ?? "This contact"} has no assigned agent yet — assign one in the CRM before scheduling showings.` }
   }
-  if (!OWNERSHIP_OVERRIDE_ROLES.has(userType)) {
+  if (!isAdminOrBroker({ user_type: userType })) {
     const { data: agentRow } = await svc
       .from("agents")
       .select("id")

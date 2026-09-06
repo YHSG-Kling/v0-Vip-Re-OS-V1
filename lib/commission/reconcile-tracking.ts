@@ -8,9 +8,13 @@
 //                   (what the agent will receive). 'approved' = authorized to disburse (the CDA
 //                   broker-sign for CDA brokerages; auto at close for non-CDA). 'paid' = the agent
 //                   actually received their disbursement.
-//   • THE LEDGER  — commissions + commission_distributions (pending → paid, + deposit_received_at):
-//                   the MONEY MOVEMENT. A brokerage RECEIVES the commission deposit at closing, then
-//                   DISBURSES the agent's split.
+//   • THE LEDGER  — commission_distributions (pending → paid; deposit_received_at lives on the
+//                   summary row): the MONEY MOVEMENT, line by line. A brokerage RECEIVES the
+//                   commission deposit at closing, then DISBURSES each split.
+//
+// KEEP-ONE (m283/m284): the `commissions` summary twin was merged INTO agent_commissions, so the
+// bridge row and the summary row are now one record. The two trackings that can still drift are that
+// summary row and its per-line distributions.
 //
 // CLOSE (final CD, both signed) freezes the AMOUNT — it does NOT pay. After close the ledger tracks
 // the deposit, then the disbursement. DISBURSEMENT is the ONE LOCK: both trackings go 'paid' together
@@ -48,7 +52,7 @@ export function detectCommissionTrackingDrift(input: {
 }
 
 /**
- * PURE: aggregate many commissions rows for one transaction into a single ledger status. Paid only
+ * PURE: aggregate many ledger rows for one transaction into a single ledger status. Paid only
  * when at least one row exists and every non-cancelled row is paid; otherwise 'pending'. Returns null
  * when there is no ledger row at all (bridge-only — not drift, a separate leak concern).
  */
@@ -109,7 +113,7 @@ export async function recordCommissionDepositReceived(
 ): Promise<{ stamped: number }> {
   const at = params.at ?? new Date().toISOString()
   const { data, error } = await svc
-    .from("commissions")
+    .from("agent_commissions")
     .update({ deposit_received_at: at, deposit_received_by: params.actorUserId })
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
@@ -120,18 +124,33 @@ export async function recordCommissionDepositReceived(
 }
 
 /**
- * THE ONE LOCK AT DISBURSEMENT — the agent was paid, so lock the LEDGER (commissions +
- * commission_distributions) to paid alongside the earnings record, so the two trackings converge on
+ * THE ONE LOCK AT DISBURSEMENT — the agent was paid, so lock the LEDGER (the agent_commissions
+ * summary row + its commission_distributions) to paid together, so the two trackings converge on
  * 'paid' at the SAME real event (disbursement), never at close. Reuses the canonical payment-tracker
  * per ledger row (correct distribution rows + commission.paid event). Idempotent; best-effort.
+ *
+ * ORPHAN DISTRIBUTIONS. The per-row path filters `.eq('commission_id', …)`, so it can only ever
+ * reach distributions the waterfall wrote — those are the only ones that carry a commission_id.
+ * Three writers create transaction-level distributions WITHOUT one, and the most important is the
+ * agent-to-agent referral fee: the referral-closer books it to the REFERRING agent, who by
+ * definition has no agent_commissions row on this deal, so there is no commission_id to give it.
+ * Those rows could not be marked paid by ANY path in the system — real money, pending forever,
+ * with markDistributionPaid holding no callers to do it by hand.
+ *
+ * It also broke convergence. The reaper aggregates the ledger side by transaction_id, and
+ * aggregateLedgerStatus only returns 'paid' when EVERY live row is paid — so one unreachable row
+ * kept the whole transaction reading 'pending' against a paid summary. The drift alarm therefore
+ * re-fired on every single pass and could never be healed by the healer it was pointing at.
+ *
+ * Disbursement is precisely the event that pays these, so this is where they lock.
  */
 export async function reconcileCommissionDisbursement(
   svc: Svc,
   params: { transactionId: string; brokerageId: string; actorUserId: string; paidAt?: string },
-): Promise<{ ledgerRowsFound: number; ledgerRowsLocked: number }> {
+): Promise<{ ledgerRowsFound: number; ledgerRowsLocked: number; orphanRowsLocked: number }> {
   const paidAt = params.paidAt ?? new Date().toISOString()
   const { data: ledgerRows } = await svc
-    .from("commissions")
+    .from("agent_commissions")
     .select("id, status")
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
@@ -142,7 +161,19 @@ export async function reconcileCommissionDisbursement(
     const { markCommissionPaid } = await import("./payment-tracker")
     for (const row of rows) {
       const status = (row.status ?? "").toLowerCase()
-      if (status === "paid" || status === "cancelled" || status === "voided") continue
+      if (status === "cancelled" || status === "voided") continue
+      // A summary row that is ALREADY paid still needs work when its per-line
+      // distributions lag behind — that is exactly the drift the reaper heals.
+      // Skipping on summary-status alone would make the heal a no-op.
+      if (status === "paid") {
+        const { data: dists } = await svc
+          .from("commission_distributions")
+          .select("status")
+          .eq("commission_id", row.id)
+          .eq("brokerage_id", params.brokerageId)
+        const distStatus = aggregateLedgerStatus((dists ?? []) as Array<{ status?: string | null }>)
+        if (distStatus == null || distStatus === "paid") continue
+      }
       const res = await markCommissionPaid({
         commissionId: row.id,
         brokerageId: params.brokerageId,
@@ -152,5 +183,23 @@ export async function reconcileCommissionDisbursement(
       if (res.success) locked++
     }
   }
-  return { ledgerRowsFound: rows.length, ledgerRowsLocked: locked }
+
+  // The rows no commission_id can reach (see the header). Scoped to this transaction and
+  // brokerage, never touching a row that is already terminal, so re-running is a no-op.
+  let orphanRowsLocked = 0
+  const { data: orphans, error: orphanErr } = await svc
+    .from("commission_distributions")
+    .update({ status: "paid", paid_at: paidAt })
+    .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .is("commission_id", null)
+    .not("status", "in", '("paid","voided")')
+    .select("id")
+  if (orphanErr) {
+    console.error("[reconcile-tracking] orphan distribution lock failed:", orphanErr.message)
+  } else {
+    orphanRowsLocked = (orphans ?? []).length
+  }
+
+  return { ledgerRowsFound: rows.length, ledgerRowsLocked: locked, orphanRowsLocked }
 }

@@ -1,39 +1,179 @@
 "use server"
 
+import { revalidatePath } from "next/cache"
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logMilestoneOverdue } from "@/lib/events"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
+import { isValidUUID } from "@/lib/validations"
+import { authorizeForUser } from "@/lib/auth/authorize-for-user"
+// The buyer_behavior_log signal families — imported from the vocabulary owner (§6),
+// never re-spelled locally (a reader that filters on one family silently halves its data).
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
+// Writers resolve their own identity and their own client here — never from the payload.
+import { resolveWriteContext } from "@/lib/platform/acting-context"
+import { byPriorityDesc } from "@/lib/kernel/priority-rank"
 
 // =====================================================
-// EVENT HANDLERS - Called by orchestrator
+// THE "EVENT HANDLERS" IN THIS FILE ARE NOT EVENT HANDLERS. Owner decision, settled.
 // =====================================================
+// They were named for a dispatcher that was never going to call them, and the earlier
+// note here recorded that as "a build line blocked on the orchestrator lane". That
+// premise does not survive reading the orchestrator. Three checks, all repeatable —
+// and one of them has CHANGED GROUNDS since this note was first written, without
+// changing the conclusion:
+//
+//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOW A DISPATCH PATH — and
+//      still does not reach these. The earlier line here ("the map is never read at
+//      runtime") was true when written and is RETIRED: internal.ts's header now reads
+//      "EVENT HANDLER REGISTRY — CONSULTED BY orchestrateEvent()", and
+//      `dispatchRegistered` (internal.ts ~:185-208) invokes handlers THROUGH the map
+//      for every event type the switch routes to it. So adding a name to the map is no
+//      longer inert. It is still not done for these three, for reason 2 — and
+//      internal.ts's own header records the same decision from its side ("the six
+//      copilot/assistant 'handlers' do NOT belong here").
+//   2. THERE IS NO EVENT TO HANDLE, and that alone is decisive. `lib/events/types.ts
+//      :29-54` is the entire EVENT_TYPES vocabulary: no coaching-booked, and the one
+//      near-match for suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO
+//      emitters repo-wide. A registered handler for an event nothing writes cannot
+//      fire. (It had no morning-kickoff either; that one is now deleted onto its
+//      survivor — see the tombstone below.)
+//   3. The recorded blocker — `emitEventFromCron` carries a service credential and no
+//      session, so `authorizeForUser` refuses every unattended dispatch — is TRUE and
+//      MOOT. An internal-caller seam would gate a dispatch that never happens. It
+//      would make these look wired while they fire exactly as often as today: never.
+//      That is strictly worse than leaving them plainly unwired.
+//
+// SO THEY ARE USER ACTIONS, and the two below are treated as such: the caller must
+// be the user named in the payload, or hold the act-for-others role
+// (`authorizeForUser`, lib/auth/authorize-for-user.ts) — and where the payload need
+// not name a user at all, it does not get to (see handleSuggestionAccepted). Verified
+// before those gates were added: `grep -rn` over `app/api/cron/`, `app/api/webhooks/`
+// and the orchestrator found NO unattended caller, so nothing is turned away by them.
 
+/**
+ * KEPT AND HARDENED — considered for a merge into the suggestion-status family in
+ * app/actions/assistant.ts (dismissSuggestion / completeSuggestion) and deliberately
+ * not merged.
+ *
+ * WHY IT IS NOT A DUPLICATE: `accepted` is a distinct point of the lifecycle, not a
+ * synonym for `actioned`. scripts/1082-broaden-smart-assistant-suggestions-status-
+ * check.sql:9-14 defines them apart — accepted is "agent agreed but hasn't completed
+ * the action yet", actioned is "agent took the action". Nothing else in the tree
+ * writes `accepted`, so folding this away removes the middle of that lifecycle.
+ *
+ * WHY IT WAS NOT MOVED THERE EITHER: moving it means exporting a fourth `"use server"`
+ * action that nothing calls. That is a RENAME of an orphan, not a burn-down — the
+ * wired-surface ratchet says so in as many words, and it is right: the capability
+ * would be no more reachable under a new name than it is under this one.
+ *
+ * THE HOLE THAT IS FIXED HERE. It read `user_id` out of the caller's payload and wrote
+ * it into `metadata.acted_by` as the record of who accepted. This is a `"use server"`
+ * export — a public HTTP endpoint — so that field recorded whatever the caller typed,
+ * on a row the caller had to be authorized for but could then attribute to anyone. The
+ * actor is now resolved server-side from the session and the payload's claim about who
+ * acted is ignored; `authorizeForUser` still decides WHETHER the call is allowed.
+ *
+ * WIRED (this wave). The missing accept control now exists:
+ * app/dashboard/coaching/sessions/coaching-sessions-client.tsx calls this for each
+ * pending suggestion, on the route app/dashboard/coaching/sessions/page.tsx. It is a
+ * SIBLING of /dashboard/coaching rather than a card on it because
+ * coaching-dashboard-client.tsx belongs to another lane this wave — the same reason
+ * the previous note gave for not building it, resolved by building beside the page
+ * instead of inside it. /dashboard/coaching/practice is the existing precedent for a
+ * coaching sub-route. The one line still owed on the parent — a link to the sibling
+ * beside its suggestions card — is reported to the wave, not written here.
+ */
 export async function handleSuggestionAccepted(payload: any) {
-  const supabase = await createServerClient()
-  const { suggestion_id, user_id, action_type } = payload
+  const { suggestion_id, action_type } = payload
+  // The actor is the SESSION's accountable human — the staff member when acting-as,
+  // the user otherwise — never a name lifted out of the request body. This replaces
+  // the `authorizeForUser(payload.user_id)` gate the other handler still needs:
+  // there is no one to act FOR here, so the payload names nobody and the question
+  // collapses to "are you signed in", which resolveWriteContext already answers.
+  const write = await resolveWriteContext()
+  if (!write.ok) return { success: false, error: write.error }
+  if (!write.brokerageId) {
+    return { success: false, error: "Your account has no brokerage, so no suggestion can be scoped to you" }
+  }
 
-  // Mark suggestion as accepted
-  await supabase
-    .from("smart_assistant_suggestions")
-    .update({ status: "accepted" })
-    .eq("id", suggestion_id)
+  // GATE-THEN-SERVICE. Under an active full act-as grant this `db` is the SERVICE
+  // client, which RLS does not confine — so the tenant predicate is applied here, on
+  // BOTH statements, rather than relied on from the client.
+  const supabase = write.db
 
-  // pass 14: suggestion_outcomes was a PHANTOM table — the acceptance already
-  // lands on the canonical smart_assistant_suggestions row above (status +
-  // metadata carry the outcome); the dead second write is removed.
-  await supabase
+  // ONE write, not two, and the result is read.
+  //
+  // The pair of updates below used to be separate — and the second REPLACED
+  // metadata wholesale rather than merging, so whatever else the suggestion
+  // carried was destroyed on acceptance. Both were awaited with the result
+  // thrown away, then `{ success: true }` was returned unconditionally: an id
+  // that does not exist, or a row RLS hides, reported as accepted.
+  const { data: current, error: readError } = await supabase
     .from("smart_assistant_suggestions")
-    .update({ metadata: { outcome: "accepted", action_taken: action_type, acted_by: user_id } })
+    .select("metadata")
     .eq("id", suggestion_id)
+    .eq("brokerage_id", write.brokerageId)
+    .maybeSingle()
+  if (readError) {
+    return { success: false, error: `Could not read the suggestion before accepting it: ${readError.message}` }
+  }
+
+  const { data: updated, error } = await supabase
+    .from("smart_assistant_suggestions")
+    .update({
+      status: "accepted",
+      metadata: {
+        ...((current?.metadata as Record<string, unknown> | null) ?? {}),
+        outcome: "accepted",
+        action_taken: action_type,
+        acted_by: write.actorUserId,
+      },
+    })
+    .eq("id", suggestion_id)
+    .eq("brokerage_id", write.brokerageId)
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!updated?.length) {
+    return { success: false, error: `No suggestion ${suggestion_id} exists in your brokerage to accept` }
+  }
+
+  // The accept surface renders its pending list on the server, so an accepted
+  // suggestion stays on screen until this cache entry is dropped.
+  revalidatePath("/dashboard/coaching/sessions")
 
   return { success: true }
 }
 
+/**
+ * KEPT — no duplicate, and it is the only writer of a coaching booking. `grep -rn` for a
+ * second `event_type: "coaching"` calendar_events insert finds exactly this one, and the
+ * coaching surface (app/dashboard/coaching) reads suggestions and reports but books
+ * nothing. So deleting it would remove the capability outright.
+ *
+ * WIRED (this wave). The caller the previous note named — "a 'book a session' control on
+ * the coaching dashboard" — is app/dashboard/coaching/sessions/coaching-sessions-client.tsx,
+ * on the route app/dashboard/coaching/sessions/page.tsx. Coaches are offered from the
+ * tenant's own staff roster (broker, broker_admin, broker_owner, team_lead, admin) read
+ * server-side, so `coach_id` is chosen from a scoped list rather than typed in.
+ *
+ * THE PARTIAL OUTCOME IS RENDERED AS A PARTIAL OUTCOME. This returns
+ * `{success:true, warning}` when the session lands on the calendar but the prep
+ * reminder is refused, and the client shows that warning in its own colour. That
+ * distinction only exists because a previous pass stopped discarding these errors —
+ * a surface that collapsed it back into a green checkmark would put the old bug
+ * ("a coaching session that was never booked looked booked") back on the screen.
+ */
 export async function handleCoachingSessionBooked(payload: any) {
-  const supabase = await createServerClient()
   const { user_id, session_date, coach_id, topic } = payload
+  // Books a real calendar event and a task for `user_id`. Without this gate any caller could
+  // put an entry on any agent's calendar and name an arbitrary `coach_id` as the attendee.
+  const auth = await authorizeForUser(user_id)
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createServerClient()
 
   // calendar_events requires brokerage_id + entity_type/entity_id (NOT NULL,
   // pass 5 live catch — this insert ALWAYS failed without them) and tasks
@@ -47,8 +187,12 @@ export async function handleCoachingSessionBooked(payload: any) {
     return { success: false, error: "No agent profile for this user — cannot book the session" }
   }
 
-  // Create calendar event
-  await supabase.from("calendar_events").insert({
+  // Both writes are CHECKED. The file's own note above records that this insert
+  // "ALWAYS failed" before brokerage_id was added — and nobody noticed for
+  // exactly this reason: the error was discarded and the function returned
+  // success regardless, so a coaching session that was never booked looked
+  // booked.
+  const { error: eventError } = await supabase.from("calendar_events").insert({
     brokerage_id: agentRow.brokerage_id,
     entity_type: "agent",
     entity_id: agentRow.id,
@@ -59,45 +203,57 @@ export async function handleCoachingSessionBooked(payload: any) {
     event_type: "coaching",
     attendees: [coach_id],
   })
+  if (eventError) {
+    return { success: false, error: `Coaching session not booked: ${eventError.message}` }
+  }
 
   // Create reminder task (assignment keys on agents.id, payload carries users.id)
-  await supabase.from("tasks").insert({
+  const { error: taskError } = await supabase.from("tasks").insert({
     brokerage_id: agentRow.brokerage_id,
     assigned_to_agent_id: agentRow.id,
     title: `Prepare for coaching session: ${topic}`,
     due_date: new Date(new Date(session_date).getTime() - 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
   })
+  // The session IS on the calendar at this point — report the missing reminder
+  // rather than implying the booking failed.
+  if (taskError) {
+    // Still revalidated: the session IS on the calendar, so the booked list is stale
+    // either way. Only the reminder failed.
+    revalidatePath("/dashboard/coaching/sessions")
+    return { success: true, warning: `Session booked, but the prep reminder was not created: ${taskError.message}` }
+  }
+
+  // The booking surface renders the coaching calendar on the server.
+  revalidatePath("/dashboard/coaching/sessions")
 
   return { success: true }
 }
 
-export async function handleMorningKickoff(payload: any) {
-  const supabase = await createServerClient()
-  const { user_id, brokerage_id } = payload
-
-  // Generate daily priorities
-  const { data: todayTasks } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("assigned_to_agent_id", await agentIdForUser(supabase, user_id))
-    .gte("due_date", new Date().toISOString().split("T")[0])
-    .lte("due_date", new Date().toISOString().split("T")[0] + "T23:59:59")
-    .order("priority", { ascending: false })
-
-  // Create daily summary notification
-  // notifications' real shape is user_id/type/body (the phantom recipient_id/
-  // notification_type/message insert failed silently — no kickoff ever delivered).
-  await supabase.from("notifications").insert({
-    user_id: user_id,
-    type: "morning_kickoff",
-    title: "Good Morning! Here's Your Day",
-    body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
-    priority: "medium",
-  })
-
-  return { success: true, taskCount: todayTasks?.length || 0 }
-}
+// ─── REMOVED in the orphan burn-down ─────────────────────────────────────────
+//
+// `handleMorningKickoff(payload)` — DELETED. The merge it was waiting on has landed.
+//
+// SURVIVOR: lib/intelligence/daily-briefing-generator.ts:generateDailyBriefing,
+// driven by app/api/cron/daily-briefing/route.ts. It was always the real morning
+// briefing — unattended on a service credential for every active agent, seven
+// sources read (tasks, transactions, leads, showings, calendar, contacts, plus the
+// ISA overnight section), persisted to `ai_daily_briefings` — against this copy's
+// ONE source and its single sentence, "You have N tasks today."
+//
+// The previous note here recorded the one thing the survivor lacked: it wrote the
+// briefing row and never DELIVERED it, so nothing rang the bell when a briefing was
+// ready. That was the only reason this duplicate was kept. THE DELIVERY IS NOW ON
+// THE SURVIVOR — lib/intelligence/daily-briefing-generator.ts:875-888, a
+// `notifications` insert keyed on the users.id (NOT the agents.id resolved beside
+// it; the spaces are disjoint), tenant-stamped, entity-linked to the briefing row,
+// and with its refusal LOGGED as "saved but NOT delivered" rather than swallowed —
+// which is the defect this copy had before it was repaired and is the one thing that
+// must not be lost in a merge. Its comment names this function as the source.
+//
+// So there is nothing left here to lose: reading one task list is strictly less than
+// reading seven, and the delivery half is gone to a caller that actually runs. Both
+// halves of the doctrine are satisfied — merge first, then delete.
 
 export async function generate7DayPlan(payload: any) {
   const supabase = await createServerClient()
@@ -120,26 +276,49 @@ export async function generate7DayPlan(payload: any) {
   if (!nurtureAgent?.id || !nurtureAgent?.brokerage_id) {
     return { success: false, error: "No agent profile for this user — nurture plan not created" }
   }
-  for (const task of tasks) {
-    await supabase.from("tasks").insert({
-      brokerage_id: nurtureAgent.brokerage_id,
-      contact_id,
-      assigned_to_agent_id: nurtureAgent.id,
-      title: task.title,
-      due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
-      priority: task.priority,
-      auto_generated: true,
-      source: "lead_nurture",
-    })
+  // ONE INSERT, AND THE RESULT IS READ. Both writes below used to be awaited
+  // with the result thrown away, and the function then returned
+  // `tasksCreated: tasks.length` — the length of the hardcoded template array
+  // above. That is 7 whether seven rows landed or zero did. It matters here
+  // more than most: the orchestrator fires this on lead.created, and a leads.id
+  // is not a contacts.id — tasks.contact_id FKs contacts, so a lead id makes
+  // every insert FK-reject and the contacts update match nothing, while the
+  // caller is told a seven-touch nurture plan is running.
+  const { data: created, error: taskErr } = await supabase
+    .from("tasks")
+    .insert(
+      tasks.map((task) => ({
+        brokerage_id: nurtureAgent.brokerage_id,
+        contact_id,
+        assigned_to_agent_id: nurtureAgent.id, // agents.id — tasks.assigned_to_agent_id FKs agents
+        title: task.title,
+        due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
+        priority: task.priority,
+        auto_generated: true,
+        source: "lead_nurture",
+      })),
+    )
+    .select("id")
+
+  if (taskErr) {
+    return { success: false, error: `Nurture plan not created: ${taskErr.message}` }
   }
 
-  // Update contact with nurture status
-  await supabase
+  const { data: marked, error: statusErr } = await supabase
     .from("contacts")
     .update({ nurture_status: "7_day_plan_active" })
     .eq("id", contact_id)
+    .select("id")
 
-  return { success: true, tasksCreated: tasks.length }
+  if (statusErr) {
+    return { success: false, error: `Tasks created, but the contact was not marked: ${statusErr.message}` }
+  }
+  if (!marked?.length) {
+    return { success: false, error: "No contact matched that id — the nurture plan has no owner" }
+  }
+
+  // The number of rows that actually landed.
+  return { success: true, tasksCreated: created?.length ?? 0 }
 }
 
 // =====================================================
@@ -147,11 +326,54 @@ export async function generate7DayPlan(payload: any) {
 // Transaction milestone tracking and automation
 // =====================================================
 
+/**
+ * Create a milestone on the transaction behind a listing.
+ *
+ * 🚨 THIS REPORTED SUCCESS WITHOUT DOING THE THING.
+ *
+ * The insert below never set `transaction_id`, and `params.listing_id` — the only thing tying
+ * the request to anything — was **accepted and then never read**. There is no `listing_id`
+ * column on `transaction_milestones`, and `transaction_id` is NULLABLE in the live schema, so
+ * Postgres accepted the row happily. The result was an orphan milestone attached to no
+ * transaction: invisible to the transaction detail page, to `getTransactionMilestones`, to the
+ * portal journey and to `checkOverdueMilestones` — while the action returned
+ * `{ success: true, milestone: data }` and the caller saw a milestone created.
+ *
+ * `responsible_party` was likewise accepted and silently dropped (no such column). It is now
+ * declared as unsupported rather than pretending, because a caller who passes it today
+ * believes an owner was recorded.
+ *
+ * Finished: the listing is resolved to its transaction IN THE CALLER'S BROKERAGE, and the
+ * milestone is attached to it. A listing with no transaction is a refusal, not a silent
+ * orphan — you cannot put a milestone on a deal that does not exist yet.
+ *
+ * ORPHAN BURN-DOWN (lane O) — RECORDED AS A BUILD LINE. It has no caller and, checked
+ * against every other milestone writer in the tree, no duplicate: lib/transactions/
+ * milestone-service.ts SEEDS a template set, lib/application/transactions.ts:1422 writes
+ * an AI-generated client timeline, and app/actions/lender-portal-actions.ts:203 stamps a
+ * lender event. This is the only lane for an agent to add ONE ad-hoc milestone by hand.
+ *
+ * WIRED (this wave). The affordance the previous note said did not exist is
+ * app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx, on the deal
+ * sub-route app/dashboard/transactions/[id]/milestones/page.tsx — a sibling of the
+ * existing /health sub-route, chosen because transaction-detail-client.tsx belongs to
+ * another lane this wave. The page reads the deal only to find its `listing_id` (this
+ * action takes a LISTING and resolves the transaction itself) and to render what is
+ * already there; the write path re-derives both the tenant and the transaction, so the
+ * page is not load-bearing for either. The link from the deal header to that sub-route
+ * is reported to the wave, not written here.
+ *
+ * THE TYPE FIELD IS FREE TEXT ON PURPOSE. lib/transactions/milestone-catalog.ts is the
+ * canonical set and it is SEEDED — offering it in this form would either duplicate a
+ * seeded row or imply the catalog is hand-editable. This lane is for the milestone that
+ * is NOT in the catalog.
+ */
 export async function createTransactionMilestone(params: {
   listing_id: string
   milestone_type: string
   title: string
   due_date: string
+  /** Not persisted — `transaction_milestones` has no such column. Ignored. */
   responsible_party?: string
   description?: string
 }) {
@@ -165,10 +387,39 @@ export async function createTransactionMilestone(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
+  if (!isValidUUID(params.listing_id)) {
+    return { success: false as const, error: "Invalid listing ID" }
+  }
+
+  // Resolve the listing's transaction, scoped to the caller's brokerage. `error` is
+  // destructured: supabase-js RESOLVES a refused query, so without this an RLS refusal and
+  // "this listing has no transaction" would be indistinguishable — and the refusal would be
+  // reported to the user as the latter.
+  const { data: tx, error: txError } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("listing_id", params.listing_id)
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (txError) {
+    return { success: false as const, error: `Could not resolve the transaction: ${txError.message}` }
+  }
+  if (!tx) {
+    return {
+      success: false as const,
+      error: "No transaction exists for this listing yet — a milestone needs a deal to hang on.",
+    }
+  }
+
   // Create milestone
   const { data, error } = await supabase
     .from("transaction_milestones")
     .insert({
+      // THE ATTACHMENT. Without this the row is an orphan — see the header comment.
+      transaction_id: tx.id,
       brokerage_id: profile.brokerage_id,
       milestone_name: params.milestone_type, // NOT NULL on transaction_milestones
       milestone_type: params.milestone_type,
@@ -182,7 +433,10 @@ export async function createTransactionMilestone(params: {
 
   if (error) throw error
 
-  return { success: true, milestone: data }
+  // The deal's milestone sub-route lists these server-side.
+  revalidatePath(`/dashboard/transactions/${tx.id}/milestones`)
+
+  return { success: true as const, milestone: data }
 }
 
 export async function checkOverdueMilestones() {
@@ -273,10 +527,19 @@ export async function generateDailyGameplan(userId: string) {
   const gameplanAgentId = (await agentIdForUser(supabase, userId)) ?? userId
 
   // Get hot leads (score > 70)
-  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  // Recent replies read from `messages` (direction='inbound') — burn-down round 6
+  // repointed this off `communications`. CORRECTED PREMISE (2026-09-01): the note
+  // that stood here called `communications` writer-less. It is not — it is live and
+  // narrowly scoped (Zoom transcripts, lib/connections/zoom-transcripts.ts:147, plus
+  // a brokerage-stamping trigger). Its sole writer sets contact_id NULL by design,
+  // because a transcript attaches to the tenant, not a contact; that shape — not an
+  // absent writer — is why a contact-keyed read of it is structurally empty. There is
+  // no missing writer here to go build.
+  // The `property_interactions(*)` embed is DELETED (m598 retirement): consumed by nothing —
+  // the prompt and the dashboard read only name/score/stage/id off these rows.
   const { data: hotLeadRows } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*)")
+    .select("*")
     .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .gte("lead_score", 70)
@@ -297,37 +560,147 @@ export async function generateDailyGameplan(userId: string) {
   }))
 
   // Get at-risk transactions (overdue or due soon)
-  const { data: atRiskDeals } = await supabase
+  //
+  // THE "PROTECT DEALS" COLUMN WAS ALWAYS EMPTY. This selected `listings(*)`,
+  // and transaction_milestones has NO foreign key to listings (verified live:
+  // its only FKs are transaction_id→transactions, brokerage_id→brokerages and
+  // the two user columns). PostgREST cannot resolve that embed, so the request
+  // failed and — because the error was discarded — the gameplan rendered as
+  // "no at-risk deals" forever. The address lives on transactions.
+  const { data: atRiskDeals, error: atRiskError } = await supabase
     .from("transaction_milestones")
-    .select("*, listings(*)")
+    .select("*, transactions(id, property_address)")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("status", "pending")
     .lt("target_date", new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString())
     .order("target_date", { ascending: true })
     .limit(10)
 
-  // Get overdue tasks
-  const { data: overdueTasks } = await supabase
+  if (atRiskError) {
+    console.error("[copilot] at-risk milestone read failed:", atRiskError.message)
+  }
+
+  // Get overdue tasks.
+  //
+  // tasks.priority is VARCHAR (no CHECK, default 'medium'): `ORDER BY priority
+  // DESC` sorted it alphabetically — `medium` first, `high` LAST — and the
+  // `.limit(10)` then dropped the high rows first. SQL orders by due_date
+  // (most overdue first); the rank is applied in code
+  // (lib/kernel/priority-rank.ts) over a 50-row over-fetch, then sliced to 10.
+  // The error is read (§3): a refused read must not render as "nothing overdue".
+  const { data: overdueTaskRows, error: overdueTasksError } = await supabase
     .from("tasks")
     .select("*, contacts(*)")
     .eq("assigned_to_agent_id", gameplanAgentId)
     .eq("status", "pending")
     .lt("due_date", new Date().toISOString())
-    .order("priority", { ascending: false })
-    .limit(10)
+    .order("due_date", { ascending: true })
+    .limit(50)
+  if (overdueTasksError) {
+    console.error("[copilot] overdue task read failed:", overdueTasksError.message)
+  }
+  const overdueTasks = [...(overdueTaskRows ?? [])].sort(byPriorityDesc).slice(0, 10)
 
   // Get approved content ready to post
-  const { data: contentReady } = await supabase
+  //
+  // THE "CONTENT TO POST" COLUMN WAS ALWAYS EMPTY, for two reasons in one select.
+  //
+  // (1) `generated_videos(*)` — there is NO public.generated_videos table in the
+  //     live database, and PostgREST rejects the ENTIRE query when a select names
+  //     a relation it cannot resolve. The `.is("generated_videos.published_at",
+  //     null)` filter hung off the same phantom.
+  // (2) `contacts(*)` — the table exists, but video_scripts_library.contact_id
+  //     carries NO foreign key (verified in pg_constraint: the table's only FKs
+  //     are agent_id, approved_by, brokerage_id, created_by, rejected_by,
+  //     template_id), and without one PostgREST has no relationship to embed.
+  //     Fixing only (1) would have left the query failing exactly as before.
+  //
+  // THE "NOT YET PUBLISHED" FILTER IS GONE BECAUSE NOTHING IN THE SCHEMA CAN
+  // ANSWER IT. Nothing links a video_scripts_library row to a rendered video:
+  // ai_video_projects.source_script_id FKs `public.scripts`, a DIFFERENT table
+  // (see app/actions/video/create-video-project.ts), and generateVideoFromScript
+  // deliberately records no library-script id on the project it creates. The only
+  // FKs pointing INTO video_scripts_library are marketing_campaigns.source_script_id
+  // and script_variations.script_library_id — neither is a video, let alone a
+  // published one. So this column now answers the question it CAN answer honestly:
+  // approved scripts belonging to this agent. Do not re-add a published-state
+  // filter without a real column or FK to hang it on.
+  const { data: contentReady, error: contentReadyError } = await supabase
     .from("video_scripts_library")
-    .select("*, generated_videos(*), contacts(*)")
+    .select("id, title, contact_id")
     .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .eq("approval_status", "approved")
-    .is("generated_videos.published_at", null)
     .limit(5)
+
+  if (contentReadyError) {
+    console.error("[copilot] ready-to-post script read failed:", contentReadyError.message)
+  }
+
+  // contact_id has no FK, so the name is fetched rather than embedded — the same
+  // shape the hot-lead replies above use.
+  const contentContactIds = [...new Set((contentReady ?? []).map((c: any) => c.contact_id).filter(Boolean))]
+  const contentContactById = new Map<string, any>()
+  if (contentContactIds.length > 0) {
+    const { data: contentContacts, error: contentContactsError } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contentContactIds)
+      .eq("brokerage_id", profile.brokerage_id)
+    // A refused read is not "these scripts have no contact".
+    if (contentContactsError) {
+      console.error("[copilot] ready-to-post contact read failed:", contentContactsError.message)
+    }
+    for (const c of contentContacts ?? []) contentContactById.set(c.id as string, c)
+  }
+  const contentToPost = (contentReady ?? []).map((c: any) => ({
+    ...c,
+    contacts: c.contact_id ? contentContactById.get(c.contact_id) ?? null : null,
+  }))
+
+  // ── llm_calls CEILING, CONSULTED BEFORE THE SPEND (wave 26) ───────────────
+  // This lane bumps usage_counters.llm_calls below, and until now NOTHING ever
+  // read that counter back: plan_limits carries an `llm_calls` row per tier and
+  // lib/usage/check-cap.ts already held its cap and label strings, but no call
+  // site asked. A metered ceiling nobody consults is a writer with no reader
+  // (CLAUDE.md §1) on a metric the tenant is billed against.
+  //
+  // NOT a second AI gate. generateTextRouted below still runs the ai_tokens_monthly
+  // fair-use pre-flight (lib/ai/fair-use.ts, m479 served-and-billed overage) —
+  // that one meters TOKENS. This one meters CALLS, the counter this very
+  // function writes. Both ceilings are the tenant's; neither substitutes.
+  //
+  // addQuantity:1 asks "would THIS call cross the cap", not "have we already".
+  // Soft-warn passes through (the caller is near the cap, not over it); only a
+  // hard cap refuses, carrying check-cap's own message rather than a new one.
+  // The tenant is the session-resolved profile.brokerage_id — never a parameter.
+  {
+    const { checkUsageCap } = await import("@/lib/usage/check-cap")
+    const llmCap = await checkUsageCap({
+      brokerageId: profile.brokerage_id,
+      metric: "llm_calls",
+      addQuantity: 1,
+    })
+    if (!llmCap.allowed) {
+      // DEGRADE, DON'T BLANK. Only the AI SUMMARY costs an llm_call; the four
+      // lists above are plain reads the agent still needs. Withholding the whole
+      // gameplan over an AI cap would punish the agent for a billing state.
+      // Same shape as the not-linked early return, so the caller (which types
+      // this `any` and renders each list independently) needs no new branch.
+      return {
+        people_to_call: hotLeads || [],
+        deals_to_protect: atRiskDeals || [],
+        content_to_post: contentToPost,
+        overdue_tasks: overdueTasks || [],
+        ai_summary: llmCap.message ?? "You've reached this month's plan limit for AI requests.",
+        generated_at: new Date().toISOString(),
+      }
+    }
+  }
 
   // Generate AI-powered gameplan summary
   const { text: aiSummary } = await generateText({
+    brokerageId: profile.brokerage_id,
     model: "openai/gpt-4o-mini",
     prompt: `You are an AI real estate copilot helping agents prioritize their day.
 
@@ -337,10 +710,10 @@ Generate a daily gameplan for ${profile.first_name}. Organize into 3 columns:
 ${hotLeads?.map((lead) => `- ${lead.first_name} ${lead.last_name} (Score: ${lead.lead_score}) - Stage: ${lead.stage}`).join("\n") || "No hot leads today"}
 
 **DEALS TO PROTECT (At-Risk Transactions):**
-${atRiskDeals?.map((deal) => `- ${deal.listings?.property_address || "Property"} - ${deal.title} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
+${atRiskDeals?.map((deal) => `- ${deal.transactions?.property_address || "Property"} - ${deal.title || deal.milestone_name} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
 
 **CONTENT TO POST (Ready to Publish):**
-${contentReady?.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}
+${contentToPost.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}
 
 **OVERDUE ITEMS:**
 ${overdueTasks?.map((task) => `- ${task.title} (${task.contacts?.first_name || "No contact"})`).join("\n") || "Nothing overdue"}
@@ -355,13 +728,25 @@ Format as actionable priorities with time estimates and recommended order of exe
   return {
     people_to_call: hotLeads || [],
     deals_to_protect: atRiskDeals || [],
-    content_to_post: contentReady || [],
+    content_to_post: contentToPost,
     overdue_tasks: overdueTasks || [],
     ai_summary: aiSummary,
     generated_at: new Date().toISOString(),
   }
 }
 
+/**
+ * `taskId` — the gameplan ROW the agent tapped — WAS ACCEPTED HERE AND READ BY
+ * NOTHING until 2026-08-24, which left this dispatcher unable to say which row it
+ * had refused. Every export of a "use server" file is a public HTTP endpoint
+ * (CLAUDE.md §4), so `taskType` and every field of `params` arrive from the client:
+ * an unknown type, or a known type with its id missing, reached the delegated lane as
+ * `undefined` and came back as an anonymous "that action did not run" toast with no
+ * way to tell WHICH row failed or WHY.
+ *
+ * The required parameter for each lane is now checked before dispatch, and both the
+ * refusal and the server log NAME THE ROW.
+ */
 export async function executeCopilotTask(taskId: string, taskType: string, params: any) {
   const supabase = await createServerClient()
 
@@ -370,39 +755,62 @@ export async function executeCopilotTask(taskId: string, taskType: string, param
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
+  /** Refuse by NAME — the row, the lane, and the field that was missing. */
+  const missing = (field: string) => {
+    console.warn(`[copilot] task ${taskId} (${taskType}) refused — "${field}" was not supplied`)
+    return { success: false, error: `That action is missing its ${field} and did not run (row ${taskId}).` }
+  }
+
   switch (taskType) {
     case "call_hot_lead":
-      return await initiateCall(params.contactId, user.id)
+      // No agent id passed: the canonical calling lane derives the agent from
+      // the session, which is where user.id came from anyway.
+      if (!params?.contactId) return missing("contactId")
+      return await initiateCall(params.contactId)
 
     case "send_property_alert":
+      if (!params?.contactId) return missing("contactId")
       return await sendPropertyMatches(params.contactId)
 
     case "follow_up_showing":
+      if (!params?.showingId) return missing("showingId")
       return await requestShowingFeedback(params.showingId)
 
     case "check_transaction_status":
+      if (!params?.transactionId) return missing("transactionId")
       return await checkTransactionDeadlines(params.transactionId)
 
     case "post_content":
+      if (!params?.videoId) return missing("videoId")
       return await postVideoContent(params.videoId, params.platforms)
 
     default:
-      return { success: false, error: "Unknown task type" }
+      console.warn(`[copilot] task ${taskId} named an unknown task type "${taskType}"`)
+      return { success: false, error: `Unknown task type "${taskType}" (row ${taskId}).` }
   }
 }
 
 export async function analyzeContactPriority(contactId: string) {
   const supabase = await createServerClient()
 
+  // The `property_interactions(*)` embed is gone (m598 retirement) — the recent-activity
+  // factor below now reads the live twin, buyer_behavior_log, as a separate query.
   const { data: contact } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*)")
+    .select("*")
     .eq("id", contactId)
     .single()
 
   if (!contact) return { priority: "low", score: 0, factors: [], recommended_action: "Continue nurture" }
 
-  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  // Recent replies read from `messages` (direction='inbound') — burn-down round 6
+  // repointed this off `communications`. CORRECTED PREMISE (2026-09-01): the note
+  // that stood here called `communications` writer-less. It is not — it is live and
+  // narrowly scoped (Zoom transcripts, lib/connections/zoom-transcripts.ts:147, plus
+  // a brokerage-stamping trigger). Its sole writer sets contact_id NULL by design,
+  // because a transcript attaches to the tenant, not a contact; that shape — not an
+  // absent writer — is why a contact-keyed read of it is structurally empty. There is
+  // no missing writer here to go build.
   const { data: inboundMessages } = await supabase
     .from("messages")
     .select("id, direction, created_at")
@@ -412,12 +820,38 @@ export async function analyzeContactPriority(contactId: string) {
   let score = contact.lead_score || 0
   const factors = []
 
-  // Recent engagement (last 7 days)
-  const last7Days = contact.property_interactions?.filter(
-    (i: any) => new Date(i.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-  )
+  // Recent engagement (last 7 days) — REPOINTED onto buyer_behavior_log (m598).
+  //
+  // This counted ANY `property_interactions` row in the window — a table with ZERO
+  // writers anywhere in the tree (its only trigger is BEFORE INSERT, which never
+  // fires because nothing inserts), so the +20 below has never once been awarded.
+  // The live twin is buyer_behavior_log (written by the preference learner and the
+  // portal/CRM telemetry). The signal families come from the vocabulary owner
+  // (lib/behavior-learning/signal-mapping.ts): VIEW ∪ SAVE — "engaged with homes" —
+  // deliberately excluding DISMISS, which the untyped count would have scored as
+  // activity when it means the opposite. Same 7-day window, same ≥5 threshold,
+  // same +20: the MEANING survives; only the dead table does not.
+  //
+  // Separate query, not an embed — the messages fetch above is this file's own
+  // precedent — with the {error} READ (§3: supabase-js RESOLVES refusals).
+  // §4 fail closed: the count runs anchored to the contact's own brokerage_id or
+  // not at all — never an unconditional query with an optional tenant predicate.
+  let recentSignalCount = 0
+  if (contact.brokerage_id) {
+    const { data: recentSignals, error: recentSignalsError } = await supabase
+      .from("buyer_behavior_log")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", contact.brokerage_id)
+      .in("signal_type", [...VIEW_SIGNALS, ...SAVE_SIGNALS])
+      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    if (recentSignalsError) {
+      console.error("[copilot] buyer_behavior_log read failed — recent-activity factor skipped:", recentSignalsError.message)
+    }
+    recentSignalCount = (recentSignals ?? []).length
+  }
 
-  if (last7Days && last7Days.length >= 5) {
+  if (recentSignalCount >= 5) {
     score += 20
     factors.push("High recent activity")
   }
@@ -433,7 +867,18 @@ export async function analyzeContactPriority(contactId: string) {
   }
 
   // Timeline urgency
-  if (contact.timeline === "asap" || contact.timeline === "urgent") {
+  //
+  // REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). This tested "asap" and "urgent" — a private
+  // two-token spelling of `contacts.timeline` that NO writer of that column has
+  // ever produced. `contacts.timeline` is written by
+  // lib/contact-promotion/contact-creator.ts:137, which copies `leads.timeline`
+  // across verbatim, so the two columns share one vocabulary and this test now
+  // uses it. `12+_months` and `researching` are deliberately NOT urgent.
+  if (
+    contact.timeline === "immediate" ||
+    contact.timeline === "1-3_months"
+  ) {
     score += 25
     factors.push("Urgent timeline")
   }
@@ -461,6 +906,18 @@ export async function analyzeContactPriority(contactId: string) {
   }
 }
 
+/**
+ * NOTE (m343): this export currently has NO callers anywhere in the repo. It is
+ * fixed rather than deleted because an exported server action can be reached by
+ * a path a static search does not see, and a broken-but-unreachable action is a
+ * trap for whoever wires it up next. If it is still unused when the surface is
+ * reviewed, delete it — do not leave it half-alive.
+ *
+ * IDENTITY CLASS: the parameter is a USERS id (the brokerage lookup below reads
+ * `users` by it), but messages, showings, contacts and activities are ALL
+ * agents-class. Every one of the four queries below was keyed with the wrong
+ * class and would have returned nothing.
+ */
 export async function suggestNextActions(agentId: string) {
   const supabase = await createServerClient()
 
@@ -468,11 +925,17 @@ export async function suggestNextActions(agentId: string) {
 
   if (!profile?.brokerage_id) return { suggestions: [] }
 
+  // The agents-class id for the four queries below. Without it they filter an
+  // agents column by a users id and return nothing, which reads as "this agent
+  // has had no activity" rather than as a bug.
+  const agentsId = await agentIdForUser(supabase, agentId)
+  if (!agentsId) return { suggestions: [] }
+
   // Get agent's recent activity
   const { data: recentActivity } = await supabase
     .from("messages")
     .select("*, contacts(*)")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
     .order("created_at", { ascending: false })
 
@@ -494,7 +957,7 @@ export async function suggestNextActions(agentId: string) {
   const { data: showingsNoFeedback } = await supabase
     .from("showings")
     .select("*, contacts(*)")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .eq("status", "completed")
     .is("feedback", null)
     .gte("scheduled_at", new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString())
@@ -512,9 +975,15 @@ export async function suggestNextActions(agentId: string) {
   const { data: staleContacts } = await supabase
     .from("contacts")
     .select("*")
-    .eq("agent_id", agentId)
+    .eq("agent_id", agentsId)
     .eq("brokerage_id", profile.brokerage_id)
-    .in("status", ["active_client", "hot_lead"])
+    // 'active_client'/'hot_lead' were PHANTOMS (no writer has ever stored either
+    // on contacts.status), so this stale-contact check-in suggestion has never
+    // matched a row. What the read MEANT: contacts being actively worked
+    // (status 'active') or running hot — and heat is a TEMPERATURE, carried by
+    // contacts.lead_temperature (live CHECK: cold/hot/warm), not a status.
+    // Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+    .or("status.eq.active,lead_temperature.eq.hot")
     .lt("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
     .limit(5)
 
@@ -531,67 +1000,37 @@ export async function suggestNextActions(agentId: string) {
 }
 
 // Helper functions for task execution
-async function initiateCall(contactId: string, agentId: string) {
-  const supabase = await createClient()
-
-  // voice_calls requires brokerage_id + phone_to (NOT NULL) and agent_id is a FK
-  // to agents(id) — but `agentId` here is a users.id, so resolve the agents row.
-  const { data: agentUser } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", agentId)
-    .maybeSingle()
-  const agentsId = await agentIdForUser(supabase, agentId)
-  const { data: contactRow } = await supabase
-    .from("contacts")
-    .select("phone")
-    .eq("id", contactId)
-    .maybeSingle()
-
-  if (!agentUser?.brokerage_id) {
-    return { success: false, error: "Agent has no brokerage scope" }
-  }
-  if (!agentsId) {
-    return { success: false, error: "No agent profile for current user" }
-  }
-  if (!contactRow?.phone) {
-    return { success: false, error: "Contact has no phone number on file" }
-  }
-
-  // Create call log entry (real columns: direction='outbound', call_type='agent_call',
-  // started_at; phone_to + brokerage_id are NOT NULL)
-  const { data: callLog, error } = await supabase
-    .from("voice_calls")
-    .insert({
-      contact_id: contactId,
-      agent_id: agentsId,
-      brokerage_id: agentUser.brokerage_id,
-      phone_to: contactRow.phone,
-      direction: "outbound",
-      call_type: "agent_call",
-      status: "initiated",
-      started_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("[copilot] Failed to create call log:", error)
-    return { success: false, error: "Failed to initiate call" }
-  }
-
-  await supabase.from("activities").insert({
-    brokerage_id: agentUser?.brokerage_id ?? null,
-    agent_id: agentId,
-    contact_id: contactId,
-    activity_type: "call_initiated",
-    title: "Outbound call initiated",
-    description: "Outbound call initiated via copilot",
-    status: "completed",
-    entity_type: "contact",
+async function initiateCall(contactId: string) {
+  // NOTHING HERE EVER DIALLED A PHONE. This function used to insert a
+  // voice_calls row with status "initiated" and started_at = now(), plus an
+  // activities row titled "Outbound call initiated" with status "completed",
+  // and return { success: true, message: "Call initiated" } — with no provider
+  // call anywhere in it. The agent was told the call was placed, the contact's
+  // timeline said they had been rung, and the kernel's conversation memory read
+  // that activities row as fact and suppressed the real follow-up.
+  //
+  // The OS already has exactly one agent→contact calling lane that works:
+  // initiateWhisperBridge places the call through Twilio, checks the provider
+  // result, and only then writes voice_calls with the real vendor_call_id.
+  // Delegating rather than re-implementing also satisfies the standing rule
+  // that a provider gets one caller, not two. It derives the agent from the
+  // session, which is the same actor `agentId` came from (executeCopilotTask
+  // passes the authenticated user's own id).
+  const { initiateWhisperBridge } = await import("@/app/actions/voice-call-bridge")
+  const bridge = await initiateWhisperBridge({
+    contactId,
+    context: "call requested from the copilot",
   })
-  
-  return { success: true, message: "Call initiated", callLogId: callLog?.id }
+
+  if (!bridge.success) {
+    return { success: false, error: bridge.error ?? "The call was not placed" }
+  }
+
+  return {
+    success: true,
+    message: "Calling you now — we'll connect the contact when you pick up",
+    callSid: bridge.callSid,
+  }
 }
 
 async function sendPropertyMatches(contactId: string) {
@@ -600,12 +1039,21 @@ async function sendPropertyMatches(contactId: string) {
   // Criteria live in property_preferences (NOT contacts) — read via the single normalized
   // reader. The old code selected preferred_* columns off contacts (non-existent) and
   // filtered listings by `price` (the column is list_price), so it matched nothing.
-  const { data: contact } = await supabase
+  // `error` is destructured because this row is the TENANT ANCHOR for the
+  // notification written at the end of this function: supabase-js RESOLVES a
+  // refused read, so `const { data }` alone reports a refusal as "Contact not
+  // found" and the two must not be the same answer when one of them decides
+  // whose brokerage a row belongs to.
+  const { data: contact, error: matchContactError } = await supabase
     .from("contacts")
     .select("id, agent_id, brokerage_id")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
+  if (matchContactError) {
+    console.error("[copilot] sendPropertyMatches: contacts lookup refused:", matchContactError.message)
+    return { success: false, error: "Contact not found" }
+  }
   if (!contact) {
     return { success: false, error: "Contact not found" }
   }
@@ -633,15 +1081,35 @@ async function sendPropertyMatches(contactId: string) {
   
   const { data: matches } = await query.limit(10)
   
-  // Create property match notification
+  // Create property match notification.
+  //
+  // TENANT — this row is addressed to a CONTACT (`contact_id`), not a user, so
+  // the recipient resolver does not apply: the record it is filed against is the
+  // contact, whose `brokerage_id` was already read above for the listings query
+  // and is reused rather than re-resolved. That is the same one question — "whose
+  // brokerage is this row for?" — asked of the record that carries the answer.
+  //
+  // Unstamped it is invisible to every brokerage-scoped reader of this table
+  // while the escape (`brokerage_id IS NULL`) simultaneously admits it to every
+  // OTHER tenant's RLS — the exact inversion wave 22 measured.
   if (matches && matches.length > 0) {
-    await supabase.from("notifications").insert({
-      contact_id: contactId,
-      type: "property_matches",
-      title: `${matches.length} New Property Matches`,
-      body: `We found ${matches.length} properties matching your preferences.`,
-      entity_type: "property_match",
-    })
+    if (!contact.brokerage_id) {
+      console.error(
+        `[copilot] sendPropertyMatches: contact ${contactId} carries no brokerage_id — property-match notification NOT written rather than written untenanted`,
+      )
+    } else {
+      const { error: matchNotifyError } = await supabase.from("notifications").insert({
+        contact_id: contactId,
+        brokerage_id: contact.brokerage_id,
+        type: "property_matches",
+        title: `${matches.length} New Property Matches`,
+        body: `We found ${matches.length} properties matching your preferences.`,
+        entity_type: "property_match",
+      })
+      if (matchNotifyError) {
+        console.error("[copilot] property_matches notification insert refused:", matchNotifyError.message)
+      }
+    }
   }
   
   return { success: true, message: `Sent ${matches?.length || 0} property matches`, matchCount: matches?.length || 0 }

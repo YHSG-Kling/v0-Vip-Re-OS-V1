@@ -12,26 +12,45 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const ADMIN_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "team_lead",
-])
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireBrokerAdmin() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false as const, error: "Unauthorized" }
 
-  const { data: row } = await supabase
+  // DESTRUCTURED DELIBERATELY. supabase-js RESOLVES a refused query, so
+  // `const { data: row }` alone reads "permission denied" as "no such user" and
+  // this gate cannot tell the two apart. It fails closed either way, but the
+  // caller is told WHICH, because "your row is missing" and "you may not read
+  // your row" send an operator to two different places.
+  const { data: row, error: userError } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
+  if (userError) return { ok: false as const, error: `Identity read refused: ${userError.message}` }
   if (!row?.brokerage_id) return { ok: false as const, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(row.user_type as string)) return { ok: false as const, error: "Forbidden" }
+  if (!isBrokerageFinanceAdmin({ user_type: row.user_type as string })) return { ok: false as const, error: "Forbidden" }
 
-  return { ok: true as const, brokerageId: row.brokerage_id as string }
+  return {
+    ok: true as const,
+    brokerageId: row.brokerage_id as string,
+    // Platform admins see every tenant's cron runs and the raw failure text.
+    // Everyone else is confined to their own tenant plus the untenanted
+    // platform sweeps — see getCronHealth.
+    //
+    // BOTH identity columns. `row.user_type === "superadmin"` alone was FALSE for
+    // the platform's only superadmin, whose row is (user_type='admin',
+    // platform_role='superadmin') — so this flag was never once true and the
+    // platform-wide cron view and the raw failure text were unreachable. Same
+    // shape as public.is_platform_admin() in RLS and requireSuperadmin() in
+    // lib/auth/platform-guard.ts; see app/actions/vendor-budget.ts:136-147.
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    isPlatformAdmin: isPlatformSuperadminIdentity(row.user_type, (row as any).platform_role),
+  }
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -45,6 +64,11 @@ export interface AgentPLRow {
   brokerage_gross:       number
   ai_cost_cents:         number
   fee_income_cents:      number
+  /** Attributed campaign spend for the month. The rollup currently books 0
+   *  here on every row (campaign attribution not yet wired — the writer says
+   *  so at app/api/cron/brokerage-pl-rollup/route.ts) — rendered as "—" until
+   *  a real attribution writes a real number. */
+  marketing_spend_cents: number
   net_brokerage_margin:  number
   roi_multiple:          number | null
   transaction_count:     number
@@ -69,6 +93,18 @@ export interface CronHealthRow {
   last_duration_ms:       number | null
   last_records_processed: number | null
   last_error_message:     string | null
+  /**
+   * True when `last_error_message` was WITHHELD rather than absent.
+   *
+   * `cron_health_snapshot` is keyed on `cron_name` alone (upserted
+   * `onConflict: "cron_name"` by lib/kernel/cron-logging.ts) and carries NO
+   * `brokerage_id` column, so one row per cron is shared by every tenant and
+   * its `last_error_message` is whatever the most recent failing run wrote —
+   * possibly another tenant's. A null that means "withheld" and a null that
+   * means "this cron has not failed" are opposite facts, so the surface is told
+   * which one it is holding instead of rendering a clean bill of health.
+   */
+  error_message_redacted: boolean
   expected_interval_hours: number
   is_stale:               boolean
   run_count_7d:           number
@@ -95,10 +131,10 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
     .select(`
       agent_id, month_year,
       gci_gross, agent_payout, brokerage_gross,
-      ai_cost_cents, fee_income_cents, net_brokerage_margin,
+      ai_cost_cents, fee_income_cents, marketing_spend_cents, net_brokerage_margin,
       roi_multiple, transaction_count, computed_at,
       agents:agent_id (
-        users:user_id (full_name, email)
+        users:user_id (first_name, last_name, email)
       )
     `)
     .eq("brokerage_id", auth.brokerageId)
@@ -108,17 +144,22 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
 
   if (error) return { ok: false, error: error.message }
 
+  // `users` has NO `full_name` (verified against information_schema) — the name
+  // is first_name + last_name. Naming full_name made PostgREST reject the ENTIRE
+  // select, so the agent P&L table on the broker dashboard has never rendered.
   const rows: AgentPLRow[] = (data ?? []).map((r: any) => {
     const user = r.agents?.users
+    const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ")
     return {
       agent_id:             r.agent_id,
-      agent_name:           user?.full_name ?? user?.email ?? "Unknown Agent",
+      agent_name:           fullName || user?.email || "Unknown Agent",
       month_year:           r.month_year,
       gci_gross:            r.gci_gross ?? 0,
       agent_payout:         r.agent_payout ?? 0,
       brokerage_gross:      r.brokerage_gross ?? 0,
       ai_cost_cents:        r.ai_cost_cents ?? 0,
       fee_income_cents:     r.fee_income_cents ?? 0,
+      marketing_spend_cents: r.marketing_spend_cents ?? 0,
       net_brokerage_margin: r.net_brokerage_margin ?? 0,
       roi_multiple:         r.roi_multiple ?? null,
       transaction_count:    r.transaction_count ?? 0,
@@ -183,15 +224,21 @@ export async function getAgentAICostRanking(monthYear?: string): Promise<
   const gciByAgent: Record<string, number> = {}
   for (const r of plRows ?? []) gciByAgent[r.agent_id] = r.gci_gross ?? 0
 
-  const { data: agentUsers } = await svc
+  // Same dead column as above: `users` has first_name/last_name, never
+  // full_name. This select was rejected outright, so every row in the AI-cost
+  // ranking was labelled "Unknown".
+  const { data: agentUsers, error: agentUsersErr } = await svc
     .from("agents")
-    .select("id, users:user_id (full_name, email)")
+    .select("id, users:user_id (first_name, last_name, email)")
     .in("id", agentIds)
+
+  if (agentUsersErr) return { ok: false, error: agentUsersErr.message }
 
   const nameByAgent: Record<string, string> = {}
   for (const a of agentUsers ?? []) {
     const u = (a as any).users
-    nameByAgent[a.id] = u?.full_name ?? u?.email ?? "Unknown"
+    nameByAgent[a.id] =
+      [u?.first_name, u?.last_name].filter(Boolean).join(" ") || u?.email || "Unknown"
   }
 
   const rows: AgentAICostRow[] = Object.entries(byAgent)
@@ -227,34 +274,105 @@ export async function getCronHealth(): Promise<
   const svc = createServiceClient()
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
+  // ── WHAT A BROKER SEES vs WHAT A PLATFORM ADMIN SEES ──────────────────────
+  //
+  // This reader runs on a SERVICE client, which bypasses RLS entirely — so the
+  // tenant boundary here is the query predicate, not the policy. The predicate
+  // is written to compute exactly what `cron_execution_logs`' own SELECT policy
+  // computes for a session client, so the two can never disagree:
+  //
+  //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+  //
+  //   · PLATFORM ADMIN (superadmin): no predicate. Every tenant's runs, plus the
+  //     untenanted platform sweeps, plus the raw failure text.
+  //   · EVERYONE ELSE (broker, broker_admin, admin, team_lead): their OWN
+  //     tenant's runs AND the untenanted platform sweeps — never another
+  //     tenant's. A cron that ran FOR this brokerage is theirs to see; a cron
+  //     that swept every brokerage is nobody's in particular and is shown to all
+  //     of them, which is what it has always been for.
+  //
+  // THE `.or()` IS LOAD-BEARING AND IS NOT A `.eq()` IN DISGUISE. An `.eq(
+  // "brokerage_id", …)` here would be strictly WRONG, not merely stricter:
+  // `NULL = <uuid>` is NULL, so it would drop every untenanted platform sweep —
+  // and as of this writing ALL 130 `createCronRunContextAction` call sites pass
+  // no brokerage_id at all, and both remaining direct writers stamp an explicit
+  // `brokerage_id: null`. An `.eq()` would therefore show a broker an EMPTY cron
+  // health page, which is a worse regression than the over-sharing it fixes.
+  const tenantScope = `brokerage_id.is.null,brokerage_id.eq.${auth.brokerageId}`
+
+  // The tenant disjunction is applied while the chain is still a FILTER builder.
+  // `.or()` is declared on PostgrestFilterBuilder; `.order()` / `.limit()` return
+  // a PostgrestTransformBuilder, which does not declare it — so scoping after
+  // those would still run but would not type-check.
+  const runsBase = svc.from("cron_execution_logs").select("cron_name, status")
+
   const [snapshotResult, recentRunsResult] = await Promise.all([
     svc
       .from("cron_health_snapshot")
       .select("*")
       .order("cron_name", { ascending: true }),
-    svc
-      .from("cron_execution_logs")
-      .select("cron_name, status")
+    (auth.isPlatformAdmin ? runsBase : runsBase.or(tenantScope))
       .gte("started_at", sevenDaysAgo)
       .not("cron_name", "is", null),
   ])
 
   if (snapshotResult.error) return { ok: false, error: snapshotResult.error.message }
 
+  // A REFUSED LEDGER READ IS NOT A QUIET ZERO. This error was previously
+  // dropped on the floor and `recentRunsResult.data ?? []` turned the refusal
+  // into `run_count_7d: 0` on every row — a cron that has run 500 times and one
+  // whose history could not be read rendered identically, and the second is the
+  // one an operator has to act on.
+  if (recentRunsResult.error) {
+    return { ok: false, error: `cron_execution_logs read was refused: ${recentRunsResult.error.message}` }
+  }
+
   // Aggregate 7d counts per cron
   const run7d:     Record<string, number> = {}
   const failure7d: Record<string, number> = {}
+  //
+  // TWO VOCABULARIES MEET IN THIS FUNCTION AND THEY ARE NOT THE SAME WORDS.
+  // `cron_execution_logs.status` is CHECK-constrained to
+  // 'started' | 'completed' | 'failed' | 'timeout' (verified against
+  // pg_constraint), while `cron_health_snapshot.last_status` is written
+  // 'success' | 'failure' by lib/kernel/cron-logging.ts. This loop tested the
+  // SNAPSHOT's word against the LEDGER's column, and 'failure' is not a value
+  // the ledger's CHECK will even admit — so `failure_count_7d` could never be
+  // anything but 0, on every cron, forever. A health board whose failure column
+  // is hard-wired to zero is worse than one that is absent.
+  //
+  // A timeout is counted as a failure: the run did not complete, and a board
+  // that shows it as neither run-nor-failed loses it entirely.
+  const LEDGER_FAILURE_STATUSES = new Set(["failed", "timeout"])
   for (const row of recentRunsResult.data ?? []) {
     const name = row.cron_name as string
     run7d[name]     = (run7d[name] ?? 0) + 1
-    if (row.status === "failure") failure7d[name] = (failure7d[name] ?? 0) + 1
+    if (LEDGER_FAILURE_STATUSES.has(row.status as string)) {
+      failure7d[name] = (failure7d[name] ?? 0) + 1
+    }
   }
 
   // Update snapshot rows with 7d counts (in-memory — don't write back to avoid noise)
+  // `cron_health_snapshot` HAS NO TENANT COLUMN AND CANNOT BE SCOPED BY ONE.
+  // Verified against pg_attribute: there is no `brokerage_id` on this table, and
+  // cron-logging.ts upserts it `onConflict: "cron_name"` — one row per cron
+  // name, shared by the whole platform. Every one of this tree's 130 cron routes
+  // is a platform-wide sweep, so the SET of rows is genuinely platform
+  // infrastructure and a broker seeing "daily-briefing is stale" is seeing a
+  // fact about the platform they run on, not about another tenant.
+  //
+  // `last_error_message` IS THE EXCEPTION, because it is free text copied from
+  // whichever run failed most recently — and `recordCronFailure` writes it for
+  // ANY cron with a name, including a tenant-scoped one. That is the one column
+  // on this table that can carry another tenant's data, so it is withheld from
+  // everyone but a platform admin, and the withholding is REPORTED rather than
+  // rendered as a null that reads like "no failure".
   const rows: CronHealthRow[] = (snapshotResult.data ?? []).map((r: any) => {
     const intervalMs = (r.expected_interval_hours ?? 24) * 60 * 60 * 1000
     const isStale = !r.last_run_at
       || Date.now() - new Date(r.last_run_at).getTime() > intervalMs
+    const rawError = r.last_error_message ?? null
+    const withheld = !auth.isPlatformAdmin && rawError !== null
     return {
       cron_name:               r.cron_name,
       cron_path:               r.cron_path ?? null,
@@ -262,7 +380,8 @@ export async function getCronHealth(): Promise<
       last_status:             r.last_status ?? null,
       last_duration_ms:        r.last_duration_ms ?? null,
       last_records_processed:  r.last_records_processed ?? null,
-      last_error_message:      r.last_error_message ?? null,
+      last_error_message:      withheld ? null : rawError,
+      error_message_redacted:  withheld,
       expected_interval_hours: r.expected_interval_hours ?? 24,
       is_stale:                isStale,
       run_count_7d:            run7d[r.cron_name] ?? 0,

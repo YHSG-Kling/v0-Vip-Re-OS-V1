@@ -128,11 +128,13 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
     const result = await dispatchCtvCampaignAction(campaignId)
     setBusyCampaignId(null)
     if (result.dispatched) {
-      toast.success("Dispatched to Vibe")
+      toast.success("Launched on Vibe — your campaign is live")
+      if (launchPackage?.campaignId === campaignId) setLaunchPackage(null)
       router.refresh()
     } else {
-      // Honest refusal — the expected outcome today.
-      toast.info(`Not dispatched: ${result.reason}`)
+      // Real Vibe error (or not connected) — surfaced honestly; the manual
+      // vibe.co + Mark-as-launched path remains available.
+      toast.error(`Launch failed: ${result.reason}`)
     }
   }
 
@@ -168,8 +170,8 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
         </CardHeader>
         <CardContent className="text-xs text-muted-foreground">
           {vibeConnected
-            ? "A Vibe credential is on file, but Vibe API dispatch awaits the vendor API contract — campaigns stage as launch packages and are launched in the Vibe dashboard."
-            : "No Vibe credential is connected (Integrations → provider 'vibe'). Campaigns still stage fully as launch packages; you launch them in the Vibe dashboard."}
+            ? "Vibe is connected — the OS launches campaigns for you: it uploads the creative, creates the campaign + geo-targeted strategy, and publishes on Vibe. No trip to vibe.co needed."
+            : "No Vibe credential is connected (Integrations → provider 'vibe'). Campaigns still stage fully as launch packages; connect Vibe to launch in one click, or launch in the Vibe dashboard and press 'Mark as launched'."}
         </CardContent>
       </Card>
 
@@ -288,20 +290,37 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                   Creative video
                 </a>
               </Button>
-              <Button variant="outline" size="sm" asChild>
-                <a href={launchPackage.vibeDeepLink} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="h-4 w-4 mr-1" />
-                  Open vibe.co
-                </a>
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => handleMarkLaunched(launchPackage.campaignId)}
-                disabled={busyCampaignId === launchPackage.campaignId}
-              >
-                <CheckCircle className="h-4 w-4 mr-1" />
-                Mark as launched
-              </Button>
+              {vibeConnected ? (
+                // Connected → launch on Vibe from inside the app (upload creative,
+                // create campaign + geo-targeted strategy, publish). No trip to vibe.co.
+                <Button
+                  size="sm"
+                  className="bg-violet-600 hover:bg-violet-700"
+                  onClick={() => handleTryDispatch(launchPackage.campaignId)}
+                  disabled={busyCampaignId === launchPackage.campaignId}
+                >
+                  <Tv className="h-4 w-4 mr-1" />
+                  {busyCampaignId === launchPackage.campaignId ? "Launching…" : "Launch on Vibe now"}
+                </Button>
+              ) : (
+                // Not connected → the manual path: launch on vibe.co, confirm here.
+                <>
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={launchPackage.vibeDeepLink} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="h-4 w-4 mr-1" />
+                      Open vibe.co
+                    </a>
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => handleMarkLaunched(launchPackage.campaignId)}
+                    disabled={busyCampaignId === launchPackage.campaignId}
+                  >
+                    <CheckCircle className="h-4 w-4 mr-1" />
+                    Mark as launched
+                  </Button>
+                </>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -362,14 +381,17 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                     {c.status === "draft" && (
                       <>
                         <Button
-                          variant="outline"
+                          variant={vibeConnected ? "default" : "outline"}
                           size="sm"
+                          className={vibeConnected ? "bg-violet-600 hover:bg-violet-700" : undefined}
                           onClick={() => handleTryDispatch(c.id)}
                           disabled={busyCampaignId === c.id}
-                          title="Attempts API dispatch — refuses honestly until Vibe API access is connected"
+                          title={vibeConnected
+                            ? "Launch this campaign on Vibe from inside the app"
+                            : "Connect Vibe (Integrations → 'vibe') to launch in-app; otherwise launch on vibe.co and mark launched"}
                         >
                           <Send className="h-4 w-4 mr-1" />
-                          Try auto-dispatch
+                          {vibeConnected ? "Launch on Vibe" : "Try auto-dispatch"}
                         </Button>
                         <Button
                           size="sm"

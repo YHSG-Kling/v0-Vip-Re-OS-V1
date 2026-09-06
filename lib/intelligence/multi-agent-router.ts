@@ -1,4 +1,16 @@
-"use server"
+// NOT a server-action module (2026-09-03, integrator, CLAUDE.md §4). The
+// module-level "use server" that stood here made every export a public HTTP
+// endpoint onto a service client: getActiveSessions(brokerageId) and
+// getAgentMetrics(brokerageId) answered ANY tenant's agent sessions to any
+// signed-in caller, and endAgentSession / clearHumanOverride mutated any
+// tenant's rows — the parameter-supplied-tenant IDOR shape. The browser now
+// reaches these only through app/actions/coordination.ts, which resolves the
+// tenant from the session and proves the row is the caller's first. The
+// in-process callers stay: app/api/cron/agent-health-check (cron secret),
+// app/api/intelligence/coordinate (INTERNAL_API_SECRET), app/dashboard/
+// coordination/page.tsx (via the gated actions). `server-only` fails a future
+// client import at build time.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -165,29 +177,31 @@ export async function routeToAgent(request: RouteRequest): Promise<RouteResult> 
     }
   }
   
-  // Step 7: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_SESSION_STARTED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    agent_id: request.agentId,
-    payload: {
+  // Step 7: Kernel event — audit row + reactor (`payload` → `metadata`, the column
+  // every reader uses; the bare inserts here reached nothing downstream).
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_SESSION_STARTED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    agentId: request.agentId,
+    metadata: {
       session_id: newSession.id,
       agent_type: agentType,
       capability: request.capability,
       priority: request.priority || 'normal',
     },
   })
-  
+
   // Step 8: Dispatch task
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_TASK_DISPATCHED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    agent_id: request.agentId,
-    payload: {
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_TASK_DISPATCHED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    agentId: request.agentId,
+    metadata: {
       session_id: newSession.id,
       agent_type: agentType,
       capability: request.capability,
@@ -220,13 +234,14 @@ interface HandoffRequest {
 async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
   const supabase = createServiceClient()
   
-  // Log handoff initiated event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_HANDOFF_INITIATED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    payload: {
+  // Handoff initiated — audit row + reactor.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_HANDOFF_INITIATED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    metadata: {
       from_session_id: request.fromSessionId,
       from_agent_type: request.fromAgentType,
       to_agent_type: request.toAgentType,
@@ -282,13 +297,13 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
     }
   }
   
-  // Log handoff completed event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_HANDOFF_COMPLETED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    payload: {
+  // Handoff completed — audit row + reactor.
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_HANDOFF_COMPLETED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    metadata: {
       from_session_id: request.fromSessionId,
       from_agent_type: request.fromAgentType,
       to_session_id: newSession.id,
@@ -358,14 +373,15 @@ export async function escalateToHuman(params: {
     },
   })
   
-  // Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_ESCALATED_TO_HUMAN,
-    entity_type: session.entity_type,
-    entity_id: session.entity_id,
-    brokerage_id: session.brokerage_id,
-    agent_id: session.assigned_agent_id,
-    payload: {
+  // Kernel event — audit row + reactor.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_ESCALATED_TO_HUMAN,
+    entityType: session.entity_type,
+    entityId: session.entity_id,
+    brokerageId: session.brokerage_id,
+    agentId: session.assigned_agent_id,
+    metadata: {
       session_id: params.sessionId,
       agent_type: session.agent_type,
       reason: params.reason,
@@ -409,19 +425,20 @@ export async function endAgentSession(params: {
     })
     .eq('id', params.sessionId)
   
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_SESSION_ENDED,
-    entity_type: session.entity_type,
-    entity_id: session.entity_id,
-    brokerage_id: session.brokerage_id,
-    agent_id: session.assigned_agent_id,
-    payload: {
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_SESSION_ENDED,
+    entityType: session.entity_type,
+    entityId: session.entity_id,
+    brokerageId: session.brokerage_id,
+    agentId: session.assigned_agent_id,
+    metadata: {
       session_id: params.sessionId,
       agent_type: session.agent_type,
       outcome: params.outcome,
       summary: params.summary,
-      duration_ms: session.started_at 
-        ? Date.now() - new Date(session.started_at).getTime() 
+      duration_ms: session.started_at
+        ? Date.now() - new Date(session.started_at).getTime()
         : null,
     },
   })

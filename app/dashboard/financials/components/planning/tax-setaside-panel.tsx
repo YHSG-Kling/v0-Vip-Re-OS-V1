@@ -24,6 +24,9 @@ export function TaxSetasidePanel({ ytdGCI, setAsidePercent, onUpdatePercent }: T
   const [plan, setPlan] = useState<Plan | null>(null)
   const [loading, setLoading] = useState(true)
   const [saved, setSaved] = useState(false)
+  // TENANT OPTION (m574): tax assistance is opt-in per brokerage. When the action refuses with the
+  // disabled sentinel, the panel explains quietly instead of rendering tools every save would refuse.
+  const [disabledByBrokerage, setDisabledByBrokerage] = useState(false)
   const [pending, startTransition] = useTransition()
 
   const loadPlan = () => {
@@ -32,6 +35,8 @@ export function TaxSetasidePanel({ ytdGCI, setAsidePercent, onUpdatePercent }: T
         setPlan(res.plan)
         setLocalPercent(res.profile.setAsidePercent)
         onUpdatePercent(res.profile.setAsidePercent)
+      } else if ((res.error ?? "").startsWith("tax_assistance_disabled")) {
+        setDisabledByBrokerage(true)
       }
       setLoading(false)
     })
@@ -65,6 +70,25 @@ export function TaxSetasidePanel({ ytdGCI, setAsidePercent, onUpdatePercent }: T
       if (res.success) { toast.success(`Q${quarter} estimated payment recorded`); loadPlan() }
       else toast.error("Could not record the payment", { description: res.error })
     })
+  }
+
+  if (disabledByBrokerage) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <PiggyBank className="h-5 w-5 text-muted-foreground" />
+            Tax Set-Aside & Quarterly Estimates
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Tax assistance isn&apos;t enabled for your brokerage. A broker or admin can turn it on under
+            Settings → Commission &amp; Offerings.
+          </p>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (

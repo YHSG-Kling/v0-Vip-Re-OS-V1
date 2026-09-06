@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { collectError } from '@/lib/errors/collect-error'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
@@ -54,6 +55,10 @@ export async function initiateAIISAEngagement(
   opts?: { forceChannel?: 'email' | 'sms' | 'phone' | 'direct_mail' }
 ) {
   const supabase = createServiceClient()
+  // Hoisted so the catch can anchor the error row to a tenant. Every console that
+  // reads automation_errors filters on brokerage_id — an unanchored row is written
+  // and then invisible, which is the same outcome as not writing it.
+  let brokerageId: string | null = null
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
@@ -89,6 +94,51 @@ export async function initiateAIISAEngagement(
     if (hasSession && ctx.brokerageId && lead.brokerage_id !== ctx.brokerageId) {
       return { success: false, reason: 'Forbidden' }
     }
+    brokerageId = (lead.brokerage_id as string) ?? null
+
+    // ── CONVERSION FINALITY — the FIRST stop, and a RE-ROUTE, not a drop ─────
+    //
+    // This function SELECTED `contact_id` (see the select above) and then never
+    // refused on it. Every other stop it has — agent_id, 'representation',
+    // is_active===false — passes cleanly for a lead converted through
+    // lib/kernel/crm.ts:convertLeadToContact, which stamped `contact_id` and left
+    // the lead ACTIVE. So the canonical ISA first-touch door was still
+    // dispatching email / SMS / phone / direct mail at people who had already
+    // become clients.
+    //
+    // The ruling is "only contacts get the actions" — NOT "the action
+    // disappears". A contact-side twin of this exact entry point already exists,
+    // so the engagement is HANDED to it rather than dropped. An unreadable lead
+    // never reaches here (the read above throws into the catch, which files an
+    // automation_errors row), and a converted lead with no resolvable contact
+    // REFUSES rather than falling through — the reason travels back to the
+    // caller either way, so a skip is never silent.
+    //
+    // CALLER NOTE: `opts.forceChannel` does not survive the re-route — the
+    // contact lane picks the channel from the CONTACT's own stored preferences
+    // and opt-out state, which is the correct authority for a converted person.
+    // The one caller that force-channels a converted lead
+    // (app/api/contacts/send-isa-email/route.ts, which looks up
+    // `leads WHERE contact_id = <contact>` and is therefore ALWAYS aiming at a
+    // converted lead) is owned by another lane and is reported, not edited.
+    {
+      const { conversionVerdictForRow, describeConversionRefusal } =
+        await import('@/lib/contact-promotion/conversion-finality')
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        if (verdict.contactId) {
+          const { initiateAIISAContactEngagement } =
+            await import('@/app/actions/ai-isa/initiate-contact-engagement')
+          const rerouted = await initiateAIISAContactEngagement(verdict.contactId, 'reactivation')
+          return {
+            ...rerouted,
+            rerouted_to_contact: verdict.contactId,
+            reason: rerouted.reason ?? describeConversionRefusal(verdict, 'lead engagement'),
+          } as any
+        }
+        return { success: false, reason: `stop:conversion_check`, error: verdict.reason }
+      }
+    }
 
     if (lead.agent_id) {
       return { success: false, reason: 'Lead already assigned to agent' }
@@ -112,6 +162,13 @@ export async function initiateAIISAEngagement(
     }
 
     // ── Contact-level stops ─────────────────────────────────────────────────
+    // Past the conversion guard above, `lead.contact_id` is always null, so this
+    // block and the phone/SMS branches it feeds no longer fire on THIS path —
+    // which is the ruling working as intended (a lead is email / direct-mail
+    // only; a converted person is engaged as a CONTACT, through
+    // initiateAIISAContactEngagement). Kept as the defence-in-depth read rather
+    // than deleted: it is what makes a contact-linked lead fail safely instead of
+    // being treated as consented.
     let contactRow: Record<string, any> | null = null
     if (lead.contact_id) {
       const { data } = await supabase
@@ -236,13 +293,15 @@ export async function initiateAIISAEngagement(
     )
   } catch (error: any) {
     console.error('[AIISAEngagement] Error:', error)
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_engagement',
-      error_message: error.message,
-      context_json: JSON.stringify({ leadId }),
+    await collectError({
+      workflowName: 'ai_isa_engagement',
+      errorMessage: error.message,
+      stack: error.stack,
       severity: 'high',
-      status: 'new',
-      created_at: new Date().toISOString(),
+      brokerageId: brokerageId ?? undefined,
+      leadId,
+      context: { leadId },
+      client: supabase,
     })
     return { success: false, error: error.message }
   }
@@ -378,6 +437,38 @@ async function dispatchToChannel(
     // honest "intro is being prepared and will be sent shortly" note.
     const finalEmailBody = await embedVideoInEmail(body, null)
 
+    // ── THEM-FIRST / SITUATIONAL FLOOR ────────────────────────────────────
+    //
+    // OWNER RULING (2026-08-25), verbatim: "we only sent content to leads and
+    // contacts that are personalized and situation, them first messaging."
+    //
+    // This path could emit UNPERSONALIZED copy and did not know it.
+    // `buildFirstTouchEmail` degrades gracefully when a lead carries no facts —
+    // `property_interest` falls back to the literal "properties in the area" and
+    // the motivation line becomes "a few resources that might be useful" — so a
+    // bare lead (no interest, no timeline, no motivation, no city) received a
+    // message that is, by construction, the same message anyone else would get.
+    // Nothing downstream caught it: `evaluateOutbound` grades Fair Housing and
+    // tone, not whether the message is actually about THIS person.
+    //
+    // The floor is the shared one (lib/ai-isa/lead-action-plan.ts), not a second
+    // copy of the rule (§6), and it REFUSES rather than degrading silently. The
+    // refusal is fully observable: `logEmailActivity(..., false, reason)` writes
+    // the `ai_isa_email` activity row for the failed case AND files an
+    // automation_errors row, so a lead the ISA declined to blast is visible work
+    // rather than a lead nobody ever contacted for reasons nobody recorded.
+    const { isPersonalizedForLead } = await import('@/lib/ai-isa/lead-action-plan')
+    const personalized = isPersonalizedForLead({
+      body: finalEmailBody.replace(/<[^>]+>/g, ' '),
+      firstName: lead.first_name ?? null,
+      situationFacts: [lead.property_interest, lead.timeline, lead.motivation_type, lead.city],
+    })
+    if (!personalized.ok) {
+      const why = `first-touch copy is not them-first / situational (${personalized.reason}) — refusing to send generic copy to a lead`
+      await logEmailActivity(leadId, lead.brokerage_id, false, why)
+      return { success: false, reason: 'stop:not_personalized', error: why, channel }
+    }
+
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({
       actorContext: { userId: lead.brokerage_id, role: 'isa', brokerageId: lead.brokerage_id },
@@ -427,7 +518,9 @@ async function dispatchToChannel(
       await handleISAQualificationStarted({ leadId, brokerageId: lead.brokerage_id })
     }
 
-    const shouldSendMail = await shouldTriggerDirectMail(leadId)
+    // The trigger is dual-class since lane W3 2026-09-01 ({ leadId } | { contactId });
+    // this caller genuinely holds a leads.id, so the leadId arm is unchanged.
+    const shouldSendMail = await shouldTriggerDirectMail({ leadId })
     if (shouldSendMail) {
       // Welcome kit = the long-form intro LETTER. The POSTCARD is no longer a static
       // Lob-template piece here — it's the BRAND-VOICED persona postcard the Asset
@@ -466,12 +559,6 @@ async function dispatchToChannel(
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
-    const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
-    if (!vapiAssistantId) {
-      console.error('[AI-ISA] VAPI_ISA_ASSISTANT_ID not set — falling back to email')
-      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
-    }
-
     const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
     const callContext = await buildCallContext({
       brokerageId:   lead.brokerage_id,
@@ -486,68 +573,38 @@ async function dispatchToChannel(
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
-    const { initiateCall } = await import('@/lib/voice/vapi-client')
-    let vapiResponse: { id: string; status: string }
-    try {
-      vapiResponse = await initiateCall({
-        phoneNumber:  phone,
-        assistantId:  vapiAssistantId,
-        contactId:    contactRow.id,
-        brokerageId:  lead.brokerage_id,
-        initiatedBy:  lead.agent_id ?? null,
-        assistantOverrides: {
-          name:         callContext.assistantName,
-          firstMessage: callContext.firstMessage,
-          // voiceConfig shape from buildCallContext: { provider, voiceId, stability, similarityBoost }
-          ...(callContext.voiceConfig?.voiceId
-            ? {
-                voice: {
-                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as any,
-                  voiceId:         callContext.voiceConfig.voiceId,
-                  stability:       callContext.voiceConfig.stability        ?? 0.7,
-                  similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
-                },
-              }
-            : {}),
-          model:          { systemPrompt: callContext.systemPrompt },
-          variableValues: callContext.variables ?? {},
-        },
-      })
-    } catch (err: any) {
-      console.error('[AI-ISA] VAPI call failed, falling back to email:', err.message)
+    // ── ENGINE: Twilio-native (the single voice lane). The per-call ISA persona
+    // (buildCallContext systemPrompt/firstMessage) rides the serverless turn
+    // engine; TCPA + budget gates run inside placeOutboundAiCall, which writes
+    // its own voice_calls ledger row. Honest failure → fall back to email.
+    const { placeOutboundAiCall } = await import('@/lib/voice/twilio-outbound')
+    const { createServiceClient } = await import('@/lib/supabase/service')
+    const placed = await placeOutboundAiCall(createServiceClient(), {
+      toNumber:     phone,
+      contactId:    contactRow.id,
+      brokerageId:  lead.brokerage_id,
+      agentUserId:  lead.agent_id ?? null,
+      initiatedBy:  lead.agent_id ?? null,
+      objective:    'ISA qualification outreach: reconnect, understand where this lead is in their journey (timeline, motivation), and offer to book time with the agent.',
+      contactName:  lead.first_name ?? contactRow.first_name ?? null,
+      firstMessage: callContext.firstMessage ?? null,
+      systemPrompt: callContext.systemPrompt ?? null,
+      // ARMS THE AUTONOMY GATE — unattended qualification dial on a raw lead.
+      // `leadId` is passed too so the suppression and de-conflict gates can key
+      // on the LEAD as well as the contact row minted for it: this path calls
+      // people who exist as a lead first, and suppression recorded against the
+      // lead must still bind.
+      systemSource: "ai_isa",
+      leadId:       lead.id ?? null,
+    })
+    if (!placed.ok) {
+      console.error('[AI-ISA] Twilio call failed, falling back to email:', placed.error)
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
-    // voice_calls row — initiateCall confirmed the call is live
-    const voiceCallRow = await supabase
-      .from('voice_calls')
-      .insert({
-        contact_id:  contactRow.id,
-        brokerage_id: lead.brokerage_id,
-        agent_id:    lead.agent_id ?? null,
-        vapi_call_id: vapiResponse.id,
-        direction:   'outbound',
-        call_type:   'ai_isa_call',
-        status:      'initiated',
-        started_at:  new Date().toISOString(),
-      })
-      .select('id')
-      .single()
-      .then((r) => r.data, () => null)
-
-    // vapi_voice_calls billing row
-    await supabase.from('vapi_voice_calls').insert({
-      voice_call_id: voiceCallRow?.id ?? null,
-      brokerage_id:  lead.brokerage_id,
-      vapi_call_id:  vapiResponse.id,
-      assistant_id:  vapiAssistantId,
-      agent_id:      lead.agent_id ?? null,
-      contact_id:    contactRow.id,
-    }).then(() => {}, () => {})
-
-    // ai_isa_calls — use callPurpose as script_used (not raw systemPrompt)
+    // ai_isa_calls — placeOutboundAiCall already wrote the voice_calls ledger row.
     await supabase.from('ai_isa_calls').insert({
-      voice_call_id:   voiceCallRow?.id ?? null,
+      voice_call_id:   placed.voiceCallId,
       brokerage_id:    lead.brokerage_id,
       contact_id:      contactRow.id,
       lead_id:         null, // contact path — lead already promoted
@@ -562,13 +619,13 @@ async function dispatchToChannel(
       brokerageId: lead.brokerage_id,
       entity: { entityType: 'lead', leadId },
       channel: 'phone',
-      bodySnippet: `AI-ISA outbound call initiated. VAPI call ID: ${vapiResponse.id}`,
+      bodySnippet: `AI-ISA outbound call initiated (Twilio). Call SID: ${placed.callSid}`,
     })
 
     return {
       success:       true,
       callInitiated: true,
-      vapiCallId:    vapiResponse.id,
+      vendorCallId:  placed.callSid,
       channel:       'phone',
     }
   }
@@ -712,13 +769,70 @@ async function dispatchToChannel(
 
 // ─── STATUS QUERY ─────────────────────────────────────────────────────────────
 
+/**
+ * What the ISA has actually done to a lead, and where the lead stands.
+ *
+ * THREE THINGS WERE WRONG HERE and all three are fixed below, because this is
+ * now reachable from the ISA console and a status panel that lies is worse than
+ * no status panel.
+ *
+ * 1. THE ACTIVITY READ COULD NEVER RETURN A ROW. It filtered
+ *    `activities.contact_id = <a LEADS id>`. `activities.contact_id` FKs
+ *    `contacts(id)` (verified live in pg_constraint), and the WRITER of these
+ *    very rows — lib/ai-isa/email-generator.ts:77 — sets `contact_id: null`
+ *    explicitly, with the comment "leads are NOT contacts", and files the lead
+ *    under `entity_type: 'lead' / entity_id: leadId`. So the reader was matching
+ *    a column the writer deliberately leaves NULL: the activity list was
+ *    ALWAYS EMPTY, for every lead, forever, and would have rendered as "the ISA
+ *    has never touched this lead". Reads on (entity_type, entity_id) now, which
+ *    is where the rows are.
+ *
+ * 2. NO AUTH AND NO TENANT. This is a `"use server"` export — a public HTTP
+ *    endpoint — running on the SERVICE client, which bypasses RLS. Anyone who
+ *    could guess a uuid could read any brokerage's lead stage, lead score and
+ *    full ISA activity history. The lead must now be in the caller's own
+ *    brokerage before anything is returned.
+ *
+ * 3. REFUSALS WERE INVISIBLE. Every read was undestructured, so a blocked query
+ *    returned `null` and this function reported stage 'new', score 0 and no
+ *    activity — a confident, wrong answer. Failures are now reported.
+ */
 export async function getAIISAEngagementStatus(leadId: string) {
+  const { getAgentContext } = await import('@/lib/identity/get-agent-context')
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false as const, error: 'Unauthorized' }
+  }
+
   const supabase = createServiceClient()
 
-  const { data: activities } = await supabase
+  // TENANT FIRST. The service client bypasses RLS, so the brokerage predicate is
+  // this function's only tenancy — and it is checked before anything else is read.
+  const { data: lead, error: leadError } = await supabase
+    .from('leads')
+    // ONE STRING LITERAL, NOT A CONCATENATION. supabase-js parses the select at
+    // the TYPE level; splitting it with `+` collapses the row type to
+    // `GenericStringError` and every field access below becomes a TS2339 —
+    // including `lead_stage`, `lead_score` and `agent_id`, which were fine before
+    // the column list grew. Keep it on one line however long it gets.
+    .select('lead_stage, lead_score, agent_id, contact_id, lifecycle_state, first_touched_at, first_touch_channel, email, email_verified, email_opt_out, direct_mail_opt_out, mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile')
+    .eq('id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
+    .maybeSingle()
+
+  if (leadError) {
+    console.error('[getAIISAEngagementStatus] lead read failed:', leadError.message)
+    return { success: false as const, error: 'Could not load that lead.' }
+  }
+  if (!lead) return { success: false as const, error: 'Lead not found' }
+
+  const { data: activities, error: activitiesError } = await supabase
     .from('activities')
-    .select('*')
-    .eq('contact_id', leadId)
+    .select('id, activity_type, title, description, status, outcome, channel, created_at')
+    // The identity class the WRITER uses. See note 1 above.
+    .eq('entity_type', 'lead')
+    .eq('entity_id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
     .in('activity_type', [
       'ai_isa_email',
       'ai_isa_conversation',
@@ -727,31 +841,132 @@ export async function getAIISAEngagementStatus(leadId: string) {
     ])
     .order('created_at', { ascending: false })
 
+  if (activitiesError) {
+    console.error('[getAIISAEngagementStatus] activity read failed:', activitiesError.message)
+    return { success: false as const, error: 'Could not load this lead’s ISA history.' }
+  }
+
   // PASS-2 FIX: the old read filtered messages.contact_id (FKs contacts) by a
   // LEAD id — always empty. The ISA record of truth is isa_outreach_log;
   // inbound threads only exist once a lead becomes a contact (honest zero).
-  const { count: outreachCount } = await supabase
+  const { count: outreachCount, error: outreachError } = await supabase
     .from('isa_outreach_log')
     .select('id', { count: 'exact', head: true })
     .eq('lead_id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
+
+  if (outreachError) {
+    console.error('[getAIISAEngagementStatus] outreach count failed:', outreachError.message)
+    return { success: false as const, error: 'Could not count this lead’s ISA outreach.' }
+  }
+
   const inboundCount = 0
   const outboundCount = outreachCount ?? 0
 
-  const { data: lead } = await supabase
-    .from('leads')
-    .select('lead_stage, lead_score, agent_id')
-    .eq('id', leadId)
-    .maybeSingle()
+  // ── WHAT THE ISA IS GOING TO DO NEXT, AND WHETHER IT WILL SEND IT ─────────
+  //
+  // The console could say what the ISA HAD done and never what it WOULD do, so
+  // the answer to "is anything still going to happen to this lead?" was a shrug.
+  // The plan and the settings gate are the SHARED ones
+  // (lib/ai-isa/lead-action-plan.ts) — this renders them, it does not re-decide
+  // them, so the panel and the cron can never disagree (§6).
+  //
+  // Best-effort by construction: a status panel must not fail because the plan
+  // could not be computed. `nextPlannedTouch: null` renders as "no plan
+  // available", which is honest, rather than as "nothing is planned".
+  let nextPlannedTouch: {
+    channel: string | null
+    wireChannel: string | null
+    code: string
+    reason: string
+    dueAt: string | null
+    /** 'auto_send' → the ISA will send it; 'stage_for_approval' → a human releases it. */
+    autoSendMode: string
+    autoSendReason: string
+  } | null = null
+  try {
+    const {
+      planNextLeadTouch, wireChannelFor, resolveLeadSettingsResolution, leadAutoSendVerdict,
+    } = await import('@/lib/ai-isa/lead-action-plan')
+    const { cohortFromEnrichment: cohortOf } = await import('@/lib/ai-isa/adaptive-reengagement')
+
+    const resolution = await resolveLeadSettingsResolution({ brokerageId: ctx.brokerageId })
+    const settings = resolution.status === 'unreadable'
+      ? (await import('@/lib/ai-isa/settings-types')).DEFAULT_AISA_SETTINGS
+      : resolution.settings
+
+    const [{ data: lastTouch }, { data: stagedRows }] = await Promise.all([
+      supabase.from('isa_outreach_log').select('channel, created_at')
+        .eq('lead_id', leadId).eq('brokerage_id', ctx.brokerageId)
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('agent_client_messages').select('channel')
+        .eq('brokerage_id', ctx.brokerageId).eq('recipient_lead_id', leadId)
+        .in('status', ['proposed', 'approved', 'sent']),
+    ])
+
+    const stagedChannels: Array<'email' | 'video_email' | 'direct_mail'> = []
+    for (const s of (stagedRows ?? []) as Array<{ channel: string }>) {
+      if (s.channel === 'direct_mail') stagedChannels.push('direct_mail')
+      else if (s.channel === 'email') { stagedChannels.push('email'); stagedChannels.push('video_email') }
+    }
+    if (lead.first_touched_at) stagedChannels.push('email')
+
+    // The reel lives in the JSONB, not in a column — ai_video_projects has no
+    // lead_id (live information_schema); the lead reel play stamps
+    // video_metadata.lead_id so a personalized reel routes 1:1.
+    const { count: reelCount } = await supabase
+      .from('ai_video_projects').select('id', { count: 'exact', head: true })
+      .eq('brokerage_id', ctx.brokerageId).eq('video_metadata->>lead_id', leadId)
+
+    const plan = planNextLeadTouch({
+      now: new Date(),
+      settings,
+      touchesSoFar: outboundCount,
+      lastTouchAt: lastTouch?.created_at ? new Date(lastTouch.created_at as string)
+        : (lead.first_touched_at ? new Date(lead.first_touched_at as string) : null),
+      lastChannel: (lastTouch?.channel as string | null) ?? (lead.first_touch_channel as string | null) ?? null,
+      channelsAlreadyStaged: stagedChannels,
+      emailUsable: !!(lead.email && lead.email_verified === true && lead.email_opt_out !== true),
+      mailingVerified: !!(
+        lead.mailing_address_verified === true &&
+        lead.mailing_address && lead.mailing_city && lead.mailing_state && lead.mailing_zip &&
+        lead.direct_mail_opt_out !== true
+      ),
+      reelReady: (reelCount ?? 0) > 0,
+      lifecycleState: (lead.lifecycle_state as string | null) ?? null,
+      cohort: cohortOf(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
+    })
+
+    const wire = plan.channel ? wireChannelFor(plan.channel) : null
+    const gate = leadAutoSendVerdict({ resolution, channel: wire ?? 'email' })
+    nextPlannedTouch = {
+      channel: plan.channel,
+      wireChannel: wire,
+      code: plan.code,
+      reason: plan.reason,
+      dueAt: plan.dueAt ? plan.dueAt.toISOString() : null,
+      autoSendMode: gate.mode,
+      autoSendReason: gate.reason,
+    }
+  } catch (err) {
+    console.error('[getAIISAEngagementStatus] next-touch plan unavailable:', (err as Error)?.message)
+  }
 
   return {
+    success: true as const,
     activities: activities ?? [],
+    nextPlannedTouch,
     conversationStats: {
       inboundMessages: inboundCount,
       outboundMessages: outboundCount,
       totalExchanges: Math.max(inboundCount, outboundCount),
+      /* Inbound is a structural zero, not a measurement: a lead has no message
+       * thread until it converts to a contact. Surfaces must not render it as
+       * "this person never replied". */
+      inboundTracked: false as const,
     },
-    currentStage: lead?.lead_stage ?? 'new',
-    leadScore: lead?.lead_score ?? 0,
-    assignedToAgent: !!lead?.agent_id,
+    currentStage: lead.lead_stage ?? 'new',
+    leadScore: lead.lead_score ?? 0,
+    assignedToAgent: !!lead.agent_id,
   }
 }

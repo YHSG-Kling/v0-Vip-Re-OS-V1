@@ -9,12 +9,12 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { Wallet, TrendingUp, Pencil, Check } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import { estimateSellerNetProceeds, clientEquityFraming } from "@/lib/seller-equity/equity-estimate"
-import { buildPricingScenarios } from "@/lib/seller-equity/scenarios"
+import { buildPricingScenarios, bestNetScenario } from "@/lib/seller-equity/scenarios"
 import { setSellerMortgageBalance } from "@/app/actions/seller-equity"
 
 interface MoveReadinessView { score: number | null; band: string; headline: string; line: string; drivers: string[] }
@@ -45,6 +45,7 @@ export function EquityEstimateCard({
   const est = estimateSellerNetProceeds({ estimatedValue, mortgageBalance: balance, hoaDuesMonthly })
   const framing = clientEquityFraming(est)
   const scenarios = buildPricingScenarios({ estimatedValue, mortgageBalance: balance, hoaDuesMonthly, annualAppreciationPct })
+  const best = bestNetScenario(scenarios)
 
   function save() {
     const parsed = draft.trim() === "" ? null : Number(draft.replace(/[^0-9.]/g, ""))
@@ -130,10 +131,24 @@ export function EquityEstimateCard({
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1.5">What if you…</p>
             <div className="space-y-1">
-              {scenarios.filter((s) => s.netProceeds !== null).map((s) => (
-                <div key={s.key} className="flex items-center justify-between text-sm rounded-md border border-border px-2.5 py-1.5">
+              {scenarios.filter((s) => s.netProceeds !== null).map((s) => {
+                // WHICH ONE ACTUALLY NETS MOST (wave 26). The list rendered flat,
+                // so the seller had to compare the figures themselves — and the
+                // highest net is not always the highest PRICE (an improvement
+                // scenario is net of its cost). bestNetScenario is the pure
+                // answer, already proven by scripts/seller-scenarios-simulator.ts;
+                // it returns null when nothing is scoreable, which this branch
+                // has already excluded.
+                const isBest = best !== null && s.key === best.key
+                return (
+                <div key={s.key} className={`flex items-center justify-between text-sm rounded-md border px-2.5 py-1.5 ${isBest ? "border-emerald-300 bg-emerald-50/60" : "border-border"}`}>
                   <div className="min-w-0">
                     <span className="font-medium">{s.label}</span>
+                    {isBest && (
+                      <span className="ml-1.5 text-[10px] font-semibold text-emerald-700 align-middle">
+                        Nets you most
+                      </span>
+                    )}
                     {s.note && <span className="block text-[10px] text-muted-foreground truncate">{s.note}</span>}
                   </div>
                   <div className="text-right shrink-0 ml-2">
@@ -145,7 +160,8 @@ export function EquityEstimateCard({
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
             <p className="text-[10px] text-muted-foreground mt-1">Estimates only — your agent models these with you for real.</p>
           </div>

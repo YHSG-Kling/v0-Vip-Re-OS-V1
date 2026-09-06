@@ -2,12 +2,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
@@ -107,15 +105,51 @@ export async function syncShowingTimeShowings(params: {
   const fallbackAgentId = (fallbackListing as any)?.agent_id ?? null
 
   let skippedNoParty = 0
+  let skippedForeignShowingId = 0
+  let failedWrite = 0
   for (const s of stShowings) {
     const rowContactId = s.contactId ?? fallbackContactId
     const rowAgentId = s.agentId ?? fallbackAgentId
     if (!rowContactId || !rowAgentId) { skippedNoParty++; continue } // honest skip — never a fake FK ref
-    await supabase
+
+    // showingtime_id is UNIQUE across the whole table, but a ShowingTime id is only
+    // unique within a ShowingTime ACCOUNT. Two brokerages on different accounts can
+    // legitimately produce the same id, and this upsert conflicts on it — which
+    // repointed the other tenant's showing row (listing_id, contact_id, agent_id) to
+    // this caller's listing. Refuse rather than repoint; an external id is not proof
+    // of ownership.
+    const { data: existing } = await supabase
+      .from("showings")
+      .select("id, brokerage_id")
+      .eq("showingtime_id", s.id)
+      .maybeSingle()
+    const existingBrokerageId = (existing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (existingBrokerageId && existingBrokerageId !== auth.brokerageId) {
+      skippedForeignShowingId++
+      continue
+    }
+
+    // STAMP THE TENANT THE GUARD JUST VALIDATED. The skip above only fires when
+    // `existing.brokerage_id` is NON-NULL and foreign — a row this very loop
+    // wrote unstamped comes back with brokerage_id = NULL, `existingBrokerageId`
+    // is null, and the guard falls through and repoints it. So the missing stamp
+    // was not merely invisible to readers, it was disarming the cross-account
+    // showingtime_id defense that sits directly above it. Stamping makes the
+    // guard self-reinforcing: every row this loop writes is one the next pass
+    // can adjudicate.
+    //
+    // The value is the LISTING's own brokerage_id, resolved through the record
+    // (app/actions/open-house.ts:481-498) — a showing is filed against
+    // `listing_id`, so it belongs to whoever owns that home. It is provably
+    // equal to auth.brokerageId here because the check at line 74 returns
+    // Forbidden otherwise; taking it from the record keeps the write correct if
+    // that check is ever loosened, and it is the same value the guard compares.
+    const { error: upsertErr } = await supabase
       .from("showings")
       .upsert(
         {
           listing_id: params.listingId,
+          brokerage_id: listing.brokerage_id,
           showingtime_id: s.id,
           scheduled_at: s.scheduledAt,
           scheduled_date: s.date,
@@ -133,10 +167,25 @@ export async function syncShowingTimeShowings(params: {
         },
         { onConflict: "showingtime_id", ignoreDuplicates: false }
       )
+
+    // supabase-js RESOLVES a refused write, so the previous bare `await` counted
+    // every row as synced whether or not it landed — "permission denied" and
+    // "wrote the row" were the same value. Count the misses instead of
+    // reporting a sync that did not happen.
+    if (upsertErr) {
+      console.error("[syncShowingTimeShowings] upsert failed for showingtime_id", s.id, upsertErr.message)
+      failedWrite++
+    }
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
-  return { success: true, synced: stShowings.length - skippedNoParty, skippedNoParty }
+  return {
+    success: true,
+    synced: stShowings.length - skippedNoParty - skippedForeignShowingId - failedWrite,
+    skippedNoParty,
+    skippedForeignShowingId,
+    failedWrite,
+  }
 }
 
 // ─── SHOWINGTIME MODE: per-showing actions ────────────────────────────────────
@@ -354,8 +403,15 @@ export async function approveShowingRequest(params: {
 
   if (reqErr || !req) return { success: false, error: "Showing request not found" }
 
-  // UPDATE showing_requests
-  await supabase
+  // UPDATE showing_requests.
+  // This used to be a bare `await` with NO error check and no `.select()`, so a
+  // refused or zero-row update was invisible — and the code below then went on
+  // to INSERT a real `showings` row and fire SHOWING_SCHEDULED for an approval
+  // that was never recorded. The seller's approval is the load-bearing fact
+  // here; if it did not land, nothing after it may happen. (This hardening was
+  // ported from app/actions/showings.ts:updateShowingStatus before that
+  // duplicate was deleted — wave 4 slice 2.)
+  const { data: approvedRows, error: approveErr } = await supabase
     .from("showing_requests")
     .update({
       seller_approved: true,
@@ -364,6 +420,12 @@ export async function approveShowingRequest(params: {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
+
+  if (approveErr) return { success: false, error: approveErr.message }
+  if (!approvedRows || approvedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   // Compose scheduled_at from date + start_time
   const scheduledAt = new Date(
@@ -387,10 +449,22 @@ export async function approveShowingRequest(params: {
   }
 
   // INSERT showings — agent from session, not params
+  //
+  // brokerage_id from the LISTING record, resolved above at line 364 and proven
+  // to equal auth.brokerageId by the Forbidden guard at line 369. The showing is
+  // filed against `listing_id`, so the listing's tenant is the row's tenant —
+  // the record-resolved answer argued at app/actions/open-house.ts:481-498. This
+  // insert stamped nothing, while the sibling writers of this same table
+  // (tour-planner.ts:376, ai-showing-management.ts:346) both stamp it; the rows
+  // it produced were the ones no .eq("brokerage_id", …) reader could ever see.
+  //
+  // agent_id stays `approverAgentId`: agents(id), a disjoint id space from
+  // brokerages(id) — never bridge the two.
   const { data: showing, error: showErr } = await supabase
     .from("showings")
     .insert({
       listing_id:         params.listingId,
+      brokerage_id:       listing.brokerage_id,
       contact_id:         params.contactId ?? req.contact_id ?? fallbackSellerContactId, // real party or refuse — never a fake FK ref
       agent_id:           approverAgentId, // agents(id) — resolved + refused above when absent
       scheduled_at:       scheduledAt,
@@ -413,6 +487,25 @@ export async function approveShowingRequest(params: {
     .from("showing_requests")
     .update({ converted_showing_id: showing.id })
     .eq("id", params.requestId)
+
+  // Agent calendar event — MERGED from the deleted
+  // app/actions/showings.ts:confirmShowing (§1 keep-one, lane E2 2026-08-28):
+  // that twin's one capability this survivor lacked. Best-effort: the approval
+  // above is already recorded and error-checked; a refused calendar row must
+  // not un-confirm a showing the buyer's agent has been told about.
+  {
+    const { error: calErr } = await supabase.from("calendar_events").insert({
+      brokerage_id:        auth.brokerageId,
+      entity_type:         "showing_request",
+      entity_id:           params.requestId,
+      event_type:          "showing",
+      start_at:            scheduledAt,
+      is_system_generated: true,
+    })
+    if (calErr) {
+      console.error("[seller-showings] approval calendar_events row refused (showing still approved):", calErr.message)
+    }
+  }
 
   // Kernel sub-event — brokerage_id / actor from session, not params
   await supabase.from("lifecycle_events").insert({
@@ -459,15 +552,27 @@ export async function suggestAlternativeTime(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  const { data: rescheduledRows, error } = await supabase
     .from("showing_requests")
     .update({
       alternative_times: params.proposedTimes,
+      // Ported from the deleted app/actions/showings.ts:updateShowingStatus
+      // (wave 4 slice 2). Proposing new times used to write ONLY the
+      // alternative_times array and leave status = 'pending', so the request
+      // stayed in the "awaiting your decision" queue that getShowingRequests
+      // builds (`.eq("status","pending")`) and the agent was asked to decide on
+      // it again on every visit. 'needs_reschedule' is live-verified against
+      // showing_requests_status_check.
+      status:            "needs_reschedule",
       updated_at:        new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!rescheduledRows || rescheduledRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
@@ -497,7 +602,11 @@ export async function denyShowingRequest(params: {
     return { success: false, error: "Forbidden" }
   }
 
-  const { error } = await supabase
+  // `.select("id")` + a zero-row refusal, ported from the deleted
+  // app/actions/showings.ts:updateShowingStatus. Without it an update RLS
+  // refused came back with error === null and was reported as { success: true }
+  // — the agent was told the request was denied when nothing was written.
+  const { data: deniedRows, error } = await supabase
     .from("showing_requests")
     .update({
       status:       "denied",
@@ -505,8 +614,12 @@ export async function denyShowingRequest(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", params.requestId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!deniedRows || deniedRows.length === 0) {
+    return { success: false, error: "Showing request not found, or you do not have access to it." }
+  }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }

@@ -112,6 +112,21 @@ export async function generateAIResponse(params: {
   // Get auto-response settings
   const { settings } = await getAutoResponseSettings()
 
+  // CONTACT MEMORY — the conversation-insights ledger distilled to ~400 tokens
+  // (topics, objections, buying signals, open questions) so the auto-reply
+  // speaks from what this contact has actually said across channels, not just
+  // the last 10 messages of one thread. buildContextWindow was written for
+  // exactly this injection point and had no caller. Best-effort: no insights
+  // (or a read failure) yields an empty string and the prompt simply omits it.
+  const { userId: memoryUserId, agentId: memoryAgentId, brokerageId: memoryBrokerageId } = await getAgentContext()
+  let contactMemory = ""
+  if (memoryAgentId && memoryBrokerageId) {
+    try {
+      const { buildContextWindow } = await import("@/lib/intelligence/conversation-insights")
+      contactMemory = await buildContextWindow(params.contactId, memoryAgentId, memoryBrokerageId)
+    } catch { /* memory is an enhancement, never a blocker */ }
+  }
+
   // Build context for AI
   const context = {
     contactName: contact?.first_name
@@ -122,18 +137,34 @@ export async function generateAIResponse(params: {
     conversationHistory: messages || [],
     tone: settings?.tone || "professional",
     agentName: user.user_metadata?.full_name || "our team",
+    contactMemory,
+    // §4 — the ledger's tenant rides in from getAgentContext above, not from
+    // params. lib/ai/models.ts books under `if (request.brokerageId)`.
+    brokerageId: memoryBrokerageId,
+    userId: memoryUserId || null,
   }
 
   // Generate AI response — real call: generateSmartReply rides generateTextRouted
   // (routed model + fair-use quota + usage log), compliance-constrained prompt.
   const aiResponse = await generateSmartReply(context)
 
-  // Log the AI response
-  const { agentId } = await getAgentContext()
+  // Log the AI response.
+  //
+  // THE TENANT IS STAMPED. `messages.brokerage_id` is nullable with no backfill,
+  // and this writer omitted it — so every AI auto-response landed with a NULL
+  // tenant and was invisible to any brokerage-filtered reader of that table.
+  // A row nothing can find is the same as a row that was never written, except
+  // that it still went out to the contact.
+  //
+  // The insert result is READ. supabase-js resolves a refused write, so an
+  // unchecked insert reports success while the outbound message it was meant to
+  // record does not exist.
+  const { agentId, brokerageId } = await getAgentContext()
   // messages live cols: conversation_id, contact_id, agent_id, type, direction,
   // subject, body, status, compliance_checked. No content/channel/is_ai_generated/
   // sent_at/compliance_approved fields. ai_auto provenance lives in `type`.
-  await supabase.from("messages").insert({
+  const { error: logError } = await supabase.from("messages").insert({
+    brokerage_id: brokerageId,
     conversation_id: params.conversationId,
     contact_id: params.contactId,
     agent_id: agentId,
@@ -143,6 +174,9 @@ export async function generateAIResponse(params: {
     status: "queued",
     compliance_checked: false,
   })
+  if (logError) {
+    console.error("[ai-auto-response] the AI reply was generated but NOT logged:", logError.message)
+  }
 
   return { success: true, response: aiResponse }
 }
@@ -155,6 +189,13 @@ async function generateSmartReply(context: {
   conversationHistory: any[]
   tone: string
   agentName: string
+  /** Distilled conversation-insights memory (buildContextWindow) — may be "". */
+  contactMemory?: string
+  /** The AI cost ledger's tenant + actor, resolved from the SESSION by the
+   *  caller (§4). Null tenant = nothing books, which is the honest outcome
+   *  for an unauthenticated call, not a silent free ride. */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<string> {
   const recentHistory = context.conversationHistory
     .slice(0, 5)
@@ -165,11 +206,13 @@ async function generateSmartReply(context: {
     .join("\n")
 
   const { text } = await generateText({
+    brokerageId: context.brokerageId ?? null,
+    userId: context.userId ?? null,
     model: resolveModel("openai/gpt-4o-mini"),
     prompt: `You are ${context.agentName}, a professional real estate agent. Write a ${context.tone} reply.
 
 Contact: ${context.contactName} (${context.contactType || "prospect"})
-${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
+${context.contactMemory ? `${context.contactMemory}\n` : ""}${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
 
 Rules:
 - 1–3 sentences, no bullet lists
@@ -184,7 +227,17 @@ Reply:`,
   return text.trim()
 }
 
-// Track behavioral event for lead scoring
+// Track behavioral event for lead scoring.
+//
+// GATED WRAPPER around the one shared recorder,
+// lib/lead-scoring/record-behavioral-event.ts. This action's agent-session gate
+// (auth user + getAgentContext) is right for agent-surface callers and
+// structurally wrong for everyone else — a portal contact or a provider webhook
+// can never hold an agent session, which is why this being the ONLY writer left
+// the canonical scorer's behavioural 30% with no event source. The write itself
+// now lives in the lib recorder so the portal/webhook call sites and this action
+// land the identical row shape; identity and tenant here stay SERVER-RESOLVED
+// (session + getAgentContext), never taken from the params.
 export async function trackBehavioralEvent(params: {
   contactId: string
   eventType: string
@@ -203,172 +256,77 @@ export async function trackBehavioralEvent(params: {
   // behavioral_patterns is a brokerage pattern-definition CATALOG, not an event log.
   // Per-entity events belong in lead_behavioral_data (keyed by lead_id, event_type NOT NULL).
   const { brokerageId } = await getAgentContext()
-  const { error } = await supabase.from("lead_behavioral_data").insert({
-    lead_id: params.contactId,
-    event_type: params.eventType,
-    event_data: {
-      ...(params.eventData || {}),
-      points_awarded: params.pointsAwarded || 0,
-    },
-    brokerage_id: brokerageId,
-    occurred_at: new Date().toISOString(),
+  // The recorder keys cost and score on the tenant — a session with no resolvable
+  // brokerage cannot record, and saying so beats a null sailing into NOT NULL.
+  if (!brokerageId) {
+    return { success: false, error: "no tenant context — event not recorded" }
+  }
+  const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
+  const result = await recordBehavioralEvent({
+    brokerageId,
+    contactId: params.contactId,
+    eventType: params.eventType,
+    eventData: params.eventData || {},
+    // PASSED THROUGH, NOT DEFAULTED. `|| 0` turned "the caller said nothing about
+    // points" into "the caller explicitly said this event is worth zero" — and
+    // those are different facts to the recorder's vocabulary gate, which admits an
+    // UNSCORED event type only when the caller states what it is worth. With the
+    // fabricated zero this endpoint could file any string as an event type and
+    // have it score 0 forever while reporting success. `undefined` now means
+    // undefined, and an unscored type without stated points is refused with a
+    // reason the caller receives.
+    pointsAwarded: params.pointsAwarded,
   })
 
-  if (error) {
-    console.error("Error tracking behavioral event:", error)
-    return { success: false, error: error.message }
+  if (!result.recorded) {
+    return { success: false, error: result.reason ?? "not recorded" }
   }
 
-  // Recalculate lead score
-  await calculateLeadScore(params.contactId)
+  // Recalculate lead score through the CANONICAL scorer (multi-factor baseline +
+  // the behavioural layer that reads this very event log). Behaviour tracking is
+  // best-effort telemetry: a scoring failure must not fail the tracking call.
+  try {
+    const { calculateLeadScore } = await import("@/lib/services/lead-management.service")
+    await calculateLeadScore({ id: params.contactId, table: "contacts" })
+  } catch (scoreErr) {
+    console.error("[ai-auto-response] scoring after behavioural event failed:", scoreErr)
+  }
 
   return { success: true }
 }
 
-/**
- * LEGACY local scorer (auto-response context).
- *
- * @deprecated New callers should use `calculateLeadScore` from
- * `lib/services/lead-management.service.ts` (the orchestrator wrapping the
- * canonical Layer 1 multi-factor scorer). This local function predates the
- * canonical layering and remains only for the auto-response flow until that
- * caller is migrated. Do NOT add new callers.
- *
- * See `lib/lead-scoring/LAYERING.md` for full layering rules.
- */
-export async function calculateLeadScore(contactId: string) {
-  const supabase = await createClient()
-
-  // Get all behavioral events for this contact (lead_behavioral_data event log)
-  const { data: events } = await supabase
-    .from("lead_behavioral_data")
-    .select("*")
-    .eq("lead_id", contactId)
-    .order("occurred_at", { ascending: false })
-
-  // Get contact info
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("id", contactId)
-    .single()
-
-  if (!contact || !events) {
-    return { success: false, error: "Contact or events not found" }
-  }
-
-  // Calculate score based on events
-  let score = 0
-  let engagement = 0
-  let recency = 0
-  let intent = 0
-
-  // Points for different behaviors
-  const eventPoints: Record<string, number> = {
-    website_visit: 5,
-    email_open: 3,
-    email_click: 10,
-    form_submit: 15,
-    property_view: 8,
-    property_save: 12,
-    showing_request: 25,
-    call_answered: 20,
-    sms_reply: 10,
-    cma_request: 30,
-    document_download: 15,
-  }
-
-  // Calculate engagement score (last 30 days)
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-
-  events.forEach((event) => {
-    const eventDate = new Date(event.occurred_at)
-    const points = eventPoints[event.event_type] || event.event_data?.points_awarded || 0
-
-    score += points
-
-    if (eventDate > thirtyDaysAgo) {
-      engagement += points
-    }
-
-    // Recency score (more recent = higher score)
-    const daysSinceEvent = Math.floor(
-      (Date.now() - eventDate.getTime()) / (1000 * 60 * 60 * 24)
-    )
-    if (daysSinceEvent < 7) {
-      recency += points * 2 // Double points for activity in last 7 days
-    } else if (daysSinceEvent < 30) {
-      recency += points
-    }
-  })
-
-  // Intent score based on high-value actions
-  const highIntentEvents = events.filter(
-    (e) =>
-      e.event_type === "showing_request" ||
-      e.event_type === "cma_request" ||
-      e.event_type === "document_download"
-  )
-  intent = highIntentEvents.length * 20
-
-  // Normalize scores
-  const totalScore = Math.min(100, Math.floor(score / 10))
-  const engagementScore = Math.min(100, engagement)
-  const recencyScore = Math.min(100, recency)
-  const intentScore = Math.min(100, intent)
-
-  // Determine priority tier
-  let priority: "hot" | "warm" | "cold" = "cold"
-  if (totalScore >= 70 || intentScore >= 60) {
-    priority = "hot"
-  } else if (totalScore >= 40 || engagementScore >= 50) {
-    priority = "warm"
-  }
-
-  // Update or insert lead score - using actual schema columns
-  // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
-  const { agentId } = await getAgentContext()
-  const { error } = await supabase.from("lead_scores").upsert({
-    contact_id: contactId,
-    agent_id: agentId,
-    score: totalScore,
-    score_factors: {
-      engagement: engagementScore,
-      recency: recencyScore,
-      intent: intentScore,
-      priority,
-    },
-    ai_confidence: 0.8,
-    computed_at: new Date().toISOString(),
-  })
-
-  if (error) {
-    console.error("Error updating lead score:", error)
-    return { success: false, error: error.message }
-  }
-
-  return {
-    success: true,
-    score: {
-      total: totalScore,
-      engagement: engagementScore,
-      recency: recencyScore,
-      intent: intentScore,
-      priority,
-    },
-  }
-}
+// ─── THE LEGACY LOCAL SCORER IS GONE ─────────────────────────────────────────
+//
+// It was the THIRD calculateLeadScore in the repo and had been marked @deprecated
+// while still being called on this file's live auto-response path. Two things made
+// it worse than a duplicate:
+//
+//   · It normalised with `min(100, floor(totalPoints / 10))`, so a "hot" score of 70
+//     required 700 raw event points — roughly 24 CMA requests or 28 showing requests
+//     from one person. Unreachable in practice, which made getHotLeads below (the
+//     agent dashboard and /leads) empty by arithmetic.
+//   · It wrote lead_scores, which NO authoritative path wrote, while the real score
+//     went to contacts.lead_score. Two tables, two formulas, one lead.
+//
+// What it uniquely got RIGHT was reading lead_behavioral_data as the event log it
+// actually is — per-event-type weights, real occurred_at recency,
+// event_data.points_awarded as a fallback. Those weights are ported verbatim into
+// lib/lead-scoring/behavioral-events.ts and now feed the canonical scorer, which
+// also writes the lead_scores snapshot. So this function's asset survives and its
+// two defects do not.
 
 // Get lead score for a contact
 export async function getLeadScore(contactId: string) {
   const supabase = await createClient()
 
+  // maybeSingle, not single: "no snapshot yet" is an ordinary state for a contact
+  // that has never been scored, and .single() turned it into an error the caller had
+  // to recognise by PostgREST code.
   const { data, error } = await supabase
     .from("lead_scores")
     .select("*")
     .eq("contact_id", contactId)
-    .single()
+    .maybeSingle()
 
   if (error && error.code !== "PGRST116") {
     console.error("Error fetching lead score:", error)
@@ -376,15 +334,27 @@ export async function getLeadScore(contactId: string) {
   }
 
   if (!data) {
-    // Calculate score if it doesn't exist
-    const result = await calculateLeadScore(contactId)
-    if (result.success) {
-      return { success: true, score: result.score }
-    }
+    // No snapshot yet — compute one through the canonical scorer, which writes the
+    // lead_scores row, then read it back rather than returning a differently-shaped
+    // ad-hoc object (the old local scorer returned its own shape here, so callers
+    // saw two different score payloads depending on whether a row existed).
+    const { calculateLeadScore } = await import("@/lib/services/lead-management.service")
+    await calculateLeadScore({ id: contactId, table: "contacts" })
+    const { data: fresh } = await supabase
+      .from("lead_scores")
+      .select("*")
+      .eq("contact_id", contactId)
+      .maybeSingle()
+    return { success: true, score: fresh ?? null }
   }
 
   return { success: true, score: data }
 }
+
+/** The score at or above which a lead is HOT. Same number priorityTier() uses in
+ *  lib/lead-scoring/behavioral-events, stated once so the list and the tier label
+ *  cannot disagree about what "hot" means. */
+const HOT_LEAD_SCORE = 70
 
 // Get hot leads (priority scoring) - using actual schema columns
 // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
@@ -397,12 +367,14 @@ export async function getHotLeads(limit = 50) {
   const { agentId, brokerageId } = context
   const supabase = await createClient()
 
-  // Try lead_scores first, fallback to contacts with high intent_score
+  // lead_scores is UNIQUE (contact_id) — one current row per contact, verified
+  // against the live schema — so ranking by score and taking `limit` needs no
+  // dedupe. The canonical scorer upserts on contact_id to keep it that way.
   const { data, error } = await supabase
     .from("lead_scores")
     .select("id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at")
     .eq("agent_id", agentId)
-    .gte("score", 70)
+    .gte("score", HOT_LEAD_SCORE)
     .order("score", { ascending: false })
     .limit(limit)
 
@@ -411,11 +383,14 @@ export async function getHotLeads(limit = 50) {
     // Fallback: query contacts directly with high intent_score
     const { data: contactsData, error: contactsError } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, email, phone, contact_type, source, intent_score, engagement_score, created_at")
+      .select("id, first_name, last_name, email, phone, contact_type, source, lead_score, lead_temperature, created_at")
       .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
-      .or("intent_score.gte.70,engagement_score.gte.70,status.eq.hot")
-      .order("intent_score", { ascending: false, nullsFirst: false })
+      // 'hot' is a TEMPERATURE, not a status — no writer has ever stored it on
+      // contacts.status (the phantom clause matched nothing); the hot flag lives
+      // on contacts.lead_temperature (live CHECK: cold/hot/warm).
+      .or(`lead_score.gte.${HOT_LEAD_SCORE},lead_temperature.eq.hot`)
+      .order("lead_score", { ascending: false, nullsFirst: false })
       .limit(limit)
 
     if (contactsError) {
@@ -430,8 +405,11 @@ export async function getHotLeads(limit = 50) {
         id: c.id,
         contact_id: c.id,
         agent_id: agentId,
-        score: c.intent_score || c.engagement_score || 70,
-        score_factors: { engagement: c.engagement_score, intent: c.intent_score },
+        // contacts.lead_score IS the canonical current score — the fallback reads the
+        // same number the snapshot would carry, not intent_score/engagement_score,
+        // which are enrichment signals and never were this score.
+        score: c.lead_score ?? HOT_LEAD_SCORE,
+        score_factors: { temperature: c.lead_temperature },
         ai_confidence: 0.8,
         computed_at: new Date().toISOString(),
         contacts: c,

@@ -11,10 +11,18 @@
 export interface RawLeadRow {
   lead_id?: string | null
   processing_status?: string | null
-  dedupe_status?: string | null
   promotion_attempts?: number | null
   error_message?: string | null
 }
+
+// The duplicate verdict RIDES processing_status — `duplicate_pre_enrich` /
+// `duplicate_post_enrich`, the pipeline's own vocabulary (lib/lead-pipeline/
+// pipeline-processor.ts:243,277 via setStatus; the CHECK on
+// raw_scraped_leads.processing_status lists both). This used to read a
+// `dedupe_status` column that NOTHING writes, so every duplicate rendered as
+// "Pending — auto-promotion" on the platform bench (integrator, 2026-09-03;
+// the bench caller never passed dedupe_status either).
+const DUPLICATE_STATUSES: ReadonlySet<string> = new Set(["duplicate_pre_enrich", "duplicate_post_enrich"])
 
 export type RawLeadReviewTone = "promoted" | "duplicate" | "error" | "pending" | "attempted"
 
@@ -29,12 +37,11 @@ export function rawLeadReviewStatus(row: RawLeadRow): RawLeadReview {
   // Already promoted → terminal for the pipeline.
   if (row.lead_id) return { tone: "promoted", label: "Promoted", pipelineRetryEligible: false }
 
-  const dedupe = (row.dedupe_status ?? "").toLowerCase()
-  if (dedupe === "duplicate" || dedupe === "merged") {
+  const status = (row.processing_status ?? "").toLowerCase()
+  if (DUPLICATE_STATUSES.has(status)) {
     return { tone: "duplicate", label: "Duplicate", pipelineRetryEligible: false }
   }
 
-  const status = (row.processing_status ?? "").toLowerCase()
   if (status === "error" || row.error_message) {
     return { tone: "error", label: "Error — pipeline retries", pipelineRetryEligible: true }
   }

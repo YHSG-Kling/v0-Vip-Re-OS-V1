@@ -190,7 +190,12 @@ export async function maybeSendVendorW9Reminder(
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const { DEFAULT_PRODUCT_BRAND } = await import("@/lib/platform/product-brand")
     const esc = (s: string) => s.replace(/</g, "&lt;")
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+    // No invented sender: an unverified from-address fails at SendGrid and
+    // takes the W-9 request with it. Null → the caller sees why.
+    const { resolveOutboundSender } = await import("@/lib/providers/outbound-sender")
+    const resolvedSender = await resolveOutboundSender(svc as any, args.brokerageId)
+    if (!resolvedSender) return { sent: false, reason: "unavailable" }
+    const fromEmail = resolvedSender.email
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
     const why = args.trigger === "payout"
       ? "a payout was initiated to you"

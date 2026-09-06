@@ -11,6 +11,8 @@
  */
 
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { isPlatformStaffIdentity, isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { NextResponse } from "next/server"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 
@@ -21,6 +23,18 @@ export interface AuthResult {
   agentId: string | null  // agents.id — contacts.agent_id → agents.id (FK corrected migration 114)
   brokerageId: string
   userType: string
+  /**
+   * `users.platform_role` — the OTHER half of staff identity, and the half this
+   * shape was missing. Staff identity is dual-column and the columns hold
+   * different vocabularies: 'marketing' is a legal platform_role and is NOT a
+   * legal user_type (users_user_type_check admits fifteen values, not that one),
+   * while the live superadmin on this database is (user_type='admin',
+   * platform_role='superadmin'). Callers that had only `userType` were therefore
+   * judging staff against a column that could not hold the answer — see
+   * isPlatformStaffIdentity in lib/auth/resolve-user-role.ts. Null for every
+   * tenant user.
+   */
+  platformRole: string | null
 }
 
 export interface AuthFailure {
@@ -52,10 +66,13 @@ export async function requireAuth(
     }
   }
 
-  // Resolve brokerage_id and user_type from the users table — never from request body/params
+  // Resolve brokerage_id, user_type AND platform_role from the users table — never
+  // from request body/params. platform_role is read here because staff identity is
+  // dual-column; without it, every caller downstream had to guess staff-ness from
+  // user_type alone, which cannot represent 'marketing' at all.
   const { data: userData } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -79,12 +96,28 @@ export async function requireAuth(
     agentId,
     brokerageId: userData.brokerage_id,
     userType: userData.user_type ?? "agent",
+    platformRole: (userData as { platform_role?: string | null }).platform_role ?? null,
   }
 }
 
 /**
- * Superadmin-only auth guard.
- * Checks users.user_type = 'superadmin' from the database — never from headers.
+ * Superadmin-only auth guard — deliberately NOT the four-role staff roster. It
+ * guards billing, entitlements and subscription routes; those stay with the one
+ * role that owns platform configuration.
+ *
+ * BOTH COLUMNS, for the same reason as everywhere else in this file. It checked
+ * `auth.userType !== "superadmin"` alone, and the platform's ONLY superadmin on this
+ * database is (user_type='admin', platform_role='superadmin') — so every route behind
+ * this guard was refusing the person it exists to admit. Adding the platform_role
+ * marker only admits the genuine superadmin; it widens to nobody else, because
+ * 'superadmin' in platform_role is written solely by the superadmin-gated staff CRUD.
+ * This is exactly the shape public.is_platform_admin() uses in RLS.
+ *
+ * TOMBSTONE (ruling 1, 2026-08-24): the test was spelled inline here as
+ * `auth.userType !== "superadmin" && auth.platformRole !== "superadmin"`. Survivor:
+ * lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity — the ONE
+ * definition, which additionally refuses the `ai_isa_system` service accounts by
+ * name rather than by string inequality.
  */
 export async function requireSuperadminAuth(
   supabase: SupabaseClient
@@ -92,7 +125,7 @@ export async function requireSuperadminAuth(
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth
 
-  if (auth.userType !== "superadmin") {
+  if (!isPlatformSuperadminIdentity(auth.userType, auth.platformRole)) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -105,9 +138,23 @@ export async function requireSuperadminAuth(
 }
 
 /**
- * Platform-staff auth guard. Allows superadmin AND support — the two platform-level
- * roles with cross-brokerage visibility. Use for platform governance surfaces
- * (vendor-spend ledger, observability) that brokerage users must never see.
+ * Platform-staff auth guard — the four roles the owner named (superadmin, admin,
+ * marketing, support). Use for platform governance surfaces (vendor-spend ledger,
+ * raw-lead ingestion, observability) that brokerage users must never see.
+ *
+ * THIS WAS A FOURTH HAND-ROLLED ROSTER AND IT WAS WRONG IN BOTH DIRECTIONS. It read
+ * `auth.userType !== "superadmin" && auth.userType !== "support"` — a roster of
+ * platform_role values tested against user_type. Consequences, measured live rather
+ * than reasoned about:
+ *
+ *   • It ADMITTED any tenant user whose user_type happens to be 'support'. That is
+ *     a legal tenant user_type, unconnected to platform employment.
+ *   • It REFUSED the platform's only superadmin, whose row is
+ *     (user_type='admin', platform_role='superadmin').
+ *   • It could never admit a `marketing` staffer, because 'marketing' is not a legal
+ *     user_type — users_user_type_check does not list it.
+ *
+ * It now delegates to the one identity gate, which reads both columns.
  */
 export async function requirePlatformStaffAuth(
   supabase: SupabaseClient
@@ -115,7 +162,7 @@ export async function requirePlatformStaffAuth(
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth
 
-  if (auth.userType !== "superadmin" && auth.userType !== "support") {
+  if (!isPlatformStaffIdentity(auth.userType, auth.platformRole)) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -128,8 +175,26 @@ export async function requirePlatformStaffAuth(
 }
 
 /**
- * Broker/Admin auth guard.
- * Allows broker, admin, and superadmin roles.
+ * Broker/Admin auth guard — the TENANT-ADMIN roster, asked of a route.
+ *
+ * ── WHAT IT IS NOT, since the team-tier ruling ──────────────────────────────
+ *
+ * This is `isAdminOrBroker` with a 403 attached, so it answers "is this caller a
+ * tenant admin" and NOTHING about rows. `team_lead` has always been in
+ * TENANT_ADMIN_USER_TYPES, so this guard has always admitted a team lead — which
+ * was harmless while team leads reached no lead data, and is not harmless now.
+ *
+ * A LEAD route must therefore NOT stop here. lib/auth/lead-visibility.ts is the
+ * one lead answer, and it returns a ROW SCOPE this boolean cannot carry; its
+ * single remaining caller, app/api/leads/process-pipeline/route.ts, keeps this
+ * gate for the admission and then refuses a team scope it cannot express (see
+ * the comment there). Any new lead route should ask the lead resolver instead of
+ * adding a second caller here.
+ *
+ * It also reads only the user_type half, so it refuses the SECOND SEAT — the
+ * live agent+admin+isa account whose admin authority is a GRANT. A gate guarding
+ * a WRITE should prefer resolveTenantAdmin (lib/auth/resolve-user-role.ts:388),
+ * which mirrors is_brokerage_admin() in RLS.
  */
 export async function requireBrokerAuth(
   supabase: SupabaseClient
@@ -137,7 +202,7 @@ export async function requireBrokerAuth(
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth
 
-  if (!["broker", "admin", "superadmin"].includes(auth.userType)) {
+  if (!isAdminOrBroker({ user_type: auth.userType })) {
     return {
       ok: false,
       response: NextResponse.json(

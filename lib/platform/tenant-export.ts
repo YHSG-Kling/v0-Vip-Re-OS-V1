@@ -18,7 +18,7 @@ export const TENANT_EXPORT_TABLES = [
   "communications", "tasks", "documents",
   "vendors", "referrals",
   "marketing_campaigns", "marketing_assets",
-  "commissions", "commission_records",
+  "agent_commissions",
   "subscriptions", "billing_invoices", "support_tickets",
 ] as const
 

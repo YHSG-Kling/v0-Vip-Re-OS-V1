@@ -5,9 +5,24 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
+// was imported here and never called. The VIDEO provider for this lane is
+// resolved by `resolveVideoProvider` inside the canonical creator this file
+// already delegates to — app/actions/video/create-video-project.ts:669 — and the
+// render itself goes out through lib/did:generateVideo, which is platform-locked
+// to D-ID. Nothing was lost.
+//
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported and never called. The lifecycle event for this lane is emitted by the
+// same creator: app/actions/video/create-video-project.ts:747 inserts
+// lifecycle_events(VIDEO_GENERATION_REQUESTED) and :765 calls processKernelEvent.
+// A second emission here would have double-notified on every render.
+import {
+  buildComplianceSystemBlocks,
+  postcheckScript,
+  PROHIBITED_PHRASE_RED_FLAG_PREFIX,
+  COMPLIANCE_UNKNOWN_PREFIX,
+} from "@/lib/video/script-compliance"
 
 // Every function in this file used to be unauthenticated. Caller could
 // generate AI video scripts attributed to any organization (burning AI
@@ -86,6 +101,16 @@ export async function generateVideoScript(params: {
     return { success: false, error: "Forbidden" }
   }
 
+  // ── THE TIER GATE ──────────────────────────────────────────────────────────
+  // BUILT, not tidied. `canAccessFeature` was imported by this file and called
+  // by nothing, so this AI-spending entry ran with no entitlement check at all.
+  // Key `video_generation` — the spelling already in force at
+  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904.
+  const access = await canAccessFeature(auth.userId, "video_generation")
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Video generation is not available on your plan" }
+  }
+
   const supabase = createServiceClient()
 
   try {
@@ -98,8 +123,16 @@ export async function generateVideoScript(params: {
 
     if (!org) throw new Error("Organization not found")
 
+    // Brand voice + ThemFirst + Fair Housing, injected proactively — the same
+    // blocks the /dashboard/videos/create wizard uses. This path had the
+    // bespoke checkCompliance() pass below but nothing that told the model
+    // what the brokerage's voice is, so it generated off-brand copy and then
+    // graded it.
+    const complianceBlocks = await buildComplianceSystemBlocks(auth.brokerageId)
+
     // Use AI to generate script from URL content
     const response = await generateAIResponse({
+      system: complianceBlocks.join("\n\n"),
       prompt: `Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
 
 Requirements:
@@ -136,11 +169,70 @@ Return ONLY the script text, no formatting or labels.`,
 
     if (error) throw error
 
-    // Run compliance check
+    // Run compliance check (bespoke AI pass — writes compliance_flags + script_status)
     await checkCompliance(videoQueue.id)
 
+    // Kernel gate, on top of the AI pass. These two are not redundant: the AI
+    // check is a judgement call over a prompt, the kernel gate is the
+    // deterministic rule array shared with every other outbound surface, and
+    // it writes the compliance_events audit row. A deterministic Fair Housing
+    // hit is not overridable by the AI's opinion, so it forces the row back to
+    // needs_revision even if checkCompliance had just approved it.
+    const kernelWarnings = await postcheckScript(
+      { userId: auth.userId, brokerageId: auth.brokerageId },
+      response.text,
+      params.contentCategory === "property_listing" ? "seller" : "buyer",
+    )
+
+    if (kernelWarnings?.length) {
+      const { data: current } = await supabase
+        .from("video_generation_queue")
+        .select("compliance_flags")
+        .eq("id", videoQueue.id)
+        .maybeSingle()
+
+      const existingFlags = Array.isArray(current?.compliance_flags) ? current.compliance_flags : []
+      // THREE THINGS COUNT AS A VIOLATION HERE, not one.
+      //   · FairHousing: — the deterministic rule array, as before.
+      //   · ProhibitedPhrase(blocking): — a word THIS BROKERAGE marked
+      //     `critical` in Settings → Prohibited phrases. The settings screen
+      //     tells the broker in so many words that critical is "the only
+      //     severity that makes content FAIL the scan"; grading it as a mere
+      //     warning on the one lane that HAS a needs_revision lever would make
+      //     that sentence false.
+      //   · Compliance: UNKNOWN — the gate could not run. This lane has a
+      //     `compliance_check_passed` column, and writing "passed" for a check
+      //     that never happened is the fail-open in column form.
+      const kernelFlags = kernelWarnings.map((issue) => ({
+        severity:
+          issue.startsWith("FairHousing:") ||
+          issue.startsWith(PROHIBITED_PHRASE_RED_FLAG_PREFIX) ||
+          issue.startsWith(COMPLIANCE_UNKNOWN_PREFIX)
+            ? "violation"
+            : "warning",
+        issue,
+        suggestion: "Regenerate or edit the script to clear this before rendering.",
+        source: "kernel_gate",
+      }))
+      const hasViolation = kernelFlags.some((f) => f.severity === "violation")
+
+      const { error: mergeError } = await supabase
+        .from("video_generation_queue")
+        .update({
+          compliance_flags: [...existingFlags, ...kernelFlags],
+          ...(hasViolation
+            ? { compliance_check_passed: false, script_status: "needs_revision" }
+            : {}),
+        })
+        .eq("id", videoQueue.id)
+
+      if (mergeError) {
+        console.error("[link-to-video] Failed to merge kernel compliance flags:", mergeError)
+      }
+    }
+
     revalidatePath("/content-studio")
-    return { success: true, videoQueue }
+    return { success: true, videoQueue, complianceWarnings: kernelWarnings }
   } catch (error) {
     console.error("[link-to-video] Generate video script error:", error)
     return { success: false, error: "Failed to generate script" }
@@ -160,7 +252,7 @@ export async function checkCompliance(videoQueueId: string) {
   try {
     const { data: video } = await supabase
       .from("video_generation_queue")
-      .select("*, brokerages(compliance_rules)")
+      .select("*")  // brokerages has no compliance_rules column — the embed failed the whole query
       .eq("id", videoQueueId)
       .single()
 
@@ -253,12 +345,148 @@ export async function startVideoGeneration(videoQueueId: string) {
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
 
+  // ── THE TIER GATE, ON THE PAID RENDER ──────────────────────────────────────
+  // This is the D-ID spend door. It was gated for TENANCY (verifyVideoAccess
+  // above) and for COMPLIANCE (compliance_approved below) but never for
+  // ENTITLEMENT — `canAccessFeature` was imported by this file and called by
+  // nothing.
+  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  if (!entitlement.allowed) {
+    return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
+  }
+
   const supabase = createServiceClient()
 
   try {
-    await supabase.from("video_generation_queue").update({ status: "generating_audio" }).eq("id", videoQueueId)
+    // THIS BUTTON USED TO SET A STATUS AND NOTHING ELSE.
+    //
+    // It wrote status='generating_audio' and returned "Video generation
+    // started" — but no renderer was ever invoked and no row existed for one to
+    // find. The Content Studio table then showed "Generating Audio" forever, and
+    // its Download control was gated on a 'completed' this path could not reach.
+    // The script was real, the compliance check was real, and the middle was
+    // missing entirely.
+    //
+    // The render rail is ai_video_projects: /api/did/generate-video submits the
+    // job, poll-did-videos drives it to completed/failed, and
+    // video-pipeline-reaper fails anything that stalls. The queue row reaches a
+    // terminal state through its project_id via the m365 trigger — so all this
+    // has to do is put the work on that rail.
+    const { data: queued, error: readError } = await supabase
+      .from("video_generation_queue")
+      .select("id, project_id, edited_script, ai_generated_script, source_url, content_category, compliance_approved, user_id, organization_id")
+      .eq("id", videoQueueId)
+      .maybeSingle()
+
+    if (readError) {
+      console.error("[link-to-video] Queue read error:", readError)
+      return { success: false, error: "Could not load the video" }
+    }
+    if (!queued) return { success: false, error: "Video not found" }
+
+    const script = (queued.edited_script || queued.ai_generated_script || "").trim()
+    if (!script) {
+      return { success: false, error: "There is no script to render yet — generate or edit one first." }
+    }
+    // The compliance check already exists on this table and had no gate reading
+    // it. A script that has not cleared it must not reach a paid render.
+    if (queued.compliance_approved !== true) {
+      return {
+        success: false,
+        error: "This script has not passed the compliance check yet. Review it before generating the video.",
+      }
+    }
+
+    // Adopt an existing project on a re-run rather than creating a second one.
+    let projectId = queued.project_id as string | null
+    if (!projectId) {
+      // Through the CANONICAL creator, not a hand-rolled insert — it resolves
+      // the video provider and stamps the provider columns too, and it keeps
+      // ai_video_projects.agent_id written from one place. That column is
+      // mid-migration (FK users(id) today, scheduled to re-point to agents(id);
+      // see scripts/agent-id-repoint-guard.ts), so a second writer passing a
+      // users id would have grown a backlog that may only shrink.
+      const { createVideoProject } = await import("@/app/actions/video/create-video-project")
+      const created = await createVideoProject({
+        brokerageId:     auth.brokerageId ?? "",
+        agentUserId:     queued.user_id ?? auth.userId,
+        title:           `Link-to-video: ${queued.source_url ?? "untitled"}`.slice(0, 200),
+        script,
+        videoType:       "avatar_explainer",
+        backgroundType:  "solid",
+        format:          "vertical",
+        durationSeconds: 60,
+        captionsEnabled: true,
+      })
+
+      if (!created.success || !created.project) {
+        console.error("[link-to-video] Project create error:", created.error)
+        return { success: false, error: created.error ?? "Could not start the render" }
+      }
+      projectId = created.project.id
+
+      const { error: linkError } = await supabase
+        .from("video_generation_queue")
+        .update({ project_id: projectId })
+        .eq("id", videoQueueId)
+      if (linkError) {
+        console.error("[link-to-video] Queue/project link error:", linkError)
+        return { success: false, error: "Could not start the render" }
+      }
+    }
+
+    // Submit the job. generateVideo resolves the agent's own D-ID twin from
+    // agentUserId and REFUSES rather than rendering a stock stranger when the
+    // agent has no avatar configured — so a missing twin reaches the agent as an
+    // instruction instead of a wrong face.
+    const { generateVideo } = await import("@/lib/did")
+    const render = await generateVideo({
+      script,
+      agentUserId: queued.user_id ?? auth.userId,
+      brokerageId: auth.brokerageId ?? "",
+    })
+
+    if (render.status === "error" || !render.videoId) {
+      const reason = render.note ?? "the video provider refused the job"
+      await supabase
+        .from("ai_video_projects")
+        .update({ status: "failed", error_message: `Render not started: ${reason}` })
+        .eq("id", projectId)
+      // The queue row follows to 'failed' through the m365 trigger.
+      revalidatePath("/content-studio")
+      return { success: false, error: reason }
+    }
+
+    // Exactly what poll-did-videos selects on: status='generating' AND
+    // provider_job_id NOT NULL AND provider_metadata->>provider='did'.
+    // mode 'talk' because lib/did/index.ts posts to /talks.
+    const { error: stampError } = await supabase
+      .from("ai_video_projects")
+      .update({
+        status:            "generating",
+        provider_job_id:   render.videoId,
+        provider_status:   "processing",
+        provider_metadata: { provider: "did", mode: "talk", talk_id: render.videoId },
+        error_message:     null,
+      })
+      .eq("id", projectId)
+
+    if (stampError) {
+      console.error("[link-to-video] Provider stamp error:", stampError)
+      return { success: false, error: "The render started but could not be tracked — please retry." }
+    }
+
+    // Counted AFTER the render is on the rail, never before — one increment per
+    // video, at the door that actually spends. `incrementFeatureUsage` was
+    // imported by this file and called by nothing, so every link-to-video render
+    // left the per-tier usage counter untouched.
+    const counted = await incrementFeatureUsage(auth.userId, "video_generation")
+    if (!counted.success) {
+      console.error("[link-to-video] feature_usage_tracking increment failed:", counted.error)
+    }
+
     revalidatePath("/content-studio")
-    return { success: true, message: "Video generation started" }
+    return { success: true, message: "Video generation started", projectId }
   } catch (error) {
     console.error("[link-to-video] Start video generation error:", error)
     return { success: false, error: "Failed to start video generation" }
@@ -277,7 +505,10 @@ export async function getVideoQueue(_userId?: string) {
     // team belongs to caller's brokerage via a separate query).
     const { data: brokerageVideos, error } = await supabase
       .from("video_generation_queue")
-      .select("*")
+      // The rendered file lives on the PROJECT, not the queue row — the queue has
+      // no output column at all, which is why the Content Studio's Download
+      // control was removed as unbackable. Embedding the project restores it.
+      .select("*, ai_video_projects(video_url, thumbnail_url, status, error_message)")
       .eq("organization_id", auth.brokerageId)
       .eq("organization_type", "brokerage")
       .order("created_at", { ascending: false })
@@ -301,7 +532,7 @@ export async function getVideoQueue(_userId?: string) {
     if (teamIds.length > 0) {
       const { data: tv } = await supabase
         .from("video_generation_queue")
-        .select("*")
+        .select("*, ai_video_projects(video_url, thumbnail_url, status, error_message)")
         .in("organization_id", teamIds)
         .eq("organization_type", "team")
         .order("created_at", { ascending: false })
@@ -327,9 +558,33 @@ export async function getVideoDetails(videoQueueId: string) {
   if (!access.ok) throw new Error("Forbidden")
 
   const supabase = createServiceClient()
+
+  // THIS FUNCTION HAD NEVER RETURNED — IT ALWAYS THREW.
+  //
+  // It embedded `video_processing_log(*)` and `video_social_publishes(*)`.
+  // NEITHER TABLE EXISTS in the live database, and in fact NOTHING in the schema
+  // carries a foreign key to video_generation_queue at all, so no relation of any
+  // name could ever have been embedded from this row. PostgREST rejects the whole
+  // query on an unresolvable embed, and the `if (error) throw error` below turned
+  // that into an exception on every single call.
+  //
+  // PROCESSING HISTORY IS REAL, ONE HOP AWAY. video_generation_queue.project_id
+  // FKs ai_video_projects — the rail that actually renders and reaches a terminal
+  // state (see the m365 note in getVideoQueue above) — and video_render_log.project_id
+  // FKs the same project. So the render attempts hang off the PROJECT, not off the
+  // queue row, and that is how they are read here.
+  //
+  // SOCIAL PUBLISHES ARE HONESTLY ABSENT. There is no publish ledger reachable
+  // from a queued video: social_publish_log keys on social_posts.id, and neither
+  // social_posts nor any table between it and ai_video_projects carries a video
+  // link. The queue row's own `social_caption` is as far as the schema goes. Do
+  // not re-add a `video_social_publishes` embed — it has never existed.
   const { data, error } = await supabase
     .from("video_generation_queue")
-    .select("*, video_processing_log(*), video_social_publishes(*)")
+    .select(
+      "*, ai_video_projects(id, title, status, video_provider, provider_job_id, provider_status, video_url, thumbnail_url, error_message, published_at, completed_at, created_at, " +
+        "video_render_log(id, status, provider, provider_job_id, render_duration_seconds, cost_usd, error_message, created_at))",
+    )
     .eq("id", videoQueueId)
     .single()
 

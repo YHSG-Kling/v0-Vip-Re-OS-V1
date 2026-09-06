@@ -2,12 +2,33 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { dispatchEmail } from "@/lib/providers/dispatch"
+import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
+import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// §6 / m561 — ONE vendor-trade vocabulary. Every bench read in this file used to
+// filter with `category ILIKE '%serviceType%'` against a CLOSED CHECK'd
+// vocabulary; benchCategoryFilter normalizes the caller's spelling to a member
+// and REFUSES what it cannot place, so the query is an exact match or there is
+// no query. See lib/kernel/vendor-categories.ts :: benchCategoryFilter.
+import { benchCategoryFilter } from "@/lib/kernel/vendor-categories"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
 // ============================================
 
+/**
+ * ABSORBED (wave 16) from the retired /api/dashboard/data `vendors` branch: a
+ * refused read reported as a FAILURE rather than as an empty result.
+ *
+ * Two reads here resolved without their `error` ever being looked at:
+ *   · the identity read. A refusal made `brokerageId` undefined, which silently
+ *     demoted the caller to the global-vendors-only branch — the brokerage's own
+ *     bench simply vanished and the screen said the marketplace was thin.
+ *   · the vendor_ratings read, whose refusal rendered every vendor as unrated.
+ * The tenant itself was already session-derived; that part was sound.
+ */
 export async function searchVendors(filters: {
   serviceType?: string
   name?: string
@@ -21,11 +42,13 @@ export async function searchVendors(filters: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+
+  if (profileError) throw new Error(`Could not resolve your brokerage: ${profileError.message}`)
 
   const brokerageId = profile?.brokerage_id
 
@@ -53,8 +76,20 @@ export async function searchVendors(filters: {
   }
 
   // Apply filters
+  //
+  // §6 / m561 — WAS `.ilike("category", '%serviceType%')`. The picker that feeds
+  // this offered "escrow" and "surveyor", neither of which was a member of the
+  // then 39-value CHECK, so both returned an empty directory that read as "your
+  // brokerage has no vendors". (`surveyor` became a member at m562 and now
+  // matches exactly; `escrow` normalises to `title`.) And `%lender%`
+  // over-matched, silently folding
+  // every `refinance_lender` into a purchase-lender search. Normalize to a
+  // member, then match it exactly; an unplaceable trade is REFUSED and says so
+  // rather than rendering as an empty bench.
   if (filters.serviceType) {
-    query = query.ilike("category", `%${filters.serviceType}%`)
+    const filter = benchCategoryFilter(filters.serviceType)
+    if (!filter.ok) throw new Error(filter.error)
+    query = query.eq("category", filter.category)
   }
 
   if (filters.name) {
@@ -74,10 +109,12 @@ export async function searchVendors(filters: {
   // Get vendor ratings for each vendor
   const vendorIds = vendors?.map(v => v.id) || []
   
-  const { data: ratings } = await supabase
+  const { data: ratings, error: ratingsError } = await supabase
     .from("vendor_ratings")
     .select("*")
     .in("vendor_id", vendorIds)
+
+  if (ratingsError) throw new Error(`Could not load vendor ratings: ${ratingsError.message}`)
 
   const ratingsMap = new Map(ratings?.map(r => [r.vendor_id, r]))
 
@@ -85,6 +122,158 @@ export async function searchVendors(filters: {
     ...v,
     vendor_rating: ratingsMap.get(v.id) || null
   }))
+}
+
+// ─── MATCHING & AVAILABILITY ────────────────────────────────────────────────
+// Moved here from multi-persona.ts, which was a grab-bag: these two are the
+// only things in the app that answer "who is actually free" and "who is the
+// right one", and they belong on the rail that owns vendors.
+
+/** The brokerage of the signed-in caller. Never taken from the client — a
+ *  caller-supplied brokerageId is a tenant boundary the caller controls. */
+async function callerBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>) {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!profile?.brokerage_id) {
+    throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
+  }
+  return profile.brokerage_id as string
+}
+
+export interface VendorAvailability {
+  /** Bench considered: active vendors of this category on the caller's bench. */
+  consideredCount: number
+  availableCount: number
+  availableVendors: Array<{
+    id: string
+    name: string
+    category: string | null
+    rating: number | null
+    preferred: boolean | null
+    estimated_turnaround_days: number | null
+  }>
+  /** Ids already committed that day, so the UI can say WHY someone is missing. */
+  busyVendorIds: string[]
+}
+
+/**
+ * Who on the bench is free on a given date.
+ *
+ * scheduled_date is a DATE column, so an exact match on YYYY-MM-DD is right.
+ * Two fixes over the version this replaces:
+ *   · the existing-bookings read was not brokerage-scoped, so ANOTHER tenant's
+ *     booking of the same vendor marked your vendor busy;
+ *   · brokerageId arrived as a parameter from the caller.
+ */
+export async function checkVendorAvailability(input: {
+  serviceType: string
+  preferredDate: string
+}): Promise<VendorAvailability> {
+  const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+
+  // §6 / m561 — exact membership, not a substring. An unplaceable trade refuses;
+  // it must not read as "everyone on the bench is busy".
+  const filter = benchCategoryFilter(input.serviceType)
+  if (!filter.ok) throw new Error(filter.error)
+
+  const { data: vendors, error } = await supabase
+    .from("vendors")
+    .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days")
+    .eq("brokerage_id", brokerageId)
+    .eq("status", "active")
+    .eq("category", filter.category)
+
+  if (error) throw error
+  const bench = vendors ?? []
+  if (bench.length === 0) {
+    return { consideredCount: 0, availableCount: 0, availableVendors: [], busyVendorIds: [] }
+  }
+
+  const { data: existingBookings, error: bookingsError } = await supabase
+    .from("vendor_bookings")
+    .select("vendor_id")
+    .eq("brokerage_id", brokerageId)
+    .in("vendor_id", bench.map((v) => v.id))
+    .eq("scheduled_date", input.preferredDate)
+    .in("status", ["booked", "confirmed"])
+
+  // A failed read here would silently report the whole bench as free and let an
+  // agent double-book. Refuse instead of guessing.
+  if (bookingsError) throw bookingsError
+
+  const busyVendorIds = Array.from(new Set((existingBookings ?? []).map((b) => b.vendor_id as string)))
+  const available = bench
+    .filter((v) => !busyVendorIds.includes(v.id))
+    .sort(compareVendors)
+
+  return {
+    consideredCount: bench.length,
+    availableCount: available.length,
+    availableVendors: available.map(({ display_priority: _dp, ...v }) => v),
+    busyVendorIds,
+  }
+}
+
+/**
+ * The single best vendor for a job — the one the form pre-selects.
+ *
+ * `urgency: "urgent"` prefers the fastest turnaround the bench offers, then
+ * falls back to normal ranking; a routine job just takes the best-ranked.
+ *
+ * NOTE ON SCOPE: the version this replaces also took a `propertyCity` and
+ * ranked by it. `vendors` has no city column — it never could have, and the
+ * parameter was accepted and dropped on the floor. Geography is not something
+ * this table can answer, so it is not claimed here.
+ */
+export async function matchVendorToTransaction(input: {
+  serviceType: string
+  urgency?: "routine" | "urgent"
+  /** Optional: exclude anyone already booked that day. */
+  neededOn?: string
+}) {
+  const supabase = await createClient()
+  const brokerageId = await callerBrokerageId(supabase)
+
+  // §6 / m561 — exact membership, not a substring. Returning null because the
+  // spelling was wrong is indistinguishable from "nobody on your bench does
+  // this"; an unplaceable trade refuses in words instead.
+  const filter = benchCategoryFilter(input.serviceType)
+  if (!filter.ok) throw new Error(filter.error)
+
+  const { data: vendors, error } = await supabase
+    .from("vendors")
+    .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days, phone, email")
+    .eq("brokerage_id", brokerageId)
+    .eq("status", "active")
+    .eq("category", filter.category)
+
+  if (error) throw error
+  let bench = vendors ?? []
+  if (bench.length === 0) return null
+
+  if (input.neededOn) {
+    const { data: booked, error: bookedError } = await supabase
+      .from("vendor_bookings")
+      .select("vendor_id")
+      .eq("brokerage_id", brokerageId)
+      .in("vendor_id", bench.map((v) => v.id))
+      .eq("scheduled_date", input.neededOn)
+      .in("status", ["booked", "confirmed"])
+    if (bookedError) throw bookedError
+    const busy = new Set((booked ?? []).map((b) => b.vendor_id as string))
+    const free = bench.filter((v) => !busy.has(v.id))
+    // Everyone booked that day → recommend the best one anyway rather than
+    // returning null; the availability panel already says they are committed.
+    if (free.length > 0) bench = free
+  }
+
+  return pickBestVendor(bench, input.urgency ?? "routine")
 }
 
 export async function getSuggestedVendorsByStage(stage: string) {
@@ -102,18 +291,33 @@ export async function getSuggestedVendorsByStage(stage: string) {
 
   const brokerageId = profile?.brokerage_id
 
-  // Map transaction stages to vendor service types
-  const stageToServiceType: Record<string, string[]> = {
-    INSPECTION: ["inspector", "home_inspector", "inspection"],
-    APPRAISAL: ["appraiser", "appraisal"],
-    FINANCING_PENDING: ["lender", "mortgage", "loan_officer", "financing"],
+  // Map transaction stages to the bench CATEGORY that serves them.
+  //
+  // §6 / m561 — WAS A FOURTH SPELLING OF THE TAXONOMY, expanded into an OR of
+  // substring matches:
+  //
+  //   INSPECTION:        ["inspector", "home_inspector", "inspection"]
+  //   APPRAISAL:         ["appraiser", "appraisal"]
+  //   FINANCING_PENDING: ["lender", "mortgage", "loan_officer", "financing"]
+  //
+  // Of those nine literals only three (`inspector`, `appraiser`, `lender`) are
+  // members of the live 39-value CHECK; the other six could never match a row
+  // and were carried as insurance against the vocabulary they were already
+  // guessing at. Worse, the OR made the over-match unavoidable:
+  // `category.ilike.%lender%` returns every `refinance_lender` too, so the
+  // FINANCING_PENDING panel offered refinance lenders on a purchase deal.
+  //
+  // One member per stage now, resolved through the ONE vocabulary — the retired
+  // spellings above still resolve there (VENDOR_CATEGORY_SYNONYMS), so nothing a
+  // caller could previously match is lost.
+  const stageToServiceType: Record<string, string> = {
+    INSPECTION: "inspector",
+    APPRAISAL: "appraiser",
+    FINANCING_PENDING: "lender",
   }
 
-  const serviceTypes = stageToServiceType[stage]
-  if (!serviceTypes) return []
-
-  // Build OR condition for matching any of the service types
-  const serviceTypeConditions = serviceTypes.map(st => `category.ilike.%${st}%`).join(",")
+  const filter = benchCategoryFilter(stageToServiceType[stage])
+  if (!filter.ok) return []
 
   let query = supabase
     .from("vendors")
@@ -126,7 +330,7 @@ export async function getSuggestedVendorsByStage(stage: string) {
       rating,
       brokerage_id
     `)
-    .or(serviceTypeConditions)
+    .eq("category", filter.category)
 
   // Filter: brokerage vendors OR global vendors
   if (brokerageId) {
@@ -265,7 +469,7 @@ export async function markBookingComplete(bookingId: string) {
   if (!user) throw new Error("Not authenticated")
   const { data: u } = await supabase
     .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!u?.brokerage_id) throw new Error("Not authenticated")
+  if (!u?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Scope the UPDATE by brokerage_id so caller can't complete bookings
   // outside their tenant.
@@ -346,7 +550,7 @@ export async function rateVendorBooking(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Get booking to find vendor — scoped by caller's brokerage so an
   // attacker can't 1-star vendors in another tenant's marketplace.
@@ -398,7 +602,12 @@ export async function rateVendorBooking(data: {
   if (reviewError) throw reviewError
 
   // Recalculate vendor_ratings aggregate (booking rollup) + the weighted review rollup.
-  await recalculateVendorRatings(booking.vendor_id, booking.brokerage_id)
+  // Tenant (booking.brokerage_id) is already PROVEN above: the booking row was read
+  // scoped to the caller's own brokerage. Same two lines as
+  // app/actions/contact-vendor-booking.ts :: rateVendorBookingAsClient — §6, one
+  // shared aggregate computation.
+  const { recalculateVendorRatingsCore } = await import("@/lib/vendor-marketplace/vendor-ratings")
+  await recalculateVendorRatingsCore(supabase, booking.vendor_id, booking.brokerage_id)
   await recomputeVendorReviewStats(booking.vendor_id, booking.brokerage_id)
 
   // Revalidate inside function to avoid module-level server dependency
@@ -407,69 +616,14 @@ export async function rateVendorBooking(data: {
   return { success: true }
 }
 
-export async function recalculateVendorRatings(vendorId: string, brokerageId: string) {
-  const supabase = await createClient()
-
-  // Get all bookings with ratings for this vendor in this brokerage
-  const { data: bookings } = await supabase
-    .from("vendor_bookings")
-    .select("agent_rating, client_rating")
-    .eq("vendor_id", vendorId)
-    .eq("brokerage_id", brokerageId)
-
-  if (!bookings || bookings.length === 0) return
-
-  // Calculate aggregates
-  const agentRatings = bookings.filter(b => b.agent_rating != null).map(b => b.agent_rating)
-  const clientRatings = bookings.filter(b => b.client_rating != null).map(b => b.client_rating)
-  const fiveStars = agentRatings.filter(r => r === 5).length
-  const oneStars = agentRatings.filter(r => r === 1).length
-  
-  const avgAgentRating = agentRatings.length > 0 
-    ? agentRatings.reduce((a, b) => a + b, 0) / agentRatings.length 
-    : null
-  const avgClientRating = clientRatings.length > 0 
-    ? clientRatings.reduce((a, b) => a + b, 0) / clientRatings.length 
-    : null
-
-  // Upsert vendor_ratings
-  const { error } = await supabase
-    .from("vendor_ratings")
-    .upsert({
-      vendor_id: vendorId,
-      brokerage_id: brokerageId,
-      avg_agent_rating: avgAgentRating,
-      avg_client_rating: avgClientRating,
-      total_bookings: bookings.length,
-      five_star_count: fiveStars,
-      one_star_count: oneStars,
-      last_updated: new Date().toISOString(),
-    }, { onConflict: "vendor_id" })
-
-  if (error) {
-    // If unique constraint doesn't exist, insert new record
-    await supabase
-      .from("vendor_ratings")
-      .insert({
-        vendor_id: vendorId,
-        brokerage_id: brokerageId,
-        avg_agent_rating: avgAgentRating,
-        avg_client_rating: avgClientRating,
-        total_bookings: bookings.length,
-        five_star_count: fiveStars,
-        one_star_count: oneStars,
-        last_updated: new Date().toISOString(),
-      })
-  }
-
-  // Also update the main vendors table rating
-  if (avgAgentRating) {
-    await supabase
-      .from("vendors")
-      .update({ rating: avgAgentRating })
-      .eq("id", vendorId)
-  }
-}
+// TOMBSTONE (2026-09-01) — `recalculateVendorRatings(vendorId, brokerageId)` export
+// DELETED. In a "use server" file every export is a public HTTP endpoint (§4), and
+// this one took its tenant from a PARAMETER with no gate — the exact IDOR shape §4
+// names — so any authenticated caller could recompute any brokerage's vendor
+// aggregate. Its only real caller was rateVendorBooking above, which now calls the
+// survivor directly: lib/vendor-marketplace/vendor-ratings.ts ::
+// recalculateVendorRatingsCore, with the tenant it already proved (mirroring
+// app/actions/contact-vendor-booking.ts :: rateVendorBookingAsClient).
 
 export async function getVendorReviews(vendorId: string) {
   const supabase = await createClient()
@@ -486,7 +640,7 @@ export async function getVendorReviews(vendorId: string) {
   // Only show reviews to agents in brokerage, not to clients
   if (!profile?.brokerage_id) return []
 
-  const { data: reviews } = await supabase
+  const { data: reviews, error } = await supabase
     .from("vendor_reviews")
     .select(`
       id,
@@ -495,25 +649,239 @@ export async function getVendorReviews(vendorId: string) {
       headline,
       sub_ratings,
       is_verified,
+      verification_method,
       moderation_status,
+      flag_count,
       vendor_response,
+      vendor_response_at,
       created_at,
       users:user_id(first_name, last_name)
     `)
     .eq("vendor_id", vendorId)
     .eq("brokerage_id", profile.brokerage_id)
+    // A rejected review is a moderation decision that has been made. It was
+    // still being rendered here, so a review an admin had thrown out kept
+    // arguing its case on the vendor's card while counting for nothing in the
+    // weighted average.
+    .neq("moderation_status", "rejected")
     .order("created_at", { ascending: false })
     .limit(20)
 
+  if (error) {
+    console.error("[vendor-marketplace] getVendorReviews failed:", error.message)
+    return []
+  }
   return reviews || []
+}
+
+/**
+ * The reviews of the vendor the CALLER OWNS — the vendor portal's side of the
+ * marketplace. Canonical vendor linkage is user_role_assignments.vendor_id
+ * (`vendors` has no user_id column), the same link /vendor/invoices and
+ * /vendor/connections resolve through.
+ *
+ * Rejected reviews are withheld: a vendor should not be answering a review the
+ * brokerage has already removed.
+ */
+export async function getMyVendorReviews(): Promise<{
+  vendorId: string | null
+  reviews: Array<Record<string, unknown>>
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { vendorId: null, reviews: [] }
+
+  const vendorId = await resolveCallerVendorId(supabase, user.id)
+  if (!vendorId) return { vendorId: null, reviews: [] }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data, error } = await svc
+    .from("vendor_reviews")
+    .select("id, rating, review, headline, sub_ratings, is_verified, verification_method, moderation_status, flag_count, vendor_response, vendor_response_at, created_at")
+    .eq("vendor_id", vendorId)
+    .neq("moderation_status", "rejected")
+    .order("created_at", { ascending: false })
+    .limit(100)
+
+  if (error) {
+    console.error("[vendor-marketplace] getMyVendorReviews failed:", error.message)
+    return { vendorId, reviews: [] }
+  }
+  return { vendorId, reviews: (data ?? []) as Array<Record<string, unknown>> }
+}
+
+/**
+ * The vendors row a signed-in VENDOR user owns, or null for anyone else.
+ * `vendors` has no user_id — user_role_assignments.vendor_id is the link.
+ */
+async function resolveCallerVendorId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<string | null> {
+  // WAS: `.not("vendor_id","is",null).maybeSingle()` with no limit. The error was
+  // already checked here — but the check could not save it, because the failure it
+  // would catch is one this shape CREATES: user_role_assignments is UNIQUE on
+  // (user_id, role), NOT on user_id, so the constraint permits a user to hold two
+  // vendor-bearing grants under different roles, and `.maybeSingle()` over two rows
+  // errors. This helper would then return null and every caller below would read the
+  // vendor as "not a vendor". Read all the grants and choose.
+  const grantsResult = await readRoleGrants(supabase, userId)
+  if (!grantsResult.ok) {
+    console.error("[vendor-marketplace] vendor linkage read failed:", grantsResult.error)
+    return null
+  }
+  const { vendorId, ambiguous } = selectVendorId(grantsResult.grants)
+  if (ambiguous) {
+    console.error("[vendor-marketplace] user holds grants for MORE THAN ONE vendor; refusing to guess:", userId)
+    return null
+  }
+  return vendorId
+}
+
+/**
+ * The brokerage's review moderation queue — everything screenReview or a
+ * community flag routed to a human. Admin/broker only; without this reader
+ * moderateVendorReview had nothing to moderate.
+ */
+export async function getVendorReviewModerationQueue(): Promise<Array<{
+  id: string
+  vendor_id: string
+  vendor_name: string | null
+  rating: number | null
+  review: string | null
+  headline: string | null
+  is_verified: boolean
+  verification_method: string | null
+  moderation_status: string
+  flag_count: number
+  created_at: string | null
+  reviewer_name: string | null
+  /**
+   * ORPHAN DOCTRINE §1.2 — BUILD THE MISSING HALF (no duplicate existed).
+   *
+   * `vendor_review_flags.reason` was written by flagVendorReview (:994) — one
+   * of five codes: inappropriate | fake | competitor | pii | irrelevant — and
+   * read by NOBODY: the only other read of that table is a `count`. So the
+   * flag count reached this queue and the REASON never did, and an admin was
+   * asked to approve or reject a review while being told that three people
+   * objected but not to what. A moderation queue that cannot be worked.
+   */
+  flag_reasons: Array<{ reason: string; count: number }>
+  /**
+   * §1.2 — `vendor_reviews.booking_id` and `.transaction_id` were written by
+   * rateVendorBooking (:586) and read by NOBODY, so the one fact that
+   * distinguishes a real customer's complaint from a drive-by — that this
+   * review hangs off an actual booking or an actual deal — was invisible at
+   * the exact moment a human decides whether to believe it. `is_verified`
+   * carried the boolean; nothing carried the evidence.
+   */
+  booking_id: string | null
+  transaction_id: string | null
+}>> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data: profile, error: profileError } = await svc
+    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+  if (profileError) {
+    console.error("[vendor-marketplace] moderation queue profile read failed:", profileError.message)
+    return []
+  }
+  const brokerageId = (profile as any)?.brokerage_id
+  const isAdmin =
+    isAdminOrBroker({ user_type: String((profile as any)?.user_type) }) ||
+    isAdminOrBroker({ user_type: String((profile as any)?.role) })
+  if (!brokerageId || !isAdmin) return []
+
+  const { data, error } = await svc
+    .from("vendor_reviews")
+    .select(`
+      id, vendor_id, rating, review, headline, is_verified, verification_method,
+      moderation_status, flag_count, created_at, booking_id, transaction_id,
+      vendors:vendor_id(name),
+      users:user_id(first_name, last_name)
+    `)
+    .eq("brokerage_id", brokerageId)
+    .in("moderation_status", ["pending", "under_review"])
+    .order("flag_count", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(200)
+
+  if (error) {
+    console.error("[vendor-marketplace] moderation queue read failed:", error.message)
+    return []
+  }
+
+  // §1.2 — the flag REASONS, tallied per review. One extra scoped read rather
+  // than a per-row N+1; the tenant predicate is the same brokerage_id already
+  // proved above, so a flag filed in another brokerage can never be counted here.
+  const queuedIds = (data ?? []).map((r: any) => r.id as string)
+  const reasonsByReview = new Map<string, Map<string, number>>()
+  if (queuedIds.length > 0) {
+    const { data: flagRows, error: flagError } = await svc
+      .from("vendor_review_flags")
+      .select("review_id, reason")
+      .eq("brokerage_id", brokerageId)
+      .in("review_id", queuedIds)
+      .limit(2000)
+    // §3 — a refused read must not render as "nobody said why": the admin is
+    // told the reasons are unavailable rather than shown an empty list.
+    if (flagError) {
+      console.error("[vendor-marketplace] flag reasons unreadable:", flagError.message)
+      for (const id of queuedIds) reasonsByReview.set(id, new Map([["(flag reasons could not be read)", 0]]))
+    } else {
+      for (const f of (flagRows ?? []) as Array<{ review_id: string; reason: string | null }>) {
+        const perReview = reasonsByReview.get(f.review_id) ?? new Map<string, number>()
+        const reason = f.reason ?? "unspecified"
+        perReview.set(reason, (perReview.get(reason) ?? 0) + 1)
+        reasonsByReview.set(f.review_id, perReview)
+      }
+    }
+  }
+
+  return (data ?? []).map((r: any) => ({
+    id: r.id,
+    vendor_id: r.vendor_id,
+    vendor_name: r.vendors?.name ?? null,
+    rating: r.rating,
+    review: r.review,
+    headline: r.headline,
+    is_verified: !!r.is_verified,
+    verification_method: r.verification_method ?? null,
+    moderation_status: r.moderation_status,
+    flag_count: r.flag_count ?? 0,
+    created_at: r.created_at,
+    reviewer_name: [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ") || null,
+    flag_reasons: [...(reasonsByReview.get(r.id) ?? new Map<string, number>()).entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, count]) => ({ reason, count })),
+    booking_id: r.booking_id ?? null,
+    transaction_id: r.transaction_id ?? null,
+  }))
 }
 
 /**
  * Recompute the WEIGHTED review rollup for a vendor (verified reviews at 1.5×) over its APPROVED reviews,
  * and write review_avg / review_count / verified_review_count onto vendor_ratings. Runs after any review
  * insert / moderation decision. Uses the service client so it isn't blocked by the reviewer's RLS scope.
+ *
+ * UN-EXPORTED (2026-09-01): this was a public HTTP endpoint (§4 — every export in a
+ * "use server" file is one) that took its tenant from a PARAMETER and wrote
+ * vendor_ratings on the SERVICE client, RLS bypassed — any authenticated caller
+ * could overwrite any brokerage's aggregates. Those aggregates are LOAD-BEARING:
+ * lib/kernel/vendor-rating-governance.ts suppresses vendors off vendor_ratings, so
+ * a forged rollup silently benches or un-benches a vendor. Now a module-private
+ * helper; its three callers (rateVendorBooking, submitVendorReview,
+ * moderateVendorReview) each pass a vendorId/brokerageId they PROVED from the
+ * session-derived profile or a brokerage-scoped row read, behind their own gates.
  */
-export async function recomputeVendorReviewStats(vendorId: string, brokerageId: string) {
+async function recomputeVendorReviewStats(vendorId: string, brokerageId: string) {
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
   const { weightedReviewAverage } = await import("@/lib/kernel/vendor-review-moderation")
@@ -567,7 +935,7 @@ export async function submitVendorReview(data: {
 
   const { data: profile } = await svc.from("users").select("brokerage_id, created_at").eq("id", user.id).maybeSingle()
   const brokerageId = (profile as any)?.brokerage_id
-  if (!brokerageId) throw new Error("Not authenticated")
+  if (!brokerageId) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   const { verificationMethod, screenReview } = await import("@/lib/kernel/vendor-review-moderation")
 
@@ -617,15 +985,23 @@ export async function respondToVendorReview(reviewId: string, response: string):
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
 
-  // The caller must own the reviewed vendor (vendor_marketplace_profiles.user_id) — a vendor can only
-  // respond to reviews of itself.
+  // The caller must own the REVIEWED vendor — a vendor can only respond to reviews of itself.
+  //
+  // The check this replaces was `if (!profileVendor && !ownsVendor)`, where
+  // `ownsVendor` was `vendors.select(id).eq("id", review.vendor_id)` — i.e. "does
+  // the reviewed vendor exist". For any real review that is always true, so the
+  // gate passed for EVERY authenticated user and anyone could post the vendor's
+  // one immutable public reply. `vendors` has no user_id column;
+  // user_role_assignments.vendor_id is the canonical linkage (same one
+  // /vendor/invoices and getAllVendorBookings resolve through).
   const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, vendor_response").eq("id", reviewId).maybeSingle()
   if (!review) throw new Error("Review not found")
   if ((review as any).vendor_response) throw new Error("A response has already been submitted (responses are immutable).")
 
-  const { data: profileVendor } = await svc.from("vendor_marketplace_profiles").select("id").eq("user_id", user.id).maybeSingle()
-  const { data: ownsVendor } = await svc.from("vendors").select("id").eq("id", (review as any).vendor_id).maybeSingle()
-  if (!profileVendor && !ownsVendor) throw new Error("Not authorized to respond to this review")
+  const callerVendorId = await resolveCallerVendorId(supabase, user.id)
+  if (!callerVendorId || callerVendorId !== (review as any).vendor_id) {
+    throw new Error("Not authorized to respond to this review")
+  }
 
   const { screenReview } = await import("@/lib/kernel/vendor-review-moderation")
   const screen = screenReview({ rating: 5, body: response.length < 50 ? response.padEnd(50, " ") : response, accountAgeDays: 999 })
@@ -635,6 +1011,9 @@ export async function respondToVendorReview(reviewId: string, response: string):
 
   const { error } = await svc.from("vendor_reviews").update({ vendor_response: response, vendor_response_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", reviewId)
   if (error) throw error
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/vendor/reviews")
   return { ok: true }
 }
 
@@ -650,8 +1029,16 @@ export async function flagVendorReview(reviewId: string, reason: string): Promis
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
 
-  const { data: review } = await svc.from("vendor_reviews").select("id, brokerage_id, moderation_status, flag_count").eq("id", reviewId).maybeSingle()
+  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id, moderation_status, flag_count").eq("id", reviewId).maybeSingle()
   if (!review) throw new Error("Review not found")
+
+  // "Any authenticated user EXCEPT the vendor" — the reviewed vendor cannot flag
+  // its own bad review into the human queue. The docstring claimed this; the code
+  // did not enforce it.
+  const callerVendorId = await resolveCallerVendorId(supabase, user.id)
+  if (callerVendorId && callerVendorId === (review as any).vendor_id) {
+    throw new Error("A vendor cannot flag a review of itself — respond to it instead.")
+  }
 
   const allowed = ["inappropriate", "fake", "competitor", "pii", "irrelevant"]
   const reasonCode = allowed.includes(reason) ? reason : "inappropriate"
@@ -685,14 +1072,24 @@ export async function moderateVendorReview(reviewId: string, decision: "approve"
   const svc = createServiceClient()
   const { data: profile } = await svc.from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
   const brokerageId = (profile as any)?.brokerage_id
-  const isAdmin = ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) || ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+  const isAdmin = isAdminOrBroker({ user_type: String((profile as any)?.user_type) }) || isAdminOrBroker({ user_type: String((profile as any)?.role) })
   if (!brokerageId || !isAdmin) throw new Error("Not authorized")
 
   const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id").eq("id", reviewId).eq("brokerage_id", brokerageId).maybeSingle()
   if (!review) throw new Error("Review not found in your brokerage")
 
-  await svc.from("vendor_reviews").update({ moderation_status: decision === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() }).eq("id", reviewId)
+  const { error: decisionError } = await svc.from("vendor_reviews")
+    .update({ moderation_status: decision === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() })
+    .eq("id", reviewId)
+  // A refused UPDATE resolves rather than throwing — reporting ok:true here
+  // would tell an admin the review was decided while it sat in the queue.
+  if (decisionError) throw decisionError
+
   await recomputeVendorReviewStats((review as any).vendor_id, brokerageId)
+
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath("/dashboard/admin/vendor-approvals")
+  revalidatePath("/dashboard/vendors")
   return { ok: true }
 }
 
@@ -714,12 +1111,19 @@ export async function getVendorCostComparison(serviceType: string) {
 
   if (!profile?.brokerage_id) return []
 
+  // §6 / m561 — exact membership, not a substring. This one is a COST report
+  // (§5): `%lender%` folded refinance lenders into a purchase-lender comparison,
+  // so the per-trade averages it published were computed over a bench that was
+  // not the trade being asked about.
+  const filter = benchCategoryFilter(serviceType)
+  if (!filter.ok) return []
+
   // Get vendors matching the service type
   const { data: vendors } = await supabase
     .from("vendors")
     .select("id, name, category, rating")
     .or(`brokerage_id.eq.${profile.brokerage_id},brokerage_id.is.null`)
-    .ilike("category", `%${serviceType}%`)
+    .eq("category", filter.category)
 
   if (!vendors || vendors.length === 0) return []
 
@@ -782,14 +1186,15 @@ export async function getAllVendorBookings(limit: number = 50) {
   // For brokerage members (broker/admin/agent/tc/isa) the brokerage-wide read is correct.
   let vendorIdFilter: string | null = null
   if (profile.user_type === "vendor") {
-    const { data: roleRow } = await supabase
-      .from("user_role_assignments")
-      .select("vendor_id")
-      .eq("user_id", user.id)
-      .not("vendor_id", "is", null)
-      .maybeSingle()
-    if (!roleRow?.vendor_id) return []
-    vendorIdFilter = roleRow.vendor_id as string
+    // Repointed onto resolveCallerVendorId above rather than repeating the read:
+    // this was the SECOND copy of the same `.not("vendor_id","is",null).maybeSingle()`
+    // shape in this one file, and it is the copy that carried no error check at all.
+    // Since it gates a tenant-wide bookings read down to this vendor's own rows, a
+    // read failure that resolved to `null` here would NOT have opened the query — the
+    // `return []` closes it — but it would have shown a working vendor an empty
+    // bookings list with no explanation. UNIQUE is on (user_id, role), not user_id.
+    vendorIdFilter = await resolveCallerVendorId(supabase, user.id)
+    if (!vendorIdFilter) return []
   }
 
   let query = supabase
@@ -830,7 +1235,7 @@ export async function assignVendorToTransaction(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Verify vendor + transaction belong to caller's brokerage before any
   // inserts. Without this, caller could attach any vendor to any deal +
@@ -853,8 +1258,14 @@ export async function assignVendorToTransaction(data: {
     .eq("user_id", user.id)
     .maybeSingle()
 
-  // Create vendor assignment (agent may not have agents row — use user.id as fallback)
-  const agentRowId = agent?.id ?? user.id
+  // The comment that used to be here said "agent may not have agents row — use
+  // user.id as fallback". The INTENT was right and the code was the opposite of
+  // it (m349): vendor_assignments.assigned_by_agent_id FKs agents and is
+  // NULLABLE, so the users id was FK-rejected, assignError threw, and the whole
+  // vendor assignment failed for exactly the user the fallback was written to
+  // accommodate. NULL is how this column expresses "no agent row" — it was
+  // designed for this case and the code reached past it.
+  const agentRowId = agent?.id ?? null
 
   const { data: assignment, error: assignError } = await supabase
     .from("vendor_assignments")
@@ -874,12 +1285,26 @@ export async function assignVendorToTransaction(data: {
 
   if (assignError) throw assignError
 
-  // Create vendor job
+  // Create vendor job.
+  //
+  // TENANT STAMP — the same one lib/kernel/vendors.ts already carries on its own
+  // vendor_jobs insert, and for the same reason it records there: vendor_jobs
+  // is NULLABLE on brokerage_id and the live policy vendor_jobs_tenant reads
+  //   ((brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()))
+  // so an untenanted job row satisfies the predicate for EVERY brokerage on the
+  // platform — job title, notes and the vendor relationship included. The tenant
+  // is profile.brokerage_id, which is not merely the caller's ambient context: it
+  // was proven above to own BOTH the vendor and the transaction this job hangs
+  // off, so it cannot be some other tenant's. The reader in
+  // app/actions/ai-vendor-management.ts compares brokerage_id explicitly and
+  // refuses an untenanted row, so this job was also unreachable by the vendor it
+  // was created for.
   const { error: jobError } = await supabase
     .from("vendor_jobs")
     .insert({
       assignment_id: assignment.id,
       vendor_id: data.vendorId,
+      brokerage_id: profile.brokerage_id,
       job_title: data.assignmentType,
       status: "pending",
       created_at: new Date().toISOString(),
@@ -887,20 +1312,22 @@ export async function assignVendorToTransaction(data: {
 
   if (jobError) throw jobError
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: profile?.brokerage_id,
-    event_type: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
-    entity_type: "vendor_assignment",
-    entity_id: assignment.id,
-    actor_user_id: user.id,
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: profile?.brokerage_id ?? null,
+    event: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
+    entityType: "vendor_assignment",
+    entityId: assignment.id,
+    transactionId: data.transactionId,
+    actorUserId: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
       assignment_type: data.assignmentType,
-      assigned_by_agent_id: agent?.id ?? user.id,
+      // Same class rule as the row this event describes — the metadata must
+      // not disagree with the assignment it is reporting on.
+      assigned_by_agent_id: agentRowId,
     },
-    created_at: new Date().toISOString(),
   })
 
   // Auto-email the vendor with job details (fire and forget — must not
@@ -953,7 +1380,9 @@ export async function assignVendorToTransaction(data: {
       const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
       await dispatchEmail({
         brokerageId: profile?.brokerage_id ?? "",
-        agentId: agentRowId,
+        // dispatchEmail takes `agentId?: string` — an absent agent is `undefined`
+        // here for the same reason it is NULL in the row above.
+        agentId: agentRowId ?? undefined,
         userId: user.id,
         systemSource: "vendor_assignment",
         from: `${(await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name} <${fromEmail}>`,
@@ -992,7 +1421,7 @@ export async function createVendorBookingWithKernelEvent(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  if (!profile?.brokerage_id) throw new Error("Not authenticated")
+  if (!profile?.brokerage_id) throw new Error("Your account is not linked to a brokerage yet — ask an admin to assign you one.")
 
   // Verify vendor + transaction belong to caller's brokerage before any
   // inserts or vendor-email fan-out.
@@ -1027,20 +1456,20 @@ export async function createVendorBookingWithKernelEvent(data: {
 
   if (error) throw error
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: profile?.brokerage_id,
-    event_type: KernelEvent.VENDOR_BOOKING_CREATED,
-    entity_type: "vendor_booking",
-    entity_id: booking.id,
-    actor_user_id: user.id,
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: profile?.brokerage_id ?? null,
+    event: KernelEvent.VENDOR_BOOKING_CREATED,
+    entityType: "vendor_booking",
+    entityId: booking.id,
+    transactionId: data.transactionId,
+    actorUserId: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
       service_type: data.serviceType,
       scheduled_date: data.scheduledDate,
     },
-    created_at: new Date().toISOString(),
   })
 
   // Auto-email vendor with booking details (fire and forget).

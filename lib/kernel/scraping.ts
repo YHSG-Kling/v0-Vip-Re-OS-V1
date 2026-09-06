@@ -49,7 +49,8 @@ export interface ScrapingMarket {
   last_scraped_at: string | null
   lead_scraping_property_params: Array<{
     id: string
-    is_active: boolean
+    // NOTE: this table has no is_active column — the property params are active
+    // whenever the row exists. Selecting it made PostgREST reject the whole query.
     min_price?: number | null
     max_price?: number | null
     min_beds?: number | null
@@ -233,6 +234,27 @@ export interface ScrapingDiagnosticsData {
     leads_created: number | null
     error_message: string | null
   }>
+  /**
+   * Dimensions whose read FAILED, so the panel above can say so instead of
+   * rendering an empty state.
+   *
+   * Every array on this interface used to be `result.data ?? []`, which turns
+   * "this query was refused" into "there is nothing here" — the six panels of a
+   * DIAGNOSTICS page, of all things, reporting a healthy zero for an outage.
+   * supabase-js RESOLVES a failed query, so nothing threw and nothing was
+   * logged. Empty is a legitimate answer for this page (the platform has no
+   * scraped data yet), which is exactly why it could not be told apart from a
+   * failure by looking.
+   *
+   * One entry per failed dimension, `dimension` matching the field it would
+   * have filled. Empty array = every read succeeded. Shaped after the
+   * `{ coverage, error }` pairs this page's own TenantCoverageCard already
+   * uses rather than app/actions/system-health.ts's HealthRead<T>: this loader
+   * runs on the SERVICE client, so a failure here is a broken query or an
+   * outage, never an authorization verdict, and HealthRead's `unauthorized` /
+   * `not_scoped` states would be states that cannot occur.
+   */
+  readErrors: Array<{ dimension: string; message: string }>
 }
 
 export interface RetryFailedBatchParams {
@@ -310,7 +332,7 @@ export async function runScrapeSourcesChronologically(
         id, brokerage_id, name, city, state, zip_codes, counties,
         enabled_sources, monthly_budget_usd, spend_this_month,
         max_records_per_run, priority, last_scraped_at,
-        lead_scraping_property_params (id, is_active, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
+        lead_scraping_property_params (id, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
         lead_scraping_motivated_params (id, is_active, signal_types, lookback_days, facebook_group_urls, reddit_subreddits)
       `)
       .eq('is_active', true)
@@ -670,6 +692,11 @@ function deriveSourceFamily(source: string): string {
 export async function dedupRawAgainstLeadAndContact(
   params: DedupRawParams,
 ): Promise<DedupResult> {
+  // EVERY query below is scoped to params.brokerageId. It always carried the tenant and
+  // never used it: on the service-role client, matching a scraped lead on email, phone or
+  // name alone made ANOTHER tenant's lead or contact the "duplicate", and handed their row
+  // id back as matchId to the promotion path. The name-only fallback (score 0.80) made
+  // that likely rather than theoretical — two tenants can easily both know a John Smith.
   const supabase = createServiceClient()
 
   const noMatch: DedupResult = {
@@ -687,6 +714,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: lead } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .eq('is_active', true)
         .maybeSingle()
@@ -710,6 +738,7 @@ export async function dedupRawAgainstLeadAndContact(
         const { data: lead } = await supabase
           .from('leads')
           .select('id, enrichment_confidence, email, phone')
+          .eq('brokerage_id', params.brokerageId)
           .eq('phone_digits', digits)
           .eq('is_active', true)
           .maybeSingle()
@@ -733,6 +762,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: contact } = await supabase
         .from('contacts')
         .select('id, engagement_score, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .is('deleted_at', null)
         .maybeSingle()
@@ -769,6 +799,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: rawCandidates } = await supabase
         .from('raw_scraped_leads')
         .select('id, lead_id, processing_status, created_at')
+        .eq('brokerage_id', params.brokerageId)
         .or(identityFilters)
         .neq('id', params.rawRecordId)
         .limit(25)
@@ -797,6 +828,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: leads } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, first_name, last_name, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('first_name', params.firstName)
         .eq('last_name', params.lastName)
         .eq('is_active', true)
@@ -991,6 +1023,20 @@ export async function loadScrapingDiagnostics(
   const supabase = createServiceClient()
   const limit = params.limit ?? 50
 
+  // The tenant disjunction is applied while the chain is still a FILTER builder.
+  // `.or()` is declared on PostgrestFilterBuilder; `.order()` / `.limit()` return
+  // a PostgrestTransformBuilder, which does not declare it — so scoping after
+  // those would still run but would not type-check.
+  const cronBase = supabase
+    .from('cron_execution_logs')
+    .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
+
+  const cronQuery = (params.brokerageId
+    ? cronBase.or(`brokerage_id.is.null,brokerage_id.eq.${params.brokerageId}`)
+    : cronBase)
+    .order('started_at', { ascending: false })
+    .limit(30)
+
   const [
     marketsResult,
     executionsResult,
@@ -1025,12 +1071,28 @@ export async function loadScrapingDiagnostics(
       .order('created_at', { ascending: false })
       .limit(100),
 
-    // Cron run history
-    supabase
-      .from('cron_execution_logs')
-      .select('id, cron_name, cron_path, status, duration_ms, records_processed, error_message, started_at, completed_at')
-      .order('started_at', { ascending: false })
-      .limit(30),
+    // Cron run history.
+    //
+    // TENANT SCOPE — this runs on a SERVICE client, so RLS is bypassed and the
+    // predicate below IS the boundary. It is written to compute exactly what
+    // `cron_execution_logs`' own SELECT policy computes for a session client:
+    //
+    //     (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())
+    //
+    // `params.brokerageId` is undefined ONLY for a platform admin — the single
+    // caller, app/dashboard/admin/scrape-diagnostics/page.tsx, passes
+    // `userType === "superadmin" ? undefined : brokerageId` behind an
+    // admin/broker/superadmin gate. So: a superadmin sees every tenant's runs; a
+    // broker sees their OWN tenant's runs plus the untenanted platform sweeps,
+    // and never another tenant's job names or failure messages.
+    //
+    // IT IS AN `.or()`, NOT AN `.eq()`, AND THAT IS THE WHOLE POINT. `NULL =
+    // <uuid>` is NULL, so an `.eq()` would silently drop every platform sweep —
+    // and every row this ledger currently receives is one: all 130
+    // `createCronRunContextAction` call sites pass no brokerage_id, and the two
+    // direct writers (api/cron/health-check, api/cron/contact-enrichment) stamp
+    // an explicit `brokerage_id: null`. An `.eq()` would leave this panel blank.
+    cronQuery,
 
     // Failed batches — retryable
     supabase
@@ -1040,6 +1102,26 @@ export async function loadScrapingDiagnostics(
       .order('started_at', { ascending: false })
       .limit(20),
   ])
+
+  // A REFUSED READ IS NOT AN EMPTY ONE. supabase-js RESOLVES a failed query, so
+  // every `result.data ?? []` below used to render a broken read as a healthy
+  // zero — on the page whose whole purpose is telling the operator what the
+  // pipeline is doing. Nothing threw and nothing was logged. Empty is a
+  // legitimate answer here (the platform has no scraped data yet), which is
+  // precisely why a failure could not be told apart from one by looking.
+  const readErrors: ScrapingDiagnosticsData['readErrors'] = []
+  const collect = (dimension: string, result: { error: { message: string } | null }) => {
+    if (result.error) {
+      console.error(`[scraping-diagnostics] ${dimension} read FAILED: ${result.error.message}`)
+      readErrors.push({ dimension, message: result.error.message })
+    }
+  }
+  collect('markets',        marketsResult)
+  collect('executions',     executionsResult)
+  collect('funnel',         rawLeadsResult)     // funnel + gatingDecisions both derive from this
+  collect('dedupDecisions', dedupResult)
+  collect('cronHistory',    cronResult)
+  collect('failedBatches',  failedBatchesResult)
 
   // Apply brokerage filter to executions if provided
   const executions = ((executionsResult.data ?? []) as any[]).filter(
@@ -1091,6 +1173,7 @@ export async function loadScrapingDiagnostics(
     gatingDecisions,
     cronHistory:    (cronResult.data       ?? []) as ScrapingDiagnosticsData['cronHistory'],
     failedBatches:  (failedBatchesResult.data ?? []) as ScrapingDiagnosticsData['failedBatches'],
+    readErrors,
   }
 }
 

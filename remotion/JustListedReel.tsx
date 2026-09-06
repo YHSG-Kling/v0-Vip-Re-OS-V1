@@ -6,8 +6,10 @@
  *
  *   0–2s   CoverFrame      — brokerage logo + "Just Listed" hook + address
  *   2–18s  PropertyImages  — image grid panning ken-burns through up to
- *                            8 property photos (sort_order asc); each
- *                            slide is 2s with a 0.3s crossfade
+ *                            8 property photos (sort_order asc); the 16s
+ *                            window is split evenly across however many
+ *                            photos arrived (2s each at the full 8), with
+ *                            a 0.3s crossfade
  *   18–22s FactCards       — price / beds / baths / sqft in brand colors
  *   22–25s CTAFrame        — agent name + phone + "DM me to tour"
  *
@@ -21,15 +23,9 @@
  * passes it in via inputProps.
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  interpolate,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-} from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -126,12 +122,12 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
 const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
         {brand.logoUrl && (
-          <Img src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
+          <SafeImg src={brand.logoUrl} style={{ width: 200, height: "auto", marginBottom: 40 }} />
         )}
         <h1 style={{ color: "white", fontSize: 96, margin: 0, fontWeight: 800, letterSpacing: -1 }}>
           {hook}
@@ -145,25 +141,33 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
 
 const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   const frame = useCurrentFrame()
-  const slideFrames = 60 // 2s per slide @ 30fps
+  // The window is divided across however many images actually arrived — the
+  // same idiom as JustListedReelSquare/Horizontal's `perPhoto`. This used to be
+  // a fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
+  // slide's crossfade-out clamped opacity to 0 and the remaining seconds of the
+  // 16s window rendered EMPTY (gradient over the #111 background) while the
+  // voiceover kept narrating.
+  const windowFrames = FRAMES.IMAGES_END - FRAMES.IMAGES_START
+  const slideFrames = images.length > 0 ? windowFrames / images.length : windowFrames
   const idx = Math.min(images.length - 1, Math.floor(frame / slideFrames))
   const localFrame = frame - idx * slideFrames
-  // Ken-burns: subtle scale + drift over 60 frames
-  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08])
+  // Ken-burns: subtle scale + drift over each slide
+  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
+    extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   })
   const url = images[idx]
   if (!url) return null
   return (
     <AbsoluteFill>
-      <Img
+      <SafeImg
         src={url}
         style={{
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          transform: `scale(${scale})`,
+          scale,
           opacity,
         }}
       />
@@ -174,8 +178,8 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
 
 const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, sqft, brand }) => {
   const frame = useCurrentFrame()
-  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateRight: "clamp" })
-  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: "clamp" })
+  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const cards = [
     { label: "Price",    value: price    || "—" },
     { label: "Beds",     value: bedrooms || "—" },
@@ -188,7 +192,7 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
         display: "grid",
         gridTemplateColumns: `repeat(${Math.min(cards.length, 4)}, 1fr)`,
         gap: 32,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         {cards.map((c) => (
@@ -211,11 +215,11 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
 
 const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
+        <SafeImg src={brand.logoUrl} style={{ width: 160, height: "auto", marginBottom: 32 }} />
       )}
       <h1 style={{ color: "white", fontSize: 80, margin: 0, fontWeight: 800 }}>DM me to tour.</h1>
       {brand.agentName && (

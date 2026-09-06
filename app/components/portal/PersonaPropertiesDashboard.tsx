@@ -11,19 +11,41 @@ import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
-  Home, Heart, Calendar, MapPin, TrendingUp, Star, DollarSign, Building, Search,
-  Sparkles, ChevronRight, Eye, Filter, Percent, Calculator, CheckCircle2, X,
-  Users, MessageSquare, ThumbsUp, ThumbsDown, Minus, Send, Loader2, Clock,
-  Target, BarChart3, Briefcase, ArrowUpRight, ArrowDownRight, Mic, Copy,
-  Share2, UserPlus, Crown, Bed, Bath, Square, ExternalLink, Play, CheckCircle,
+  Home, Heart, Calendar, MapPin, TrendingUp, DollarSign, Building, Search,
+  Sparkles, Filter, Calculator, CheckCircle2, X,
+  Users, MessageSquare, ThumbsUp, ThumbsDown, Minus, Loader2, Target, BarChart3, Mic, Bed, Bath, Square, CheckCircle,
   Lightbulb, AlertCircle, User, Pencil, Save
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { FitBadge } from "@/app/components/portal/FitBadge"
-import { smartSearch, saveProperty } from "@/app/actions/idx-search"
+// `unsaveProperty` MERGED IN from the deleted /properties/saved duplicate — see
+// the tombstone above the Saved tab below. It was that page's only caller.
+import { smartSearch, saveProperty, unsaveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
+import { submitPropertyFeedback } from "@/app/actions/portal-lifetime"
+import { analyzeInvestmentProperty, compareMortgageScenarios } from "@/app/actions/calculators"
 import Link from "next/link"
+import {
+  interestBandLabel,
+  withFeedback,
+  type PortalInterestBand,
+  type PortalShowingRow,
+} from "@/lib/portal/portal-showing-feed"
+// ── §1.2 — THE MISSING HALF OF THE `dataKey` MECHANISM ───────────────────────
+// getPersonaWidgets resolves every persona widget's `dataKey` against the
+// contact's metadata and formatWidgetValue renders it. Both have existed since
+// the persona config was written, both are exported from lib/portal/index.ts —
+// and until this import NOTHING IN THE TREE CALLED EITHER. The consequence was
+// not "two keys look writerless": it was that not one of the 48 widgets across
+// all 16 personas had ever rendered, on any portal, for any client. The two keys
+// a census flagged (`memory_video_requested`, `years_in_home`) are both the
+// `senior` persona's; they were not special, they were two of forty-eight.
+// (Counts are DERIVED and printed by test:persona-widget-render, not pinned.)
+// The inputs were already here — app/portal/[contactId]/properties/page.tsx has
+// been computing `customFields` off contacts.metadata and passing it in beside
+// `personaConfig` for exactly this. Only the render site was missing.
+import { getPersonaWidgets, formatWidgetValue, getInvestorCriteria } from "@/lib/portal/persona-config"
 
 interface PersonaPropertiesDashboardProps {
   contact: any
@@ -31,7 +53,10 @@ interface PersonaPropertiesDashboardProps {
   persona: string
   personaConfig: any
   savedProperties: any[]
-  showings: any[]
+  /** THE ONE portal showing shape — lib/portal/portal-showing-feed.ts:88. Typed
+   *  (not `any[]`) precisely because `any[]` is what let three tabs read five
+   *  fields that no row has ever carried. */
+  showings: PortalShowingRow[]
   offers: any[]
   propertyAlerts: any[]
   propertyInterests: any[]
@@ -288,7 +313,57 @@ export default function PersonaPropertiesDashboard({
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
-  
+
+  // The showings a seller's feedback surfaces are about: somebody left prose OR a
+  // verdict rung. Computed once — three tabs used to recompute
+  // `showings.filter((s) => s.buyer_feedback)`, on a field no row carried.
+  const showingsWithFeedback = withFeedback(showings ?? [])
+  /** Share of rated showings in one band, as a whole percent. 0 when none are rated. */
+  const feedbackShare = (band: PortalInterestBand) => {
+    const rated = showingsWithFeedback.filter((s) => s.interestBand !== null)
+    if (rated.length === 0) return 0
+    return Math.round((rated.filter((s) => s.interestBand === band).length / rated.length) * 100)
+  }
+
+
+  // ── REMOVE-FROM-SAVED (merged from the deleted /properties/saved) ──────────
+  // The server hands `savedProperties` down as a prop, so a removal is reflected
+  // by hiding the row locally until the server component re-renders. A SET of
+  // removed keys (rather than a copy of the list in state) is deliberate: it
+  // composes with the fresh prop that arrives after `unsaveProperty`'s
+  // revalidatePath, instead of pinning a stale snapshot.
+  //
+  // The key is the mls_number, because that is the column `unsaveProperty`
+  // deletes on. A saved row with no mls_number cannot be removed by that action
+  // at all, so its button is not rendered rather than shown and broken.
+  const [removedSavedMls, setRemovedSavedMls] = useState<Set<string>>(new Set())
+  const [removingMls, setRemovingMls] = useState<string | null>(null)
+  const visibleSavedProperties = (savedProperties ?? []).filter(
+    (p: any) => !(p?.mls_number && removedSavedMls.has(String(p.mls_number))),
+  )
+
+  const handleUnsave = (mlsNumber: string) => {
+    setRemovingMls(mlsNumber)
+    startTransition(async () => {
+      // supabase-js RESOLVES a refusal — `unsaveProperty` already destructures
+      // { data, error } and refuses a zero-row delete rather than reporting
+      // success, so the ONLY correct thing to do here is read result.success.
+      // Dropping the card unconditionally is the exact bug its docblock records.
+      const result = await unsaveProperty({ contactId, mlsNumber })
+      setRemovingMls(null)
+      if (!result.success) {
+        toast({
+          title: "Could not remove",
+          description: result.error ?? "That property is still in your saved list.",
+          variant: "destructive",
+        })
+        return
+      }
+      setRemovedSavedMls((prev) => new Set(prev).add(mlsNumber))
+      toast({ title: "Removed", description: result.message ?? "Property removed from saved" })
+    })
+  }
+
   // Get persona-specific tabs
   const tabConfig = PERSONA_TAB_CONFIG[persona] || PERSONA_TAB_CONFIG.default
   const [activeTab, setActiveTab] = useState(tabConfig.tabs[0])
@@ -298,6 +373,7 @@ export default function PersonaPropertiesDashboard({
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
   const [isSearching, setIsSearching] = useState(false)
+  const [voiceListening, setVoiceListening] = useState(false)
   
 
   
@@ -321,20 +397,71 @@ export default function PersonaPropertiesDashboard({
   }>({ min_price: "", max_price: "", bedrooms_min: "", bathrooms_min: "", cities: "" })
   const [savingAlert, setSavingAlert] = useState(false)
 
-  // Investor-specific: investment criteria
-  // Investor persona settings — sourced from contacts.metadata (passed in as customFields).
-  const targetCapRate = customFields?.target_cap_rate || 7
-  const investmentStrategy = customFields?.investment_strategy || "Buy and Hold"
-  const portfolioSize = customFields?.portfolio_size || 0
+  // Refine state — "Refine" beside the result count had no handler at all, so
+  // the only way to narrow a result set was to retype the whole sentence.
+  // smartSearch takes one natural-language string, so a refinement is expressed
+  // the way the interpreter actually accepts it: appended to the query and
+  // re-run. The AI-interpreted filter chips below then show the REAL filters
+  // the action extracted.
+  const [showRefine, setShowRefine] = useState(false)
+  const [refineForm, setRefineForm] = useState({ maxPrice: "", minBeds: "", mustHave: "" })
+  const [isRefining, setIsRefining] = useState(false)
+
+  // Investment analysis state — both calculators below printed HARDCODED
+  // percentages ("5.04%", "6.72%") beside UNCONTROLLED inputs. Nothing the
+  // investor typed reached anything, and the number on screen was invented
+  // financial advice. One analysis now feeds both cards, because
+  // analyzeInvestmentProperty returns cap rate AND cash-on-cash from the same
+  // inputs — they are two views of one deal, not two calculators.
+  const [dealForm, setDealForm] = useState({
+    purchasePrice: "",
+    monthlyRent: "",
+    monthlyExpenses: "",
+    downPaymentPercent: "",
+    interestRate: "",
+  })
+  const [dealMetrics, setDealMetrics] = useState<any>(null)
+  const [dealAnalysis, setDealAnalysis] = useState<any>(null)
+  const [dealError, setDealError] = useState<string | null>(null)
+  const [capPending, setCapPending] = useState(false)
+  const [cocPending, setCocPending] = useState(false)
+
+  // Affordability/payment state — "Calculate Monthly Payment" had no handler
+  // and the four inputs were uncontrolled, so the form collected nothing.
+  const [mortgageForm, setMortgageForm] = useState({
+    homePrice: "",
+    downPaymentPercent: "",
+    interestRate: "",
+    termYears: "",
+  })
+  const [mortgageResult, setMortgageResult] = useState<any>(null)
+  const [mortgageError, setMortgageError] = useState<string | null>(null)
+  const [mortgagePending, setMortgagePending] = useState(false)
+
+  // Investor-specific: investment criteria — sourced from contacts.metadata
+  // (passed in as customFields), through the ONE accessor.
+  // TOMBSTONE (§1.1, spelling merge): three hand-picked reads of
+  // customFields?.target_cap_rate / investment_strategy / portfolio_size lived
+  // here — a second spelling of the same three dataKeys getPersonaWidgets
+  // resolves for the "At a glance" strip. Survivor:
+  // lib/portal/persona-config.ts getInvestorCriteria (+ INVESTOR_CRITERIA_KEYS),
+  // so the widget strip and the cap-rate arithmetic below can never read
+  // different keys. The arithmetic itself (meetsTarget etc.) stays HERE — it
+  // was never a duplicate of the display strip.
+  const { targetCapRate, investmentStrategy, portfolioSize } = getInvestorCriteria(customFields)
 
   // AI Smart Search handler
-  const handleSmartSearch = async () => {
-    if (!naturalQuery.trim()) return
-    
+  // `spokenQuery` lets the voice control run the search with the transcript it
+  // just captured — setNaturalQuery() has not flushed yet at that point, so
+  // reading state here would search the PREVIOUS query.
+  const handleSmartSearch = async (spokenQuery?: string) => {
+    const query = (spokenQuery ?? naturalQuery).trim()
+    if (!query) return
+
     setIsSearching(true)
     try {
       const result = await smartSearch({
-        naturalLanguageQuery: naturalQuery,
+        naturalLanguageQuery: query,
         contactId: contactId,
       })
       
@@ -361,6 +488,57 @@ export default function PersonaPropertiesDashboard({
     } finally {
       setIsSearching(false)
     }
+  }
+
+  // Voice search — the mic button in the search box had no handler at all, so
+  // the one control the persona dashboard advertises as "Voice search" did
+  // nothing. Uses the browser's Web Speech API (the same API the internal AI
+  // assistant already drives) and feeds the transcript straight into the same
+  // smartSearch capability the typed box uses. No new backend: the capability
+  // is the browser's, and it either exists or is reported as missing.
+  const handleVoiceSearch = () => {
+    if (typeof window === "undefined") return
+    const SR: any =
+      (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition
+    if (!SR) {
+      toast({
+        title: "Voice search is not available in this browser",
+        description: "This browser does not expose the Web Speech API. Type your search instead.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const recognition = new SR()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = "en-US"
+
+    setVoiceListening(true)
+    recognition.onresult = (e: any) => {
+      const transcript = Array.from(e.results ?? [])
+        .map((r: any) => r[0]?.transcript ?? "")
+        .join(" ")
+        .trim()
+      setVoiceListening(false)
+      if (!transcript) return
+      setNaturalQuery(transcript)
+      void handleSmartSearch(transcript)
+    }
+    // Report what the browser actually said went wrong — do not guess a cause
+    // (no microphone / permission denied / no speech are all possible here).
+    recognition.onerror = (e: any) => {
+      setVoiceListening(false)
+      toast({
+        title: "Voice search stopped",
+        description: e?.error
+          ? `The browser reported: ${e.error}`
+          : "The browser ended the recording before anything was captured.",
+        variant: "destructive",
+      })
+    }
+    recognition.onend = () => setVoiceListening(false)
+    recognition.start()
   }
 
   // Handle saving property
@@ -449,15 +627,190 @@ export default function PersonaPropertiesDashboard({
     }
   }
 
+  // Open the criteria editor on the buyer's saved search. The investor tab set
+  // has no "matches" tab, so "Adjust Criteria" on the Deal Flow header was the
+  // ONLY route an investor had to this editor — and it was wired to nothing.
+  const openAlertEditor = (alert: any) => {
+    setEditingAlertId(editingAlertId === alert.id ? null : alert.id)
+    setEditAlertForm({
+      min_price: alert.min_price ? String(alert.min_price) : "",
+      max_price: alert.max_price ? String(alert.max_price) : "",
+      bedrooms_min: alert.bedrooms_min ? String(alert.bedrooms_min) : "",
+      bathrooms_min: alert.bathrooms_min ? String(alert.bathrooms_min) : "",
+      cities: (alert.cities ?? []).join(", "),
+    })
+  }
+
+  // The investor's saved search — prefer an active one, else the most recent.
+  const investorAlert =
+    propertyAlerts.find((a: any) => a.is_active) ?? propertyAlerts[0] ?? null
+
+  // Re-run the search with the refinement appended to the buyer's own words.
+  const handleRefineSearch = async () => {
+    const clauses: string[] = []
+    const maxPrice = Number(refineForm.maxPrice.replace(/[^0-9.]/g, ""))
+    const minBeds = Number(refineForm.minBeds)
+    if (Number.isFinite(maxPrice) && maxPrice > 0) clauses.push(`under $${Math.round(maxPrice).toLocaleString()}`)
+    if (Number.isFinite(minBeds) && minBeds > 0) clauses.push(`at least ${minBeds} bedrooms`)
+    if (refineForm.mustHave.trim()) clauses.push(`must have ${refineForm.mustHave.trim()}`)
+
+    if (clauses.length === 0) {
+      toast({
+        title: "Nothing to refine",
+        description: "Add a price cap, a bedroom minimum, or a must-have first.",
+      })
+      return
+    }
+
+    const refinedQuery = [naturalQuery.trim(), clauses.join(", ")].filter(Boolean).join(", ")
+    setIsRefining(true)
+    try {
+      const result = await smartSearch({
+        naturalLanguageQuery: refinedQuery,
+        contactId: contactId,
+      })
+      if (result.success) {
+        setNaturalQuery(refinedQuery)
+        setSearchResults(result.properties || [])
+        setExtractedFilters(result.filters)
+        setShowRefine(false)
+        toast({
+          title: "Search Refined",
+          description: `${result.properties?.length || 0} properties match the narrowed criteria`,
+        })
+      } else {
+        toast({ title: "Refine Failed", description: result.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Error", description: "Failed to refine your search", variant: "destructive" })
+    } finally {
+      setIsRefining(false)
+    }
+  }
+
+  // Run the real investment analysis. Both Calculate buttons call this — the
+  // flag argument only decides which button shows the spinner.
+  const runInvestmentAnalysis = async (setPending: (v: boolean) => void) => {
+    const purchasePrice = Number(dealForm.purchasePrice.replace(/[^0-9.]/g, ""))
+    const monthlyRent = Number(dealForm.monthlyRent.replace(/[^0-9.]/g, ""))
+    const monthlyExpenses = Number(dealForm.monthlyExpenses.replace(/[^0-9.]/g, ""))
+    const downPaymentPercent = Number(dealForm.downPaymentPercent)
+    const interestRate = Number(dealForm.interestRate)
+
+    if (!(purchasePrice > 0) || !(monthlyRent > 0) || !(monthlyExpenses >= 0)) {
+      setDealError("Enter a purchase price, gross monthly rent, and monthly expenses.")
+      return
+    }
+    if (!(downPaymentPercent > 0) || !(interestRate > 0)) {
+      setDealError("Enter your down payment percentage and interest rate — both drive the return.")
+      return
+    }
+
+    setPending(true)
+    setDealError(null)
+    try {
+      const result = await analyzeInvestmentProperty({
+        purchasePrice,
+        downPaymentPercent,
+        interestRate,
+        estimatedRent: monthlyRent,
+        // The form collects ONE monthly operating-expense figure. hoaFees is the
+        // analyzer's only monthly-denominated expense slot, so the figure goes
+        // there whole and the itemized slots stay at zero — nothing is split,
+        // guessed, or padded on the investor's behalf.
+        propertyTaxes: 0,
+        insurance: 0,
+        hoaFees: monthlyExpenses,
+        maintenanceReserve: 0,
+        vacancyRate: 0,
+      })
+      if (!result.success || !result.financial_metrics) {
+        setDealError("The analysis could not be completed. Please try again.")
+        return
+      }
+      setDealMetrics(result.financial_metrics)
+      setDealAnalysis((result as any).analysis ?? null)
+    } catch {
+      setDealError("The analysis could not be completed. Please try again.")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  // Monthly payment on the terms the buyer actually entered. compareMortgageScenarios
+  // is the action whose inputs match this form (price, down payment, rate, term);
+  // calculateAffordability works backwards from income, which this form never asks for.
+  const handleCalculateMonthlyPayment = async () => {
+    const homePrice = Number(mortgageForm.homePrice.replace(/[^0-9.]/g, ""))
+    const downPaymentPercent = Number(mortgageForm.downPaymentPercent)
+    const interestRate = Number(mortgageForm.interestRate)
+    const termYears = Number(mortgageForm.termYears)
+
+    if (!(homePrice > 0) || !(downPaymentPercent >= 0) || !(interestRate > 0) || !(termYears > 0)) {
+      setMortgageError("Enter a home price, down payment %, interest rate, and loan term.")
+      return
+    }
+    if (downPaymentPercent >= 100) {
+      setMortgageError("A 100% down payment leaves no loan to calculate.")
+      return
+    }
+
+    setMortgagePending(true)
+    setMortgageError(null)
+    try {
+      const result = await compareMortgageScenarios({
+        loanAmount: homePrice,
+        scenarios: [
+          {
+            name: `${termYears}-year fixed`,
+            term: termYears,
+            interestRate,
+            downPayment: homePrice * (downPaymentPercent / 100),
+            loanType: "fixed",
+          },
+        ],
+      })
+      if (!result.success || !result.comparisons?.length) {
+        setMortgageError("The payment could not be calculated. Please try again.")
+        return
+      }
+      setMortgageResult(result.comparisons[0])
+    } catch {
+      setMortgageError("The payment could not be calculated. Please try again.")
+    } finally {
+      setMortgagePending(false)
+    }
+  }
+
   // Handle property rating (placeholder - functionality to be implemented)
   const handleRateProperty = async () => {
     if (!selectedProperty) return
-    
-    toast({
-      title: "Rating Saved",
-      description: "Your feedback has been recorded.",
+
+    // This used to toast "Your feedback has been recorded" and close, calling
+    // nothing at all — the buyer's vote AND their comment were both discarded.
+    // It now writes property_feedback, which is the same table the agent-side
+    // preference learner reads, so a portal rating actually teaches the match
+    // engine instead of evaporating.
+    startTransition(async () => {
+      const result = await submitPropertyFeedback({
+        contactId,
+        propertyId: selectedProperty.id,
+        vote: propertyVote as "love" | "like" | "neutral" | "dislike" | "pass",
+        comments: ratingComments,
+      })
+      if (!result.success) {
+        toast({
+          title: "Rating not saved",
+          description: result.error ?? "Please try again.",
+          variant: "destructive",
+        })
+        return
+      }
+      toast({ title: "Rating saved", description: "Your agent can see this now." })
+      setRatingComments("")
+      setPropertyVote("neutral")
+      setShowRatingDialog(false)
     })
-    setShowRatingDialog(false)
   }
 
   // Calculate investment metrics for a property
@@ -526,6 +879,73 @@ export default function PersonaPropertiesDashboard({
         ]
     }
   }
+
+  // The saved-search criteria editor. Extracted so the investor Deal Flow
+  // header can open the SAME editor the matches tab uses — both write through
+  // updatePropertyAlert.
+  const renderAlertCriteriaEditor = () => (
+    <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
+      <p className="text-xs font-medium text-muted-foreground">Edit Search Criteria</p>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-xs">Min Price</Label>
+          <Input
+            className="h-7 text-xs"
+            value={editAlertForm.min_price}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, min_price: e.target.value }))}
+            placeholder="$400,000"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Max Price</Label>
+          <Input
+            className="h-7 text-xs"
+            value={editAlertForm.max_price}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, max_price: e.target.value }))}
+            placeholder="$600,000"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Min Beds</Label>
+          <Input
+            className="h-7 text-xs"
+            type="number"
+            min={0}
+            value={editAlertForm.bedrooms_min}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, bedrooms_min: e.target.value }))}
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Min Baths</Label>
+          <Input
+            className="h-7 text-xs"
+            type="number"
+            min={0}
+            value={editAlertForm.bathrooms_min}
+            onChange={(e) => setEditAlertForm(f => ({ ...f, bathrooms_min: e.target.value }))}
+          />
+        </div>
+      </div>
+      <div>
+        <Label className="text-xs">Cities (comma-separated)</Label>
+        <Input
+          className="h-7 text-xs"
+          value={editAlertForm.cities}
+          onChange={(e) => setEditAlertForm(f => ({ ...f, cities: e.target.value }))}
+          placeholder="Austin, Cedar Park"
+        />
+      </div>
+      <div className="flex gap-2 pt-1">
+        <Button size="sm" className="h-7 text-xs" onClick={handleSaveAlertCriteria} disabled={savingAlert}>
+          {savingAlert ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+          Save
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingAlertId(null)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  )
 
   // Render property card based on persona
   const renderPropertyCard = (property: any, showInvestmentMetrics = false) => {
@@ -663,7 +1083,16 @@ export default function PersonaPropertiesDashboard({
               {persona === "investor" ? "Analyze Deal" : "Schedule Tour"}
             </Button>
             <Button variant="outline" size="sm" asChild className="bg-transparent">
-              <Link href={`/portal/${contactId}/properties/${property.mlsNumber || property.id}`}>
+              {/*
+                The detail route resolves its row with .eq("id", propertyId)
+                against a uuid column. `property.mlsNumber ||` put an MLS number
+                there first whenever one existed — which fails the uuid cast, so
+                the page found nothing and rendered with the MLS number printed
+                where the address belongs and an otherwise empty property. The
+                sibling link further down this same file already uses the id;
+                this one just had a fallback in the wrong order.
+              */}
+              <Link href={`/portal/${contactId}/properties/${property.id}`}>
                 View Details
               </Link>
             </Button>
@@ -832,7 +1261,7 @@ export default function PersonaPropertiesDashboard({
         <div className="flex items-center gap-3">
           <Badge variant="outline" className="py-2 px-3">
             <Heart className="w-4 h-4 mr-2 text-red-500" />
-            {savedProperties.length} Saved
+            {visibleSavedProperties.length} Saved
           </Badge>
           <Badge variant="outline" className="py-2 px-3">
             <Calendar className="w-4 h-4 mr-2 text-purple-500" />
@@ -846,6 +1275,60 @@ export default function PersonaPropertiesDashboard({
           )}
         </div>
       </div>
+
+      {/* ── AT A GLANCE — the persona's own widgets ───────────────────────────
+          The render site the dataKey mechanism never had. Driven entirely by
+          PERSONA_CONFIGS[persona].widgets, so a first-time buyer sees their
+          pre-approval and down payment, a VA buyer their entitlement and BAH, a
+          downsizing seller their years in the home — with no per-persona branch
+          in this component.
+
+          WHAT IT WILL NOT DO: invent a value. A widget whose dataKey is absent
+          from contacts.metadata renders its own authored `emptyMessage`, and a
+          widget with neither a value nor an emptyMessage is DROPPED rather than
+          rendered blank — "never narrate a day the OS didn't see". If a persona
+          has nothing to show at all, the whole strip disappears instead of
+          leaving an empty card. */}
+      {(() => {
+        const widgets = getPersonaWidgets(persona, customFields).filter(
+          (w) => w.value !== undefined && w.value !== null && w.value !== "" ? true : !!w.emptyMessage,
+        )
+        if (widgets.length === 0) return null
+        return (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {widgets.map((w) => {
+              const has = w.value !== undefined && w.value !== null && w.value !== ""
+              const WidgetIcon = w.icon
+              return (
+                <Card key={w.id} className="border-muted">
+                  <CardContent className="pt-5 pb-4 space-y-1">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <WidgetIcon className="w-4 h-4" />
+                      <span className="text-xs font-medium uppercase tracking-wide">{w.title}</span>
+                    </div>
+                    {has ? (
+                      <>
+                        <p className="text-xl font-semibold">{formatWidgetValue(w.value, w.format)}</p>
+                        <p className="text-xs text-muted-foreground">{w.description}</p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{w.emptyMessage}</p>
+                    )}
+                    {w.action && (
+                      <Link
+                        href={w.action.href.replace("{contactId}", contactId)}
+                        className="inline-block text-xs font-medium text-primary hover:underline pt-1"
+                      >
+                        {w.action.label}
+                      </Link>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       {/* AI Smart Search - RealScout Style */}
       <Card className="border-2 border-primary/20 bg-gradient-to-r from-blue-50/50 to-purple-50/50">
@@ -872,16 +1355,18 @@ export default function PersonaPropertiesDashboard({
                   onKeyDown={(e) => e.key === "Enter" && handleSmartSearch()}
                   className="text-lg h-12 pr-10"
                 />
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8"
-                  title="Voice search"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={`absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 ${voiceListening ? "text-red-600" : ""}`}
+                  title={voiceListening ? "Listening…" : "Voice search"}
+                  onClick={handleVoiceSearch}
+                  disabled={voiceListening || isSearching}
                 >
-                  <Mic className="w-4 h-4" />
+                  <Mic className={`w-4 h-4 ${voiceListening ? "animate-pulse" : ""}`} />
                 </Button>
               </div>
-              <Button onClick={handleSmartSearch} disabled={isSearching} size="lg" className="min-w-[140px]">
+              <Button onClick={() => handleSmartSearch()} disabled={isSearching} size="lg" className="min-w-[140px]">
                 {isSearching ? (
                   <>
                     <Loader2 className="mr-2 h-5 w-5 animate-spin" />
@@ -948,10 +1433,74 @@ export default function PersonaPropertiesDashboard({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold">{searchResults.length} Properties Found</h2>
-            <Button variant="outline" size="sm" className="bg-transparent">
+            <Button
+              variant="outline"
+              size="sm"
+              className="bg-transparent"
+              onClick={() => setShowRefine((v) => !v)}
+            >
               <Filter className="w-4 h-4 mr-2" /> Refine
             </Button>
           </div>
+
+          {/* Refinement narrows the SAME search: the clauses are appended to the
+              buyer's own sentence and re-interpreted, so the filter chips above
+              keep showing what the AI actually extracted. */}
+          {showRefine && (
+            <Card className="border-primary/20">
+              <CardContent className="p-4 space-y-3">
+                <p className="text-sm font-medium">Narrow these results</p>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Max Price</Label>
+                    <Input
+                      className="h-8"
+                      value={refineForm.maxPrice}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, maxPrice: e.target.value }))}
+                      placeholder="$600,000"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Min Beds</Label>
+                    <Input
+                      className="h-8"
+                      type="number"
+                      min={0}
+                      value={refineForm.minBeds}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, minBeds: e.target.value }))}
+                      placeholder="3"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Must Have</Label>
+                    <Input
+                      className="h-8"
+                      value={refineForm.mustHave}
+                      onChange={(e) => setRefineForm((f) => ({ ...f, mustHave: e.target.value }))}
+                      placeholder="garage, big yard"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleRefineSearch} disabled={isRefining}>
+                    {isRefining ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Refining...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="w-4 h-4 mr-2" /> Apply Refinement
+                      </>
+                    )}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setShowRefine(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {searchResults.map((property) => renderPropertyCard(property, persona === "investor"))}
           </div>
@@ -973,7 +1522,7 @@ export default function PersonaPropertiesDashboard({
           <TabsContent value="deals" className="space-y-6">
             {/* Investment Criteria Summary */}
             <Card className="bg-gradient-to-r from-green-50 to-emerald-50 border-green-200">
-              <CardContent className="p-4">
+              <CardContent className="p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
                     <div className="p-3 rounded-xl bg-white shadow-md">
@@ -984,19 +1533,41 @@ export default function PersonaPropertiesDashboard({
                       <p className="text-sm text-muted-foreground">
                         Strategy: {investmentStrategy} | Target Cap Rate: {targetCapRate}% | Portfolio: {portfolioSize} properties
                       </p>
+                      {investorAlert && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Deal alerts: {investorAlert.alert_name || "Saved search"}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <Button variant="outline" size="sm" className="bg-transparent">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-transparent"
+                    onClick={() => {
+                      // No saved search means there is nothing to adjust — say so
+                      // rather than opening an editor that would write nowhere.
+                      if (!investorAlert) {
+                        toast({
+                          title: "No saved search yet",
+                          description: "Your agent sets up deal alerts — ask them to add one and it will be editable here.",
+                        })
+                        return
+                      }
+                      openAlertEditor(investorAlert)
+                    }}
+                  >
                     <Filter className="w-4 h-4 mr-2" /> Adjust Criteria
                   </Button>
                 </div>
+                {investorAlert && editingAlertId === investorAlert.id && renderAlertCriteriaEditor()}
               </CardContent>
             </Card>
 
             {/* Deal Flow Cards */}
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedProperties.length > 0 ? (
-                savedProperties.map((property) => renderPropertyCard(property, true))
+              {visibleSavedProperties.length > 0 ? (
+                visibleSavedProperties.map((property: any) => renderPropertyCard(property, true))
               ) : (
                 <Card className="col-span-full">
                   <CardContent className="py-12 text-center">
@@ -1030,21 +1601,62 @@ export default function PersonaPropertiesDashboard({
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label>Purchase Price</Label>
-                    <Input type="number" placeholder="500000" />
+                    <Input
+                      type="number"
+                      placeholder="500000"
+                      value={dealForm.purchasePrice}
+                      onChange={(e) => setDealForm((f) => ({ ...f, purchasePrice: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Gross Monthly Rent</Label>
-                    <Input type="number" placeholder="3500" />
+                    <Input
+                      type="number"
+                      placeholder="3500"
+                      value={dealForm.monthlyRent}
+                      onChange={(e) => setDealForm((f) => ({ ...f, monthlyRent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>Monthly Expenses</Label>
-                    <Input type="number" placeholder="1400" />
+                    <Label>Monthly Expenses (taxes, insurance, HOA, upkeep)</Label>
+                    <Input
+                      type="number"
+                      placeholder="1400"
+                      value={dealForm.monthlyExpenses}
+                      onChange={(e) => setDealForm((f) => ({ ...f, monthlyExpenses: e.target.value }))}
+                    />
                   </div>
                   <div className="p-4 bg-green-50 rounded-lg">
                     <p className="text-sm text-green-700">Calculated Cap Rate</p>
-                    <p className="text-3xl font-bold text-green-700">5.04%</p>
+                    <p className="text-3xl font-bold text-green-700">
+                      {dealMetrics?.cap_rate != null ? `${dealMetrics.cap_rate}%` : "—"}
+                    </p>
+                    {dealMetrics?.cap_rate != null ? (
+                      <p className="text-xs text-green-700 mt-1">
+                        {Number(dealMetrics.cap_rate) >= Number(targetCapRate)
+                          ? `At or above your ${targetCapRate}% target.`
+                          : `Below your ${targetCapRate}% target.`}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-green-700/80 mt-1">
+                        Enter your numbers below and press Calculate.
+                      </p>
+                    )}
                   </div>
-                  <Button className="w-full">Calculate</Button>
+                  <Button
+                    className="w-full"
+                    onClick={() => runInvestmentAnalysis(setCapPending)}
+                    disabled={capPending || cocPending}
+                  >
+                    {capPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                      </>
+                    ) : (
+                      "Calculate"
+                    )}
+                  </Button>
+                  {dealError && <p className="text-sm text-red-600">{dealError}</p>}
                 </CardContent>
               </Card>
 
@@ -1056,20 +1668,78 @@ export default function PersonaPropertiesDashboard({
                     Cash-on-Cash Return
                   </CardTitle>
                 </CardHeader>
+                {/* The down payment and the annual cash flow used to be typed in
+                    and thrown away. They are OUTPUTS of the analysis, not inputs —
+                    what the analyzer needs is the financing terms, so that is what
+                    this card now asks for. It shares the deal above; both cards
+                    read one analysis. */}
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Down Payment (25%)</Label>
-                    <Input type="number" placeholder="125000" />
+                    <Label>Down Payment (%)</Label>
+                    <Input
+                      type="number"
+                      placeholder="25"
+                      value={dealForm.downPaymentPercent}
+                      onChange={(e) => setDealForm((f) => ({ ...f, downPaymentPercent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>Annual Cash Flow</Label>
-                    <Input type="number" placeholder="8400" />
+                    <Label>Interest Rate (%)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="6.5"
+                      value={dealForm.interestRate}
+                      onChange={(e) => setDealForm((f) => ({ ...f, interestRate: e.target.value }))}
+                    />
                   </div>
                   <div className="p-4 bg-blue-50 rounded-lg">
                     <p className="text-sm text-blue-700">Cash-on-Cash Return</p>
-                    <p className="text-3xl font-bold text-blue-700">6.72%</p>
+                    <p className="text-3xl font-bold text-blue-700">
+                      {dealMetrics?.cash_on_cash_return != null ? `${dealMetrics.cash_on_cash_return}%` : "—"}
+                    </p>
+                    {dealMetrics && (
+                      <div className="mt-2 space-y-0.5 text-xs text-blue-800">
+                        {dealMetrics.down_payment != null && (
+                          <p>Down payment: ${Math.round(dealMetrics.down_payment).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.monthly_mortgage != null && (
+                          <p>Monthly mortgage: ${Math.round(dealMetrics.monthly_mortgage).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.annual_cash_flow != null && (
+                          <p>Annual cash flow: ${Math.round(dealMetrics.annual_cash_flow).toLocaleString()}</p>
+                        )}
+                        {dealMetrics.monthly_cash_flow != null && (
+                          <p>Monthly cash flow: ${Math.round(dealMetrics.monthly_cash_flow).toLocaleString()}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <Button className="w-full">Calculate</Button>
+                  <Button
+                    className="w-full"
+                    onClick={() => runInvestmentAnalysis(setCocPending)}
+                    disabled={capPending || cocPending}
+                  >
+                    {cocPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                      </>
+                    ) : (
+                      "Calculate"
+                    )}
+                  </Button>
+                  {/* One analysis, one error — shown on whichever card the
+                      investor is looking at. */}
+                  {dealError && <p className="text-sm text-red-600">{dealError}</p>}
+                  {typeof dealAnalysis?.recommendation === "string" && (
+                    <div className="p-3 rounded-lg border bg-muted/30">
+                      <p className="text-xs font-medium mb-1 flex items-center gap-1">
+                        <Lightbulb className="w-3 h-3 text-amber-500" />
+                        Analyst note
+                      </p>
+                      <p className="text-xs text-muted-foreground">{dealAnalysis.recommendation}</p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -1111,84 +1781,13 @@ export default function PersonaPropertiesDashboard({
                             size="icon"
                             variant="ghost"
                             className="h-6 w-6"
-                            onClick={() => {
-                              setEditingAlertId(editingAlertId === search.id ? null : search.id)
-                              setEditAlertForm({
-                                min_price: search.min_price ? String(search.min_price) : "",
-                                max_price: search.max_price ? String(search.max_price) : "",
-                                bedrooms_min: search.bedrooms_min ? String(search.bedrooms_min) : "",
-                                bathrooms_min: search.bathrooms_min ? String(search.bathrooms_min) : "",
-                                cities: (search.cities ?? []).join(", "),
-                              })
-                            }}
+                            onClick={() => openAlertEditor(search)}
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>
                         </div>
                       </div>
-                      {editingAlertId === search.id && (
-                        <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
-                          <p className="text-xs font-medium text-muted-foreground">Edit Search Criteria</p>
-                          <div className="grid grid-cols-2 gap-2">
-                            <div>
-                              <Label className="text-xs">Min Price</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                value={editAlertForm.min_price}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, min_price: e.target.value }))}
-                                placeholder="$400,000"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Max Price</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                value={editAlertForm.max_price}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, max_price: e.target.value }))}
-                                placeholder="$600,000"
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Min Beds</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                type="number"
-                                min={0}
-                                value={editAlertForm.bedrooms_min}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, bedrooms_min: e.target.value }))}
-                              />
-                            </div>
-                            <div>
-                              <Label className="text-xs">Min Baths</Label>
-                              <Input
-                                className="h-7 text-xs"
-                                type="number"
-                                min={0}
-                                value={editAlertForm.bathrooms_min}
-                                onChange={(e) => setEditAlertForm(f => ({ ...f, bathrooms_min: e.target.value }))}
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <Label className="text-xs">Cities (comma-separated)</Label>
-                            <Input
-                              className="h-7 text-xs"
-                              value={editAlertForm.cities}
-                              onChange={(e) => setEditAlertForm(f => ({ ...f, cities: e.target.value }))}
-                              placeholder="Austin, Cedar Park"
-                            />
-                          </div>
-                          <div className="flex gap-2 pt-1">
-                            <Button size="sm" className="h-7 text-xs" onClick={handleSaveAlertCriteria} disabled={savingAlert}>
-                              {savingAlert ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
-                              Save
-                            </Button>
-                            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingAlertId(null)}>
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      )}
+                      {editingAlertId === search.id && renderAlertCriteriaEditor()}
                       <div className="flex flex-wrap gap-2">
                         {search.min_price && (
                           <Badge variant="outline" className="text-xs">
@@ -1293,9 +1892,9 @@ export default function PersonaPropertiesDashboard({
             </CardContent>
           </Card>
 
-          {savedProperties.length > 0 ? (
+          {visibleSavedProperties.length > 0 ? (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedProperties.map((property) => renderPropertyCard(property))}
+              {visibleSavedProperties.map((property: any) => renderPropertyCard(property))}
             </div>
           ) : (
             <Card>
@@ -1363,9 +1962,26 @@ export default function PersonaPropertiesDashboard({
               </section>
             )}
 
-            {savedProperties.length > 0 ? (
+            {/* ── TOMBSTONE (orphan-route sweep, lane G) ─────────────────────
+                `/properties/saved` — app/properties/saved/{page,saved-content}.tsx
+                — IS DELETED. THIS TAB IS THE SURVIVOR.
+
+                That route rendered the same `saved_properties` list and was
+                reachable from nothing (test:orphan-routes listed it; its only
+                "references" were two revalidatePath calls, which the sweep
+                itself no longer counts as reachability). It also took the
+                contact's identity from a QUERY STRING with the literal fallback
+                `"demo-contact-id"` — this tab takes it from the portal route the
+                server already resolved.
+
+                MERGED FIRST, then deleted, per the orphan doctrine: the one
+                thing that page had and this tab did not was the REMOVE verb, and
+                it was `unsaveProperty`'s only caller in the tree. Deleting the
+                page without moving the button would have traded an orphan route
+                for an orphan export. `handleUnsave` above is that merge. */}
+            {visibleSavedProperties.length > 0 ? (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedProperties.map((property: any) => (
+                {visibleSavedProperties.map((property: any) => (
                   <Card key={property.id} className="overflow-hidden hover:shadow-lg transition-shadow">
                     <div className="aspect-video bg-slate-200 relative">
                       {property.images?.[0] ? (
@@ -1385,6 +2001,22 @@ export default function PersonaPropertiesDashboard({
                       <p className="text-sm text-muted-foreground">
                         {property.beds || property.bedrooms || 0} bed | {property.baths || property.bathrooms || 0} bath | {(property.sqft || property.square_feet || 0).toLocaleString()} sqft
                       </p>
+                      {property.mls_number && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-3 w-full text-destructive hover:text-destructive"
+                          disabled={removingMls === String(property.mls_number)}
+                          onClick={() => handleUnsave(String(property.mls_number))}
+                        >
+                          {removingMls === String(property.mls_number) ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <X className="w-4 h-4 mr-2" />
+                          )}
+                          Remove from saved
+                        </Button>
+                      )}
                     </CardContent>
                   </Card>
                 ))}
@@ -1468,22 +2100,74 @@ export default function PersonaPropertiesDashboard({
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Home Price</Label>
-                    <Input type="number" placeholder="$400,000" />
+                    <Input
+                      type="number"
+                      placeholder="400000"
+                      value={mortgageForm.homePrice}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, homePrice: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Down Payment (%)</Label>
-                    <Input type="number" placeholder="20" />
+                    <Input
+                      type="number"
+                      placeholder="20"
+                      value={mortgageForm.downPaymentPercent}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, downPaymentPercent: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Interest Rate (%)</Label>
-                    <Input type="number" placeholder="6.5" />
+                    <Input
+                      type="number"
+                      step="0.01"
+                      placeholder="6.5"
+                      value={mortgageForm.interestRate}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, interestRate: e.target.value }))}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Loan Term (years)</Label>
-                    <Input type="number" placeholder="30" />
+                    <Input
+                      type="number"
+                      placeholder="30"
+                      value={mortgageForm.termYears}
+                      onChange={(e) => setMortgageForm((f) => ({ ...f, termYears: e.target.value }))}
+                    />
                   </div>
                 </div>
-                <Button className="w-full">Calculate Monthly Payment</Button>
+
+                {/* Real figures off compareMortgageScenarios — principal and
+                    interest only, which is exactly what the action returns. */}
+                {mortgageResult && (
+                  <div className="p-4 bg-blue-50 rounded-lg space-y-1">
+                    <p className="text-sm text-blue-700">Monthly Principal &amp; Interest</p>
+                    <p className="text-3xl font-bold text-blue-700">
+                      ${Number(mortgageResult.monthly_payment).toLocaleString()}
+                    </p>
+                    <div className="text-xs text-blue-800 pt-1 space-y-0.5">
+                      <p>Loan amount: ${Number(mortgageResult.loan_amount).toLocaleString()}</p>
+                      <p>Down payment: ${Number(mortgageResult.down_payment).toLocaleString()}</p>
+                      <p>Total interest over {mortgageResult.term_years} years: ${Number(mortgageResult.total_interest).toLocaleString()}</p>
+                      <p>Total paid: ${Number(mortgageResult.total_paid).toLocaleString()}</p>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground pt-1">
+                      Property taxes, insurance, HOA dues and PMI are not included — your lender's
+                      estimate is the authority.
+                    </p>
+                  </div>
+                )}
+
+                <Button className="w-full" onClick={handleCalculateMonthlyPayment} disabled={mortgagePending}>
+                  {mortgagePending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Calculating...
+                    </>
+                  ) : (
+                    "Calculate Monthly Payment"
+                  )}
+                </Button>
+                {mortgageError && <p className="text-sm text-red-600">{mortgageError}</p>}
               </CardContent>
             </Card>
           </TabsContent>
@@ -1494,15 +2178,15 @@ export default function PersonaPropertiesDashboard({
           <TabsContent value="showings" className="space-y-6">
             {showings.length > 0 ? (
               <div className="space-y-4">
-                {showings.map((showing: any) => (
+                {showings.map((showing) => (
                   <Card key={showing.id}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="font-semibold">{showing.property_address}</p>
+                          <p className="font-semibold">{showing.propertyAddress ?? "Address on file with your agent"}</p>
                           <p className="text-sm text-muted-foreground">
-                            {showing.confirmed_date 
-                              ? new Date(showing.confirmed_date).toLocaleDateString()
+                            {showing.showingAt
+                              ? new Date(showing.showingAt).toLocaleDateString()
                               : "Pending confirmation"}
                           </p>
                         </div>
@@ -1540,7 +2224,7 @@ export default function PersonaPropertiesDashboard({
               <Card>
                 <CardContent className="p-4 text-center">
                   <p className="text-3xl font-bold text-green-600">
-                    {showings.filter((s: any) => s.status === "completed").length}
+                    {showings.filter((s) => s.status === "completed").length}
                   </p>
                   <p className="text-sm text-muted-foreground">Completed</p>
                 </CardContent>
@@ -1548,16 +2232,14 @@ export default function PersonaPropertiesDashboard({
               <Card>
                 <CardContent className="p-4 text-center">
                   <p className="text-3xl font-bold text-blue-600">
-                    {showings.filter((s: any) => s.status === "scheduled" || s.status === "confirmed").length}
+                    {showings.filter((s) => s.status === "scheduled" || s.status === "confirmed").length}
                   </p>
                   <p className="text-sm text-muted-foreground">Upcoming</p>
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="p-4 text-center">
-                  <p className="text-3xl font-bold text-amber-600">
-                    {showings.filter((s: any) => s.buyer_feedback).length}
-                  </p>
+                  <p className="text-3xl font-bold text-amber-600">{showingsWithFeedback.length}</p>
                   <p className="text-sm text-muted-foreground">With Feedback</p>
                 </CardContent>
               </Card>
@@ -1572,21 +2254,21 @@ export default function PersonaPropertiesDashboard({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.status === "scheduled" || s.status === "confirmed").length > 0 ? (
+                {showings.filter((s) => s.status === "scheduled" || s.status === "confirmed").length > 0 ? (
                   <div className="space-y-3">
                     {showings
-                      .filter((s: any) => s.status === "scheduled" || s.status === "confirmed")
-                      .map((showing: any) => (
+                      .filter((s) => s.status === "scheduled" || s.status === "confirmed")
+                      .map((showing) => (
                         <div key={showing.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
                           <div className="flex items-center gap-4">
                             <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
                               <Users className="w-6 h-6 text-primary" />
                             </div>
                             <div>
-                              <p className="font-medium">{showing.buyer_name || "Prospective Buyer"}</p>
+                              <p className="font-medium">{showing.buyerName || "Prospective Buyer"}</p>
                               <p className="text-sm text-muted-foreground">
-                                {showing.confirmed_date 
-                                  ? new Date(showing.confirmed_date).toLocaleDateString("en-US", {
+                                {showing.showingAt
+                                  ? new Date(showing.showingAt).toLocaleDateString("en-US", {
                                       weekday: "long",
                                       month: "short",
                                       day: "numeric",
@@ -1618,30 +2300,30 @@ export default function PersonaPropertiesDashboard({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.status === "completed").length > 0 ? (
+                {showings.filter((s) => s.status === "completed").length > 0 ? (
                   <div className="space-y-3">
                     {showings
-                      .filter((s: any) => s.status === "completed")
-                      .map((showing: any) => (
+                      .filter((s) => s.status === "completed")
+                      .map((showing) => (
                         <div key={showing.id} className="p-4 bg-slate-50 rounded-lg">
                           <div className="flex items-center justify-between mb-2">
                             <div>
-                              <p className="font-medium">{showing.buyer_name || "Buyer"}</p>
+                              <p className="font-medium">{showing.buyerName || "Buyer"}</p>
                               <p className="text-sm text-muted-foreground">
-                                {showing.confirmed_date 
-                                  ? new Date(showing.confirmed_date).toLocaleDateString()
+                                {showing.showingAt
+                                  ? new Date(showing.showingAt).toLocaleDateString()
                                   : "Date not recorded"}
                               </p>
                             </div>
-                            {showing.buyer_feedback && (
+                            {showing.buyerFeedback && (
                               <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
                                 Feedback Received
                               </Badge>
                             )}
                           </div>
-                          {showing.buyer_feedback && (
+                          {showing.buyerFeedback && (
                             <div className="mt-3 p-3 bg-white rounded border">
-                              <p className="text-sm italic">"{showing.buyer_feedback}"</p>
+                              <p className="text-sm italic">"{showing.buyerFeedback}"</p>
                             </div>
                           )}
                         </div>
@@ -1670,79 +2352,77 @@ export default function PersonaPropertiesDashboard({
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {showings.filter((s: any) => s.buyer_feedback).length > 0 ? (
+                {showingsWithFeedback.length > 0 ? (
                   <>
-                    {/* Sentiment Summary */}
+                    {/* Sentiment Summary — REAL verdicts, on the one ladder.
+                        Was `s.feedback_sentiment`, a column no table has, so all
+                        three figures were 0% whenever the card managed to render at
+                        all. The verdict the OS actually records is
+                        showings.buyer_interest_level (love_it|like_it|maybe|no),
+                        banded by lib/portal/portal-showing-feed.ts:112. A showing
+                        with prose but no rung is counted in the denominator and in
+                        none of the three bands — a comment is not a verdict. */}
                     <div className="grid md:grid-cols-3 gap-4">
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <ThumbsUp className="w-4 h-4 text-green-600" />
                           <span className="font-medium text-green-700">Positive</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "positive").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("high")}%</p>
                       </div>
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <Minus className="w-4 h-4 text-amber-600" />
                           <span className="font-medium text-amber-700">Neutral</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "neutral").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("medium")}%</p>
                       </div>
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <ThumbsDown className="w-4 h-4 text-red-600" />
                           <span className="font-medium text-red-700">Concerns</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "negative").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("low")}%</p>
                       </div>
                     </div>
 
-                    {/* Common Themes */}
-                    <div className="p-4 bg-white rounded-lg border">
-                      <h4 className="font-medium mb-3">Common Buyer Feedback Themes</h4>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline" className="bg-green-50 border-green-200 text-green-700">
-                          Great location
-                        </Badge>
-                        <Badge variant="outline" className="bg-green-50 border-green-200 text-green-700">
-                          Well-maintained
-                        </Badge>
-                        <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">
-                          Price consideration
-                        </Badge>
-                        <Badge variant="outline" className="bg-blue-50 border-blue-200 text-blue-700">
-                          Good natural light
-                        </Badge>
+                    {/* WHAT BUYERS ACTUALLY SAID.
+                        TOMBSTONE — two blocks were deleted here, not moved:
+                        · "Common Buyer Feedback Themes" rendered four hardcoded
+                          badges (Great location / Well-maintained / Price
+                          consideration / Good natural light) to EVERY seller on
+                          EVERY listing, regardless of what any buyer said.
+                        · "AI Recommendations" rendered three hardcoded sentences
+                          ("Buyers consistently praise the natural lighting…") the
+                          same way.
+                        Neither read a single row. Both were seller-facing claims
+                        about buyers that the OS had not observed, which this repo
+                        refuses on principle ("never narrate a day the OS didn't
+                        see" — MAINTENANCE_DOMAINS.client_story_drafts). The REAL
+                        versions of both already exist and are owned elsewhere:
+                        listing feedback analysis in lib/listing-health/health-scorer.ts
+                        (the FEEDBACK category + listing_health_interventions), and the
+                        seller-facing narrative in app/actions/seller-updates.ts.
+                        What stays here is only what a buyer actually left. */}
+                    {showingsWithFeedback.some((s) => s.buyerConcerns) && (
+                      <div className="p-4 bg-white rounded-lg border">
+                        <h4 className="font-medium mb-3 flex items-center gap-2">
+                          <Lightbulb className="w-4 h-4 text-amber-500" />
+                          Concerns Buyers Raised
+                        </h4>
+                        <ul className="space-y-2 text-sm">
+                          {showingsWithFeedback
+                            .filter((s) => s.buyerConcerns)
+                            .slice(0, 5)
+                            .map((s) => (
+                              <li key={s.id} className="flex items-start gap-2">
+                                <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                                <span>{s.buyerConcerns}</span>
+                              </li>
+                            ))}
+                        </ul>
                       </div>
-                    </div>
-
-                    {/* AI Recommendations */}
-                    <div className="p-4 bg-white rounded-lg border">
-                      <h4 className="font-medium mb-3 flex items-center gap-2">
-                        <Lightbulb className="w-4 h-4 text-amber-500" />
-                        AI Recommendations
-                      </h4>
-                      <ul className="space-y-2 text-sm">
-                        <li className="flex items-start gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
-                          <span>Buyers consistently praise the natural lighting - highlight this in your listing photos</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
-                          <span>Consider addressing price concerns by highlighting recent comparable sales</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
-                          <span>Location is a top selling point - emphasize proximity to amenities</span>
-                        </li>
-                      </ul>
-                    </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-center py-8">
@@ -1762,11 +2442,10 @@ export default function PersonaPropertiesDashboard({
                 <CardTitle>All Buyer Feedback</CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.buyer_feedback).length > 0 ? (
+                {showingsWithFeedback.length > 0 ? (
                   <div className="space-y-4">
-                    {showings
-                      .filter((s: any) => s.buyer_feedback)
-                      .map((showing: any) => (
+                    {showingsWithFeedback
+                      .map((showing) => (
                         <div key={showing.id} className="p-4 border rounded-lg">
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-3">
@@ -1774,38 +2453,46 @@ export default function PersonaPropertiesDashboard({
                                 <User className="w-5 h-5 text-slate-600" />
                               </div>
                               <div>
-                                <p className="font-medium">{showing.buyer_name || "Anonymous Buyer"}</p>
+                                <p className="font-medium">{showing.buyerName || "Anonymous Buyer"}</p>
                                 <p className="text-xs text-muted-foreground">
-                                  {showing.confirmed_date 
-                                    ? new Date(showing.confirmed_date).toLocaleDateString()
+                                  {showing.showingAt
+                                    ? new Date(showing.showingAt).toLocaleDateString()
                                     : ""}
                                 </p>
                               </div>
                             </div>
-                            {showing.buyer_interest_level && (
-                              <Badge 
+                            {/* THE NAMED FINDING. This badge compared
+                                showing.buyer_interest_level against "high"/"medium"
+                                on a row sourced from `showing_requests`, which has no
+                                such column — so it never rendered once. The value now
+                                comes from showings.buyer_interest_level and is banded
+                                by the ONE ladder (lib/portal/portal-showing-feed.ts:112);
+                                `maybe` bands to medium and an unrated showing gets no
+                                badge rather than a fabricated one. */}
+                            {showing.interestBand && (
+                              <Badge
                                 variant="outline"
                                 className={
-                                  showing.buyer_interest_level === "high" 
+                                  showing.interestBand === "high"
                                     ? "bg-green-50 text-green-700 border-green-200"
-                                    : showing.buyer_interest_level === "medium"
+                                    : showing.interestBand === "medium"
                                     ? "bg-amber-50 text-amber-700 border-amber-200"
                                     : "bg-slate-50 text-slate-700 border-slate-200"
                                 }
                               >
-                                {showing.buyer_interest_level === "high" ? "Very Interested" 
-                                  : showing.buyer_interest_level === "medium" ? "Interested" 
-                                  : "Exploring"}
+                                {interestBandLabel(showing.interestBand)}
                               </Badge>
                             )}
                           </div>
-                          <p className="text-sm bg-slate-50 p-3 rounded italic">
-                            "{showing.buyer_feedback}"
-                          </p>
-                          {showing.buyer_concerns && (
+                          {showing.buyerFeedback && (
+                            <p className="text-sm bg-slate-50 p-3 rounded italic">
+                              "{showing.buyerFeedback}"
+                            </p>
+                          )}
+                          {showing.buyerConcerns && (
                             <div className="mt-3 flex items-start gap-2 text-sm text-amber-700">
                               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                              <span>Concerns: {showing.buyer_concerns}</span>
+                              <span>Concerns: {showing.buyerConcerns}</span>
                             </div>
                           )}
                         </div>

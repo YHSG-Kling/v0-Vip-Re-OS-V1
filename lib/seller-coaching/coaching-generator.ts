@@ -1,5 +1,6 @@
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:seller_stage_coaching, pinned to
+// claude-sonnet, the model this call site already passed. Only the ledger changes.
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type SellerPersona =
@@ -66,24 +67,43 @@ export async function getSellerCoaching(
     const sevenDays  = 7 * 24 * 60 * 60 * 1000
     const isFresh    = Date.now() - updatedAt < sevenDays
     if (isFresh) return cached as SellerCoachingContent
-    // Fall through to regenerate stale content
+    // STALE — regenerate INTO THE SCOPE THE STALE ROW CAME FROM. Same defect and
+    // same fix as the buyer half at lib/intelligence/coaching-engine.ts:64 (§6 —
+    // one vocabulary per function): the refresh used to always write the
+    // system-default row while the lookup RANKS a brokerage row first, so a stale
+    // brokerage row was never replaced and every call re-paid the model.
+    return generateSellerCoachingWithAI(listingStage, persona, cached.brokerage_id ?? "")
   }
 
-  // 2. No cache or stale — generate with AI
-  return generateSellerCoachingWithAI(listingStage, persona, brokerageId)
+  // 2. No cache at all — generate ONE shared system default. Deliberately not
+  //    scoped to `brokerageId`: a per-brokerage row on first view would multiply
+  //    model spend across tenants for identical generic coaching. The brokerage
+  //    half of this feature is the LOOKUP predicate above.
+  return generateSellerCoachingWithAI(listingStage, persona, "")
 }
 
+/**
+ * `brokerageId` IS THE ROW SCOPE — accepted here and read by NOTHING until
+ * 2026-08-24, while the content object and the upsert both hardcoded
+ * `brokerage_id: null`. "" = the shared system default; a brokerage id refreshes
+ * that brokerage's own row in place, which is what the conflict target
+ * (listing_stage, persona, brokerage_id) has always required.
+ */
 async function generateSellerCoachingWithAI(
   listingStage: string,
   persona: SellerPersona,
   brokerageId: string
 ): Promise<SellerCoachingContent> {
   const supabase    = createServiceClient()
+  const rowScope: string | null = brokerageId || null
   const personaLabel = persona ?? "standard"
   const stageLabel   = listingStage.replace(/_/g, " ").toLowerCase()
 
-  const { text } = await generateText({
-    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+  const { text } = await generateTextRouted({
+    feature: "seller_stage_coaching",
+    // Same scope the row is written under; "" = shared system default, which
+    // bills to no tenant rather than to an arbitrary one.
+    brokerageId: rowScope,
     system:
       "You are a real estate coaching AI. Generate coaching for a listing agent at a specific " +
       "stage of the seller journey. Return JSON only with keys: " +
@@ -122,7 +142,7 @@ async function generateSellerCoachingWithAI(
   const content: Omit<SellerCoachingContent, "id" | "updated_at"> = {
     listing_stage:            listingStage,
     persona:                  persona ?? null,
-    brokerage_id:             null,            // system default — applies to all brokerages
+    brokerage_id:             rowScope,        // null = shared system default; else this brokerage's own row
     coaching_headline:        `AI Coaching — ${stageLabel.replace(/\b\w/g, c => c.toUpperCase())}`,
     coaching_body:            `Focus on the ${personaLabel} seller's priorities at this stage.`,
     suggested_talking_points: ai.talking_points,
@@ -138,11 +158,11 @@ async function generateSellerCoachingWithAI(
   }
 
   // UPSERT — ON CONFLICT (listing_stage, persona, brokerage_id) DO UPDATE
-  const { data: upserted } = await supabase
+  const { data: upserted, error: upsertError } = await supabase
     .from("seller_stage_coaching")
     .upsert(
       {
-        brokerage_id:             null,
+        brokerage_id:             rowScope,
         listing_stage:            listingStage,
         persona:                  persona ?? null,
         coaching_headline:        content.coaching_headline,
@@ -163,6 +183,17 @@ async function generateSellerCoachingWithAI(
     )
     .select("*")
     .single()
+
+  // supabase-js RESOLVES refusals (CLAUDE.md §3): an unread `error` here turns a
+  // failed cache write into a page that looks cached and re-pays the model next call.
+  if (upsertError) {
+    console.error("[seller-coaching] cache upsert refused", {
+      listingStage,
+      persona,
+      brokerageId: rowScope,
+      error: upsertError.message,
+    })
+  }
 
   return (upserted ?? content) as SellerCoachingContent
 }

@@ -10,9 +10,9 @@ import {
   getSyncErrors,
   getTaxCategories,
 } from "@/app/actions/accounting-sync"
-import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
+import { LinkIcon, AlertCircle, Clock, Settings2 } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
-import { readScopedZoom } from "@/lib/connections/zoom"
+import { readScopedZoom, resolveZoomOwner } from "@/lib/connections/zoom"
 import { createServiceClient } from "@/lib/supabase/service"
 import { defaultQbReconciliationPeriod, loadBrokerageQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "./provider-connection-card"
@@ -21,6 +21,8 @@ import { SyncControlsCard } from "./sync-controls-card"
 import { SyncHistoryTable } from "./sync-history-table"
 import { ErrorLogTable } from "./error-log-table"
 import { TaxCategoryManager } from "./tax-category-manager"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -30,6 +32,13 @@ export default async function AccountingSettingsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user profile and verify role
   const { data: profile } = await supabase
     .from("users")
@@ -40,7 +49,7 @@ export default async function AccountingSettingsPage() {
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Role gate: broker + admin only
-  if (!["broker", "admin"].includes(profile.user_type ?? "")) {
+  if (!isBrokerageFinanceAdmin({ user_type: profile.user_type ?? "" })) {
     redirect("/dashboard")
   }
 
@@ -71,7 +80,19 @@ export default async function AccountingSettingsPage() {
   // BROKERAGE MEETINGS (round 39) — the brokerage's own Zoom (scope-aware, exact
   // owner match). Zoom appointments booked by brokerage members host here when
   // no more-specific (agent/team) Zoom is connected.
-  const brokerageZoom = await readScopedZoom(createServiceClient(), "brokerage", profile.brokerage_id).catch(() => null)
+  //
+  // OWNER RESOLUTION IS THE MODULE'S JOB (§6, wave 26). This passed the scope
+  // literal and a raw id straight through; `resolveZoomOwner`
+  // (lib/connections/zoom.ts:169) is the declared resolver for exactly that
+  // pair and had no caller. It returns an HONEST NULL when the anchor for a
+  // scope is missing rather than minting an owner — "NO cross-scope fallback —
+  // an unresolvable owner is an honest null, never someone else's id" — so a
+  // session with no brokerage now renders no card instead of a card read against
+  // an empty owner id.
+  const zoomOwner = resolveZoomOwner("brokerage", { brokerageId: profile.brokerage_id })
+  const brokerageZoom = zoomOwner
+    ? await readScopedZoom(createServiceClient(), zoomOwner.ownerType, zoomOwner.ownerId).catch(() => null)
+    : null
 
   return (
     <div className="container mx-auto p-6 space-y-6">

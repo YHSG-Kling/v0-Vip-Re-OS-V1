@@ -17,7 +17,9 @@
  * declared INLINE so this composition never drags server deps into the bundle.
  */
 import React from "react"
-import { AbsoluteFill, Img, Sequence, Video, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Sequence, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 
@@ -29,7 +31,27 @@ export interface PartnersMeetingReelProps {
   weekLabel: string
   cards: ReelCard[]
   oneAsk: string
-  narration?: string | null
+  // TOMBSTONE (2026-09-03): `narration?: string | null` was declared here and
+  // read by NOTHING in this file. The narration TEXT rides in input_props as
+  // a CARRIER for the voiceover lane, which runs at queue time AFTER the row
+  // is built and reads it from the queued props — lib/intelligence/
+  // partners-meeting.ts (prepareReelVoiceover ← req.inputProps.narration),
+  // lib/kernel/board-packet-reel.ts, lib/kernel/deal-room-reel.ts and
+  // lib/video/listing-pitch-reel.ts — and lands as the snake-key
+  // `voiceover_url` the coordinator muxes AFTER the render (m313 tpad). The
+  // client-facing uses ALSO derive `captionsCues` from that same text
+  // upstream (deal-room-reel.ts / listing-pitch-reel.ts → buildCaptionPlan),
+  // which is the prop this composition actually renders (CaptionLayer below).
+  // A `<CaptionLayer script={narration}>` fallback was considered and
+  // REJECTED: the internal uses (partners_meeting_reel, board_packet_reel)
+  // are REPORT_INTERNAL with `captions: false` in lib/video/finish-spec.ts,
+  // and an in-composition fallback would have burned captions into exactly
+  // those. This matches how the other narrated compositions are shaped —
+  // ListingSectionReel and NewsletterDigestVideo declare only what they
+  // render (voiceoverUrl → <Audio>), never the script text. The producer
+  // type (lib/intelligence/partners-meeting-reel-props.ts) keeps `narration`
+  // because THAT is the input_props shape; this interface is the component's.
+  // test:remotion-setup §5 now refuses any declared-but-unread prop.
   agentName: string
   avatarVideoUrl: string | null
   agentPhotoUrl: string | null
@@ -57,7 +79,7 @@ const KIND_TAG: Record<ReelCardKind, string> = {
 const EASE = Easing.bezier(0.16, 1, 0.3, 1)
 const fadeUp = (frame: number, from: number, to: number) => ({
   opacity: interpolate(frame, [from, to], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE }),
-  transform: `translateY(${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px)`,
+  translate: `0 ${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px`,
 })
 
 /** Layered depth: brand-color base, accent glow top-right, cool glow bottom-left,
@@ -75,7 +97,7 @@ const SceneBackground: React.FC<{ brand: Brand; accent?: string }> = ({ brand, a
 const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ brand, right }) => (
   <>
     <div style={{ position: "absolute", top: 44, left: 64, right: 64, display: "flex", alignItems: "center", gap: 20 }}>
-      {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
+      {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
       <div style={{ fontSize: 24, letterSpacing: 5, color: "#fff", opacity: 0.85, fontWeight: 700 }}>
         {brand.brokerageName.toUpperCase()}
       </div>
@@ -98,9 +120,9 @@ const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string
   return (
     <div style={{ position: "absolute", bottom: 44, right: 56, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
       {avatarVideoUrl ? (
-        <div style={ring}><Video src={avatarVideoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+        <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%" }} /></div>
       ) : agentPhotoUrl ? (
-        <div style={ring}><Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+        <div style={ring}><SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
       ) : (
         <div style={{ ...ring, backgroundColor: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 92, color: primaryColor, fontWeight: 800 }}>
           {(agentName[0] ?? "T").toUpperCase()}
@@ -172,7 +194,7 @@ const CoverScene: React.FC<{ brand: Brand; weekLabel: string; agentName: string 
     <AbsoluteFill>
       <SceneBackground brand={brand} />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center" }}>
-        {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 96, objectFit: "contain", marginBottom: 44, ...fadeUp(frame, 0, 14) }} />}
+        {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 96, objectFit: "contain", marginBottom: 44, ...fadeUp(frame, 0, 14) }} />}
         <div style={{
           display: "inline-block", padding: "12px 30px", borderRadius: 8, backgroundColor: brand.accentColor,
           color: brand.primaryColor, fontSize: 25, fontWeight: 800, letterSpacing: 6, textTransform: "uppercase",
@@ -218,7 +240,7 @@ const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: str
       <SceneBackground brand={brand} />
       <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", color: "#fff", textAlign: "center" }}>
         <div>
-          {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
+          {brand.logoUrl && <SafeImg src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
           <div style={{ fontSize: 44, fontWeight: 800, ...fadeUp(frame, 4, 18) }}>{brand.brokerageName}</div>
           <div style={{ width: 90, height: 4, borderRadius: 2, backgroundColor: brand.accentColor, margin: "22px auto 0" }} />
           <div style={{ fontSize: 23, opacity: 0.65, marginTop: 22 }}>
@@ -255,17 +277,46 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
         <CoverScene brand={brand} weekLabel={weekLabel} agentName={agentName} />
       </Sequence>
 
-      {/* EARNED CARDS — the presenter rides every card */}
+      {/* EARNED CARDS */}
       {cards.map((card, i) => (
         <Sequence key={i} from={COVER + per * i} durationInFrames={per}>
           <CardScene card={card} index={i} total={cards.length} brand={brand} />
-          <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
         </Sequence>
       ))}
 
       {/* THE ONE ASK */}
       <Sequence from={COVER + cardTotal} durationInFrames={ASK}>
         <AskScene brand={brand} oneAsk={oneAsk} />
+      </Sequence>
+
+      {/* THE PRESENTER RIDES EVERY CARD — AS ONE CONTINUOUS TAKE.
+          THE DEFECT (found 2026-09-05, lane BROLL, auditing remotion/ against
+          .claude/skills/remotion-best-practices). `<AvatarPIP>` was mounted
+          INSIDE each card's `<Sequence>` and again inside the ask's — cards.length
+          + 1 separate mounts of the SAME `avatarVideoUrl`. A `<Video>` inside a
+          `<Sequence>` starts at that sequence's frame 0, which is exactly right
+          for one clip in one slot and exactly wrong here: the presenter RESTARTED
+          at every card boundary, so the reel only ever showed the clip's first
+          `per` frames and never reached the rest of the take — and, because
+          `<Video>` from @remotion/media plays the media's audio, the D-ID clip's
+          lip-synced narration RE-SPOKE its opening line once per card while the
+          root-level `<CaptionLayer>` ran one continuous caption track over the
+          top. The captions and the audio disagreed, and the render reported
+          success — the same silent-wrong-thing shape as the B-roll freeze this
+          lane closed (scripts/broll-slot-guard.ts).
+
+          One mount over the whole presenter window [COVER, durationInFrames −
+          OUTRO) gives the clip ONE clock, so it plays through. Placed after the
+          card/ask sequences so the PIP still draws on top of them, and before
+          the outro so the outro still draws on top of it. The window meets the
+          outro exactly: COVER + cardTotal + ASK === durationInFrames − OUTRO.
+
+          UNRESOLVED and NOT invented here: if the D-ID clip is SHORTER than this
+          window it holds its final frame, the same class of defect the B-roll
+          layer now bounds with a measured duration. Nothing in this composition's
+          props carries the avatar clip's length, so there is no honest number to
+          bound it with — see the report, not a guess. */}
+      <Sequence from={COVER} durationInFrames={cardTotal + ASK}>
         <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
       </Sequence>
 

@@ -8,6 +8,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { ArrowLeft, CheckCircle2, Clock, AlertTriangle, Calendar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+// THE BOARD'S MISSING HALF — this page listed every open task and offered no way
+// to act on one. See the component's header for why these three controls and not
+// more, and which writer each one uses.
+import { TaskRowActions } from './task-row-actions'
+// HOISTED (§6, lane G3 2026-09-03): the overdue rule and the priority colour
+// lived inline here (:42-59) and were needed verbatim by the agent-facing list
+// at app/dashboard/tasks/page.tsx. One module now holds both — see its header
+// for why "overdue" compares calendar days rather than timestamps.
+import { isTaskOverdue, getPriorityColor } from '@/lib/tasks/task-presentation'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,24 +45,10 @@ export default async function AdminTasksPage() {
     .order('due_date', { ascending: true })
     .limit(50)
 
-  const overdueTasks = tasks?.filter(
-    (t) => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed'
-  ) || []
-  const pendingTasks = tasks?.filter(
-    (t) => t.status === 'pending' && (!t.due_date || new Date(t.due_date) >= new Date())
-  ) || []
+  const now = new Date()
+  const overdueTasks = tasks?.filter((t) => isTaskOverdue(t, now)) || []
+  const pendingTasks = tasks?.filter((t) => t.status === 'pending' && !isTaskOverdue(t, now)) || []
   const inProgressTasks = tasks?.filter((t) => t.status === 'in_progress') || []
-
-  const getPriorityColor = (priority: string | null) => {
-    switch (priority) {
-      case 'high':
-        return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-      case 'medium':
-        return 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400'
-      default:
-        return 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-400'
-    }
-  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -107,7 +102,10 @@ export default async function AdminTasksPage() {
                         Overdue by {formatDistanceToNow(new Date(task.due_date!))}
                       </div>
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -144,7 +142,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -181,7 +182,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>

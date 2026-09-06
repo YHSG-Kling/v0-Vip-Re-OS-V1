@@ -29,6 +29,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isoWeekOf } from "@/lib/kernel/week-in-review"
+import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+// The ONE owner of the buyer-verdict vocabulary (CLAUDE.md §6). Static and pure —
+// no I/O, no server-only dependency — so it costs the graph one small module rather
+// than a dynamic import re-resolved once per tour inside runTourRecaps' loop.
+import { tourInterestToRating } from "@/lib/behavior-learning/signal-mapping"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -81,7 +86,17 @@ export function sellerWeeklyTag(listingId: string, isoWeek: string): string {
 
 // ── 2. Tour-evening recap ───────────────────────────────────────────────────
 
-export interface TourStopFact { address: string; rating: number | null; feedback: string | null }
+export interface TourStopFact {
+  address: string
+  rating: number | null
+  feedback: string | null
+  /** Minutes the buyer actually spent in the house — tour_stops.time_spent_minutes,
+   *  DERIVED by the database (m564) from the day-of check-in/check-out stamps that
+   *  app/actions/tour-planner.ts::stampTourStopPresence writes. Optional: a stop
+   *  nobody checked into carries null, and null must stay SILENT rather than
+   *  become "0 minutes". */
+  minutesOnSite?: number | null
+}
 
 export interface TourRecapFacts {
   buyerFirstName: string | null
@@ -105,6 +120,16 @@ export function tourRecapBrief(f: TourRecapFacts): StoryBrief | null {
     const bits: string[] = [s.address]
     if (s.rating != null) bits.push(`buyer's rating ${s.rating}/5`)
     if ((s.feedback ?? "").trim()) bits.push(`buyer's own note: "${(s.feedback ?? "").trim().slice(0, 120)}"`)
+    // TIME ON SITE — the day-of check-in/check-out record (m564), added to the
+    // brief because how long someone lingered is a real, grounded fact about the
+    // day and it is the one the buyer themselves will remember. It ENRICHES a stop
+    // that already carries a reaction; it never qualifies a stop on its own — the
+    // `known` filter above is untouched, so a tour with stamps and no reactions
+    // still yields NO brief. Minutes are only spoken when the OS actually watched
+    // the clock: null stays silent rather than rendering as "0 minutes".
+    if (s.minutesOnSite != null && s.minutesOnSite > 0) {
+      bits.push(`they spent ${s.minutesOnSite} ${s.minutesOnSite === 1 ? "minute" : "minutes"} in the house`)
+    }
     facts.push(`Stop: ${bits.join(" — ")}.`)
   }
   const standout = pickStandout(f.stops)
@@ -329,13 +354,45 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
     out.scanned++
     const tag = tourRecapTag(t.id)
     if (await alreadyProposed(svc, brokerageId, tag)) continue
+    // TOMBSTONE (orphan doctrine §1.1 — a DUPLICATE existed; merged onto the survivor).
+    // This read was `.select("property_address, rating, feedback")`. tour_stops carries
+    // TWO spellings of the buyer's verdict and only ONE has writers:
+    //   · rating / feedback              — WRITERLESS. No code writes them (the whole
+    //     tree's tour_stops call chains were read comment-stripped), and no DB trigger,
+    //     routine or column DEFAULT does either — pg_trigger and pg_proc are both empty
+    //     for tour_stops on the live project, and both columns default NULL.
+    //   · buyer_interest_level / buyer_note — THE SURVIVORS, written by
+    //     app/actions/tour-planner.ts:896 (rateTourStop) and :966 (completeTour), and
+    //     already read by lib/kernel/tour-optimizer.ts:599.
+    // So every stop came back {rating: null, feedback: null}, tourRecapBrief's
+    // "never narrate a day the OS didn't see" guard (the `if (!brief) continue` below)
+    // returned null for every tour ever planned, and NOT ONE tour recap — nor the
+    // offer-readiness bridge task after it — has ever fired.
+    // The verdict is translated through the ONE owner of that vocabulary,
+    // lib/behavior-learning/signal-mapping.ts::tourInterestToRating, rather than a
+    // private map here (CLAUDE.md §6); the pure brief/standout functions keep their
+    // 1-5 contract untouched.
     const [{ data: buyer }, { data: stops }] = await Promise.all([
       svc.from("contacts").select("first_name").eq("id", t.contact_id).maybeSingle(),
-      svc.from("tour_stops").select("property_address, rating, feedback").eq("tour_id", t.id).limit(12),
+      // time_spent_minutes joins the read (orphan doctrine §1.2, wave BA): it was
+      // WRITERLESS — no code writer, no trigger, no routine, no default, verified
+      // live — and its only appearance in the tree was a SELECT list nothing read.
+      // The owner ruled showings.completed_at/duration_minutes is NOT its
+      // duplicate ("tours and showings are 2 different"), so the missing half was
+      // BUILT rather than deleted: app/actions/tour-planner.ts::stampTourStopPresence
+      // stamps the day-of arrival/departure and m564 derives this column from them.
+      // This read is one of its two real consumers; the other is the CRM day-of tab.
+      svc.from("tour_stops").select("property_address, buyer_interest_level, buyer_note, time_spent_minutes").eq("tour_id", t.id).limit(12),
     ])
+    const stopFacts = ((stops ?? []) as any[]).map((s) => ({
+      address: s.property_address ?? "one of the homes",
+      rating: tourInterestToRating(s.buyer_interest_level),
+      feedback: s.buyer_note ?? null,
+      minutesOnSite: s.time_spent_minutes ?? null,
+    }))
     const brief = tourRecapBrief({
       buyerFirstName: (buyer as any)?.first_name ?? null,
-      stops: ((stops ?? []) as any[]).map((s) => ({ address: s.property_address ?? "one of the homes", rating: s.rating ?? null, feedback: s.feedback ?? null })),
+      stops: stopFacts,
     })
     if (!brief) continue // no reactions recorded — never narrate a day the OS didn't see
     const draft = await authorStory(brief)
@@ -359,7 +416,9 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
     // RECAP → OFFER BRIDGE: a standout reaction is an offer-readiness SIGNAL —
     // the agent gets the prep task (comps + net sheet) the same evening, once
     // per tour, so the momentum the recap creates lands on someone's list.
-    const standoutStop = pickStandout(((stops ?? []) as any[]).map((s) => ({ address: s.property_address ?? "the standout home", rating: s.rating ?? null, feedback: s.feedback ?? null })))
+    // Same facts the brief was built from — re-deriving them from the raw rows here
+    // is how the two halves drifted apart in the first place.
+    const standoutStop = pickStandout(stopFacts)
     if (r.ok && standoutStop && t.agent_id) {
       const bridgeTag = `[TOUR_STANDOUT] [${t.id}]`
       const { data: priorTask } = await svc.from("tasks").select("id")
@@ -390,7 +449,7 @@ export async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Dat
 
   const { data: txs } = await svc.from("transactions")
     .select("id, property_address, buyer_contact_id, contact_id, seller_contact_id, listing_id, status")
-    .eq("brokerage_id", brokerageId).in("status", ["under_contract", "closing"]).limit(200)
+    .eq("brokerage_id", brokerageId).in("status", [...TRANSACTION_STATUSES_IN_ESCROW]).limit(200)
   for (const tx of ((txs ?? []) as any[])) {
     const clientId = tx.buyer_contact_id ?? tx.contact_id
     // Distinct seller contact on a dual-represented deal — the side that used to
@@ -506,13 +565,21 @@ export async function runBuyerSearchStories(svc: Svc, brokerageId: string, now: 
     if (await alreadyProposed(svc, brokerageId, tag)) continue
 
     const listingIds = [...new Set(metas.map((m) => m.listing_id).filter(Boolean))] as string[]
-    const [{ data: buyer }, { count: portalCount }, { data: listingRows }] = await Promise.all([
+    const [{ data: buyer }, { count: portalCount, error: portalCountError }, { data: listingRows }] = await Promise.all([
       svc.from("contacts").select("first_name").eq("id", contactId).maybeSingle(),
-      svc.from("client_portal_activity").select("id", { count: "exact", head: true }).eq("contact_id", contactId).gte("created_at", since),
+      // Tenant-bounded even though contactId came from a brokerage-scoped scan: this is the
+      // SERVICE client, so RLS is not the bound — the filter is. It is writable now only because
+      // the portal-activity writers stamp brokerage_id; before that, scoping this read would have
+      // returned zero for every buyer. The count feeds "how engaged has this buyer been", so a
+      // refused read reporting 0 would author a story saying they were quiet. Destructured below.
+      svc.from("client_portal_activity").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("contact_id", contactId).gte("created_at", since),
       listingIds.length
         ? svc.from("listings").select("id, address, status").in("id", listingIds.slice(0, 20))
         : Promise.resolve({ data: [] } as any),
     ])
+    if (portalCountError) {
+      console.error(`[client-story-drafts] portal-activity count refused for contact ${contactId} — story understates engagement:`, portalCountError.message)
+    }
     const listings = ((listingRows ?? []) as any[])
     const brief = buyerStoryBrief({
       buyerFirstName: (buyer as any)?.first_name ?? null,
