@@ -16,6 +16,11 @@
 /** ad_campaigns.platform — every platform a campaign may target. */
 export const AD_CAMPAIGN_PLATFORMS = [
   "facebook", "instagram", "google", "linkedin", "tiktok", "vibe_ctv",
+  // "chatgpt" — ChatGPT Ads (owner, 2026-09-06: "ads are now available with
+  // chatgpt"). m607 widens the live CHECK; no account connection or API
+  // dispatch path exists yet, so a campaign is staged as a launch package
+  // like vibe_ctv. The lane is recorded as UNRESOLVED for dispatch.
+  "chatgpt",
 ] as const
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `AdCampaignPlatform`
 // deleted — never named by any consumer (validators call the type-guard /
@@ -53,7 +58,7 @@ export const CONNECTABLE_AD_PLATFORMS = ["facebook", "instagram", "linkedin"] as
  * Connection OS. A campaign can be created for these and cannot be launched from
  * here — surfaced honestly rather than shown as a disconnected account.
  */
-export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "vibe_ctv"] as const
+export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "vibe_ctv", "chatgpt"] as const
 
 export function isConnectableAdPlatform(v: string | null | undefined): boolean {
   return !!v && (CONNECTABLE_AD_PLATFORMS as readonly string[]).includes(v)

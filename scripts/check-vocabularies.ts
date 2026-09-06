@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 435 tables, 767 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-04
+ * generated: 2026-09-06
  * source: public.live_check_constraints_json()
- * body-sha256: f780e1dfaeb6e711fe34cfbccf2cfcdc01526f2747bc88d7256af7888899bfde
+ * body-sha256: f9351c4316b70d381d7009607dfb9ca642019a90e81223b788fe0da64b79037e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -37,7 +37,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     sync_type: ["commission", "expense", "full", "invoice", "journal"],
   },
   ad_campaigns: {
-    platform: ["facebook", "google", "instagram", "linkedin", "tiktok", "vibe_ctv"],
+    platform: ["chatgpt", "facebook", "google", "instagram", "linkedin", "tiktok", "vibe_ctv"],
     status: ["approved", "draft", "ended", "failed", "launching", "live", "paused", "pending_review"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
   },

@@ -192,6 +192,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/support-sla"                         , schedule: "30 * * * *" },
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/open-house-followup"                 , schedule: "45 * * * *" },
+  // THE CAPABILITY RADAR — weekly, Monday 12:00 UTC. The OS searches the web for
+  // capabilities it does not have yet, records each once as a disabled beta
+  // feature flag and tells platform staff (lib/kernel/capability-radar.ts).
+  { path: "/api/cron/capability-radar"                    , schedule: "0 12 * * 1" },
   { path: "/api/cron/voice-call-analysis"                 , schedule: "20 * * * *" },
   // Zoom transcript reconciliation (lane Z2) — re-asks Zoom's recordings API for
   // past meetings whose transcript webhook never landed, and feeds the SAME

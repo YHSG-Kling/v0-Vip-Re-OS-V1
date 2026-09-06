@@ -52,6 +52,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 1c: TEXT AN ACTION — a STAFF phone texting the tenant's own number is
+  // commanding the AI team, not raising a hand as a lead (owner, 2026-09-06:
+  // "text some sort of action with 30+ agents on standby"). The door resolves a
+  // staff seat by phone inside this tenant, hands the text to the ONE
+  // voice-command brain, and texts the answer back. A non-staff phone falls
+  // through to the contact path below, unchanged.
+  if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
+    try {
+      const { runStaffTextCommand } = await import("@/lib/voice/text-command")
+      const cmd = await runStaffTextCommand(supabase as any, {
+        brokerageId: inbound.brokerageId,
+        fromPhone:   inbound.fromPhone,
+        toPhone:     inbound.toPhone ?? null,
+        text:        inbound.text ?? "",
+        messageSid:  inbound.messageId ?? null,
+      })
+      if (cmd.handled) return NextResponse.json({ linked: false, command: true, intent: cmd.intent ?? null })
+    } catch (err) {
+      console.error("[providers/inbound] text command door failed (non-fatal, contact path continues):", (err as Error).message)
+    }
+  }
+
   // ── Step 2: Normalize identifiers for matching ─────────────────────────────
   const emailNorm = inbound.fromEmail?.toLowerCase().trim() ?? null
   const phoneDigits = inbound.fromPhone?.replace(/\D/g, "") ?? null

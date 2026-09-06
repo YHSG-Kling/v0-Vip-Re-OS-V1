@@ -401,6 +401,8 @@
     "test:manager-dissent": "tsx scripts/manager-dissent-simulator.ts",
     "test:partners-meeting": "tsx scripts/partners-meeting-simulator.ts",
     "test:cron-dispatch": "tsx scripts/cron-dispatch-simulator.ts",
+    "test:text-command-door": "tsx scripts/text-command-door-guard.ts",
+    "test:capability-radar": "tsx scripts/capability-radar-guard.ts",
     "test:cron-status-vocabulary": "tsx scripts/cron-status-vocabulary-simulator.ts",
     "test:simulator-wiring": "tsx scripts/simulator-wiring-guard.ts",
     "test:team-query": "tsx scripts/team-query-simulator.ts",

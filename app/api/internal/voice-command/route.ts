@@ -57,9 +57,31 @@ interface VoiceCommandResponse {
 }
 
 export async function POST(req: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  // ── WHO IS ASKING — two doors, one identity ────────────────────────────
+  // 1. A signed-in seat (the Command Center text bar, the spoken admin).
+  // 2. THE TEXT-AN-ACTION DOOR (owner, 2026-09-06: "text some sort of action
+  //    with 30+ agents on standby"): the inbound SMS ingress resolved a STAFF
+  //    phone inside the tenant the called number belongs to and vouches for
+  //    who texted (lib/voice/text-command.ts). It may act as that user ONLY
+  //    under the cron secret — verifyCronAuth fails closed when the secret is
+  //    unset — and everything below (profile, agent, authority) is resolved
+  //    for that user exactly as for a session. Nothing else in this route
+  //    changes; the classifier and the dispatch stay the ONE brain.
+  let user: { id: string } | null = null
+  {
+    const supabase = await createClient()
+    const { data: { user: sessionUser } } = await supabase.auth.getUser()
+    if (sessionUser) user = { id: sessionUser.id }
+  }
+  if (!user) {
+    const { verifyCronAuth } = await import("@/lib/cron-auth")
+    const unauth = verifyCronAuth(req)
+    const acting = req.headers.get("x-acting-user-id")
+    if (unauth || !acting || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(acting)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    user = { id: acting }
+  }
 
   const { transcript, sessionId } = await req.json()
   if (!transcript || typeof transcript !== "string") {

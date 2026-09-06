@@ -25,7 +25,13 @@ function main() {
   const webhook = src("app/api/agent-assistant/tool-call/route.ts")
 
   check("the create_tenant_user intent is declared + classified", /\| "create_tenant_user"/.test(route) && /create_tenant_user: a PLATFORM-ADMIN command/.test(route))
-  check("it goes ONLY through the AUTHENTICATED route (getUser → 401)", /const \{ data: \{ user \} \} = await supabase\.auth\.getUser\(\)/.test(route) && /status: 401/.test(route))
+  // TWO DOORS, ONE IDENTITY (2026-09-06, the text-an-action door): a session
+  // user, OR an internal caller admitted ONLY under the cron secret
+  // (verifyCronAuth fails closed) naming the acting user by header. Either way
+  // an unidentified caller is refused with 401 before any intent runs.
+  check("it goes ONLY through an AUTHENTICATED identity (session getUser, or cron-secret + acting user → else 401)",
+    /supabase\.auth\.getUser\(\)/.test(route) && /verifyCronAuth\(req\)/.test(route) && /x-acting-user-id/.test(route)
+    && /if \(!user\) \{[\s\S]{0,700}status: 401/.test(route))
   // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2 — "do not pin an assertion to
   // a WAYPOINT"). This pinned the literal `user_type === "superadmin" ||
   // platform_role === "superadmin"`, so it could only pass while the discriminator

@@ -95,7 +95,7 @@ export type AudienceType =
   | "custom" | "lookalike" | "website_visitors" | "engagement"
   | "listing_visitors" | "video_viewers" | "newsletter_openers" | "portal_visitors" | "persona_segment"
 
-export type AdPlatform = "facebook" | "instagram" | "google" | "linkedin" | "tiktok"
+export type AdPlatform = "facebook" | "instagram" | "google" | "linkedin" | "tiktok" | "chatgpt"
 
 export type AdObjective = "awareness" | "traffic" | "leads" | "conversions"
 
