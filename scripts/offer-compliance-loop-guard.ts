@@ -12,7 +12,7 @@
  * execute predicate and calls the one driver, which calls the one gate; (2) FAIL
  * is idempotent INSIDE the gate's block arm, so every caller is deduped; (3) PASS
  * is the gate's own transaction creation, not a second one; (4) UNKNOWN records
- * nothing as failure; (5) the four doors are wired with the right trigger; (6)
+ * nothing as failure; (5) the five doors are wired with the right trigger; (6)
  * dotloop stamps the predicate's columns, not only esign_status.
  *
  * BLIND SPOTS, published beside the result (§2): static. Proves the wires and the
@@ -82,7 +82,7 @@ check("a driver that did not attempt the gate is recorded as unknown, not blocke
 check("the loop's gate-state write is counted and tenant-filtered",
   /from\("offers"\)\s*\.update\(\{ metadata: \{ \.\.\.meta, compliance_gate: gateState \}[\s\S]{0,200}\.eq\("brokerage_id", brokerageId\)\s*\.select\("id"\)/.test(LOOP))
 
-console.log("\n── 5 · four doors, each with the right trigger ──")
+console.log("\n── 5 · five doors, each with the right trigger ──")
 const wired = (s: string, trig: string) => new RegExp(`runOfferComplianceLoop\\([\\s\\S]{0,300}?trigger:\\s*"${trig}"`).test(s)
 check("finalize-packet (counter fully executed) → agreement_executed", wired(FINAL, "agreement_executed"))
 check("…placed after the fully_signed + accepted stamp, not before it",
@@ -92,6 +92,12 @@ check("record-seller-response (accepted) → agreement_executed, through the loo
   wired(SELLER, "agreement_executed") && !/autoExecuteFullySignedOffer/.test(SELLER))
 check("scanUploadedDocument → document_uploaded (the re-entry), keyed on metadata.linked_offer_id",
   wired(SCAN, "document_uploaded") && /linkedOfferId = \(\(doc as any\)\.metadata\?\.linked_offer_id/.test(SCAN))
+// Emailed pages are scanned on ARRIVAL, before they carry an offer link, so the
+// scanner's re-entry ran for no offer; the linker is the moment they start
+// counting and re-enters once per offer, after the loop over pages.
+const INTAKE = src("lib/inbound-mail/offer-intake.ts")
+check("linkInboundDocumentsToOffer → document_uploaded, once per offer after the pages are linked",
+  wired(INTAKE, "document_uploaded") && /linkedDocumentIds\.length > 0\) \{[\s\S]{0,300}runOfferComplianceLoop/.test(INTAKE))
 
 console.log("\n── 6 · dotloop stamps the columns the predicate READS ──")
 check("dotloop's offer select carries the three execution columns",

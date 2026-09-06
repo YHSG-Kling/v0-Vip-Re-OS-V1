@@ -839,6 +839,27 @@ export async function linkInboundDocumentsToOffer(
     linkedDocumentIds.push(id)
   }
 
+  // THE OFFER COMPLIANCE LOOP RE-ENTERS HERE TOO. These pages were scanned when
+  // they ARRIVED (uploadDocument fires scanUploadedDocument), which is before
+  // they carried an offer link — so the scanner's own re-entry
+  // (lib/documents/scan-uploaded-document.ts, keyed on metadata.linked_offer_id)
+  // ran for no offer. Linking is the moment they start counting toward this
+  // offer's checklist, and the gate has to be asked again once, for the offer,
+  // not once per page. Idle for an offer that is not yet fully executed.
+  if (linkedDocumentIds.length > 0) {
+    try {
+      const { runOfferComplianceLoop } = await import("@/lib/transactions/offer-compliance-loop")
+      await runOfferComplianceLoop(svc as any, {
+        brokerageId: params.brokerageId,
+        offerId:     params.offerId,
+        trigger:     "document_uploaded",
+        actorUserId: null,
+      })
+    } catch (err) {
+      console.error("[offer-intake] offer compliance loop failed (non-fatal):", (err as Error).message)
+    }
+  }
+
   return { linkedDocumentIds, plan, errors }
 }
 
