@@ -14,7 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { WorkflowChain } from "../types"
-import { STATUS_AFTER_LISTING_AGREEMENT_GATE } from "@/lib/listings/listing-status-sync"
+import { STATUS_AT_LISTING_AGREEMENT_SIGNED } from "@/lib/listings/listing-status-sync"
 
 export const complianceListingAutoCreateChain: WorkflowChain = {
   key: "compliance-listing-auto-create",
@@ -95,7 +95,7 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             city:            data.city ?? null,
             state:           data.state ?? null,
             zip:             data.zipCode ?? null,
-            status:          STATUS_AFTER_LISTING_AGREEMENT_GATE,
+            status:          STATUS_AT_LISTING_AGREEMENT_SIGNED,
             lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             metadata: {
               source_document_id: ctx.metadata.document_id,
@@ -176,7 +176,7 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
             // hand-copied constraint list is a claim about the database that ages badly
             // — the same defect the deleted 7-value ListingStatus in
             // lib/listings/listing-status-sync.ts carried (CLAUDE.md §3).
-            status: STATUS_AFTER_LISTING_AGREEMENT_GATE,
+            status: STATUS_AT_LISTING_AGREEMENT_SIGNED,
             lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
             created_via: "compliance_auto_create",
             metadata: {

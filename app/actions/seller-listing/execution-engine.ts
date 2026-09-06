@@ -1080,6 +1080,19 @@ export async function markAgreementSigned(params: {
   // Non-blocking — notification failure must not fail the agreement signing
   })
 
+  // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ────────────
+  // The audit above decided whether the AGREEMENT could be executed; the loop now
+  // asks the ONE listing gate whether the LISTING may go coming-soon. A pass walks
+  // it to COMING_SOON_PREP (status coming_soon via the gated map); a fail names the
+  // missing documents, signatures and initials — separately — to the TC, the
+  // compliance officer and the agent, and every later upload re-enters the loop.
+  try {
+    const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+    await runListingComplianceLoop(supabase as any, { brokerageId, listingId, trigger: "agreement_executed", actorUserId: userId })
+  } catch (err: any) {
+    console.error("[markAgreementSigned] listing compliance loop failed (non-fatal):", err?.message ?? err)
+  }
+
   // The agreement itself saved. If the ledger entry did not, the caller is told so
   // explicitly rather than being handed an unqualified success — a concession the
   // money engine never sees is money the seller is charged anyway.
@@ -1847,6 +1860,15 @@ export async function activateMLS(params: {
     door: "MLS activation",
   })
   if (!complianceGate.allowed) {
+    // A refused MLS door used to tell only the CALLER. The three roles who can fix it
+    // are told what is missing (deduped on the blocker set), and the loop re-runs on
+    // upload. It never advances from here — MLS_READY is past the coming-soon window.
+    try {
+      const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+      await runListingComplianceLoop(supabase as any, { brokerageId, listingId, trigger: "activation_refused", actorUserId: userId })
+    } catch (err: any) {
+      console.error("[activateMLS] compliance-loop notification failed (non-fatal):", err?.message ?? err)
+    }
     return {
       success: false,
       error: complianceGate.reason,

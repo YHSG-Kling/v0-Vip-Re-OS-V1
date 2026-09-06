@@ -655,6 +655,14 @@ export async function launchListing(input: {
       door:        "listing launch",
     })
     if (!complianceGate.allowed) {
+      // Same as activateMLS: the refusal reaches the TC, compliance officer and agent
+      // with the missing items named, deduped on the blocker set. Never advances.
+      try {
+        const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+        await runListingComplianceLoop(supabase as any, { brokerageId: input.brokerageId, listingId: input.listingId, trigger: "activation_refused", actorUserId: null })
+      } catch (err: any) {
+        console.error("[launchListing] compliance-loop notification failed (non-fatal):", err?.message ?? err)
+      }
       return { success: false, error: complianceGate.reason }
     }
 

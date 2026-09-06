@@ -194,10 +194,10 @@ console.log("\n── the signed agreement adopts the draft, it does not duplica
   // the constant's VALUE is verified against the live vocabulary separately by
   // test:listing-status-two-senses rather than re-asserted here.
   check("…and promotes that row in place",
-    /const promotion = \{[\s\S]{0,700}?status:\s*(?:"coming_soon"|STATUS_AFTER_LISTING_AGREEMENT_GATE)/.test(CHAIN) &&
+    /const promotion = \{[\s\S]{0,700}?status:\s*(?:"listing_signed"|STATUS_AT_LISTING_AGREEMENT_SIGNED)/.test(CHAIN) &&
     /\.update\(promotion\)\s*\n\s*\.eq\("id",\s*existingDraft\.id\)/.test(CHAIN))
   check("POSITIVE CONTROL: the promotion finder still rejects a promotion with NO status at all",
-    !/const promotion = \{[\s\S]{0,700}?status:\s*(?:"coming_soon"|STATUS_AFTER_LISTING_AGREEMENT_GATE)/
+    !/const promotion = \{[\s\S]{0,700}?status:\s*(?:"listing_signed"|STATUS_AT_LISTING_AGREEMENT_SIGNED)/
       .test('const promotion = { list_price: 1, lifecycle_stage: "LISTING_AGREEMENT_SIGNED" }'))
   check("…with the tenant anchor on the WRITE, not just the read",
     /\.update\(promotion\)[\s\S]{0,200}?\.eq\("brokerage_id",\s*ctx\.brokerageId\)/.test(CHAIN))

@@ -460,7 +460,12 @@ const SOURCE: SourceAssertion[] = [
       return { ok: true }
     },
     breaks: [
-      { file: F.engine, find: `  if (!complianceGate.allowed) {\n    return {\n      success: false,\n      error: complianceGate.reason,`, replace: `  if (false) {\n    return {\n      success: false,\n      error: complianceGate.reason,` },
+      // RE-ANCHORED 2026-09-05: the find string used to include the block's first three inner
+      // lines, so wiring the compliance-loop notification INSIDE the refusal block (a change
+      // that made the door strictly better) stopped the mutation applying and the theatre
+      // detector went red. The rule this mutation breaks is the CONDITION — flip it and the
+      // gate is decorative — so only the condition line is matched now.
+      { file: F.engine, find: `  if (!complianceGate.allowed) {`, replace: `  if (false) {` },
     ],
   },
   {
@@ -479,7 +484,7 @@ const SOURCE: SourceAssertion[] = [
       return { ok: true }
     },
     breaks: [
-      { file: F.kernel, find: `    if (!complianceGate.allowed) {\n      return { success: false, error: complianceGate.reason }\n    }`, replace: `    if (false) {\n      return { success: false, error: complianceGate.reason }\n    }` },
+      { file: F.kernel, find: `    if (!complianceGate.allowed) {`, replace: `    if (false) {` },
     ],
   },
   {

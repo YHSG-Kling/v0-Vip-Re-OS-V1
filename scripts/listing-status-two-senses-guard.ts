@@ -50,6 +50,7 @@ import {
   mappedStages,
   LISTING_STATUS_VALUES,
   STATUS_AFTER_LISTING_AGREEMENT_GATE,
+  STATUS_AT_LISTING_AGREEMENT_SIGNED,
   type ListingStatusGate,
 } from "../lib/listings/listing-status-sync"
 
@@ -259,6 +260,11 @@ function statusWriteLiterals(): Map<string, string[]> {
       if (!found.has(v)) found.set(v, [])
       if (!found.get(v)!.includes(f)) found.get(v)!.push(f)
     }
+    if (src.includes("STATUS_AT_LISTING_AGREEMENT_SIGNED")) {
+      const v = STATUS_AT_LISTING_AGREEMENT_SIGNED as string
+      if (!found.has(v)) found.set(v, [])
+      if (!found.get(v)!.includes(f)) found.get(v)!.push(f)
+    }
   }
   return found
 }
@@ -278,8 +284,19 @@ function reportWriterlessStatuses() {
     /status:\s*"([a-z_]+)"/.exec(SPECIMEN)?.[1] === RULING_STATUS)
   check("NEGATIVE CONTROL: it does not fire on a status write that names no literal",
     /status:\s*"([a-z_]+)"/.exec('update({ status: SOME_CONSTANT })') === null)
-  check("the ruling's status is reached by a real writer, by literal OR by the shared constant",
-    literals.has(RULING_STATUS), `found: ${[...literals.keys()].join(", ") || "nothing"}`)
+  // RETARGETED 2026-09-05 (ruling: pass → coming soon prep). `coming_soon` is reached ONLY
+  // through the gated map's COMING_SOON_PREP entry — i.e. after the gate PASSED. A
+  // signature-time writer stamping it (which three did, for one wave) declares compliance
+  // passed before it ran and overwrites the kernel's `listing_signed`. So the RULE has two
+  // halves: the map EMITS it, and no scanned signature-time writer names it.
+  const emittedNow = new Set(mappedStages().map((m) => m.status as string))
+  check("the ruling's status is EMITTED by the canonical map (reached through the gated COMING_SOON_PREP entry)",
+    emittedNow.has(RULING_STATUS))
+  check("…and NO signature-time writer stamps it directly any more — only the gate's pass can",
+    !(literals.get(RULING_STATUS) ?? []).some((f) => /finalize-packet|dotloop|compliance-listing-auto-create/.test(f)),
+    `still written by: ${(literals.get(RULING_STATUS) ?? []).join(", ") || "nobody"}`)
+  check("the START status is written by the one producer that INSERTS at LISTING_AGREEMENT_SIGNED",
+    (literals.get(STATUS_AT_LISTING_AGREEMENT_SIGNED as string) ?? []).some((f) => /compliance-listing-auto-create/.test(f)))
 
   // A status the canonical map can EMIT is written by transitionLifecycle's synced update, which is
   // not a `status: "…"` literal anywhere. Counting only literals would report it writerless.

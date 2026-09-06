@@ -304,6 +304,26 @@ export async function scanUploadedDocument(params: {
     console.error("[scan] listing-agreement gate failed (non-fatal):", err?.message ?? err)
   }
 
+  // Post-scan hook 0b — THE COMPLIANCE LOOP RE-ENTERS HERE (owner: "…to upload so
+  // compliance can run again"). The document gate above records what THIS document
+  // still lacks; the listing loop asks the ONE listing gate whether the whole file now
+  // passes, walks the listing to COMING_SOON_PREP on a pass, and re-notifies the TC /
+  // compliance officer / agent only if the blocker set CHANGED. Any upload on a listing
+  // re-enters — the uploader does not have to know which document was the last one.
+  if ((doc as any).listing_id) {
+    try {
+      const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+      await runListingComplianceLoop(supabase as any, {
+        brokerageId: doc.brokerage_id as string,
+        listingId:   (doc as any).listing_id as string,
+        trigger:     "document_uploaded",
+        actorUserId: ((doc as any).metadata?.uploaded_by as string | undefined) ?? null,
+      })
+    } catch (err: any) {
+      console.error("[scan] listing compliance loop failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   // Post-scan hook: when the classification yields participant info (PAL →
   // lender; signed_contract → title_company), wire the extracted fields
   // straight into transaction_participants if a transaction already exists.

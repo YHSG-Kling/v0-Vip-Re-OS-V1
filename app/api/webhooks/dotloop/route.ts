@@ -5,7 +5,6 @@ import { logEventAndTrigger } from "@/lib/events"
 import { finalizeVoiceCockpitPacket } from "@/lib/esign-webhooks/finalize-packet"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
-import { STATUS_AFTER_LISTING_AGREEMENT_GATE } from "@/lib/listings/listing-status-sync"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DOTLOOP WEBHOOK HANDLER
@@ -214,11 +213,28 @@ export async function POST(request: NextRequest) {
               metadata:    { agreementId: matchedAgreement.id, loop_id, provider: "dotloop", source: "webhook" },
             }, supabase)
 
-            // status is the MLS-status column, not part of the stage machine.
+            // stage_entered_at is the stage machine's clock; listings.status is NOT written here —
+            // transitionLifecycle synced it (listing_signed) from the shared map one call above.
             await supabase
               .from("listings")
-              .update({ status: STATUS_AFTER_LISTING_AGREEMENT_GATE, stage_entered_at: now })
+              .update({ stage_entered_at: now })
               .eq("id", matchedAgreement.listing_id)
+            // ── THE COMPLIANCE LOOP'S FIRST RUN (owner ruling 2026-09-05) ─────────
+            // The executed agreement is where compliance STARTS. The kernel transition above
+            // already stamped `listing_signed` through the shared map; the explicit
+            // `status: coming_soon` write that stood here overwrote it and declared the
+            // gate passed before it had run. Now the loop runs the ONE gate: a pass walks the
+            // listing to COMING_SOON_PREP (status coming_soon), a fail names what is missing
+            // to the TC, the compliance officer and the agent, and every later upload
+            // re-enters it. Non-fatal — the webhook has already recorded the signature.
+            try {
+              const { runListingComplianceLoop } = await import("@/lib/listings/listing-compliance-loop")
+              await runListingComplianceLoop(supabase as any, {
+                brokerageId: listingRow.brokerage_id, listingId: matchedAgreement.listing_id, trigger: "agreement_executed", actorUserId: null,
+              })
+            } catch (err: any) {
+              console.error("[dotloop] listing compliance loop failed (non-fatal):", err?.message ?? err)
+            }
           }
         }
 

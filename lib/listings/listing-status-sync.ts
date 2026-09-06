@@ -62,14 +62,28 @@ export { LISTING_STATUSES as LISTING_STATUS_VALUES }
  * THE RULING'S STATUS. What listings.status becomes once the listing-agreement compliance gate has
  * passed: `coming_soon`, never `active`.
  *
- * Exported as a named constant so the writers that currently hardcode the literal at this exact
- * moment converge on ONE spelling (§6) instead of four:
- *   · lib/esign-webhooks/finalize-packet.ts      — `.update({ status: "coming_soon" })`
- *   · app/api/webhooks/dotloop/route.ts          — `.update({ status: "coming_soon" })`
- *   · lib/workflow-orchestrator/chains/compliance-listing-auto-create.ts — `status: "coming_soon"` on INSERT
- *   · this map (below), for the kernel path
+ * ONE WRITER, AND IT IS THE GATED MAP. For one wave this constant was ALSO imported by the three
+ * signature-time writers (the two e-sign webhooks and the compliance auto-create chain), which
+ * stamped `coming_soon` the moment the agreement was executed — BEFORE the gate had run, and on
+ * the webhook paths OVERWRITING the `listing_signed` the kernel transition had just stamped. That
+ * contradicted the owner's sequence (listing_signed → coming_soon → active). Those writers now
+ * stamp nothing (the kernel path does it) or STATUS_AT_LISTING_AGREEMENT_SIGNED (the insert), and
+ * `coming_soon` is reached ONLY through the gated COMING_SOON_PREP entry below — which is what
+ * "after the gate" means.
  */
 export const STATUS_AFTER_LISTING_AGREEMENT_GATE: ListingStatus = "coming_soon"
+
+/**
+ * THE STATUS AT WHICH COMPLIANCE STARTS. Owner: "the listing signed is part of the gate to start
+ * compliance." Stamped UNGATED on LISTING_AGREEMENT_SIGNED by the map below and by the one
+ * producer that INSERTS a listing already at that stage
+ * (lib/workflow-orchestrator/chains/compliance-listing-auto-create.ts). It is NOT the status
+ * after the gate passes — that is STATUS_AFTER_LISTING_AGREEMENT_GATE, reached only through the
+ * gated COMING_SOON_PREP entry. The two names exist so the two moments cannot be spelled as one:
+ * for one wave the signature-time writers stamped `coming_soon`, which overwrote the kernel's
+ * fresh `listing_signed` and declared compliance passed before it had run.
+ */
+export const STATUS_AT_LISTING_AGREEMENT_SIGNED: ListingStatus = "listing_signed"
 
 /**
  * Evidence that a GATE has passed, supplied by the caller that ran it. This file is pure and does
@@ -104,7 +118,7 @@ const STATUS_FOR_STAGE: Record<string, ListingStatus> = {
   //   listing_signed (compliance started) → coming_soon (compliance passed) → active (MLS-live) —
   // and no two of those are the same fact. markAgreementSigned reaches this through
   // transitionLifecycle, so the stamp is autonomous: no surface has to remember to set it.
-  LISTING_AGREEMENT_SIGNED: "listing_signed",
+  LISTING_AGREEMENT_SIGNED: STATUS_AT_LISTING_AGREEMENT_SIGNED,
   COMING_SOON_ACTIVE: "coming_soon", // publicly teased, pre-MLS
   MLS_ACTIVE:         "active",      // live on MLS — must surface in buyer search. THE ONLY 'active'.
   UNDER_CONTRACT:     "pending",     // accepted offer, off the active market
