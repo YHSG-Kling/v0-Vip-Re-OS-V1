@@ -56,9 +56,9 @@
 import { createHmac, timingSafeEqual } from "crypto"
 
 /** The ONE handshake-token env name (survivor — see the header). */
-export const META_VERIFY_TOKEN_ENV = "META_WEBHOOK_VERIFY_TOKEN"
+const META_VERIFY_TOKEN_ENV = "META_WEBHOOK_VERIFY_TOKEN"
 /** Accepted, documented fallbacks — a console configured against either keeps working. */
-export const META_VERIFY_TOKEN_FALLBACK_ENVS = ["META_VERIFY_TOKEN", "WHATSAPP_VERIFY_TOKEN"] as const
+const META_VERIFY_TOKEN_FALLBACK_ENVS = ["META_VERIFY_TOKEN", "WHATSAPP_VERIFY_TOKEN"] as const
 
 /** The App Secret env pair — the same pair lib/social/token-refresh.ts uses. */
 export const META_APP_SECRET_ENV = "META_APP_SECRET"
@@ -77,7 +77,8 @@ export const META_APP_SECRET_ENV = "META_APP_SECRET"
  * (and any human grep) finds a secret by `process.env.NAME`, and a loop over
  * `process.env[name]` would make every one of these names invisible to it.
  */
-export function resolveMetaVerifyToken(): { token: string; source: string } | null {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function resolveMetaVerifyToken(): { token: string; source: string } | null {
   const candidates: Array<[string, string | undefined]> = [
     [META_VERIFY_TOKEN_ENV, process.env.META_WEBHOOK_VERIFY_TOKEN],
     [META_VERIFY_TOKEN_FALLBACK_ENVS[0], process.env.META_VERIFY_TOKEN],
@@ -90,13 +91,15 @@ export function resolveMetaVerifyToken(): { token: string; source: string } | nu
 }
 
 /** The App Secret, survivor first. Null = this deploy cannot verify payloads. */
-export function resolveMetaAppSecret(): string | null {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function resolveMetaAppSecret(): string | null {
   const v = process.env.META_APP_SECRET ?? process.env.FACEBOOK_APP_SECRET
   return v && v.trim().length > 0 ? v : null
 }
 
 /** Lowercase hex HMAC-SHA256 of `message` keyed by `secret`. */
-export function hmacSha256Hex(secret: string, message: string): string {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function hmacSha256Hex(secret: string, message: string): string {
   return createHmac("sha256", secret).update(message, "utf-8").digest("hex")
 }
 
@@ -105,7 +108,8 @@ export function hmacSha256Hex(secret: string, message: string): string {
  * input (odd length, non-hex, length mismatch) rather than throwing — a
  * verifier that throws on a crafted header is a verifier that can be crashed.
  */
-export function safeHexEqual(expectedHex: string, actualHex: string): boolean {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function safeHexEqual(expectedHex: string, actualHex: string): boolean {
   if (!/^[0-9a-fA-F]+$/.test(expectedHex) || !/^[0-9a-fA-F]+$/.test(actualHex)) return false
   if (expectedHex.length % 2 !== 0 || actualHex.length % 2 !== 0) return false
   try {

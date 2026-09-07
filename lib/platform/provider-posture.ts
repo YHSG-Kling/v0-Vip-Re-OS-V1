@@ -527,7 +527,7 @@ export type ProviderCategory =
 
 export type ProviderScope = "platform" | "tenant_byo" | "both"
 
-export interface PlatformProviderEntry {
+interface PlatformProviderEntry {
   /** Canonical provider key (alias-folded). */
   provider: string
   label: string
@@ -688,7 +688,8 @@ function prettyLabel(key: string): string {
  * Derive the COMPLETE provider registry from the code's own sources (see the
  * banner above). Pure — no I/O — so it is cheap to call and unit-testable.
  */
-export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function getPlatformProviderRegistry(): PlatformProviderEntry[] {
   const acc = new Map<string, RegistryAccumulator>()
   const get = (name: string, source: string): RegistryAccumulator => {
     const canon = canonPostureKey(name)
@@ -876,7 +877,8 @@ function envVarsByProvider(): Map<string, string[]> {
 
 /** The ONE env-presence expression. null = no env home, so "no platform lane
  *  exists" stays distinguishable from "the platform lane is dark". */
-export function envPresence(vars: readonly string[]): boolean | null {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function envPresence(vars: readonly string[]): boolean | null {
   if (vars.length === 0) return null
   return vars.some((v) => !!process.env[v])
 }
@@ -1065,7 +1067,7 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
 
   let needsAttentionCount = 0
   const rows: ProviderPostureRow[] = registry.map((e) => {
-    const envConfigured = envPresence(e.envVars)
+    const envConfigured = platformEnvConfigured(e.provider)
     const l = ledger.get(e.provider) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
     const h = healByProvider.get(e.provider) ?? { healed: 0, failed: 0, escalated: 0, failures: [] }
     const d = driftByProvider.get(e.provider) ?? { pending: 0, lastAt: null }
@@ -1314,7 +1316,7 @@ export async function getBrokerageProviderReadiness(
   }
 
   const rows: BrokerageProviderReadinessRow[] = registry.map((e) => {
-    const envConfigured = envPresence(e.envVars)
+    const envConfigured = platformEnvConfigured(e.provider)
     const { state, ready } = resolveBrokerageReadinessState({
       keyless: e.keyless,
       scope: e.scope,

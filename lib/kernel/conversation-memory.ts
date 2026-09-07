@@ -210,7 +210,7 @@ export async function composeContextSummary(
 }
 
 /** Read a contact's REAL interactions from the live tables, normalized to InteractionRow[]. */
-export async function loadContactInteractions(
+async function loadContactInteractions(
   supabase: Svc, contactId: string, opts: { limit?: number } = {},
 ): Promise<InteractionRow[]> {
   const limit = opts.limit ?? 20

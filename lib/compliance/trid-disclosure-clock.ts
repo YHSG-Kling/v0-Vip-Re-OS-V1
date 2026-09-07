@@ -124,7 +124,7 @@ export function closingDisclosureDueBy(closeIso: string): string {
 }
 
 /** The latest date the Loan Estimate can be delivered: application + (3 business days). */
-export function loanEstimateDueBy(applicationIso: string): string {
+function loanEstimateDueBy(applicationIso: string): string {
   const start = parse(applicationIso)
   const cur = new Date(start)
   // Advance until the inclusive window application..cur reaches the max allowed.

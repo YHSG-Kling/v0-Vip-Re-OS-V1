@@ -320,8 +320,12 @@ console.log("\n[there is ONE env-presence answer]")
     /if \(vars\.length === 0\) return null/.test(posture))
   check("…derived from the canonical registry, so it knows EVERY var for a provider",
     /getPlatformProviderRegistry\(\)/.test(posture) && /envVarsByProvider/.test(posture))
+  // The readiness scans (getBrokerageProviderReadiness / getFullProviderPosture) call the
+  // CANONICAL helper platformEnvConfigured(); envPresence() is its module-private body.
+  // This once counted `envPresence(` >= 3 — a WAYPOINT spelling (§2) that went red the
+  // moment the scans were moved onto the canonical helper (2026-09-07, lane O).
   check("…and the readiness scan uses that one expression rather than its own",
-    (posture.match(/envPresence\(/g) ?? []).length >= 3)
+    (posture.match(/platformEnvConfigured\(/g) ?? []).length >= 3 && (posture.match(/envPresence\(/g) ?? []).length >= 2)
   check("PLATFORM_PROVIDER_KEYS still feeds it — lob/did/elevenlabs were already mapped",
     /PLATFORM_PROVIDER_KEYS/.test(posture) &&
     /lob: "LOB_API_KEY"/.test(src("lib/agentic-os/connector-probe.ts")))

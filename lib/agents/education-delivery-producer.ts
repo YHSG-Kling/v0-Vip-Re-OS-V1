@@ -416,9 +416,35 @@ async function deliverChosenModule(
     rationale: `Stage-matched lesson "${sanitizeProperNoun(chosen.title, 80) ?? "lesson"}" (${chosen.signalSource}) — ${bandNote}${basisNote} — review/edit before it reaches the client.`,
     channel: choice.channel,
   }, supabase)
-  return res.ok
-    ? { proposed: true, moduleId: chosen.id, channel: choice.channel }
-    : { proposed: false, reason: res.error }
+  if (!res.ok) return { proposed: false, reason: res.error }
+
+  // THE LESSON AS A REEL (2026-09-07, owner: education videos "created correctly
+  // … using the skills"). The same stage-matched lesson, fronted by the assigned
+  // agent as an avatar-led explainer (Director kind 'explainer' → video_type
+  // 'education', AgentExplainerReel), staged GATED through commissionVideo —
+  // the one video door — idempotent per (contact, module). Best-effort: the
+  // written lesson proposal above stands on its own if the reel cannot be staged.
+  try {
+    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveContactPresenterUserId(supabase, contactId, brokerageId)
+    if (agentUserId) {
+      const { buildInformationalReelSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+      const { commissionVideo } = await import("@/lib/video/video-director")
+      const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const persona = side === "seller" ? "seller" : side === "buyer" ? "buyer" : "both"
+      const situation = buildInformationalReelSituation({
+        contactId, persona, topicTitle: chosen.title, valueAngle: chosen.summary, categories: ["education"],
+      })
+      await commissionVideo(
+        situation,
+        { brokerageId, agentUserId, contactId, idempotencyDiscriminator: `education_module:${chosen.id}`, persona: { audience: persona }, copyGenerator: realCopyGenerator },
+        supabase,
+      )
+    }
+  } catch (e) {
+    console.error("[education-delivery] lesson reel commission failed (lesson proposal stands):", (e as Error).message)
+  }
+  return { proposed: true, moduleId: chosen.id, channel: choice.channel }
 }
 
 /**

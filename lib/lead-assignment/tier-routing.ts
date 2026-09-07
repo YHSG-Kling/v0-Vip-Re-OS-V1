@@ -94,7 +94,8 @@ export const ASSIGNMENT_LOG_METHODS = [
 ] as const
 export type AssignmentLogMethod = (typeof ASSIGNMENT_LOG_METHODS)[number]
 
-export function isAssignmentLogMethod(v: string | null | undefined): v is AssignmentLogMethod {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function isAssignmentLogMethod(v: string | null | undefined): v is AssignmentLogMethod {
   return !!v && (ASSIGNMENT_LOG_METHODS as readonly string[]).includes(v)
 }
 
@@ -112,7 +113,8 @@ export function isAssignmentLogMethod(v: string | null | undefined): v is Assign
  * `team_` prefix is stripped, or the team cascade's last rung would be recorded
  * as a method called "lead" that no constraint admits.
  */
-export function normalizeAssignmentMethod(decorated: string): {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function normalizeAssignmentMethod(decorated: string): {
   method: AssignmentLogMethod
   detail: string[]
 } {
@@ -149,7 +151,7 @@ export function normalizeAssignmentMethod(decorated: string): {
 
 // ─── THE DECISION ────────────────────────────────────────────────────────────
 
-export interface TierRoutingDecision {
+interface TierRoutingDecision {
   tier: PlanTier
   /** agents.id — NEVER users.id. leads.agent_id and assignment_log.agent_id both FK agents(id). */
   agentId: string | null
@@ -222,7 +224,8 @@ async function activeTeamMembers(supabase: Svc, brokerageId: string, teamId: str
  * Exported so the assignment-rules settings page and the simulator can ask
  * "who would this go to" without assigning anybody.
  */
-export async function resolveTierRouting(
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+async function resolveTierRouting(
   supabase: Svc,
   brokerageId: string,
   lead: LeadRoutingHints & { id: string },

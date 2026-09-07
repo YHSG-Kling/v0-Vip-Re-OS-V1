@@ -180,6 +180,28 @@ export async function GET(request: NextRequest) {
           const result = await initiateAIISAContactEngagement(contact.id, contact.detection_type)
           if (result.success) {
             reengaged++
+            // THE REEL HANDOFF THIS RE-ENGAGEMENT ALWAYS PROMISED (2026-09-07). The
+            // signal registry declared `contact_reel_handoff` ("the AI ISA re-engages
+            // a CONTACT and DELEGATES a truly situational reel to the Asset Manager")
+            // and lib/kernel/manager-signals.ts has commissioned the persona reel on
+            // it since wave 41 — but nothing ever PUBLISHED it. This is the moment it
+            // describes. Idempotent per open (contact) signal; best-effort.
+            try {
+              const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+              await publishManagerSignal({
+                brokerageId,
+                fromManager: 'ai_isa',
+                toManager: 'asset_manager',
+                signalType: 'contact_reel_handoff',
+                message: `Re-engaged a ${contact.detection_type} contact — front a situational reel with the assigned agent so the next touch is a face, not a text.`,
+                entityType: 'contact',
+                entityId: contact.id,
+                contactId: contact.id,
+                payload: { detection_type: contact.detection_type },
+              }, supabase)
+            } catch (e) {
+              console.error('[stale-contact-monitor] contact_reel_handoff publish failed:', (e as Error).message)
+            }
           } else {
             skipped++
             // Only surface unexpected failures, not expected business stop reasons

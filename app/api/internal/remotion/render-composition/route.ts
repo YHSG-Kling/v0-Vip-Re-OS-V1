@@ -436,6 +436,17 @@ async function runPostRenderCoordination(
   outputUrl: string | null,
   thumbnailUrl: string | null,
 ): Promise<void> {
+  // The platform's own product video (lib/platform/product-content-autopilot.ts):
+  // the finished file is the draft's video_url, which is what lets it be posted.
+  if (row.entity_type === "platform_social_draft" && row.entity_id) {
+    if (!outputUrl) return
+    const { data: attached, error } = await svc.from("platform_social_drafts")
+      .update({ video_url: outputUrl, updated_at: new Date().toISOString() })
+      .eq("id", row.entity_id).eq("media_type", "video").select("id")
+    if (error) console.error("[render-composition] platform draft video_url attach refused:", error.message)
+    else if (!attached?.length) console.error("[render-composition] platform draft video_url attach matched no row:", row.entity_id)
+    return
+  }
   if (row.entity_type !== "video_project" || !row.entity_id) return
   try {
     await svc.from("ai_video_projects")

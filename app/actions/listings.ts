@@ -363,6 +363,22 @@ export async function updateListing(listingId: string, updates: Record<string, u
         change_reason: priceChangeReason,
         effective_date: new Date().toISOString().split("T")[0],
       }).then(() => undefined, (e: unknown) => console.error("[updateListing] price-change ledger:", e))
+      // LISTING_PRICE_REDUCED had a reader (the kernel event reactor's saved-home
+      // nudge, and the portal stream's price line) and NO writer until 2026-09-07.
+      // Emitted beside the ledger row, with the same two numbers. Not marketing
+      // spend: the reactor's response is a 1:1 gated nudge to buyers who saved
+      // the home; broadcast price-drop marketing stays agent-initiated.
+      if (priceChangeReason === "price_reduction") {
+        await emitKernelEvent({
+          entityType:  "listing",
+          entityId:    listingId,
+          event:       KernelEvent.LISTING_PRICE_REDUCED,
+          brokerageId,
+          listingId,
+          actorUserId: actorUserId ?? undefined,
+          metadata:    { old_price: currentPrice, new_price: newPrice, change_reason: priceChangeReason },
+        }).catch((e: unknown) => console.error("[updateListing] LISTING_PRICE_REDUCED emit:", e))
+      }
     }
 
     revalidatePath("/listings")

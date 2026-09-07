@@ -20,7 +20,7 @@ const STOP = new Set([
 ])
 
 /** PURE: normalize a title into a stable set of significant tokens. */
-export function titleTokens(title: string): Set<string> {
+function titleTokens(title: string): Set<string> {
   const toks = (title ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")

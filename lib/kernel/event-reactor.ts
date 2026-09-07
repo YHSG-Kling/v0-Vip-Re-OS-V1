@@ -627,11 +627,36 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
         agentUserId = await resolveAgentRecordToUserId(listingAgentRecordId)
       }
+      // THE STAGE KEY (2026-09-07). This block read `metadata.new_stage` from wave 27
+      // on; no emitter ever wrote that key. executeListingTransition
+      // (app/actions/listing-lifecycle-core.ts) writes `from_stage` / `to_stage`,
+      // in the UPPERCASE ListingStage vocabulary (lib/listing-lifecycle/
+      // lifecycle-definitions.ts), and it is the only LISTING_STAGE_CHANGED
+      // emitter carrying a stage at all. So every STAGE_CHANGED landed here with
+      // newStage=null and the coming-soon / under-contract / just-sold promo,
+      // mail, ad and testimonial dispatch below fired ONLY on the separate
+      // LISTING_UNDER_CONTRACT event. Reader moved onto the writer's key and
+      // vocabulary (§6); the comparisons below are lower-cased once here.
+      const meta = params.metadata as { to_stage?: string; from_stage?: string } | null | undefined
+      const newStage = meta?.to_stage ? String(meta.to_stage).toLowerCase() : null
+      // Saved-home nudges to the buyers who SAVED this listing — the kinds no bus
+      // signal carries (back_on_market is published by executeListingTransition as
+      // listing_back_on_market; price_drop by (G2) below). Not marketing spend: a
+      // 1:1 gated reel / portal note per follower, so it needs no agent policy
+      // gate and no agentUserId — commissionVideo resolves the presenter later.
+      {
+        let savedHomeKind: import("@/lib/ai-isa/saved-home-nudge").SavedHomeNudgeKind | null = null
+        if (params.event === KernelEvent.LISTING_UNDER_CONTRACT || newStage === "under_contract") savedHomeKind = "under_contract"
+        else if (newStage === "coming_soon") savedHomeKind = "coming_soon"
+        if (savedHomeKind) {
+          const { nudgeSaversOfListing } = await import("@/lib/kernel/manager-signals")
+          void nudgeSaversOfListing({ brokerageId: params.brokerageId, supabase: svc }, { listingId: params.entityId, nudgeKind: savedHomeKind })
+            .catch((e) => console.error("[event-reactor] saved-home nudges failed:", e))
+        }
+      }
       if (agentUserId) {
         // Map kernel event → lifecycle event_type. STAGE_CHANGED inspects
-        // metadata.new_stage to pick the right promo variant.
-        const meta = params.metadata as { new_stage?: string } | null | undefined
-        const newStage = meta?.new_stage ?? null
+        // metadata.to_stage (lower-cased above) to pick the right promo variant.
         let eventType: import("@/lib/video/listing-promo-reactor").ListingPromoEventType | null = null
         if (params.event === KernelEvent.LISTING_UNDER_CONTRACT) {
           eventType = "under_contract"
@@ -678,6 +703,30 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (G2) 2026-09-07 — a price DROP still reaches the buyers who saved the home.
+  // This is the one exception to the NOTE above and it is not the thing the
+  // note forbids: no broadcast, no spend — a 1:1 gated avatar reel per saved
+  // follower (nudgeSaversOfListing → routeSavedHomeNudge → saved_home_reel_handoff).
+  // LISTING_PRICE_REDUCED had no emitter until this wave; updateListing
+  // (app/actions/listings.ts) now emits it beside the price-change ledger row.
+  // The agent-initiated campaign path (app/actions/price-reduction-campaign.ts
+  // → bus signal price_reduced) nudges the same savers; the bus dedupes per
+  // open (contact, type), so a buyer is never nudged twice for one drop.
+  if (
+    params.brokerageId &&
+    params.entityType === "listing" &&
+    params.event === KernelEvent.LISTING_PRICE_REDUCED
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { nudgeSaversOfListing } = await import("@/lib/kernel/manager-signals")
+      void nudgeSaversOfListing({ brokerageId: params.brokerageId, supabase: createServiceClient() }, { listingId: params.entityId, nudgeKind: "price_drop" })
+        .catch((e) => console.error("[event-reactor] saved-home price-drop nudges failed:", e))
+    } catch (err) {
+      console.error("[event-reactor] saved-home price-drop dispatch failed:", err)
+    }
+  }
+
   // (H) Wave 27 — open-house announcement on schedule. Reminder is fired
   // separately by app/api/cron/open-house-reminder on a T-24h window.
   if (
@@ -696,6 +745,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         .maybeSingle()
       const ohRow = oh as { listing_id: string | null; event_date: string | null; start_time: string | null; agent_id: string | null } | null
       if (ohRow?.listing_id) {
+        // 2026-09-07 — tell the buyers who saved this home there is an open house
+        // (saved_home_message → campaign_orchestrator, gated portal note).
+        try {
+          const { nudgeSaversOfListing } = await import("@/lib/kernel/manager-signals")
+          void nudgeSaversOfListing({ brokerageId: params.brokerageId, supabase: svc }, { listingId: ohRow.listing_id, nudgeKind: "open_house" })
+            .catch((e) => console.error("[event-reactor] saved-home open-house nudges failed:", e))
+        } catch { /* best-effort */ }
         // Resolve users.id from open_house_events.agent_id (FK to agents.id
         // per live schema, same pattern as listings.agent_id).
         let agentUserId: string | null = null

@@ -68,14 +68,15 @@ export function composeConsistencyFlag(f: ConsistencyFinding): string {
   return `Price mismatch in a queued client message: it says ${usd(f.offendingPrice)} but the listing's live price is ${usd(f.listingPrice)} (${f.deltaPct}% off). Fix the message or confirm the listing price before releasing — a stale figure confuses the client and creates advertising exposure.`
 }
 
-export interface GuardianResult { scanned: number; flagged: number }
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+interface GuardianResult { scanned: number; flagged: number }
 
 /**
  * Scan PROPOSED listing-scoped client messages for price inconsistency and
  * flag material mismatches onto compliance_flags (deduped per message).
  * Best-effort; deterministic.
  */
-export async function runConsistencyGuardian(svc: any, brokerageId: string): Promise<GuardianResult> {
+async function runConsistencyGuardian(svc: any, brokerageId: string): Promise<GuardianResult> {
   const out: GuardianResult = { scanned: 0, flagged: 0 }
   const { data: msgs } = await svc.from("agent_client_messages")
     .select("id, body, entity_type, entity_id")

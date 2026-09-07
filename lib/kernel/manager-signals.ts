@@ -216,6 +216,47 @@ export async function routeSavedHomeNudge(
   return res.ok
 }
 
+/**
+ * nudgeSaversOfListing — the ONE saver fan-out (2026-09-07). Every buyer who SAVED the listing
+ * (saved_properties, not dismissed) gets one routeSavedHomeNudge; the bus dedupes per open
+ * (contact, type). This body lived TWICE in this file (the listing_back_on_market and
+ * price_reduced handlers, identical but for the kind) and a THIRD time as
+ * lib/ai-isa/saved-home-signals.ts:publishSavedHomeSignals, written before the survivor was
+ * found — merged here (§1.1), the duplicates deleted. The kernel event reactor calls this
+ * directly for the kinds no bus signal carries (under_contract / coming_soon / open_house):
+ * a 1:1 gated nudge to a self-declared follower is not marketing spend.
+ *
+ * The read is destructured and its error READ: supabase-js resolves a refusal, and "nobody
+ * saved it" must never be the reading of a refused query.
+ */
+export async function nudgeSaversOfListing(
+  ctx: { brokerageId: string; supabase: ReturnType<typeof createServiceClient> },
+  params: { listingId: string; nudgeKind: string; limit?: number },
+): Promise<{ savers: number; proposed: number; refused?: string }> {
+  const { data, error } = await ctx.supabase
+    .from("saved_properties")
+    .select("contact_id, property_address")
+    .eq("brokerage_id", ctx.brokerageId).eq("listing_id", params.listingId)
+    .eq("dismissed", false).not("contact_id", "is", null)
+    .limit(params.limit ?? 50)
+  if (error) {
+    console.error("[manager-signals] saved_properties read refused:", error.message)
+    return { savers: 0, proposed: 0, refused: error.message }
+  }
+  const seen = new Set<string>()
+  const rows = ((data ?? []) as Array<{ contact_id: string | null; property_address: string | null }>)
+    .filter((r): r is { contact_id: string; property_address: string | null } => !!r.contact_id && !seen.has(r.contact_id) && !!seen.add(r.contact_id))
+  let proposed = 0
+  for (const r of rows) {
+    const q = await routeSavedHomeNudge(ctx, {
+      contactId: r.contact_id, nudgeKind: params.nudgeKind,
+      listingId: params.listingId, propertyAddress: r.property_address ?? null,
+    })
+    if (q) proposed += 1
+  }
+  return { savers: rows.length, proposed }
+}
+
 /** AUTONOMOUS REPURPOSE trigger: when a BROADCAST reel is being distributed, hand it to the
  *  Asset Manager to cut platform shorts (managed, on the bus). Idempotent per source video via
  *  the bus dedupe. Only fires for broadcast, non-1:1, non-variant reels. */
@@ -396,49 +437,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // a PERSONAL "back on market" nudge. back_on_market is avatar-worthy → Asset Manager creates the
   // reel → Campaign sends. Mirrors price_reduced; the normal just_listed marketing skipped this
   // (idempotent per listing), so this is the re-engagement the re-list otherwise lost.
+  // Both saver loops are nudgeSaversOfListing above (one body, two kinds).
   "shopping_agent:listing_back_on_market": async (signal, ctx) => {
     if (!signal.entityId) return null
-    const { data: savers } = await ctx.supabase
-      .from("saved_properties")
-      .select("contact_id, property_address")
-      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", signal.entityId)
-      .eq("dismissed", false).not("contact_id", "is", null)
-      .limit(5)
-    const rows = (savers ?? []) as Array<{ contact_id: string; property_address: string | null }>
-    if (rows.length === 0) return "back on market — no saved-property buyers to re-engage"
-    let proposed = 0
-    for (const r of rows) {
-      const q = await routeSavedHomeNudge(ctx, {
-        contactId: r.contact_id, nudgeKind: "back_on_market",
-        listingId: signal.entityId, propertyAddress: r.property_address ?? null,
-      })
-      if (q) proposed += 1
-    }
-    return proposed > 0 ? `re-engaged ${proposed} saved-home buyer${proposed === 1 ? "" : "s"} on a back-on-market listing (avatar via Asset Manager → Campaign sends)` : null
+    const r = await nudgeSaversOfListing(ctx, { listingId: signal.entityId, nudgeKind: "back_on_market" })
+    if (r.refused) return null
+    if (r.savers === 0) return "back on market — no saved-property buyers to re-engage"
+    return r.proposed > 0 ? `re-engaged ${r.proposed} saved-home buyer${r.proposed === 1 ? "" : "s"} on a back-on-market listing (avatar via Asset Manager → Campaign sends)` : null
   },
+  // SAVED-HOME WATCH — a price drop on a home they saved is the strongest "act now" moment, so it
+  // gets a PERSONAL nudge, not a generic blast. The Shopping Agent DELEGATES: a price drop is
+  // avatar-worthy → Asset Manager creates a personal avatar reel (Campaign sends on completion);
+  // routeSavedHomeNudge picks the right manager per the nudge's avatarWorthy flag.
   "shopping_agent:price_reduced": async (signal, ctx) => {
     if (!signal.entityId) return null
-    const { data: savers } = await ctx.supabase
-      .from("saved_properties")
-      .select("contact_id, property_address")
-      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", signal.entityId)
-      .eq("dismissed", false).not("contact_id", "is", null)
-      .limit(5)
-    const rows = (savers ?? []) as Array<{ contact_id: string; property_address: string | null }>
-    if (rows.length === 0) return "no saved-property buyers to alert"
-    // SAVED-HOME WATCH — a price drop on a home they saved is the strongest "act now" moment, so it
-    // gets a PERSONAL nudge, not a generic blast. The Shopping Agent DELEGATES: a price drop is
-    // avatar-worthy → Asset Manager creates a personal avatar reel (Campaign sends on completion);
-    // the routeSavedHomeNudge helper picks the right manager per the nudge's avatarWorthy flag.
-    let proposed = 0
-    for (const r of rows) {
-      const q = await routeSavedHomeNudge(ctx, {
-        contactId: r.contact_id, nudgeKind: "price_drop",
-        listingId: signal.entityId, propertyAddress: r.property_address ?? null,
-      })
-      if (q) proposed += 1
-    }
-    return proposed > 0 ? `routed ${proposed} personal saved-home price-drop nudge${proposed === 1 ? "" : "s"} (avatar via Asset Manager → Campaign sends)` : null
+    const r = await nudgeSaversOfListing(ctx, { listingId: signal.entityId, nudgeKind: "price_drop" })
+    if (r.refused) return null
+    if (r.savers === 0) return "no saved-property buyers to alert"
+    return r.proposed > 0 ? `routed ${r.proposed} personal saved-home price-drop nudge${r.proposed === 1 ? "" : "s"} (avatar via Asset Manager → Campaign sends)` : null
   },
   // Deal Coordinator → Recruiting Manager: a RECRUITED agent just closed their FIRST deal.
   // Recruiting ROI gets its first real production datapoint + the broker gets the

@@ -118,7 +118,7 @@
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock-runner.ts": 1,
-    "lib/compliance/trid-disclosure-clock.ts": 3,
+    "lib/compliance/trid-disclosure-clock.ts": 2,
     "lib/compliance/vendor-respa.ts": 6,
     "lib/connections/accounting-scopes.ts": 3,
     "lib/connections/scope.ts": 1,
@@ -142,14 +142,14 @@
     "lib/education/agent-guide.ts": 2,
     "lib/education/book-authority-program.ts": 1,
     "lib/education/client-education-curriculum.ts": 2,
-    "lib/education/client-tutor.ts": 3,
+    "lib/education/client-tutor.ts": 2,
     "lib/education/content-freshness.ts": 3,
     "lib/education/curriculum-author.ts": 3,
-    "lib/education/dedup-guard.ts": 3,
-    "lib/education/depth-reauthor.ts": 3,
+    "lib/education/dedup-guard.ts": 2,
+    "lib/education/depth-reauthor.ts": 2,
     "lib/education/onboarding-curriculum.ts": 2,
     "lib/education/question-gap.ts": 1,
-    "lib/education/regulatory-curriculum.ts": 3,
+    "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
     "lib/education/skill-freshness-radar.ts": 1,
     "lib/education/skill-freshness.ts": 1,
@@ -231,10 +231,10 @@
     "lib/kernel/commission-forecaster.ts": 6,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
-    "lib/kernel/consistency-guardian.ts": 3,
+    "lib/kernel/consistency-guardian.ts": 2,
     "lib/kernel/content-studio.ts": 5,
     "lib/kernel/continuity-receipt.ts": 2,
-    "lib/kernel/conversation-memory.ts": 3,
+    "lib/kernel/conversation-memory.ts": 2,
     "lib/kernel/cron-dispatch.ts": 3,
     "lib/kernel/deal-autopsy.ts": 2,
     "lib/kernel/deal-play-outcomes.ts": 1,
@@ -252,7 +252,7 @@
     "lib/kernel/fire-drills.ts": 2,
     "lib/kernel/flow-integrity.ts": 4,
     "lib/kernel/idle-hands.ts": 2,
-    "lib/kernel/ingress-continuity.ts": 3,
+    "lib/kernel/ingress-continuity.ts": 2,
     "lib/kernel/intelligence-report.ts": 4,
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
@@ -304,7 +304,7 @@
     "lib/kernel/vendor-price-intelligence.ts": 2,
     "lib/kernel/vendor-rating-governance.ts": 4,
     "lib/kernel/vendor-request.ts": 1,
-    "lib/kernel/vendor-subscription.ts": 3,
+    "lib/kernel/vendor-subscription.ts": 2,
     "lib/kernel/vendor-verification.ts": 1,
     "lib/kernel/video-coordination.ts": 3,
     "lib/kernel/voice-delegation.ts": 7,
@@ -315,7 +315,6 @@
     "lib/lead-assignment/capacity-pick.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
-    "lib/lead-assignment/tier-routing.ts": 3,
     "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
@@ -364,7 +363,7 @@
     "lib/marketing/image-library.ts": 2,
     "lib/marketing/lead-magnet-copy.ts": 1,
     "lib/marketing/lead-magnet-delivery-runner.ts": 1,
-    "lib/marketing/marketing-autonomy-ratchet.ts": 3,
+    "lib/marketing/marketing-autonomy-ratchet.ts": 2,
     "lib/marketing/marketing-qr.ts": 1,
     "lib/marketing/package-catalog.ts": 1,
     "lib/marketing/social-cadence.ts": 1,
@@ -372,7 +371,6 @@
     "lib/marketing/social-media-pairing.ts": 2,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/video-content-kit.ts": 2,
-    "lib/meta/verify-signature.ts": 3,
     "lib/net-sheet/net-sheet-guard-runner.ts": 1,
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
     "lib/newsletter/seo-score.ts": 2,
@@ -406,11 +404,10 @@
     "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-content.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
-    "lib/platform/provider-posture.ts": 3,
+    "lib/platform/provider-posture.ts": 1,
     "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
     "lib/platform/self-audit-rollup.ts": 1,
-    "lib/platform/status-notice.ts": 3,
     "lib/platform/subscription-oversight.ts": 2,
     "lib/platform/tenant-export.ts": 1,
     "lib/platform/tenant-sso.ts": 1,
@@ -445,7 +442,7 @@
     "lib/remotion/render-cache.ts": 1,
     "lib/remotion/render-decision.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 1,
-    "lib/security/oauth-refresh.ts": 3,
+    "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
     "lib/showings/dispatchers.ts": 2,
     "lib/showings/showingtime-ingest.ts": 1,
@@ -506,7 +503,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9428,
+  "census": 9410,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1263,6 +1260,7 @@
     "app/api/cron/permit-signal-scan/route.ts": 1,
     "app/api/cron/photo-intelligence/route.ts": 1,
     "app/api/cron/platform-lead-distribution/route.ts": 1,
+    "app/api/cron/platform-product-autopilot/route.ts": 1,
     "app/api/cron/platform-prospect-followup/route.ts": 1,
     "app/api/cron/platform-sentinel/route.ts": 1,
     "app/api/cron/podcast-weekly-auto/route.ts": 1,
@@ -2975,7 +2973,7 @@
     "lib/compliance/required-documents.ts": 4,
     "lib/compliance/signature-completeness.ts": 1,
     "lib/compliance/trid-disclosure-clock-runner.ts": 2,
-    "lib/compliance/trid-disclosure-clock.ts": 6,
+    "lib/compliance/trid-disclosure-clock.ts": 5,
     "lib/compliance/vendor-respa.ts": 13,
     "lib/compliance-rules/compliance-engine.ts": 5,
     "lib/compliance-rules/compliance-logger.ts": 4,
@@ -3095,17 +3093,17 @@
     "lib/education/ce-provider.ts": 7,
     "lib/education/client-education-authoring.ts": 2,
     "lib/education/client-education-curriculum.ts": 3,
-    "lib/education/client-tutor.ts": 4,
+    "lib/education/client-tutor.ts": 3,
     "lib/education/content-freshness.ts": 5,
     "lib/education/curriculum-author.ts": 5,
-    "lib/education/dedup-guard.ts": 5,
+    "lib/education/dedup-guard.ts": 4,
     "lib/education/delivery-format.ts": 5,
-    "lib/education/depth-reauthor.ts": 4,
+    "lib/education/depth-reauthor.ts": 3,
     "lib/education/knowledge-gap-detector.ts": 1,
     "lib/education/onboarding-authoring.ts": 2,
     "lib/education/onboarding-curriculum.ts": 4,
     "lib/education/question-gap.ts": 2,
-    "lib/education/regulatory-curriculum.ts": 4,
+    "lib/education/regulatory-curriculum.ts": 3,
     "lib/education/seller-signal-education-context.ts": 2,
     "lib/education/skill-freshness-radar.ts": 3,
     "lib/education/skill-freshness.ts": 2,
@@ -3391,12 +3389,12 @@
     "lib/kernel/consensus-memory-runner.ts": 2,
     "lib/kernel/consensus-memory.ts": 5,
     "lib/kernel/consent-recovery.ts": 3,
-    "lib/kernel/consistency-guardian.ts": 5,
+    "lib/kernel/consistency-guardian.ts": 4,
     "lib/kernel/consult-outcome-resolver.ts": 1,
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
-    "lib/kernel/conversation-memory.ts": 6,
+    "lib/kernel/conversation-memory.ts": 5,
     "lib/kernel/conversation-thread.ts": 2,
     "lib/kernel/coordination-kind.ts": 1,
     "lib/kernel/crm.ts": 13,
@@ -3433,7 +3431,7 @@
     "lib/kernel/global-settings.ts": 2,
     "lib/kernel/helpers.ts": 6,
     "lib/kernel/idle-hands.ts": 3,
-    "lib/kernel/ingress-continuity.ts": 8,
+    "lib/kernel/ingress-continuity.ts": 7,
     "lib/kernel/intelligence-report.ts": 8,
     "lib/kernel/intent-campaign.ts": 5,
     "lib/kernel/jobs.ts": 1,
@@ -3456,7 +3454,7 @@
     "lib/kernel/manager-activity.ts": 1,
     "lib/kernel/manager-dissent.ts": 5,
     "lib/kernel/manager-registry.ts": 7,
-    "lib/kernel/manager-signals.ts": 5,
+    "lib/kernel/manager-signals.ts": 6,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
     "lib/kernel/marketing-bench.ts": 1,
     "lib/kernel/marketing.ts": 20,
@@ -3471,7 +3469,7 @@
     "lib/kernel/notification-center.ts": 4,
     "lib/kernel/notification-engine.ts": 1,
     "lib/kernel/notification-rules.ts": 4,
-    "lib/kernel/objection-library.ts": 5,
+    "lib/kernel/objection-library.ts": 4,
     "lib/kernel/observability.ts": 3,
     "lib/kernel/offer-net-sheet.ts": 1,
     "lib/kernel/offers.ts": 12,
@@ -3558,7 +3556,7 @@
     "lib/kernel/vendor-request.ts": 5,
     "lib/kernel/vendor-review-moderation.ts": 4,
     "lib/kernel/vendor-sla.ts": 2,
-    "lib/kernel/vendor-subscription.ts": 7,
+    "lib/kernel/vendor-subscription.ts": 6,
     "lib/kernel/vendor-verification.ts": 4,
     "lib/kernel/vendors.ts": 8,
     "lib/kernel/video-coordination.ts": 4,
@@ -3579,7 +3577,7 @@
     "lib/lead-assignment/rule-matcher.ts": 10,
     "lib/lead-assignment/solo-agent.ts": 1,
     "lib/lead-assignment/stale-lead-detector.ts": 1,
-    "lib/lead-assignment/tier-routing.ts": 4,
+    "lib/lead-assignment/tier-routing.ts": 1,
     "lib/lead-assignment/unassigned-escalation.ts": 1,
     "lib/lead-governance/multi-factor-scorer.ts": 1,
     "lib/lead-governance/promotion-readiness.ts": 1,
@@ -3732,7 +3730,7 @@
     "lib/marketing/lead-magnet-delivery-runner.ts": 2,
     "lib/marketing/lead-magnet-intent.ts": 1,
     "lib/marketing/listing-promo-catchup.ts": 1,
-    "lib/marketing/marketing-autonomy-ratchet.ts": 4,
+    "lib/marketing/marketing-autonomy-ratchet.ts": 3,
     "lib/marketing/marketing-qr.ts": 2,
     "lib/marketing/newsletter-cadence.ts": 1,
     "lib/marketing/package-catalog.ts": 5,
@@ -3752,7 +3750,7 @@
     "lib/marketing/vendor-ranking.ts": 5,
     "lib/marketing/video-content-kit.ts": 4,
     "lib/marketing/video-provider-resolver.ts": 2,
-    "lib/meta/verify-signature.ts": 6,
+    "lib/meta/verify-signature.ts": 2,
     "lib/negotiation/analyzer.ts": 1,
     "lib/negotiation/auto-trigger.ts": 2,
     "lib/negotiation/copilot-ai.ts": 1,
@@ -3833,11 +3831,12 @@
     "lib/platform/platform-social.ts": 12,
     "lib/platform/platform-staff-roster.ts": 11,
     "lib/platform/product-brand.ts": 5,
+    "lib/platform/product-content-autopilot.ts": 3,
     "lib/platform/product-content.ts": 6,
     "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 4,
-    "lib/platform/provider-posture.ts": 9,
+    "lib/platform/provider-posture.ts": 7,
     "lib/platform/public-tiers.ts": 2,
     "lib/platform/referral-payouts.ts": 7,
     "lib/platform/require-capability.ts": 2,
@@ -3847,7 +3846,7 @@
     "lib/platform/service-catalogue-scope.ts": 2,
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
-    "lib/platform/status-notice.ts": 10,
+    "lib/platform/status-notice.ts": 7,
     "lib/platform/subscriber-referrals.ts": 6,
     "lib/platform/subscription-oversight.ts": 4,
     "lib/platform/suppression-list.ts": 4,
@@ -3985,7 +3984,7 @@
     "lib/security/audio-source-allowlist.ts": 2,
     "lib/security/credential-rotation.ts": 3,
     "lib/security/export-credential-scan.ts": 2,
-    "lib/security/oauth-refresh.ts": 4,
+    "lib/security/oauth-refresh.ts": 3,
     "lib/security/public-rate-limit.ts": 2,
     "lib/security/rbac.ts": 5,
     "lib/security/secret-crypto.ts": 4,
@@ -4034,6 +4033,7 @@
     "lib/storage/file-limits.ts": 5,
     "lib/storage/orphan-sweeper.ts": 1,
     "lib/storage/parse-object-url.ts": 1,
+    "lib/storage/platform-contract-document.ts": 1,
     "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
     "lib/storage/signed-upload-url.ts": 6,
@@ -8663,6 +8663,9 @@
       "GET"
     ],
     "app/api/cron/platform-lead-distribution/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/platform-product-autopilot/route.ts": [
       "GET"
     ],
     "app/api/cron/platform-prospect-followup/route.ts": [
@@ -14698,7 +14701,6 @@
       "businessDaysInclusive",
       "businessDaysUntil",
       "closingDisclosureDueBy",
-      "loanEstimateDueBy",
       "computeTridClock",
       "mostUrgentDeadline"
     ],
@@ -15270,7 +15272,6 @@
     "lib/education/client-tutor.ts": [
       "buildTutorSystemPrompt",
       "tutorAnswerRisky",
-      "resolveTutorContext",
       "answerTutorQuestion"
     ],
     "lib/education/content-freshness.ts": [
@@ -15288,7 +15289,6 @@
       "runCurriculumAuthorAll"
     ],
     "lib/education/dedup-guard.ts": [
-      "titleTokens",
       "titleSimilarity",
       "isNearDuplicateTitle",
       "hasNearDuplicateModule",
@@ -15304,7 +15304,6 @@
     "lib/education/depth-reauthor.ts": [
       "isShallowBody",
       "recoverTopicForModule",
-      "reauthorShallowModules",
       "runDepthReauthorAll"
     ],
     "lib/education/knowledge-gap-detector.ts": [
@@ -15326,7 +15325,6 @@
     ],
     "lib/education/regulatory-curriculum.ts": [
       "regulationTag",
-      "authorRegulatoryModule",
       "persistRegulatoryModule",
       "authorRegulatoryTraining"
     ],
@@ -16692,7 +16690,6 @@
       "extractPrices",
       "checkPriceConsistency",
       "composeConsistencyFlag",
-      "runConsistencyGuardian",
       "runConsistencyGuardianAll"
     ],
     "lib/kernel/consult-outcome-resolver.ts": [
@@ -16718,7 +16715,6 @@
     ],
     "lib/kernel/conversation-memory.ts": [
       "composeContextSummary",
-      "loadContactInteractions",
       "updateContactContext",
       "loadContactContext",
       "refreshRecentContactSpines",
@@ -16973,7 +16969,6 @@
     ],
     "lib/kernel/ingress-continuity.ts": [
       "decideIngressAction",
-      "envelopeHasAnyArtifact",
       "parkIngressEvent",
       "payloadHash",
       "quarantineDriftedPayload",
@@ -17120,6 +17115,7 @@
       "validSignalRoute",
       "publishManagerSignal",
       "routeSavedHomeNudge",
+      "nudgeSaversOfListing",
       "consumeManagerSignals",
       "loadRecentManagerTalk"
     ],
@@ -17202,8 +17198,7 @@
       "categorizeObjection",
       "rankRebuttals",
       "composeObjectionSummary",
-      "runObjectionLibrary",
-      "isoWeekTag"
+      "runObjectionLibrary"
     ],
     "lib/kernel/observability.ts": [
       "listAutomationErrors",
@@ -17727,7 +17722,6 @@
       "resolveTierPrice",
       "resolveVendorTiers",
       "normalizeTier",
-      "tierCapabilities",
       "effectiveCapabilities",
       "tierAllows",
       "mapStripeEventToStatus"
@@ -17865,9 +17859,6 @@
       "detectStaleLeads"
     ],
     "lib/lead-assignment/tier-routing.ts": [
-      "isAssignmentLogMethod",
-      "normalizeAssignmentMethod",
-      "resolveTierRouting",
       "autoAssignLead"
     ],
     "lib/lead-assignment/unassigned-escalation.ts": [
@@ -18589,8 +18580,7 @@
     "lib/marketing/marketing-autonomy-ratchet.ts": [
       "computeSocialShapeStats",
       "decideMarketingRatchet",
-      "runMarketingRatchetSweep",
-      "socialShapeKey"
+      "runMarketingRatchetSweep"
     ],
     "lib/marketing/marketing-qr.ts": [
       "qrDestinationForMaterial",
@@ -18685,10 +18675,6 @@
       "initialProviderColumns"
     ],
     "lib/meta/verify-signature.ts": [
-      "resolveMetaVerifyToken",
-      "resolveMetaAppSecret",
-      "hmacSha256Hex",
-      "safeHexEqual",
       "verifyMetaSignature",
       "metaSubscriptionHandshake"
     ],
@@ -19138,6 +19124,11 @@
       "validateTopic",
       "topicToAngle"
     ],
+    "lib/platform/product-content-autopilot.ts": [
+      "writeWeeklyProductCalendar",
+      "queueProductVideoRender",
+      "runWeeklyProductAutopilot"
+    ],
     "lib/platform/product-content.ts": [
       "composeProductPost",
       "buildWeeklyProductCalendar",
@@ -19162,8 +19153,6 @@
       "getTwilioFleetPosture",
       "assessA2pStall",
       "getSendgridPosture",
-      "getPlatformProviderRegistry",
-      "envPresence",
       "platformEnvConfigured",
       "getFullProviderPosture",
       "resolveBrokerageReadinessState",
@@ -19210,9 +19199,6 @@
       "auditStaffAction"
     ],
     "lib/platform/status-notice.ts": [
-      "resolveStatusNotice",
-      "resolveProposedStatusNotice",
-      "resolveStatusNoticeState",
       "composeProviderDownNotice",
       "loadStatusNotice",
       "loadStatusNoticeState",
@@ -19892,7 +19878,6 @@
     "lib/security/oauth-refresh.ts": [
       "shouldAttemptRefresh",
       "resolveProviderOAuth",
-      "refreshCredential",
       "runCredentialRefresh"
     ],
     "lib/security/public-rate-limit.ts": [
@@ -20126,6 +20111,9 @@
     ],
     "lib/storage/parse-object-url.ts": [
       "parseStorageObjectUrl"
+    ],
+    "lib/storage/platform-contract-document.ts": [
+      "mintContractDocumentUrl"
     ],
     "lib/storage/put-and-sign.ts": [
       "putAndSign",

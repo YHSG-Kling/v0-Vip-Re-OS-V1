@@ -53,7 +53,8 @@ export function resolveProviderOAuth(provider: string | null): ProviderOAuth | n
 export interface RefreshOutcome { id: string; provider: string | null; result: "refreshed" | "skipped_unconfigured" | "skipped_unsupported" | "failed" }
 
 /** Refresh one credential row (from platform_credentials / agent_api_credentials). Provider-gated. */
-export async function refreshCredential(
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+async function refreshCredential(
   svc: Svc,
   row: { table: string; id: string; provider: string | null; refresh_token: string | null },
 ): Promise<RefreshOutcome> {

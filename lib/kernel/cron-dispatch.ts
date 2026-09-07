@@ -189,6 +189,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/ai-overage-billing"                  , schedule: "23 1 1 * *" }, // monthly, 1st 01:23 UTC — bills the CLOSED period's derived AI overage as Stripe invoice items; idempotent per (brokerage, period) via ai_overage_invoices claim (m479)
   { path: "/api/cron/platform-lead-distribution"          , schedule: "0 */2 * * *" }, // batch sweep for platform leads whose inline distribution found no subscriber — speed-to-lead once a zip gains one (round 38)
   { path: "/api/cron/platform-prospect-followup"          , schedule: "0 15 * * *" },
+  { path: "/api/cron/platform-product-autopilot"          , schedule: "0 13 * * 1" }, // Monday: the platform's own acquisition posts + one ProductPromoReel render, gated (2026-09-07)
   { path: "/api/cron/support-sla"                         , schedule: "30 * * * *" },
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/open-house-followup"                 , schedule: "45 * * * *" },

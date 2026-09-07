@@ -63,7 +63,8 @@ export function normalizeTier(tier: string | null | undefined): VendorTier {
 }
 
 /** PURE: capabilities for a tier. */
-export function tierCapabilities(tier: string | null | undefined): TierCapabilities {
+// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
+function tierCapabilities(tier: string | null | undefined): TierCapabilities {
   return VENDOR_TIERS[normalizeTier(tier)]
 }
 
