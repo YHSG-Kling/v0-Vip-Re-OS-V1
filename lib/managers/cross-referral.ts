@@ -276,7 +276,7 @@ const LEAD_QUALITY_QUALIFIED_SHARE_FLOOR = 0.2
  * seats grounded in their own tables) argues shift-vs-scale. Deduped weekly per tenant
  * over the bus ledger itself.
  */
-export async function publishLeadQualityReferrals(client?: Svc): Promise<SlaReferralSweepResult> {
+async function publishLeadQualityReferrals(client?: Svc): Promise<SlaReferralSweepResult> {
   const svc = client ?? createServiceClient()
   const result: SlaReferralSweepResult = { candidates: 0, published: 0, skippedRecent: 0, errors: [] }
   const sinceIso = new Date(Date.now() - 30 * 86_400_000).toISOString()
@@ -353,7 +353,7 @@ export async function publishLeadQualityReferrals(client?: Svc): Promise<SlaRefe
  * the recruits pipeline vs agent_commission_profiles / agent_cap_tracking). Deduped
  * per recruit over the bus ledger.
  */
-export async function publishRecruitOfferReferrals(client?: Svc): Promise<SlaReferralSweepResult> {
+async function publishRecruitOfferReferrals(client?: Svc): Promise<SlaReferralSweepResult> {
   const svc = client ?? createServiceClient()
   const result: SlaReferralSweepResult = { candidates: 0, published: 0, skippedRecent: 0, errors: [] }
   const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`

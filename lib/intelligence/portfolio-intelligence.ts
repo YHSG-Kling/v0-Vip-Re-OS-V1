@@ -158,7 +158,7 @@ export async function loadPortfolioIntelligence(svc: Svc, brokerageId: string): 
 }
 
 /** Monthly gated broker brief carrying the top strategy move + top risk. Idempotent per (brokerage, month). */
-export async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ proposed: boolean }> {
+async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ proposed: boolean }> {
   const read = await loadPortfolioIntelligence(svc, brokerageId)
   if (read.strategy.length === 0 && read.riskOps.length === 0) return { proposed: false }
   const tag = `portfolio_advisor:${now.toISOString().slice(0, 7)}`

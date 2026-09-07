@@ -215,6 +215,10 @@ export async function aiGenerateListingDescription(params: {
   style: "luxury" | "family" | "investor" | "first_time_buyer"
   highlights?: string[]
   neighborhood?: string
+  /** The listing the copy is for. Stamped as listing_marketing_content.listing_id
+   *  — the column app/dashboard/listings/[id]/share/page.tsx filters on — only
+   *  after the listing is proven to be THIS brokerage's (never a foreign id). */
+  listingId?: string
 }) {
   try {
     // Auth gate — burns paid OpenAI inference. Previously accepted a
@@ -293,10 +297,24 @@ IMPORTANT RULES:
     // points at. This path generates text before any row exists, so the scan
     // (which must run first — see the ordering ruling in lib/content-guardian)
     // could not name it; the link is stamped immediately after, below.
+    // listing_id: until 2026-09-07 no writer of this table stamped it, so the
+    // share page's `.eq("listing_id", …)` read (the ONE listing-scoped reader)
+    // found nothing — a writerless column the deleted ai-marketing-automation
+    // duplicate had also left null. Stamped only for a listing inside THIS
+    // brokerage; an unknown or foreign id stays null rather than mis-filing.
+    let scopedListingIdForContent: string | null = null
+    const candidateListingId = params.listingId ?? (typeof params.propertyData?.id === "string" ? params.propertyData.id : null)
+    if (candidateListingId && isValidUUID(candidateListingId)) {
+      const { data: owned, error: ownedError } = await supabase
+        .from("listings").select("id").eq("id", candidateListingId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (ownedError) console.error("[AI Listing Intake] listing ownership read refused:", ownedError.message)
+      if (owned) scopedListingIdForContent = candidateListingId
+    }
     const { data: savedContent, error: savedContentError } = await supabase
       .from("listing_marketing_content")
       .insert({
         brokerage_id: brokerageId,
+        listing_id: scopedListingIdForContent,
         content_type: "ai_descriptions",
         content: { ...descriptions, target_audience: params.style },
       })

@@ -269,6 +269,22 @@ async function runAdHandler(
     // Record the staged campaign on the action so the ledger names it.
     input.campaign_id = campaignId
   }
+  // A `content_winner` proposal (ads_manager:content_winner) carries the winning
+  // post and no campaign either — it failed the same way. On approval it STAGES
+  // the paid campaign from the post (lib/ads/promote-post.ts): compliance-first
+  // creative in the one approval queue, then the ordinary Meta launch gates.
+  if (!campaignId && action === "launch_ad_campaign" && input.post_id) {
+    const { stageCampaignFromSocialPost } = await import("@/lib/ads/promote-post")
+    const staged = await stageCampaignFromSocialPost({ brokerageId, postId: String(input.post_id), client: svc })
+    if (!staged.ok || !staged.campaignId) return { status: "failed", result: { error: `could not stage a paid campaign from the post: ${staged.reason}` } }
+    campaignId = staged.campaignId
+    input.campaign_id = campaignId
+    if (!staged.alreadyStaged) {
+      // The creative is a DRAFT until a human approves the words; say so
+      // rather than fall through to "campaign is draft, must be approved".
+      return { status: "skipped", result: { campaign_id: campaignId, creative_id: staged.creativeId, reason: "paid campaign staged from the winning post — approve the creative in the ad approval queue, then approve the campaign to launch" } }
+    }
+  }
   if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
   const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget, platform, targeting_config").eq("id", campaignId).maybeSingle()
   const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null; platform: string; targeting_config: Record<string, unknown> | null } | null

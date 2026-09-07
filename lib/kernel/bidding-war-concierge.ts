@@ -31,7 +31,7 @@ type Svc = ReturnType<typeof createServiceClient>
 
 // Pre-acceptance offer statuses where a competitive prep still matters (the seller has not
 // accepted/rejected/withdrawn — the buyer can still improve their position).
-export const COMPETITIVE_OFFER_STATUSES = ["draft", "submitted", "pending", "countered", "negotiating"] as const
+const COMPETITIVE_OFFER_STATUSES = ["draft", "submitted", "pending", "countered", "negotiating"] as const
 
 // ─── PURE LAYER 1 ─────────────────────────────────────────────────────────────
 

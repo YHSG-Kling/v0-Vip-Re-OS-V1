@@ -81,7 +81,7 @@ export const EQUITY_TRIGGER_TAG = "EQUITY TRIGGER"
 
 /** Non-authoritative rate source sentinel (matches the Wealth Advisor's cold-start guard):
  *  a placeholder benchmark is NOT a market quote — the refi dollar-claim is suppressed for it. */
-export const NON_AUTHORITATIVE_RATE_SOURCE = "seed_default"
+const NON_AUTHORITATIVE_RATE_SOURCE = "seed_default"
 
 export type EquityTriggerType = "cash_out" | "refi"
 

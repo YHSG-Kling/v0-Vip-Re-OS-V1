@@ -17,7 +17,7 @@ import { zipFromAddress } from "@/lib/intelligence/negotiation-bands"
 type Svc = SupabaseClient<any, any, any>
 
 export const MIN_CLOSINGS = 3
-export const CAREER_WINDOW_DAYS = 365
+const CAREER_WINDOW_DAYS = 365
 
 export interface CareerProfile {
   agentId: string
@@ -74,7 +74,7 @@ export function composeCareerSuggestions(p: CareerProfile): CareerSuggestion[] {
 }
 
 /** Load a producing agent's career profile from the ledgers. */
-export async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<CareerProfile[]> {
+async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<CareerProfile[]> {
   const since = new Date(now.getTime() - CAREER_WINDOW_DAYS * 86_400_000).toISOString()
   const [{ data: closed }, { data: decisions }] = await Promise.all([
     svc.from("transactions").select("agent_id, purchase_price, property_address")
@@ -151,7 +151,7 @@ async function loadTopTouchedZip(svc: Svc, brokerageId: string, agentId: string,
 const quarterTag = (now: Date) => `career_architect:${now.getFullYear()}-Q${Math.floor(now.getMonth() / 3) + 1}`
 
 /** Quarterly gated brief per producing agent. Idempotent per (agent, quarter). */
-export async function runCareerArchitect(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ briefed: number }> {
+async function runCareerArchitect(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ briefed: number }> {
   const profiles = await loadCareerProfiles(svc, brokerageId, now)
   let briefed = 0
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")

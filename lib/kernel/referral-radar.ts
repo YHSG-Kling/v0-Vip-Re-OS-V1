@@ -42,10 +42,10 @@ type Svc = ReturnType<typeof createServiceClient>
 const RADAR_DEDUPE_DAYS = 90
 
 /** A life event is "fresh" when detected within this window (Data Steward stamp). */
-export const LIFE_EVENT_FRESH_DAYS = 60
+const LIFE_EVENT_FRESH_DAYS = 60
 
 /** Equity at/above this is a milestone worth a sell/upgrade conversation. */
-export const EQUITY_MILESTONE = 250_000
+const EQUITY_MILESTONE = 250_000
 
 /** referral_score at/above this marks a contact primed to refer. */
 const REFERRAL_PRIMED_SCORE = 70
@@ -64,7 +64,7 @@ const REFERRAL_PRIMED_SCORE = 70
  * m539 does not reach it and its spellings are pinned to their writers, not to a
  * constraint. `past_client` and `lifetime` stay here for exactly that reason.
  */
-export const PAST_CLIENT_NURTURE = ["past_client", "closed", "lifetime"] as const
+const PAST_CLIENT_NURTURE = ["past_client", "closed", "lifetime"] as const
 
 export type LifeEventType =
   | "job_change"

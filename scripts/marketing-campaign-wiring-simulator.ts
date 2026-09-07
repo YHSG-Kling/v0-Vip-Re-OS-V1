@@ -46,6 +46,15 @@ const F = {
   readiness: "app/actions/campaign-readiness.ts",
   email: "app/actions/email-campaigns.ts",
   aiMarketing: "app/actions/ai-marketing-automation.ts",
+  // Survivors for two of the four orphaned ai-marketing-automation.ts actions
+  // deleted 2026-09-07 (§1.1 — see the tombstones there): createAIOffer's
+  // defects now live in buyerOffers' createOffer, compareOffers' in
+  // sellerOffers' triggerOfferComparison. (createAIListing has no single-file
+  // survivor — split across listings-kernel.ts + ai-listing-intake.ts — and
+  // generateCounterOfferStrategy's survivor, ai-offer-creation.ts, is not
+  // targeted by any check in this registry, so neither gets an F entry.)
+  buyerOffers: "app/actions/buyer-offers.ts",
+  sellerOffers: "app/actions/seller-offers.ts",
   adOsActions: "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts",
   prelaunchPanel: "app/dashboard/marketing/studio/components/ad-os/prelaunch-prediction-panel.tsx",
   listingCopyPanel: "app/dashboard/marketing/studio/components/ad-os/listing-copy-panel.tsx",
@@ -422,30 +431,33 @@ const CHECKS: Check[] = [
       const bad = /\.from\(\s*["'`]users["'`]\s*\)[\s\S]{0,160}\.eq\(\s*["'`]id["'`]\s*,\s*[A-Za-z0-9_.]*agentId/i
       return !bad.test(s) && /\.from\(\s*["'`]agents["'`]\s*\)/.test(s)
     },
+    // REPOINTED 2026-09-07 (§1.1): the previous anchor was the
+    // `requireAgentInCallerBrokerage(params.agentId)` call inside createAIListing,
+    // deleted as an unwired duplicate (see the tombstone below). This still
+    // exercises the same defect class (a `users` lookup keyed by an agents id)
+    // on generateAIDirectMail's own agent-resolution read, which survives.
     mutate: (raw) =>
       replaceOnce(
         raw,
-        `    const auth = await requireAgentInCallerBrokerage(params.agentId)
-    if (!auth.ok) return { success: false, error: auth.error }
-    const brokerageId = auth.brokerageId`,
-        `    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
-    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }`
+        `supabase.from("agents").select("brokerage_id, users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),`,
+        `supabase.from("users").select("brokerage_id, users(first_name, last_name, phone, email)").eq("id", params.agentId).maybeSingle(),`
       ),
   },
   {
     id: "ai/tenant-guard-on-every-action",
     file: "aiMarketing",
     name: "every AI marketing action verifies the agent is inside the caller's brokerage",
+    // createAIListing / createAIOffer / generateCounterOfferStrategy /
+    // compareOffers deleted 2026-09-07 (§1.1 — see the tombstones in
+    // aiMarketing) — they had no product caller and their tenant-guard
+    // behaviour is proven on their survivors by ai/offer-escalation-clause-type
+    // (buyerOffers) and ai/listing-price-column-is-real (sellerOffers) below,
+    // scoped to each survivor's own auth gate rather than this name.
     assert: (s) =>
       [
         "generateAINewsletter",
         "generateNewsletterSubjectVariants",
         "enhanceListingDescription",
-        "createAIListing",
-        "createAIOffer",
-        "generateCounterOfferStrategy",
-        "compareOffers",
       ].every((fn) => callsFunction(fnBody(s, fn), "requireAgentInCallerBrokerage")),
     mutate: (raw) =>
       replaceOnce(
@@ -453,53 +465,94 @@ const CHECKS: Check[] = [
         `    const auth = await requireAgentInCallerBrokerage(agentId)
     if (!auth.ok) return { success: false, error: auth.error }
 
-    const supabase = await createClient()
-
-    const { data: offers, error: offersError } = await supabase`,
+    const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
+      model: "openai/gpt-4o-mini",
+      prompt: \`Generate 5 A/B test subject line variants for a real estate newsletter.`,
         `    const auth = { ok: true as const, brokerageId: "" }
     if (!auth.ok) return { success: false, error: "x" }
 
-    const supabase = await createClient()
-
-    const { data: offers, error: offersError } = await supabase`
+    const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
+      model: "openai/gpt-4o-mini",
+      prompt: \`Generate 5 A/B test subject line variants for a real estate newsletter.`
       ),
   },
   {
+    // REPOINTED 2026-09-07 (§1.1): createAIOffer (the original subject) was
+    // deleted as an unwired duplicate of buyer-offers.ts:createOffer — see the
+    // tombstone in aiMarketing. The defect this guards (an escalation object
+    // pushed into a BOOLEAN column) is real and now lives entirely on the
+    // survivor, so the check follows it there rather than disappearing.
     id: "ai/offer-escalation-clause-type",
-    file: "aiMarketing",
-    name: "createAIOffer writes a boolean into the boolean column offers.escalation_clause",
+    file: "buyerOffers",
+    name: "createOffer writes a boolean into the boolean column offers.escalation_clause (not an escalation-terms object)",
     assert: (s) => {
-      const body = fnBody(s, "createAIOffer")
-      return /escalation_clause\s*:\s*Boolean\(/.test(body)
+      const body = fnBody(s, "createOffer")
+      return /escalation_clause:\s*boolean/.test(s) && /escalation_clause:\s*form\.escalation_clause,/.test(body)
     },
-    mutate: (raw) => replaceOnce(raw, "escalation_clause: Boolean(params.escalationClause),", "escalation_clause: params.escalationClause,"),
+    mutate: (raw) =>
+      replaceOnce(
+        raw,
+        "escalation_clause:           form.escalation_clause,",
+        "escalation_clause:           { maxPrice: form.escalation_cap ?? 0, increment: 0 },"
+      ),
   },
   {
+    // REPOINTED 2026-09-07 (§1.1) — see the note on ai/offer-escalation-clause-type.
     id: "ai/offer-columns-are-real",
-    file: "aiMarketing",
-    name: "offer reads use offer_price / closing_date, not the phantom offer_amount / close_date",
-    assert: (s) => !/\boffer_amount\b/.test(s) && !/\bclose_date\b/.test(s),
-    mutate: (raw) => replaceOnce(raw, "- Offer: $${offer.offer_price?.toLocaleString() ?? \"N/A\"}", "- Offer: $${offer.offer_amount.toLocaleString()}"),
+    file: "buyerOffers",
+    name: "createOffer writes offer_price / closing_date, not the phantom offer_amount / close_date",
+    assert: (s) => {
+      const body = fnBody(s, "createOffer")
+      return !/\boffer_amount\b/.test(body) && !/\bclose_date\b/.test(body) && /offer_price:/.test(body) && /closing_date:/.test(body)
+    },
+    mutate: (raw) => replaceOnce(raw, "offer_price:                 form.offer_price,", "offer_amount:                 form.offer_price,"),
   },
   {
+    // REPOINTED 2026-09-07 (§1.1): compareOffers (the original subject) was
+    // deleted as an unwired duplicate of seller-offers.ts:triggerOfferComparison
+    // — see the tombstone in aiMarketing. The phantom-column defect this guards
+    // now lives entirely on the survivor.
     id: "ai/listing-price-column-is-real",
-    file: "aiMarketing",
-    name: "compareOffers uses listings.list_price, not the phantom listings.price",
+    file: "sellerOffers",
+    name: "triggerOfferComparison uses listings.list_price, not the phantom listings.price",
     assert: (s) => {
-      const body = fnBody(s, "compareOffers")
+      const body = fnBody(s, "triggerOfferComparison")
       return !/listing\??\.price\b/.test(body) && /list_price/.test(body)
     },
-    mutate: (raw) => replaceOnce(raw, "- List Price: $${listing?.list_price?.toLocaleString() ?? \"N/A\"}", "- List Price: $${listing?.price.toLocaleString()}"),
+    mutate: (raw) => replaceOnce(raw, "listPrice: listing?.list_price ?? 0,", "listPrice: listing?.price ?? 0,"),
   },
   {
     id: "ai/json-parse-is-guarded",
     file: "aiMarketing",
     name: "AI JSON responses are fence-stripped and parse failures are reported, not thrown",
+    // THE RULE, not a headcount pinned to today's function roster (§2 —
+    // "assert the rule, derive the number"): the helper is DEFINED (its own
+    // declaration matches "stripCodeFences(" too) and CALLED at least once
+    // beyond that declaration, and every JSON.parse this detector CAN see sits
+    // inside a guarded try. Was `uses >= 4, guardedParses >= 3` — counts that
+    // only held while createAIOffer, generateCounterOfferStrategy and
+    // compareOffers still lived here; deleting them as unwired duplicates
+    // (§1.1, 2026-09-07 — see the tombstones below) dropped `uses` to 2 (1
+    // declaration + generateNewsletterSubjectVariants' own call) and
+    // `guardedParses` to 2 (that same function's primary parse AND its
+    // regex-fallback parse in the nested catch) without making anything less
+    // guarded. A hardcoded 4/3 would have gone red for a correct deletion —
+    // exactly the waypoint trap in §2. (`guardedParses` never counted
+    // generateAINewsletter's or generateAIDirectMail's try blocks either,
+    // before or after this deletion: their `text.match(/\{[\s\S]*\}/)` sits
+    // between "try {" and "JSON.parse(", and its own literal "}" breaks the
+    // `[^}]` run this detector requires — a pre-existing detector blind spot,
+    // not something this deletion introduced, and out of scope to fix here.)
     assert: (s) => {
-      // 1 declaration + one guarded call site per AI-JSON consumer.
-      const uses = (s.match(/stripCodeFences\s*\(/g) ?? []).length
+      const usesBeyondDeclaration = (s.match(/stripCodeFences\s*\(/g) ?? []).length - 1
       const guardedParses = (s.match(/try\s*\{\s*[^}]{0,200}JSON\.parse\(/g) ?? []).length
-      return uses >= 4 && guardedParses >= 3
+      return usesBeyondDeclaration >= 1 && guardedParses >= 2
     },
     mutate: (raw) => replaceOnce(raw, "parsed = JSON.parse(stripCodeFences(text))", "parsed = JSON.parse(text || \"\")"),
   },

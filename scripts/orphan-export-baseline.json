@@ -4,7 +4,6 @@
     "app/actions/ai-auto-response.ts": 1,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
-    "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 4,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/cda-portal.ts": 3,
@@ -38,6 +37,7 @@
     "lib/ads/connectors/pii.ts": 3,
     "lib/ads/ctv-campaign.ts": 3,
     "lib/ads/fb-audience-templates.ts": 1,
+    "lib/ads/promote-post.ts": 1,
     "lib/agentic-os/agent-credentials.ts": 2,
     "lib/agentic-os/app-capability-registry.ts": 1,
     "lib/agentic-os/capability-ownership.ts": 1,
@@ -143,7 +143,7 @@
     "lib/education/book-authority-program.ts": 2,
     "lib/education/client-education-curriculum.ts": 2,
     "lib/education/client-tutor.ts": 3,
-    "lib/education/content-freshness.ts": 4,
+    "lib/education/content-freshness.ts": 3,
     "lib/education/curriculum-author.ts": 3,
     "lib/education/dedup-guard.ts": 3,
     "lib/education/depth-reauthor.ts": 3,
@@ -169,7 +169,7 @@
     "lib/external/tavily-client.ts": 1,
     "lib/external/vision-property.ts": 1,
     "lib/finance/auto-dispute.ts": 1,
-    "lib/finance/qb-reconciliation.ts": 4,
+    "lib/finance/qb-reconciliation.ts": 3,
     "lib/finance/quarterly-tax-concierge.ts": 1,
     "lib/finance/tax-planning.ts": 3,
     "lib/finance/team-pl-writer.ts": 1,
@@ -181,7 +181,7 @@
     "lib/integrations/providers/catalog.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
-    "lib/intelligence/career-architect.ts": 4,
+    "lib/intelligence/career-architect.ts": 2,
     "lib/intelligence/conversation-insights.ts": 2,
     "lib/intelligence/curriculum-board.ts": 1,
     "lib/intelligence/decision-velocity.ts": 1,
@@ -196,7 +196,7 @@
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
     "lib/intelligence/playbook-engine.ts": 3,
-    "lib/intelligence/portfolio-intelligence.ts": 4,
+    "lib/intelligence/portfolio-intelligence.ts": 3,
     "lib/intelligence/predictor-learning-runner.ts": 1,
     "lib/intelligence/predictor-learning.ts": 1,
     "lib/intelligence/reaper-net.ts": 2,
@@ -208,7 +208,7 @@
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
-    "lib/kernel/agent-coaching.ts": 4,
+    "lib/kernel/agent-coaching.ts": 1,
     "lib/kernel/ai-isa.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 6,
     "lib/kernel/ai-sentinel.ts": 1,
@@ -342,7 +342,7 @@
     "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 2,
-    "lib/listing-presentation/section-drip.ts": 4,
+    "lib/listing-presentation/section-drip.ts": 3,
     "lib/listing-presentation/section-narration-orchestrator.ts": 1,
     "lib/listing-presentation/section-narration.ts": 1,
     "lib/listing-presentation/section-render.ts": 1,
@@ -353,7 +353,7 @@
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
     "lib/managers/accuracy-gate.ts": 5,
-    "lib/managers/cross-referral.ts": 4,
+    "lib/managers/cross-referral.ts": 2,
     "lib/managers/deliberation.ts": 7,
     "lib/managers/eval-scoring.ts": 2,
     "lib/managers/learning-loop.ts": 1,
@@ -512,7 +512,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9460,
+  "census": 9449,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -600,7 +600,7 @@
     "app/actions/ai-listing-packet.ts": 5,
     "app/actions/ai-listing-presentation.ts": 3,
     "app/actions/ai-market-intelligence.ts": 3,
-    "app/actions/ai-marketing-automation.ts": 8,
+    "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-newsletter.ts": 13,
     "app/actions/ai-offer-creation.ts": 9,
     "app/actions/ai-predictions.ts": 24,
@@ -2645,6 +2645,7 @@
     "lib/ads/launch-assembler.ts": 2,
     "lib/ads/listing-ad-producer.ts": 2,
     "lib/ads/orchestrate-ad-retarget-send.ts": 1,
+    "lib/ads/promote-post.ts": 2,
     "lib/ads/stuck-ad-action-policy.ts": 1,
     "lib/ads/stuck-ad-action-reaper.ts": 1,
     "lib/agent-action-queue/composer.ts": 1,
@@ -3100,7 +3101,7 @@
     "lib/education/client-education-authoring.ts": 2,
     "lib/education/client-education-curriculum.ts": 3,
     "lib/education/client-tutor.ts": 4,
-    "lib/education/content-freshness.ts": 6,
+    "lib/education/content-freshness.ts": 5,
     "lib/education/curriculum-author.ts": 5,
     "lib/education/dedup-guard.ts": 5,
     "lib/education/delivery-format.ts": 5,
@@ -3173,7 +3174,7 @@
     "lib/finance/commission-tracking-reaper.ts": 1,
     "lib/finance/expense-csv.ts": 2,
     "lib/finance/invoice-draft.ts": 1,
-    "lib/finance/qb-reconciliation.ts": 10,
+    "lib/finance/qb-reconciliation.ts": 9,
     "lib/finance/quarterly-tax-concierge.ts": 2,
     "lib/finance/scoped-accounting-export.ts": 2,
     "lib/finance/tax-assistance.ts": 1,
@@ -3236,7 +3237,7 @@
     "lib/intelligence/brokerage-pnl.ts": 3,
     "lib/intelligence/buyer-stall-predictor-runner.ts": 1,
     "lib/intelligence/buyer-stall-predictor.ts": 1,
-    "lib/intelligence/career-architect.ts": 5,
+    "lib/intelligence/career-architect.ts": 3,
     "lib/intelligence/coaching-engine.ts": 1,
     "lib/intelligence/conversation-insights.ts": 4,
     "lib/intelligence/curriculum-board.ts": 2,
@@ -3294,7 +3295,7 @@
     "lib/intelligence/partners-meeting.ts": 4,
     "lib/intelligence/pattern-detector.ts": 2,
     "lib/intelligence/playbook-engine.ts": 4,
-    "lib/intelligence/portfolio-intelligence.ts": 6,
+    "lib/intelligence/portfolio-intelligence.ts": 5,
     "lib/intelligence/predictor-learning-runner.ts": 3,
     "lib/intelligence/predictor-learning.ts": 3,
     "lib/intelligence/predictor-outcome-resolver.ts": 1,
@@ -3337,7 +3338,7 @@
     "lib/kernel/adapters/financial.ts": 1,
     "lib/kernel/addressing.ts": 1,
     "lib/kernel/ads.ts": 7,
-    "lib/kernel/agent-coaching.ts": 8,
+    "lib/kernel/agent-coaching.ts": 5,
     "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 4,
     "lib/kernel/agent-onboarding.ts": 8,
@@ -3674,7 +3675,7 @@
     "lib/listing-presentation/marketing-system-resolver.ts": 1,
     "lib/listing-presentation/marketing-system.ts": 2,
     "lib/listing-presentation/prelisting-delivery.ts": 5,
-    "lib/listing-presentation/section-drip.ts": 7,
+    "lib/listing-presentation/section-drip.ts": 6,
     "lib/listing-presentation/section-narration-orchestrator.ts": 3,
     "lib/listing-presentation/section-narration.ts": 3,
     "lib/listing-presentation/section-render.ts": 2,
@@ -3703,7 +3704,7 @@
     "lib/listings/tier-assigner.ts": 10,
     "lib/managers/accuracy-gate.ts": 10,
     "lib/managers/autonomy-gate.ts": 5,
-    "lib/managers/cross-referral.ts": 8,
+    "lib/managers/cross-referral.ts": 6,
     "lib/managers/deliberation.ts": 13,
     "lib/managers/eval-scoring.ts": 7,
     "lib/managers/learning-loop.ts": 5,
@@ -3722,6 +3723,8 @@
     "lib/marketing/content-publish-gate.ts": 1,
     "lib/marketing/content-topics-runner.ts": 1,
     "lib/marketing/content-topics.ts": 2,
+    "lib/marketing/content-winner-verdict.ts": 1,
+    "lib/marketing/content-winner.ts": 1,
     "lib/marketing/creative-playbooks.ts": 1,
     "lib/marketing/email-campaign-sender.ts": 2,
     "lib/marketing/engagement-rollup.ts": 3,
@@ -4836,11 +4839,7 @@
       "generateAINewsletter",
       "generateNewsletterSubjectVariants",
       "generateAIDirectMail",
-      "createAIListing",
-      "enhanceListingDescription",
-      "createAIOffer",
-      "generateCounterOfferStrategy",
-      "compareOffers"
+      "enhanceListingDescription"
     ],
     "app/actions/ai-newsletter.ts": [
       "aiGenerateSubjectLines",
@@ -12972,6 +12971,10 @@
     "lib/ads/orchestrate-ad-retarget-send.ts": [
       "orchestrateAdRetargetSend"
     ],
+    "lib/ads/promote-post.ts": [
+      "creativeFromPost",
+      "stageCampaignFromSocialPost"
+    ],
     "lib/ads/stuck-ad-action-policy.ts": [
       "classifyStuckAdAction"
     ],
@@ -15272,7 +15275,6 @@
       "answerTutorQuestion"
     ],
     "lib/education/content-freshness.ts": [
-      "moduleContentDate",
       "moduleAgeDays",
       "isModuleStale",
       "staleModules",
@@ -15658,7 +15660,6 @@
       "generateInvoice"
     ],
     "lib/finance/qb-reconciliation.ts": [
-      "emptyQbReconTotals",
       "reconcileLedgerRows",
       "reconcileAgainstSyncLog",
       "monthLabelsBetween",
@@ -15947,8 +15948,6 @@
     "lib/intelligence/career-architect.ts": [
       "composeColdStartCareer",
       "composeCareerSuggestions",
-      "loadCareerProfiles",
-      "runCareerArchitect",
       "runCareerArchitectAll"
     ],
     "lib/intelligence/coaching-engine.ts": [
@@ -16187,7 +16186,6 @@
       "composeStrategyMoves",
       "composeRiskOpportunities",
       "loadPortfolioIntelligence",
-      "runPortfolioAdvisor",
       "runPortfolioAdvisorAll"
     ],
     "lib/intelligence/predictor-learning-runner.ts": [
@@ -16364,11 +16362,8 @@
     ],
     "lib/kernel/agent-coaching.ts": [
       "composeCoachingBrief",
-      "renderCoachingMessage",
       "coachingScore",
-      "briefToWeeklyReport",
       "getAgentWeeklyReport",
-      "buildCoachingStats",
       "runAgentCoaching",
       "runAgentCoachingForAgent"
     ],
@@ -18302,7 +18297,6 @@
       "composeSectionEmail",
       "materializePresentationSections",
       "attachChapterReelsToSections",
-      "resolveSectionReel",
       "deliverDueSections"
     ],
     "lib/listing-presentation/section-narration-orchestrator.ts": [
@@ -18447,8 +18441,6 @@
       "raiseCrossManagerReferral",
       "raiseReferralDeduped",
       "publishApprovalSlaReferrals",
-      "publishLeadQualityReferrals",
-      "publishRecruitOfferReferrals",
       "emittersForDomain",
       "runReferralSweeps"
     ],
@@ -18541,6 +18533,12 @@
     "lib/marketing/content-topics.ts": [
       "topicSearchQuery",
       "extractContentTopics"
+    ],
+    "lib/marketing/content-winner-verdict.ts": [
+      "judgeContentWinner"
+    ],
+    "lib/marketing/content-winner.ts": [
+      "detectContentWinnersAll"
     ],
     "lib/marketing/creative-playbooks.ts": [
       "getPlaybook"

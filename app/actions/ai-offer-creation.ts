@@ -486,7 +486,13 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
     })
     let strategy: unknown
     try {
-      strategy = JSON.parse(strategyResult.text)
+      // MERGED (§1.1, 2026-09-07) from the deleted
+      // app/actions/ai-marketing-automation.ts:generateCounterOfferStrategy — the
+      // model routinely wraps this JSON in prose or a ```json fence, and a bare
+      // JSON.parse(strategyResult.text) threw on exactly that. Extract the first
+      // brace-delimited object before parsing; fall back to the raw text so an
+      // unfenced, unwrapped response still parses as before.
+      strategy = JSON.parse(strategyResult.text.match(/\{[\s\S]*\}/)?.[0] ?? strategyResult.text)
     } catch {
       return { success: false, error: "AI response was not valid JSON" }
     }

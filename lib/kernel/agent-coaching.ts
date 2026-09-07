@@ -221,7 +221,7 @@ export function composeCoachingBrief(stats: AgentCoachingStats): CoachingBrief {
 }
 
 /** PURE. Render the brief into the manager-facing message {subject, body}. */
-export function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
+function renderCoachingMessage(stats: AgentCoachingStats, brief: CoachingBrief): { subject: string; body: string } {
   if (brief.notEnoughData) {
     return {
       subject: `📋 Coaching brief: ${stats.name} — getting started`,
@@ -283,7 +283,7 @@ export function coachingScore(brief: CoachingBrief): number {
 }
 
 /** PURE. Map a composed brief into the dashboard's WeeklyCoachingReport shape. */
-export function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
+function briefToWeeklyReport(stats: AgentCoachingStats, brief: CoachingBrief): WeeklyCoachingReport {
   if (brief.notEnoughData) {
     return {
       overall_score: coachingScore(brief),
@@ -356,7 +356,7 @@ const APPT_STATUSES = ["scheduled", "confirmed", "completed", "no_show"] as cons
  * the agent-scoped no-show / stale-book / tour→offer aggregates from the existing
  * conventions. Every number traces to a real row; missing data stays null/zero honestly.
  */
-export async function buildCoachingStats(
+async function buildCoachingStats(
   brokerageId: string, opts: { now?: Date; sinceIso?: string } = {}, client?: Svc,
 ): Promise<AgentCoachingStats[]> {
   const supabase = client ?? createServiceClient()

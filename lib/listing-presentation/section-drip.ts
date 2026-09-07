@@ -722,7 +722,7 @@ export type SectionReel = PlayableVideo
  * something is genuinely still coming the state is 'in_progress' so the caller
  * can wait rather than send an email whose whole point is missing.
  */
-export async function resolveSectionReel(
+async function resolveSectionReel(
   section: { render_id: string | null; body: Record<string, unknown> | null },
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<SectionReel> {

@@ -54,7 +54,11 @@ export type FunnelStage = "pending" | "promoted" | "rejected" | "error"
 // used to build a local `new Set<string>(REJECTION_STATUSES)` and ask it — a
 // second spelling of one question (§6), and the spelling that drifts, because a
 // Set built here is invisible to the guard that pins the vocabulary. The roster
-// is still imported and re-exported for the readers that iterate it.
+// is still imported and re-exported: scripts/processing-status-guard.ts asserts
+// this exact import line by name (a category-A proof — see lane-G's 2026-09-07
+// export census), so the re-export stays even though no product code currently
+// imports REJECTION_STATUSES through this path (every other reader goes straight
+// to the survivor, lib/lead-pipeline/processing-status.ts).
 import { REJECTION_STATUSES, isRejectionStatus } from "@/lib/lead-pipeline/processing-status"
 export { REJECTION_STATUSES }
 
@@ -65,7 +69,7 @@ export { REJECTION_STATUSES }
 
 /** The in-flight statuses — the row entered the pipeline but hasn't reached a terminal
  *  (promoted / rejected / error) state yet. */
-export const PENDING_STATUSES = [
+const PENDING_STATUSES = [
   "pending",
   "processing",
   "queued_for_enrichment",

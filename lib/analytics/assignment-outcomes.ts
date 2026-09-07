@@ -52,7 +52,7 @@ export const ASSIGNMENT_OUTCOME_HORIZON_DAYS = 30
 /** Both rules need at least this many fully-graded observations before divergence is argued. */
 export const ASSIGNMENT_POLICY_MIN_OBSERVATIONS = 8
 /** Material divergence: the measured outcome-rate gap (0..1) that triggers the referral. */
-export const ASSIGNMENT_POLICY_DIVERGENCE = 0.2
+const ASSIGNMENT_POLICY_DIVERGENCE = 0.2
 
 // ─── Shapes ──────────────────────────────────────────────────────────────────
 

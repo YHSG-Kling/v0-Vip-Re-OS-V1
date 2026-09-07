@@ -29,7 +29,7 @@ type Svc = ReturnType<typeof createServiceClient>
 
 /** Rationale marker — also the idempotency key (one re-engagement per contact per window). */
 export const REENGAGE_TAG = "♻️ RETURNING-CUSTOMER"
-export const REENGAGE_DEDUPE_DAYS = 60
+const REENGAGE_DEDUPE_DAYS = 60
 
 export interface ContactLite {
   id: string

@@ -95,11 +95,11 @@ export interface ScopeQbReconciliation {
   totals: QbReconTotals
 }
 
-export const UNEXPORTED_LIST_CAP = 25
+const UNEXPORTED_LIST_CAP = 25
 
 // ─── Pure math ───────────────────────────────────────────────────────────────
 
-export function emptyQbReconTotals(): QbReconTotals {
+function emptyQbReconTotals(): QbReconTotals {
   return {
     totalRows: 0,
     exportedRows: 0,
