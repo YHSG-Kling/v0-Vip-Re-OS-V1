@@ -388,7 +388,7 @@ export function CtvLane({ vibeConnected, eligibleVideos, ctvCampaigns }: CtvLane
                           disabled={busyCampaignId === c.id}
                           title={vibeConnected
                             ? "Launch this campaign on Vibe from inside the app"
-                            : "Connect Vibe (Integrations → 'vibe') to launch in-app; otherwise launch on vibe.co and mark launched"}
+                            : "Connect Vibe (Settings → Integrations → Lead sources & connections → 'Vibe streaming TV': client id, client secret, advertiser id) to launch in-app; otherwise launch on vibe.co and mark launched"}
                         >
                           <Send className="h-4 w-4 mr-1" />
                           {vibeConnected ? "Launch on Vibe" : "Try auto-dispatch"}

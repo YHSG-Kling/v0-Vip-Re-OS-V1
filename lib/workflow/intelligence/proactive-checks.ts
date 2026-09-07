@@ -54,7 +54,8 @@ export interface Finding {
   }
 }
 
-export interface CheckResult {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface CheckResult {
   passed:   boolean
   findings: Finding[]
   blockers: Finding[]                 // findings with severity === 'blocker'
@@ -64,7 +65,7 @@ export interface CheckResult {
 // 1. MLS-aware validation
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function mlsValidationCheck(input: {
+async function mlsValidationCheck(input: {
   intake:      OfferIntake
   listingId?:  string | null
 }): Promise<CheckResult> {
@@ -152,7 +153,7 @@ export interface AddendumSuggestion {
   required:    boolean
 }
 
-export async function addendumAutoDetect(input: {
+async function addendumAutoDetect(input: {
   intake:     OfferIntake
   listingId?: string | null
 }): Promise<CheckResult & { suggested: AddendumSuggestion[] }> {
@@ -262,7 +263,7 @@ export async function addendumAutoDetect(input: {
 // 3. Buyer financing pre-flight
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function buyerFinancingPreflight(input: {
+async function buyerFinancingPreflight(input: {
   intake:    OfferIntake
   contactId: string | null
 }): Promise<CheckResult> {
@@ -433,7 +434,7 @@ export async function scanContingenciesNearingDeadline(input: {
 // 5. Completeness / compliance gate
 // ──────────────────────────────────────────────────────────────────────────
 
-export async function completenessGate(input: {
+async function completenessGate(input: {
   intake:       OfferIntake
   contactId:    string | null
   agentUserId:  string | null

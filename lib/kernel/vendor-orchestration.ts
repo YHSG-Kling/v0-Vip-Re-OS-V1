@@ -382,7 +382,7 @@ function stageLabel(stage: string | null): string {
  * (default '{}') — the canonical place for such a flag. We read settings->>'staging_enabled'
  * (also accepting 'staging' for forward-compat). DEFAULT OFF when the row or flag is absent.
  */
-export async function readStagingEnabled(supabase: Svc, brokerageId: string): Promise<boolean> {
+async function readStagingEnabled(supabase: Svc, brokerageId: string): Promise<boolean> {
   try {
     const { data } = await supabase.from("brokerage_settings")
       .select("settings").eq("brokerage_id", brokerageId).maybeSingle()
@@ -399,7 +399,7 @@ export async function readStagingEnabled(supabase: Svc, brokerageId: string): Pr
  * vendor_booking with an inspection service_type); Lender → transaction_lenders;
  * Title/Stager → vendor_bookings by service_type (the canonical booking rail).
  */
-export async function loadCoverage(supabase: Svc, transactionId: string, stagingEnabled: boolean): Promise<DealCoverage> {
+async function loadCoverage(supabase: Svc, transactionId: string, stagingEnabled: boolean): Promise<DealCoverage> {
   const [insp, lend, bookings] = await Promise.all([
     supabase.from("transaction_inspections").select("id").eq("transaction_id", transactionId)
       .neq("status", "cancelled").limit(1).maybeSingle(),

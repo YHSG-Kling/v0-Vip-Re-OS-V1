@@ -19,8 +19,10 @@
  *          campaign and always failed, now stages a TV draft; (5) the sweep proposes
  *          launches for approved/staged campaigns whose account is connected;
  *      (6) the vocabulary puts vibe_ctv in exactly one class (provider-connected).
- *  GPT (7) the lane is honest about the missing API — no HTTP, never dispatched,
- *          getConnector('chatgpt') null, the executor skips with the reason;
+ *  GPT (7) chatgpt is a connector on the OpenAI Advertiser API (one provider
+ *          module runs the documented chain; approved copy only; region/DMA
+ *          targeting; paused-then-activate; three-state credential; the flip
+ *          lives once; the sweep proposes launches) and honest when no key;
  *      (8) copy is composed from the ONE Fair-Housing-clean builder, clipped to the
  *          Ads Manager's limits, and SCANNED BEFORE ANY ROW IS WRITTEN — a hard
  *          flag or a restricted-category (financial) hint refuses;
@@ -33,7 +35,10 @@
  * BLIND SPOTS (§2): static. Vibe report field names follow the published OpenAPI
  * (revision 2026-06-01) and await a live 2xx; the ChatGPT bulk-upload column
  * names follow the documented campaign schema as reported by third parties, not
- * an OpenAI-published header row. Neither vendor can be exercised in-sandbox.
+ * an OpenAI-published header row; the Advertiser API request shapes follow
+ * developers.openai.com/ads (quickstart, campaigns, ad-groups, campaign-targeting,
+ * insights, authentication) and await a live 2xx. Neither vendor can be
+ * exercised in-sandbox.
  */
 import { readFileSync } from "node:fs"
 import { stripComments } from "./strip-comments"
@@ -59,6 +64,8 @@ const SWEEP     = src("app/api/cron/ads-manager-sweep/route.ts")
 const CONN      = src("lib/ads/connection-status.ts")
 const VOCAB     = src("lib/integrations/ad-campaign-vocabulary.ts")
 const GPT       = src("lib/ads/chatgpt-campaign.ts")
+const GPT_CONNECTOR = src("lib/ads/connectors/chatgpt.ts")
+const OPENAI    = src("lib/providers/openai-ads.ts")
 const GPT_ACT   = src("app/actions/chatgpt-ads.ts")
 const GPT_UI    = src("app/dashboard/campaigns/ads/chatgpt-lane.tsx")
 const ADS_PAGE  = src("app/dashboard/campaigns/ads/ads-dashboard-client.tsx")
@@ -114,24 +121,52 @@ check("agents.id crosses to users.id through the resolver (§3)", /stageCtvCampa
 
 console.log("\n── TV 5 · the sweep proposes launches ──")
 check("proposeAdLaunches exists and the sweep calls it", /export async function proposeAdLaunches/.test(MANAGER) && /proposeAdLaunches\(bid, svc\)/.test(SWEEP))
-check("candidates: approved campaigns + staged vibe_ctv drafts (a draft is a candidate only on TV)",
-  /c\.status === "approved" \|\| \(c\.platform === "vibe_ctv" && c\.status === "draft"\)/.test(MANAGER) && /r\.status === "approved" \|\| \(r\.platform === "vibe_ctv" && r\.status === "draft"\)/.test(SWEEP))
+check("candidates: approved campaigns + staged vibe_ctv/chatgpt drafts (a draft is a candidate only on the provider-connected lanes)",
+  /c\.status === "approved" \|\| \(\(c\.platform === "vibe_ctv" \|\| c\.platform === "chatgpt"\) && c\.status === "draft"\)/.test(MANAGER) && /r\.status === "approved" \|\| \(\(r\.platform === "vibe_ctv" \|\| r\.platform === "chatgpt"\) && r\.status === "draft"\)/.test(SWEEP))
 check("…gated on a connected account and idempotent per campaign",
   /isAdPlatformConnected\(brokerageId, c\.platform, supabase\)/.test(MANAGER) && /isVibeConfigured\(brokerageId\)/.test(MANAGER) && /\.in\("status", \["proposed", "approved", "executing"\]\)/.test(MANAGER.slice(MANAGER.indexOf("proposeAdLaunches"))))
-check("…never for chatgpt (no API to launch on)", /if \(c\.platform === "chatgpt"\) continue/.test(MANAGER))
+check("…and for chatgpt only with approved copy (the one queue) — never a draft creative", /c\.platform === "chatgpt"[\s\S]{0,400}\.eq\("approval_status", "approved"\)/.test(MANAGER))
 check("the read refusal is logged, not reported as zero candidates", /launch-candidate read refused/.test(MANAGER))
 
 console.log("\n── TV 6 · one vocabulary class per platform ──")
-check("vibe_ctv is provider-connected (vibe) …", /PROVIDER_CONNECTED_AD_PLATFORMS = \{ vibe_ctv: "vibe" \}/.test(VOCAB))
+check("vibe_ctv and chatgpt are provider-connected (vibe / openai_ads) …", /PROVIDER_CONNECTED_AD_PLATFORMS = \{ vibe_ctv: "vibe", chatgpt: "openai_ads" \}/.test(VOCAB))
 check("…and in neither of the other two lists", !/CONNECTABLE_AD_PLATFORMS = \[[^\]]*vibe_ctv/.test(VOCAB) && !/AD_PLATFORMS_WITHOUT_CONNECTIONS = \[[^\]]*vibe_ctv/.test(VOCAB))
-check("chatgpt is in the no-connection class", /AD_PLATFORMS_WITHOUT_CONNECTIONS = \[[^\]]*"chatgpt"/.test(VOCAB))
+check("…and chatgpt is in neither of the other two lists", !/CONNECTABLE_AD_PLATFORMS = \[[^\]]*chatgpt/.test(VOCAB) && !/AD_PLATFORMS_WITHOUT_CONNECTIONS = \[[^\]]*chatgpt/.test(VOCAB))
 check("the launch precheck reads that class and asks the Vibe resolver", /PROVIDER_CONNECTED_AD_PLATFORMS as Record[\s\S]{0,300}resolveVibeCredential\(brokerageId\)/.test(CONN))
 
-console.log("\n── GPT 7 · honest about the missing API ──")
-check("the lane makes no HTTP call", !/fetch\(/.test(GPT))
-check("no chatgpt connector is registered", !/^\s*chatgpt\s*:/m.test(REGISTRY))
-check("the executor skips chatgpt with the reason, never a fake live", /campaign\.platform === "chatgpt"[\s\S]{0,200}status: "skipped"/.test(MANAGER))
-check("the precheck says so too", /campaignPlatform === "chatgpt"\) return \{ connected: false/.test(CONN))
+console.log("\n── GPT 7 · one connector on the OpenAI Advertiser API, honest when no key ──")
+check("registry maps chatgpt → chatgptConnector", /chatgpt:\s*chatgptConnector/.test(REGISTRY))
+check("the connector spells no OpenAI Ads HTTP of its own", !/api\.ads\.openai\.com|fetch\(/.test(GPT_CONNECTOR))
+check("…publish delegates to dispatchChatgptCampaign, insights to fetchOpenaiCampaignInsights",
+  /dispatchChatgptCampaign\(campaignId\)/.test(GPT_CONNECTOR) && /fetchOpenaiCampaignInsights\(/.test(GPT_CONNECTOR))
+check("the provider runs the documented chain: account → geo lookup → upload → campaign → ad group → ad → activate",
+  /"GET", "\/ad_account"/.test(OPENAI) && /\/geo_lookup\/search\?q=/.test(OPENAI) && /"POST", "\/upload"/.test(OPENAI)
+  && /"POST", "\/campaigns"/.test(OPENAI) && /"POST", "\/ad_groups"/.test(OPENAI) && /"POST", "\/ads"/.test(OPENAI)
+  && /\{ status: "active" \}/.test(OPENAI) && /https:\/\/api\.ads\.openai\.com\/v1/.test(OPENAI))
+check("…the campaign is created PAUSED and activated last (the contract's validate-then-serve order)",
+  (() => { const a = OPENAI.indexOf('status: "paused"'); const b = OPENAI.indexOf('{ status: "active" }'); return a > 0 && b > a })())
+check("…the copy is the APPROVED creative from the one queue (approval_status approved), never the draft",
+  /\.eq\("approval_status", "approved"\)/.test(OPENAI) && /no APPROVED creative/.test(OPENAI))
+check("…the chat card obeys the limits (title ≤50, body ≤100) and carries the UTM destination",
+  /title: creative\.headline\.slice\(0, 50\)/.test(OPENAI) && /body: creative\.primary_text\.slice\(0, 100\)/.test(OPENAI) && /target_url: destination/.test(OPENAI))
+check("…targeting is region/DMA ids only; no resolvable location REFUSES rather than running nationwide",
+  /targeting: \{ locations: \{ include:/.test(OPENAI) && /if \(locations\.length === 0\)/.test(OPENAI) && !/custom_audiences/.test(OPENAI))
+check("…the daily budget maps to the API's lifetime cap over a stated flight", /OPENAI_ADS_FLIGHT_DAYS = 30/.test(OPENAI) && /lifetime_spend_limit_micros: Math\.max\(MICROS/.test(OPENAI) && /end_time: now \+ OPENAI_ADS_FLIGHT_DAYS \* 86_400/.test(OPENAI))
+check("the credential is resolved ONCE (provider openai_ads) with three states, and the dispatcher tells them apart",
+  /export async function resolveOpenaiAdsCredential/.test(OPENAI) && /OPENAI_ADS_PROVIDER = "openai_ads"/.test(OPENAI)
+  && /openai_ads_connection_unreadable/.test(OPENAI) && /openai_ads_not_connected — campaign staged as launch package/.test(OPENAI)
+  && !/\.catch\s*\(\s*\(\s*\)\s*=>\s*null\s*\)/.test(OPENAI))
+check("the registry loads the chatgpt credential through that resolver, not platform_credentials",
+  /platform === "chatgpt"[\s\S]{0,200}resolveOpenaiAdsCredential\(brokerageId\)/.test(REGISTRY))
+check("the precheck resolves openai_ads through PROVIDER_CONNECTED_AD_PLATFORMS", /provider === "openai_ads"[\s\S]{0,200}resolveOpenaiAdsCredential/.test(CONN) && /chatgpt: "openai_ads"/.test(VOCAB) && !/"chatgpt"\]/.test(VOCAB.slice(VOCAB.indexOf("AD_PLATFORMS_WITHOUT_CONNECTIONS ="))))
+check("one flip-to-live for chatgpt (launchChatgptCampaignOnOpenai), UPDATE counted, external_campaign_id + openai ids",
+  /export async function launchChatgptCampaignOnOpenai/.test(GPT) && /external_campaign_id: result\.openaiCampaignId/.test(GPT) && /\.select\("id"\)\s*if \(flipError \|\| !flipped\?\.length\)/.test(GPT.slice(GPT.indexOf("launchChatgptCampaignOnOpenai"))))
+check("the Ads Manager executor delegates for chatgpt and skips honestly when not dispatched",
+  /campaign\.platform === "chatgpt"[\s\S]{0,900}launchChatgptCampaignOnOpenai\(\{ campaignId, brokerageId, actorUserId: null, launchedVia: "ads_manager"/.test(MANAGER)
+  && /if \(!r\.dispatched\) return \{ status: "skipped", result: \{ campaign_id: campaignId, reason: r\.reason \} \}/.test(MANAGER))
+check("the sweep proposes chatgpt launches (approved copy + key connected)",
+  /c\.platform === "chatgpt"[\s\S]{0,600}isAdPlatformConnected\(brokerageId, "chatgpt", supabase\)/.test(MANAGER) && /\(r\.platform === "vibe_ctv" \|\| r\.platform === "chatgpt"\) && r\.status === "draft"/.test(SWEEP))
+check("the ingest can read chatgpt performance (connector present, external id key shared)", /fetchPerformance\(args: PerformanceQuery\)/.test(GPT_CONNECTOR) && /external_campaign_id/.test(INGEST))
 
 console.log("\n── GPT 8 · compliance-first copy, the Ads Manager's own limits ──")
 check("copy comes from the one Fair-Housing-clean builder", /buildListingCreative\(facts, kind\)/.test(GPT))
@@ -158,10 +193,25 @@ check("three session-gated actions", /export async function stageChatgptCampaign
 check("…each with a UI caller in the lane, rendered in the ads workspace",
   /stageChatgptCampaignAction\(/.test(GPT_UI) && /markChatgptCampaignLaunchedAction\(/.test(GPT_UI) && /importChatgptPerformanceAction\(/.test(GPT_UI) && /<ChatgptLane/.test(ADS_PAGE))
 
+console.log("\n── DOOR · the credential the two providers READ can be WRITTEN ──")
+{
+  const SLOTS = src("lib/settings/tenant-connection-slots.ts")
+  const SAVE  = src("app/actions/tenant-connections.ts")
+  const M609  = readFileSync("supabase/migrations/m609-ad-providers-have-a-credential-door.sql", "utf8")
+  const CACHE = readFileSync("scripts/check-vocabularies.ts", "utf8")
+  check("m609 admits 'vibe' and 'openai_ads' in platform_credentials.platform", /'vibe','openai_ads'\]\)\);/.test(M609) && /APPLIED 2026-09-07/.test(M609))
+  check("…and the generated vocabulary cache agrees (regenerated from the live database, never hand-edited)",
+    /platform_credentials: \{[\s\S]{0,1200}"openai_ads"[\s\S]{0,800}"vibe"/.test(CACHE))
+  check("the one tenant-connection writer offers both slots", /key: "openai_ads"[\s\S]{0,120}fields: \["api_key"\]/.test(SLOTS) && /key: "vibe"[\s\S]{0,160}fields: \["api_key", "api_secret", "account_id"\]/.test(SLOTS))
+  check("…stores the secret half under the key the resolver reads first (§6 — one secret vocabulary)",
+    /config: \{ \[CONFIG_SECRET_KEYS\[0\]\]: apiSecret \}/.test(SAVE) && /needs the secret half of the pair too/.test(SAVE))
+  check("…and the providers ask the Connection OS by exactly those names", /OPENAI_ADS_PROVIDER = "openai_ads"/.test(OPENAI) && /VIBE_PROVIDER = "vibe"/.test(VIBE))
+}
+
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the order finder fails when the insert precedes the scan",
   (() => { const s = 'x.from("ad_campaigns").insert(…) … severity === "high"'; const scan = s.indexOf('severity === "high"'); const ins = s.indexOf('.from("ad_campaigns").insert'); return !(scan > 0 && ins > scan) })())
-check("POSITIVE CONTROL: the HTTP finder would catch a copied client", /fetch\(/.test('const r = await fetch("https://ads.openai.com/api")'))
+check("POSITIVE CONTROL: the HTTP finder would catch a copied client in a connector", /api\.ads\.openai\.com|fetch\(/.test('const r = await fetch("https://api.ads.openai.com/v1/ads")'))
 check("POSITIVE CONTROL: the protected-class finder catches a real word, not a substring",
   /\b(age|ages|gender|genders)\b/i.test("ages: [25, 54]") && !/\b(age|ages|gender|genders)\b/i.test("manager stage message"))
 check("BLINDNESS CONTROL: scans read comment-STRIPPED source", !stripComments("// vibe_ctv: vibeCtvConnector\n").includes("vibeCtvConnector"))

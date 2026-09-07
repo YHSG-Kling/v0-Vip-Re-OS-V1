@@ -17,9 +17,8 @@
 export const AD_CAMPAIGN_PLATFORMS = [
   "facebook", "instagram", "google", "linkedin", "tiktok", "vibe_ctv",
   // "chatgpt" — ChatGPT Ads (owner, 2026-09-06: "ads are now available with
-  // chatgpt"). m607 widens the live CHECK; no account connection or API
-  // dispatch path exists yet, so a campaign is staged as a launch package
-  // like vibe_ctv. The lane is recorded as UNRESOLVED for dispatch.
+  // chatgpt"). m607 widened the live CHECK. Connected through the OpenAI
+  // Advertiser API key (provider 'openai_ads', lib/providers/openai-ads.ts).
   "chatgpt",
 ] as const
 // TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `AdCampaignPlatform`
@@ -61,17 +60,16 @@ export const CONNECTABLE_AD_PLATFORMS = ["facebook", "instagram", "linkedin"] as
  * Neither of the two lists above nor below may name these — a platform is in
  * exactly one class (§6).
  */
-export const PROVIDER_CONNECTED_AD_PLATFORMS = { vibe_ctv: "vibe" } as const
+export const PROVIDER_CONNECTED_AD_PLATFORMS = { vibe_ctv: "vibe", chatgpt: "openai_ads" } as const
 
 /**
  * Ad platforms a campaign may name that have NO account connection in the
  * Connection OS. A campaign can be created for these and cannot be launched from
  * here — surfaced honestly rather than shown as a disconnected account.
- * chatgpt: ChatGPT Ads (ads.openai.com) has no public advertiser API as of
- * 2026-09 — the lane stages a launch package + imports performance
- * (lib/ads/chatgpt-campaign.ts); it is never dispatched.
+ * (chatgpt left this list 2026-09-07: the OpenAI Advertiser API exists and the
+ * lane dispatches through it — PROVIDER_CONNECTED_AD_PLATFORMS.)
  */
-export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "chatgpt"] as const
+export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok"] as const
 
 export function isConnectableAdPlatform(v: string | null | undefined): boolean {
   return !!v && (CONNECTABLE_AD_PLATFORMS as readonly string[]).includes(v)

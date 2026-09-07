@@ -36,7 +36,7 @@ export interface PersonaFacts {
 }
 
 /** Deterministic persona name from the strongest real signals. */
-export function derivePersonaName(f: PersonaFacts): string {
+function derivePersonaName(f: PersonaFacts): string {
   const lifecycle =
     f.homeOwnerStatus?.toLowerCase().includes("own") ? "Homeowner"
     : f.homeOwnerStatus?.toLowerCase().includes("rent") ? "First-Time Buyer"
@@ -48,14 +48,14 @@ export function derivePersonaName(f: PersonaFacts): string {
   return `${family} ${lifecycle}`
 }
 
-export function derivePersonaType(f: PersonaFacts): string {
+function derivePersonaType(f: PersonaFacts): string {
   const t = (f.contactType ?? "").toLowerCase()
   if (["seller", "investor", "buyer"].includes(t)) return t
   if (t === "both") return "buyer_seller"
   return f.homeOwnerStatus?.toLowerCase().includes("own") ? "potential_seller" : "buyer"
 }
 
-export function deriveBuyingTriggers(f: PersonaFacts): string[] {
+function deriveBuyingTriggers(f: PersonaFacts): string[] {
   const triggers: string[] = []
   for (const ev of f.lifeEvents ?? []) triggers.push(`life_event:${String(ev).toLowerCase().replace(/\s+/g, "_")}`)
   if ((f.childrenCount ?? 0) > 0) triggers.push("growing_household_space_needs")
@@ -64,7 +64,7 @@ export function deriveBuyingTriggers(f: PersonaFacts): string[] {
   return triggers
 }
 
-export function derivePainPoints(f: PersonaFacts): string[] {
+function derivePainPoints(f: PersonaFacts): string[] {
   const pains: string[] = []
   if (f.homeOwnerStatus?.toLowerCase().includes("rent")) pains.push("down_payment_uncertainty", "qualification_anxiety")
   if (f.homeOwnerStatus?.toLowerCase().includes("own")) pains.push("sell_before_buy_timing", "current_rate_lock_in")
@@ -74,7 +74,7 @@ export function derivePainPoints(f: PersonaFacts): string[] {
 }
 
 /** Deterministic summary — the honest floor the AI paragraph improves on. */
-export function composeFallbackSummary(f: PersonaFacts): string {
+function composeFallbackSummary(f: PersonaFacts): string {
   const bits: string[] = []
   if (f.ageRange) bits.push(`${f.ageRange}`)
   if (f.maritalStatus) bits.push(f.maritalStatus)

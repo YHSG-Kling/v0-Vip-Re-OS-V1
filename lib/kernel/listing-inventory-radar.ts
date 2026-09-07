@@ -357,7 +357,7 @@ export function candidateFromRawRow(row: {
 // ─── Proposal copy (pure, deterministic fallback) ─────────────────────────────────
 
 /** A short, honest description of WHY this owner is a hot seller candidate (earned lines). */
-export function describeSellerReason(lead: ScoredSellerLead): string {
+function describeSellerReason(lead: ScoredSellerLead): string {
   const top = lead.reasons.slice(0, 3).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join(", ")
   const addr = lead.propertyAddress ?? "this property"
   return top
@@ -369,7 +369,7 @@ export function describeSellerReason(lead: ScoredSellerLead): string {
  *  AI ISA — which owns the lead until it qualifies + converts — can PRIORITIZE it and open
  *  its qualifying conversation with the right context. This is an INTERNAL lead note, NOT a
  *  client message; no contact info is fabricated and nothing is sent. */
-export function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
+function composeSellerIntentLeadNote(lead: ScoredSellerLead): string {
   const addr = lead.propertyAddress ?? "this property"
   const why = lead.reasons.slice(0, 4).map((r) => r.replace(/\s*\([^)]*\)\s*$/, "")).join("; ") || "scored seller intent"
   return `[Listing Inventory Radar] Seller-intent ${(lead.intentScore * 100).toFixed(0)}/100 for ${addr}. Why now: ${why}. Prioritize for AI-ISA qualification — NOT yet a contact (no portal, no client message until qualified + converted).`

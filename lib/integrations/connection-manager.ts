@@ -67,6 +67,8 @@ const PROVIDER_ALIASES: Record<string, string[]> = {
   brokermint:     ["brokermint", "broker_mint"],
   gohighlevel:    ["gohighlevel", "ghl"],
   realtor_com:    ["realtor_com", "realtorcom", "realtor.com"],
+  // OpenAI Advertiser API key (ChatGPT Ads) — lib/providers/openai-ads.ts.
+  openai_ads:     ["openai_ads", "chatgpt_ads", "openai-ads"],
 }
 
 /** Normalize any provider string (from any table or UI) to its canonical name. */

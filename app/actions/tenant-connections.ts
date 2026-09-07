@@ -18,6 +18,7 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 import { TENANT_CONNECTION_SLOTS } from "@/lib/settings/tenant-connection-slots"
+import { CONFIG_SECRET_KEYS } from "@/lib/connections/credential-secret"
 
 /**
  * ONE gate, TWO channels (§6).
@@ -55,6 +56,10 @@ async function requireAdmin(
 export async function saveTenantConnectionAction(input: {
   platform: string
   apiKey?: string
+  /** The secret half of an api-key pair (Vibe client_secret). Stored in
+   *  config under the key lib/connections/credential-secret.ts secretFromConfig
+   *  reads first, so the resolver hands it back as apiSecret. */
+  apiSecret?: string
   apiUrl?: string
   accountId?: string
 }): Promise<{ ok: boolean; error?: string }> {
@@ -69,10 +74,13 @@ export async function saveTenantConnectionAction(input: {
   const svc = createServiceClient()
   const { data: existing } = await svc.from("platform_credentials").select("id")
     .eq("brokerage_id", ctx.brokerageId).eq("platform", input.platform).maybeSingle()
+  const apiSecret = input.apiSecret?.trim() || null
+  if ((slot.fields as readonly string[]).includes("api_secret") && !apiSecret) return { ok: false, error: `${slot.label} needs the secret half of the pair too` }
   const row = {
     brokerage_id: ctx.brokerageId, platform: input.platform,
     api_key: apiKey, api_url: input.apiUrl?.trim() || null, account_id: input.accountId?.trim() || null,
     owner_type: "brokerage", owner_id: ctx.brokerageId, is_active: true,
+    ...(apiSecret ? { config: { [CONFIG_SECRET_KEYS[0]]: apiSecret } } : {}),
   }
   const { error } = existing
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)

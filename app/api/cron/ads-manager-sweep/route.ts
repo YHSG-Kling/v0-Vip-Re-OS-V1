@@ -48,7 +48,7 @@ export async function GET(request: Request) {
     const { data: launchable } = await svc.from("ad_campaigns").select("brokerage_id, platform, status")
       .in("status", ["approved", "draft"])
     const launchIds = (launchable ?? [])
-      .filter((r: { platform: string; status: string }) => r.status === "approved" || (r.platform === "vibe_ctv" && r.status === "draft"))
+      .filter((r: { platform: string; status: string }) => r.status === "approved" || ((r.platform === "vibe_ctv" || r.platform === "chatgpt") && r.status === "draft"))
       .map((r: { brokerage_id: string }) => r.brokerage_id)
     for (const bid of Array.from(new Set(launchIds))) {
       const res = await proposeAdLaunches(bid, svc)

@@ -37,12 +37,14 @@ import {
   Rocket,
   ImageIcon,
   AlertTriangle,
+  Send,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
   stageChatgptCampaignAction,
   markChatgptCampaignLaunchedAction,
   importChatgptPerformanceAction,
+  dispatchChatgptCampaignAction,
 } from "@/app/actions/chatgpt-ads"
 import type { ChatgptLaunchPackage } from "@/lib/ads/chatgpt-campaign"
 import { CHATGPT_ADS_MANAGER_URL, CHATGPT_MIN_DAILY_BUDGET_USD, CHATGPT_OBJECTIVES, type ChatgptObjective } from "@/lib/integrations/ad-campaign-vocabulary"
@@ -66,6 +68,8 @@ export interface ChatgptEligibleListing {
 }
 
 interface ChatgptLaneProps {
+  /** Honest posture for the OpenAI Advertiser API credential (provider 'openai_ads'). */
+  openaiAdsConnected: boolean
   listings: ChatgptEligibleListing[]
   chatgptCampaigns: ChatgptCampaignRow[]
 }
@@ -88,7 +92,7 @@ function copyText(text: string, label: string) {
     .catch(() => toast.error(`Could not copy ${label.toLowerCase()}`))
 }
 
-export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
+export function ChatgptLane({ openaiAdsConnected, listings, chatgptCampaigns }: ChatgptLaneProps) {
   const router = useRouter()
   const [isStaging, startStaging] = useTransition()
   const [isBusy, startBusy] = useTransition()
@@ -107,6 +111,9 @@ export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
   const [csvByCampaign, setCsvByCampaign] = useState<Record<string, string>>({})
   const [importedRowByCampaign, setImportedRowByCampaign] = useState<Record<string, ProviderPerformanceRow>>({})
   const [importErrorByCampaign, setImportErrorByCampaign] = useState<Record<string, string>>({})
+  const [dispatchResultByCampaign, setDispatchResultByCampaign] = useState<
+    Record<string, { dispatched: boolean; reason: string; reviewStatus?: string | null }>
+  >({})
 
   const handleStage = () => {
     const budget = Number.parseFloat(dailyBudget)
@@ -160,6 +167,29 @@ export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
     })
   }
 
+  const handleTryDispatch = (campaignId: string) => {
+    setBusyCampaignId(campaignId)
+    setDispatchResultByCampaign((prev) => ({ ...prev, [campaignId]: undefined as any }))
+    startBusy(async () => {
+      const result = await dispatchChatgptCampaignAction(campaignId)
+      setBusyCampaignId(null)
+      const reviewStatus = "reviewStatus" in result ? result.reviewStatus ?? null : null
+      setDispatchResultByCampaign((prev) => ({
+        ...prev,
+        [campaignId]: { dispatched: result.dispatched, reason: result.reason, reviewStatus },
+      }))
+      if (result.dispatched) {
+        toast.success("Active on ChatGPT Ads")
+        if (launchPackage?.campaignId === campaignId) setLaunchPackage(null)
+        router.refresh()
+      } else {
+        // Real OpenAI Ads error (or not connected) — surfaced honestly; the
+        // manual ads.openai.com + Mark-as-launched path remains available.
+        toast.error(`Launch failed: ${result.reason}`)
+      }
+    })
+  }
+
   const handleImportPerformance = (campaignId: string) => {
     const csv = csvByCampaign[campaignId]?.trim()
     if (!csv) {
@@ -194,12 +224,15 @@ export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
                 ChatGPT Ads
               </CardTitle>
               <CardDescription>
-                OpenAI Ads Manager ({CHATGPT_ADS_MANAGER_URL}) is self-serve with no advertiser API —
-                the OS composes and stages the campaign, you upload it.
+                {openaiAdsConnected
+                  ? "OpenAI Advertiser API connected — approved campaigns launch from here (and the Ads Manager proposes launches automatically)."
+                  : `No OpenAI Ads API key connected — paste the key from ads.openai.com → Settings into Settings → Integrations → Lead sources & connections (/dashboard/settings/integrations/lead-sources, "ChatGPT Ads"); until then use the package below at ${CHATGPT_ADS_MANAGER_URL} by hand.`}
               </CardDescription>
             </div>
             <div className="flex flex-col items-end gap-2">
-              <Badge className="bg-amber-100 text-amber-700">No advertiser API</Badge>
+              <Badge className={openaiAdsConnected ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}>
+                {openaiAdsConnected ? "OpenAI Ads API connected" : "No OpenAI Ads API key"}
+              </Badge>
               <Button variant="outline" size="sm" asChild>
                 <a href={CHATGPT_ADS_MANAGER_URL} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-4 w-4 mr-1" />
@@ -210,10 +243,9 @@ export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
           </div>
         </CardHeader>
         <CardContent className="text-xs text-muted-foreground">
-          The OS validates the copy for Fair Housing before it is written down, stages the campaign
-          and creative, and hands you a complete launch package with a bulk-upload CSV. Launch
-          happens at ads.openai.com; confirm it here and import the report CSV to feed real
-          cost-per-lead back into the Ads Manager.
+          {openaiAdsConnected
+            ? "The OS validates the copy for Fair Housing before it is written down, stages the campaign and creative, then launches through the OpenAI Advertiser API once the creative is approved — account, geo targeting, ad group, ad, and activation, no trip to ads.openai.com needed."
+            : "The OS validates the copy for Fair Housing before it is written down, stages the campaign and creative, and hands you a complete launch package with a bulk-upload CSV. Launch happens at ads.openai.com; confirm it here and import the report CSV to feed real cost-per-lead back into the Ads Manager."}
         </CardContent>
       </Card>
 
@@ -448,21 +480,54 @@ export function ChatgptLane({ listings, chatgptCampaigns }: ChatgptLaneProps) {
                   </div>
 
                   {c.status === "draft" && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Input
-                        placeholder="Ads Manager campaign id (optional)"
-                        className="max-w-xs h-8 text-xs"
-                        value={externalIdByCampaign[c.id] ?? ""}
-                        onChange={(e) => setExternalIdByCampaign((prev) => ({ ...prev, [c.id]: e.target.value }))}
-                      />
-                      <Button size="sm" onClick={() => handleMarkLaunched(c.id)} disabled={busyCampaignId === c.id}>
-                        {busyCampaignId === c.id ? (
-                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                        ) : (
-                          <CheckCircle className="h-4 w-4 mr-1" />
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {openaiAdsConnected && (
+                          <Button
+                            size="sm"
+                            className="bg-violet-600 hover:bg-violet-700"
+                            onClick={() => handleTryDispatch(c.id)}
+                            disabled={busyCampaignId === c.id}
+                          >
+                            {busyCampaignId === c.id ? (
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                            ) : (
+                              <Send className="h-4 w-4 mr-1" />
+                            )}
+                            Launch on ChatGPT now
+                          </Button>
                         )}
-                        Mark as launched
-                      </Button>
+                        <Input
+                          placeholder="Ads Manager campaign id (optional)"
+                          className="max-w-xs h-8 text-xs"
+                          value={externalIdByCampaign[c.id] ?? ""}
+                          onChange={(e) => setExternalIdByCampaign((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                        />
+                        <Button size="sm" onClick={() => handleMarkLaunched(c.id)} disabled={busyCampaignId === c.id}>
+                          {busyCampaignId === c.id ? (
+                            <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                          ) : (
+                            <CheckCircle className="h-4 w-4 mr-1" />
+                          )}
+                          Mark as launched
+                        </Button>
+                      </div>
+                      {dispatchResultByCampaign[c.id] && (
+                        dispatchResultByCampaign[c.id].dispatched ? (
+                          <p className="flex items-start gap-2 text-xs text-emerald-600">
+                            <CheckCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                            Active on OpenAI Ads
+                            {dispatchResultByCampaign[c.id].reviewStatus
+                              ? ` — review status: ${dispatchResultByCampaign[c.id].reviewStatus}`
+                              : ""}
+                          </p>
+                        ) : (
+                          <p className="flex items-start gap-2 text-xs text-red-600">
+                            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                            {dispatchResultByCampaign[c.id].reason}
+                          </p>
+                        )
+                      )}
                     </div>
                   )}
 

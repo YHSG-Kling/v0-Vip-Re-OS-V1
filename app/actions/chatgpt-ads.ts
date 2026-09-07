@@ -12,11 +12,13 @@ import {
   stageChatgptCampaign,
   markChatgptCampaignLaunched,
   importChatgptPerformance,
+  launchChatgptCampaignOnOpenai,
   type ChatgptLaunchPackage,
   type ChatgptObjective,
 } from "@/lib/ads/chatgpt-campaign"
 import type { ListingAdKind } from "@/lib/ads/listing-ad-producer"
 import type { ProviderPerformanceRow } from "@/lib/ads/connectors/types"
+import type { ChatgptDispatchResult } from "@/lib/providers/openai-ads"
 
 interface SessionActor {
   userId: string
@@ -82,6 +84,39 @@ export async function markChatgptCampaignLaunchedAction(
     campaignId,
     actorUserId: actor.userId,
     externalCampaignId,
+  })
+}
+
+/**
+ * Dispatch a staged ChatGPT campaign to OpenAI Ads end-to-end (account → geo
+ * lookup → upload → campaign → ad group → ad → activate). Honest:
+ * dispatched:true ONLY on an OpenAI-confirmed ACTIVE campaign — and only then
+ * is the row flipped to 'live' with the OpenAI ids recorded. On any failure
+ * the row is untouched and the real reason is returned (the human-finalize
+ * path stays). Mirrors app/actions/ctv-ads.ts::dispatchCtvCampaignAction.
+ */
+export async function dispatchChatgptCampaignAction(
+  campaignId: string,
+): Promise<ChatgptDispatchResult | { dispatched: false; reason: string }> {
+  const { actor, error } = await requireActor()
+  if (!actor) return { dispatched: false, reason: error ?? "Not authenticated" }
+
+  // Ownership check with the user-scoped client before touching the service path.
+  const supabase = await createClient()
+  const { data: campaign, error: fetchError } = await supabase
+    .from("ad_campaigns")
+    .select("id")
+    .eq("id", campaignId)
+    .eq("brokerage_id", actor.brokerageId)
+    .maybeSingle()
+  if (fetchError) return { dispatched: false, reason: fetchError.message }
+  if (!campaign) return { dispatched: false, reason: "Campaign not found" }
+
+  return launchChatgptCampaignOnOpenai({
+    campaignId: campaign.id as string,
+    brokerageId: actor.brokerageId,
+    actorUserId: actor.userId,
+    launchedVia: "openai_ads_api",
   })
 }
 

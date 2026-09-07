@@ -125,7 +125,6 @@
     "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
-    "lib/contacts/persona-builder.ts": 5,
     "lib/crm/import-pull.ts": 4,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 3,
@@ -145,7 +144,7 @@
     "lib/education/client-education-curriculum.ts": 2,
     "lib/education/client-tutor.ts": 3,
     "lib/education/content-freshness.ts": 4,
-    "lib/education/curriculum-author.ts": 5,
+    "lib/education/curriculum-author.ts": 3,
     "lib/education/dedup-guard.ts": 3,
     "lib/education/depth-reauthor.ts": 3,
     "lib/education/onboarding-curriculum.ts": 2,
@@ -215,7 +214,6 @@
     "lib/kernel/ai-sentinel.ts": 1,
     "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
-    "lib/kernel/appraisal-negotiation.ts": 5,
     "lib/kernel/appraiser-packet.ts": 2,
     "lib/kernel/approval-sla.ts": 2,
     "lib/kernel/area-query.ts": 2,
@@ -262,7 +260,7 @@
     "lib/kernel/lead-intake-cockpit.ts": 4,
     "lib/kernel/lead-magnets.ts": 2,
     "lib/kernel/listing-archive.ts": 1,
-    "lib/kernel/listing-inventory-radar.ts": 5,
+    "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/lookalike-audience.ts": 1,
@@ -303,7 +301,7 @@
     "lib/kernel/vendor-coverage-forecast.ts": 2,
     "lib/kernel/vendor-doc-compliance.ts": 3,
     "lib/kernel/vendor-no-show-autopilot.ts": 3,
-    "lib/kernel/vendor-orchestration.ts": 5,
+    "lib/kernel/vendor-orchestration.ts": 3,
     "lib/kernel/vendor-price-intelligence.ts": 2,
     "lib/kernel/vendor-rating-governance.ts": 4,
     "lib/kernel/vendor-request.ts": 1,
@@ -403,8 +401,8 @@
     "lib/platform/go-live-readiness.ts": 1,
     "lib/platform/impersonation.ts": 1,
     "lib/platform/manager-ops.ts": 2,
-    "lib/platform/nps.ts": 4,
-    "lib/platform/os-sentinel.ts": 5,
+    "lib/platform/nps.ts": 1,
+    "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
     "lib/platform/platform-sentinel.ts": 2,
     "lib/platform/platform-social.ts": 1,
@@ -461,7 +459,6 @@
     "lib/storage/file-limits.ts": 3,
     "lib/storage/signed-upload-url.ts": 5,
     "lib/strategy-learning/strategy-insights.ts": 1,
-    "lib/tasks/task-presentation.ts": 4,
     "lib/transactions/buyer-move.ts": 3,
     "lib/transactions/cda-esign.ts": 1,
     "lib/transactions/cda-field-classifier.ts": 2,
@@ -508,7 +505,6 @@
     "lib/voice-admin/kernel-command-surface.ts": 1,
     "lib/wealth-advisor/fetch-market-rates.ts": 1,
     "lib/workflow/intelligence/packet-analysis.ts": 1,
-    "lib/workflow/intelligence/proactive-checks.ts": 4,
     "lib/workflow/step-palette.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "remotion/EquityReportReel.tsx": 1,
@@ -516,7 +512,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9483,
+  "census": 9460,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -684,7 +680,7 @@
     "app/actions/ce-provider.ts": 4,
     "app/actions/challenges.ts": 3,
     "app/actions/channel-presets.ts": 3,
-    "app/actions/chatgpt-ads.ts": 3,
+    "app/actions/chatgpt-ads.ts": 4,
     "app/actions/cma-presentation/cma-generator.ts": 1,
     "app/actions/cma-presentation/index.ts": 1,
     "app/actions/cma-presentation/net-sheet-calculator.ts": 6,
@@ -2634,7 +2630,7 @@
     "lib/ads/audience-exclusion.ts": 5,
     "lib/ads/audience-persona-basis.ts": 4,
     "lib/ads/audience-source-rules.ts": 5,
-    "lib/ads/chatgpt-campaign.ts": 3,
+    "lib/ads/chatgpt-campaign.ts": 4,
     "lib/ads/connection-status.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 4,
     "lib/ads/connectors/google.ts": 1,
@@ -3020,7 +3016,7 @@
     "lib/contacts/card-classifier.ts": 1,
     "lib/contacts/contact-brief.ts": 2,
     "lib/contacts/ownership-model.ts": 1,
-    "lib/contacts/persona-builder.ts": 6,
+    "lib/contacts/persona-builder.ts": 1,
     "lib/contacts/provenance-receipt.ts": 4,
     "lib/contacts/resolve-mailing-address.ts": 1,
     "lib/contacts/transaction-rollup.ts": 2,
@@ -3105,7 +3101,7 @@
     "lib/education/client-education-curriculum.ts": 3,
     "lib/education/client-tutor.ts": 4,
     "lib/education/content-freshness.ts": 6,
-    "lib/education/curriculum-author.ts": 7,
+    "lib/education/curriculum-author.ts": 5,
     "lib/education/dedup-guard.ts": 5,
     "lib/education/delivery-format.ts": 5,
     "lib/education/depth-reauthor.ts": 4,
@@ -3355,7 +3351,7 @@
     "lib/kernel/anniversary-equity.ts": 7,
     "lib/kernel/api-auth.ts": 4,
     "lib/kernel/appointment-noshow-autopilot.ts": 4,
-    "lib/kernel/appraisal-negotiation.ts": 6,
+    "lib/kernel/appraisal-negotiation.ts": 1,
     "lib/kernel/appraiser-packet.ts": 3,
     "lib/kernel/approval-queue-aggregator.ts": 6,
     "lib/kernel/approval-sla.ts": 5,
@@ -3454,7 +3450,7 @@
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
     "lib/kernel/listing-archive.ts": 3,
-    "lib/kernel/listing-inventory-radar.ts": 7,
+    "lib/kernel/listing-inventory-radar.ts": 5,
     "lib/kernel/listing-marketing-week.ts": 2,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
@@ -3560,7 +3556,7 @@
     "lib/kernel/vendor-coverage-forecast.ts": 4,
     "lib/kernel/vendor-doc-compliance.ts": 4,
     "lib/kernel/vendor-no-show-autopilot.ts": 4,
-    "lib/kernel/vendor-orchestration.ts": 7,
+    "lib/kernel/vendor-orchestration.ts": 5,
     "lib/kernel/vendor-price-intelligence.ts": 3,
     "lib/kernel/vendor-rating-governance.ts": 6,
     "lib/kernel/vendor-request.ts": 5,
@@ -3831,8 +3827,8 @@
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
     "lib/platform/manager-ops.ts": 3,
-    "lib/platform/nps.ts": 9,
-    "lib/platform/os-sentinel.ts": 7,
+    "lib/platform/nps.ts": 6,
+    "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
@@ -3930,6 +3926,7 @@
     "lib/providers/messaging/index.ts": 4,
     "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 4,
+    "lib/providers/openai-ads.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
     "lib/providers/tenancy-matrix.ts": 1,
@@ -4051,7 +4048,7 @@
     "lib/support/support-sla.ts": 4,
     "lib/support/support-thread.ts": 3,
     "lib/support/ticket-constants.ts": 2,
-    "lib/tasks/task-presentation.ts": 7,
+    "lib/tasks/task-presentation.ts": 3,
     "lib/teams/membership.ts": 4,
     "lib/teams/team-scope.ts": 2,
     "lib/territory/metrics-aggregator.ts": 3,
@@ -4248,7 +4245,7 @@
     "lib/workflow/intelligence/listing-presentation-builder.ts": 1,
     "lib/workflow/intelligence/multi-offer-matrix.ts": 2,
     "lib/workflow/intelligence/packet-analysis.ts": 2,
-    "lib/workflow/intelligence/proactive-checks.ts": 6,
+    "lib/workflow/intelligence/proactive-checks.ts": 2,
     "lib/workflow/intelligence/scan-offer-packet.ts": 2,
     "lib/workflow/qr-modifier.ts": 1,
     "lib/workflow/step-palette.ts": 7,
@@ -5395,6 +5392,7 @@
     "app/actions/chatgpt-ads.ts": [
       "stageChatgptCampaignAction",
       "markChatgptCampaignLaunchedAction",
+      "dispatchChatgptCampaignAction",
       "importChatgptPerformanceAction"
     ],
     "app/actions/cma-presentation/cma-generator.ts": [
@@ -12904,7 +12902,8 @@
     "lib/ads/chatgpt-campaign.ts": [
       "stageChatgptCampaign",
       "markChatgptCampaignLaunched",
-      "importChatgptPerformance"
+      "importChatgptPerformance",
+      "launchChatgptCampaignOnOpenai"
     ],
     "lib/ads/connection-status.ts": [
       "adCredentialPlatform",
@@ -14900,11 +14899,6 @@
       "getOfferContext"
     ],
     "lib/contacts/persona-builder.ts": [
-      "derivePersonaName",
-      "derivePersonaType",
-      "deriveBuyingTriggers",
-      "derivePainPoints",
-      "composeFallbackSummary",
       "buildContactPersona"
     ],
     "lib/contacts/provenance-receipt.ts": [
@@ -15287,10 +15281,8 @@
     ],
     "lib/education/curriculum-author.ts": [
       "gatherGapSignals",
-      "authorCurriculum",
       "runCurriculumAuthor",
       "renderModuleBody",
-      "renderCurriculumBody",
       "persistCurriculumDraft",
       "runCurriculumAuthorAll"
     ],
@@ -16473,11 +16465,6 @@
       "runAppointmentNoShowAutopilot"
     ],
     "lib/kernel/appraisal-negotiation.ts": [
-      "loanTermsProvenanceLabel",
-      "composeAppraisalGapOptions",
-      "loadSupportingComps",
-      "buildAgentBriefing",
-      "resolveLoanTermsForTransaction",
       "runAppraisalNegotiationCopilot"
     ],
     "lib/kernel/appraiser-packet.ts": [
@@ -17087,8 +17074,6 @@
       "scoreSellerIntent",
       "rankSellerLeads",
       "candidateFromRawRow",
-      "describeSellerReason",
-      "composeSellerIntentLeadNote",
       "composeProspectingBriefFallback",
       "runListingInventoryRadar"
     ],
@@ -17717,9 +17702,7 @@
       "rankVendors",
       "pickVendorForGap",
       "composeQuoteRequestFallback",
-      "runVendorOrchestration",
-      "readStagingEnabled",
-      "loadCoverage"
+      "runVendorOrchestration"
     ],
     "lib/kernel/vendor-price-intelligence.ts": [
       "flagOverpricedVendors",
@@ -19099,11 +19082,8 @@
     ],
     "lib/platform/nps.ts": [
       "classifyNps",
-      "computeNps",
-      "currentPeriod",
       "quarterPeriods",
       "lastNPeriods",
-      "isEligibleForNps",
       "shouldPromptNps",
       "submitNps",
       "rollupNpsByPeriod"
@@ -19111,8 +19091,6 @@
     "lib/platform/os-sentinel.ts": [
       "worstStatus",
       "classifyCount",
-      "deliveryQueueStatus",
-      "describeDeliveryQueues",
       "rollupOsHealth",
       "loadOsHealth",
       "runOsSentinelSweep"
@@ -19615,6 +19593,12 @@
       "sendViaTelnyx",
       "sendViaBandwidth",
       "isSupportedSMSProvider"
+    ],
+    "lib/providers/openai-ads.ts": [
+      "resolveOpenaiAdsCredential",
+      "isOpenaiAdsConfigured",
+      "dispatchChatgptCampaign",
+      "fetchOpenaiCampaignInsights"
     ],
     "lib/providers/outbound-sender.ts": [
       "isUnsendableAddress",
@@ -20209,11 +20193,7 @@
       "ticketAnsweredBy"
     ],
     "lib/tasks/task-presentation.ts": [
-      "localDayKey",
-      "dueDayKey",
-      "isTaskDone",
       "isTaskOverdue",
-      "isTaskDueToday",
       "groupTasksByDue",
       "getPriorityColor"
     ],
@@ -21160,11 +21140,7 @@
       "analyzeFilledPacket"
     ],
     "lib/workflow/intelligence/proactive-checks.ts": [
-      "mlsValidationCheck",
-      "addendumAutoDetect",
-      "buyerFinancingPreflight",
       "scanContingenciesNearingDeadline",
-      "completenessGate",
       "runAllOfferChecks"
     ],
     "lib/workflow/intelligence/scan-offer-packet.ts": [

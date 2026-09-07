@@ -181,6 +181,8 @@ interface AdsDashboardClientProps {
   ctvEligibleVideos?: CtvEligibleVideo[]
   /** ChatGPT Ads lane (OpenAI Ads Manager): active listings eligible to stage a campaign for. */
   chatgptEligibleListings?: ChatgptEligibleListing[]
+  /** ChatGPT Ads lane: honest posture for the OpenAI Advertiser API credential. */
+  openaiAdsConnected?: boolean
   /**
    * Paid-vs-organic CTR per platform, from loadAdsWorkspace. The organic side
    * comes from the brokerage's own trailing-28d social results — this is the
@@ -324,6 +326,7 @@ export function AdsDashboardClient({
   vibeConnected = false,
   ctvEligibleVideos = [],
   chatgptEligibleListings = [],
+  openaiAdsConnected = false,
   organicLift = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
@@ -1235,6 +1238,7 @@ export function AdsDashboardClient({
             />
 
             <ChatgptLane
+              openaiAdsConnected={openaiAdsConnected}
               listings={chatgptEligibleListings}
               chatgptCampaigns={campaigns
                 .filter((c) => c.platform === "chatgpt")

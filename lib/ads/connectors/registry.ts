@@ -10,6 +10,7 @@ import type { AdConnector, ConnectorCredential } from "./types"
 import { metaConnector } from "./meta"
 import { googleConnector } from "./google"
 import { vibeCtvConnector } from "./vibe-ctv"
+import { chatgptConnector } from "./chatgpt"
 
 const CONNECTORS: Record<string, AdConnector> = {
   facebook:  metaConnector,
@@ -18,9 +19,11 @@ const CONNECTORS: Record<string, AdConnector> = {
   // Streaming TV (Vibe.co). Its credential is NOT a platform_credentials row —
   // the Connection OS resolves provider 'vibe' — see loadConnectorCredential.
   vibe_ctv:  vibeCtvConnector,
-  // chatgpt: ChatGPT Ads (ads.openai.com) has NO public advertiser API as of
-  // 2026-09 (partner-only). The lane is staged + imported, never dispatched —
-  // lib/ads/chatgpt-campaign.ts. getConnector("chatgpt") is null on purpose.
+  // ChatGPT Ads (OpenAI Advertiser API, developers.openai.com/ads). Its
+  // credential is the Ads API key under Connection OS provider 'openai_ads' —
+  // see loadConnectorCredential. (Until 2026-09-07 this read "no public API";
+  // the owner linked the quickstart and ruled build.)
+  chatgpt:   chatgptConnector,
 }
 
 export function getConnector(platform: string): AdConnector | null {
@@ -43,6 +46,15 @@ export async function loadConnectorCredential(
       return null
     }
     return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: { ...r.conn.config, api_secret: r.conn.apiSecret } }
+  }
+  if (platform === "chatgpt") {
+    const { resolveOpenaiAdsCredential } = await import("@/lib/providers/openai-ads")
+    const r = await resolveOpenaiAdsCredential(brokerageId)
+    if (r.status !== "connected") {
+      if (r.status === "unreadable") console.error("[ad-connectors] openai_ads credential unreadable:", r.reason)
+      return null
+    }
+    return { accessToken: r.conn.apiKey as string, accountId: r.conn.accountId, config: r.conn.config ?? {} }
   }
   const supabase = client ?? createServiceClient()
   // instagram auth lives under the facebook (Meta) credential.

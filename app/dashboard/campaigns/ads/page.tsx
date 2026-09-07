@@ -14,6 +14,7 @@ import { AdsDashboardClient } from "./ads-dashboard-client"
 import { getAdConnections } from "@/lib/ads/connection-status"
 import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
 import { isVibeConfigured } from "@/lib/providers/vibe"
+import { isOpenaiAdsConfigured } from "@/lib/providers/openai-ads"
 import type { CtvEligibleVideo } from "./ctv-lane"
 import type { ChatgptEligibleListing } from "./chatgpt-lane"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -209,6 +210,9 @@ export default async function AdsCampaignsPage() {
     .order("created_at", { ascending: false })
     .limit(50)
 
+  // Honest connection posture for the OpenAI Ads (ChatGPT) connector slot.
+  const openaiAdsConnected = await isOpenaiAdsConfigured(profile.brokerage_id)
+
   return (
     <AdsDashboardClient
       userId={user.id}
@@ -223,6 +227,7 @@ export default async function AdsCampaignsPage() {
       vibeConnected={vibeConnected}
       ctvEligibleVideos={(ctvVideos || []) as CtvEligibleVideo[]}
       chatgptEligibleListings={(chatgptListings || []) as ChatgptEligibleListing[]}
+      openaiAdsConnected={openaiAdsConnected}
       organicLift={workspace.organicLift}
     />
   )

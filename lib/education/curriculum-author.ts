@@ -91,7 +91,7 @@ export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date)
 }
 
 /** Author a rich curriculum for a detected gap with the model. Throws if the model is unavailable. */
-export async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
+async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
   const evidence = gap.evidence.length ? `\n\nReal evidence from our agents (ground the material in THESE, not generic advice):\n- ${gap.evidence.join("\n- ")}` : ""
   const { withScriptStandards } = await import("@/lib/ai/script-standards")
@@ -158,7 +158,7 @@ export function renderModuleBody(c: Curriculum, footer: string): string {
 }
 
 /** PURE: render a knowledge-gap curriculum (footer names the gap that triggered it). */
-export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
+function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
   return renderModuleBody(c, `Authored by the Recruiting Manager from a real, recurring gap: ${gap.rationale}`)
 }
 

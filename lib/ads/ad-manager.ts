@@ -172,17 +172,25 @@ export async function proposeAdLaunches(
   // A draft is a launch candidate ONLY on the streaming-TV lane (its approval
   // is the action itself); every other platform must be 'approved' first.
   const rows = ((data ?? []) as Array<{ id: string; platform: string; status: string; daily_budget: number | null; targeting_config: Record<string, unknown> | null; campaign_name: string | null }>)
-    .filter((c) => c.status === "approved" || (c.platform === "vibe_ctv" && c.status === "draft"))
+    .filter((c) => c.status === "approved" || ((c.platform === "vibe_ctv" || c.platform === "chatgpt") && c.status === "draft"))
   if (rows.length === 0) return { candidates: 0, proposed: 0 }
 
   let vibeConnected: boolean | null = null
   let proposed = 0
   for (const c of rows) {
-    if (c.platform === "chatgpt") continue
     if (Number(c.daily_budget ?? 0) <= 0) continue
     let ready = false
     let why = ""
-    if (c.platform === "vibe_ctv") {
+    if (c.platform === "chatgpt") {
+      // A ChatGPT draft launches through the OpenAI Advertiser API once its
+      // copy is approved in the one queue and the Ads API key is connected.
+      const { count } = await supabase.from("ad_creative_variations").select("id", { count: "exact", head: true })
+        .eq("ad_campaign_id", c.id).eq("approval_status", "approved")
+      if ((count ?? 0) === 0) continue
+      const { isAdPlatformConnected } = await import("@/lib/ads/connection-status")
+      ready = (await isAdPlatformConnected(brokerageId, "chatgpt", supabase)).connected
+      why = `ChatGPT campaign "${c.campaign_name ?? c.id}" has approved copy and the OpenAI Ads key is connected — launch it at $${Number(c.daily_budget).toFixed(0)}/day.`
+    } else if (c.platform === "vibe_ctv") {
       if (!c.targeting_config?.creative_video_url) continue
       if (vibeConnected === null) {
         const { isVibeConfigured } = await import("@/lib/providers/vibe")
@@ -287,13 +295,19 @@ async function runAdHandler(
         }
         return { status: "succeeded", result: { campaign_id: campaignId, status: "live", external_campaign_id: r.vibeCampaignId, launched_via: "ads_manager" } }
       }
-      // ── ChatGPT Ads ─────────────────────────────────────────────────────
-      // No public advertiser API (ads.openai.com is self-serve; API access is
-      // partner-only as of 2026-09). The lane stages a complete launch package
-      // (lib/ads/chatgpt-campaign.ts); a human uploads it and marks it launched
-      // with the Ads Manager campaign id. Never a fake live state.
+      // ── ChatGPT Ads (OpenAI Advertiser API) ─────────────────────────────
+      // The copy is the APPROVED creative in the one queue; the connection is
+      // the Ads API key (provider 'openai_ads'); the publish is the real chain
+      // (geo lookup → upload → campaign → ad group → ad → activate). The human
+      // gate is the approval of THIS action. Not connected → honest skip; the
+      // staged package + ads.openai.com by hand remains.
       if (campaign.platform === "chatgpt") {
-        return { status: "skipped", result: { campaign_id: campaignId, reason: "chatgpt has no advertiser API — launch the staged package at ads.openai.com from the ChatGPT Ads lane, then mark it launched there" } }
+        if (!["draft", "approved"].includes(campaign.status)) return { status: "skipped", result: { reason: `campaign is ${campaign.status}, nothing to launch` } }
+        if (currentDaily > MAX_AD_DAILY_BUDGET_USD) return { status: "failed", result: { error: `daily budget $${currentDaily} exceeds cap $${MAX_AD_DAILY_BUDGET_USD}` } }
+        const { launchChatgptCampaignOnOpenai } = await import("@/lib/ads/chatgpt-campaign")
+        const r = await launchChatgptCampaignOnOpenai({ campaignId, brokerageId, actorUserId: null, launchedVia: "ads_manager", client: svc })
+        if (!r.dispatched) return { status: "skipped", result: { campaign_id: campaignId, reason: r.reason } }
+        return { status: "succeeded", result: { campaign_id: campaignId, status: "live", external_campaign_id: r.openaiCampaignId, review_status: r.reviewStatus ?? null, launched_via: "ads_manager" } }
       }
       if (campaign.status !== "approved") return { status: "skipped", result: { reason: `campaign is ${campaign.status}, must be approved` } }
       // Must have at least one APPROVED creative before any spend.

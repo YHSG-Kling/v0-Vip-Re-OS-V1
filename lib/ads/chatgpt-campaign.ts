@@ -6,23 +6,26 @@
  * capability needs built out fully … each capability should be used
  * autonomously as much as you can").
  *
- * What exists (researched 2026-09-07): OpenAI Ads Manager is SELF-SERVE at
- * https://ads.openai.com (beta since 2026-05-05; India/Europe/MEA expansion
- * 2026-08-31). There is NO public advertiser API — programmatic access is
- * partner-only (Adobe, Criteo, Kargo, Pacvue, StackAdapt and the holding-company
- * agencies). So this lane is honest about its two halves:
+ * Two halves, both real (2026-09-07 — the owner linked
+ * developers.openai.com/ads/api-quickstart: the OpenAI ADVERTISER API exists;
+ * the earlier "no public API, partner-only" reading is retired):
  *
  *   AUTONOMOUS (the OS does it): compose the campaign to the Ads Manager's own
  *   structure and limits, Fair-Housing-scan the copy BEFORE it is written down,
  *   stage the ad_campaigns row (platform 'chatgpt', status 'draft') + the
  *   creative in the ONE ad-creative approval queue, resolve the destination
  *   (the listing's own landing page) with UTMs so the click is attributed, and
- *   emit a bulk-upload CSV row + a checklist a human can run in minutes.
+ *   — once the copy is approved and the brokerage's Ads API key is connected
+ *   (provider 'openai_ads') — LAUNCH through the API: launchChatgptCampaignOnOpenai
+ *   below delegates to lib/providers/openai-ads.ts dispatchChatgptCampaign
+ *   (account → geo lookup → upload → campaign → ad group → ad → activate) and
+ *   the Ads Manager's sweep proposes it (lib/ads/ad-manager.ts). Insights come
+ *   back through the chatgpt connector into ad_performance.
  *
- *   HUMAN (no API): upload at ads.openai.com, then "Mark as launched" with the
- *   Ads Manager campaign id; export the report CSV and import it here so the
- *   Ads Manager judges the campaign on REAL cost-per-lead like every other
- *   platform (lib/ads/ad-manager.ts proposeAdOptimizations reads ad_performance).
+ *   FALLBACK (no key connected): the same package as a bulk-upload CSV + a
+ *   checklist; a human uploads at ads.openai.com, "Marks as launched" with the
+ *   campaign id, and imports the report CSV here so the Ads Manager still judges
+ *   the campaign on REAL cost-per-lead.
  *
  * Ads Manager structure (searchengineland.com/run-chatgpt-ads-484513,
  * webfx.com/blog/ai/chatgpt-ads-manager): Campaign (objective Reach / Clicks /
@@ -40,6 +43,7 @@
  * on the listing page with UTMs; the lead form is the conversion event).
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { dispatchChatgptCampaign, type ChatgptDispatchResult } from "@/lib/providers/openai-ads"
 import { evaluateContentSafety, type SafetyViolation } from "@/lib/compliance/content-safety-checks"
 import { deriveMetrics, type ProviderPerformanceRow } from "./connectors/types"
 import { buildListingCreative, type ListingAdKind, type ListingFacts } from "./listing-ad-producer"
@@ -379,4 +383,74 @@ export async function importChatgptPerformance(input: {
   const { recordAdPerformanceSnapshot } = await import("./creative-fatigue-runner")
   await recordAdPerformanceSnapshot({ brokerageId: input.brokerageId, adCampaignId: input.campaignId, ctr: row.ctr, impressions: row.impressions, clicks: row.clicks, leads: row.leads, costPerLead: row.costPerLead }, svc)
   return { success: true, row }
+}
+
+// ─── LAUNCH ON OPENAI ADS — the one place a chatgpt row leaves draft by API ──
+//
+// dispatch (lib/providers/openai-ads.ts) + flip the row + ledger the launch. The
+// server action app/actions/chatgpt-ads.ts::dispatchChatgptCampaignAction and
+// the Ads Manager executor (lib/ads/ad-manager.ts launch_ad_campaign, platform
+// chatgpt) both call THIS; neither re-spells the flip. No fake live state: the
+// row moves only once the campaign is ACTIVE on OpenAI Ads.
+
+export interface LaunchChatgptInput {
+  campaignId: string
+  brokerageId: string
+  /** The human whose approval launched it (null when the Ads Manager ran an
+   *  approved action — the approver is on ad_manager_actions). */
+  actorUserId: string | null
+  launchedVia: "openai_ads_api" | "ads_manager"
+  client?: ReturnType<typeof createServiceClient>
+}
+
+export async function launchChatgptCampaignOnOpenai(input: LaunchChatgptInput): Promise<ChatgptDispatchResult> {
+  const svc = input.client ?? createServiceClient()
+  const { data: campaign, error } = await svc
+    .from("ad_campaigns").select("id, targeting_config, status")
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId).maybeSingle()
+  if (error) return { dispatched: false, reason: `campaign read refused: ${error.message}` }
+  if (!campaign) return { dispatched: false, reason: "Campaign not found in this brokerage" }
+  if (["live", "launching"].includes(String(campaign.status))) {
+    return { dispatched: false, reason: `campaign is already ${campaign.status}` }
+  }
+
+  const result = await dispatchChatgptCampaign(input.campaignId)
+  if (!(result.dispatched && result.openaiCampaignId)) return result
+
+  const nowIso = new Date().toISOString()
+  // `external_campaign_id` is the ONE key every platform's ingest reads
+  // (lib/ads/ad-performance-ingest.ts); the openai_* ids are the provider's own.
+  const { data: flipped, error: flipError } = await svc
+    .from("ad_campaigns")
+    .update({
+      status: "live",
+      updated_at: nowIso,
+      targeting_config: {
+        ...((campaign.targeting_config as Record<string, unknown>) ?? {}),
+        launched_via: input.launchedVia,
+        launched_at: nowIso,
+        external_campaign_id: result.openaiCampaignId,
+        openai_campaign_id: result.openaiCampaignId,
+        openai_ad_group_id: result.openaiAdGroupId ?? null,
+        openai_ad_id: result.openaiAdId ?? null,
+        openai_review_status: result.reviewStatus ?? null,
+        openai_location_ids: result.locationIds ?? [],
+      },
+    })
+    .eq("id", input.campaignId).eq("brokerage_id", input.brokerageId)
+    .select("id")
+  // An UPDATE matching nothing also resolves (§3): count what came back.
+  if (flipError || !flipped?.length) {
+    return { ...result, reason: `Active on OpenAI Ads (${result.openaiCampaignId}) but the row did NOT flip to live: ${flipError?.message ?? "no row matched"} — mark it launched by hand` }
+  }
+  const { error: eventError } = await svc.from("lifecycle_events").insert({
+    brokerage_id: input.brokerageId,
+    entity_type: "ad_campaign",
+    entity_id: input.campaignId,
+    event_type: "ad_campaign_launched",
+    actor_user_id: input.actorUserId,
+    metadata: { platform: "chatgpt", launched_via: input.launchedVia, openai_campaign_id: result.openaiCampaignId, review_status: result.reviewStatus ?? null },
+  })
+  if (eventError) console.error("[chatgpt-campaign] launch ledger refused:", eventError.message)
+  return result
 }

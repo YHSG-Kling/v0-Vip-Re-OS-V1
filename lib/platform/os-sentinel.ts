@@ -134,7 +134,7 @@ export interface DeliveryQueueHealth {
  * this loader could not run is "nobody checked", and §4 forbids rendering that
  * as "checked and fine".
  */
-export function deliveryQueueStatus(q: DeliveryQueueHealth): SubsystemStatus {
+function deliveryQueueStatus(q: DeliveryQueueHealth): SubsystemStatus {
   const T = SENTINEL_THRESHOLDS.queueFailures
   const byCount = classifyCount(q.pushFailed + q.tasksFailed, T.warn, T.breach)
   if (q.unreadable.length > 0 && byCount === "ok") return "warn"
@@ -142,7 +142,7 @@ export function deliveryQueueStatus(q: DeliveryQueueHealth): SubsystemStatus {
 }
 
 /** PURE — the one-line detail the board renders under the tile. */
-export function describeDeliveryQueues(q: DeliveryQueueHealth): string {
+function describeDeliveryQueues(q: DeliveryQueueHealth): string {
   const parts = [
     `${q.pushFailed} push failed`,
     `${q.pushDelivered} delivered`,

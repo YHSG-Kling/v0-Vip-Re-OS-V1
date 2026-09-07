@@ -30,7 +30,7 @@ export interface TaskDueFields {
 const PLAIN_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 /** Local calendar-day key (YYYY-MM-DD) for a Date. */
-export function localDayKey(d: Date): string {
+function localDayKey(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, "0")
   const day = String(d.getDate()).padStart(2, "0")
@@ -42,7 +42,7 @@ export function localDayKey(d: Date): string {
  * value is absent or unparseable (an unparseable date is "no due date", never
  * "overdue" — fail toward the quieter bucket).
  */
-export function dueDayKey(due: string | null | undefined): string | null {
+function dueDayKey(due: string | null | undefined): string | null {
   if (!due) return null
   if (PLAIN_DATE.test(due)) return due
   const d = new Date(due)
@@ -50,7 +50,7 @@ export function dueDayKey(due: string | null | undefined): string | null {
   return localDayKey(d)
 }
 
-export function isTaskDone(t: Pick<TaskDueFields, "status">): boolean {
+function isTaskDone(t: Pick<TaskDueFields, "status">): boolean {
   return t.status === "completed" || t.status === "cancelled"
 }
 
@@ -60,7 +60,7 @@ export function isTaskOverdue(t: TaskDueFields, now: Date = new Date()): boolean
   return key !== null && key < localDayKey(now)
 }
 
-export function isTaskDueToday(t: TaskDueFields, now: Date = new Date()): boolean {
+function isTaskDueToday(t: TaskDueFields, now: Date = new Date()): boolean {
   if (isTaskDone(t)) return false
   return dueDayKey(t.due_date) === localDayKey(now)
 }

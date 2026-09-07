@@ -50,9 +50,12 @@ export async function isAdPlatformConnected(
     const r = await resolveVibeCredential(brokerageId)
     return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — connect Vibe in Settings → Connections` }
   }
+  if (provider === "openai_ads") {
+    const { resolveOpenaiAdsCredential } = await import("@/lib/providers/openai-ads")
+    const r = await resolveOpenaiAdsCredential(brokerageId)
+    return r.status === "connected" ? { connected: true } : { connected: false, reason: `${r.reason} — add the Ads API key (ads.openai.com → Settings) in Settings → Connections` }
+  }
   if (provider) return { connected: false, reason: `${campaignPlatform} is connected through provider '${provider}', which this precheck does not resolve yet` }
-  // ChatGPT Ads has no advertiser API and therefore no connection to hold.
-  if (campaignPlatform === "chatgpt") return { connected: false, reason: "chatgpt has no advertiser API — launch from the ChatGPT Ads lane package at ads.openai.com" }
   const platform = adCredentialPlatform(campaignPlatform)
   const conns = await getAdConnections(brokerageId, client)
   const conn = conns.find((c) => c.platform === platform)
