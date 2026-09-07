@@ -30,7 +30,6 @@
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
     "lib/ads/ad-outcome-loop.ts": 3,
-    "lib/ads/ad-performance-ingest.ts": 1,
     "lib/ads/audience-persona-basis.ts": 1,
     "lib/ads/audience-source-rules.ts": 2,
     "lib/ads/connectors/ad-payload.ts": 2,
@@ -228,7 +227,7 @@
     "lib/kernel/call-intelligence.ts": 2,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
-    "lib/kernel/client-story-drafts.ts": 10,
+    "lib/kernel/client-story-drafts.ts": 9,
     "lib/kernel/client-welcome.ts": 1,
     "lib/kernel/closing-war-room.ts": 2,
     "lib/kernel/command-center.ts": 1,
@@ -246,7 +245,7 @@
     "lib/kernel/deal-room-reel.ts": 2,
     "lib/kernel/deal-save-huddle.ts": 3,
     "lib/kernel/document-autofile.ts": 5,
-    "lib/kernel/document-compliance-audit.ts": 6,
+    "lib/kernel/document-compliance-audit.ts": 4,
     "lib/kernel/document-custody.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 2,
     "lib/kernel/equity-trigger.ts": 4,
@@ -284,7 +283,7 @@
     "lib/kernel/postclose-concierge.ts": 3,
     "lib/kernel/referral-appreciation.ts": 6,
     "lib/kernel/referral-radar.ts": 4,
-    "lib/kernel/regulatory-watcher.ts": 6,
+    "lib/kernel/regulatory-watcher.ts": 5,
     "lib/kernel/repair-digest.ts": 1,
     "lib/kernel/returning-customer.ts": 4,
     "lib/kernel/reverse-prospecting.ts": 2,
@@ -352,7 +351,7 @@
     "lib/listings/expiry-decision.ts": 1,
     "lib/listings/listing-status-sync.ts": 1,
     "lib/listings/mls-verification.ts": 3,
-    "lib/listings/photo-intelligence.ts": 6,
+    "lib/listings/photo-intelligence.ts": 4,
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
     "lib/managers/accuracy-gate.ts": 5,
@@ -382,7 +381,7 @@
     "lib/newsletter/seo-score.ts": 2,
     "lib/notifications/brokerage-admins.ts": 1,
     "lib/notifications/platform-staff.ts": 1,
-    "lib/offers/closing-cost-accuracy.ts": 6,
+    "lib/offers/closing-cost-accuracy.ts": 5,
     "lib/offers/net-sheet-calc.ts": 2,
     "lib/offers/offer-target.ts": 1,
     "lib/offers/public-record-preload.ts": 1,
@@ -460,7 +459,7 @@
     "lib/social/token-refresh.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
     "lib/storage/file-limits.ts": 3,
-    "lib/storage/signed-upload-url.ts": 6,
+    "lib/storage/signed-upload-url.ts": 5,
     "lib/strategy-learning/strategy-insights.ts": 1,
     "lib/tasks/task-presentation.ts": 4,
     "lib/transactions/buyer-move.ts": 3,
@@ -492,7 +491,7 @@
     "lib/video/promo-composition.ts": 1,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/script-compliance.ts": 3,
-    "lib/video/video-director.ts": 7,
+    "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/call-analysis.ts": 1,
@@ -517,7 +516,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9477,
+  "census": 9483,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -685,6 +684,7 @@
     "app/actions/ce-provider.ts": 4,
     "app/actions/challenges.ts": 3,
     "app/actions/channel-presets.ts": 3,
+    "app/actions/chatgpt-ads.ts": 3,
     "app/actions/cma-presentation/cma-generator.ts": 1,
     "app/actions/cma-presentation/index.ts": 1,
     "app/actions/cma-presentation/net-sheet-calculator.ts": 6,
@@ -1978,6 +1978,7 @@
     "app/dashboard/calendar/components/os/this-week-preview.tsx": 1,
     "app/dashboard/campaigns/ads/ads-campaign-actions.ts": 1,
     "app/dashboard/campaigns/ads/ads-dashboard-client.tsx": 1,
+    "app/dashboard/campaigns/ads/chatgpt-lane.tsx": 1,
     "app/dashboard/campaigns/ads/ctv-lane.tsx": 1,
     "app/dashboard/campaigns/competitive/competitive-monitor-client.tsx": 1,
     "app/dashboard/campaigns/competitive/track-competitor-dialog.tsx": 1,
@@ -2625,7 +2626,7 @@
     "lib/ads/ad-destination.ts": 1,
     "lib/ads/ad-engagement-decay.ts": 1,
     "lib/ads/ad-lead-intake.ts": 3,
-    "lib/ads/ad-manager.ts": 4,
+    "lib/ads/ad-manager.ts": 5,
     "lib/ads/ad-monitor.ts": 8,
     "lib/ads/ad-outcome-loop.ts": 5,
     "lib/ads/ad-performance-ingest.ts": 2,
@@ -2633,15 +2634,16 @@
     "lib/ads/audience-exclusion.ts": 5,
     "lib/ads/audience-persona-basis.ts": 4,
     "lib/ads/audience-source-rules.ts": 5,
+    "lib/ads/chatgpt-campaign.ts": 3,
     "lib/ads/connection-status.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 4,
     "lib/ads/connectors/google.ts": 1,
     "lib/ads/connectors/meta.ts": 1,
     "lib/ads/connectors/pii.ts": 5,
     "lib/ads/connectors/registry.ts": 2,
-    "lib/ads/connectors/types.ts": 1,
+    "lib/ads/connectors/types.ts": 2,
     "lib/ads/creative-fatigue-runner.ts": 2,
-    "lib/ads/ctv-campaign.ts": 4,
+    "lib/ads/ctv-campaign.ts": 6,
     "lib/ads/facebook-audience-sync.ts": 6,
     "lib/ads/fb-audience-templates.ts": 2,
     "lib/ads/launch-assembler.ts": 2,
@@ -3378,7 +3380,7 @@
     "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
-    "lib/kernel/client-story-drafts.ts": 12,
+    "lib/kernel/client-story-drafts.ts": 11,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
     "lib/kernel/command-center.ts": 4,
@@ -3418,7 +3420,7 @@
     "lib/kernel/deconflict/index.ts": 2,
     "lib/kernel/deconflict/lead-channel.ts": 2,
     "lib/kernel/document-autofile.ts": 8,
-    "lib/kernel/document-compliance-audit.ts": 8,
+    "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 5,
     "lib/kernel/draft-quality.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 4,
@@ -3504,7 +3506,7 @@
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
-    "lib/kernel/regulatory-watcher.ts": 8,
+    "lib/kernel/regulatory-watcher.ts": 7,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 4,
     "lib/kernel/reporting-scope.ts": 2,
@@ -3695,7 +3697,7 @@
     "lib/listings/mls-reminder-policy.ts": 1,
     "lib/listings/mls-rule-check.ts": 1,
     "lib/listings/mls-verification.ts": 4,
-    "lib/listings/photo-intelligence.ts": 11,
+    "lib/listings/photo-intelligence.ts": 9,
     "lib/listings/price-improvement-label.ts": 3,
     "lib/listings/relist-recovery-runner.ts": 1,
     "lib/listings/relist-recovery.ts": 2,
@@ -3931,7 +3933,7 @@
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
     "lib/providers/tenancy-matrix.ts": 1,
-    "lib/providers/vibe.ts": 2,
+    "lib/providers/vibe.ts": 5,
     "lib/providers/web-push.ts": 2,
     "lib/providers/webhook-contract.ts": 2,
     "lib/quality-checker.ts": 1,
@@ -4039,7 +4041,7 @@
     "lib/storage/parse-object-url.ts": 1,
     "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
-    "lib/storage/signed-upload-url.ts": 7,
+    "lib/storage/signed-upload-url.ts": 6,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
     "lib/stripe.ts": 1,
@@ -4173,7 +4175,7 @@
     "lib/video/script-compliance.ts": 11,
     "lib/video/script-structure.ts": 11,
     "lib/video/verbal-disclosure.ts": 1,
-    "lib/video/video-director.ts": 11,
+    "lib/video/video-director.ts": 10,
     "lib/video/video-identity.ts": 1,
     "lib/video/video-pipeline-reaper-policy.ts": 1,
     "lib/video/video-pipeline-reaper.ts": 1,
@@ -5389,6 +5391,11 @@
       "listChannelPresets",
       "upsertChannelPreset",
       "deactivateChannelPreset"
+    ],
+    "app/actions/chatgpt-ads.ts": [
+      "stageChatgptCampaignAction",
+      "markChatgptCampaignLaunchedAction",
+      "importChatgptPerformanceAction"
     ],
     "app/actions/cma-presentation/cma-generator.ts": [
       "generateCMA"
@@ -10819,6 +10826,9 @@
     "app/dashboard/campaigns/ads/ads-dashboard-client.tsx": [
       "AdsDashboardClient"
     ],
+    "app/dashboard/campaigns/ads/chatgpt-lane.tsx": [
+      "ChatgptLane"
+    ],
     "app/dashboard/campaigns/ads/ctv-lane.tsx": [
       "CtvLane"
     ],
@@ -12844,6 +12854,7 @@
       "evaluateAdPerformance",
       "clampDailyBudget",
       "proposeAdOptimizations",
+      "proposeAdLaunches",
       "executeAdManagerAction"
     ],
     "lib/ads/ad-monitor.ts": [
@@ -12890,6 +12901,11 @@
       "rowMatchesPredicates",
       "contactMatchesNarrowing"
     ],
+    "lib/ads/chatgpt-campaign.ts": [
+      "stageChatgptCampaign",
+      "markChatgptCampaignLaunched",
+      "importChatgptPerformance"
+    ],
     "lib/ads/connection-status.ts": [
       "adCredentialPlatform",
       "getAdConnections",
@@ -12919,6 +12935,7 @@
       "loadConnectorCredential"
     ],
     "lib/ads/connectors/types.ts": [
+      "isPerformancePending",
       "deriveMetrics"
     ],
     "lib/ads/creative-fatigue-runner.ts": [
@@ -12929,7 +12946,9 @@
       "validateCtvCreative",
       "summarizeCtvTargeting",
       "summarizeCtvBudget",
-      "stageCtvCampaign"
+      "stageCtvCampaign",
+      "launchCtvCampaignOnVibe",
+      "stageCtvCampaignForVideo"
     ],
     "lib/ads/facebook-audience-sync.ts": [
       "previewAudienceReach",
@@ -16596,7 +16615,6 @@
       "buyerStoryBrief",
       "buyerWeeklyTag",
       "authorStory",
-      "runBuyerSearchStories",
       "runClientStoryDraftsAll"
     ],
     "lib/kernel/client-welcome.ts": [
@@ -16828,9 +16846,7 @@
       "deterministicTextIssues",
       "classifyFindings",
       "runDocumentComplianceAudit",
-      "defaultTextExtractor",
-      "defaultTextChecker",
-      "defaultVisionFetcher"
+      "defaultTextChecker"
     ],
     "lib/kernel/document-custody.ts": [
       "retentionPolicyFor",
@@ -17371,8 +17387,7 @@
       "extractEffectiveDate",
       "parseChangesFromSearchResult",
       "runRegulatoryWatcher",
-      "isoWeek",
-      "realRegSearchFetcher"
+      "isoWeek"
     ],
     "lib/kernel/repair-digest.ts": [
       "composeRepairDigest",
@@ -18378,12 +18393,10 @@
       "verifyMlsSyndication"
     ],
     "lib/listings/photo-intelligence.ts": [
-      "analyzeListingPhoto",
       "persistPhotoAnalysis",
       "applyEnhancements",
       "enhanceListingPhoto",
       "buildMultipartBody",
-      "editImageWithAI",
       "stagingPrompt",
       "twilightPrompt",
       "virtualStagePhoto",
@@ -19625,8 +19638,11 @@
       "providerTenancy"
     ],
     "lib/providers/vibe.ts": [
+      "resolveVibeCredential",
       "isVibeConfigured",
-      "dispatchCtvCampaign"
+      "dispatchCtvCampaign",
+      "requestVibeCampaignReport",
+      "readVibeCampaignReport"
     ],
     "lib/providers/web-push.ts": [
       "isWebPushConfigured",
@@ -20151,7 +20167,6 @@
     ],
     "lib/storage/signed-upload-url.ts": [
       "sanitizeUploadFileName",
-      "isUploadPurpose",
       "buildUploadObjectPath",
       "purposesMissingTenantPrefix",
       "purposesWithNoBucketCeiling",
@@ -20786,7 +20801,6 @@
       "sentimentForSituation",
       "musicMoodForSituation",
       "qrKindForSituation",
-      "qrCaptionForSituation",
       "defaultHookForSituation",
       "hookVariants",
       "assemblySpec",

@@ -81,8 +81,10 @@ const EMPTY_ANALYSIS: PhotoAnalysis = {
   lighting: "poor", issues: [], vacant: false, error: null,
 }
 
-/** One vision call → structured analysis. Pure of the DB — see persistPhotoAnalysis. */
-export async function analyzeListingPhoto(params: {
+/** One vision call → structured analysis. Pure of the DB — see persistPhotoAnalysis.
+ *  Internal only (orphan-export guard, category B): called once, from
+ *  persistPhotoAnalysis below, and by nothing outside this module. */
+async function analyzeListingPhoto(params: {
   photoUrl: string
   /** Optional context ("4BR colonial in Naples FL, $1.2M") to sharpen judgment. */
   context?: string | null
@@ -297,8 +299,10 @@ export function buildMultipartBody(
  * One gpt-image-1 EDIT call: photo bytes + instruction → transformed photo
  * bytes. Vercel AI Gateway first (one egress/billing), direct OpenAI as the
  * fallback — the same two-step image-generation.ts uses.
+ * Internal only (orphan-export guard, category B): called from
+ * virtualStagePhoto/twilightConvertPhoto below, and by nothing outside this module.
  */
-export async function editImageWithAI(params: {
+async function editImageWithAI(params: {
   imageBytes: Buffer
   prompt: string
   /** gpt-image-1 edit sizes; picked from the source aspect when omitted. */

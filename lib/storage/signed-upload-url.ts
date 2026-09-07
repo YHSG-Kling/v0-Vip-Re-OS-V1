@@ -194,8 +194,10 @@ export const UPLOAD_PURPOSES = {
 
 export type UploadPurpose = keyof typeof UPLOAD_PURPOSES
 
-/** PURE — is this an upload purpose we will mint for? Narrows an untrusted string. */
-export function isUploadPurpose(value: unknown): value is UploadPurpose {
+/** PURE — is this an upload purpose we will mint for? Narrows an untrusted string.
+ *  Internal only (orphan-export guard, category B): called once, from
+ *  planSignedUpload below, and by nothing outside this module. */
+function isUploadPurpose(value: unknown): value is UploadPurpose {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(UPLOAD_PURPOSES, value)
 }
 

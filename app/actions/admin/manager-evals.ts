@@ -732,6 +732,12 @@ export interface StandingReviewView {
   dueAt: string | null
   lastCompletedAt: string | null
   summary: string
+  /** The closing-cost accuracy flywheel's per-state rollup for THIS brokerage's own
+   *  closed deals (lib/offers/closing-cost-accuracy.ts:getClosingCostAccuracyReport) —
+   *  arms the reviewer with real observed deltas alongside the published-source check.
+   *  Only attached to the regional-convention review (the only review it's evidence
+   *  for); null when the observations table isn't provisioned or the read failed. */
+  accuracyReport: import("@/lib/offers/closing-cost-accuracy").ClosingCostAccuracyReport | null
 }
 
 /** The Finance Manager's standing yearly regional-convention review, due state derived
@@ -757,6 +763,19 @@ export async function getStandingReviews(): Promise<
     .maybeSingle()
   const assessment = assessStandingReview(REGIONAL_CONVENTION_REVIEW, (last as { created_at?: string } | null)?.created_at ?? null)
   const owner = MANAGERS[REGIONAL_CONVENTION_REVIEW.owner]
+
+  // Arm the reviewer with this brokerage's own observed accuracy against the model
+  // it's about to re-verify (round 34's closing-cost accuracy flywheel). Scoped to
+  // ctx.brokerageId — tenant comes from the session (CLAUDE.md §4); the report
+  // itself defaults cross-tenant for a superadmin surface, but this action is
+  // tenant-gated (isAdminOrBroker), so another brokerage's observations must never
+  // leak into it. Best-effort: an unprovisioned table degrades to available:false,
+  // never blocks the review card.
+  const { getClosingCostAccuracyReport } = await import("@/lib/offers/closing-cost-accuracy")
+  const accuracyReport = await getClosingCostAccuracyReport(svc, { brokerageId: ctx.brokerageId }).catch(
+    () => null,
+  )
+
   return {
     ok: true,
     reviews: [{
@@ -771,6 +790,7 @@ export async function getStandingReviews(): Promise<
       dueAt: assessment.dueAt,
       lastCompletedAt: assessment.lastCompletedAt,
       summary: assessment.summary,
+      accuracyReport,
     }],
   }
 }

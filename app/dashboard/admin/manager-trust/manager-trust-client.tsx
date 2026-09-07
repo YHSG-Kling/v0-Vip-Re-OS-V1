@@ -760,6 +760,25 @@ export function ManagerTrustClient({
                   {rv.sources.map((s) => <li key={s}>{s}</li>)}
                 </ul>
               </div>
+              {rv.accuracyReport?.available && rv.accuracyReport.totalObservations > 0 && (
+                <div className="rounded border border-slate-200 bg-slate-50/60 p-2 text-[11px] text-slate-700">
+                  <p className="font-medium">
+                    Your own observed accuracy — {rv.accuracyReport.totalObservations} closed-deal
+                    observation{rv.accuracyReport.totalObservations === 1 ? "" : "s"} across{" "}
+                    {rv.accuracyReport.states.length} state{rv.accuracyReport.states.length === 1 ? "" : "s"}:
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {rv.accuracyReport.states.slice(0, 5).map((s) => (
+                      <li key={s.state}>
+                        {s.state}: {s.observationCount} observation{s.observationCount === 1 ? "" : "s"}
+                        {s.lines.length > 0 && (
+                          <> — {s.lines.map((l) => `${l.label} within band ${Math.round(l.withinBandRate * 100)}%`).join(", ")}</>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="flex justify-end">
                 <Button size="sm" variant="outline" disabled={completingReview === rv.key}
                   onClick={() => markReviewDone(rv)}>
