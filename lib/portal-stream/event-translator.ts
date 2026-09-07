@@ -465,9 +465,8 @@ const TRANSLATIONS: Record<string, Builder> = {
  * vocabulary, so the kernel spelling is accepted here and canonicalised to the
  * portal kind the stream stores. Only kinds with NO dotted writer are aliased —
  * aliasing one that already has a dotted writer would card the moment twice.
- * Not aliased (no kernel event carries the moment — unresolved, not guessed):
- * inspection.completed, portal.message_sent_by_agent (client_portal_message_sent
- * does not say who sent it), wealth.refinance_opportunity, wealth.equity_milestone.
+ * Kinds with no kernel moment are listed in PORTAL_KINDS_WITHOUT_KERNEL_MOMENT
+ * below — unresolved, not guessed.
  */
 export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   offer_submitted:            "offer.submitted",
@@ -484,6 +483,20 @@ export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   offer_strategy_recommended: "negotiation.strategy_ready",
   contract_signed:            "portal.document_signed",
 }
+
+/**
+ * Portal kinds no KernelEvent carries (§1: "unresolved", not guessed). Each stays
+ * reachable only by a dotted direct insert, which nothing writes today:
+ *  · inspection.completed — INSPECTION_DUE / INSPECTION_ORDERED are not completion.
+ *  · portal.message_sent_by_agent — CLIENT_PORTAL_MESSAGE_SENT does not say who sent it.
+ *  · wealth.refinance_opportunity, wealth.equity_milestone — no kernel event exists.
+ */
+export const PORTAL_KINDS_WITHOUT_KERNEL_MOMENT: readonly string[] = [
+  "inspection.completed",
+  "portal.message_sent_by_agent",
+  "wealth.refinance_opportunity",
+  "wealth.equity_milestone",
+]
 
 /** The portal kind a lifecycle_events.event_type projects as (identity for portal spellings). */
 export function canonicalPortalEventType(eventType: string): string {

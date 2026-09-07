@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { PUBLIC_ROUTES, PROTECTED_ROUTES } from "../app/constants/auth"
 import { stripComments } from "./strip-comments"
+import { walkTs } from "./runtime-roots"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -61,17 +62,14 @@ function check(name: string, cond: boolean, detail?: string) {
 // runs its positive controls against the SURVIVOR, so the integrity checks that
 // justified writing a scanner at all are kept, not dropped with the code.
 
-// ── file walking ────────────────────────────────────────────────────────────
-function walk(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir)) {
-    if (e === "node_modules" || e === ".next" || e === ".git") continue
-    const p = join(dir, e)
-    const st = statSync(p)
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.tsx?$/.test(p)) out.push(p)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private recursive `walk()` that stood
+// here was one of the readdirSync walkers merged onto
+// scripts/runtime-roots.ts:walkTs. Its skip set (node_modules/.next/.git) was
+// narrower than walkTs's NEVER_WALK (adds .vercel/.claude), but every call
+// site below walks only app/ or lib/ subtrees, neither of which nests a
+// .vercel or .claude directory, so the wider skip list changes nothing here.
+function walk(dir: string): string[] {
+  return existsSync(dir) ? walkTs(dir) : []
 }
 const read = (p: string) => readFileSync(p, "utf8")
 const rel = (p: string) => relative(ROOT, p)

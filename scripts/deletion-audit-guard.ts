@@ -45,38 +45,21 @@
  *     history.
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from "fs"
+import { readFileSync, existsSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+import { walkTs } from "./runtime-roots"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const SCAN_DIRS = ["app", "lib", "hooks", "services", "components", "constants", "types", "scripts"]
 const ROOT_FILES = ["types.ts"]
-const SKIP_DIRS = new Set(["node_modules", ".next", ".git"])
 
-// ─── collect files ───────────────────────────────────────────────────────────
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try {
-    entries = readdirSync(dir)
-  } catch {
-    return
-  }
-  for (const e of entries) {
-    const p = join(dir, e)
-    let st
-    try {
-      st = statSync(p)
-    } catch {
-      continue
-    }
-    if (st.isDirectory()) {
-      if (!SKIP_DIRS.has(e)) walk(p, out)
-    } else if (/\.(ts|tsx)$/.test(e)) {
-      out.push(p)
-    }
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` that stood here was
+// one of the readdirSync walkers merged onto scripts/runtime-roots.ts:walkTs.
+// SCAN_DIRS contains no nested node_modules/.next/.git/.vercel/.claude (the only
+// dot-directory anywhere under them, app/.well-known, carries zero .ts/.tsx), so
+// walkTs's NEVER_WALK skip list is not narrower here in practice — verified by
+// running this guard before and after and diffing its printed counts.
 
 // ─── tombstone block extraction (raw source, comment lines only) ─────────────
 const COMMENT_LINE = /^\s*(\/\/|\/\*|\*|\{\/\*)/
@@ -265,7 +248,7 @@ if (controlFailures.length > 0) {
 }
 
 const files: string[] = []
-for (const d of SCAN_DIRS) walk(join(ROOT, d), files)
+for (const d of SCAN_DIRS) files.push(...walkTs(join(ROOT, d)))
 for (const f of ROOT_FILES) {
   const p = join(ROOT, f)
   if (existsSync(p)) files.push(p)

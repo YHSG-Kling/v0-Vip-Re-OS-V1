@@ -38,7 +38,8 @@ export const CITATION_PLATFORMS = [
   "gemini",
   "bing_copilot",
 ] as const
-export type CitationPlatform = (typeof CITATION_PLATFORMS)[number]
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+type CitationPlatform = (typeof CITATION_PLATFORMS)[number]
 
 /** Honest outcome vocabulary — `not_checked` is the degrade, never a fabricated miss. */
 export type CitationOutcome = "cited" | "not_cited" | "not_checked"
@@ -50,7 +51,8 @@ export interface CitationObservation {
 
 // ── PURE: detect whether a search answer cites OUR pages/brand ──
 
-export interface DetectionTarget {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DetectionTarget {
   /** Our citable /v/[slug] URLs (full URL) AND any standalone slugs to match. */
   slugs:    string[]
   /** Our domains/hosts (from NEXT_PUBLIC_APP_URL) — a bare domain mention counts. */
@@ -59,7 +61,8 @@ export interface DetectionTarget {
   brands:   string[]
 }
 
-export interface DetectionResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DetectionResult {
   cited:    boolean
   /** When cited via a URL/slug, the matched URL or slug; when cited only via brand, the brand. */
   matched:  string | null
@@ -159,7 +162,8 @@ export function detectCompetitorCitations(
 
 // ── PURE: score AI-search visibility from REAL recorded observations ──
 
-export interface VisibilityScore {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface VisibilityScore {
   /** 0..1 visibility = cited / checked. NULL when nothing was actually checked
    *  (all not_checked or empty) — we report the honest gap, never a fabricated 0
    *  that would read as "definitely not cited". */
@@ -206,7 +210,8 @@ export function scoreCitationVisibility(observations: ReadonlyArray<CitationObse
 // ── The external-search seam (gated, honest-degrade) ──
 
 /** What the runner asks the search rail for, per platform query. */
-export interface SearchFetchResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface SearchFetchResult {
   /** Combined answer + result snippets to scan for our citation. */
   text:     string
   /** The provider that answered: "tavily" | "exa" | "none". "none" ⇒ not_checked. */
@@ -284,7 +289,8 @@ export function buildLandingCitationQuery(args: {
 
 // ── The runner ──
 
-export interface CitationMonitorOptions {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CitationMonitorOptions {
   now?:           Date
   /** Injectable external-search seam — real web-search default. */
   searchFetcher?: SearchFetcher
@@ -296,7 +302,8 @@ export interface CitationMonitorOptions {
   windowDays?:    number
 }
 
-export interface CitationMonitorResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CitationMonitorResult {
   pagesMonitored:  number
   observations:    number
   cited:           number
@@ -602,7 +609,8 @@ export async function runCitationMonitor(
 // rail, recording honest observations into ai_search_landing_citation_observations
 // (FK'd to lead_capture_forms — reels and landing pages are kept in their own tables).
 
-export interface LandingCitationMonitorResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface LandingCitationMonitorResult {
   pagesMonitored: number
   observations:   number
   cited:          number

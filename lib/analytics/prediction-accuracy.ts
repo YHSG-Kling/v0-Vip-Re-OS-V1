@@ -120,7 +120,8 @@ export interface RailMedianError {
   label: string
 }
 
-export interface RailWithinRate {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RailWithinRate {
   /** 0..1 share of graded observations inside the SOURCE-DEFINED tolerance */
   rate: number
   /** names the tolerance so the number can't be mistaken for something else */
@@ -252,7 +253,8 @@ export function normalizeAddressKey(street: string | null | undefined, zip: stri
 
 // ─── Rail 1: CLOSING COSTS (the round-34 flywheel, merged in keep-one) ───────
 
-export interface ClosingCostObsRow {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ClosingCostObsRow {
   state: string
   lines: AccuracyLine[]
   created_at: string | null
@@ -827,7 +829,8 @@ async function loadPricePairs(svc: Svc, brokerageId?: string): Promise<PricePred
 
 // ─── Rail 5: OPEN-HOUSE ATTENDANCE (predicted head count vs the door) ────────
 
-export interface AttendancePair {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface AttendancePair {
   predicted: number | null
   actual: number | null
   eventDate: string | null
@@ -897,7 +900,8 @@ async function attendanceAdapter(svc: Svc, brokerageId?: string): Promise<RailAc
 
 // ─── Rail 6: OFFER STRATEGY (recommended price vs the final price) ───────────
 
-export interface StrategyOutcomeRow {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface StrategyOutcomeRow {
   outcome: string
   final_price: number | null
   deviation_from_recommendation: number | null
@@ -955,7 +959,8 @@ async function strategyAdapter(svc: Svc, brokerageId?: string): Promise<RailAccu
 
 // ─── Rail 7: PATTERN PREDICTIONS (human-graded correct/incorrect) ────────────
 
-export interface PatternPredictionRow {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface PatternPredictionRow {
   outcome: string | null
   outcome_recorded_at: string | null
 }
@@ -1021,7 +1026,8 @@ async function patternAdapter(svc: Svc, brokerageId?: string): Promise<RailAccur
 // The headline metric is UNCHANGED on purpose: the accuracy gate's
 // marketing_content bar is "median engagement-score miss ≤ 15 score_points".
 // The recovered measurements arrive as BREAKDOWN rows beside it.
-export interface ContentAccuracyRow {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ContentAccuracyRow {
   delta_score: number | null
   logged_at: string | null
   // ── the three recorded measurements the reader used to drop ────────────────

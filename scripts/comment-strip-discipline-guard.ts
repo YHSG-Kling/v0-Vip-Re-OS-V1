@@ -120,10 +120,11 @@
  *
  * Run: npx tsx scripts/comment-strip-discipline-guard.ts
  */
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs"
+import { join, relative, basename } from "node:path"
 import { createHash } from "node:crypto"
 import { stripComments } from "./strip-comments"
+import { walkTs } from "./runtime-roots"
 
 const SCRIPTS = join(process.cwd(), "scripts")
 
@@ -494,15 +495,20 @@ export function detect(file: string, rawSrc: string): Offence[] {
  * level, so a scanner one directory down (scripts/shared/, scripts/flow-tests/)
  * was outside the guard entirely — and "the guard is green" would have meant
  * "the guard did not look".
+ *
+ * TOMBSTONE (orphan doctrine §1.1) — the private recursive readdirSync walker
+ * that stood here is merged onto scripts/runtime-roots.ts:walkTs. scripts/
+ * has no .tsx files and no node_modules/dot subdirectory (verified), so
+ * walkTs's broader match (.ts AND .tsx) and NEVER_WALK skip list select
+ * exactly the same .ts files; the .ts-only filter, the CANONICAL exclusion
+ * and the sort are re-applied after walking to preserve this guard's exact
+ * corpus and ordering.
  */
-function scriptFiles(dir = SCRIPTS, prefix = ""): string[] {
-  const out: string[] = []
-  for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-    const rel = prefix ? `${prefix}/${e.name}` : e.name
-    if (e.isDirectory()) out.push(...scriptFiles(join(dir, e.name), rel))
-    else if (e.name.endsWith(".ts") && !CANONICAL.has(e.name)) out.push(rel)
-  }
-  return out
+function scriptFiles(): string[] {
+  return walkTs(SCRIPTS)
+    .map((p) => relative(SCRIPTS, p))
+    .filter((rel) => rel.endsWith(".ts") && !CANONICAL.has(basename(rel)))
+    .sort((a, b) => a.localeCompare(b))
 }
 
 function scanTree(): Offence[] {

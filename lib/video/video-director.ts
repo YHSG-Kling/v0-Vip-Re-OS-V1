@@ -101,7 +101,8 @@ export type CompositionTierLite =
 export type TargetChannel =
   | "tiktok" | "instagram" | "youtube" | "facebook" | "email" | "portal"
 
-export type VideoAspect = "square" | "vertical" | "horizontal"
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+type VideoAspect = "square" | "vertical" | "horizontal"
 
 export interface VideoSituation {
   kind: SituationKind
@@ -353,7 +354,8 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
  * returns — PLUS the learning provenance so commissionVideo can stamp
  * video_metadata.format_source + the WHY for auditability.
  */
-export interface LearnedFormat {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface LearnedFormat {
   format: SelectedFormat
   /** "default" = expert rule kept; "learned" = a real, gated per-brokerage win. */
   formatSource: "default" | "learned"
@@ -401,7 +403,8 @@ export function selectVideoFormatLearned(
 /** The intro the build assembles: brand + agent photo + a hook line. The hook
  *  COPY is generated at runtime (generatePersonaCopy + fallback); the spec only
  *  declares the slots. */
-export interface IntroSpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface IntroSpec {
   /** Brand band shows the brokerage trade name + colors. */
   brand: true
   /** Agent photo card (agents.avatar_image_url at build time). */
@@ -412,7 +415,8 @@ export interface IntroSpec {
 
 /** The outro the build assembles: brand + agent contact + a tracked QR whose
  *  destination is keyed by the video kind (qrDestinationForKind). */
-export interface OutroSpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface OutroSpec {
   brand: true
   /** Agent contact line (name + phone) shown on the outro card. */
   agentContact: true
@@ -440,7 +444,8 @@ export function sentimentForSituation(kind: SituationKind): "happy" | "neutral" 
 
 export type MusicMood = "none" | "energetic" | "sophisticated" | "calm" | "upbeat"
 
-export interface AssemblySpec {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface AssemblySpec {
   intro: IntroSpec
   outro: OutroSpec
   /** The background-music mood for this situation (the coordinator honors it). */
@@ -565,7 +570,8 @@ export function defaultHookForSituation(kind: SituationKind): string {
  *   urgency      — the window is closing ("Before it's gone").
  *   value        — the concrete payoff up front ("What your home is worth").
  */
-export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
 
 /** The fixed angle ORDER the A/B draws from — curiosity first (the strongest
  *  scroll-stopper), then social-proof, urgency, value. hookVariants(…, n) takes the
@@ -573,7 +579,8 @@ export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
 export const HOOK_ANGLE_ORDER: HookAngle[] = ["curiosity", "social_proof", "urgency", "value"]
 
 /** One drafted hook variant — the angle + its (deterministic-fallback) copy. */
-export interface HookVariant {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface HookVariant {
   /** 0-based position in the experiment (variant_index stamped on the row). */
   index: number
   angle: HookAngle
@@ -781,7 +788,8 @@ export interface CommissionOpts {
   formatLearning?: boolean | ScoredFormats
 }
 
-export interface CommissionResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionResult {
   ok: boolean
   status: "staged" | "already_staged" | "blocked" | "failed"
   videoProjectId?: string
@@ -1308,7 +1316,8 @@ async function draftAndGateHook(
   }
 }
 
-export interface CommissionExperimentOpts extends CommissionOpts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionExperimentOpts extends CommissionOpts {
   /**
    * OPTIONAL learned-angle seam. When supplied, the winning angle (from a prior
    * crowned hook experiment via recommendHookWinner) is moved to variant 0 so
@@ -1320,7 +1329,8 @@ export interface CommissionExperimentOpts extends CommissionOpts {
   preferredAngleWhy?: string | null
 }
 
-export interface CommissionExperimentResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionExperimentResult {
   ok: boolean
   status: "staged" | "already_staged" | "blocked" | "failed"
   experimentId?: string

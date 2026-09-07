@@ -39,9 +39,10 @@
  *     site, and neither is the tombstone comment inside _BrollLayer.tsx.
  *   · Blind spots are printed beside the count.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import { brollWindowAt } from "../remotion/_BrollLayer"
+import { walkTs } from "./runtime-roots"
 
 let passed = 0
 let failed = 0
@@ -224,17 +225,11 @@ console.log("\n═══ 5. Census: which <Video> sites in remotion/ this rule r
   // Denominator, published beside the number (§2). A single-clip <Video> whose
   // slot IS its enclosing sequence needs no `from`; the rule above is about a
   // component that packs several clips into one window.
-  const files: string[] = []
-  const walk = (dir: string, depth = 0) => {
-    if (depth > 3) return
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith(".")) continue
-      const full = `${dir}/${e.name}`
-      if (e.isDirectory()) walk(full, depth + 1)
-      else if (/\.tsx?$/.test(e.name)) files.push(full)
-    }
-  }
-  walk("remotion")
+  // TOMBSTONE (orphan doctrine §1.1) — the private depth-capped `walk()` that
+  // stood here was one of the readdirSync walkers merged onto
+  // scripts/runtime-roots.ts:walkTs. Its depth>3 cap never bound: remotion/
+  // is only 1 directory level deep (verified).
+  const files: string[] = walkTs("remotion")
   let sites = 0
   const perFile: string[] = []
   for (const f of files) {

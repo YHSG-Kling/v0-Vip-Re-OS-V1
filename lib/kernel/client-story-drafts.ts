@@ -49,7 +49,8 @@ export interface StoryBrief {
 
 // ── 1. Weekly seller update ─────────────────────────────────────────────────
 
-export interface SellerWeekFacts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface SellerWeekFacts {
   sellerFirstName: string | null
   address: string
   showingCount: number
@@ -86,7 +87,8 @@ export function sellerWeeklyTag(listingId: string, isoWeek: string): string {
 
 // ── 2. Tour-evening recap ───────────────────────────────────────────────────
 
-export interface TourStopFact {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface TourStopFact {
   address: string
   rating: number | null
   feedback: string | null
@@ -98,7 +100,8 @@ export interface TourStopFact {
   minutesOnSite?: number | null
 }
 
-export interface TourRecapFacts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface TourRecapFacts {
   buyerFirstName: string | null
   stops: TourStopFact[]
 }
@@ -152,7 +155,8 @@ export function tourRecapTag(tourId: string): string {
 
 // ── 3. Weekly deal note (the TC's all-parties status) ───────────────────────
 
-export const LOAN_CLIENT_LANGUAGE: Record<string, string> = {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+const LOAN_CLIENT_LANGUAGE: Record<string, string> = {
   submitted: "your loan file is in with the lender",
   in_review: "the lender is reviewing your file",
   in_underwriting: "your loan is in underwriting — normal at this stage",
@@ -162,7 +166,8 @@ export const LOAN_CLIENT_LANGUAGE: Record<string, string> = {
   funded: "your loan has funded",
 }
 
-export interface DealNoteFacts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealNoteFacts {
   clientFirstName: string | null
   address: string | null
   loanStatus: string | null
@@ -220,7 +225,8 @@ function dealWeeklySellerTag(transactionId: string, isoWeek: string): string {
 
 // ── 4. Buyer weekly search story (the RealScout counter — authored, not a blast) ──
 
-export interface BuyerWeekFacts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface BuyerWeekFacts {
   buyerFirstName: string | null
   /** portal activity events in the window (views, searches, decisions) */
   portalActivityCount: number

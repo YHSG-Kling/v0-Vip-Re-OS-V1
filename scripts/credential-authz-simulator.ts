@@ -15,8 +15,9 @@
 // broken for exactly that reason. Any NEW action file that touches a credential table
 // without gating on role fails here.
 
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { walkTs } from "./runtime-roots"
 
 const ROOT = process.cwd()
 
@@ -73,18 +74,14 @@ const GATE_MARKERS = [
   "BROKERAGE_ROLES",
 ]
 
-const walk = (dir: string, out: string[] = []): string[] => {
-  for (const e of readdirSync(dir)) {
-    const p = join(dir, e)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (e.endsWith(".ts") || e.endsWith(".tsx")) out.push(p)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` that stood here was
+// one of the readdirSync walkers merged onto scripts/runtime-roots.ts:walkTs.
+// It had no node_modules/dot-dir skip of its own, and app/actions/ contains
+// neither, so walkTs's NEVER_WALK skip list narrows nothing here.
 
 console.log("\n[provider credentials are never writable without a role gate]")
 {
-  const files = walk(join(ROOT, "app/actions"))
+  const files = walkTs(join(ROOT, "app/actions"))
   const offenders: string[] = []
 
   for (const f of files) {

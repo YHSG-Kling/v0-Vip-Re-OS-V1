@@ -27,7 +27,8 @@
  *
  * Reads Root.tsx as text. No Remotion import, no bundling, no DB.
  */
-import { readFileSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
 import {
@@ -749,17 +750,12 @@ console.log("\n═══ 14. Time and money formatting cannot guess ═══")
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n═══ 15. ONE voiceover census — the set, the compositions, the code, the live mirror ═══")
 {
-  const compFiles: string[] = []
-  const walk = (dir: string, depth = 0) => {
-    if (depth > 3) return
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith(".")) continue
-      const full = `${dir}/${e.name}`
-      if (e.isDirectory()) walk(full, depth + 1)
-      else if (/\.tsx?$/.test(e.name)) compFiles.push(full)
-    }
-  }
-  walk("remotion")
+  // TOMBSTONE (orphan doctrine §1.1) — the private depth-capped `walk()` that
+  // stood here was one of the readdirSync walkers merged onto
+  // scripts/runtime-roots.ts:walkTs. Its depth>3 cap never bound: remotion/
+  // is only 1 directory level deep (verified), well inside walkTs's unbounded
+  // recursion.
+  const compFiles: string[] = walkTs("remotion")
   // The same reader shape scripts/remotion-setup-guard.ts §5 uses — an <Audio>
   // whose src reads voiceoverUrl. Comment-stripped, NOT string-masked: JSX
   // attributes are code, and the prop name is what is being looked for.
@@ -1024,17 +1020,12 @@ console.log("\n═══ 18. every companion-card producer supplies a seoHint (t
     "lib/geo/video-landing.ts",
   ])
 
-  const producerFiles: string[] = []
-  const walkSrc = (dir: string, depth = 0) => {
-    if (depth > 8) return
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name.startsWith(".") || e.name === "node_modules") continue
-      const full = `${dir}/${e.name}`
-      if (e.isDirectory()) walkSrc(full, depth + 1)
-      else if (/\.tsx?$/.test(e.name)) producerFiles.push(full)
-    }
-  }
-  walkSrc("lib"); walkSrc("app")
+  // TOMBSTONE (orphan doctrine §1.1) — the private depth-capped `walkSrc()`
+  // that stood here was one of the readdirSync walkers merged onto
+  // scripts/runtime-roots.ts:walkTs. Its depth>8 cap never bound: lib/ is 2
+  // levels deep and app/ is 6 (both verified), well inside the cap, so
+  // dropping it changes nothing.
+  const producerFiles: string[] = [...walkTs("lib"), ...walkTs("app")]
 
   const staging: string[] = []
   const hintless: string[] = []

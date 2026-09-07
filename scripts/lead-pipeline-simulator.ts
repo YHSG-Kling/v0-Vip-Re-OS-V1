@@ -40,9 +40,10 @@
  *
  * Run:  npx tsx scripts/lead-pipeline-simulator.ts   (npm run test:lead-pipeline)
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { walkTs } from "./runtime-roots"
 import { calculateFuzzyMatch } from "../lib/lead-pipeline/fuzzy-matcher"
 import { evaluateCanonicalLeadEligibility } from "../lib/lead-pipeline/canonical-lead-eligibility"
 import { resolveScrapeTerritoriesFrom, territoryUnion } from "../lib/lead-pipeline/scrape-territories"
@@ -183,20 +184,14 @@ function testTerritoryAndScoring() {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const src = (rel: string) => readFileSync(join(ROOT, rel), "utf8")
 
-/** Recursive walk of app/ + lib/ .ts(x) sources (skips node_modules by construction). */
+// TOMBSTONE (orphan doctrine §1.1) — the private recursive `walk()` that stood
+// here was one of the readdirSync walkers merged onto
+// scripts/runtime-roots.ts:walkTs. It had no node_modules/dot-dir skip of its
+// own ("skips node_modules by construction" — only app/ and lib/ were ever
+// walked), so walkTs's NEVER_WALK skip list narrows nothing here.
 function walkSources(): Array<{ rel: string; text: string }> {
-  const out: Array<{ rel: string; text: string }> = []
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
-      const p = join(dir, name)
-      const st = statSync(p)
-      if (st.isDirectory()) walk(p)
-      else if (/\.(ts|tsx)$/.test(name)) out.push({ rel: p.slice(ROOT.length + 1), text: readFileSync(p, "utf8") })
-    }
-  }
-  walk(join(ROOT, "app"))
-  walk(join(ROOT, "lib"))
-  return out
+  return [...walkTs(join(ROOT, "app")), ...walkTs(join(ROOT, "lib"))]
+    .map((p) => ({ rel: p.slice(ROOT.length + 1), text: readFileSync(p, "utf8") }))
 }
 
 function testNoManualRawToLeadDoor() {

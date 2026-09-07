@@ -14,6 +14,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { blankStrings, stringLiterals } from "./strip-comments"
+import { walkTs } from "./runtime-roots"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -161,17 +162,13 @@ console.log("\n── there is ONE role→capability table, and the tree cannot 
   const CAPABILITY_LITERAL = /^[a-z_]+:[a-z_*]+$/
   const RAW_CAPABILITY = /['"`][a-z_]+:[a-z_*]+['"`]/g
 
-  const walk = (dir: string, out: string[] = []): string[] => {
-    const abs = join(process.cwd(), dir)
-    if (!existsSync(abs)) return out
-    for (const e of readdirSync(abs, { withFileTypes: true })) {
-      if (e.name === "node_modules" || e.name === ".next" || e.name.startsWith(".")) continue
-      const rel = `${dir}/${e.name}`
-      if (e.isDirectory()) walk(rel, out)
-      else if (/\.tsx?$/.test(e.name)) out.push(rel)
-    }
-    return out
-  }
+  // TOMBSTONE (orphan doctrine §1.1) — the private recursive `walk()` that
+  // stood here was one of the readdirSync walkers merged onto
+  // scripts/runtime-roots.ts:walkTs. It skipped ALL dot-directories, broader
+  // than walkTs's NEVER_WALK list, but the only dot-directory under any
+  // SCAN_ROOTS entry (app/.well-known) carries zero .ts/.tsx files, so the
+  // wider list changes nothing here.
+  const walk = (dir: string): string[] => (existsSync(dir) ? walkTs(dir) : [])
 
   /** Role keys counted in CODE; capability grants counted in STRING LITERALS. */
   const measure = (raw: string) => {

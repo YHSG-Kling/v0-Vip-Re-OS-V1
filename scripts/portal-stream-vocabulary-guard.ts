@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import { walkTs } from "./runtime-roots"
+import { PORTAL_KINDS_WITHOUT_KERNEL_MOMENT } from "../lib/portal-stream/event-translator"
 
 let passed = 0, failed = 0
 const fails: string[] = []
@@ -28,7 +29,6 @@ function check(name: string, ok: boolean, detail = ""): void {
 const src = (p: string) => stripComments(readFileSync(p, "utf8"))
 
 const TRANSLATOR = src("lib/portal-stream/event-translator.ts")
-const RAW_TRANSLATOR = readFileSync("lib/portal-stream/event-translator.ts", "utf8")
 const PROJECTOR  = src("app/api/cron/portal-stream-projector/route.ts")
 const STAGE_TAGS = src("lib/portal-stream/event-to-stage-tags.ts")
 const EVENTS     = src("lib/kernel/events.ts")
@@ -57,13 +57,19 @@ check("the kernel emitter writes the enum spelling (the reason the alias is need
 // the literal IS the thing we look for, so use stripComments only).
 const productFiles = [...walkTs("app"), ...walkTs("lib")].filter((f) => !/portal-stream\/(event-translator|event-to-stage-tags)\.ts$|price-improvement-label\.ts$/.test(f))
 const corpus = productFiles.map((f) => src(f)).join("\n")
-const unresolvedNote = RAW_TRANSLATOR.slice(RAW_TRANSLATOR.indexOf("Not aliased ("), RAW_TRANSLATOR.indexOf("*/", RAW_TRANSLATOR.indexOf("Not aliased (")))
+// The unresolved list is CODE (PORTAL_KINDS_WITHOUT_KERNEL_MOMENT), imported —
+// never a comment parsed by hand (§2). The translator is pure (no server-only).
+const unresolvedKinds = [...PORTAL_KINDS_WITHOUT_KERNEL_MOMENT]
+check("the unresolved list is declared in code and every entry is a translator key",
+  unresolvedKinds.length >= 1 && unresolvedKinds.every((k) => keys.includes(k)), unresolvedKinds.join(", "))
 const reach = keys.map((k) => ({
   key: k,
   dotted: corpus.includes(`"${k}"`),
   aliased: aliases.some((a) => a.portal === k),
-  unresolved: unresolvedNote.includes(k),
+  unresolved: unresolvedKinds.includes(k),
 }))
+check("no kind is BOTH unresolved and aliased/written (the list would be stale)",
+  reach.every((r) => !(r.unresolved && (r.aliased || r.dotted))), reach.filter((r) => r.unresolved && (r.aliased || r.dotted)).map((r) => r.key).join(", "))
 const unreachable = reach.filter((r) => !r.dotted && !r.aliased && !r.unresolved)
 check("every portal kind is reachable: a dotted writer, a kernel alias, or named UNRESOLVED in the translator",
   unreachable.length === 0, unreachable.map((r) => r.key).join(", "))

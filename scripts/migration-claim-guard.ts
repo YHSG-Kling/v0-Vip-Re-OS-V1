@@ -69,6 +69,7 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
+import { walkTs } from "./runtime-roots"
 
 const ROOT = process.cwd()
 const MIGRATIONS = join(ROOT, "supabase", "migrations")
@@ -178,19 +179,13 @@ console.log("\n[2 · no prose claim in the repo contradicts a migration's own fi
 const CLAIM_NOT_APPLIED_A = /\b(m\d+[a-z]?)\b[^.]{0,80}?\b(?:is\s+)?(?:WRITTEN|written)[,\s]+(?:and\s+)?(?:NOT|not)\s+(?:APPLIED|applied)/g
 const CLAIM_NOT_APPLIED_B = /\b(m\d+[a-z]?)\b[^.]{0,40}?\((?:WRITTEN|written)[,\s]+(?:NOT|not)\s+(?:APPLIED|applied)\)/g
 
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` that stood here was
+// one of the readdirSync walkers merged onto scripts/runtime-roots.ts:walkTs.
+// It skipped ALL dot-directories, broader than walkTs's NEVER_WALK list, but
+// neither scripts/ nor lib/kernel/ contains a dot-subdirectory (verified),
+// so the wider list narrows nothing here in practice.
 function claimCorpus(): string[] {
-  const out: string[] = []
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === "node_modules" || e.name.startsWith(".")) continue
-      const p = join(dir, e.name)
-      if (e.isDirectory()) walk(p)
-      else if (e.name.endsWith(".ts") || e.name.endsWith(".tsx")) out.push(p)
-    }
-  }
-  walk(join(ROOT, "scripts"))
-  walk(join(ROOT, "lib", "kernel"))
-  return out
+  return [...walkTs(join(ROOT, "scripts")), ...walkTs(join(ROOT, "lib", "kernel"))]
 }
 
 const appliedPrefixes = new Set(applied.map(prefixOf).filter(Boolean) as string[])

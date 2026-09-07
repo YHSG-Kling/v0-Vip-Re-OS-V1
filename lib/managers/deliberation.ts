@@ -81,7 +81,8 @@ export interface ManagerBrief {
 
 /** One manager's bounded rebuttal of the OTHERS' positions (round 36) — cited from
  *  its OWN loader's real citations, same grounding guard as the position itself. */
-export interface PositionRebuttal {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface PositionRebuttal {
   /** The factual pushback on the other positions (empty note = no rebuttal held). */
   note: string
   /** Field-level citations — filtered to the rebutting manager's REAL citations. */
@@ -89,7 +90,8 @@ export interface PositionRebuttal {
 }
 
 /** One manager's argued position. */
-export interface ManagerPosition {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ManagerPosition {
   manager: ManagerKey
   proposal: string
   reasoning: string
@@ -100,7 +102,8 @@ export interface ManagerPosition {
   rebuttal?: PositionRebuttal | null
 }
 
-export interface DeliberationDissent {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DeliberationDissent {
   manager: ManagerKey
   /** Why the losing position had merit — honest, on the record. */
   note: string
@@ -108,7 +111,8 @@ export interface DeliberationDissent {
 
 /** THE PRINCIPAL'S CALL (round 36) — the human's recorded override of the argued
  *  winner, on the SAME payload record. The argued record stays intact underneath. */
-export interface DeliberationOverride {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DeliberationOverride {
   /** The position the principal picked instead — must be one that actually argued. */
   winner: ManagerKey
   /** The principal's stated reason — required; an unexplained override is refused. */
@@ -265,7 +269,8 @@ export function parseDeliberation(payload: Record<string, unknown> | null | unde
 // Read-only, brokerage-scoped, bounded. An empty tenant yields honest empty facts.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface ReferralContext {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ReferralContext {
   brokerageId: string
   ask: string
   entityType: string | null
@@ -730,7 +735,8 @@ export async function loadManagerBrief(
 // deterministic engine. Any engine failure → the deliberation records 'unavailable'.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface ArgueInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ArgueInput {
   manager: ManagerKey
   domain: CollaborationDomain
   ask: string
@@ -741,7 +747,8 @@ export interface ArgueInput {
 
 /** ONE bounded rebuttal turn (round 36): a manager reads the OTHERS' positions and may
  *  push back with cited evidence from its OWN brief — or honestly decline (null). */
-export interface RebutInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RebutInput {
   manager: ManagerKey
   domain: CollaborationDomain
   ask: string
@@ -753,7 +760,8 @@ export interface RebutInput {
   brokerageId: string
 }
 
-export interface ResolveInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ResolveInput {
   domain: CollaborationDomain
   ask: string
   positions: ManagerPosition[]
@@ -970,7 +978,8 @@ export async function deliberate(params: {
   }
 }
 
-export interface RunDeliberationInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RunDeliberationInput {
   brokerageId: string
   /** MANAGER_COLLABORATIONS key the referral traveled — must be deliberative. */
   collabDomain: string

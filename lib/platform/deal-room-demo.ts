@@ -151,7 +151,8 @@ export function hasDealRoomMarker(row: Record<string, unknown>): boolean {
 
 const DAY = 24 * 60 * 60 * 1000
 
-export interface DealRoomStoryPlanInput {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomStoryPlanInput {
   brokerageId: string
   /** The demo owner's agents.id (CRM rows hang off it) — null tolerated. */
   agentId: string | null
@@ -164,7 +165,8 @@ export interface DealRoomStoryPlanInput {
   now?: Date
 }
 
-export interface DealRoomStoryPlan {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomStoryPlan {
   market: Record<string, unknown>
   raw: Record<string, unknown>
   saves: Array<Record<string, unknown>>
@@ -411,13 +413,15 @@ export function isRecognizedDemoRow(
   return false
 }
 
-export interface GuardSuspect {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface GuardSuspect {
   table: string
   count: number
   sampleIds: string[]
 }
 
-export interface DemoDayGuardResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DemoDayGuardResult {
   clean: boolean
   suspects: GuardSuspect[]
 }
@@ -670,7 +674,8 @@ export async function teardownDealRoomDemo(): Promise<TeardownReport> {
 
 // ─── The seeder ──────────────────────────────────────────────────────────────
 
-export interface DealRoomSeedStep {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DealRoomSeedStep {
   beat: string
   rail: "real" | "staged" | "unavailable"
   ok: boolean

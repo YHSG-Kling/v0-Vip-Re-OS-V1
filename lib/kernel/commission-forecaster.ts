@@ -48,7 +48,8 @@ export interface PipelineDeal {
   expectedCloseDate: string | null
 }
 
-export interface GciForecast {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface GciForecast {
   /** GCI already booked from deals CLOSED year-to-date. */
   closedYtd: number
   /** Probability-weighted GCI still in the pipeline (Σ commission × winProbability). */
@@ -65,7 +66,8 @@ export interface GciForecast {
   yearElapsed: number
 }
 
-export interface CapStatus {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CapStatus {
   /** The configured cap when present, else null (cap unconfigured). */
   cap: number | null
   /** GCI booked YTD applied against the cap. */
@@ -210,7 +212,8 @@ export function dealsToPush(pipeline: PipelineDeal[], gap: number): PipelineDeal
 
 // ── Summary composition (pure) ────────────────────────────────────────────────
 
-export interface ForecastSummary {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ForecastSummary {
   subject: string
   body: string
 }
@@ -398,7 +401,8 @@ export function toPipeline(rows: RawTxn[]): PipelineDeal[] {
 
 const IN_PROGRESS_STATUSES = ["active", "under_contract", "closing"] as const
 
-export interface CommissionForecasterResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionForecasterResult {
   agentsConsidered: number
   forecastsProposed: number
   audioBriefs: number

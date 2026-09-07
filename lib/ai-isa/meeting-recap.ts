@@ -86,7 +86,8 @@ export function isMeetingConversation(callType: string | null | undefined, hasLi
 
 // ─── Pure: grounded "what we discussed" ──────────────────────────────────────
 
-export interface DiscussedPoint {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DiscussedPoint {
   /** The extractor's key topic (short client-safe phrase). */
   topic: string
   /** The VERBATIM transcript line evidencing it (internal — approver-visible, never client-visible). */
@@ -141,7 +142,8 @@ export function deriveDiscussedPoints(
 
 // ─── Pure: "what happens next" — ONLY from real artifacts ────────────────────
 
-export interface RecapNextStep {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface RecapNextStep {
   /** Which real artifact this step cites. */
   source: FollowthroughKind | "scheduled_followup"
   /** Client-toned phrasing (no jargon, no system talk, no figures). */
@@ -245,7 +247,8 @@ export function buildRecapFallback(args: {
 
 // ─── IO: compose + propose (caller-supplied client; proposal only) ───────────
 
-export interface MeetingRecapResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface MeetingRecapResult {
   ok: boolean
   /** True when a recap proposal landed on the gate this run. */
   proposed: boolean

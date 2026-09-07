@@ -21,7 +21,7 @@
  */
 import { validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES, platformStaffCan } from "../lib/platform/platform-staff-roster"
 import { roleDashboardRoute, ROLE_DASHBOARD_ROUTES } from "../lib/kernel/role-routes"
-import { readFileSync, readdirSync, existsSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 let passed = 0, failed = 0

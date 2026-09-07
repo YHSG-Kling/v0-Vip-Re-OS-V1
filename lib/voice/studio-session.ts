@@ -44,7 +44,8 @@ import type { createServiceClient } from "@/lib/supabase/service"
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** A single reel in the batch plan. */
-export interface StudioSessionItem {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface StudioSessionItem {
   /** The Director SituationKind this reel addresses. */
   kind: SituationKind
   /** Target channel — drives format selection (aspect + B-roll) in the Director. */
@@ -275,7 +276,8 @@ export function composeSessionPreviewSpoken(args: {
 
 type AnyClient = ReturnType<typeof createServiceClient>
 
-export interface CommissionSessionOpts {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionSessionOpts {
   brokerageId: string
   agentUserId: string
   spokenCommand: string
@@ -287,7 +289,8 @@ export interface CommissionSessionOpts {
   _skipCompliance?: boolean
 }
 
-export interface CommissionSessionResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface CommissionSessionResult {
   ok: boolean
   status: "commissioned" | "already_commissioned" | "partial" | "failed"
   sessionId?: string
@@ -581,7 +584,8 @@ export function isStudioSessionCommand(text: string): boolean {
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export interface VoiceStudioSessionResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface VoiceStudioSessionResult {
   ok: boolean
   spoken: string
   sessionId?: string

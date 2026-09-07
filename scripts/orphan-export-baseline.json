@@ -503,7 +503,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9410,
+  "census": 9409,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3239,7 +3239,7 @@
     "lib/intelligence/decision-receipts.ts": 1,
     "lib/intelligence/decision-velocity.ts": 3,
     "lib/intelligence/deliverables-summary.ts": 3,
-    "lib/intelligence/derived-snapshots.ts": 2,
+    "lib/intelligence/derived-snapshots.ts": 1,
     "lib/intelligence/dry-run-cockpit-runner.ts": 1,
     "lib/intelligence/dry-run-cockpit.ts": 2,
     "lib/intelligence/dual-transaction-timing-runner.ts": 1,
@@ -3496,7 +3496,7 @@
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
-    "lib/kernel/regulatory-watcher.ts": 7,
+    "lib/kernel/regulatory-watcher.ts": 6,
     "lib/kernel/repair-digest.ts": 3,
     "lib/kernel/reporting-autonomy.ts": 4,
     "lib/kernel/reporting-scope.ts": 2,
@@ -3883,7 +3883,7 @@
     "lib/portal/seller-journey-copy.ts": 2,
     "lib/portal/static-lesson-bridge.ts": 3,
     "lib/portal-stream/event-to-stage-tags.ts": 1,
-    "lib/portal-stream/event-translator.ts": 1,
+    "lib/portal-stream/event-translator.ts": 2,
     "lib/predictive-listing/auto-send.ts": 3,
     "lib/predictive-listing/run-scoring.ts": 1,
     "lib/predictive-listing/signal-generators.ts": 4,
@@ -15980,7 +15980,6 @@
       "generateDeliverablesSummary"
     ],
     "lib/intelligence/derived-snapshots.ts": [
-      "zipFromAddress",
       "runDerivedSnapshots"
     ],
     "lib/intelligence/dry-run-cockpit-runner.ts": [
@@ -17355,8 +17354,7 @@
       "classifyChangeSeverity",
       "extractEffectiveDate",
       "parseChangesFromSearchResult",
-      "runRegulatoryWatcher",
-      "isoWeek"
+      "runRegulatoryWatcher"
     ],
     "lib/kernel/repair-digest.ts": [
       "composeRepairDigest",
@@ -19392,6 +19390,7 @@
       "eventTypeToStageTags"
     ],
     "lib/portal-stream/event-translator.ts": [
+      "canonicalPortalEventType",
       "translateEvent"
     ],
     "lib/predictive-listing/auto-send.ts": [
