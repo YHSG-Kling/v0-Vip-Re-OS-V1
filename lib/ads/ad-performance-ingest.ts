@@ -9,7 +9,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { getConnector, loadConnectorCredential } from "./connectors/registry"
-import type { ProviderPerformanceRow } from "./connectors/types"
+import { isPerformancePending, type PerformanceFetchResult, type ProviderPerformanceRow } from "./connectors/types"
 import { recordAdPerformanceSnapshot, detectCreativeFatigue } from "./creative-fatigue-runner"
 
 /** Pure: provider performance row → ad_performance insert payload. */
@@ -76,7 +76,23 @@ export async function ingestAdPerformance(
     const cred = credCache.get(c.platform)
     if (!cred) { skipped++; continue }
 
-    const perf = await connector.fetchPerformance({ campaignExternalId: externalId, sinceIso: new Date(Date.now() - 30 * 86_400_000).toISOString(), cred })
+    const providerState = (c.targeting_config?.provider_state as Record<string, unknown> | undefined) ?? undefined
+    let perf: PerformanceFetchResult
+    try {
+      perf = await connector.fetchPerformance({ campaignExternalId: externalId, sinceIso: new Date(Date.now() - 30 * 86_400_000).toISOString(), cred, providerState })
+    } catch (e) {
+      console.error("[ad-performance-ingest] fetch failed for", c.id, (e as Error).message)
+      skipped++; continue
+    }
+    if (isPerformancePending(perf)) {
+      // An async provider (Vibe reports) answers on a later pass; carry its
+      // state on the row. A refused write is logged, not read as "carried".
+      const { error: stateError } = await supabase.from("ad_campaigns")
+        .update({ targeting_config: { ...(c.targeting_config ?? {}), provider_state: perf.providerState } })
+        .eq("id", c.id).eq("brokerage_id", brokerageId)
+      if (stateError) console.error("[ad-performance-ingest] provider_state write refused:", stateError.message)
+      skipped++; continue
+    }
     if (!perf) { skipped++; continue }
     const { error } = await supabase.from("ad_performance").insert(toAdPerformanceRow(brokerageId, c.id, perf))
     if (!error) ingested++; else skipped++

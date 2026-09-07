@@ -53,12 +53,18 @@ console.log("\n── dispatch is honest; the row flips only on a confirmed publ
   check("errors return dispatched:false with the real Vibe message",
     v.includes("catch") && v.includes("VibeError") && v.includes("dispatched: false"))
 
+  // The flip-to-live moved from the server action onto ONE survivor
+  // (lib/ads/ctv-campaign.ts launchCtvCampaignOnVibe, 2026-09-07) so the Ads
+  // Manager executor and the action share it. The action must DELEGATE.
+  const lane = src("lib/ads/ctv-campaign.ts")
   const act = src("app/actions/ctv-ads.ts")
-  check("the action flips status→live + records Vibe ids ONLY when dispatched",
-    /if \(result\.dispatched && result\.vibeCampaignId\)/.test(act) &&
-    act.includes('status: "live"') && act.includes("vibe_campaign_id"))
-  check("it ledgers the launch as launched_via vibe_api",
-    act.includes("ad_campaign_launched") && act.includes('launched_via: "vibe_api"'))
+  check("the survivor flips status→live + records Vibe ids ONLY when dispatched",
+    /if \(!\(result\.dispatched && result\.vibeCampaignId\)\) return result/.test(lane) &&
+    lane.includes('status: "live"') && lane.includes("vibe_campaign_id"))
+  check("it ledgers the launch with the caller's launched_via (vibe_api from the action)",
+    lane.includes("ad_campaign_launched") && lane.includes("launched_via: input.launchedVia") && act.includes('launchedVia: "vibe_api"'))
+  check("the action delegates to the survivor and spells no flip of its own",
+    act.includes("launchCtvCampaignOnVibe({") && !act.slice(act.indexOf("dispatchCtvCampaignAction")).includes('status: "live"'))
 }
 
 console.log("\n── the UI launches in-app when Vibe is connected ──")

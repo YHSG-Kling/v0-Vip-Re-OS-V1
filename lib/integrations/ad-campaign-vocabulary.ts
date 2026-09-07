@@ -47,18 +47,31 @@ export const AD_CAMPAIGN_RUNNING_STATUSES = ["launching", "live"] as const satis
  * Deliberately narrow, and deliberately NOT a credential allow-list: it is the
  * intersection of "a campaign can target it" and "the Connection OS actually
  * offers a connection for it". facebook + instagram are CONNECTOR_PROVIDERS.social
- * (via meta); linkedin likewise. google/tiktok/vibe_ctv have no ads connection in
- * the Connection OS, so the workspace must not render them as merely
+ * (via meta); linkedin likewise. google/tiktok have no ads connection in the
+ * Connection OS, so the workspace must not render them as merely
  * "disconnected".
  */
 export const CONNECTABLE_AD_PLATFORMS = ["facebook", "instagram", "linkedin"] as const
 
 /**
+ * Ad platforms connected through a PROVIDER credential in the Connection OS
+ * rather than an ad-account row: the campaign platform → the provider name the
+ * resolver (lib/integrations/connection-manager.ts) is asked for. Streaming TV
+ * runs on the brokerage's Vibe client credentials (lib/providers/vibe.ts).
+ * Neither of the two lists above nor below may name these — a platform is in
+ * exactly one class (§6).
+ */
+export const PROVIDER_CONNECTED_AD_PLATFORMS = { vibe_ctv: "vibe" } as const
+
+/**
  * Ad platforms a campaign may name that have NO account connection in the
  * Connection OS. A campaign can be created for these and cannot be launched from
  * here — surfaced honestly rather than shown as a disconnected account.
+ * chatgpt: ChatGPT Ads (ads.openai.com) has no public advertiser API as of
+ * 2026-09 — the lane stages a launch package + imports performance
+ * (lib/ads/chatgpt-campaign.ts); it is never dispatched.
  */
-export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "vibe_ctv", "chatgpt"] as const
+export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "chatgpt"] as const
 
 export function isConnectableAdPlatform(v: string | null | undefined): boolean {
   return !!v && (CONNECTABLE_AD_PLATFORMS as readonly string[]).includes(v)

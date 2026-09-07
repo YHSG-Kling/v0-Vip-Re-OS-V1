@@ -21,8 +21,40 @@ import { resolveConnectionResult, type ResolvedConnection } from "@/lib/integrat
 export const VIBE_PROVIDER = "vibe"
 export const VIBE_HOME_URL = "https://vibe.co"
 const VIBE_API_BASE = "https://api.vibe.co"
-// Pin the API revision (ISO year-month). Bump deliberately per the changelog.
-const VIBE_REVISION = "2026-06"
+// Pin the API revision. The documented header value is a full ISO DATE
+// (`X-Vibe-Revision: YYYY-MM-DD`, developers.vibe.co/docs/api-versioning; the
+// published OpenAPI is "revision 2026-06-01"). The earlier "2026-06" spelling
+// was the year-month only, which the contract lists as a 400 "unknown revision".
+// Bump deliberately per the changelog.
+const VIBE_REVISION = "2026-06-01"
+
+/** The four credential fields every Vibe call needs. `ResolvedConnection`
+ *  satisfies it; so does the connector-registry credential projection. */
+export type VibeCredential = Pick<ResolvedConnection, "apiKey" | "apiSecret" | "accountId" | "config">
+
+export type VibeCredentialResolution =
+  | { status: "connected"; conn: VibeCredential }
+  | { status: "not_connected"; reason: string }
+  | { status: "unreadable"; reason: string }
+
+/**
+ * THE ONE place a Vibe credential is resolved for a brokerage (§6: one
+ * vocabulary). `dispatchCtvCampaign`, the connector registry
+ * (lib/ads/connectors/registry.ts) and the performance ingest all ask here, so
+ * "not connected" and "could not read the store" are told apart once.
+ */
+export async function resolveVibeCredential(brokerageId: string): Promise<VibeCredentialResolution> {
+  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })
+  if (resolved.status === "unreadable") {
+    return {
+      status: "unreadable",
+      reason: `vibe_connection_unreadable — the Vibe credential could not be READ (${resolved.detail}); this is not "not connected"`,
+    }
+  }
+  const conn = resolved.status === "connected" ? resolved.connection : null
+  if (!conn || !conn.apiKey || !conn.apiSecret) return { status: "not_connected", reason: "vibe_not_connected" }
+  return { status: "connected", conn }
+}
 
 /**
  * Is a Vibe credential connected for this brokerage?
@@ -53,8 +85,7 @@ const VIBE_REVISION = "2026-06"
  * is carried.
  */
 export async function isVibeConfigured(brokerageId: string): Promise<boolean> {
-  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })
-  return resolved.status === "connected" && !!resolved.connection.apiKey && !!resolved.connection.apiSecret
+  return (await resolveVibeCredential(brokerageId)).status === "connected"
 }
 
 export interface CtvDispatchResult {
@@ -87,7 +118,7 @@ function vibeErrorMessage(status: number, body: any): string {
 
 /** Client-credentials token exchange (HTTP Basic client_id:client_secret).
  *  Scope is omitted → the token is issued with all scopes the client has. */
-async function getAccessToken(conn: ResolvedConnection): Promise<string> {
+async function getAccessToken(conn: VibeCredential): Promise<string> {
   const clientId = conn.apiKey
   const clientSecret = conn.apiSecret
   if (!clientId || !clientSecret) throw new VibeError(401, "Vibe client_id/client_secret not configured")
@@ -130,7 +161,7 @@ async function vibeFetch<T = any>(
 
 /** Resolve the advertiser to launch under: explicit config, then the account's
  *  first advertiser. */
-async function resolveAdvertiserId(token: string, conn: ResolvedConnection): Promise<string> {
+async function resolveAdvertiserId(token: string, conn: VibeCredential): Promise<string> {
   const configured = (conn.config?.advertiser_id as string | undefined) ?? conn.accountId ?? undefined
   if (configured) return configured
   const list = await vibeFetch<{ data?: Array<{ id: string }> } | Array<{ id: string }>>(token, "GET", "/advertisers")
@@ -202,17 +233,14 @@ export async function dispatchCtvCampaign(campaignId: string): Promise<CtvDispat
   // hand-launch on vibe.co, on the strength of a fact nobody established.
   // `dispatched` stays false on both paths — that is the fail-closed answer and
   // it does not change — but the REASON is now the true one.
-  const resolved = await resolveConnectionResult({ brokerageId: campaign.brokerage_id as string, provider: VIBE_PROVIDER })
+  const resolved = await resolveVibeCredential(campaign.brokerage_id as string)
   if (resolved.status === "unreadable") {
-    return {
-      dispatched: false,
-      reason: `vibe_connection_unreadable — the Vibe credential could not be READ (${resolved.detail}); this is not "not connected", and the campaign was left staged`,
-    }
+    return { dispatched: false, reason: `${resolved.reason}, and the campaign was left staged` }
   }
-  const conn = resolved.status === "connected" ? resolved.connection : null
-  if (!conn || !conn.apiKey || !conn.apiSecret) {
+  if (resolved.status === "not_connected") {
     return { dispatched: false, reason: "vibe_not_connected — campaign staged as launch package" }
   }
+  const conn = resolved.conn
 
   const cfg = (campaign.targeting_config ?? {}) as {
     dmas?: string[]; cities?: string[]; zips?: string[]; creative_video_url?: string
@@ -285,4 +313,115 @@ export async function dispatchCtvCampaign(campaignId: string): Promise<CtvDispat
     const reason = e instanceof VibeError ? e.message : `Vibe dispatch error: ${e?.message ?? String(e)}`
     return { dispatched: false, reason }
   }
+}
+
+// ─── reporting (the read-back half of the loop) ──────────────────────────────
+//
+// Vibe reporting is ASYNC: POST /reports returns a report resource, the caller
+// polls GET /reports/{id} until status READY, then downloads `download_url`
+// (valid 24h). Reports "typically complete within a few minutes" and the
+// contract asks for no more than one poll per 10 seconds — so a cron tick never
+// blocks on one. The ingest is two-phase instead: one pass REQUESTS a report and
+// remembers its id on the campaign row; the next pass READS it and requests the
+// next. Date windows are capped at 45 days (start inclusive, end exclusive).
+
+export interface VibeReportRequest {
+  conn: VibeCredential
+  vibeCampaignId: string
+  /** Report window start (ISO); clamped to Vibe's 45-day maximum. */
+  sinceIso: string
+}
+
+export type VibeReportOutcome =
+  /** A report was (re)quested; read it on the next pass. */
+  | { kind: "pending"; reportId: string }
+  /** The report is READY and summed over the window. */
+  | { kind: "ready"; row: VibePerformanceTotals; reportId: string }
+  /** The report FAILED / expired at Vibe — request a fresh one next pass. */
+  | { kind: "failed"; reason: string }
+
+/** CTV metrics summed over a report window. `pageViews` stands in for "clicks"
+ *  on a screen with no click: it is the SITE VISITS Vibe attributes to the
+ *  campaign through the impression tracker, which is the nearest honest cousin. */
+export interface VibePerformanceTotals {
+  spend: number
+  impressions: number
+  completedViews: number
+  pageViews: number
+  leads: number
+  purchases: number
+  signups: number
+  purchaseAmount: number
+}
+
+const VIBE_REPORT_MAX_DAYS = 45
+const VIBE_REPORT_METRICS = [
+  "spend", "impressions", "completed_views", "number_of_page_views",
+  "number_of_leads", "number_of_purchases", "amount_of_purchases", "number_of_signups",
+] as const
+
+function isoDate(d: Date): string { return d.toISOString().slice(0, 10) }
+
+/** POST /reports for ONE campaign (filter campaign_id) over the window. */
+export async function requestVibeCampaignReport(req: VibeReportRequest): Promise<{ reportId: string }> {
+  const token = await getAccessToken(req.conn)
+  const advertiserId = await resolveAdvertiserId(token, req.conn)
+  const end = new Date()
+  end.setUTCDate(end.getUTCDate() + 1) // end_date is EXCLUSIVE — include today
+  const floor = new Date(end.getTime() - VIBE_REPORT_MAX_DAYS * 86_400_000)
+  const since = new Date(req.sinceIso)
+  const start = Number.isFinite(since.getTime()) && since > floor ? since : floor
+  const created = await vibeFetch<{ id: string; status?: string }>(token, "POST", "/reports", {
+    start_date: isoDate(start),
+    end_date: isoDate(end),
+    timezone: "UTC",
+    advertiser_ids: [advertiserId],
+    metrics: [...VIBE_REPORT_METRICS],
+    dimensions: ["campaign_id"],
+    filters: [{ dimension: "campaign_id", values: [req.vibeCampaignId] }],
+    granularity: "DAY",
+    format: "JSON",
+  })
+  if (!created?.id) throw new VibeError(500, "Vibe report response missing id")
+  return { reportId: created.id }
+}
+
+/** GET /reports/{id}; when READY, download and SUM the rows for the campaign. */
+export async function readVibeCampaignReport(
+  conn: VibeCredential, reportId: string, vibeCampaignId: string,
+): Promise<VibeReportOutcome> {
+  const token = await getAccessToken(conn)
+  const report = await vibeFetch<{ id: string; status: string; download_url?: string | null; error?: unknown }>(
+    token, "GET", `/reports/${encodeURIComponent(reportId)}`,
+  )
+  const status = String(report?.status ?? "").toUpperCase()
+  if (status === "CREATED" || status === "PROCESSING" || status === "PENDING") return { kind: "pending", reportId }
+  if (status !== "READY" || !report.download_url) {
+    return { kind: "failed", reason: `Vibe report ${reportId} is ${status || "unknown"} with no download_url` }
+  }
+  const res = await fetch(report.download_url)
+  if (!res.ok) return { kind: "failed", reason: `Vibe report download failed (${res.status})` }
+  const body = await res.json().catch(() => null) as unknown
+  const rows: Array<Record<string, unknown>> = Array.isArray(body)
+    ? body as Array<Record<string, unknown>>
+    : Array.isArray((body as { data?: unknown })?.data) ? (body as { data: Array<Record<string, unknown>> }).data
+    : Array.isArray((body as { rows?: unknown })?.rows) ? (body as { rows: Array<Record<string, unknown>> }).rows
+    : []
+  const num = (r: Record<string, unknown>, k: string) => { const v = Number(r[k] ?? 0); return Number.isFinite(v) ? v : 0 }
+  const totals: VibePerformanceTotals = { spend: 0, impressions: 0, completedViews: 0, pageViews: 0, leads: 0, purchases: 0, signups: 0, purchaseAmount: 0 }
+  for (const r of rows) {
+    // The filter already scopes to the campaign; a row naming another id is a
+    // contract drift and is skipped rather than summed into the wrong campaign.
+    const rowCampaign = r.campaign_id == null ? null : String(r.campaign_id)
+    if (rowCampaign && rowCampaign !== vibeCampaignId) continue
+    totals.spend          += num(r, "spend")
+    totals.impressions    += num(r, "impressions")
+    totals.completedViews += num(r, "completed_views")
+    totals.pageViews      += num(r, "number_of_page_views")
+    totals.leads          += num(r, "number_of_leads")
+    totals.purchases      += num(r, "number_of_purchases")
+    totals.signups        += num(r, "number_of_signups")
+    totals.purchaseAmount += num(r, "amount_of_purchases")
+  }
+  return { kind: "ready", row: totals, reportId }
 }

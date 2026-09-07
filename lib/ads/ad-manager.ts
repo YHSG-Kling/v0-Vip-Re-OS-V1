@@ -137,6 +137,85 @@ export async function proposeAdOptimizations(
   return { scanned: perfs.length, proposed }
 }
 
+// ── Launch proposer — approved-but-unlaunched campaigns get a launch proposal ─
+
+export interface ProposeLaunchesResult { candidates: number; proposed: number }
+
+/**
+ * THE LAUNCH HALF OF THE LOOP. `executeAdManagerAction` could launch a campaign
+ * for a year, but nothing PROPOSED launches except two manager signals
+ * (content_winner / video_ready), so a campaign an agent had approved with an
+ * approved creative sat until someone found the button. Now, per sweep:
+ *   • Meta/Google: status 'approved' + ≥1 approved creative + ad account
+ *     connected → propose launch_ad_campaign.
+ *   • Streaming TV: a vibe_ctv 'draft' with a creative video + the brokerage's
+ *     Vibe credential connected → propose launch_ad_campaign.
+ *   • ChatGPT: never proposed for API launch (no API) — the lane surfaces the
+ *     package in its own UI instead.
+ * Idempotent: one open launch action per campaign. Money still moves only after
+ * a human approves the action and the spend cap clears at execution.
+ */
+export async function proposeAdLaunches(
+  brokerageId: string,
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<ProposeLaunchesResult> {
+  const supabase = client ?? createServiceClient()
+  const { data, error } = await supabase
+    .from("ad_campaigns")
+    .select("id, platform, status, daily_budget, targeting_config, campaign_name")
+    .eq("brokerage_id", brokerageId)
+    .in("status", ["approved", "draft"])
+  if (error) {
+    console.error("[ad-manager] launch-candidate read refused:", error.message)
+    return { candidates: 0, proposed: 0 }
+  }
+  // A draft is a launch candidate ONLY on the streaming-TV lane (its approval
+  // is the action itself); every other platform must be 'approved' first.
+  const rows = ((data ?? []) as Array<{ id: string; platform: string; status: string; daily_budget: number | null; targeting_config: Record<string, unknown> | null; campaign_name: string | null }>)
+    .filter((c) => c.status === "approved" || (c.platform === "vibe_ctv" && c.status === "draft"))
+  if (rows.length === 0) return { candidates: 0, proposed: 0 }
+
+  let vibeConnected: boolean | null = null
+  let proposed = 0
+  for (const c of rows) {
+    if (c.platform === "chatgpt") continue
+    if (Number(c.daily_budget ?? 0) <= 0) continue
+    let ready = false
+    let why = ""
+    if (c.platform === "vibe_ctv") {
+      if (!c.targeting_config?.creative_video_url) continue
+      if (vibeConnected === null) {
+        const { isVibeConfigured } = await import("@/lib/providers/vibe")
+        vibeConnected = await isVibeConfigured(brokerageId)
+      }
+      ready = vibeConnected === true
+      why = `Streaming-TV spot "${c.campaign_name ?? c.id}" is staged with a TV-ready video and the Vibe account is connected — launch it at $${Number(c.daily_budget).toFixed(0)}/day.`
+    } else {
+      const { count } = await supabase.from("ad_creative_variations").select("id", { count: "exact", head: true })
+        .eq("ad_campaign_id", c.id).eq("approval_status", "approved")
+      if ((count ?? 0) === 0) continue
+      const { isAdPlatformConnected } = await import("@/lib/ads/connection-status")
+      ready = (await isAdPlatformConnected(brokerageId, c.platform, supabase)).connected
+      why = `"${c.campaign_name ?? c.id}" is approved with an approved creative and the ${c.platform} ad account is connected — launch it at $${Number(c.daily_budget).toFixed(0)}/day.`
+    }
+    if (!ready) continue
+    const { data: existing } = await supabase
+      .from("ad_manager_actions").select("id")
+      .eq("brokerage_id", brokerageId).eq("action_type", "launch_ad_campaign")
+      .contains("action_input", { campaign_id: c.id })
+      .in("status", ["proposed", "approved", "executing"])
+      .maybeSingle()
+    if (existing) continue
+    const { error: insErr } = await supabase.from("ad_manager_actions").insert({
+      brokerage_id: brokerageId, action_type: "launch_ad_campaign",
+      action_input: { campaign_id: c.id, platform: c.platform, source: "launch_sweep" },
+      rationale: why, status: "proposed", proposed_at: new Date().toISOString(),
+    })
+    if (!insErr) proposed++
+  }
+  return { candidates: rows.length, proposed }
+}
+
 // ── Executor — runs an approved action under the hard spend cap ─────────────
 
 export interface AdActionResult { status: "succeeded" | "failed" | "skipped"; result: Record<string, unknown> }
@@ -167,7 +246,21 @@ export async function executeAdManagerAction(actionId: string, approverUserId: s
 async function runAdHandler(
   action: string, brokerageId: string, input: Record<string, unknown>, svc: ReturnType<typeof createServiceClient>,
 ): Promise<AdActionResult> {
-  const campaignId = String(input.campaign_id ?? "")
+  let campaignId = String(input.campaign_id ?? "")
+  // A `video_ready` proposal (lib/kernel/manager-signals.ts ads_manager:video_ready)
+  // carries a video_project_id and NO campaign — it used to fail here with
+  // "campaign_id required" every time, so the Asset Manager → Ads Manager
+  // handoff was a writer with no reader. The approved proposal now STAGES the
+  // streaming-TV draft from that render (geo from the listing, autonomous
+  // budget) and launches it below like any other vibe_ctv campaign.
+  if (!campaignId && action === "launch_ad_campaign" && input.video_project_id) {
+    const { stageCtvCampaignForVideo } = await import("@/lib/ads/ctv-campaign")
+    const staged = await stageCtvCampaignForVideo({ brokerageId, videoProjectId: String(input.video_project_id), client: svc })
+    if (!staged.ok || !staged.campaignId) return { status: "failed", result: { error: `could not stage a TV campaign from the video: ${staged.reason}` } }
+    campaignId = staged.campaignId
+    // Record the staged campaign on the action so the ledger names it.
+    input.campaign_id = campaignId
+  }
   if (!campaignId) return { status: "failed", result: { error: "campaign_id required" } }
   const { data: c } = await svc.from("ad_campaigns").select("id, brokerage_id, status, daily_budget, platform, targeting_config").eq("id", campaignId).maybeSingle()
   const campaign = c as { id: string; brokerage_id: string; status: string; daily_budget: number | null; platform: string; targeting_config: Record<string, unknown> | null } | null
@@ -177,6 +270,31 @@ async function runAdHandler(
 
   switch (action) {
     case "launch_ad_campaign": {
+      // ── Streaming TV (Vibe.co) ──────────────────────────────────────────
+      // The creative is the rendered video on the staged row, not an
+      // ad_creative_variations row; the connection is the Connection OS's
+      // 'vibe' credential, not platform_credentials; and the publish is the
+      // real Vibe chain. The human gate is the approval of THIS action.
+      if (campaign.platform === "vibe_ctv") {
+        if (!["draft", "approved"].includes(campaign.status)) return { status: "skipped", result: { reason: `campaign is ${campaign.status}, nothing to launch` } }
+        if (currentDaily > MAX_AD_DAILY_BUDGET_USD) return { status: "failed", result: { error: `daily budget $${currentDaily} exceeds cap $${MAX_AD_DAILY_BUDGET_USD}` } }
+        const { launchCtvCampaignOnVibe } = await import("@/lib/ads/ctv-campaign")
+        const r = await launchCtvCampaignOnVibe({ campaignId, brokerageId, actorUserId: null, launchedVia: "ads_manager", client: svc })
+        if (!r.dispatched) {
+          // not connected / unreadable / Vibe refused: the row stays draft and
+          // the manual vibe.co + Mark-as-launched path remains. Honest skip.
+          return { status: "skipped", result: { campaign_id: campaignId, reason: r.reason } }
+        }
+        return { status: "succeeded", result: { campaign_id: campaignId, status: "live", external_campaign_id: r.vibeCampaignId, launched_via: "ads_manager" } }
+      }
+      // ── ChatGPT Ads ─────────────────────────────────────────────────────
+      // No public advertiser API (ads.openai.com is self-serve; API access is
+      // partner-only as of 2026-09). The lane stages a complete launch package
+      // (lib/ads/chatgpt-campaign.ts); a human uploads it and marks it launched
+      // with the Ads Manager campaign id. Never a fake live state.
+      if (campaign.platform === "chatgpt") {
+        return { status: "skipped", result: { campaign_id: campaignId, reason: "chatgpt has no advertiser API — launch the staged package at ads.openai.com from the ChatGPT Ads lane, then mark it launched there" } }
+      }
       if (campaign.status !== "approved") return { status: "skipped", result: { reason: `campaign is ${campaign.status}, must be approved` } }
       // Must have at least one APPROVED creative before any spend.
       const { count } = await svc.from("ad_creative_variations").select("id", { count: "exact", head: true })

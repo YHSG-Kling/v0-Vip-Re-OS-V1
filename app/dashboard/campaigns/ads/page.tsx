@@ -15,6 +15,7 @@ import { getAdConnections } from "@/lib/ads/connection-status"
 import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
 import { isVibeConfigured } from "@/lib/providers/vibe"
 import type { CtvEligibleVideo } from "./ctv-lane"
+import type { ChatgptEligibleListing } from "./chatgpt-lane"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 import { loadAdsWorkspace } from "@/lib/kernel/ads"
@@ -195,6 +196,19 @@ export default async function AdsCampaignsPage() {
   // Honest connection posture for the Vibe connector slot (never throws).
   const vibeConnected = await isVibeConfigured(profile.brokerage_id)
 
+  // ── ChatGPT Ads lane (OpenAI Ads Manager) ────────────────────────────────
+  // Eligible listings to stage a campaign for: the brokerage's own active
+  // listings. No canonical "active" status list exists yet (grepped
+  // lib/listings and lib/kernel) — this matches the set used elsewhere on the
+  // dashboard, e.g. app/dashboard/listings/health/actions.ts.
+  const { data: chatgptListings } = await supabase
+    .from("listings")
+    .select("id, address, city, state")
+    .eq("brokerage_id", profile.brokerage_id)
+    .in("status", ["active", "coming_soon", "pending"])
+    .order("created_at", { ascending: false })
+    .limit(50)
+
   return (
     <AdsDashboardClient
       userId={user.id}
@@ -208,6 +222,7 @@ export default async function AdsCampaignsPage() {
       audienceTemplates={audienceTemplates}
       vibeConnected={vibeConnected}
       ctvEligibleVideos={(ctvVideos || []) as CtvEligibleVideo[]}
+      chatgptEligibleListings={(chatgptListings || []) as ChatgptEligibleListing[]}
       organicLift={workspace.organicLift}
     />
   )

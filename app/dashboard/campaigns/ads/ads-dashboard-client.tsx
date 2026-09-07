@@ -93,6 +93,7 @@ import {
   resolveExclusionSlot,
 } from "@/lib/ads/audience-exclusion"
 import { CtvLane, type CtvEligibleVideo, type CtvCampaignRow } from "./ctv-lane"
+import { ChatgptLane, type ChatgptEligibleListing, type ChatgptCampaignRow } from "./chatgpt-lane"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -178,6 +179,8 @@ interface AdsDashboardClientProps {
   /** Streaming-TV lane (Vibe.co): honest connector posture + TV-eligible creative. */
   vibeConnected?: boolean
   ctvEligibleVideos?: CtvEligibleVideo[]
+  /** ChatGPT Ads lane (OpenAI Ads Manager): active listings eligible to stage a campaign for. */
+  chatgptEligibleListings?: ChatgptEligibleListing[]
   /**
    * Paid-vs-organic CTR per platform, from loadAdsWorkspace. The organic side
    * comes from the brokerage's own trailing-28d social results — this is the
@@ -320,6 +323,7 @@ export function AdsDashboardClient({
   audienceTemplates = [],
   vibeConnected = false,
   ctvEligibleVideos = [],
+  chatgptEligibleListings = [],
   organicLift = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
@@ -1220,6 +1224,22 @@ export function AdsDashboardClient({
                 .filter((c) => c.platform === "vibe_ctv")
                 .map(
                   (c): CtvCampaignRow => ({
+                    id: c.id,
+                    campaign_name: c.campaign_name,
+                    status: c.status,
+                    daily_budget: c.daily_budget,
+                    targeting_config: (c.targeting_config ?? null) as unknown as Record<string, unknown> | null,
+                    created_at: c.created_at,
+                  }),
+                )}
+            />
+
+            <ChatgptLane
+              listings={chatgptEligibleListings}
+              chatgptCampaigns={campaigns
+                .filter((c) => c.platform === "chatgpt")
+                .map(
+                  (c): ChatgptCampaignRow => ({
                     id: c.id,
                     campaign_name: c.campaign_name,
                     status: c.status,
