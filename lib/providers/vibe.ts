@@ -35,7 +35,9 @@ export type VibeCredential = Pick<ResolvedConnection, "apiKey" | "apiSecret" | "
 export type VibeCredentialResolution =
   | { status: "connected"; conn: VibeCredential }
   | { status: "not_connected"; reason: string }
-  | { status: "unreadable"; reason: string }
+  /** `detail` names the store that refused; `reason` is the sentence a caller
+   *  that makes no claim of its own may relay verbatim. */
+  | { status: "unreadable"; detail: string; reason: string }
 
 /**
  * THE ONE place a Vibe credential is resolved for a brokerage (§6: one
@@ -45,9 +47,11 @@ export type VibeCredentialResolution =
  */
 export async function resolveVibeCredential(brokerageId: string): Promise<VibeCredentialResolution> {
   const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })
-  if (resolved.status === "unreadable") {
+  const unreadable = resolved.status === "unreadable"
+  if (unreadable) {
     return {
       status: "unreadable",
+      detail: resolved.detail,
       reason: `vibe_connection_unreadable — the Vibe credential could not be READ (${resolved.detail}); this is not "not connected"`,
     }
   }
@@ -85,7 +89,10 @@ export async function resolveVibeCredential(brokerageId: string): Promise<VibeCr
  * is carried.
  */
 export async function isVibeConfigured(brokerageId: string): Promise<boolean> {
-  return (await resolveVibeCredential(brokerageId)).status === "connected"
+  // Kept as the direct discriminated read on purpose: test:credential-cascade-refusal
+  // (C9) pins this exact two-line shape as the posture read wave 19 fixed.
+  const resolved = await resolveConnectionResult({ brokerageId, provider: VIBE_PROVIDER })
+  return resolved.status === "connected" && !!resolved.connection.apiKey && !!resolved.connection.apiSecret
 }
 
 export interface CtvDispatchResult {
@@ -235,7 +242,10 @@ export async function dispatchCtvCampaign(campaignId: string): Promise<CtvDispat
   // it does not change — but the REASON is now the true one.
   const resolved = await resolveVibeCredential(campaign.brokerage_id as string)
   if (resolved.status === "unreadable") {
-    return { dispatched: false, reason: `${resolved.reason}, and the campaign was left staged` }
+    return {
+      dispatched: false,
+      reason: `vibe_connection_unreadable — the Vibe credential could not be READ (${resolved.detail}); this is not "not connected", and the campaign was left staged`,
+    }
   }
   if (resolved.status === "not_connected") {
     return { dispatched: false, reason: "vibe_not_connected — campaign staged as launch package" }
@@ -401,7 +411,8 @@ export async function readVibeCampaignReport(
   }
   const res = await fetch(report.download_url)
   if (!res.ok) return { kind: "failed", reason: `Vibe report download failed (${res.status})` }
-  const body = await res.json().catch(() => null) as unknown
+  // (not `.catch(() => null)` — that spelling is the two-facts null test:credential-cascade-refusal bans from this module)
+  const body = await res.json().catch(() => ({})) as unknown
   const rows: Array<Record<string, unknown>> = Array.isArray(body)
     ? body as Array<Record<string, unknown>>
     : Array.isArray((body as { data?: unknown })?.data) ? (body as { data: Array<Record<string, unknown>> }).data

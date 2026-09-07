@@ -77,8 +77,11 @@ check("…reporting delegates to the provider's request/read pair",
 check("…audiences answer honestly (ok:false), not a fabricated ok", count(CONNECTOR, /ok: false, recordsSynced: 0/g) === 2)
 check("the credential is loaded through the ONE resolver, not platform_credentials",
   /platform === "vibe_ctv"[\s\S]{0,200}resolveVibeCredential\(brokerageId\)/.test(REGISTRY))
-check("…and that resolver is the single resolveConnectionResult call in the provider",
-  count(VIBE, /resolveConnectionResult\(\{ brokerageId, provider: VIBE_PROVIDER \}\)/g) === 1 && /export async function resolveVibeCredential/.test(VIBE))
+check("…and the dispatcher asks that resolver, not the Connection OS directly (isVibeConfigured keeps its pinned direct read — test:credential-cascade-refusal C9)",
+  /export async function resolveVibeCredential/.test(VIBE)
+  && count(VIBE, /resolveConnectionResult\(\{ brokerageId, provider: VIBE_PROVIDER \}\)/g) === 2
+  && !/resolveConnectionResult\(/.test(VIBE.slice(VIBE.indexOf("export async function dispatchCtvCampaign"), VIBE.indexOf("export interface VibeReportRequest")))
+  && /resolveVibeCredential\(campaign\.brokerage_id as string\)/.test(VIBE))
 check("the revision header is a full ISO date (the contract's YYYY-MM-DD, not year-month)",
   /const VIBE_REVISION = "\d{4}-\d{2}-\d{2}"/.test(VIBE))
 
