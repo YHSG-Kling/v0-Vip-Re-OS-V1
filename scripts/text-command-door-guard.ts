@@ -17,10 +17,11 @@
  * to, and a refused read falls through (fail closed); (5) the reply goes back
  * through the ONE outbound sender.
  *
- * BLIND SPOTS (§2): static. A Twilio retry of the same MessageSid would run the
- * command twice (the contact path dedupes by sid; the staff path does not yet).
- * Intents that resolve the user from cookies inside their action (draft_offer,
- * draft_listing) will refuse over text and say so.
+ * BLIND SPOTS (§2): static. A retry is deduped on (user, transcript, two
+ * minutes) against voice_commands rather than on MessageSid, so the same staff
+ * user texting the identical sentence twice inside two minutes on purpose is
+ * treated as one command. Intents that resolve the user from cookies inside
+ * their action (draft_offer, draft_listing) will refuse over text and say so.
  */
 import { readFileSync } from "node:fs"
 import { stripComments } from "./strip-comments"
@@ -73,6 +74,9 @@ check("a refused users read falls through to the contact path (not 'unknown phon
 check("only staff user types may command (contacts, vendors, lenders stay customers)",
   /STAFF_USER_TYPES = new Set\(/.test(DOOR) && !/"contact"|"vendor"|"lender"/.test(DOOR.slice(DOOR.indexOf("STAFF_USER_TYPES = new Set("), DOOR.indexOf("STAFF_USER_TYPES = new Set(") + 260)))
 check("agents.user_id is the bridge to users (§3 — the ids are disjoint)", /agents"\)[\s\S]{0,120}user_id/.test(DOOR))
+check("a webhook retry runs the command ONCE: same user + transcript within two minutes on voice_commands is a duplicate",
+  /from\("voice_commands"\)[\s\S]{0,300}\.eq\("raw_transcript", text\)[\s\S]{0,500}duplicate delivery/.test(DOOR))
+check("…and a refused duplicate check is logged, not read as 'not a duplicate' silently", /duplicate check refused/.test(DOOR))
 
 console.log("\n── 5 · the answer goes back through the GOVERNED egress ──")
 check("dispatchSms from lib/providers/dispatch (autonomy, budget, fair-housing and TCPA gates live there)",
@@ -90,8 +94,8 @@ check("BLINDNESS CONTROL: scans read comment-STRIPPED source",
   !stripComments("// runStaffTextCommand(svc, …)\n").includes("runStaffTextCommand"))
 
 console.log("\n──────────────────────────────────────────────────")
-console.log(" BLIND SPOTS (§2): static. Twilio retries of one MessageSid are not deduped on the")
-console.log(" staff path; cookie-resolving intents refuse over text and say so.")
+console.log(" BLIND SPOTS (§2): static. Retries dedupe on (user, transcript, 2 min), not MessageSid;")
+console.log(" cookie-resolving intents refuse over text and say so.")
 if (fails.length) { console.log("\nFAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(`\n RESULT: ${pass} passed, ${fails.length} failed`)
 if (fails.length > 0) { console.log(" ❌ TEXT_COMMAND_DOOR_FAIL"); process.exit(1) }

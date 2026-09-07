@@ -121,6 +121,25 @@ export async function runStaffTextCommand(
   const staff = await resolveStaffByPhone(svc, input.brokerageId, input.fromPhone)
   if (!staff) return { handled: false, reason: "sender is not a staff phone in this brokerage" }
 
+  // ONCE PER TEXT. Twilio retries a webhook it did not get a 2xx for, and the
+  // contact path dedupes by MessageSid inside recordInboundMessage; this path
+  // never records a messages row, so it dedupes on the ledger the brain writes:
+  // the same staff user, the same transcript, inside the last two minutes is a
+  // retry, not a second command. A refused read is NOT treated as "not a
+  // duplicate" silently — it is logged and the command still runs once.
+  {
+    const { data: recent, error: recentErr } = await svc
+      .from("voice_commands")
+      .select("id")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("user_id", staff.userId)
+      .eq("raw_transcript", text)
+      .gte("created_at", new Date(Date.now() - 2 * 60 * 1000).toISOString())
+      .limit(1)
+    if (recentErr) console.error(`[text-command] duplicate check refused (${recentErr.message}); running the command once`)
+    else if (recent && recent.length > 0) return { handled: true, intent: null, reason: "duplicate delivery of a command already run" }
+  }
+
   const secret = process.env.CRON_SECRET
   if (!secret) {
     console.error("[text-command] CRON_SECRET not configured — the team command cannot be run")

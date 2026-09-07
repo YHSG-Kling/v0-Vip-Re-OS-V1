@@ -24,7 +24,7 @@
       "sourceType": "github",
       "skillPath": "skills/remotion-best-practices/SKILL.md",
       "sourceRef": "54e9b19a612897171e0b3b242e01c2badba4a272",
-      "skillVersion": "4.0.520",
+      "skillVersion": "4.0.521",
       "computedHash": null
     },
     "vercel-react-best-practices": {

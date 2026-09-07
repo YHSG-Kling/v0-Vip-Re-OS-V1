@@ -1,7 +1,7 @@
 ---
 name: remotion-markup
 description: Content, animation and effects best practices
-version: 4.0.520
+version: 4.0.521
 ---
 
 This is guidance for writing Remotion React Markup.
@@ -268,14 +268,6 @@ When needing to use sound effects, load the [./sfx.md](./sfx.md) file for more i
 ## Audio visualization
 
 When needing to visualize audio (spectrum bars, waveforms, bass-reactive effects), load the [./audio-visualization.md](./audio-visualization.md) file for more information.
-
-<!-- LOCAL ADDITION, not upstream 4.0.520 (nor 4.0.517 before it). Restored by
-     owner ruling 2026-08-26; see the tombstone in scripts/remotion-setup-guard.ts.
-     Carried forward through the 2026-09-03 re-vendor. Keep on re-vendor. -->
-
-## Charts and data visualization
-
-When building bar charts, pie charts, histograms or progress bars, load the [./charts.md](./charts.md) file for more information.
 
 ## Maps
 
