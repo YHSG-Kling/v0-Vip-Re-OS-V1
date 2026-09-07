@@ -506,7 +506,7 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
 
 /** PURE: the outro-QR caption per situation — a short, on-brand scan prompt that matches where the
  *  QR lands (the agent can re-point the target_url in the UI; the caption stays a generic invite). */
-export function qrCaptionForSituation(kind: SituationKind): string {
+function qrCaptionForSituation(kind: SituationKind): string {
   switch (kind) {
     case "just_sold":      return "Scan to list with me"
     case "open_house":     return "Scan to RSVP"

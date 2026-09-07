@@ -293,7 +293,11 @@ async function alreadyProposed(svc: Svc, brokerageId: string, tag: string): Prom
   return !!data
 }
 
-export interface StoryDraftResult { scanned: number; proposed: number; skippedNoCopy: number }
+// TOMBSTONE (orphan doctrine §1) — was `export`; nothing outside this file imports
+// it (test:opposite-missing category 3, orphaned non-function export). Only the
+// four runners in this module (runWeeklySellerUpdates, runTourRecaps,
+// runWeeklyDealNotes, runBuyerSearchStories) return this shape.
+interface StoryDraftResult { scanned: number; proposed: number; skippedNoCopy: number }
 
 // internal helper — called in-file by runClientStoryDraftsAll
 async function runWeeklySellerUpdates(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
@@ -547,7 +551,7 @@ async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Date = new
   return out
 }
 
-export async function runBuyerSearchStories(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
+async function runBuyerSearchStories(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
   const out: StoryDraftResult = { scanned: 0, proposed: 0, skippedNoCopy: 0 }
   const isoWeek = isoWeekOf(now)
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString()

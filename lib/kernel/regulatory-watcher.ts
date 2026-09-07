@@ -322,7 +322,7 @@ export type RegSearchFetcher = (params: { query: string; brokerageId: string }) 
  * and returns provider "none" with no hits when no creds are configured → the runner
  * records "search unavailable" and escalates nothing. No key is read or logged here.
  */
-export const realRegSearchFetcher: RegSearchFetcher = async (params) => {
+const realRegSearchFetcher: RegSearchFetcher = async (params) => {
   const { webSearch } = await import("@/lib/ai/web-search")
   const res = await webSearch({ query: params.query, maxResults: 8, mode: "research", deep: true }).catch(
     () => ({ answer: null, hits: [], provider: "none" as const, cost: 0 }),
