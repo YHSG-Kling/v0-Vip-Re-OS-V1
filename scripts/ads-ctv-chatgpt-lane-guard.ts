@@ -132,7 +132,9 @@ check("the precheck says so too", /campaignPlatform === "chatgpt"\) return \{ co
 
 console.log("\n── GPT 8 · compliance-first copy, the Ads Manager's own limits ──")
 check("copy comes from the one Fair-Housing-clean builder", /buildListingCreative\(facts, kind\)/.test(GPT))
-check("limits: headline 50, description 100, $25/day minimum", /CHATGPT_HEADLINE_MAX = 50/.test(GPT) && /CHATGPT_DESCRIPTION_MAX = 100/.test(GPT) && /CHATGPT_MIN_DAILY_BUDGET_USD = 25/.test(GPT))
+check("limits: headline 50, description 100, $25/day minimum", /CHATGPT_HEADLINE_MAX = 50/.test(GPT) && /CHATGPT_DESCRIPTION_MAX = 100/.test(GPT) && /CHATGPT_MIN_DAILY_BUDGET_USD = 25/.test(VOCAB))
+check("the client lane imports values only from the client-safe vocabulary (never the server composer)",
+  /from "@\/lib\/integrations\/ad-campaign-vocabulary"/.test(GPT_UI) && !/^import \{[^}]*\} from "@\/lib\/ads\/chatgpt-campaign"/m.test(GPT_UI))
 check("the scan runs BEFORE the campaign row is inserted",
   (() => { const scan = GPT.indexOf("severity === \"high\""); const ins = GPT.indexOf('.from("ad_campaigns").insert'); return scan > 0 && ins > scan })())
 check("a restricted-category (financial) hint is refused, not warned", /RESTRICTED_FINANCIAL\.test\(h\)/.test(GPT) && /if \(restricted\) return \{ success: false/.test(GPT))

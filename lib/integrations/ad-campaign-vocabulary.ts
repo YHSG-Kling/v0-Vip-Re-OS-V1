@@ -76,3 +76,13 @@ export const AD_PLATFORMS_WITHOUT_CONNECTIONS = ["google", "tiktok", "chatgpt"] 
 export function isConnectableAdPlatform(v: string | null | undefined): boolean {
   return !!v && (CONNECTABLE_AD_PLATFORMS as readonly string[]).includes(v)
 }
+
+/**
+ * ChatGPT Ads (OpenAI Ads Manager) — the client-safe facts the lane UI needs.
+ * The composer lib/ads/chatgpt-campaign.ts is server-side (it reaches the
+ * service client); a "use client" lane may import only from here.
+ */
+export const CHATGPT_ADS_MANAGER_URL = "https://ads.openai.com"
+export const CHATGPT_MIN_DAILY_BUDGET_USD = 25
+export const CHATGPT_OBJECTIVES = ["reach", "clicks", "conversions"] as const
+export type ChatgptObjective = (typeof CHATGPT_OBJECTIVES)[number]

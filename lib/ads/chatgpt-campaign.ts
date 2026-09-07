@@ -43,18 +43,18 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateContentSafety, type SafetyViolation } from "@/lib/compliance/content-safety-checks"
 import { deriveMetrics, type ProviderPerformanceRow } from "./connectors/types"
 import { buildListingCreative, type ListingAdKind, type ListingFacts } from "./listing-ad-producer"
+// The URL, the $25/day floor and the objective list live in the client-safe
+// vocabulary so the "use client" lane never reaches this server module.
+import { CHATGPT_ADS_MANAGER_URL, CHATGPT_MIN_DAILY_BUDGET_USD, type ChatgptObjective } from "@/lib/integrations/ad-campaign-vocabulary"
+export type { ChatgptObjective }
 
 // ─── the Ads Manager's own limits (one vocabulary for the whole lane) ────────
-export const CHATGPT_ADS_MANAGER_URL = "https://ads.openai.com"
-export const CHATGPT_MIN_DAILY_BUDGET_USD = 25
 const CHATGPT_HEADLINE_MAX = 50
 const CHATGPT_HEADLINE_AIM = 16
 const CHATGPT_DESCRIPTION_MAX = 100
 const CHATGPT_DESCRIPTION_AIM = 32
 const CHATGPT_IMAGE_MIN_PX = 256
 const CHATGPT_RECOMMENDED_MAX_CPC_USD = 4     // inside the documented $3–5 band
-export const CHATGPT_OBJECTIVES = ["reach", "clicks", "conversions"] as const
-export type ChatgptObjective = (typeof CHATGPT_OBJECTIVES)[number]
 
 /** Restricted-category words that make a ChatGPT ad ineligible outright
  *  (financial services). The lane never writes them; a caller-supplied hint

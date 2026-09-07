@@ -44,8 +44,8 @@ import {
   markChatgptCampaignLaunchedAction,
   importChatgptPerformanceAction,
 } from "@/app/actions/chatgpt-ads"
-import type { ChatgptLaunchPackage, ChatgptObjective } from "@/lib/ads/chatgpt-campaign"
-import { CHATGPT_ADS_MANAGER_URL, CHATGPT_MIN_DAILY_BUDGET_USD, CHATGPT_OBJECTIVES } from "@/lib/ads/chatgpt-campaign"
+import type { ChatgptLaunchPackage } from "@/lib/ads/chatgpt-campaign"
+import { CHATGPT_ADS_MANAGER_URL, CHATGPT_MIN_DAILY_BUDGET_USD, CHATGPT_OBJECTIVES, type ChatgptObjective } from "@/lib/integrations/ad-campaign-vocabulary"
 import type { ListingAdKind } from "@/lib/ads/listing-ad-producer"
 import type { ProviderPerformanceRow } from "@/lib/ads/connectors/types"
 
