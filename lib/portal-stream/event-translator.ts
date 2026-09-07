@@ -453,10 +453,47 @@ const TRANSLATIONS: Record<string, Builder> = {
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
+/**
+ * KERNEL SPELLING → PORTAL SPELLING (2026-09-07). lifecycle_events.event_type is
+ * written by lib/kernel/emit.ts in the KernelEvent vocabulary (`offer_submitted`,
+ * `listing_price_reduced`, …). This translator was keyed on a DOTTED portal
+ * vocabulary (`offer.submitted`) that only seven direct inserts ever wrote, so
+ * the projector's `.in("event_type", PROJECTABLE_EVENT_TYPES)` never selected a
+ * kernel-emitted row for FOURTEEN of the twenty-one kinds — the client portal
+ * stayed silent on offers, inspections, appraisals, price drops and showings.
+ * Two spellings of one idea are a defect (§6); the kernel enum is the writers'
+ * vocabulary, so the kernel spelling is accepted here and canonicalised to the
+ * portal kind the stream stores. Only kinds with NO dotted writer are aliased —
+ * aliasing one that already has a dotted writer would card the moment twice.
+ * Not aliased (no kernel event carries the moment — unresolved, not guessed):
+ * inspection.completed, portal.message_sent_by_agent (client_portal_message_sent
+ * does not say who sent it), wealth.refinance_opportunity, wealth.equity_milestone.
+ */
+export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
+  offer_submitted:            "offer.submitted",
+  offer_counter_sent:         "offer.countered",
+  offer_os_countered:         "offer.countered",
+  offer_rejected:             "offer.rejected",
+  inspection_ordered:         "inspection.scheduled",
+  appraisal_ordered:          "appraisal.ordered",
+  appraisal_completed:        "appraisal.completed",
+  listing_price_reduced:      "listing.price_reduced",
+  listing_showing_completed:  "listing.showing_completed",
+  showing_completed:          "listing.showing_completed",
+  negotiation_strategy_ready: "negotiation.strategy_ready",
+  offer_strategy_recommended: "negotiation.strategy_ready",
+  contract_signed:            "portal.document_signed",
+}
+
+/** The portal kind a lifecycle_events.event_type projects as (identity for portal spellings). */
+export function canonicalPortalEventType(eventType: string): string {
+  return KERNEL_EVENT_TO_PORTAL[eventType] ?? eventType
+}
+
 export function translateEvent(input: TranslatorInput): TranslatedEvent | null {
-  const builder = TRANSLATIONS[input.eventType]
+  const builder = TRANSLATIONS[canonicalPortalEventType(input.eventType)]
   if (!builder) return null
   return builder(input)
 }
 
-export const PROJECTABLE_EVENT_TYPES: string[] = Object.keys(TRANSLATIONS)
+export const PROJECTABLE_EVENT_TYPES: string[] = [...Object.keys(TRANSLATIONS), ...Object.keys(KERNEL_EVENT_TO_PORTAL)]

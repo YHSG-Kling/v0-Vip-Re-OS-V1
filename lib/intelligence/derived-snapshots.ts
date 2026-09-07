@@ -13,16 +13,13 @@
 // brokerage (no unique indexes, live-verified).
 
 import "server-only"
+// TOMBSTONE (§1.1, 2026-09-07) — a private `zipFromAddress` (any 5-digit run,
+// so a house number read as a ZIP) stood here. Survivor:
+// lib/intelligence/negotiation-bands.ts:zipFromAddress, which gained this
+// file's one missing case (a ZIP before a trailing ", USA") on merge.
+import { zipFromAddress } from "@/lib/intelligence/negotiation-bands"
 
 type Svc = { from: (table: string) => any }
-
-const ZIP_RE = /\b(\d{5})(?:-\d{4})?\b/
-
-export function zipFromAddress(address: string | null | undefined): string | null {
-  if (!address) return null
-  const m = ZIP_RE.exec(address)
-  return m ? m[1] : null
-}
 
 export interface DerivedSnapshotsResult { insightsRows: number; heatmapRows: number }
 

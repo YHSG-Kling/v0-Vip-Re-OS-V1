@@ -45,7 +45,16 @@ import { readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 /** Never descend into these, anywhere in the tree. */
-export const NEVER_WALK = new Set(["node_modules", ".next", ".git", ".vercel"])
+// `.claude` — Claude Code's own directory. `.claude/worktrees/<agent>/` holds
+// parallel-agent WORKTREES: whole copies of this repository, git-ignored
+// (.gitignore: `.claude/worktrees/`). Walking them doubles every census and
+// hands client-server-only a phantom import chain rooted in the copy
+// (`.claude/worktrees/agent-…/app/crm/…` → lib/… → event-reactor), which is
+// how chain guard39a went red on 2026-09-07 with no defect in the tree.
+// Skill specimens under `.claude/skills/**` were already outside every census
+// (a dot-directory fails runtimeRoots' `startsWith(".")` test); this makes the
+// file walker agree with the root walker.
+export const NEVER_WALK = new Set(["node_modules", ".next", ".git", ".vercel", ".claude"])
 
 /**
  * Directories that hold TypeScript but do not ship as application runtime. Every

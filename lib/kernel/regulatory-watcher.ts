@@ -32,6 +32,7 @@
 // imports it directly.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -446,7 +447,7 @@ export async function runRegulatoryWatcher(
   const maxChanges = opts.maxChanges ?? 20
   // Idempotency PERIOD: ISO week (yyyy-Www) — weekly cadence; the same change in the
   // same week is recorded/escalated once, but a recurrence next week re-surfaces.
-  const period = isoWeek(now)
+  const period = isoWeekTag(now)
 
   const result: RegulatoryWatcherResult = {
     searchRan: false, provider: "none", changesScanned: 0, flagged: [], escalated: 0,
@@ -618,19 +619,9 @@ async function escalateBrief(
   return bus.ok
 }
 
-/** PURE: ISO week label yyyy-Www (the idempotency period). */
-export function isoWeek(d: Date): string {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  const dayNum = (date.getUTCDay() + 6) % 7 // Mon=0..Sun=6
-  date.setUTCDate(date.getUTCDate() - dayNum + 3) // nearest Thursday
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4))
-  const week =
-    1 +
-    Math.round(
-      ((date.getTime() - firstThursday.getTime()) / 86_400_000 -
-        3 +
-        ((firstThursday.getUTCDay() + 6) % 7)) /
-        7,
-    )
-  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`
-}
+// TOMBSTONE (orphan doctrine §1.1, lane R): this file's own isoWeek(d) — computing
+// the same ISO-8601 week label (yyyy-Www) as isoWeekTag() at
+// lib/kernel/commission-forecaster.ts:634 (re-exported by
+// lib/kernel/objection-library.ts:312) via a different but equivalent algorithm —
+// was deleted 2026-09-07. Callers use isoWeekTag from commission-forecaster; any
+// future change to the ISO-week rule needs to change only one place.
