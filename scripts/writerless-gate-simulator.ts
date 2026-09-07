@@ -374,21 +374,48 @@ function censusLayer() {
   // lib/kernel/calendar-sync.ts:listSyncMappings + the panel on
   // app/dashboard/settings/calendar/page.tsx.
   //
-  // The replacement is `platform_contract_templates.body_storage_path`, and it is the
-  // most durable entry on the list by construction rather than by luck: its writer is
-  // absent BY RULING, not by omission. m481 gives that table two body arms under
-  // `check (body_text is not null or body_storage_path is not null)`, in-app authoring
-  // fills the body_text arm only (app/actions/superadmin/subscription-contracts.ts), and
-  // the storage-path arm waits on an uploaded-document lane that does not exist. It also
-  // cannot be retired from the other end: the column has a REAL reader that must stay —
-  // signSubscriptionAgreementAction's fail-closed branch
-  // (app/actions/admin/subscription-agreement.ts, the `!body.body_text?.trim()` guard)
-  // uses it to refuse a signature on a contract this screen cannot display. A lane that
-  // "fixes" it by writing a placeholder path would be manufacturing an unshowable
-  // contract. Same protocol as before: if this goes green, either the upload lane landed
-  // with its renderer (repoint, and say so) or the scanner went blind.
+  // The replacement was `platform_contract_templates.body_storage_path` (w26): its
+  // writer was absent BY RULING — m481's two body arms, in-app authoring filling
+  // body_text only, the storage-path arm waiting on an uploaded-document lane —
+  // and the protocol read: "if this goes green, either the upload lane landed with
+  // its renderer (repoint, and say so) or the scanner went blind."
+  //
+  // ── CANARY REPOINTED, WAVE 38 — AND SAYING SO, AS INSTRUCTED ──────────────
+  // THE UPLOAD LANE LANDED, WITH ITS RENDERER (owner 2026-09-07: "complete the
+  // building and editing for owner decisions … owners decision is build and
+  // fix"). lane M added the purpose `platform_contract_document` to the one
+  // signed-upload planner (lib/storage/signed-upload-url.ts), the superadmin
+  // writers planPlatformContractDocumentUploadAction +
+  // attachPlatformContractDocumentAction (app/actions/superadmin/
+  // subscription-contracts.ts), a sign-on-read renderer (mintContractDocumentUrl
+  // in app/actions/admin/subscription-agreement.ts, surfaced on the tenant card
+  // as an iframe + link), and the signing gate now refuses only when NEITHER arm
+  // renders. The same wave gave agent_reviews.source_url its writer
+  // (app/actions/agent-reviews.ts) and stamped listing_marketing_content.listing_id.
+  //
+  // The replacement is `listing_marketing_services.estimated_cost`, durable by
+  // construction for the same reason the last one was: its writer is absent BY
+  // RULING (app/actions/marketing-package-automation.ts:193 — "the bench carries no
+  // price for a vendor and the package catalog prices a whole TIER, not one
+  // service"), the live schema holds NO vendor price / quote table a truthful
+  // number could come from (measured 2026-09-07: no *quote* relation exists), and
+  // the column has a REAL reader that must stay (the package readers at :797 and
+  // lib/communications/vendor-communications.tsx:205). A lane that "fixes" it by
+  // writing the tier price into one service row would be inventing a per-service
+  // cost. Same protocol: if this goes green, either a vendor pricing/quote source
+  // landed and the booking writer was repointed onto it (repoint, and say so) or
+  // the scanner went blind.
   check("1b still reports a genuine writerless read no lane has fixed",
-    oneB.includes("platform_contract_templates.body_storage_path"))
+    oneB.includes("listing_marketing_services.estimated_cost"))
+  // The three w38 owner-decision columns must be GONE — the proof that the repoint
+  // above was a burn-down and not a blindness.
+  for (const col of [
+    "platform_contract_templates.body_storage_path",
+    "agent_reviews.source_url",
+    "listing_marketing_content.listing_id",
+  ]) {
+    check(`1b no longer accuses ${col} (w38 built the writer)`, !oneB.includes(col))
+  }
   // The calendar mapping columns this wave's adapter closed must be GONE — the proof
   // that the repoint above was a burn-down and not a blindness.
   for (const col of [
