@@ -160,6 +160,9 @@ export interface VendorEarningsSummary {
     /** Manual Cash App transaction reference — how the vendor matches the row
      *  to the payment that reached them. Null for Stripe/other methods. */
     cashAppReference: string | null
+    /** The Stripe transfer reference (tr_…) for the Stripe method — the same
+     *  reconciliation handle as cashAppReference, other rail. Null otherwise. */
+    stripeTransferId: string | null
     /** The brokerage's free-text note on this payout, written at creation
      *  (`params.note`) and, until now, read by nobody — so a payout that
      *  covered an unusual adjustment arrived with the explanation stranded in
@@ -761,7 +764,12 @@ export async function getVendorEarningsSummary(
         // brokerage's explanation of the payout, and the set of earnings it
         // settled. Both are written by initiateVendorPayout above and neither had
         // a reader, so a vendor saw an amount with no account of what it covered.
-        .select("id, amount, payout_method, status, initiated_at, completed_at, cash_app_reference, note, earnings_ids")
+        // `stripe_transfer_id` is the SAME shape for the Stripe method: the tr_…
+        // reference the payee matches against their own Stripe balance. Read here
+        // (2026-09-07) beside cash_app_reference — the webhook matcher at
+        // lib/vendors/vendor-payout-events.ts:130 reads it too, but through a
+        // variable column name no static scan can see.
+        .select("id, amount, payout_method, status, initiated_at, completed_at, cash_app_reference, stripe_transfer_id, note, earnings_ids")
         .eq("vendor_id", vendorId)
         .eq("brokerage_id", brokerageId)
         .order("initiated_at", { ascending: false }),
@@ -797,6 +805,7 @@ export async function getVendorEarningsSummary(
       initiatedAt: p.initiated_at,
       completedAt: p.completed_at,
       cashAppReference: p.cash_app_reference ?? null,
+      stripeTransferId: p.stripe_transfer_id ?? null,
       note: p.note ?? null,
       // The column is a uuid[] with DEFAULT '{}'. A non-array (legacy null) must
       // read as 0 covered earnings, never as a crash on .length.

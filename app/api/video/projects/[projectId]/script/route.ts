@@ -4,6 +4,11 @@ import { videoActionResponse } from "../video-action-http"
 import type { GenerateVideoScriptInput } from "@/lib/kernel/video"
 
 /**
+ * DOOR (census 6d, unresolved by design): second HTTP door onto
+ * app/actions/video.ts:generateVideoScriptAction. AUTH MODEL: Supabase SESSION,
+ * checked once inside the action — no non-session credential, so an external
+ * caller can be neither proven nor disproved (§1).
+ *
  * POST /api/video/projects/:projectId/script — generate the AI script.
  *
  * The auth + project-ownership check that used to live here now lives once, in

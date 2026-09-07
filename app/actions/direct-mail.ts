@@ -650,43 +650,30 @@ export async function logResponse(params: LogResponseParams) {
     // used to be discarded entirely — a swallowed refusal here is how a campaign's
     // cost-per-response silently disagrees with its Responses tab.
     //
-    // `response_metadata` HERE IS A DUPLICATE, AND ITS SURVIVOR IS NAMED — but
-    // it is NOT deleted, because deleting it needs a fact this repo cannot see
-    // (orphan doctrine §1 + §3, 2026-09-04).
+    // ── TOMBSTONE: `response_metadata` is NO LONGER WRITTEN HERE (2026-09-07) ──
+    // It was a DUPLICATE (orphan doctrine §1.1). SURVIVOR:
+    // `direct_mail_responses.response_metadata`, written above from the SAME
+    // `params.responseMetadata` and genuinely read — app/actions/ai-direct-mail.ts
+    // selects `*, responses:direct_mail_responses(*)`, which is what the
+    // Responses tab renders. The copy on `mail_response_tracking` had no reader:
+    // this table's only consumers take a COUNT
+    // (app/api/cron/bundle-attribution-rollup/route.ts:166) or id/type/contact/
+    // lead columns (lib/campaigns/roi-calculator.ts:316, :812), never metadata.
+    // The twin write at app/api/qr/scan/route.ts was dropped in the same edit.
     //
-    // SURVIVOR: `direct_mail_responses.response_metadata`, written four lines
-    // above from the SAME `params.responseMetadata` and genuinely read —
-    // app/actions/ai-direct-mail.ts:1018 selects
-    // `*, responses:direct_mail_responses(*)`, a wildcard embed that reads
-    // every column of that row. The copy on `mail_response_tracking` has no
-    // reader at all: the only consumer of this table is the ROI rollup
-    // (app/api/cron/bundle-attribution-rollup/route.ts:166), which takes a
-    // COUNT and no columns. Same story at the second writer,
-    // app/api/qr/scan/route.ts:170.
-    //
-    // WHY IT STAYS FOR NOW: PGRST/23502 — an INSERT that omits a NOT NULL
-    // column with no default is refused ENTIRELY, and this write is the ROI
-    // ledger, so getting that wrong stops cost-per-response from being
-    // recorded at all. Nullability is not in the generated schema cache
-    // (scripts/schema-snapshot.ts holds column NAMES only), so it cannot be
-    // proved from the tree. UNVERIFIED — the integrator must measure:
-    //
-    //   select is_nullable, column_default
-    //     from information_schema.columns
-    //    where table_schema = 'public'
-    //      and table_name   = 'mail_response_tracking'
-    //      and column_name  = 'response_metadata';
-    //
-    // If is_nullable = 'YES' (or a default exists), drop this line and the twin
-    // at app/api/qr/scan/route.ts:170 and leave the tombstone naming the
-    // survivor above.
+    // The 2026-09-04 note that stood here kept the write pending ONE fact —
+    // nullability — because PGRST/23502 refuses an INSERT that omits a NOT NULL
+    // column with no default. MEASURED LIVE against hrvaqgvukzxfskkcrwbt on
+    // 2026-09-07 (information_schema.columns): is_nullable = 'YES',
+    // column_default = '{}'::jsonb. Omitting the column lands `{}`, which the
+    // ROI consumers never read, so the ledger row is unchanged in every way
+    // that is read.
     const { error: roiError } = await supabase.from("mail_response_tracking").insert({
       brokerage_id: params.brokerageId,
       campaign_id: params.campaignId,
       contact_id: contactId,
       lead_id: leadId,
       response_type: params.responseType,
-      response_metadata: params.responseMetadata ?? null,
     })
     if (roiError) {
       console.error("[DirectMail] ROI ledger write refused:", roiError.message)

@@ -198,12 +198,14 @@ export function money(n: number | null | undefined): string | null {
   return `$${Math.round(n).toLocaleString("en-US")}`
 }
 
-export function cityStateOf(l: ListingRow): string | null {
+// internal helper — called in-file by the prop builders behind resolveDirectorContentProps
+function cityStateOf(l: ListingRow): string | null {
   const s = [l.city, l.state].filter((v) => typeof v === "string" && v.trim()).join(", ")
   return s || null
 }
 
-export function photoUrlsOf(l: ListingRow, max = 6): string[] {
+// internal helper — called in-file by the prop builders behind resolveDirectorContentProps
+function photoUrlsOf(l: ListingRow, max = 6): string[] {
   const list = Array.isArray(l.photos) ? (l.photos as unknown[]) : []
   const urls = [
     l.primary_photo_url,

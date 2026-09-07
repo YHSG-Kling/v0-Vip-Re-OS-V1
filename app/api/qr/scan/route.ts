@@ -167,13 +167,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         if (responseError) {
           console.error('[qr/scan] direct_mail_responses insert refused:', responseError.message)
         }
+        // `response_metadata` is deliberately NOT copied onto the ROI ledger —
+        // tombstone and live nullability evidence at app/actions/direct-mail.ts
+        // (logResponse's mail_response_tracking insert); the survivor is the
+        // direct_mail_responses row written just above.
         const { error: roiError } = await supabase.from('mail_response_tracking').insert({
           brokerage_id: responseRow.brokerage_id,
           campaign_id: responseRow.campaign_id,
           contact_id: responseRow.contact_id,
           lead_id: responseRow.lead_id,
           response_type: responseRow.response_type,
-          response_metadata: responseRow.response_metadata,
         })
         if (roiError) {
           console.error('[qr/scan] mail_response_tracking insert refused:', roiError.message)

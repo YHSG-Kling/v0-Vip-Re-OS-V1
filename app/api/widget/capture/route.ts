@@ -1,6 +1,14 @@
 // TRACK B: Widget chat lead capture → captureContact() → CONTACT (not lead)
 //
-// This route is called by the widget client after the user submits the
+// DOOR (census 6d, PUBLIC BY DESIGN): the off-repo twin of
+// /api/widget/capture-lead, which the in-repo widget client uses
+// (app/widget/[brokerageSlug]/widget-chat-client.tsx). AUTH MODEL: no Supabase
+// session — a server-minted widget_session_token, minted to ANY visitor of a
+// public slug by /api/widget/session and proven below against the slug's own
+// brokerage (fail-closed 503 on a refused read). An anonymous credential is not
+// proof of an external caller and not evidence against one (§1: unresolved).
+//
+// This route is reached by a widget client after the user submits the
 // capture form inside the chat widget. Widget submissions include implicit
 // TCPA consent from the widget's built-in disclosure language.
 //

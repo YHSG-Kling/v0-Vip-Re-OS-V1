@@ -503,7 +503,8 @@ export async function commissionStudioSession(
  * commissionStudioSession); its length is the number of reels that were
  * planned, which may differ from commissioned_count when some were skipped.
  */
-export function composeSessionAlreadyCommissionedSpoken(args: {
+// internal helper — called in-file inside voiceStudioSession's already-commissioned path
+function composeSessionAlreadyCommissionedSpoken(args: {
   storedDurationLabel: string | null
   storedPlan: unknown
   storedSpokenCommand: string | null

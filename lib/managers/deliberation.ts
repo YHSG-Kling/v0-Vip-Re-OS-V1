@@ -771,7 +771,8 @@ export interface DeliberationEngine {
 }
 
 /** The production engine — structured generation through the ONE gateway. */
-export function gatewayEngine(): DeliberationEngine {
+// internal helper — called in-file by deliberate
+function gatewayEngine(): DeliberationEngine {
   return {
     async argue(input) {
       const { generateObjectRouted } = await import("@/lib/ai/models")

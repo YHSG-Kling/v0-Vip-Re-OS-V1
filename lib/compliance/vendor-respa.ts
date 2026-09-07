@@ -45,7 +45,8 @@ const SETTLEMENT_TOKENS: readonly string[] = [
 ]
 
 /** Normalize any category / partner-type spelling to a comparable token. */
-export function normalizeVendorCategory(raw: string | null | undefined): string {
+// internal helper — called in-file by isRespaRegulatedCategory/buildDisclosureEvent
+function normalizeVendorCategory(raw: string | null | undefined): string {
   return (raw ?? "").toLowerCase().replace(/[^a-z]/g, "")
 }
 

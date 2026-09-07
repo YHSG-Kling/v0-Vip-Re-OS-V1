@@ -98,7 +98,8 @@ function severityFromLift(lift: number): MinerInsight["severity"] {
 // = fastest-responding 25%. Conversion = contacts.status='lead' → eventual
 // transaction with a closed status.
 
-export async function mineResponseTime(input: MinerInput): Promise<MinerInsight | null> {
+// internal helper — called in-file by mineAllPatterns
+async function mineResponseTime(input: MinerInput): Promise<MinerInsight | null> {
   const svc = createServiceClient()
   const lookbackDays = input.lookbackDays ?? 180
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
@@ -205,7 +206,8 @@ export async function mineResponseTime(input: MinerInput): Promise<MinerInsight 
 
 // ─── Miner 2: AI ISA enablement lift ─────────────────────────────────────
 
-export async function mineAiIsaLift(input: MinerInput): Promise<MinerInsight | null> {
+// internal helper — called in-file by mineAllPatterns
+async function mineAiIsaLift(input: MinerInput): Promise<MinerInsight | null> {
   const svc = createServiceClient()
   const lookbackDays = input.lookbackDays ?? 180
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
@@ -274,7 +276,8 @@ export async function mineAiIsaLift(input: MinerInput): Promise<MinerInsight | n
 
 // ─── Miner 3: Touchpoint cadence → close rate ────────────────────────────
 
-export async function mineTouchpointCadence(input: MinerInput): Promise<MinerInsight | null> {
+// internal helper — called in-file by mineAllPatterns
+async function mineTouchpointCadence(input: MinerInput): Promise<MinerInsight | null> {
   const svc = createServiceClient()
   const lookbackDays = input.lookbackDays ?? 365
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString().slice(0, 10)
@@ -372,7 +375,8 @@ export async function mineTouchpointCadence(input: MinerInput): Promise<MinerIns
 
 // ─── Miner 4: Drip enrollment → engagement ───────────────────────────────
 
-export async function mineDripEngagement(input: MinerInput): Promise<MinerInsight | null> {
+// internal helper — called in-file by mineAllPatterns
+async function mineDripEngagement(input: MinerInput): Promise<MinerInsight | null> {
   const svc = createServiceClient()
   const lookbackDays = input.lookbackDays ?? 180
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
@@ -465,7 +469,8 @@ export async function mineDripEngagement(input: MinerInput): Promise<MinerInsigh
 // The output drives the `no_negotiation_copilot_use` gap_tag in Sprint 7,
 // which surfaces a learning module to bottom-quartile agents.
 
-export async function mineNegotiationCoPilotAdoption(input: MinerInput): Promise<MinerInsight | null> {
+// internal helper — called in-file by mineAllPatterns
+async function mineNegotiationCoPilotAdoption(input: MinerInput): Promise<MinerInsight | null> {
   const svc = createServiceClient()
   const lookbackDays = input.lookbackDays ?? 60
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()

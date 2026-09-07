@@ -138,7 +138,8 @@ export function zoomProviderGap(env: { clientId?: string | null; clientSecret?: 
 }
 
 /** Live: is the Zoom OAuth app configured? (Drives every connect button.) */
-export function isZoomProviderConfigured(): boolean {
+// internal helper — called in-file by ensureZoomMeetingForAppointment
+function isZoomProviderConfigured(): boolean {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
@@ -146,7 +147,8 @@ export function isZoomProviderConfigured(): boolean {
 }
 
 /** Live: the gap statement for the current environment (null when configured). */
-export function currentZoomProviderGap(): string | null {
+// internal helper — called in-file by ensureFreshZoomToken/ensureZoomMeetingForAppointment/readScopedZoom
+function currentZoomProviderGap(): string | null {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,

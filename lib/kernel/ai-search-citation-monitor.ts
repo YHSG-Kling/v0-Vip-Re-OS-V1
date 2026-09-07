@@ -225,7 +225,8 @@ export type SearchFetcher = (params: { query: string; brokerageId: string }) => 
  * with no hits when no creds are configured → the runner records not_checked.
  * No key is read or logged here — that lives env-only inside the clients.
  */
-export const realSearchFetcher: SearchFetcher = async (params) => {
+// internal helper — called in-file by runCitationMonitor/runLandingPageCitationMonitor
+const realSearchFetcher: SearchFetcher = async (params) => {
   const { webSearch, formatWebSearchContext } = await import("@/lib/ai/web-search")
   const res = await webSearch({ query: params.query, maxResults: 8, mode: "research" }).catch(
     () => ({ answer: null, hits: [], provider: "none" as const, cost: 0 }),
@@ -244,7 +245,8 @@ export function siteOrigin(): string {
 }
 
 /** Host (no scheme) of the site origin — the bare-domain detection target. */
-export function siteHost(): string {
+// internal helper — called in-file by runCitationMonitor/runLandingPageCitationMonitor
+function siteHost(): string {
   return siteOrigin().replace(/^https?:\/\//, "").replace(/\/$/, "")
 }
 

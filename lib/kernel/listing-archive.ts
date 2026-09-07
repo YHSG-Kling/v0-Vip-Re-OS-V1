@@ -240,6 +240,13 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "transactions", column: "listing_id", disposition: "detach", why: "a closed deal keeps its listing pointer — commission and transaction history read it" },
   { table: "documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / contact / transaction; disclosures are retention records" },
   { table: "generated_documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / transaction" },
+  // m608 (2026-09-07) gave these three columns the FK the schema never had, so
+  // they entered SCHEMA_FK_MAP and this ledger's denominator. Each is a record
+  // that outlives the listing: the activity feed is the agent's own history,
+  // client documents belong to the contact, and a script is a marketing asset.
+  { table: "activities", column: "listing_id", disposition: "detach", why: "the agent's activity history; owned by agent / contact / transaction" },
+  { table: "client_documents", column: "listing_id", disposition: "detach", why: "owned by the contact; a disclosure or contract is a retention record" },
+  { table: "video_scripts_library", column: "listing_id", disposition: "detach", why: "a marketing asset owned by the brokerage / agent" },
   { table: "vendor_invoices", column: "listing_id", disposition: "detach", why: "owned by a vendor; a bill outlives the listing" },
   { table: "vendor_bookings", column: "listing_id", disposition: "detach", why: "owned by a vendor" },
   { table: "appointments", column: "listing_id", disposition: "detach", why: "owned by agent / contact" },

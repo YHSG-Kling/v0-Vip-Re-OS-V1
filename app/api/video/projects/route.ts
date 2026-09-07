@@ -6,6 +6,14 @@ import { createVideoProject } from "@/app/actions/video/create-video-project"
 import type { CreateVideoProjectParams } from "@/app/actions/video/create-video-project"
 
 /**
+ * DOOR (census 6d, unresolved by design): second HTTP door onto
+ * app/actions/video/create-video-project.ts, kept by the app/actions/video.ts
+ * "NOT ORPHANS" ruling. AUTH MODEL: Supabase SESSION (supabase.auth.getUser /
+ * requireAuth) — no bearer or shared secret, so an out-of-process caller
+ * cannot be proven from this repo and none can be disproved (CLAUDE.md §1).
+ * The in-app Video Studio calls the server action directly.
+ */
+/**
  * ai_video_projects_video_type_check — the DB rejects anything outside this list,
  * and a caller-supplied string reaching the insert turns a bad request into a 500.
  * Checked here because this is where untrusted input enters.

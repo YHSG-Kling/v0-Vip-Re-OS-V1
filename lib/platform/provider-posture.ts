@@ -55,14 +55,16 @@ import { gatewayChat } from "@/lib/ai/gateway-chat"
 // the per-provider inbound webhook contract — so the drift detector below and
 // the superadmin contract card can never disagree about the canonical URL.
 
-export interface ExpectedWebhooks {
+// internal type — used only by expectedWebhookTargets/classifyNumberBinding, both un-exported in-file helpers
+interface ExpectedWebhooks {
   voice: string
   sms: string
 }
 
 /** PURE: the webhook URLs a bound tenant number is expected to carry —
  *  derived from the webhook contract, never retyped. */
-export function expectedWebhookTargets(appUrl: string): ExpectedWebhooks {
+// internal helper — called in-file by getTwilioFleetPosture
+function expectedWebhookTargets(appUrl: string): ExpectedWebhooks {
   const voiceEntry = findWebhookContractEntry("/api/voice/twilio/inbound")
   const smsEntry = findWebhookContractEntry("/api/providers/inbound")
   // The contract carries both entries by construction (webhook-contract-guard
@@ -79,7 +81,8 @@ export type NumberBinding = "bound" | "unbound" | "drifted"
  *  "unbound" (empty URLs) is a plain line — legitimate when the AI toggle is
  *  off; "drifted" (bound to something ELSE) is the dangerous state: the tenant
  *  thinks the AI answers, but calls/texts route elsewhere. */
-export function classifyNumberBinding(
+// internal helper — called in-file by getTwilioFleetPosture
+function classifyNumberBinding(
   voiceUrl: string | null | undefined,
   smsUrl: string | null | undefined,
   expected: ExpectedWebhooks,
@@ -391,7 +394,8 @@ const SUPPRESSION_FETCH_CAP = 500
 const SENDGRID_API = "https://api.sendgrid.com"
 
 /** PURE: fold ledger counts into the problem rate. */
-export function computeProblemRatePct(delivered: number, bounced: number, dropped: number, spamComplaints: number): number | null {
+// internal helper — called in-file by getSendgridPosture
+function computeProblemRatePct(delivered: number, bounced: number, dropped: number, spamComplaints: number): number | null {
   const total = delivered + bounced + dropped + spamComplaints
   if (total === 0) return null
   return Math.round(((bounced + dropped + spamComplaints) / total) * 1000) / 10
@@ -879,7 +883,8 @@ export function envPresence(vars: readonly string[]): boolean | null {
 
 /** Every platform env var that can carry this provider's key. [] = the provider
  *  has no env home at all (credential-stores only, or keyless). */
-export function platformEnvVarsFor(provider: string): string[] {
+// internal helper — called in-file by platformEnvConfigured
+function platformEnvVarsFor(provider: string): string[] {
   const key = canonPostureKey(provider)
   return envVarsByProvider().get(key) ?? envVarsByProvider().get((provider ?? "").trim().toLowerCase()) ?? []
 }
@@ -943,7 +948,8 @@ export interface FullProviderPosture {
 /** PURE: fold a provider's failed/escalated heal rows into one plain-language
  *  cause line, riding composeSentinelLossReport's grouping + pg-code hints
  *  (reused, not forked — same vocabulary the sentinel loss report speaks). */
-export function topFailureCause(
+// internal helper — called in-file by getFullProviderPosture
+function topFailureCause(
   rows: Array<{ brokerage_id?: string | null; detail?: unknown }>,
 ): string | null {
   if (rows.length === 0) return null

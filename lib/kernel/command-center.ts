@@ -106,6 +106,19 @@ export interface ManagerSessionDetail {
   lastEventAt: string | null
   endedAt:     string | null
   evaluations: ManagerSessionEvaluation[]
+  /** The client messages THIS session drafted — read by managed_agent_session_id,
+   *  the column every proposal stamps (lib/agents/agent-client-messages.ts:63). */
+  clientMessages: ManagerSessionClientMessage[]
+}
+
+/** One client-message proposal a manager session produced, as the drawer lists it. */
+export interface ManagerSessionClientMessage {
+  id:         string
+  audience:   string | null
+  channel:    string | null
+  subject:    string | null
+  status:     string | null
+  proposedAt: string | null
 }
 
 export interface CommandCenterAction {
@@ -845,6 +858,22 @@ export async function loadManagerSessionDetail(params: {
     .order("iteration", { ascending: false })
   if (evalsErr) return { ok: false, error: `Evaluation read was refused: ${evalsErr.message}` }
 
+  // THE MESSAGES THIS SESSION DRAFTED (2026-09-07). agent_client_messages.
+  // managed_agent_session_id is stamped on every proposal and the feed's
+  // team/agent scope filters on it — but that filter is a `.or()` string built
+  // at runtime (see the scope block in loadCommandCenter), so the drawer had no
+  // static reader that shows an operator WHICH proposals a session produced.
+  // Tenant-anchored on the session's own brokerage (already scope-proven above),
+  // and a refused read is reported, never rendered as "drafted nothing".
+  const { data: drafted, error: draftedErr } = await supabase
+    .from("agent_client_messages")
+    .select("id, audience, channel, subject, status, proposed_at")
+    .eq("managed_agent_session_id", session.id as string)
+    .eq("brokerage_id", session.brokerage_id as string)
+    .order("proposed_at", { ascending: false })
+    .limit(50)
+  if (draftedErr) return { ok: false, error: `Client-message read was refused: ${draftedErr.message}` }
+
   return {
     ok: true,
     detail: {
@@ -871,6 +900,14 @@ export async function loadManagerSessionDetail(params: {
         outputTokens: (e.output_tokens as number | null) ?? 0,
         cacheReadInputTokens: (e.cache_read_input_tokens as number | null) ?? 0,
         evaluatedAt: (e.evaluated_at as string | null) ?? null,
+      })),
+      clientMessages: ((drafted ?? []) as Array<Record<string, unknown>>).map((m) => ({
+        id:         String(m.id),
+        audience:   (m.audience as string | null) ?? null,
+        channel:    (m.channel as string | null) ?? null,
+        subject:    (m.subject as string | null) ?? null,
+        status:     (m.status as string | null) ?? null,
+        proposedAt: (m.proposed_at as string | null) ?? null,
       })),
     },
   }

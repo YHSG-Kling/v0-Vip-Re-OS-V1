@@ -213,7 +213,8 @@ export function dealWeeklyTag(transactionId: string, isoWeek: string): string {
 
 /** PURE: per-deal-per-week dedupe tag for the SELLER side of a dual-represented
  *  deal — separate tag so each side dedupes independently. */
-export function dealWeeklySellerTag(transactionId: string, isoWeek: string): string {
+// internal helper — called in-file by runWeeklyDealNotes
+function dealWeeklySellerTag(transactionId: string, isoWeek: string): string {
   return `[TC_WEEKLY_SELLER] [${transactionId}] [${isoWeek}]`
 }
 
@@ -294,7 +295,8 @@ async function alreadyProposed(svc: Svc, brokerageId: string, tag: string): Prom
 
 export interface StoryDraftResult { scanned: number; proposed: number; skippedNoCopy: number }
 
-export async function runWeeklySellerUpdates(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
+// internal helper — called in-file by runClientStoryDraftsAll
+async function runWeeklySellerUpdates(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
   const out: StoryDraftResult = { scanned: 0, proposed: 0, skippedNoCopy: 0 }
   const isoWeek = isoWeekOf(now)
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString()
@@ -342,7 +344,8 @@ export async function runWeeklySellerUpdates(svc: Svc, brokerageId: string, now:
   return out
 }
 
-export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
+// internal helper — called in-file by runClientStoryDraftsAll
+async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
   const out: StoryDraftResult = { scanned: 0, proposed: 0, skippedNoCopy: 0 }
   const since = new Date(now.getTime() - 36 * 3_600_000).toISOString().slice(0, 10) // today or yesterday
 
@@ -443,7 +446,8 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
   return out
 }
 
-export async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
+// internal helper — called in-file by runClientStoryDraftsAll
+async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
   const out: StoryDraftResult = { scanned: 0, proposed: 0, skippedNoCopy: 0 }
   const isoWeek = isoWeekOf(now)
 

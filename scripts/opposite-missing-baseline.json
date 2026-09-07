@@ -1,7 +1,7 @@
 {
-  "generated": "2026-09-04",
+  "generated": "2026-09-07",
   "counts": {
-    "col-write-no-read": 11,
+    "col-write-no-read": 0,
     "col-read-no-write": 5,
     "dead-import": 1,
     "orphan-type-export": 0,
@@ -14,19 +14,7 @@
     "route-unresolved-door": 8
   },
   "keys": {
-    "col-write-no-read": [
-      "agent_client_messages.managed_agent_session_id",
-      "agent_intro_videos.trigger_year",
-      "ai_search_citation_observations.agent_id",
-      "ai_search_citation_observations.team_id",
-      "client_portal_activity.agent_id",
-      "communications.contact_id",
-      "communications.direction",
-      "generated_documents.agent_id",
-      "listing_landing_pages.template_id",
-      "mail_response_tracking.response_metadata",
-      "vendor_payouts.stripe_transfer_id"
-    ],
+    "col-write-no-read": [],
     "col-read-no-write": [
       "agent_reviews.source_url",
       "listing_marketing_services.estimated_cost",

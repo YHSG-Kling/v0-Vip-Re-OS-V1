@@ -204,23 +204,22 @@ async function GeoTab({
   let query = supabase
     .from("ai_search_citation_observations")
     // `query` is the prompt the monitor asked — the card shows it under each outcome.
-    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited, query")
+    // agent_id / team_id are selected (m335 attribution) AND filtered on below.
+    // At brokerage scope the card shows WHOSE observation each row is — a
+    // broker reading a mixed list needs that to act on a "not cited" — so the
+    // columns are rendered, not merely carried (same shape as the landing rail).
+    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited, query, agent_id, team_id")
     // The tenant filter ALWAYS applies. The scope filter narrows within it — it
     // never replaces it, so a narrower scope can never widen the read.
     .eq("brokerage_id", brokerageId)
-  // agent_id / team_id ARE READ HERE — as the dynamic filter column
-  // `active.column` (one of brokerage_id | team_id | agent_id, from
-  // allowedScopes), not as selected fields. A column-level census that looks
-  // for the literal name inside `.select()` / `.eq("agent_id", …)` cannot see
-  // this `.eq(active.column, …)`, so ai_search_citation_observations.agent_id
-  // and .team_id read as "written, never read" in scripts/opposite-missing-
-  // baseline.json while being the axis this whole page pivots on. They are
-  // deliberately NOT added to the select: nothing renders a per-row
-  // attribution, and selecting a column no one shows is the other half of the
-  // same orphan. (The landing rail below spells its branches literally for the
-  // same reason — see the comment there.)
+  // The column names are spelled as literals (not `.eq(active.column, …)`) so
+  // the columns this page pivots on stay visible to a column-level scan — the
+  // landing rail below does the same. The outer guard is the shape
+  // scripts/geo-scope-guard.ts holds: the scope filter only ever NARROWS.
   if (active.column !== "brokerage_id" && active.value) {
-    query = query.eq(active.column, active.value)
+    query = active.column === "agent_id"
+      ? query.eq("agent_id", active.value)
+      : query.eq("team_id", active.value)
   }
   const { data: citationRows, error } = await query
     .gte("observed_at", citationSince)

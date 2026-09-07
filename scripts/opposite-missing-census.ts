@@ -477,6 +477,54 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   // asked for. Same class as closing_cost_accuracy_observations' two identity
   // columns: written by app code, consumed by the conflict target.
   "ai_search_landing_citation_observations.platform",
+
+  // WHY THIS ONE. `agent_intro_videos.trigger_year` is written by every arm of
+  // the intro-video reactor (lib/video/intro-video-reactor.ts:406, :427, :443,
+  // :706) and its READER IS THE DATABASE: the UNIQUE index that makes "one
+  // anniversary video per contact per YEAR" true and that the reactor's 23505
+  // branch depends on. Verified live against hrvaqgvukzxfskkcrwbt on 2026-09-07,
+  // pg_indexes: uq_agent_intro_videos_per_trigger UNIQUE
+  // (contact_id, agent_id, trigger, COALESCE(trigger_year, 0)). A code-side
+  // pre-check would be a SECOND idempotency rule racing the first (§1: no
+  // twins), and the reactor's own header says so at :387. Same class as
+  // usage_counters.period_end: written by app code, consumed by an index.
+  "agent_intro_videos.trigger_year",
+
+  // WHY THESE TWO. `client_portal_activity.agent_id` and
+  // `generated_documents.agent_id` are stamped by every writer
+  // (app/actions/journey-tasks.ts:105, app/actions/portal-offer-decision.ts:79;
+  // lib/documents/client-document-producer.ts:136, lib/kernel/appraiser-packet.ts:838)
+  // and their READER IS THE SELECT POLICY — the same
+  // mirror-of-§3 class as ai_subscription_tier above: a column read only by RLS
+  // reads as readerless without being readerless. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-09-07, pg_policies:
+  //   client_portal_activity_select … OR (is_agent_role() AND agent_id IS NOT NULL
+  //                                       AND agent_id = current_user_agent_id())
+  //   generated_documents_select    … OR (is_agent_role() AND agent_id = current_user_agent_id())
+  // An UNSTAMPED row is readable by the client who wrote it and by nobody who
+  // can act on it — journey-tasks.ts:96 records exactly that failure — so the
+  // write is load-bearing for tenancy. generated_documents additionally has a
+  // code reader the chain scanner cannot follow: app/actions/generated-documents.ts:89
+  // narrows a non-elevated seat with `q = q.eq("agent_id", ctx.agentId)` on a
+  // chain continued across statements.
+  "client_portal_activity.agent_id",
+  "generated_documents.agent_id",
+
+  // WHY THESE TWO. `communications.contact_id` and `communications.direction`
+  // have ONE writer (lib/connections/zoom-transcripts.ts:185 — contact_id NULL
+  // by design, a platform-hosted meeting has no contact; direction 'inbound', a
+  // recording's provenance) and their reader is the AUDIT EXPORT this set is
+  // named for: lib/platform/tenant-export.ts:40 reads `.select("*")` over every
+  // table in TENANT_EXPORT_TABLES (:22 names "communications"), through a loop
+  // variable no static `.from("…")` scan can attribute. The two in-product
+  // readers (app/dashboard/superadmin/tenant-calls/page.tsx:117,
+  // app/dashboard/meetings/[eventId]/transcript-panel.tsx:164) take
+  // subject/content_preview/metadata only, and building one for these would
+  // mean displaying a constant. zoom-transcripts.ts:169-185 records why the
+  // proposed alternative (wiring into lib/kernel/communications.ts' contact
+  // inbox) would be WRONG: these rows carry no contact to key on.
+  "communications.contact_id",
+  "communications.direction",
 ])
 
 /**

@@ -7,6 +7,11 @@ import { videoActionResponse } from "../video-action-http"
 import type { SubmitVideoGenerationJobInput } from "@/lib/kernel/video"
 
 /**
+ * DOOR (census 6d, unresolved by design): second HTTP door onto
+ * app/actions/video.ts:submitVideoGenerationJobAction / loadVideoGenerationStateAction.
+ * AUTH MODEL: Supabase SESSION, checked once inside the action — no non-session
+ * credential, so an external caller can be neither proven nor disproved (§1).
+ *
  * POST /api/video/projects/:projectId/generate — submit the render job.
  * GET  /api/video/projects/:projectId/generate — read the generation state.
  *

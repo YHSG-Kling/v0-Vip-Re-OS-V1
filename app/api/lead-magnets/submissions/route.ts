@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { captureFormSubmission, trackMagnetEvent, type CaptureFormSubmissionInput } from "@/lib/kernel/lead-magnets"
 
 // POST /api/lead-magnets/submissions
+// DOOR (census 6d, PUBLIC BY DESIGN): anonymous form-submission intake for
+// embeds outside this app. AUTH MODEL: none — the submitter IS the lead;
+// TCPA consent and real IP/UA provenance are enforced below.
 // Input contract: CaptureFormSubmissionInput
 // Output contract: CaptureFormSubmissionOutput
 // Auth: NOT required — public-facing endpoint for form submitters (embeds

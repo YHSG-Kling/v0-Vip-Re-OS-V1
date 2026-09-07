@@ -199,7 +199,8 @@ const NOT_APPLICABLE: AccuracyGateVerdict = {
 }
 
 /** Verdict for one domain, tenant-scoped (autonomy is earned per brokerage from ITS outcomes). */
-export async function loadAccuracyGateVerdict(
+// internal helper — called in-file by loadAccuracyGateForManager/loadAccuracyGateReport
+async function loadAccuracyGateVerdict(
   brokerageId: string,
   domain: AccuracyDomain,
   client?: Svc,
@@ -221,7 +222,8 @@ export async function loadAccuracyGateVerdict(
 }
 
 /** The verdict for a MANAGER (resolves its domain; unmapped ⇒ not_applicable). */
-export async function loadAccuracyGateForManager(
+// internal helper — called in-file by loadAccuracyHoldForManager
+async function loadAccuracyGateForManager(
   brokerageId: string,
   managerKey: ManagerKey,
   client?: Svc,

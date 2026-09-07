@@ -40,6 +40,10 @@ import { trackMagnetEvent } from "@/lib/kernel/lead-magnets"
 // standing. UNRESOLVED, and it needs a tenancy decision, not a guess.
 
 // GET /api/lead-magnets/qr/[magnetId]
+// DOOR (census 6d, PUBLIC BY DESIGN for the scan arm): a QR scan arrives from
+// a stranger's phone. AUTH MODEL: none for the anonymous scan (stamped to the
+// MAGNET's tenant, never the caller's claim); the record arm is gated behind a
+// session whose brokerage must equal the one asked about, fail-closed.
 // Returns the QR code record for a given magnet
 // Also fires a qr_scan tracking event if ?track=1 is passed (used by QR redirect pages)
 export async function GET(

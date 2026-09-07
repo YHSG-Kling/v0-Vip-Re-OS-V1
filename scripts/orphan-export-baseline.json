@@ -83,7 +83,7 @@
     "lib/ai-isa/voice-dial-batch.ts": 2,
     "lib/analytics/ai-prediction-outcomes.ts": 1,
     "lib/analytics/assignment-outcomes.ts": 4,
-    "lib/analytics/prediction-accuracy.ts": 15,
+    "lib/analytics/prediction-accuracy.ts": 14,
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/auth/isa-actor.ts": 1,
@@ -96,7 +96,7 @@
     "lib/billing/stripe-account-scope.ts": 2,
     "lib/billing/stripe-webhook-secrets.ts": 1,
     "lib/blog/wordpress-connection.ts": 1,
-    "lib/brokerage-intelligence/miners.ts": 6,
+    "lib/brokerage-intelligence/miners.ts": 1,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-consultation/consultation-narration.ts": 2,
     "lib/buyer-search/external-match.ts": 2,
@@ -120,14 +120,14 @@
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 3,
-    "lib/compliance/vendor-respa.ts": 7,
+    "lib/compliance/vendor-respa.ts": 6,
     "lib/connections/accounting-scopes.ts": 3,
     "lib/connections/scope.ts": 1,
-    "lib/connections/zoom.ts": 8,
+    "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
-    "lib/crm/import-pull.ts": 8,
+    "lib/crm/import-pull.ts": 4,
     "lib/data-guard/index.ts": 1,
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
@@ -212,7 +212,7 @@
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/ai-isa.ts": 1,
-    "lib/kernel/ai-search-citation-monitor.ts": 8,
+    "lib/kernel/ai-search-citation-monitor.ts": 6,
     "lib/kernel/ai-sentinel.ts": 1,
     "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
@@ -228,7 +228,7 @@
     "lib/kernel/call-intelligence.ts": 2,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
-    "lib/kernel/client-story-drafts.ts": 14,
+    "lib/kernel/client-story-drafts.ts": 10,
     "lib/kernel/client-welcome.ts": 1,
     "lib/kernel/closing-war-room.ts": 2,
     "lib/kernel/command-center.ts": 1,
@@ -245,7 +245,7 @@
     "lib/kernel/deal-play.ts": 1,
     "lib/kernel/deal-room-reel.ts": 2,
     "lib/kernel/deal-save-huddle.ts": 3,
-    "lib/kernel/document-autofile.ts": 7,
+    "lib/kernel/document-autofile.ts": 5,
     "lib/kernel/document-compliance-audit.ts": 6,
     "lib/kernel/document-custody.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 2,
@@ -355,9 +355,9 @@
     "lib/listings/photo-intelligence.ts": 6,
     "lib/listings/relist-recovery.ts": 1,
     "lib/listings/seller-weekly-report.ts": 2,
-    "lib/managers/accuracy-gate.ts": 7,
+    "lib/managers/accuracy-gate.ts": 5,
     "lib/managers/cross-referral.ts": 4,
-    "lib/managers/deliberation.ts": 8,
+    "lib/managers/deliberation.ts": 7,
     "lib/managers/eval-scoring.ts": 2,
     "lib/managers/learning-loop.ts": 1,
     "lib/managers/teamwork-metrics.ts": 1,
@@ -382,7 +382,7 @@
     "lib/newsletter/seo-score.ts": 2,
     "lib/notifications/brokerage-admins.ts": 1,
     "lib/notifications/platform-staff.ts": 1,
-    "lib/offers/closing-cost-accuracy.ts": 9,
+    "lib/offers/closing-cost-accuracy.ts": 6,
     "lib/offers/net-sheet-calc.ts": 2,
     "lib/offers/offer-target.ts": 1,
     "lib/offers/public-record-preload.ts": 1,
@@ -412,7 +412,7 @@
     "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-content.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
-    "lib/platform/provider-posture.ts": 8,
+    "lib/platform/provider-posture.ts": 3,
     "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
     "lib/platform/self-audit-rollup.ts": 1,
@@ -484,7 +484,7 @@
     "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/avatar-render-orchestrator.ts": 1,
     "lib/video/composite-attribution.ts": 1,
-    "lib/video/director-content.ts": 12,
+    "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 3,
     "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
@@ -501,7 +501,7 @@
     "lib/voice/deal-decision.ts": 2,
     "lib/voice/platform-reception.ts": 2,
     "lib/voice/reception-inventory.ts": 2,
-    "lib/voice/studio-session.ts": 8,
+    "lib/voice/studio-session.ts": 7,
     "lib/voice/twilio-outbound.ts": 1,
     "lib/voice/twilio-tenancy.ts": 2,
     "lib/voice/twilio-voice.ts": 1,
@@ -517,7 +517,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9502,
+  "census": 9477,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1171,6 +1171,7 @@
     "app/api/cron/calendar-sync/route.ts": 1,
     "app/api/cron/campaign-orchestrator-weekly/route.ts": 1,
     "app/api/cron/campaign-sequence-steps/route.ts": 1,
+    "app/api/cron/capability-radar/route.ts": 1,
     "app/api/cron/capacity-guardian/route.ts": 1,
     "app/api/cron/client-pulse/route.ts": 1,
     "app/api/cron/closing-orchestration/route.ts": 1,
@@ -2787,7 +2788,7 @@
     "lib/analytics/ai-prediction-outcomes.ts": 4,
     "lib/analytics/assignment-outcomes.ts": 6,
     "lib/analytics/intent-phrase-rollup.ts": 1,
-    "lib/analytics/prediction-accuracy.ts": 21,
+    "lib/analytics/prediction-accuracy.ts": 20,
     "lib/analytics/territory-coverage.ts": 4,
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
@@ -2844,7 +2845,7 @@
     "lib/brokerage/get-default-commission-structure.ts": 1,
     "lib/brokerage/get-required-providers.ts": 4,
     "lib/brokerage/get-required-state.ts": 2,
-    "lib/brokerage-intelligence/miners.ts": 7,
+    "lib/brokerage-intelligence/miners.ts": 2,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 4,
     "lib/buyer-broker/gate.ts": 1,
     "lib/buyer-consultation/consultation-narration.ts": 3,
@@ -2981,7 +2982,7 @@
     "lib/compliance/signature-completeness.ts": 1,
     "lib/compliance/trid-disclosure-clock-runner.ts": 2,
     "lib/compliance/trid-disclosure-clock.ts": 6,
-    "lib/compliance/vendor-respa.ts": 14,
+    "lib/compliance/vendor-respa.ts": 13,
     "lib/compliance-rules/compliance-engine.ts": 5,
     "lib/compliance-rules/compliance-logger.ts": 4,
     "lib/compliance-rules/fair-housing-patterns.ts": 1,
@@ -2996,7 +2997,7 @@
     "lib/connections/vendor-quickbooks.ts": 2,
     "lib/connections/vendor-stripe.ts": 4,
     "lib/connections/zoom-transcripts.ts": 2,
-    "lib/connections/zoom.ts": 24,
+    "lib/connections/zoom.ts": 22,
     "lib/constants/index.ts": 3,
     "lib/contact-pipeline/contact-capture.ts": 2,
     "lib/contact-promotion/contact-creator.ts": 3,
@@ -3036,7 +3037,7 @@
     "lib/content-intel/reddit-scraper.ts": 1,
     "lib/content-intel/rss-scraper.ts": 1,
     "lib/content-intel/topic-bank.ts": 2,
-    "lib/crm/import-pull.ts": 9,
+    "lib/crm/import-pull.ts": 5,
     "lib/crm/providers/followupboss.ts": 1,
     "lib/crm/providers/hubspot.ts": 1,
     "lib/crm/providers/lofty.ts": 1,
@@ -3345,7 +3346,7 @@
     "lib/kernel/ai-copy.ts": 3,
     "lib/kernel/ai-isa.ts": 11,
     "lib/kernel/ai-model.ts": 1,
-    "lib/kernel/ai-search-citation-monitor.ts": 10,
+    "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 2,
     "lib/kernel/ai-teammates.ts": 7,
     "lib/kernel/ai-tools.ts": 4,
@@ -3371,12 +3372,13 @@
     "lib/kernel/calendar-sync.ts": 7,
     "lib/kernel/call-intelligence.ts": 6,
     "lib/kernel/campaign-center.ts": 4,
+    "lib/kernel/capability-radar.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
     "lib/kernel/capacity-guardian.ts": 4,
     "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
-    "lib/kernel/client-story-drafts.ts": 16,
+    "lib/kernel/client-story-drafts.ts": 12,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
     "lib/kernel/command-center.ts": 4,
@@ -3415,7 +3417,7 @@
     "lib/kernel/deconflict/cadence-policy.ts": 2,
     "lib/kernel/deconflict/index.ts": 2,
     "lib/kernel/deconflict/lead-channel.ts": 2,
-    "lib/kernel/document-autofile.ts": 10,
+    "lib/kernel/document-autofile.ts": 8,
     "lib/kernel/document-compliance-audit.ts": 8,
     "lib/kernel/document-custody.ts": 5,
     "lib/kernel/draft-quality.ts": 3,
@@ -3681,10 +3683,11 @@
     "lib/listings/back-on-market.ts": 1,
     "lib/listings/compute-dom.ts": 2,
     "lib/listings/expiry-decision.ts": 2,
-    "lib/listings/listing-activation-gate.ts": 1,
+    "lib/listings/listing-activation-gate.ts": 2,
+    "lib/listings/listing-compliance-loop.ts": 1,
     "lib/listings/listing-metrics-rollup.ts": 1,
     "lib/listings/listing-metrics-shape.ts": 2,
-    "lib/listings/listing-status-sync.ts": 2,
+    "lib/listings/listing-status-sync.ts": 3,
     "lib/listings/market-pulse-runner.ts": 1,
     "lib/listings/market-pulse.ts": 3,
     "lib/listings/marketing-channels.ts": 1,
@@ -3700,10 +3703,10 @@
     "lib/listings/seller-weekly-report-runner.ts": 1,
     "lib/listings/seller-weekly-report.ts": 4,
     "lib/listings/tier-assigner.ts": 10,
-    "lib/managers/accuracy-gate.ts": 12,
+    "lib/managers/accuracy-gate.ts": 10,
     "lib/managers/autonomy-gate.ts": 5,
     "lib/managers/cross-referral.ts": 8,
-    "lib/managers/deliberation.ts": 14,
+    "lib/managers/deliberation.ts": 13,
     "lib/managers/eval-scoring.ts": 7,
     "lib/managers/learning-loop.ts": 5,
     "lib/managers/outcome-attribution.ts": 3,
@@ -3728,6 +3731,7 @@
     "lib/marketing/guide-booklet-content.ts": 2,
     "lib/marketing/home-value-email.ts": 2,
     "lib/marketing/image-library.ts": 4,
+    "lib/marketing/landing-template.ts": 2,
     "lib/marketing/lead-magnet-copy.ts": 5,
     "lib/marketing/lead-magnet-delivery-runner.ts": 2,
     "lib/marketing/lead-magnet-intent.ts": 1,
@@ -3770,7 +3774,7 @@
     "lib/notifications/route-resolver.ts": 1,
     "lib/notifications/transaction-parties-packet.ts": 8,
     "lib/offers/buyer-closing-costs.ts": 2,
-    "lib/offers/closing-cost-accuracy.ts": 12,
+    "lib/offers/closing-cost-accuracy.ts": 9,
     "lib/offers/commission-disclosure.ts": 3,
     "lib/offers/multi-offer-rules.ts": 2,
     "lib/offers/net-sheet-calc.ts": 13,
@@ -3837,7 +3841,7 @@
     "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 4,
-    "lib/platform/provider-posture.ts": 14,
+    "lib/platform/provider-posture.ts": 9,
     "lib/platform/public-tiers.ts": 2,
     "lib/platform/referral-payouts.ts": 7,
     "lib/platform/require-capability.ts": 2,
@@ -4084,6 +4088,7 @@
     "lib/transactions/milestone-identity.ts": 2,
     "lib/transactions/milestone-service.ts": 7,
     "lib/transactions/offer-bridge.ts": 3,
+    "lib/transactions/offer-compliance-loop.ts": 1,
     "lib/transactions/offer-execution-state.ts": 3,
     "lib/transactions/participant-populator.ts": 1,
     "lib/transactions/role-guard.ts": 5,
@@ -4136,13 +4141,14 @@
     "lib/video/avatar-track-submit.ts": 1,
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
+    "lib/video/broll-url.ts": 1,
     "lib/video/caption-plan.ts": 2,
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
     "lib/video/composite-attribution.ts": 5,
     "lib/video/comps-animation-spec.ts": 1,
-    "lib/video/director-content.ts": 18,
+    "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 6,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 8,
@@ -4200,11 +4206,12 @@
     "lib/voice/showing-request.ts": 1,
     "lib/voice/sms-inbound.ts": 5,
     "lib/voice/spoken-values.ts": 3,
-    "lib/voice/studio-session.ts": 10,
+    "lib/voice/studio-session.ts": 9,
     "lib/voice/sync-voice-id.ts": 1,
     "lib/voice/task-command.ts": 3,
     "lib/voice/team-command-names.ts": 1,
     "lib/voice/team-commands.ts": 1,
+    "lib/voice/text-command.ts": 1,
     "lib/voice/tool-registry.ts": 3,
     "lib/voice/twilio-outbound.ts": 5,
     "lib/voice/twilio-tenancy.ts": 5,
@@ -8340,6 +8347,9 @@
       "GET"
     ],
     "app/api/cron/campaign-sequence-steps/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/capability-radar/route.ts": [
       "GET"
     ],
     "app/api/cron/capacity-guardian/route.ts": [
@@ -13587,7 +13597,6 @@
       "summarizeStrategyRows",
       "summarizePatternRows",
       "summarizeContentRows",
-      "dealOutcomeProbability",
       "summarizeDealOutcomeRows",
       "summarizeHomeValueRows",
       "summarizePropensityRows",
@@ -13991,11 +14000,6 @@
       "getPrimaryState"
     ],
     "lib/brokerage-intelligence/miners.ts": [
-      "mineResponseTime",
-      "mineAiIsaLift",
-      "mineTouchpointCadence",
-      "mineDripEngagement",
-      "mineNegotiationCoPilotAdoption",
       "mineOfferTermOutcomes",
       "mineAllPatterns"
     ],
@@ -14678,7 +14682,6 @@
       "mostUrgentDeadline"
     ],
     "lib/compliance/vendor-respa.ts": [
-      "normalizeVendorCategory",
       "isRespaRegulatedCategory",
       "evaluateReferralFee",
       "standardPreferredDisclosure",
@@ -14778,8 +14781,6 @@
       "zoomStorageKey",
       "isZoomOffered",
       "zoomProviderGap",
-      "isZoomProviderConfigured",
-      "currentZoomProviderGap",
       "resolveZoomOwner",
       "zoomOwnerFilter",
       "zoomHostCascade",
@@ -14968,10 +14969,6 @@
       "hubspotToRow",
       "loftyToRow",
       "ghlToRow",
-      "pullFollowUpBoss",
-      "pullHubSpot",
-      "pullLofty",
-      "pullGoHighLevel",
       "pullCrmPage"
     ],
     "lib/crm/providers/followupboss.ts": [
@@ -16411,12 +16408,10 @@
       "detectCompetitorCitations",
       "scoreCitationVisibility",
       "siteOrigin",
-      "siteHost",
       "buildCitationQuery",
       "buildLandingCitationQuery",
       "runCitationMonitor",
-      "runLandingPageCitationMonitor",
-      "realSearchFetcher"
+      "runLandingPageCitationMonitor"
     ],
     "lib/kernel/ai-sentinel.ts": [
       "classifyLicenseRisk",
@@ -16565,6 +16560,9 @@
       "approveCampaignItem",
       "approveCampaignPlay"
     ],
+    "lib/kernel/capability-radar.ts": [
+      "runCapabilityRadar"
+    ],
     "lib/kernel/capacity-guardian-runner.ts": [
       "runCapacityGuardian"
     ],
@@ -16595,13 +16593,9 @@
       "tourRecapTag",
       "dealNoteBrief",
       "dealWeeklyTag",
-      "dealWeeklySellerTag",
       "buyerStoryBrief",
       "buyerWeeklyTag",
       "authorStory",
-      "runWeeklySellerUpdates",
-      "runTourRecaps",
-      "runWeeklyDealNotes",
       "runBuyerSearchStories",
       "runClientStoryDraftsAll"
     ],
@@ -16824,11 +16818,9 @@
       "resolveDealFolder",
       "parseBucketObjectPath",
       "dealFolderObjectPath",
-      "makeSupabaseStorageMover",
       "fileStorageObject",
       "runAutoFile",
-      "runAutoFileSweep",
-      "realDocClassifier"
+      "runAutoFileSweep"
     ],
     "lib/kernel/document-compliance-audit.ts": [
       "auditChecklist",
@@ -18341,7 +18333,11 @@
       "runExpiryDecisions"
     ],
     "lib/listings/listing-activation-gate.ts": [
+      "listingAgreementComplianceState",
       "assertListingActivationAllowed"
+    ],
+    "lib/listings/listing-compliance-loop.ts": [
+      "runListingComplianceLoop"
     ],
     "lib/listings/listing-metrics-rollup.ts": [
       "rollupListingMetrics"
@@ -18352,6 +18348,7 @@
     ],
     "lib/listings/listing-status-sync.ts": [
       "statusForStage",
+      "isGatedStage",
       "mappedStages"
     ],
     "lib/listings/market-pulse-runner.ts": [
@@ -18433,8 +18430,6 @@
     "lib/managers/accuracy-gate.ts": [
       "accuracyGateVerdict",
       "accuracyHold",
-      "loadAccuracyGateVerdict",
-      "loadAccuracyGateForManager",
       "loadAccuracyHoldForManager",
       "loadAccuracyGateReport",
       "summarizeAutonomyAccuracy",
@@ -18472,7 +18467,6 @@
       "summarizeDeliberation",
       "parseDeliberation",
       "loadManagerBrief",
-      "gatewayEngine",
       "deliberate",
       "runDeliberation",
       "recordPrincipalOverride"
@@ -18582,6 +18576,10 @@
       "canShareToTenants",
       "validateLibrarySave",
       "searchPexels"
+    ],
+    "lib/marketing/landing-template.ts": [
+      "resolveLandingTemplate",
+      "applyLandingTemplateToPrompt"
     ],
     "lib/marketing/lead-magnet-copy.ts": [
       "landingPageCopy",
@@ -18782,9 +18780,6 @@
     ],
     "lib/offers/closing-cost-accuracy.ts": [
       "parseMoney",
-      "isProvenanceUsable",
-      "extractActualCdFigures",
-      "mapAccuracyLines",
       "parseSellerSettlementFigures",
       "mapSellerAccuracyLines",
       "medianOf",
@@ -19186,17 +19181,12 @@
       "sourcePlatformProspects"
     ],
     "lib/platform/provider-posture.ts": [
-      "expectedWebhookTargets",
-      "classifyNumberBinding",
       "getTwilioFleetPosture",
       "assessA2pStall",
-      "computeProblemRatePct",
       "getSendgridPosture",
       "getPlatformProviderRegistry",
       "envPresence",
-      "platformEnvVarsFor",
       "platformEnvConfigured",
-      "topFailureCause",
       "getFullProviderPosture",
       "resolveBrokerageReadinessState",
       "getBrokerageProviderReadiness"
@@ -20378,6 +20368,9 @@
       "assertOfferReadyForTransaction",
       "createTransactionFromOffer"
     ],
+    "lib/transactions/offer-compliance-loop.ts": [
+      "runOfferComplianceLoop"
+    ],
     "lib/transactions/offer-execution-state.ts": [
       "offerExecutionPath",
       "isOfferFullyExecuted",
@@ -20613,6 +20606,9 @@
     "lib/video/broll-plan.ts": [
       "selectBrollPlan"
     ],
+    "lib/video/broll-url.ts": [
+      "isVideoUrl"
+    ],
     "lib/video/caption-plan.ts": [
       "buildCaptionPlan",
       "activeCueIndex"
@@ -20640,8 +20636,6 @@
       "brandBlock",
       "directorShareCard",
       "money",
-      "cityStateOf",
-      "photoUrlsOf",
       "daysBetween",
       "listingReelProps",
       "justSoldProps",
@@ -20974,7 +20968,6 @@
       "planStudioSession",
       "composeSessionPreviewSpoken",
       "commissionStudioSession",
-      "composeSessionAlreadyCommissionedSpoken",
       "composeSessionCommissionSpoken",
       "normalizeStudioSessionDuration",
       "isStudioSessionCommand",
@@ -20993,6 +20986,9 @@
     ],
     "lib/voice/team-commands.ts": [
       "dispatchTeamCommand"
+    ],
+    "lib/voice/text-command.ts": [
+      "runStaffTextCommand"
     ],
     "lib/voice/tool-registry.ts": [
       "getVoiceTool",

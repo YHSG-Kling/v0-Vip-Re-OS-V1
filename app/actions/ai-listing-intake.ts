@@ -1286,12 +1286,19 @@ export async function generateListingLandingPage(params: {
     // contact_id and brokerage_id all rewritten to the caller's.
     //
     // The read staying global is right. The write must not cross tenants.
+    //
+    // `template_id` IS READ HERE TOO — this is the reader the column never had
+    // (2026-09-07). The upsert below conflicts on slug, so regenerating an
+    // existing page REPLACES it; when the caller names no template, the page
+    // keeps the one it was built with rather than silently reverting to
+    // free-form. An explicit params.templateId still wins (the agent chose).
     const { data: slugHolder } = await supabase
       .from("listing_landing_pages")
-      .select("brokerage_id")
+      .select("brokerage_id, template_id")
       .eq("slug", pageSlug)
       .maybeSingle()
     const holderBrokerageId = (slugHolder as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    const priorTemplateId = (slugHolder as { template_id?: string | null } | null)?.template_id ?? null
     if (holderBrokerageId && holderBrokerageId !== params.brokerageId) {
       return {
         success: false,
@@ -1320,7 +1327,10 @@ export async function generateListingLandingPage(params: {
     const templateChoice = await resolveLandingTemplate(supabase, {
       brokerageId: params.brokerageId,
       agentId: params.agentUserId ?? null,
-      explicitTemplateId: params.templateId ?? null,
+      // The stored template_id is the fallback ONLY for a page this same
+      // brokerage already published under this slug (the cross-tenant case
+      // returned above), so a template id can never leak across tenants here.
+      explicitTemplateId: params.templateId ?? priorTemplateId,
     })
     if (templateChoice.lookupFailed) {
       console.error(

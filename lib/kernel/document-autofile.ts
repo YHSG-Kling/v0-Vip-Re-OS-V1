@@ -344,7 +344,8 @@ export type DocClassifier = (input: ClassifierInput) => Promise<DocClassificatio
  * off-enum answer is rejected → null → the pure floor runs). Returns null on any failure
  * so production never blocks on the gateway. Token-spending; tests inject a stub instead.
  */
-export const realDocClassifier: DocClassifier = async (input) => {
+// internal helper — called in-file by runAutoFile
+const realDocClassifier: DocClassifier = async (input) => {
   try {
     const { gatewayChatJSON } = await import("@/lib/ai/gateway-chat")
     const enumList = DOC_CATEGORIES.join(", ")
@@ -478,7 +479,8 @@ export type StorageMover = (input: StorageMoverInput) => Promise<StorageMoverOut
  * writing it onto the row as the document's new home. Signed, the URL both resolves and stays
  * governed; a bucket that IS public-media still gets a public URL, because the issuer decides.
  */
-export function makeSupabaseStorageMover(supabase: Svc): StorageMover {
+// internal helper — called in-file by runAutoFile
+function makeSupabaseStorageMover(supabase: Svc): StorageMover {
   return async ({ bucket, fromPath, toPath }) => {
     try {
       const { error } = await (supabase as any).storage.from(bucket).move(fromPath, toPath)

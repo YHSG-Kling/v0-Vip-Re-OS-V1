@@ -28,6 +28,23 @@ export interface CitationObservationRow {
    * only for rows older than the column.
    */
   query: string | null
+  /**
+   * m335 attribution — WHOSE observation this is (GEO is for agents, teams and
+   * brokerages). Optional because the intelligence page's brokerage-wide read
+   * does not carry them; the SEO page selects both and the row is labelled
+   * "agent" / "team" / "brokerage" from whichever is set, so a broker reading a
+   * mixed list can tell whose "not cited" they are looking at.
+   */
+  agent_id?: string | null
+  team_id?: string | null
+}
+
+/** The attribution label, or null when the row carries no attribution columns. */
+function attributionOf(obs: CitationObservationRow): string | null {
+  if (obs.agent_id === undefined && obs.team_id === undefined) return null
+  if (obs.agent_id) return "agent"
+  if (obs.team_id) return "team"
+  return "brokerage"
 }
 
 const OUTCOME_BADGE: Record<string, string> = {
@@ -100,6 +117,11 @@ export function AiCitationVisibilityCard({ observations }: { observations: Citat
                     >
                       {obs.outcome.replace(/_/g, " ")}
                     </Badge>
+                    {attributionOf(obs) && (
+                      <Badge variant="outline" className="text-[10px] capitalize">
+                        {attributionOf(obs)}
+                      </Badge>
+                    )}
                     <span className="text-xs text-muted-foreground truncate">
                       {obs.cited_url ?? (obs.public_slug ? `/v/${obs.public_slug}` : "")}
                     </span>

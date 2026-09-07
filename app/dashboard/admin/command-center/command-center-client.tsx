@@ -783,6 +783,31 @@ function SessionRow({ session }: { session: CommandCenterSession }) {
                   </ul>
                 )}
               </div>
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                  Client messages drafted {detail.clientMessages.length > 0 ? `(${detail.clientMessages.length})` : ""}
+                </div>
+                {detail.clientMessages.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    This session has not drafted a client message.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detail.clientMessages.map((m) => (
+                      <li key={m.id} className="rounded border bg-background p-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="bg-slate-100 text-slate-700">{m.status ?? "proposed"}</Badge>
+                          <span className="text-muted-foreground">
+                            {m.audience ?? "client"} · {m.channel ?? "portal"}
+                          </span>
+                          {m.proposedAt && <span className="text-muted-foreground">{timeAgo(m.proposedAt)}</span>}
+                        </div>
+                        {m.subject && <p className="mt-1 truncate">{m.subject}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </>
           )}
         </div>

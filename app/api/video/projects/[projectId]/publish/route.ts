@@ -7,6 +7,11 @@ import { videoActionResponse } from "../video-action-http"
 import type { DistributeVideoProjectInput, RepurposeVideoOutputInput } from "@/lib/kernel/video"
 
 /**
+ * DOOR (census 6d, unresolved by design): second HTTP door onto
+ * app/actions/video.ts:distributeVideoProjectAction / repurposeVideoOutputAction.
+ * AUTH MODEL: Supabase SESSION, checked once inside the action — no non-session
+ * credential, so an external caller can be neither proven nor disproved (§1).
+ *
  * POST /api/video/projects/:projectId/publish — distribute or repurpose.
  *
  * HTTP door onto app/actions/video.ts, which owns the tenant check for both

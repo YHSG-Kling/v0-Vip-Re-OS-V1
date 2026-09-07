@@ -1261,7 +1261,8 @@ const DEAL_OUTCOME_BASE = {
 }
 
 /** PURE: extract the 0..1 probability claim from a prediction row's jsonb. */
-export function dealOutcomeProbability(row: DealOutcomePredictionRow): number | null {
+// internal helper — called in-file by summarizeDealOutcomeRows
+function dealOutcomeProbability(row: DealOutcomePredictionRow): number | null {
   const v = row.predictionValue as Record<string, unknown> | null
   if (!v || typeof v !== "object") return null
   return normalizeProbability(

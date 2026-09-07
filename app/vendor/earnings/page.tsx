@@ -275,6 +275,10 @@ export default async function VendorEarningsPage({
                       {new Date(p.initiatedAt).toLocaleDateString()}
                       {p.completedAt && ` → ${new Date(p.completedAt).toLocaleDateString()}`}
                       {p.cashAppReference && ` · ref ${p.cashAppReference}`}
+                      {/* The Stripe transfer the payee sees in their own Stripe
+                          balance — the same reconciliation handle as the Cash App
+                          ref, for the other payout method. */}
+                      {p.stripeTransferId && ` · transfer ${p.stripeTransferId}`}
                       {/* What the transfer settled. Written at payout creation and
                           previously unreadable by the payee — a lump sum with no
                           count of the jobs behind it cannot be reconciled. */}
