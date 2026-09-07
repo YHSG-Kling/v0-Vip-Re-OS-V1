@@ -19,54 +19,25 @@
 // gate rather than a bypassed one.
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
-import { UPLOAD_PURPOSES } from "@/lib/storage/signed-upload-url"
+import { mintContractDocumentUrl } from "@/lib/storage/platform-contract-document"
 
 // The bucket this lane's document arm lives in — read from the ONE upload
 // registry (lib/storage/signed-upload-url.ts#UPLOAD_PURPOSES) rather than
 // re-spelled here, so a bucket change on the writer's side cannot silently
 // leave this reader minting against the wrong bucket (§6).
-const CONTRACT_DOCUMENT_BUCKET = UPLOAD_PURPOSES.platform_contract_document.bucket
 
 // Per-render, NOT persisted: sign-on-read (lib/storage/signed-doc-url.ts's own
 // documented end-state) rather than a long-lived link stored on a column. Short
 // enough that a copied link is useless within the hour, long enough to survive
 // a slow page load.
-const CONTRACT_DOCUMENT_VIEW_TTL_SECONDS = 300
 
-/**
- * THE RENDERER for m481's storage-path arm. Mints a short-lived signed GET url
- * for a template whose body lives in Storage rather than inline. Called from
- * BOTH the read (getSubscriptionAgreementAction, so the card has a link to show)
- * and the write gate (signSubscriptionAgreementAction, so "can this be shown at
- * all" is answered once, not twice with the risk of the two disagreeing — §6).
- *
- * Uses the SERVICE client, not the tenant's authed client: `documents` carries
- * brokerage-owned rows too (lib/storage/document-buckets.ts), and this object
- * belongs to the PLATFORM (PLATFORM_CONTRACT_TENANT_SENTINEL), so no tenant's
- * storage RLS grant is the right lens for it — the TENANT GATE already ran
- * before either caller reaches this (brokerage resolved, in signing's case
- * admin-checked), so minting a read link for the ACTIVE agreement everyone may
- * read is not an escalation.
- *
- * Fails closed to null: a mint failure is not surfaced as a thrown error here,
- * it is surfaced as "no document to show" and the caller's own fail-closed
- * branch (getSubscriptionAgreementAction just omits documentUrl;
- * signSubscriptionAgreementAction refuses) decides what that means.
- */
-async function mintContractDocumentUrl(bodyStoragePath: string | null): Promise<string | null> {
-  if (!bodyStoragePath) return null
-  const svc = createServiceClient()
-  const { data, error } = await svc.storage
-    .from(CONTRACT_DOCUMENT_BUCKET)
-    .createSignedUrl(bodyStoragePath, CONTRACT_DOCUMENT_VIEW_TTL_SECONDS)
-  if (error) {
-    console.error(`[subscription-agreement] could not mint a read url for ${CONTRACT_DOCUMENT_BUCKET}/${bodyStoragePath}: ${error.message}`)
-    return null
-  }
-  return data?.signedUrl ?? null
-}
+// mintContractDocumentUrl moved to lib/storage/platform-contract-document.ts
+// (2026-09-07): the tenant sign lane must hold NO service client so m481's RLS
+// stays the second, database-enforced gate on the agreement INSERT
+// (scripts/contract-lanes-simulator.ts); the platform-owned document's
+// sign-on-read link is minted behind that module instead, after the tenant
+// gate here has already run.
 
 export interface SubscriptionAgreementView {
   template: {
