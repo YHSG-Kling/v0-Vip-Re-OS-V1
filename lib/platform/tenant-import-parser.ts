@@ -23,7 +23,7 @@ interface CsvRecord {
 }
 
 /** RFC-4180-tolerant scan: quoted fields, "" escapes, newlines inside quotes. */
-export function csvToRecords(text: string): CsvRecord[] {
+function csvToRecords(text: string): CsvRecord[] {
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text // strip BOM
   const records: CsvRecord[] = []
   let cells: string[] = []
@@ -203,7 +203,7 @@ export function parseContactsCsv(csvText: string): ParseContactsCsvResult {
  * validation. The CRM pull used to run a second, separate pipeline; this is the
  * single definition of "what a valid imported contact is".
  */
-export function parseContactFields(
+function parseContactFields(
   field: Record<string, string | null>,
   line: number,
 ): ParsedContactRow | CsvRowError {

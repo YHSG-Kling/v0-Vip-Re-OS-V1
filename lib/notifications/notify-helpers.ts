@@ -69,8 +69,11 @@ export interface ComplianceFlag {
   title:       string
   /** Optional body / detail for the dropdown. */
   body?:       string
-  /** Source entity for deep-linking. */
-  entityType:  "offer" | "transaction" | "document"
+  /** Source entity for deep-linking. `listing` added 2026-09-07 (owner build
+   *  ruling): listing-lifecycle and demo raisers already flagged listings and
+   *  the union refused them at the type level; compliance_flags.entity_type
+   *  carries no CHECK, so the column admits it. */
+  entityType:  "offer" | "transaction" | "document" | "listing"
   entityId:    string
   /** Optional ids for cross-reference. */
   documentId?: string | null

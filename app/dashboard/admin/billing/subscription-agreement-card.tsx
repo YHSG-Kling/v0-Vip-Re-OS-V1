@@ -128,10 +128,35 @@ export function SubscriptionAgreementCard({ initialView }: { initialView: Subscr
             Your subscription is put in writing by signing this agreement. Read it, then sign below —
             the signature is recorded in-app for your brokerage.
           </p>
-          {template.body_text && (
+          {template.body_text ? (
             <pre className="text-xs whitespace-pre-wrap border rounded p-3 max-h-72 overflow-y-auto bg-muted/30">
               {template.body_text}
             </pre>
+          ) : view.documentUrl ? (
+            // The document-arm renderer (built 2026-09-07): body_text is empty,
+            // so this template is an uploaded PDF — the signed url is minted
+            // fresh on every read (app/actions/admin/subscription-agreement.ts's
+            // mintContractDocumentUrl) and never persisted, so it stays valid for
+            // this page view without being a permanent link anyone could reuse.
+            <div className="space-y-2">
+              <iframe
+                src={view.documentUrl}
+                title={`${template.name} (PDF)`}
+                className="w-full h-72 border rounded"
+              />
+              <a
+                href={view.documentUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-blue-600 underline underline-offset-2"
+              >
+                Open the agreement (PDF) in a new tab
+              </a>
+            </div>
+          ) : (
+            <p className="text-sm text-amber-700">
+              This agreement is a stored document and a viewable link could not be created right now — reload the page.
+            </p>
           )}
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex gap-2 flex-wrap items-center">

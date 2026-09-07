@@ -71,7 +71,8 @@ import { checkAudioSourceUrl, platformAudioHostRules } from "@/lib/security/audi
 import { hasRecordingDisclosure } from "@/lib/communication/call-disclosures"
 
 /** The jsonb key on `brokerage_settings.settings` that carries the opt-in. */
-export const CALL_RECORDING_SETTINGS_KEY = "call_recording"
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+const CALL_RECORDING_SETTINGS_KEY = "call_recording"
 
 export interface CallRecordingPolicy {
   /** Is call recording armed for this brokerage? Default false. */
@@ -84,7 +85,8 @@ export interface CallRecordingPolicy {
 /** The default every unknown / unreadable / unconfigured path resolves to.
  *  FAILS CLOSED TOWARD NOT RECORDING: a refused settings read must never be
  *  read as "sure, record them". */
-export const CALL_RECORDING_OFF: CallRecordingPolicy = {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+const CALL_RECORDING_OFF: CallRecordingPolicy = {
   enabled: false,
   reason: "call recording is not enabled for this brokerage (brokerage_settings.settings.call_recording.enabled)",
 }
@@ -95,7 +97,7 @@ export const CALL_RECORDING_OFF: CallRecordingPolicy = {
  * and the bare boolean (`{ call_recording: true }`), matching the tolerance
  * lib/kernel/vendor-orchestration.ts:readStagingEnabled established.
  */
-export function readCallRecordingPolicy(settings: unknown): CallRecordingPolicy {
+function readCallRecordingPolicy(settings: unknown): CallRecordingPolicy {
   if (!settings || typeof settings !== "object") return CALL_RECORDING_OFF
   const raw = (settings as Record<string, unknown>)[CALL_RECORDING_SETTINGS_KEY]
   const flag =
@@ -155,7 +157,7 @@ export function disclosureCoversRecording(
 }
 
 /** PURE: the absolute webhook URL Twilio posts recording status to. */
-export function recordingCallbackUrl(appBaseUrl: string): string {
+function recordingCallbackUrl(appBaseUrl: string): string {
   return `${appBaseUrl.replace(/\/$/, "")}/api/voice/twilio/recording`
 }
 
@@ -211,7 +213,7 @@ export type RecordingCallbackParse =
  * mp3 is chosen: an order of magnitude smaller over the wire and playable by
  * every browser `<audio>` implementation.
  */
-export function normalizeRecordingUrl(rawUrl: string): string {
+function normalizeRecordingUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim()
   return /\.(mp3|wav)$/i.test(trimmed) ? trimmed : `${trimmed}.mp3`
 }

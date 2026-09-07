@@ -1,14 +1,13 @@
 {
   "generated": "2026-09-07",
   "counts": {
-    "oc1": 21,
+    "oc1": 19,
     "oc2": 1,
     "oc3": 0,
     "oc4": 0
   },
   "keys": {
     "oc1": [
-      "agent_commissions.approved_by",
       "audience_members.lead_id",
       "campaign_bundle_dispatches.lead_id",
       "communication_audit_log.lead_id",
@@ -25,7 +24,6 @@
       "motivated_seller_signals.lead_id",
       "nextdoor_activity.lead_id",
       "outcome_reconciliations.lead_id",
-      "saved_properties.user_id",
       "tax_categories.provider_account_id",
       "unified_lead_profile.lead_id",
       "vendor_subscriptions.brokerage_id"

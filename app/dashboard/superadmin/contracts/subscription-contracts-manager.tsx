@@ -4,15 +4,18 @@
 // agreements. CRUD only; the tenant signs on THEIR billing page. No e-sign
 // provider anywhere in this lane — the in-app signature record IS the record.
 
-import { useState, useTransition } from "react"
+import { useRef, useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
   upsertSubscriptionContractTemplateAction,
   setSubscriptionContractTemplateActiveAction,
+  planPlatformContractDocumentUploadAction,
+  attachPlatformContractDocumentAction,
   type SubscriptionContractTemplate,
   type TenantContractSignatureRow,
 } from "@/app/actions/superadmin/subscription-contracts"
+import { createClient } from "@/lib/supabase/client"
 
 export function SubscriptionContractsManager({
   initialTemplates,
@@ -27,6 +30,62 @@ export function SubscriptionContractsManager({
   const [editing, setEditing] = useState<{ id?: string; name: string; bodyText: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  // ── the storage-path arm's control (LANE 1, m481, built 2026-09-07) ─────────
+  // A minimal "Upload PDF" flow: mint a signed PUT (server action, superadmin
+  // gated), PUT the bytes straight to Supabase Storage, then record the path on
+  // the template row. See app/actions/superadmin/subscription-contracts.ts's
+  // two new actions for the write half and app/actions/admin/subscription-agreement.ts
+  // for the tenant-facing renderer this feeds.
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [pendingUploadTemplateId, setPendingUploadTemplateId] = useState<string | null>(null)
+  const [uploadingId, setUploadingId] = useState<string | null>(null)
+
+  function triggerUpload(templateId: string) {
+    setError(null)
+    setPendingUploadTemplateId(templateId)
+    fileInputRef.current?.click()
+  }
+
+  async function uploadDocument(templateId: string, file: File) {
+    if (file.type !== "application/pdf") {
+      setError("Only a PDF may be attached as the agreement document")
+      return
+    }
+    setUploadingId(templateId)
+    try {
+      const planRes = await planPlatformContractDocumentUploadAction({
+        fileName: file.name,
+        contentType: file.type,
+        bytes: file.size,
+      })
+      if (!planRes.ok) { setError(planRes.error); return }
+
+      // supabase-js RESOLVES a refusal (CLAUDE.md §3) — the storage error is read
+      // rather than assumed absent.
+      const supabase = createClient()
+      const { error: putErr } = await supabase.storage
+        .from(planRes.plan.bucket)
+        .uploadToSignedUrl(planRes.plan.path, planRes.plan.token, file, { contentType: file.type })
+      if (putErr) { setError(putErr.message); return }
+
+      const attachRes = await attachPlatformContractDocumentAction({ templateId, storagePath: planRes.plan.path })
+      if (!attachRes.ok) { setError(attachRes.error); return }
+
+      setTemplates((prev) => prev.map((t) => (t.id === templateId ? { ...t, body_storage_path: planRes.plan.path } : t)))
+    } finally {
+      setUploadingId(null)
+    }
+  }
+
+  function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null
+    const templateId = pendingUploadTemplateId
+    e.target.value = ""
+    setPendingUploadTemplateId(null)
+    if (!file || !templateId) return
+    void uploadDocument(templateId, file)
+  }
 
   function save() {
     if (!editing) return
@@ -76,6 +135,14 @@ export function SubscriptionContractsManager({
     <div className="space-y-8">
       {error && <div className="rounded border border-red-300 p-3 text-sm text-red-600">{error}</div>}
 
+      <input
+        type="file"
+        accept="application/pdf"
+        ref={fileInputRef}
+        onChange={onFileChosen}
+        className="hidden"
+      />
+
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">Templates</h2>
@@ -99,6 +166,7 @@ export function SubscriptionContractsManager({
               <Badge variant="outline">v{t.version}</Badge>
               <Badge variant={t.is_active ? "default" : "secondary"}>{t.is_active ? "Active" : "Retired"}</Badge>
               <Badge variant="outline">{t.signature_count} signed</Badge>
+              {t.body_storage_path && <Badge variant="outline">Document attached</Badge>}
               {canWrite && (
                 <span className="ml-auto flex gap-2">
                   <Button
@@ -108,6 +176,14 @@ export function SubscriptionContractsManager({
                     disabled={isPending}
                   >
                     Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => triggerUpload(t.id)}
+                    disabled={isPending || uploadingId === t.id}
+                  >
+                    {uploadingId === t.id ? "Uploading…" : t.body_storage_path ? "Replace PDF" : "Upload PDF"}
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => setActive(t.id, !t.is_active)} disabled={isPending}>
                     {t.is_active ? "Retire" : "Make active"}
@@ -119,6 +195,11 @@ export function SubscriptionContractsManager({
               <pre className="text-xs text-muted-foreground whitespace-pre-wrap max-h-40 overflow-y-auto border rounded p-2">
                 {t.body_text}
               </pre>
+            )}
+            {!t.body_text && t.body_storage_path && (
+              <p className="text-xs text-muted-foreground">
+                This agreement is an uploaded document (no inline text) — the tenant is shown a signed link to it.
+              </p>
             )}
           </div>
         ))}

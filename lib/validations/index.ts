@@ -106,7 +106,7 @@ export function isValidEmail(email: string | null | undefined): boolean {
 export const validateEmail = isValidEmail
 
 // Phone Validation
-export function isValidPhone(phone: string | null | undefined): boolean {
+function isValidPhone(phone: string | null | undefined): boolean {
   if (!phone) return false
   const phoneRegex = /^\+?1?\d{10,14}$/
   return phoneRegex.test(phone.replace(/[\s\-\(\)]/g, ""))
@@ -119,7 +119,7 @@ export const validatePhone = isValidPhone
 // header: app/actions/tenant-webhooks.ts is the survivor and returns the reason.
 
 // Price Validation
-export function isValidPrice(price: number | null | undefined): boolean {
+function isValidPrice(price: number | null | undefined): boolean {
   return typeof price === "number" && price >= 0 && !isNaN(price)
 }
 
@@ -128,7 +128,7 @@ export function isValidPrice(price: number | null | undefined): boolean {
 // are the survivors and are both stricter than a bare `new Date()` parse.
 
 // Zipcode Validation (US)
-export function isValidZipcode(zip: string | null | undefined): boolean {
+function isValidZipcode(zip: string | null | undefined): boolean {
   if (!zip) return false
   const zipcodeRegex = /^\d{5}(-\d{4})?$/
   return zipcodeRegex.test(zip)

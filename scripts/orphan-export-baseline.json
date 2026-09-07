@@ -140,7 +140,7 @@
     "lib/documents/listing-packet-pdf.ts": 2,
     "lib/documents/stage-candidates.ts": 1,
     "lib/education/agent-guide.ts": 2,
-    "lib/education/book-authority-program.ts": 2,
+    "lib/education/book-authority-program.ts": 1,
     "lib/education/client-education-curriculum.ts": 2,
     "lib/education/client-tutor.ts": 3,
     "lib/education/content-freshness.ts": 3,
@@ -182,11 +182,10 @@
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
     "lib/intelligence/career-architect.ts": 2,
-    "lib/intelligence/conversation-insights.ts": 2,
+    "lib/intelligence/conversation-insights.ts": 1,
     "lib/intelligence/curriculum-board.ts": 1,
     "lib/intelligence/decision-velocity.ts": 1,
     "lib/intelligence/deliverables-summary.ts": 2,
-    "lib/intelligence/derived-snapshots.ts": 2,
     "lib/intelligence/dry-run-cockpit.ts": 1,
     "lib/intelligence/loan-milestone-sync-runner.ts": 1,
     "lib/intelligence/manager-touch-provenance.ts": 1,
@@ -195,7 +194,7 @@
     "lib/intelligence/offer-property-prefill-runner.ts": 1,
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
-    "lib/intelligence/playbook-engine.ts": 3,
+    "lib/intelligence/playbook-engine.ts": 1,
     "lib/intelligence/portfolio-intelligence.ts": 3,
     "lib/intelligence/predictor-learning-runner.ts": 1,
     "lib/intelligence/predictor-learning.ts": 1,
@@ -380,7 +379,7 @@
     "lib/notifications/brokerage-admins.ts": 1,
     "lib/notifications/platform-staff.ts": 1,
     "lib/offers/closing-cost-accuracy.ts": 5,
-    "lib/offers/net-sheet-calc.ts": 2,
+    "lib/offers/net-sheet-calc.ts": 1,
     "lib/offers/offer-target.ts": 1,
     "lib/offers/public-record-preload.ts": 1,
     "lib/onboarding/certification-engine.ts": 1,
@@ -392,7 +391,6 @@
     "lib/onboarding/state-license-registry.ts": 1,
     "lib/osint-client.ts": 1,
     "lib/platform/acting-context.ts": 1,
-    "lib/platform/affiliates.ts": 2,
     "lib/platform/ai-ops.ts": 1,
     "lib/platform/config-snapshots.ts": 1,
     "lib/platform/custom-domains.ts": 1,
@@ -404,7 +402,6 @@
     "lib/platform/nps.ts": 1,
     "lib/platform/os-sentinel.ts": 3,
     "lib/platform/platform-controls.ts": 1,
-    "lib/platform/platform-sentinel.ts": 2,
     "lib/platform/platform-social.ts": 1,
     "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-content.ts": 2,
@@ -416,7 +413,6 @@
     "lib/platform/status-notice.ts": 3,
     "lib/platform/subscription-oversight.ts": 2,
     "lib/platform/tenant-export.ts": 1,
-    "lib/platform/tenant-import-parser.ts": 2,
     "lib/platform/tenant-sso.ts": 1,
     "lib/platform/territory-marketplace.ts": 1,
     "lib/platform/trial-funnel.ts": 1,
@@ -464,14 +460,13 @@
     "lib/transactions/cda-field-classifier.ts": 2,
     "lib/transactions/closing-orchestration.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 2,
-    "lib/transactions/deal-vendor-notify.ts": 2,
+    "lib/transactions/deal-vendor-notify.ts": 1,
     "lib/transactions/final-compliance-check.ts": 1,
     "lib/transactions/milestone-service.ts": 1,
     "lib/transactions/offer-bridge.ts": 1,
     "lib/transactions/sync-from-provider.ts": 1,
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 1,
-    "lib/validations/index.ts": 3,
     "lib/vendor/assignment-access.ts": 2,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-money-directions.ts": 1,
@@ -481,18 +476,17 @@
     "lib/video/avatar-render-orchestrator.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
-    "lib/video/director-eval-harness.ts": 3,
-    "lib/video/format-learning.ts": 3,
+    "lib/video/director-eval-harness.ts": 2,
+    "lib/video/format-learning.ts": 2,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/promo-composition.ts": 1,
     "lib/video/reel-voiceover.ts": 1,
-    "lib/video/script-compliance.ts": 3,
+    "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
     "lib/voice/call-analysis.ts": 1,
-    "lib/voice/call-recording.ts": 3,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/deal-decision.ts": 2,
     "lib/voice/platform-reception.ts": 2,
@@ -512,7 +506,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9449,
+  "census": 9428,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -560,6 +554,7 @@
     "app/actions/agent-insights.ts": 1,
     "app/actions/agent-pl.ts": 1,
     "app/actions/agent-public-profile.ts": 1,
+    "app/actions/agent-reviews.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 10,
@@ -1006,7 +1001,7 @@
     "app/actions/superadmin/portal-clients.ts": 2,
     "app/actions/superadmin/provider-posture.ts": 3,
     "app/actions/superadmin/subscriber-referrals.ts": 4,
-    "app/actions/superadmin/subscription-contracts.ts": 4,
+    "app/actions/superadmin/subscription-contracts.ts": 6,
     "app/actions/superadmin/subscription-oversight.ts": 1,
     "app/actions/superadmin/support-console.ts": 5,
     "app/actions/superadmin/suppression.ts": 3,
@@ -3096,7 +3091,7 @@
     "lib/documents/stage-candidates.ts": 2,
     "lib/documents/upload-document.ts": 1,
     "lib/education/agent-guide.ts": 3,
-    "lib/education/book-authority-program.ts": 3,
+    "lib/education/book-authority-program.ts": 2,
     "lib/education/ce-provider.ts": 7,
     "lib/education/client-education-authoring.ts": 2,
     "lib/education/client-education-curriculum.ts": 3,
@@ -3239,14 +3234,14 @@
     "lib/intelligence/buyer-stall-predictor.ts": 1,
     "lib/intelligence/career-architect.ts": 3,
     "lib/intelligence/coaching-engine.ts": 1,
-    "lib/intelligence/conversation-insights.ts": 4,
+    "lib/intelligence/conversation-insights.ts": 3,
     "lib/intelligence/curriculum-board.ts": 2,
     "lib/intelligence/daily-briefing-generator.ts": 2,
     "lib/intelligence/decision-receipts-runner.ts": 1,
     "lib/intelligence/decision-receipts.ts": 1,
     "lib/intelligence/decision-velocity.ts": 3,
     "lib/intelligence/deliverables-summary.ts": 3,
-    "lib/intelligence/derived-snapshots.ts": 4,
+    "lib/intelligence/derived-snapshots.ts": 2,
     "lib/intelligence/dry-run-cockpit-runner.ts": 1,
     "lib/intelligence/dry-run-cockpit.ts": 2,
     "lib/intelligence/dual-transaction-timing-runner.ts": 1,
@@ -3294,7 +3289,7 @@
     "lib/intelligence/partners-meeting-reel-props.ts": 2,
     "lib/intelligence/partners-meeting.ts": 4,
     "lib/intelligence/pattern-detector.ts": 2,
-    "lib/intelligence/playbook-engine.ts": 4,
+    "lib/intelligence/playbook-engine.ts": 2,
     "lib/intelligence/portfolio-intelligence.ts": 5,
     "lib/intelligence/predictor-learning-runner.ts": 3,
     "lib/intelligence/predictor-learning.ts": 3,
@@ -3778,7 +3773,7 @@
     "lib/offers/closing-cost-accuracy.ts": 9,
     "lib/offers/commission-disclosure.ts": 3,
     "lib/offers/multi-offer-rules.ts": 2,
-    "lib/offers/net-sheet-calc.ts": 13,
+    "lib/offers/net-sheet-calc.ts": 12,
     "lib/offers/offer-analyzer.ts": 1,
     "lib/offers/offer-extractor.ts": 1,
     "lib/offers/offer-math.ts": 1,
@@ -3812,7 +3807,7 @@
     "lib/permissions/offer-permissions.ts": 5,
     "lib/platform/acting-context.ts": 5,
     "lib/platform/affiliate-ref-capture.ts": 2,
-    "lib/platform/affiliates.ts": 10,
+    "lib/platform/affiliates.ts": 8,
     "lib/platform/ai-ops.ts": 3,
     "lib/platform/capability-overrides.ts": 2,
     "lib/platform/changelog.ts": 2,
@@ -3834,7 +3829,7 @@
     "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
     "lib/platform/platform-providers.ts": 3,
-    "lib/platform/platform-sentinel.ts": 8,
+    "lib/platform/platform-sentinel.ts": 6,
     "lib/platform/platform-social.ts": 12,
     "lib/platform/platform-staff-roster.ts": 11,
     "lib/platform/product-brand.ts": 5,
@@ -3857,7 +3852,7 @@
     "lib/platform/subscription-oversight.ts": 4,
     "lib/platform/suppression-list.ts": 4,
     "lib/platform/tenant-export.ts": 2,
-    "lib/platform/tenant-import-parser.ts": 5,
+    "lib/platform/tenant-import-parser.ts": 3,
     "lib/platform/tenant-import.ts": 3,
     "lib/platform/tenant-sso.ts": 10,
     "lib/platform/tenant-webhooks-core.ts": 11,
@@ -4079,7 +4074,7 @@
     "lib/transactions/coordination-status.ts": 3,
     "lib/transactions/deadline-monitor.ts": 1,
     "lib/transactions/deal-type-resolver.ts": 1,
-    "lib/transactions/deal-vendor-notify.ts": 4,
+    "lib/transactions/deal-vendor-notify.ts": 3,
     "lib/transactions/deal-vendor-targets.ts": 1,
     "lib/transactions/earnest-terms.ts": 4,
     "lib/transactions/final-compliance-check.ts": 2,
@@ -4109,7 +4104,7 @@
     "lib/usage/period.ts": 2,
     "lib/usage.ts": 2,
     "lib/utils.ts": 1,
-    "lib/validations/index.ts": 8,
+    "lib/validations/index.ts": 5,
     "lib/vendor/assignment-access.ts": 3,
     "lib/vendor-governance/attribution.ts": 2,
     "lib/vendor-governance/budget-eval.ts": 4,
@@ -4151,9 +4146,9 @@
     "lib/video/composite-attribution.ts": 5,
     "lib/video/comps-animation-spec.ts": 1,
     "lib/video/director-content.ts": 16,
-    "lib/video/director-eval-harness.ts": 6,
+    "lib/video/director-eval-harness.ts": 5,
     "lib/video/finish-spec.ts": 1,
-    "lib/video/format-learning.ts": 8,
+    "lib/video/format-learning.ts": 7,
     "lib/video/intro-video-reactor.ts": 2,
     "lib/video/ken-burns-plan.ts": 1,
     "lib/video/listing-pitch-reel.ts": 3,
@@ -4172,7 +4167,7 @@
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
-    "lib/video/script-compliance.ts": 11,
+    "lib/video/script-compliance.ts": 9,
     "lib/video/script-structure.ts": 11,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 10,
@@ -4189,7 +4184,7 @@
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 5,
     "lib/voice/call-coaching.ts": 1,
-    "lib/voice/call-recording.ts": 8,
+    "lib/voice/call-recording.ts": 5,
     "lib/voice/campaign-command.ts": 1,
     "lib/voice/command-coverage.ts": 3,
     "lib/voice/conversation-relay.ts": 7,
@@ -4521,6 +4516,9 @@
     ],
     "app/actions/agent-public-profile.ts": [
       "captureProfileLead"
+    ],
+    "app/actions/agent-reviews.ts": [
+      "attachReviewSourceUrlAction"
     ],
     "app/actions/agent-settings.ts": [
       "getAgentSettings",
@@ -7501,6 +7499,8 @@
     "app/actions/superadmin/subscription-contracts.ts": [
       "listSubscriptionContractTemplatesAction",
       "upsertSubscriptionContractTemplateAction",
+      "planPlatformContractDocumentUploadAction",
+      "attachPlatformContractDocumentAction",
       "setSubscriptionContractTemplateActiveAction",
       "listTenantContractSignaturesAction"
     ],
@@ -15246,7 +15246,6 @@
       "answerAgentQuestion"
     ],
     "lib/education/book-authority-program.ts": [
-      "runBookAuthorityProgram",
       "runBookAuthorityProgramAll",
       "BOOK_PROGRAM_TAG"
     ],
@@ -15956,7 +15955,6 @@
     "lib/intelligence/conversation-insights.ts": [
       "getContactMemory",
       "buildContextWindow",
-      "deriveConversationAnalytics",
       "updateConversationMemory"
     ],
     "lib/intelligence/curriculum-board.ts": [
@@ -15985,8 +15983,6 @@
     ],
     "lib/intelligence/derived-snapshots.ts": [
       "zipFromAddress",
-      "runPropertySmartInsights",
-      "runTeamHeatmapSnapshots",
       "runDerivedSnapshots"
     ],
     "lib/intelligence/dry-run-cockpit-runner.ts": [
@@ -16177,8 +16173,6 @@
     ],
     "lib/intelligence/playbook-engine.ts": [
       "composePlaybookCandidates",
-      "loadAgentBehaviorStats",
-      "runPlaybookEngine",
       "runPlaybookEngineAll"
     ],
     "lib/intelligence/portfolio-intelligence.ts": [
@@ -18794,7 +18788,6 @@
     ],
     "lib/offers/net-sheet-calc.ts": [
       "computeNetProceeds",
-      "buildNetLine",
       "rankOffersByNet",
       "fmtUsd",
       "composeComparisonFallback",
@@ -18966,8 +18959,6 @@
       "isAffiliateStatus",
       "normalizeAffiliateCode",
       "validateAffiliateInput",
-      "commissionFor",
-      "addMonthsIso",
       "referralWindowEnd",
       "referralActive",
       "periodFor",
@@ -19106,9 +19097,7 @@
       "setPlatformProviderOverride"
     ],
     "lib/platform/platform-sentinel.ts": [
-      "sentinelBucket",
       "splitDraftEmail",
-      "sentinelKindTenantKey",
       "summarizeSentinelVerdicts",
       "isSentinelKindOverAlarmed",
       "applySentinelLearning",
@@ -19257,9 +19246,7 @@
       "buildTenantExport"
     ],
     "lib/platform/tenant-import-parser.ts": [
-      "csvToRecords",
       "parseContactsCsv",
-      "parseContactFields",
       "parseContactRecords",
       "parseListingsCsv"
     ],
@@ -20309,7 +20296,6 @@
     ],
     "lib/transactions/deal-vendor-notify.ts": [
       "notifyDealVendorsOfIssue",
-      "formatCdaMoney",
       "composeCdaDisbursementLines",
       "deliverCdaToClosingAgent"
     ],
@@ -20439,9 +20425,6 @@
     "lib/validations/index.ts": [
       "isValidUUID",
       "isValidEmail",
-      "isValidPhone",
-      "isValidPrice",
-      "isValidZipcode",
       "validateContact",
       "validateProperty",
       "validateTransaction"
@@ -20644,7 +20627,6 @@
       "resolveDirectorContentProps"
     ],
     "lib/video/director-eval-harness.ts": [
-      "artifactText",
       "detectUngroundedClaims",
       "detectFairHousingRisk",
       "evalScopeCreep",
@@ -20656,7 +20638,6 @@
     ],
     "lib/video/format-learning.ts": [
       "summarizeTopFormats",
-      "formatCellKey",
       "scoreFormatOutcomes",
       "recommendFormatAdjustment",
       "loadFormatOutcomes",
@@ -20745,10 +20726,8 @@
       "repurposeDiscriminator"
     ],
     "lib/video/script-compliance.ts": [
-      "proveActorTenancy",
       "detectFairHousingRedFlags",
       "loadProhibitedPhraseCatalogue",
-      "buildProhibitedPhraseBlock",
       "assessProhibitedPhrases",
       "detectProhibitedPhraseRedFlags",
       "buildComplianceSystemBlocks",
@@ -20850,12 +20829,9 @@
       "writeCallCoachingInsights"
     ],
     "lib/voice/call-recording.ts": [
-      "readCallRecordingPolicy",
       "resolveCallRecordingPolicy",
       "disclosureCoversRecording",
-      "recordingCallbackUrl",
       "recordingDialParams",
-      "normalizeRecordingUrl",
       "parseRecordingCallback",
       "startCallRecording"
     ],

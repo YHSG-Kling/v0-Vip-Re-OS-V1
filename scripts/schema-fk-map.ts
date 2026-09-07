@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1763 of 1822 pairs) — storing them would be
+ * overwhelming majority (1765 of 1824 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1898 edges across 710 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1822 unordered
+ * MEASURED AT GENERATION: 1900 edges across 710 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1824 unordered
  * table pairs carry at least one FK; 59
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-07
  * source: public.live_foreign_keys_json()
- * body-sha256: 55cb7cfc339d67ddc9959e01b9833d2d03f95f0e41f243d4016e3486d12547a3
+ * body-sha256: 066b498ec51f773afb7abbdd05451b667aa6454e9c2c233075d03dbe41a10f8e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -120,7 +120,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "agent_chat_preferences": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "agent_client_messages": { "approved_by": "users", "brokerage_id": "brokerages" },
   "agent_commission_profiles": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "agent_commissions": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
+  "agent_commissions": { "agent_id": "agents", "approved_by": "users", "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "agent_coordination_log": { "brokerage_id": "brokerages" },
   "agent_credentials": { "brokerage_id": "brokerages", "created_by": "users" },
   "agent_credit_budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -637,7 +637,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "review_requests": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "saved_ai_outputs": { "brokerage_id": "brokerages", "user_id": "users" },
   "saved_calculations": { "brokerage_id": "brokerages" },
-  "saved_properties": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
+  "saved_properties": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "user_id": "users" },
   "scheduled_touchpoints": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "scraper_executions": { "brokerage_id": "brokerages", "triggered_by": "users" },
   "script_variations": { "brokerage_id": "brokerages", "created_by": "users", "script_library_id": "video_scripts_library" },

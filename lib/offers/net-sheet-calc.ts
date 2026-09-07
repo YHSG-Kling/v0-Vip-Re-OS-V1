@@ -96,7 +96,7 @@ export function computeNetProceeds(
 }
 
 /** Build a per-offer net line (the breakdown the interactive sheet renders). */
-export function buildNetLine(offer: OfferNetInput, costs: SellerCosts): OfferNetLine {
+function buildNetLine(offer: OfferNetInput, costs: SellerCosts): OfferNetLine {
   const buyerClosingCredit = offer.buyerClosingCredit
   const netProceeds = computeNetProceeds(
     { offerPrice: offer.offerPrice, buyerClosingCredit },

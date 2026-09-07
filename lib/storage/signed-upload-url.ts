@@ -118,6 +118,21 @@ export type UploadIdentity = {
   userId: string
 }
 
+/**
+ * SENTINEL, not a real brokerage id. `platform_contract_document` below is the
+ * one purpose in this registry whose bytes belong to the PLATFORM rather than a
+ * tenant — a superadmin-authored contract document (CLAUDE.md §7-adjacent lane,
+ * app/actions/superadmin/subscription-contracts.ts), gated by requireSuperadmin,
+ * never by a brokerage session. The registry's mechanical rule (every prefix
+ * starts with `id.brokerageId` and moves with it — purposesMissingTenantPrefix
+ * below) still has to hold, so this purpose is called with this fixed string in
+ * the brokerageId slot instead of a real tenant id. It is exported so the one
+ * writer (attachPlatformContractDocumentAction) and the one reader (the tenant
+ * signing gate in app/actions/admin/subscription-agreement.ts, which validates a
+ * path before minting a read URL from it) agree on the same literal (§6).
+ */
+export const PLATFORM_CONTRACT_TENANT_SENTINEL = "platform"
+
 export type UploadPurposeSpec = {
   /** Which live bucket the bytes land in. */
   readonly bucket: string
@@ -189,6 +204,26 @@ export const UPLOAD_PURPOSES = {
     why: "Client testimonial video published on public marketing surfaces.",
     prefix: (id) => `${id.brokerageId}/testimonials/${id.userId}`,
     contentTypePrefixes: ["video/"],
+  },
+  /**
+   * PLATFORM-owned, not tenant-owned — see PLATFORM_CONTRACT_TENANT_SENTINEL
+   * above for why its identity.brokerageId is a fixed literal rather than a real
+   * tenant. Bucket `documents` is the existing "universal document lane"
+   * (lib/storage/document-buckets.ts#DOCUMENT_CLASS_BUCKETS), already live and
+   * already public=false — no new bucket, per the same reasoning that module
+   * gives for GENERATED_DOCUMENT_BUCKET. This is the writer for
+   * platform_contract_templates.body_storage_path (m481's second body arm): a
+   * superadmin uploads a PDF here, then attachPlatformContractDocumentAction
+   * records the resulting path on the template. The reader is the tenant
+   * signing gate (app/actions/admin/subscription-agreement.ts), which mints a
+   * short-lived signed GET url from the stored path — never a public one, since
+   * `documents` is document-class.
+   */
+  platform_contract_document: {
+    bucket: "documents",
+    why: "A superadmin-uploaded contract document (e.g. a subscription agreement PDF) attached to a platform_contract_templates row via body_storage_path.",
+    prefix: (id) => `${id.brokerageId}/platform-contracts`,
+    contentTypePrefixes: ["application/pdf"],
   },
 } as const satisfies Record<string, UploadPurposeSpec>
 

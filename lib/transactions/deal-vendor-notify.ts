@@ -109,7 +109,7 @@ export interface CdaDisbursementFigures {
 
 /** PURE: format one CDA money figure. Kept beside the lines so a caller cannot
  *  round or symbol it differently on one surface than the other. */
-export function formatCdaMoney(n: number): string {
+function formatCdaMoney(n: number): string {
   return `$${(Math.round(n * 100) / 100).toLocaleString()}`
 }
 

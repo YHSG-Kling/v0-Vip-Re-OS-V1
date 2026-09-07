@@ -104,7 +104,7 @@ export function composePlaybookCandidates(stats: AgentBehaviorStats[]): Playbook
 }
 
 /** Load per-agent behavior stats from the ledgers (trailing window). */
-export async function loadAgentBehaviorStats(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<AgentBehaviorStats[]> {
+async function loadAgentBehaviorStats(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<AgentBehaviorStats[]> {
   const since = new Date(now.getTime() - WINDOW_DAYS * 86_400_000).toISOString()
   const [{ data: agents }, { data: closed }, { data: decisions }, { data: tasks }, { data: approvals }] = await Promise.all([
     svc.from("agents").select("id, user_id").eq("brokerage_id", brokerageId).limit(500),
@@ -165,7 +165,7 @@ export async function loadAgentBehaviorStats(svc: Svc, brokerageId: string, now:
 }
 
 /** Monthly gated broker brief — idempotent per (brokerage, month). */
-export async function runPlaybookEngine(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ candidates: number; proposed: boolean }> {
+async function runPlaybookEngine(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ candidates: number; proposed: boolean }> {
   const stats = await loadAgentBehaviorStats(svc, brokerageId, now)
   const candidates = composePlaybookCandidates(stats)
   if (candidates.length === 0) return { candidates: 0, proposed: false }

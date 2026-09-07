@@ -320,6 +320,21 @@ export async function loadReputationWorkspace(
       // would mean re-adding it the day the importer lands. Recorded here with
       // its reason instead of deleted to move a number (§1), and carried on the
       // ratchet rather than silently baselined.
+      //
+      // ── UPDATE 2026-09-07 (owner decision — "build and fix"): THE WRITER NOW
+      //    EXISTS ────────────────────────────────────────────────────────────
+      // `source_url` is no longer written by nobody. The missing half named
+      // above — an agent (or a tenant admin) recording where their OWN
+      // first-party review also lives on Google / Zillow / Realtor.com / Yelp /
+      // Facebook, so a card can link out — is
+      // `app/actions/agent-reviews.ts:attachReviewSourceUrlAction`. It is NOT an
+      // external-review importer (that capability still does not exist, and
+      // this paragraph is not claiming otherwise): it only lets the review's own
+      // agent, or a tenant admin of the review's brokerage, attach a URL to a
+      // review already sitting in this table. Surfaced on
+      // app/components/reputation/ReputationPanel.tsx (the agent's own review
+      // list) and read on app/p/[agentSlug]/page.tsx (the public profile, which
+      // now selects the column and renders "Read on <host>").
       supabase
         .from("agent_reviews")
         .select("id, rating, review_text, platform, source_url, is_published, response_text, response_at, created_at, contact_id, transaction_id")

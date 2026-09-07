@@ -54,6 +54,19 @@ interface ReviewItem {
   reviewer_name: string | null
   platform: string | null
   created_at: string
+  /** Where the review lives on the platform it came from — app/actions/agent-reviews.ts. */
+  source_url: string | null
+}
+
+/** "Read on Google" / "Read on Zillow" — a friendly label from a review's source_url host. */
+function reviewSourceHost(url: string): string {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "")
+    const label = host.split(".")[0]
+    return label.charAt(0).toUpperCase() + label.slice(1)
+  } catch {
+    return "the original site"
+  }
 }
 
 async function loadProfile(slug: string): Promise<{
@@ -91,7 +104,7 @@ async function loadProfile(slug: string): Promise<{
         .limit(6),
       svc
         .from("agent_reviews")
-        .select("id, rating, review_text, reviewer_name, platform, created_at")
+        .select("id, rating, review_text, reviewer_name, platform, created_at, source_url")
         .eq("agent_id", agent.id)
         .eq("is_published", true)
         .order("created_at", { ascending: false })
@@ -353,6 +366,16 @@ export default async function AgentPublicProfilePage({
                       </div>
                       {r.review_text && (
                         <p className="text-sm text-gray-700 mt-1.5 leading-relaxed">{r.review_text}</p>
+                      )}
+                      {r.source_url && (
+                        <a
+                          href={r.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                        >
+                          Read on {reviewSourceHost(r.source_url)}
+                        </a>
                       )}
                     </div>
                   ))}

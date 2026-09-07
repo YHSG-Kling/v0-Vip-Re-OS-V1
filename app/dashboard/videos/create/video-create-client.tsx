@@ -337,6 +337,12 @@ export default function VideoCreatePage() {
 
   // Platform provider (loaded once from global_settings)
   const [platformProvider, setPlatformProvider] = useState<"did">("did")
+  // "Voiceover slideshow (no avatar)" — the cheapest listing video: ElevenLabs
+  // narration over the listing's own photos, no D-ID avatar spend at all. Only
+  // offered when a listing is the video's context (the composition needs the
+  // listing's photos + address). POSTs to /api/videos/listing-voiceover instead
+  // of /api/did/generate-video — see handleGenerateVideo below.
+  const [useVoiceoverSlideshow, setUseVoiceoverSlideshow] = useState(false)
   const [agentDIDProfile, setAgentDIDProfile] = useState<{
     elevenlabs_voice_id: string | null
     did_photo_url: string | null
@@ -556,15 +562,27 @@ export default function VideoCreatePage() {
             "No voice selected. Pick an assistant voice in step 2, or record your own under Avatar & Voice Setup."
           )
         }
-        const selectedAsset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
-        const hasReadyAvatar =
-          (selectedAsset?.status === "ready") ||
-          (selectedDidAssetId === "photo" && agentDIDProfile?.did_photo_url)
-        if (!hasReadyAvatar) {
-          throw new Error(
-            "No avatar selected. Choose an avatar from the gallery or upload a new video clip."
-          )
+        // The slideshow lane needs the voice above but NEVER an avatar — it is
+        // the "no avatar" option precisely so an agent who hasn't finished Twin
+        // Studio can still ship a listing video today.
+        if (!useVoiceoverSlideshow) {
+          const selectedAsset = didAvatarAssets.find((a) => a.id === selectedDidAssetId)
+          const hasReadyAvatar =
+            (selectedAsset?.status === "ready") ||
+            (selectedDidAssetId === "photo" && agentDIDProfile?.did_photo_url)
+          if (!hasReadyAvatar) {
+            throw new Error(
+              "No avatar selected. Choose an avatar from the gallery or upload a new video clip."
+            )
+          }
         }
+      }
+
+      // The slideshow needs a listing to source photos + address/city from —
+      // the composition's content contract requires all three (m221 /
+      // lib/remotion/content-contract.ts PhotoWalkthroughReel).
+      if (useVoiceoverSlideshow && !(selectedContextType === "listing" && selectedContextId)) {
+        throw new Error("Voiceover slideshow needs a listing selected as the video's context (step 0).")
       }
 
       // 1. Create ai_video_projects record
@@ -591,7 +609,12 @@ export default function VideoCreatePage() {
           provider_status: "pending",
           provider_avatar_id: null,
           provider_voice_id: null,
-          video_provider: platformProvider,
+          // video_provider's CHECK is ('did', 'upload') — there is no 'remotion'
+          // spelling in that vocabulary (§6), and the slideshow lane submits no
+          // D-ID job at all, so writing "did" here would be a false claim about
+          // which vendor rendered it. NULL, same as every other pure-Remotion
+          // Director reel (lib/video/video-director.ts never sets this column).
+          video_provider: useVoiceoverSlideshow ? null : platformProvider,
           // listing_id is only relevant when the user explicitly selected a listing as the
           // video context. Other context types (contact, homeowner, market, none) do not
           // involve a listing and must leave this null.
@@ -611,7 +634,65 @@ export default function VideoCreatePage() {
 
       if (projectError || !project) throw projectError ?? new Error("Failed to create video project")
 
-      // 2. Submit to video generation API — D-ID is the only engine.
+      // ── VOICEOVER SLIDESHOW — the "no avatar" lane ──────────────────────────
+      // Same TWO-STEP shape as the D-ID lane below (project already created
+      // above; this branch just submits to the OTHER generation route), but
+      // with no D-ID payload at all: /api/videos/listing-voiceover synthesizes
+      // the ElevenLabs narration then queues the PhotoWalkthroughReel Remotion
+      // composition directly — no avatar, no background, no b-roll.
+      if (useVoiceoverSlideshow) {
+        // listings.photos / primary_photo_url — the SAME two columns
+        // lib/video/director-content.ts photoUrlsOf() reads for every other
+        // listing composition. Read here (not server-side) because the route
+        // takes property_image_urls as a caller-supplied ordered list, same as
+        // every other field on this request.
+        const { data: listingPhotoRow, error: listingPhotoError } = await supabase
+          .from("listings")
+          .select("photos, primary_photo_url")
+          .eq("id", selectedContextId)
+          .maybeSingle()
+        if (listingPhotoError) {
+          throw new Error(`Could not read the listing's photos — ${listingPhotoError.message}`)
+        }
+        const rawPhotos = Array.isArray(listingPhotoRow?.photos) ? (listingPhotoRow!.photos as unknown[]) : []
+        const propertyImageUrls = Array.from(new Set(
+          [
+            listingPhotoRow?.primary_photo_url,
+            ...rawPhotos.map((p) => (typeof p === "string" ? p : (p as { url?: string } | null)?.url)),
+          ].filter((u): u is string => typeof u === "string" && u.startsWith("http")),
+        ))
+        if (propertyImageUrls.length === 0) {
+          throw new Error("This listing has no photos to build a slideshow from.")
+        }
+
+        const response = await fetch("/api/videos/listing-voiceover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            video_project_id: project.id,
+            script,
+            elevenlabs_voice_id: selectedElevenLabsVoiceId,
+            property_image_urls: propertyImageUrls,
+          }),
+        })
+        const result = await response.json()
+        if (!response.ok) {
+          // A Fair-Housing refusal here is the SAME hard gate the D-ID lane's
+          // compliance_hold branch guards above (§5) — nothing was generated,
+          // no TTS spend happened, so the project is genuinely failed rather
+          // than held for review (there is no review queue on this lane).
+          const lines: string[] = Array.isArray(result?.violations) ? result.violations : []
+          const message = [result?.error, ...lines].filter(Boolean).join("\n") || "Failed to generate video"
+          await supabase.from("ai_video_projects")
+            .update({ status: "failed", error_message: message.slice(0, 800) })
+            .eq("id", project.id)
+          throw new Error(message)
+        }
+        router.push("/dashboard/videos/board")
+        return
+      }
+
+      // 2. Submit to video generation API — D-ID is the only avatar engine.
       const endpoint = "/api/did/generate-video"
 
       // Resolve background payload (color hex or image URL) for the D-ID API.
@@ -1791,7 +1872,40 @@ export default function VideoCreatePage() {
                         )}
                       </div>
 
-                      {/* Avatar Gallery */}
+                      {/* Voiceover slideshow — the "no avatar" option. Only
+                          offered when the video's context is a listing (the
+                          composition needs that listing's photos + address);
+                          gated identically wherever handleGenerateVideo checks
+                          it, so this checkbox is never able to promise a mode
+                          the submit path would then refuse. */}
+                      {selectedContextType === "listing" && selectedContextId && (
+                        <div
+                          onClick={() => setUseVoiceoverSlideshow((v) => !v)}
+                          className={cn(
+                            "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-start gap-3",
+                            useVoiceoverSlideshow ? "border-primary bg-primary/5" : "border-border hover:border-primary/50",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "mt-0.5 h-5 w-5 shrink-0 rounded border-2 flex items-center justify-center",
+                              useVoiceoverSlideshow ? "border-primary bg-primary" : "border-muted-foreground/40",
+                            )}
+                          >
+                            {useVoiceoverSlideshow && <Check className="h-3.5 w-3.5 text-primary-foreground" />}
+                          </div>
+                          <div>
+                            <p className="font-medium text-sm">Voiceover slideshow (no avatar)</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              Skip the avatar entirely — your narration plays over a Ken Burns tour of this
+                              listing&apos;s own photos. The cheapest option, and nothing to set up in Twin Studio.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Avatar Gallery — skipped entirely for the voiceover slideshow. */}
+                      {!useVoiceoverSlideshow && (
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
                           <Label>Avatar</Label>
@@ -1895,6 +2009,7 @@ export default function VideoCreatePage() {
                           </Alert>
                         )}
                       </div>
+                      )}
                     </div>
                   )
                 })()}

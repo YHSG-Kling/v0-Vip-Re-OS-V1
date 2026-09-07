@@ -1,27 +1,48 @@
 /**
  * POST /api/videos/listing-voiceover
  * Cheapest video type: no avatar needed.
- * Generates ElevenLabs TTS voiceover over property images.
- * The client stitches images + audio into a slideshow video.
+ * Generates ElevenLabs TTS voiceover over property images, then queues the
+ * PhotoWalkthroughReel Remotion composition (Ken Burns tour + the narration as
+ * an <Audio> track) on the SAME render pipeline every other Remotion video in
+ * this repo uses — remotion_composition_renders, drained by
+ * composition-render-queue. See the 2026-09-07 note below for the wiring.
  *
  * Body: {
- *   video_project_id: string,
+ *   video_project_id: string,  // must already carry a listing_id (address source)
  *   script: string,
  *   elevenlabs_voice_id: string,
  *   property_image_urls: string[],  // in display order
  * }
- * Returns: { audio_url: string, property_image_urls: string[], video_project_id: string }
+ * Returns: { audio_url, property_image_urls, video_project_id, composition_id, render_id }
  *
- * ── UNRESOLVED, AND DELIBERATELY LEFT STANDING (lane G1, 2026-08-28) ─────────
- * The census reports this route under 6b ("nothing in the tree addresses it").
- * That is true, and it is HALF the story: the rail is unfinished at BOTH ends.
- *   · NO CALLER. Nothing in the tree POSTs here.
- *   · NO COMPLETER. The handler leaves the row at status 'generating' /
- *     provider_status 'audio_ready' and says "the client stitches images +
- *     audio". No such stitcher exists anywhere in this repo, so a row that DID
- *     reach here would sit in flight until the pipeline reaper aged it out
- *     (lib/video/video-status.ts:126 records exactly that phase; the reaper
- *     covers it — scripts/video-pipeline-reaper-simulator.ts:40).
+ * ── BOTH HALVES BUILT (owner ruling, 2026-09-07) ─────────────────────────────
+ * The 2026-08-28/2026-09-01 notes below record why this route was left
+ * standing unfinished rather than deleted; that reasoning still holds and nothing
+ * here retires it onto commissionVideo. What changed is that BOTH missing halves
+ * named in those notes are now built, using exactly the doors W8 found open:
+ *
+ *   · COMPLETER: this handler now calls lib/remotion/registry's
+ *     recordRenderQueued directly — the SAME producer app/api/cron/
+ *     director-reel-render's non-avatar branch and the Asset Manager's
+ *     start_render action use — with composition_id='PhotoWalkthroughReel' and
+ *     input_props={ hook, address, cityState, imageUrls: property_image_urls,
+ *     voiceoverUrl: <the ElevenLabs URL>, brand }. Going around commissionVideo
+ *     (rather than through it) is exactly what keeps "my photos / my script /
+ *     my voice" intact — the composition itself is agnostic to where imageUrls
+ *     and voiceoverUrl came from; only commissionVideo's OWN resolver
+ *     (resolveDirectorContentProps) is pinned to listing_media + the drafted
+ *     hook + the agent's cascade voice. Content-contract-validated (hook/
+ *     address/cityState) BEFORE any TTS spend, same as the fair-housing gate
+ *     below. status/provider_status move to 'generating'/'queued' — the same
+ *     spellings lib/video/video-status.ts and lib/kernel/video.ts:460 use for
+ *     "submitted, awaiting the render" elsewhere — never the retired
+ *     'audio_ready' mid-phase the reaper used to have to age out.
+ *   · CALLER: app/dashboard/videos/create/video-create-client.tsx now offers
+ *     "Voiceover slideshow (no avatar)" in the Avatar & Voice step (shown only
+ *     when the video's context is a listing) — same two-step shape as the
+ *     neighbouring D-ID submission (create the ai_video_projects row, then
+ *     POST here), reading listings.photos / primary_photo_url for
+ *     property_image_urls and the already-selected ElevenLabs voice id.
  *
  * ── EXIT (a) EVALUATED AND REFUSED (lane W8, 2026-09-01) ─────────────────────
  * The owner's option (a) — retire onto the walkthrough rail — was compared
@@ -103,7 +124,7 @@ export async function POST(request: NextRequest) {
     // every brokerage. An equality test is the only thing a NULL cannot pass.
     const { data: project, error: projectError } = await supabase
       .from("ai_video_projects")
-      .select("id, brokerage_id")
+      .select("id, brokerage_id, listing_id, agent_id, title")
       .eq("id", video_project_id)
       .maybeSingle()
     // supabase-js RESOLVES a refusal (§3): without reading the error, a refused
@@ -118,6 +139,64 @@ export async function POST(request: NextRequest) {
     }
     if (project.brokerage_id !== auth.brokerageId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // ── THE COMPOSITION THE COMPLETER RENDERS ────────────────────────────────
+    // PhotoWalkthroughReel already takes exactly the two shapes this route
+    // produces — imageUrls (a photo set) and voiceoverUrl (an <Audio> narration
+    // over a Ken Burns tour of them) — so there is no second composition to
+    // build (§1.2 "the functionality already lives elsewhere" would apply to a
+    // NEW one). See remotion/PhotoWalkthroughReel.tsx and its registration in
+    // remotion/Root.tsx / m221.
+    const COMPOSITION_ID = "PhotoWalkthroughReel" as const
+
+    // ── FAIL CLOSED BEFORE ANY SPEND, NOT JUST BEFORE THE HARD PART ──────────
+    // The composition's content contract (lib/remotion/content-contract.ts)
+    // requires hook + address + cityState — the SAME "never let a caller's
+    // absent fact render as the Studio's sample data" rule §5/§1 already
+    // enforce elsewhere in this file for the script. Checked here, before the
+    // fair-housing gate and before the TTS call, so a project with no listing
+    // (or a listing with no address on file) is refused before either spend
+    // happens rather than after — the constraint TTS-then-check would violate.
+    if (!project.listing_id) {
+      return NextResponse.json(
+        { error: "This video project has no listing attached — a walkthrough needs one to render against." },
+        { status: 422 },
+      )
+    }
+    const { data: listing, error: listingError } = await supabase
+      .from("listings")
+      .select("address, city, state")
+      .eq("id", project.listing_id)
+      .maybeSingle()
+    if (listingError) {
+      console.error("[ListingVoiceover] listing read refused:", listingError)
+      return NextResponse.json({ error: "Failed to verify the listing" }, { status: 500 })
+    }
+    const listingAddress = typeof listing?.address === "string" ? listing.address.trim() : ""
+    const listingCityState = [listing?.city, listing?.state]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .join(", ")
+    // The project's own title stands in for the short on-screen hook line —
+    // this route has no AI hook-writer of its own (that lane is
+    // commissionVideo's draftAndGateHook, a different producer for a different
+    // rail — see the header). "Take the tour" is an honest generic default,
+    // never a fabricated fact about the property.
+    const hook = (typeof project.title === "string" && project.title.trim()) || "Take the tour"
+
+    const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+    const draftInputProps: Record<string, unknown> = {
+      hook,
+      ...(listingAddress ? { address: listingAddress } : {}),
+      ...(listingCityState ? { cityState: listingCityState } : {}),
+      imageUrls: property_image_urls,
+    }
+    const missingProps = missingContentProps(COMPOSITION_ID, draftInputProps)
+    if (missingProps.length > 0) {
+      return NextResponse.json(
+        { error: describeMissingContent(COMPOSITION_ID, missingProps), missing_content_props: missingProps },
+        { status: 422 },
+      )
     }
 
     // ── §5 GATE ON THE CALLER'S OWN WORDS, BEFORE ANY TTS SPEND ──────────────
@@ -156,20 +235,87 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to generate voiceover audio" }, { status: 500 })
     }
 
-    // Update project with audio URL — client handles slideshow rendering.
+    // ── THE COMPLETER: queue the Remotion render, don't leave it to "the client" ──
+    // This is the half that was UNRESOLVED (see the header): nothing ever
+    // stitched the voiceover + photos into a video, so the row sat at
+    // provider_status='audio_ready' until the reaper aged it out
+    // (lib/video/video-status.ts:126 / scripts/video-pipeline-reaper-simulator.ts:40).
+    // recordRenderQueued is the SAME producer path the Asset Manager's own
+    // start_render action uses (lib/agents/asset-manager-actions.ts) — a row in
+    // remotion_composition_renders that composition-render-queue drains, and
+    // whose completion (entity_type='video_project') flips this project to
+    // 'completed' with the branded video_url (render-composition/route.ts
+    // runPostRenderCoordination). No second render path invented.
+    const { resolveDirectorIdentity } = await import("@/lib/video/director-content")
+    const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+    const agentUserId = project.agent_id
+      ? await resolveAgentRecordToUserId(project.agent_id)
+      : auth.userId
+    const identity = await resolveDirectorIdentity(supabase, auth.brokerageId, agentUserId ?? auth.userId)
+
+    const inputProps: Record<string, unknown> = {
+      ...draftInputProps,
+      voiceoverUrl: ttsData.audio_url,
+      brand: {
+        primaryColor: identity.primaryColor,
+        accentColor: identity.accentColor,
+        showEhoMark: true,
+        ...(identity.logoUrl ? { logoUrl: identity.logoUrl } : {}),
+        ...(identity.agentName ? { agentName: identity.agentName } : {}),
+        ...(identity.agentPhone ? { agentPhone: identity.agentPhone } : {}),
+      },
+    }
+
+    const { recordRenderQueued } = await import("@/lib/remotion/registry")
+    const { stagesVoiceover } = await import("@/lib/remotion/content-contract")
+    const queued = await recordRenderQueued({
+      brokerageId: auth.brokerageId,
+      compositionId: COMPOSITION_ID,
+      agentUserId: agentUserId ?? null,
+      entityType: "video_project",
+      entityId: video_project_id,
+      usedDidAvatar: false,
+      usedVoiceover: stagesVoiceover(COMPOSITION_ID, inputProps),
+      inputProps,
+      scopeType: "agent",
+      scopeId: agentUserId ?? auth.brokerageId,
+      requestedVia: "api",
+    })
+    if (!queued.ok) {
+      console.error("[ListingVoiceover] render enqueue refused:", queued.error)
+      await supabase
+        .from("ai_video_projects")
+        .update({ status: "failed", error_message: (queued.error ?? "render enqueue failed").slice(0, 800) })
+        .eq("id", video_project_id)
+        .eq("brokerage_id", auth.brokerageId)
+      return NextResponse.json({ error: "Failed to queue the slideshow render" }, { status: 500 })
+    }
+
     // Tenant-scoped on the way in as well as gated above, and `.select()`ed so a
     // predicate that matched nothing is distinguishable from a write that
     // landed: an UPDATE matching zero rows resolves with error === null (§3).
+    // The render row above is already queued regardless — a failed update here
+    // does not orphan it; composition-render-queue's completion handler flips
+    // this project row to 'completed' by entity_id whenever it next reads it.
     const { data: updated, error: updateError } = await supabase
       .from("ai_video_projects")
       .update({
-        // The voiceover exists but the slideshow video does not — this row is
-        // still IN FLIGHT, not finished. provider_status keeps the finer-grained
-        // 'audio_ready' detail; ai_video_projects.status is the one vocabulary.
+        // 'generating' — the ONE canonical in-flight status
+        // (lib/video/video-status.ts). The render is genuinely in flight now:
+        // it has left this route's hands for the composition-render-queue
+        // cron, the SAME point at which app/api/cron/director-reel-render's
+        // non-avatar branch also leaves a row at 'generating' after enqueuing.
         status: "generating",
-        provider_status: "audio_ready",
+        // provider_status is NOT the canonical vocabulary (free text, the
+        // provider's own words) — "queued" is the SAME spelling
+        // lib/kernel/video.ts:460 uses for "submitted, awaiting the render/
+        // provider", so a reader of this column sees one word for one meaning
+        // across both lanes rather than a private third spelling.
+        provider_status: "queued",
         provider_metadata: {
-          provider: "slideshow",
+          provider: "remotion_slideshow",
+          composition_id: COMPOSITION_ID,
+          render_id: queued.renderId,
           audio_url: ttsData.audio_url,
           property_image_urls,
         },
@@ -190,13 +336,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to attach the voiceover" }, { status: 409 })
     }
 
-    // `status` is NAMED rather than left on the column DEFAULT: the attempt list
-    // an agent reads (app/components/content-studio/LinkToVideoGenerator.tsx:614)
-    // renders this value, and an unnamed default is indistinguishable from an
-    // attempt nobody ever updated. The voiceover IS the deliverable of this
-    // route — the slideshow render is a later step — so the honest state of THIS
-    // attempt is submitted, matching the project's own 'generating'.
-    //
     // `cost_usd` IS KNOWN ON THIS LANE, and that is the whole reason it is
     // filled here and nowhere else. The column is read by the render-attempt
     // list (app/actions/link-to-video.ts:583) and had no writer at all, because
@@ -231,6 +370,8 @@ export async function POST(request: NextRequest) {
       audio_url: ttsData.audio_url,
       property_image_urls,
       video_project_id,
+      composition_id: COMPOSITION_ID,
+      render_id: queued.renderId,
     })
   } catch (error: any) {
     console.error("[ListingVoiceover] error:", error)

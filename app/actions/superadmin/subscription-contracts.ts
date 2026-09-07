@@ -21,6 +21,13 @@ import { headers } from "next/headers"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireSuperadmin, requirePlatformStaff } from "@/lib/auth/platform-guard"
 import { revalidatePath } from "next/cache"
+import {
+  mintSignedUpload,
+  UPLOAD_PURPOSES,
+  PLATFORM_CONTRACT_TENANT_SENTINEL,
+  type SignedUploadTicket,
+  type SignedUploadRefusal,
+} from "@/lib/storage/signed-upload-url"
 
 export interface SubscriptionContractTemplate {
   id: string
@@ -157,6 +164,95 @@ export async function upsertSubscriptionContractTemplateAction(input: {
   await audit(gate.userId, "subscription_contract_template.created", id, { name })
   revalidatePath("/dashboard/superadmin/contracts")
   return { ok: true, id, version: 1 }
+}
+
+// ─── Attach an uploaded document (superadmin only) ────────────────────────────
+// LANE 1 (m481), THE STORAGE-PATH ARM's WRITER — built 2026-09-07 per owner
+// ruling ("complete the building and editing for owner decisions … owners
+// decision is build and fix"), closing the gap the tombstone in
+// app/actions/admin/subscription-agreement.ts:74-110 named: m481 gives this
+// table two body arms, in-app authoring above fills only body_text, and until
+// now nothing filled body_storage_path. This is that filler, plus the tenant
+// renderer added in that same file (getSubscriptionAgreementAction /
+// signSubscriptionAgreementAction).
+//
+// TWO CALLS, same shape as every other signed-upload flow in this repo
+// (lib/storage/browser-upload.ts's pattern, done server-side here since the
+// caller is a "use server" action rather than a route the browser POSTs to
+// directly): (1) plan the upload — mint a signed PUT — (2) after the browser
+// PUTs the bytes, record the resulting path on the template row. Splitting them
+// is not optional: the object must exist in Storage before the row claims it,
+// or a "successful" attach could point at nothing.
+
+export type PlatformContractUploadPlan =
+  Pick<SignedUploadTicket, "bucket" | "path" | "token" | "signedUrl" | "ceilingBytes">
+
+/** Step 1 — mint a signed PUT for a contract-document PDF. Superadmin-gated: this
+ *  is platform configuration, same tier as authoring the body text itself. */
+export async function planPlatformContractDocumentUploadAction(input: {
+  fileName: string
+  contentType: string
+  bytes: number
+}): Promise<{ ok: true; plan: PlatformContractUploadPlan } | { ok: false; error: string }> {
+  const gate = await requireSuperadmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+
+  const svc = createServiceClient()
+  const ticket: SignedUploadTicket | SignedUploadRefusal = await mintSignedUpload(svc, {
+    purpose: "platform_contract_document",
+    // Not a real tenant — see PLATFORM_CONTRACT_TENANT_SENTINEL's own doc.
+    identity: { brokerageId: PLATFORM_CONTRACT_TENANT_SENTINEL, userId: gate.userId },
+    fileName: input.fileName,
+    contentType: input.contentType,
+    bytes: input.bytes,
+  })
+  if (!ticket.ok) return { ok: false, error: ticket.reason }
+
+  return {
+    ok: true,
+    plan: { bucket: ticket.bucket, path: ticket.path, token: ticket.token, signedUrl: ticket.signedUrl, ceilingBytes: ticket.ceilingBytes },
+  }
+}
+
+/** Step 2 — after the browser PUTs the bytes to the signed URL from step 1,
+ *  record the path. Validated against the SAME purpose prefix the mint used, so
+ *  a caller cannot point a template at an object outside this lane's own tree —
+ *  the path is untrusted input at this call (it came back from the browser),
+ *  even though it was this server that minted the URL that produced it. */
+export async function attachPlatformContractDocumentAction(input: {
+  templateId: string
+  storagePath: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await requireSuperadmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+
+  const templateId = (input.templateId ?? "").trim()
+  const storagePath = (input.storagePath ?? "").trim()
+  if (!templateId) return { ok: false, error: "No template selected" }
+  if (!storagePath) return { ok: false, error: "No uploaded document to attach" }
+
+  const expectedPrefix = `${UPLOAD_PURPOSES.platform_contract_document.prefix({
+    brokerageId: PLATFORM_CONTRACT_TENANT_SENTINEL,
+    userId: "",
+  })}/`
+  if (!storagePath.startsWith(expectedPrefix)) {
+    return { ok: false, error: "That path was not issued by this upload lane — refusing to attach it" }
+  }
+
+  const svc = createServiceClient()
+  const { data: updated, error } = await svc
+    .from("platform_contract_templates")
+    .update({ body_storage_path: storagePath, updated_at: new Date().toISOString() })
+    .eq("id", templateId)
+    .select("id")
+  if (error) return { ok: false, error: error.message }
+  // CLAUDE.md §3: an UPDATE matching nothing also resolves with no error — count
+  // what came back rather than trusting the absence of `error`.
+  if (!updated || updated.length === 0) return { ok: false, error: "Template not found" }
+
+  await audit(gate.userId, "subscription_contract_template.document_attached", templateId, { storagePath })
+  revalidatePath("/dashboard/superadmin/contracts")
+  return { ok: true }
 }
 
 // ─── Activate / retire a template (superadmin only) ──────────────────────────

@@ -19,7 +19,54 @@
 // gate rather than a bypassed one.
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+import { UPLOAD_PURPOSES } from "@/lib/storage/signed-upload-url"
+
+// The bucket this lane's document arm lives in — read from the ONE upload
+// registry (lib/storage/signed-upload-url.ts#UPLOAD_PURPOSES) rather than
+// re-spelled here, so a bucket change on the writer's side cannot silently
+// leave this reader minting against the wrong bucket (§6).
+const CONTRACT_DOCUMENT_BUCKET = UPLOAD_PURPOSES.platform_contract_document.bucket
+
+// Per-render, NOT persisted: sign-on-read (lib/storage/signed-doc-url.ts's own
+// documented end-state) rather than a long-lived link stored on a column. Short
+// enough that a copied link is useless within the hour, long enough to survive
+// a slow page load.
+const CONTRACT_DOCUMENT_VIEW_TTL_SECONDS = 300
+
+/**
+ * THE RENDERER for m481's storage-path arm. Mints a short-lived signed GET url
+ * for a template whose body lives in Storage rather than inline. Called from
+ * BOTH the read (getSubscriptionAgreementAction, so the card has a link to show)
+ * and the write gate (signSubscriptionAgreementAction, so "can this be shown at
+ * all" is answered once, not twice with the risk of the two disagreeing — §6).
+ *
+ * Uses the SERVICE client, not the tenant's authed client: `documents` carries
+ * brokerage-owned rows too (lib/storage/document-buckets.ts), and this object
+ * belongs to the PLATFORM (PLATFORM_CONTRACT_TENANT_SENTINEL), so no tenant's
+ * storage RLS grant is the right lens for it — the TENANT GATE already ran
+ * before either caller reaches this (brokerage resolved, in signing's case
+ * admin-checked), so minting a read link for the ACTIVE agreement everyone may
+ * read is not an escalation.
+ *
+ * Fails closed to null: a mint failure is not surfaced as a thrown error here,
+ * it is surfaced as "no document to show" and the caller's own fail-closed
+ * branch (getSubscriptionAgreementAction just omits documentUrl;
+ * signSubscriptionAgreementAction refuses) decides what that means.
+ */
+async function mintContractDocumentUrl(bodyStoragePath: string | null): Promise<string | null> {
+  if (!bodyStoragePath) return null
+  const svc = createServiceClient()
+  const { data, error } = await svc.storage
+    .from(CONTRACT_DOCUMENT_BUCKET)
+    .createSignedUrl(bodyStoragePath, CONTRACT_DOCUMENT_VIEW_TTL_SECONDS)
+  if (error) {
+    console.error(`[subscription-agreement] could not mint a read url for ${CONTRACT_DOCUMENT_BUCKET}/${bodyStoragePath}: ${error.message}`)
+    return null
+  }
+  return data?.signedUrl ?? null
+}
 
 export interface SubscriptionAgreementView {
   template: {
@@ -50,6 +97,15 @@ export interface SubscriptionAgreementView {
   } | null
   /** True when an active agreement exists and this brokerage has not signed it. */
   awaitingSignature: boolean
+  /**
+   * A short-lived signed GET url for `template.body_storage_path`, minted fresh
+   * on every read (never persisted) — the document-arm renderer named in the
+   * ruling comment above `template`. null whenever there is no template, the
+   * template has an inline body_text instead, there is no storage path, or the
+   * mint failed (fail closed: a minting failure is a missing document, not a
+   * thrown error the card has to handle).
+   */
+  documentUrl: string | null
 }
 
 // ─── What the tenant sees on the billing/activation surface ──────────────────
@@ -72,36 +128,26 @@ export async function getSubscriptionAgreementAction(): Promise<
   // The ACTIVE subscription agreement (RLS lets any signed-in tenant seat read
   // active templates — a tenant must be able to read what they are asked to sign).
   //
-  // ── KEEP, WITH THE REASON (lane W3, 2026-09-01) ────────────────────────────
-  // `body_storage_path` reaches NO PIXEL: the tenant card renders
-  // `template.body_text` only (app/dashboard/admin/billing/
-  // subscription-agreement-card.tsx:131-134). It is kept anyway, and it is not an
-  // inert projection, because it is READ — by the signing gate below.
+  // ── THE LANE NOW EXISTS (2026-09-07, owner ruling: "complete the building and
+  // editing for owner decisions … owners decision is build and fix") ──────────
+  // Superseded below: this used to say the storage-path arm had no renderer and
+  // was kept only so the signing gate could refuse honestly. It now has both.
   //
   // THE RULING. m481 gives this table two body arms and requires exactly that at
   // least one is present:
   //     check (body_text is not null or body_storage_path is not null)
-  // In-app authoring writes the body_text arm and only that arm
-  // (app/actions/superadmin/subscription-contracts.ts:127-135 update, :144-153
-  // insert), so a NULL here is not a missing value — it is the ordinary state of
-  // a contract that was typed rather than uploaded. The storage-path arm exists
-  // for a future uploaded-document lane, and until that lane also brings a
-  // renderer, a document-only template is a contract this surface CANNOT SHOW.
-  // Selecting the column is what lets `signSubscriptionAgreementAction` tell that
-  // case apart and refuse instead of collecting a signature on a blank screen —
-  // see the fail-closed branch there. Live evidence 2026-09-01
-  // (hrvaqgvukzxfskkcrwbt): `platform_contract_templates` holds zero rows, so no
-  // signing flow in production changes shape.
-  //
-  // RE-CONFIRMED w26 (lane C8), against a census that flagged body_storage_path as a
-  // read with no writer: NOT A DEFECT, ruling unchanged. THE READER IS
-  // signSubscriptionAgreementAction's fail-closed branch in this file (see
-  // `body.body_storage_path` below, in the `if (!body.body_text?.trim())` guard) —
-  // it is what distinguishes "a stored document this screen cannot display" from
-  // "no readable body at all" and refuses instead of collecting a signature on a
-  // blank screen. The other reader is app/actions/superadmin/subscription-contracts.ts:74.
-  // The writer is absent BY RULING, not by omission: in-app authoring fills the
-  // body_text arm and m481's CHECK requires exactly one of the two.
+  // THE WRITER: app/actions/superadmin/subscription-contracts.ts's
+  // planPlatformContractDocumentUploadAction (mints a signed PUT via the one
+  // upload registry, lib/storage/signed-upload-url.ts#UPLOAD_PURPOSES
+  // .platform_contract_document) and attachPlatformContractDocumentAction (records
+  // the resulting path on body_storage_path, superadmin-gated, path validated
+  // against the purpose's own prefix). THE RENDERER is right here: whenever
+  // `body_text` is absent and `body_storage_path` is present, this action mints a
+  // short-lived signed GET url (CONTRACT_DOCUMENT_VIEW_TTL_SECONDS, sign-on-read
+  // rather than a persisted link) and returns it as `documentUrl` — the tenant
+  // card renders it as an "Open the agreement (PDF)" link. The signing gate below
+  // (signSubscriptionAgreementAction) now refuses ONLY when NEITHER arm renders:
+  // no body_text AND no signed url could be minted for body_storage_path.
   const { data: template, error: tplErr } = await supabase
     .from("platform_contract_templates")
     .select("id, name, body_text, body_storage_path, version")
@@ -114,7 +160,7 @@ export async function getSubscriptionAgreementAction(): Promise<
 
   if (!template) {
     // Nothing authored yet — honestly nothing to sign (never invent a contract).
-    return { ok: true, view: { template: null, signature: null, awaitingSignature: false } }
+    return { ok: true, view: { template: null, signature: null, awaitingSignature: false, documentUrl: null } }
   }
 
   const { data: signature, error: sigErr } = await supabase
@@ -125,12 +171,18 @@ export async function getSubscriptionAgreementAction(): Promise<
     .maybeSingle()
   if (sigErr) return { ok: false, error: `Could not read your signature record: ${sigErr.message}` }
 
+  const tpl = template as { body_text: string | null; body_storage_path: string | null }
+  // Only mint when body_text is absent — a template with inline text needs no
+  // link, and minting one nobody will render would be wasted work on every read.
+  const documentUrl = tpl.body_text?.trim() ? null : await mintContractDocumentUrl(tpl.body_storage_path)
+
   return {
     ok: true,
     view: {
       template: template as SubscriptionAgreementView["template"],
       signature: (signature as SubscriptionAgreementView["signature"]) ?? null,
       awaitingSignature: !signature,
+      documentUrl,
     },
   }
 }
@@ -180,21 +232,22 @@ export async function signSubscriptionAgreementAction(input: {
     return { ok: false, error: "This agreement is no longer the active version — reload and sign the current one" }
   }
 
-  // ── A DOCUMENT NOBODY CAN READ IS NOT SIGNABLE HERE (lane W3, 2026-09-01) ───
-  // m481 admits a template whose body is a STORAGE PATH rather than inline text,
-  // and this surface has no renderer for one: the tenant card shows `body_text`
-  // and nothing else, so a document-only template would put the "Type your full
-  // legal name to sign" box under a BLANK contract. The in-app record rail's
-  // whole honesty claim is that the signer read what is on screen (see this
-  // file's header), so this refuses rather than collecting an attestation to
-  // something never displayed. Fail closed (§4): when the storage-path arm
-  // finally gets its renderer, this branch is what tells that lane it is done.
+  // ── A DOCUMENT NOBODY CAN READ IS NOT SIGNABLE HERE (built 2026-09-07) ──────
+  // The in-app record rail's whole honesty claim is that the signer read what is
+  // on screen (see this file's header), so this refuses UNLESS at least one arm
+  // actually renders: inline body_text, or a signed url this call can mint for
+  // body_storage_path (mintContractDocumentUrl — the same renderer
+  // getSubscriptionAgreementAction uses, so "can this be shown" is answered
+  // identically on both the read and the write path). Fail closed (§4): a mint
+  // failure here reads as "no document", not as a thrown error.
   const body = template as { body_text: string | null; body_storage_path: string | null }
-  if (!body.body_text?.trim()) {
+  const hasInlineText = !!body.body_text?.trim()
+  const documentUrl = hasInlineText ? null : await mintContractDocumentUrl(body.body_storage_path)
+  if (!hasInlineText && !documentUrl) {
     return {
       ok: false,
       error: body.body_storage_path
-        ? "This agreement is a stored document, and this screen can only display an inline agreement — it cannot be signed here until the document is shown to you. Contact platform support."
+        ? "This agreement is a stored document, and a viewable link for it could not be created right now — reload and try again, or contact platform support."
         : "This agreement has no readable body yet — nothing can be signed until the platform publishes its text.",
     }
   }

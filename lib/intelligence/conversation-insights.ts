@@ -232,7 +232,8 @@ export interface AnalyticsMessage {
   created_at: string
 }
 
-export interface DerivedConversationAnalytics {
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+interface DerivedConversationAnalytics {
   /** overall_sentiment as the DATABASE accepts it. The live CHECK admits only
    *  positive/neutral/negative (verified against hrvaqgvukzxfskkcrwbt,
    *  conversation_insights_overall_sentiment_check) — the model may honestly
@@ -266,7 +267,7 @@ const SENTIMENT_RANK: Record<string, number> = { negative: -1, neutral: 0, posit
  * @param extraction     the AI extraction that just ran
  * @param previousSentiment  overall_sentiment stored on the existing insight row, if any
  */
-export function deriveConversationAnalytics(
+function deriveConversationAnalytics(
   messages: AnalyticsMessage[],
   extraction: {
     objections_raised: string[]

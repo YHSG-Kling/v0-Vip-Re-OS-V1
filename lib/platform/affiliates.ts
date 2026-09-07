@@ -119,14 +119,14 @@ export function validateAffiliateInput(input: {
 
 /** PURE: commission in cents on one month of MRR. Rounds to the nearest cent;
  *  garbage in (negative / non-finite) → 0, never NaN into the ledger. */
-export function commissionFor(mrrCents: number, percent: number): number {
+function commissionFor(mrrCents: number, percent: number): number {
   if (!Number.isFinite(mrrCents) || mrrCents <= 0) return 0
   if (!Number.isFinite(percent) || percent <= 0) return 0
   return Math.round((mrrCents * Math.min(percent, 100)) / 100)
 }
 
 /** PURE: ISO timestamp + N calendar months (UTC; JS end-of-month overflow rules). */
-export function addMonthsIso(iso: string, months: number): string {
+function addMonthsIso(iso: string, months: number): string {
   const d = new Date(iso)
   d.setUTCMonth(d.getUTCMonth() + months)
   return d.toISOString()

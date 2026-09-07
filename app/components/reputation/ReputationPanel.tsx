@@ -49,11 +49,13 @@ import {
   PenLine,
   History,
   ExternalLink,
+  Link2,
 } from "lucide-react"
 import {
   aiGenerateReviewRequest,
   aiExtractTestimonials,
 } from "@/app/actions/ai-review-automation"
+import { attachReviewSourceUrlAction } from "@/app/actions/agent-reviews"
 import { aiRecommendGift, aiGenerateThankYouNote } from "@/app/actions/ai-client-gifting"
 import {
   sendThankYouNoteAction,
@@ -215,6 +217,45 @@ export function ReputationPanel({
   // J8 Gap 8.2 — review filters + auto-respond preferences
   const [reviewFilterPlatform, setReviewFilterPlatform] = useState<string>("all")
   const [reviewFilterRange, setReviewFilterRange] = useState<"30d" | "90d" | "all">("all")
+
+  // ── Link to the original review (app/actions/agent-reviews.ts) ────────────
+  // `source_url` is where the review actually lives on the platform it came
+  // from — see the OWNER DECISION header on that file. Draft text is tracked
+  // per review id so opening one editor doesn't clobber another's in-progress
+  // draft, and `sourceUrlById` is updated OPTIMISTICALLY only after the server
+  // confirms the write, since the `reviews` prop is not refetched here.
+  const [sourceUrlDraftById, setSourceUrlDraftById] = useState<Record<string, string>>({})
+  const [sourceUrlById,      setSourceUrlById]      = useState<Record<string, string | null>>({})
+  const [savingSourceUrlId,  setSavingSourceUrlId]  = useState<string | null>(null)
+
+  function currentSourceUrl(r: any): string | null {
+    return Object.prototype.hasOwnProperty.call(sourceUrlById, r.id)
+      ? sourceUrlById[r.id]
+      : (r.source_url ?? null)
+  }
+
+  async function handleSaveSourceUrl(reviewId: string, draft: string) {
+    setSavingSourceUrlId(reviewId)
+    try {
+      const value = draft.trim().length > 0 ? draft.trim() : null
+      const result = await attachReviewSourceUrlAction(reviewId, value)
+      if (!result.ok) {
+        toast.error(result.error ?? "That link could not be saved.")
+        return
+      }
+      setSourceUrlById(prev => ({ ...prev, [reviewId]: value }))
+      setSourceUrlDraftById(prev => {
+        const next = { ...prev }
+        delete next[reviewId]
+        return next
+      })
+      toast.success(value ? "Link saved." : "Link cleared.")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "That link could not be saved.")
+    } finally {
+      setSavingSourceUrlId(null)
+    }
+  }
   const [autoRespondMode, setAutoRespondMode] = useState<"off" | "review" | "auto">("off")
   const [autoRespondApprovalHours, setAutoRespondApprovalHours] = useState<number>(24)
   const [prefsLoaded, setPrefsLoaded] = useState(false)
@@ -987,6 +1028,53 @@ export function ReputationPanel({
                       </div>
                       <p className="text-sm text-muted-foreground line-clamp-2">{r.review_text}</p>
                       <p className="text-xs text-muted-foreground capitalize">{r.platform} &mdash; {new Date(r.created_at).toLocaleDateString()}</p>
+
+                      {/* Link to the original review — see app/actions/agent-reviews.ts */}
+                      <div className="flex items-center gap-2 pt-1">
+                        <Link2 className="w-3 h-3 text-muted-foreground shrink-0" />
+                        {currentSourceUrl(r) ? (
+                          <>
+                            <a
+                              href={currentSourceUrl(r) as string}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs text-primary underline underline-offset-2 truncate"
+                            >
+                              {currentSourceUrl(r)}
+                            </a>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 px-2 text-xs shrink-0"
+                              onClick={() => {
+                                setSourceUrlDraftById(prev => ({ ...prev, [r.id]: currentSourceUrl(r) ?? "" }))
+                                handleSaveSourceUrl(r.id, "")
+                              }}
+                              disabled={savingSourceUrlId === r.id}
+                            >
+                              Remove
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Input
+                              value={sourceUrlDraftById[r.id] ?? ""}
+                              onChange={(e) => setSourceUrlDraftById(prev => ({ ...prev, [r.id]: e.target.value }))}
+                              placeholder="Link to the original review (Google, Zillow, …)"
+                              className="h-6 text-xs px-2"
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-xs shrink-0"
+                              disabled={savingSourceUrlId === r.id || !(sourceUrlDraftById[r.id] ?? "").trim()}
+                              onClick={() => handleSaveSourceUrl(r.id, sourceUrlDraftById[r.id] ?? "")}
+                            >
+                              {savingSourceUrlId === r.id ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

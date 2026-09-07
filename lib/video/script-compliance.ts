@@ -58,7 +58,8 @@ export interface QueryableClient {
   from: (table: string) => any
 }
 
-export type ActorTenancyProof =
+// module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers
+type ActorTenancyProof =
   | { ok: true; via: "users.brokerage_id" | "agents.user_id"; agentId: string | null }
   | { ok: false; error: string }
 
@@ -86,7 +87,7 @@ export type ActorTenancyProof =
  * pair is fine — "nobody checked" must never render as "checked and fine". The
  * caller reports that refusal; it never becomes a silent skip.
  */
-export async function proveActorTenancy(
+async function proveActorTenancy(
   client: QueryableClient,
   actor: ScriptComplianceActor,
 ): Promise<ActorTenancyProof> {
@@ -420,7 +421,7 @@ const PROMPT_PHRASE_LIMIT = 80
  * reporting of that state belongs to assessScriptCompliance below, which turns
  * it into `unknown` rather than `clean`.
  */
-export function buildProhibitedPhraseBlock(catalogue: ProhibitedPhraseCatalogue): string {
+function buildProhibitedPhraseBlock(catalogue: ProhibitedPhraseCatalogue): string {
   if (catalogue.state !== "loaded") return ""
 
   const blocking = catalogue.rows.filter((r) => r.severity === "critical")

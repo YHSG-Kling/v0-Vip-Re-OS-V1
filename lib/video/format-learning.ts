@@ -141,7 +141,7 @@ export interface FormatRecommendation {
 
 /** Deterministic cell key. Lowercased so live-DB casing variance never splits a
  *  cell. */
-export function formatCellKey(
+function formatCellKey(
   kind: string, channel: string, compositionId: string, mood: string,
 ): string {
   return `${kind}|${channel}|${compositionId}|${mood}`.toLowerCase()

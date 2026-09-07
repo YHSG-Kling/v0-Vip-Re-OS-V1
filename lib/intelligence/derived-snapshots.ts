@@ -26,7 +26,7 @@ export function zipFromAddress(address: string | null | undefined): string | nul
 
 export interface DerivedSnapshotsResult { insightsRows: number; heatmapRows: number }
 
-export async function runPropertySmartInsights(svc: Svc, brokerageId: string, now: Date): Promise<number> {
+async function runPropertySmartInsights(svc: Svc, brokerageId: string, now: Date): Promise<number> {
   // Live columns: list_price / listing_date (NOT price / list_date — the
   // drift guard caught the phantom names before this ever shipped).
   const { data: listings } = await svc
@@ -65,7 +65,7 @@ export async function runPropertySmartInsights(svc: Svc, brokerageId: string, no
   return written
 }
 
-export async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now: Date): Promise<number> {
+async function runTeamHeatmapSnapshots(svc: Svc, brokerageId: string, now: Date): Promise<number> {
   const snapshotDate = now.toISOString().slice(0, 10)
   const since = new Date(now.getTime() - 90 * 86_400_000).toISOString()
 
