@@ -90,7 +90,7 @@ import {
   REPOINTED_HISTORY_TABLES,
 } from "../lib/contact-promotion/history-carry"
 import { LIVE_TABLES } from "./live-tables"
-import { SCHEMA_FK_MAP } from "./schema-fk-map"
+import { SCHEMA_FK_MAP, SCHEMA_FK_COLUMN_AMBIGUOUS } from "./schema-fk-map"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -333,6 +333,13 @@ export function oc1Verdict(
 ): Oc1Verdict | null {
   if (!consensusParent) return null
   if (fks[col]) return "protected"
+  // A column with TWO candidate parents (a single-column FK beside a composite
+  // one — vendor_subscriptions.brokerage_id → brokerages AND (plan_id,
+  // brokerage_id) → vendor_plans) is filed by the generator in
+  // SCHEMA_FK_COLUMN_AMBIGUOUS and left OUT of the primary map. Reading only the
+  // primary map accused a live constraint of being absent (2026-09-08; the
+  // census's own [recorded] line said the FK existed while OC1 counted it).
+  if (SCHEMA_FK_COLUMN_AMBIGUOUS[table]?.[col]?.length) return "protected"
   // ENFORCED, JUST NOT BY A PUBLIC-SCHEMA CONSTRAINT. Second, right after the
   // cache's own answer: if the FK map ever learns about these the cache wins and
   // this declaration becomes dead weight rather than a competing opinion (§6).

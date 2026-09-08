@@ -1,7 +1,7 @@
 {
   "generated": "2026-09-08",
   "counts": {
-    "oc1": 12,
+    "oc1": 11,
     "oc2": 0,
     "oc3": 0,
     "oc4": 0
@@ -18,8 +18,7 @@
       "lead_property_searches.lead_id",
       "motivated_seller_signals.lead_id",
       "nextdoor_activity.lead_id",
-      "tax_categories.provider_account_id",
-      "vendor_subscriptions.brokerage_id"
+      "tax_categories.provider_account_id"
     ],
     "oc2": [],
     "oc3": [],
