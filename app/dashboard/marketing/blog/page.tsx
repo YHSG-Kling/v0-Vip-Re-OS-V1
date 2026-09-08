@@ -54,7 +54,7 @@ export default async function BlogDashboardPage() {
   const { data: posts, error: postsError } = await supabase
     .from("blog_posts")
     .select(
-      "id, title, slug, excerpt, category, publish_status, seo_score, created_at, published_at, agent_user_id"
+      "id, title, slug, excerpt, category, publish_status, seo_score, created_at, published_at, agent_user_id, visibility_scope"
     )
     .eq("brokerage_id", userData.brokerage_id)
     .order("created_at", { ascending: false })
