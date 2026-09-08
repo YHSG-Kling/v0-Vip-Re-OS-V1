@@ -2,8 +2,8 @@
 
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createServiceClient } from "@/lib/supabase/service"
-import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { requireCaller } from "@/lib/auth/require-caller"
 // TOMBSTONE (dead-import tranche): `callConnector`
 // (lib/agentic-os/connector-gateway.ts) was imported here and never called —
 // this file makes no outbound HTTP of its own. The provider call for its render
@@ -65,21 +65,9 @@ import { targetWordCount } from "@/lib/video/script-structure"
 //   - Forge engagement events against another brokerage's videos
 // This helper resolves identity from the session; callers ignore the
 // caller-supplied IDs and use session-derived values.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 // Resolve caller's agents.id (some video tables use agent_id which is
 // agents.id, not auth.users.id). Returns null if caller isn't a registered

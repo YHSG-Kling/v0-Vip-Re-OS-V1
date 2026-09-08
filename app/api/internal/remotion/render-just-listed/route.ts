@@ -75,6 +75,7 @@ import {
 } from "@/lib/video/script-structure"
 import { missingContentProps, describeMissingContent, stagesVoiceover } from "@/lib/remotion/content-contract"
 import { seoHintFromNarration } from "@/lib/geo/video-landing"
+import { usdOrEmpty } from "@/lib/format/money"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -429,8 +430,8 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
     .eq("media_type", "photo")  // listing_media says 'photo'; 'image' matched nothing, so the just-listed video had no stills
     .order("sort_order", { ascending: true })
     .limit(8)
-  const usd = (n: number | null) =>
-    n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : ""
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
+  const usd = usdOrEmpty
   return {
     id:            lr.id,
     brokerage_id:  lr.brokerage_id,

@@ -37,6 +37,7 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -124,9 +125,14 @@ function utcDay(iso: string): number {
   return Math.floor(Date.parse(`${iso.slice(0, 10)}T00:00:00Z`) / 86_400_000)
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here (as
+// utcDay(b) - utcDay(a), a calendar-day subtraction); survivor
+// lib/format/dates.ts:daysBetween — equivalent for date-only YYYY-MM-DD
+// input, since both parse to UTC midnight and the ms/86.4M division is
+// already an integer, making floor a no-op.
 /** Whole calendar days from `a` to `b` (both YYYY-MM-DD); positive when b is later. */
 export function daysBetween(a: string, b: string): number {
-  return utcDay(b) - utcDay(a)
+  return dateDaysBetween(a, b, { round: "floor" })
 }
 
 function todayIso(now: Date): string {

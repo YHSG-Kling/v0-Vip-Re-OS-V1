@@ -49,6 +49,7 @@ import {
   getGiftAnalytics,
 } from "@/app/actions/ai-client-gifting"
 import { aiGenerateEventInvitation } from "@/app/actions/ai-sphere-management"
+import { usd } from "@/lib/format/money"
 
 interface LifetimeContact {
   id: string
@@ -96,8 +97,9 @@ interface GiftAnalytics {
   topVendors: Array<[string, number]>
 }
 
-const usd = (n: number) =>
-  n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here (locale left implicit
+// as `undefined` — a latent non-determinism the survivor fixes by pinning
+// "en-US"); survivor lib/format/money.ts:usd
 
 export function CampaignsGiftingPanel({ brokerageId, agentId, contacts }: Props) {
   const [isPending, startTransition] = useTransition()

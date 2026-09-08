@@ -444,7 +444,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9330,
+  "census": 9342,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1182,6 +1182,7 @@
     "app/api/cron/marketing-attribution-engine/route.ts": 2,
     "app/api/cron/marketing-campaign-scheduler/route.ts": 2,
     "app/api/cron/marketing-image-regen/route.ts": 1,
+    "app/api/cron/message-needs-response/route.ts": 1,
     "app/api/cron/negotiation-strategy-generator/route.ts": 2,
     "app/api/cron/newsletter-cadence-tick/route.ts": 1,
     "app/api/cron/newsletter-video-render/route.ts": 1,
@@ -1247,6 +1248,7 @@
     "app/api/cron/stripe-drift/route.ts": 1,
     "app/api/cron/support-sla/route.ts": 1,
     "app/api/cron/sync-facebook-audiences/route.ts": 1,
+    "app/api/cron/task-due/route.ts": 1,
     "app/api/cron/task-overdue/route.ts": 1,
     "app/api/cron/team-heatmap-snapshot/route.ts": 1,
     "app/api/cron/tenant-safety-scan/route.ts": 1,
@@ -3120,7 +3122,9 @@
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
-    "lib/format/money.ts": 1,
+    "lib/format/dates.ts": 1,
+    "lib/format/math.ts": 1,
+    "lib/format/money.ts": 9,
     "lib/format/ordinal.ts": 2,
     "lib/format/stats.ts": 1,
     "lib/forms/esign-anchor-adapters.ts": 4,
@@ -8550,6 +8554,9 @@
     "app/api/cron/marketing-image-regen/route.ts": [
       "GET"
     ],
+    "app/api/cron/message-needs-response/route.ts": [
+      "GET"
+    ],
     "app/api/cron/negotiation-strategy-generator/route.ts": [
       "GET",
       "POST"
@@ -8748,6 +8755,9 @@
       "GET"
     ],
     "app/api/cron/sync-facebook-audiences/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/task-due/route.ts": [
       "GET"
     ],
     "app/api/cron/task-overdue/route.ts": [
@@ -15619,8 +15629,22 @@
     "lib/financing/rate-lock-watch.ts": [
       "computeRateLockRisk"
     ],
+    "lib/format/dates.ts": [
+      "daysBetween"
+    ],
+    "lib/format/math.ts": [
+      "clamp"
+    ],
     "lib/format/money.ts": [
-      "compactCentsMoney"
+      "compactCentsMoney",
+      "compactDollarsMoney",
+      "usd",
+      "usdOrEmpty",
+      "usdOrNull",
+      "usdOrDash",
+      "usd2Grouped",
+      "usd2",
+      "usd2OrNull"
     ],
     "lib/format/ordinal.ts": [
       "ordinal",

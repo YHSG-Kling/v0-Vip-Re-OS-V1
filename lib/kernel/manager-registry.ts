@@ -2158,6 +2158,8 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/deal-health/cron": "deal_coordinator",
   "/api/cron/deadline-watcher": "deal_coordinator",
   "/api/cron/task-overdue": "deal_coordinator",
+  "/api/cron/task-due": "deal_coordinator",
+  "/api/cron/message-needs-response": "ai_isa",
   // The Deal Coordinator stands guard at the wire window (wave 26) — same owner
   // as MAINTENANCE_DOMAINS.wire_fraud_sentinel, so the domain and the schedule
   // that drives it cannot end up accountable to two different managers.

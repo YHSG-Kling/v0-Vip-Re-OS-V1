@@ -35,6 +35,7 @@ import type { SituationKind, VideoSituation } from "./video-director"
 // PURE imports only — this module is exercised by the simulator without a DB.
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type AnyClient = any
 
@@ -214,12 +215,17 @@ function photoUrlsOf(l: ListingRow, max = 6): string[] {
   return Array.from(new Set(urls)).slice(0, max)
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. The null-on-missing/bad-input/negative
+// guard is this caller's own honesty policy (never show a fabricated or
+// backwards date-diff on a video), not shared date math, so it stays as a
+// thin wrapper around the survivor.
 /** Whole days between two dates; null when either is unusable. */
 export function daysBetween(fromIso: string | null | undefined, toIso: string): number | null {
   if (!fromIso) return null
   const a = Date.parse(fromIso), b = Date.parse(toIso)
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null
-  const d = Math.floor((b - a) / 86_400_000)
+  const d = dateDaysBetween(a, b, { round: "floor" })
   return d >= 0 ? d : null
 }
 

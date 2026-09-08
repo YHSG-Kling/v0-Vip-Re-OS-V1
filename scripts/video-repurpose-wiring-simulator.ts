@@ -268,9 +268,18 @@ console.log("\n[Layer 1 · tenant gate on ai_video_projects — structural]")
   // The session-derived helpers on the repurposing file.
   // Tightened: a bare /getUser/ still matched a mutated `getUserZZ`, so the
   // check could not be made to fail. Anchor on the exact member call.
-  const rc = body(repurpose, "requireCaller")
+  //
+  // §1.1/§2 (2026-09-08, lane CC): the file-local `requireCaller` body was
+  // folded onto the wave-26 survivor lib/auth/require-caller.ts (per that
+  // file's own "NOT folded in this wave" list) — this file now only IMPORTS
+  // the name. `body()` on the local source is correctly empty; assert the
+  // RULE (the file wires to a requireCaller that does these two things),
+  // resolved at whichever location — local or imported — actually holds it,
+  // so this cannot pin a location a later merge moves again.
+  const importsFromAuthSurvivor = /import\s*\{[^}]*\brequireCaller\b[^}]*\}\s*from\s*["']@\/lib\/auth\/require-caller["']/.test(repurposeL)
+  const rc  = importsFromAuthSurvivor ? body(strip(load("lib/auth/require-caller.ts")), "requireCaller") + body(strip(load("lib/auth/require-caller.ts")), "resolveCallerIdentity") : body(repurpose, "requireCaller")
   check("video-repurposing requireCaller reads auth.getUser", /\bauth\.getUser\(\)/.test(rc))
-  const rcL = body(repurposeL, "requireCaller")
+  const rcL = importsFromAuthSurvivor ? body(stripCommentsOnly(load("lib/auth/require-caller.ts")), "requireCaller") + body(stripCommentsOnly(load("lib/auth/require-caller.ts")), "resolveCallerIdentity") : body(repurposeL, "requireCaller")
   check("video-repurposing requireCaller resolves users.brokerage_id", /from\("users"\)/.test(rcL))
 
   for (const fn of ["deleteSnippet", "getSnippetById", "getRepurposedContentLogs", "generateCaptionVariations", "getFilteredRepurposeHistory"]) {

@@ -1,7 +1,7 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -25,21 +25,9 @@ import { REPURPOSE_LOG_STATUSES, REPURPOSE_LOG_APPROVAL_STATUSES } from "./video
 //     generateCaptionVariations
 // This helper resolves identity from the session; functions ignore the
 // caller-supplied IDs and use session-derived values.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 // ============================================
 // TYPES — Layer 8.4 Snippet & Repurposing Generator

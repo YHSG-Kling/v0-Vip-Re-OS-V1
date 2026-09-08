@@ -8,25 +8,14 @@ import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // Auth gate — write actions in this file stamp brokerage_id / agent_user_id
 // onto lifecycle_events and listing-stage mutations. Without a session-derived
 // identity, callers could forge those fields.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 // ─── ROUTING: detect ShowingTime config ──────────────────────────────────────
 

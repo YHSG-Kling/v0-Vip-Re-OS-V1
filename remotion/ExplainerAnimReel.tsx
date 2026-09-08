@@ -138,6 +138,11 @@ const AvatarPIP: React.FC<{
 // ── diagram canvas geometry ──────────────────────────────────────────────────
 const CANVAS = { x: 90, y: 470, w: 900, h: 470 }   // diagram drawing region
 
+// NOT lib/format/money.ts's `compactCentsMoney` (§1/§6, 2026-09-08): that one
+// takes CENTS and has an M tier; this takes DOLLARS, K-only, no locale
+// commas — the same "compact dollars" shape already documented there as
+// lib/video/director-content.ts:419's `compactMoney`, not a duplicate of it
+// either. Genuinely different unit/contract, recorded rather than merged.
 const fmtMoney = (n: number): string =>
   n >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`
 

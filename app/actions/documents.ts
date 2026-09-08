@@ -16,6 +16,8 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { handleError } from "@/lib/errors"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 export async function getDocuments(params?: { contactId?: string; transactionId?: string; type?: string }) {
   try {
@@ -406,6 +408,22 @@ export async function uploadDocument(
       console.error(`[documents] document_action (uploaded) NOT logged for ${document.id}:`, activityError.message)
     }
   }
+
+  // DOCUMENT_RECEIVED — a live notification_rules trigger_event with no emitter:
+  // this is the universal document lane every portal + contact upload rides, and
+  // nothing on it ever told the reactor a document came in. Tenant/contact/
+  // transaction from the row just inserted; void/catch so a fan-out hiccup never
+  // fails the upload the caller is waiting on.
+  void emitKernelEvent({
+    event:         KernelEvent.DOCUMENT_RECEIVED,
+    brokerageId:   document.brokerage_id ?? ctx.brokerageId,
+    entityType:    "document",
+    entityId:      document.id,
+    contactId:     contactId || undefined,
+    transactionId: transactionId || undefined,
+    actorUserId:   userId ?? undefined,
+    metadata:      { document_name: file.name, document_type: file.type },
+  }).catch((err) => console.error(`[uploadDocument] DOCUMENT_RECEIVED emit failed for ${document.id}:`, err))
 
   // Queue for AI processing (async)
   processDocumentWithAI(document.id, publicUrl, file.type).catch(console.error)

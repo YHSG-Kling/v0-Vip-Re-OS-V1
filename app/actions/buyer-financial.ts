@@ -27,6 +27,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { KernelEvent } from "@/lib/kernel/events"
 // LENDERS ARE VENDORS (owner ruling). The bench is a vendors.category question,
 // never a users.user_type one — one vocabulary, from one module.
 import { LENDER_BENCH_CATEGORIES, lenderVendorUserIds } from "@/lib/kernel/lender-linkage"
@@ -320,6 +322,24 @@ export async function markFinanciallyVerified(params: {
   if (!transitionResult.success) {
     return { success: false, error: transitionResult.error }
   }
+
+  // BUYER_VERIFIED — a live notification_rules/campaign_sequences trigger_event
+  // with no emitter anywhere in the tree: the buyer_stage machine only ever
+  // fires BUYER_FINANCIALLY_VERIFIED for this same real-world fact (contacts.status
+  // carries no 'verified' value — the CHECK admits none of the legacy seller/buyer
+  // journey state names, so that path was unreachable, not merely unused). This
+  // IS the moment "a buyer got verified" happens; fired alongside the buyer_stage
+  // transition, not as a second source of truth. void/catch — never fails the
+  // verification write above.
+  void emitKernelEvent({
+    event:       KernelEvent.BUYER_VERIFIED,
+    brokerageId: params.brokerageId,
+    entityType:  "contact",
+    entityId:    params.contactId,
+    contactId:   params.contactId,
+    actorUserId: params.agentUserId,
+    metadata:    { source: "buyer_dashboard" },
+  }).catch((err) => console.error("[markFinanciallyVerified] BUYER_VERIFIED emit failed:", err))
 
   return { success: true }
 }

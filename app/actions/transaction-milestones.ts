@@ -26,6 +26,7 @@ import {
   setMilestoneDate,
 } from "@/lib/transactions/milestone-service"
 import { requireOverrideActor } from "@/lib/kernel/portal-auth"
+import { usd } from "@/lib/format/money"
 
 interface ScopedParams {
   transactionId: string
@@ -259,7 +260,7 @@ async function runAppraisalGapDetection(args: {
   // (via {gap_framing}) and the huddle's risk level.
   const gapFraming =
     gapPct >= 5 ? "a significant gap" : gapPct >= 2 ? "a meaningful gap" : "a modest gap"
-  const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
   // (a) The REAL kernel event: staff notifications (default rules resolve agent + TC for
   // appraisal events) + the APPRAISAL_GAP_DETECTED portal template in event-fanout — the

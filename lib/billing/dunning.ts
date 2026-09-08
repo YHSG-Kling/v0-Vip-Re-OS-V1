@@ -10,6 +10,8 @@
 // exist (creds-gated, never faked). Nothing here suspends an account — the
 // paywall (billing-access) already gates access; dunning is the communication.
 
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+
 export interface DunningStep {
   step: number
   /** Days past due before this step fires. */
@@ -45,10 +47,13 @@ export const DUNNING_LADDER: DunningStep[] = [
   },
 ]
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. The never-negative clamp is dunning's own
+// policy (a past-due episode can't have negative days-late), not shared date
+// math, so it stays as a thin wrapper around the survivor.
 /** PURE: whole days between two ISO timestamps (floored, never negative). */
 export function daysBetween(fromIso: string, nowIso: string): number {
-  const ms = new Date(nowIso).getTime() - new Date(fromIso).getTime()
-  return Math.max(0, Math.floor(ms / 86_400_000))
+  return Math.max(0, dateDaysBetween(fromIso, nowIso, { round: "floor" }))
 }
 
 /**

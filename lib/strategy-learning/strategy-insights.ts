@@ -12,6 +12,7 @@
 // the tables the audit made trustworthy — no model narration in the numbers.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { usd } from "@/lib/format/money"
 
 export interface StrategyTypeStat {
   type: string
@@ -71,7 +72,7 @@ interface OutcomeRow {
 const AUTO_CLOSE_NOTE_PREFIX = "Auto-closed on offer"
 
 function pct(n: number): string { return `${Math.round(n * 100)}%` }
-function usd(n: number): string { return `$${Math.round(n).toLocaleString()}` }
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /** Pure: fold raw outcome+strategy-type rows into the insights contract. */
 export function computeStrategyInsights(

@@ -192,8 +192,13 @@ export async function declineVendorBookingAction(params: {
   if (booking.transaction_id) {
     try {
       const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      // VENDOR_BOOKING_DECLINED — was VENDOR_BOOKING_CREATED reused with
+      // accept_or_decline: "declined" in the metadata (naming bug, lane CB
+      // 2026-09-08): any reader keyed on the event value alone (title/body
+      // lookups, notification_rules, campaign_sequences) read a decline as a
+      // creation. The metadata shape stays for callers already reading it.
       await emitTransactionEvent({
-        event:       KernelEvent.VENDOR_BOOKING_CREATED,
+        event:       KernelEvent.VENDOR_BOOKING_DECLINED,
         brokerageId: actor.brokerageId,
         entityId:    booking.transaction_id,
         actorUserId: actor.userId,

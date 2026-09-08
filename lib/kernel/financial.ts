@@ -49,6 +49,7 @@ import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status
 import { readCapProgress } from "@/lib/finance/cap-progress"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { usd } from "@/lib/format/money"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1534,7 +1535,8 @@ export async function createCommissionRecord(
   }
 }
 // ── Report serialization (pure, testable) ──────────────────────────────────────
-const fmtMoney = (n: number) => `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtMoney` lived here; survivor lib/format/money.ts:usd
+const fmtMoney = (n: number) => usd(Number(n) || 0)
 
 /** PURE: flatten a brokerage financial summary into labelled rows for CSV/PDF. */
 export function financialReportRows(

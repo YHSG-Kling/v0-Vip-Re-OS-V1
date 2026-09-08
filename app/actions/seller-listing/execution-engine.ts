@@ -34,6 +34,7 @@ import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { getStageDefinition, type ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import {
   ledgerMechanismForReason,
@@ -369,15 +370,31 @@ export async function markDripCompleted(params: {
     entity_type:   "contact",
   })
 
-  // Sub-event within SELLER_DECISION stage — no stage change → lifecycle_events
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  brokerageId,
-    entity_type:   "listing_stage_machine",
-    entity_id:     listingId,
-    event_type:    "seller.decision.ready",
-    actor_user_id: userId,
-    metadata:      {},
-  })
+  // DECISION_PENDING — sub-event within SELLER_DECISION stage (no stage change).
+  // This raw insert used the dotted "seller.decision.ready" string, which is not
+  // a KernelEvent value — CLAUDE.md §6 (one vocabulary per function) — so it
+  // reached the audit table and NOTHING else: notification_rules' live
+  // decision_pending row never fired, though LISTING_DRIP_COMPLETED above already
+  // covers the drip-finished fact for a different audience. Real moment: right
+  // here, the seller now has a decision to make. Tenant/entity from the scope
+  // this function already resolved; void/catch so the emit never fails the
+  // stage transition above.
+  const { data: listingForDecision } = await supabase
+    .from("listings")
+    .select("seller_contact_id")
+    .eq("id", listingId)
+    .maybeSingle()
+  void emitKernelEvent({
+    event:       KernelEvent.DECISION_PENDING,
+    brokerageId,
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    listingId,
+    contactId:   (listingForDecision as { seller_contact_id?: string | null } | null)?.seller_contact_id ?? undefined,
+    sellerContactId: (listingForDecision as { seller_contact_id?: string | null } | null)?.seller_contact_id ?? undefined,
+    actorUserId: userId,
+    metadata:    { stage: "SELLER_DECISION" },
+  }).catch((err) => console.error("[markDripCompleted] DECISION_PENDING emit failed:", err))
 
   return { success: true }
 }

@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Suspense } from "react"
 import { generateBrokeragePnl } from "@/lib/intelligence/brokerage-pnl"
+import { usd as usdFormat, usd2Grouped } from "@/lib/format/money"
 import { Handshake } from "lucide-react"
 import {
   DollarSign,
@@ -841,9 +842,8 @@ export default async function BrokeragePLPage() {
  */
 async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: string }) {
   const pnl = await generateBrokeragePnl({ brokerageId })
-  const usd = (n: number | null | undefined) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
-      .format(Number(n ?? 0))
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
+  const usd = (n: number | null | undefined) => usdFormat(Number(n ?? 0))
 
   return (
     <div className="space-y-6">
@@ -991,8 +991,8 @@ async function CompanyBooksObligations({ brokerageId }: { brokerageId: string })
     return [a.id, `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim()]
   }))
 
-  const usd = (n: number | null | undefined) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(n ?? 0))
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd2Grouped
+  const usd = (n: number | null | undefined) => usd2Grouped(Number(n ?? 0))
   const pendingTotal = obligations.filter((o) => o.status === "pending").reduce((s, o) => s + Number(o.calculated_amount ?? 0), 0)
   // §6 vocabulary rendered, not restated: 'residual' is the revenue-share word,
   // 'team_member' the brokerage-funded team split; 'post_cap_company_books' is

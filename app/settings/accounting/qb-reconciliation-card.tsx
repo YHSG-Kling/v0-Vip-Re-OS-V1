@@ -13,8 +13,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Scale } from "lucide-react"
 import type { ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
+import { usd } from "@/lib/format/money"
 
-const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 const STATUS_BADGE: Record<ScopeQbReconciliation["status"], { label: string; cls: string }> = {
   reconciled: { label: "Marker-based", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" },

@@ -25,6 +25,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // ONE SPELLING FOR THE PUBLIC EVENT LABEL (§6) — the caption's hook and the
 // reel's cover frame are the same words seen by the same audience.
 import { promoEventLabel } from "@/lib/video/promo-composition"
+import { usdOrEmpty } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -146,10 +147,8 @@ export async function GET(req: NextRequest) {
       continue // otherwise still rendering — wait next tick
     }
 
-    const usd = (n: number | null | undefined) =>
-      n != null
-        ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
-        : ""
+    // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
+    const usd = usdOrEmpty
     const address  = r.listing?.address ?? ""
     const cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
     const price    = usd(r.listing?.list_price)

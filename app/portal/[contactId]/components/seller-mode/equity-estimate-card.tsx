@@ -16,10 +16,11 @@ import { useToast } from "@/hooks/use-toast"
 import { estimateSellerNetProceeds, clientEquityFraming } from "@/lib/seller-equity/equity-estimate"
 import { buildPricingScenarios, bestNetScenario } from "@/lib/seller-equity/scenarios"
 import { setSellerMortgageBalance } from "@/app/actions/seller-equity"
+import { usd } from "@/lib/format/money"
 
 interface MoveReadinessView { score: number | null; band: string; headline: string; line: string; drivers: string[] }
 
-const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 export function EquityEstimateCard({
   contactId, estimatedValue, initialMortgageBalance, hoaDuesMonthly, valuationNote,

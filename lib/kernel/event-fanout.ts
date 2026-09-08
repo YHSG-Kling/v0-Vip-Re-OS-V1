@@ -556,9 +556,9 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
   // ── Offer intake + due-diligence vendor quotes (kernel-event-census-z1, lane BB,
   // 2026-09-08) — all five were EMITTED with zero portal consumer: entityType
   // "offer"/"transaction" already resolves buyer + seller via resolveEventContacts,
-  // so a template is the whole fix (no plumbing gap, unlike CONTRACT_SENT_FOR_SIGNATURE's
-  // "transaction_document" entityType, which resolveEventContacts has no branch for and
-  // stays audit-only until that's added). ──────────────────────────────────────
+  // so a template is the whole fix. (CONTRACT_SENT_FOR_SIGNATURE's "transaction_document"
+  // entityType needed the resolver branch too — added by lane CB, 2026-09-08; see its
+  // template further down with LISTING_AGREEMENT_SIGNED.) ──────────────────────
   [KernelEvent.OFFER_UPLOADED]: {
     title: "New offer uploaded",
     plainLanguageSummary:
@@ -637,6 +637,65 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
       "Here's the latest on your listing — recent showings, feedback, and market activity are summarized in your portal.",
     responsibleParty: "agent",
     chatBody: "I posted your latest listing activity update — showings and feedback are summarized for you.",
+  },
+
+  // ── Kernel-event-census-z1 burn-down (lane CB, 2026-09-08) — newly-wired
+  // emitters below whose events are client-facing. ──────────────────────────
+  [KernelEvent.BUYER_VERIFIED]: {
+    title: "You're verified!",
+    plainLanguageSummary:
+      "Your financial verification is complete. You're clear to tour homes and submit offers.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    nextStep: "Start touring homes that fit your budget.",
+    chatBody: "You're verified — ready to tour and make offers whenever you find the right home!",
+  },
+  [KernelEvent.DECISION_PENDING]: {
+    title: "Your decision is ready for review",
+    plainLanguageSummary:
+      "Your custom listing presentation is complete. When you're ready, let your agent know how you'd like to proceed.",
+    responsibleParty: "client",
+    audience: "seller",
+    nextStep: "Review the presentation and let your agent know your decision.",
+    chatBody: "Your listing presentation is ready — take a look and let me know what you'd like to do next.",
+  },
+  [KernelEvent.PRICE_DETERMINED]: {
+    title: "Your list price is set",
+    plainLanguageSummary:
+      "A list price has been set for your home. Your agent will walk you through the strategy behind it.",
+    responsibleParty: "agent",
+    audience: "seller",
+    chatBody: "Your list price is set — happy to walk you through the strategy behind the number.",
+  },
+  [KernelEvent.SHOWING_COMPLETED]: {
+    title: "A showing on your listing wrapped up",
+    plainLanguageSummary:
+      "A buyer's agent just finished showing your home. We'll share feedback as soon as it comes in.",
+    responsibleParty: "agent",
+    audience: "seller",
+    chatBody: "A showing on your home just wrapped up — I'll pass along feedback as soon as it's in.",
+  },
+
+  // ── Task B (lane CB, 2026-09-08): both events now resolve a contact via the
+  // resolve-event-contacts.ts branches added above — the plumbing gap is closed,
+  // so a template is the whole rest of the fix (same pattern the OFFER_UPLOADED
+  // block above documents for the earlier hunt). ────────────────────────────
+  [KernelEvent.CONTRACT_SENT_FOR_SIGNATURE]: {
+    title: "A document is ready for your signature",
+    plainLanguageSummary:
+      "A document was sent to you for e-signature. Open it, review the terms, and sign when ready.",
+    responsibleParty: "client",
+    nextStep: "Review and sign the document.",
+    chatBody: "Sent a document your way for signature — let me know if anything needs explaining.",
+  },
+  [KernelEvent.LISTING_AGREEMENT_SIGNED]: {
+    title: "Listing agreement signed!",
+    plainLanguageSummary:
+      "Your listing agreement is fully executed. Next up: photography, marketing prep, and getting your home ready to go live.",
+    responsibleParty: "agent",
+    audience: "seller",
+    nextStep: "Photography + marketing prep begins.",
+    chatBody: "Your listing agreement is signed — we're officially underway! I'll keep you posted as we prep for launch.",
   },
 }
 

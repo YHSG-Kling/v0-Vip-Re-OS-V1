@@ -254,6 +254,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
   { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
   { path: "/api/cron/task-overdue"                        , schedule: "20 * * * *" }, // TASK_OVERDUE had live notification_rules and no emitter (wave 26)
+  { path: "/api/cron/task-due"                            , schedule: "25 * * * *" }, // TASK_DUE had live notification_rules/campaign_sequences and a dead calendar_events emitter (lane CB, 2026-09-08)
+  { path: "/api/cron/message-needs-response"               , schedule: "35 * * * *" }, // MESSAGE_NEEDS_RESPONSE had live notification_rules and no emitter (lane CB, 2026-09-08)
   // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
   // Each was reachable only from its own simulator; the capability had never run
   // against a live tenant. Cadence is chosen from what each one WATCHES.

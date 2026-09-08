@@ -18,6 +18,7 @@ import { summarizeComplianceLedger, PREFLIGHT_GATE } from "@/lib/kernel/complian
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 // PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
+import { compactDollarsMoney } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -51,13 +52,8 @@ export interface WeekInBusiness {
   docConflictsCaughtThisWeek?: number
 }
 
-/** Speak a dollar figure the way a partner would ("$1.2M" / "$180K" / "$3,200"). */
-function fmtUsd(n: number): string {
-  const v = Math.round(Math.max(0, n))
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000)}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtUsd` lived here; survivor lib/format/money.ts:compactDollarsMoney
+const fmtUsd = compactDollarsMoney
 
 /** Pure: the partners'-meeting script — spoken, warm, only lines the team actually
  *  earned (zero weeks don't get fabricated wins), always ends on the pending queue. */

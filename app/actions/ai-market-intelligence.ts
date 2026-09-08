@@ -6,6 +6,7 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // ============================================================================
 // AI MARKET INTELLIGENCE SYSTEM
@@ -14,21 +15,9 @@ import { z } from "zod"
 
 // Auth gate — same pattern as ai-lead-nurturing / ai-listing-presentation.
 // Resolves the caller's brokerage so listings reads stay tenant-scoped.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 /**
  * Generate comprehensive market report with AI analysis

@@ -471,6 +471,10 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         {equityEstimatedValue && equityEstimatedValue > 0 && (() => {
           const scenarios = composeRenovationScenarios(equityEstimatedValue).slice(0, 3)
           if (scenarios.length === 0) return null
+          // NOT lib/format/money.ts's `usd` (§1/§6, 2026-09-08): deliberately
+          // skips Math.round — renovation-scenario deltas can be fractional
+          // and this is the one caller that wants them shown, not rounded to
+          // the nearest whole dollar. Genuinely different contract, recorded.
           const usd = (n: number) => `$${n.toLocaleString("en-US")}`
           return (
             <div className="rounded-lg border bg-card p-6 space-y-3">

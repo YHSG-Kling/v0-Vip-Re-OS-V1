@@ -64,6 +64,7 @@ import { resolveLifecycleAutoSpawn, isWithinCooldown, type LifecycleEventType } 
 // WORDS_PER_MINUTE / NARRATION_HEADROOM). See the TOMBSTONE on EventTemplate.
 import { promoNarrationBudget, promoEventLabel } from "@/lib/video/promo-composition"
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+import { usdOrEmpty } from "@/lib/format/money"
 import {
   fitNarrationToBudget,
   narrationLengthDirective,
@@ -363,7 +364,8 @@ interface ListingFacts {
 }
 
 function buildFacts(l: ListingRow, _event: ListingPromoEventType): ListingFacts {
-  const usd = (n: number | null) => n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : ""
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrEmpty
+  const usd = usdOrEmpty
   return {
     address:       l.address ?? "",
     city_state:    [l.city, l.state].filter(Boolean).join(", "),

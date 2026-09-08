@@ -35,13 +35,12 @@ import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Home, ArrowRight, TrendingUp, TrendingDown, Minus } from "lucide-react"
 import { ListingAppointmentCard } from "@/app/components/home-value/ListingAppointmentCard"
+import { usd } from "@/lib/format/money"
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 interface Props {
   contactId: string
 }
-
-const usd = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 
 /** What actually produced the number, in the seller's words. */
 function methodLabel(methodology: string | null): string {

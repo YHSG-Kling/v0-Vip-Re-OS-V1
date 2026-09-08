@@ -97,6 +97,7 @@ import {
 } from "./perplexity-comp-finder"
 import type { CompProviderId, ScoredComp } from "./comp-types"
 import type { SubjectFeatures } from "./state-adjustment-rates"
+import { clamp } from "@/lib/format/math"
 
 // ─── The required mix, named once ───────────────────────────────────────────
 
@@ -1010,6 +1011,5 @@ function featureSimilarity(subject: SubjectFeatures, comp: ScoredComp): number {
   return parts.reduce((s, n) => s + n, 0) / parts.length
 }
 
-function clamp01(n: number): number {
-  return Math.max(0, Math.min(1, n))
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp01` lived here; survivor lib/format/math.ts:clamp
+const clamp01 = (n: number) => clamp(n, 0, 1)

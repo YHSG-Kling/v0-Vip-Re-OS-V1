@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // ============================================================================
 // AI LEAD NURTURING SYSTEM
@@ -16,21 +17,9 @@ import { z } from "zod"
 // Auth gate — all AI functions in this file run paid AI inference and write
 // to contacts/leads/campaigns. Without an explicit auth check, callers could
 // burn money + write to rows whose access is only governed by RLS.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 /**
  * ─── TOMBSTONE ─────────────────────────────────────────────────────────────

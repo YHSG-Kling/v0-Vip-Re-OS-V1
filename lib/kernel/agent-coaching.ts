@@ -42,6 +42,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateAgentScorecards, type AgentScorecard } from "@/lib/intelligence/agent-scorecard"
 import { isoWeekTag } from "@/lib/kernel/commission-forecaster"
 import { DEFAULT_STALE_DAYS } from "@/lib/ai-isa/stale-contact-detector"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -114,7 +115,7 @@ export interface CoachingBrief {
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * PURE + deterministic. Compose a coaching brief from REAL agent stats.

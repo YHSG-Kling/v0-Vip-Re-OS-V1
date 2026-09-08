@@ -34,6 +34,7 @@
 // raw send). Best-effort throughout — the copilot never breaks the detector.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -129,9 +130,7 @@ interface AppraisalGapCopilot {
   options: AppraisalGapOption[]
 }
 
-function usd(n: number): string {
-  return `$${Math.round(n).toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 function num(label: string, value: number): OptionNumber {
   return { label, value: Math.round(value), fmt: usd(value) }

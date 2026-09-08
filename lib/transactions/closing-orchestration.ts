@@ -39,6 +39,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 import { resolveMilestoneIdentity } from "./milestone-identity"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 import {
   readHazardInsurance,
   hazardSeverity,
@@ -127,8 +128,9 @@ const isMilestone = (m: { milestone_type: string | null; milestone_name: string 
   resolveMilestoneIdentity(m) === id
 
 const today = () => new Date().toISOString().slice(0, 10)
-const daysBetween = (a: string, b: string) =>
-  Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86_400_000)
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween
+const daysBetween = (a: string, b: string) => dateDaysBetween(a, b, { round: "floor" })
 
 // ────────────────────────────────────────────────────────────────────────────
 // Detectors — pure functions over (ctx, evidence) → DetectedAction | null

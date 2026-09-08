@@ -488,6 +488,12 @@ export enum KernelEvent {
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
   VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
   VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
+  // The decline path (app/actions/vendor-portal.ts declineVendorBookingAction)
+  // used to reuse VENDOR_BOOKING_CREATED with accept_or_decline: "declined" in
+  // its metadata — a naming bug: any reader keyed on the event value alone
+  // (title/body lookups, notification_rules, campaign_sequences) read a decline
+  // as a creation. lane CB, 2026-09-08.
+  VENDOR_BOOKING_DECLINED            = 'vendor_booking_declined',
   VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
   VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
   // Kernel-owned vendor commands (lib/kernel/vendors.ts)

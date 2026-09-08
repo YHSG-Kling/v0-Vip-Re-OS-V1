@@ -20,6 +20,7 @@ import {
   type SellerDictatedSegment,
 } from "@/lib/video/memory-video-gate"
 import { MEMORY_VIDEO_OFFER_TAG } from "@/lib/video/memory-video"
+import { usdOrDash } from "@/lib/format/money"
 import {
   threeSidedContactTransactionFilter,
   deriveTransactionRollup,
@@ -31,10 +32,8 @@ interface Props {
   brokerageId:  string
 }
 
-function fmtMoney(n: number | null | undefined): string {
-  if (typeof n !== "number" || !isFinite(n)) return "—"
-  return `$${Math.round(n).toLocaleString()}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtMoney` lived here; survivor lib/format/money.ts:usdOrDash
+const fmtMoney = usdOrDash
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "—"
   return new Date(iso).toLocaleDateString()

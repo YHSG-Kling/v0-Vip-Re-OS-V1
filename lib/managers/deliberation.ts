@@ -59,6 +59,7 @@ import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status
 import {
   MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey, type CollaborationDomain,
 } from "@/lib/kernel/manager-registry"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -279,7 +280,7 @@ interface ReferralContext {
 
 type FactLoader = (svc: Svc, ctx: ReferralContext) => Promise<{ facts: string[]; citations: string[] }>
 
-const usd = (n: number): string => `$${Math.round(n).toLocaleString("en-US")}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /** Seller side: the listing(s) in dispute — price, market time, showings, walkaway. */
 const loadListingConciergeFacts: FactLoader = async (svc, ctx) => {

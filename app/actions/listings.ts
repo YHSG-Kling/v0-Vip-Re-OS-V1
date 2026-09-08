@@ -379,6 +379,21 @@ export async function updateListing(listingId: string, updates: Record<string, u
           metadata:    { old_price: currentPrice, new_price: newPrice, change_reason: priceChangeReason },
         }).catch((e: unknown) => console.error("[updateListing] LISTING_PRICE_REDUCED emit:", e))
       }
+      // PRICE_DETERMINED — the first time this listing gets a list price (currentPrice
+      // was null). A live notification_rules/campaign_sequences trigger_event with no
+      // emitter anywhere: only the price REDUCTION half of "a price event happened"
+      // was wired. Same ledger row, same moment, the other branch of priceChangeReason.
+      if (priceChangeReason === "price_set") {
+        await emitKernelEvent({
+          entityType:  "listing",
+          entityId:    listingId,
+          event:       KernelEvent.PRICE_DETERMINED,
+          brokerageId,
+          listingId,
+          actorUserId: actorUserId ?? undefined,
+          metadata:    { list_price: newPrice, change_reason: priceChangeReason },
+        }).catch((e: unknown) => console.error("[updateListing] PRICE_DETERMINED emit:", e))
+      }
     }
 
     revalidatePath("/listings")

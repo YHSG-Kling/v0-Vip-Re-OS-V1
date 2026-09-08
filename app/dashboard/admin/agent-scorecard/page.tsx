@@ -6,6 +6,7 @@ import { redirect } from "next/navigation"
 import { generateAgentScorecards } from "@/lib/intelligence/agent-scorecard"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { usd } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic"
  * deal health, education completion, and recruiting-source ROI into the view a broker
  * actually manages on. Feeds off the Owner's Report (same trustworthy columns).
  */
-function usd(n: number): string { return `$${Math.round(n).toLocaleString()}` }
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 function healthTone(s: number | null): string {
   if (s == null) return "text-muted-foreground"
   if (s >= 85) return "text-green-700"

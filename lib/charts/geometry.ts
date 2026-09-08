@@ -13,6 +13,8 @@
  *   · AffordabilityDonut — monthly payment split (P&I / tax / insurance / HOA)
  */
 
+import { clamp } from "@/lib/format/math"
+
 export interface Point { x: number; y: number }
 
 /** Linear remap of v from [inMin,inMax] to [outMin,outMax]. Guards a zero
@@ -159,5 +161,5 @@ export function annulusSegment(cx: number, cy: number, rOuter: number, rInner: n
   ].join(" ")
 }
 
-function clamp(v: number, lo: number, hi: number): number { return Math.min(hi, Math.max(lo, v)) }
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp` lived here; survivor lib/format/math.ts:clamp
 function round(n: number): number { return Math.round(n * 100) / 100 }

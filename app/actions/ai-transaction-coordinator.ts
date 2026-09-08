@@ -116,16 +116,8 @@ async function scopeTransaction(transactionId: string): Promise<CoordinatorScope
   return { ok: true, userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId }
 }
 
-function normalizeZip(zip?: string) {
-  if (!zip) return undefined
-
-  const cleaned = zip.replace(/\s+/g, '').replace(/[^0-9]/g, '')
-
-  if (cleaned.length === 5) return cleaned
-  if (cleaned.length === 9) return `${cleaned.slice(0, 5)}-${cleaned.slice(5)}`
-
-  return zip
-}
+// TOMBSTONE (§1.1, 2026-09-08): normalizeZip lived here (unused in this file,
+// and missing the .trim() fallback); survivor lib/application/transactions.ts:88
 
 // ============================================
 // AI TRANSACTION COORDINATOR

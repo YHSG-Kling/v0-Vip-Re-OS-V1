@@ -16,6 +16,8 @@
 // catch happens BEFORE a human releases it — the flag rides the same
 // compliance_flags ledger the Compliance Officer already owns.
 
+import { usd } from "@/lib/format/money"
+
 export const PRICE_TOLERANCE_PCT = 2 // within 2% = rounding/estimate, not a mismatch
 
 /** PURE: pull plausible USD price amounts ($250k, $1.2M, $485,000) from text. */
@@ -64,7 +66,7 @@ export function checkPriceConsistency(
 
 /** PURE: the compliance-ledger line for a finding (charter tone, actionable). */
 export function composeConsistencyFlag(f: ConsistencyFinding): string {
-  const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
   return `Price mismatch in a queued client message: it says ${usd(f.offendingPrice)} but the listing's live price is ${usd(f.listingPrice)} (${f.deltaPct}% off). Fix the message or confirm the listing price before releasing — a stale figure confuses the client and creates advertising exposure.`
 }
 

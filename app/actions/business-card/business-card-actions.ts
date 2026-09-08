@@ -6,6 +6,7 @@ import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { VENDOR_CATEGORY_OTHER } from "@/lib/kernel/vendor-categories"
 
 // Was trusting caller-supplied agentId + brokerageId. Caller could
@@ -117,13 +118,18 @@ export async function uploadBusinessCard(params: {
     .select("id")
     .single()
 
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "business_card",
-    entity_id: scan!.id,
-    event_type: KernelEvent.BUSINESS_CARD_UPLOADED,
-    metadata: { confidence: confidence_score, viable },
-  })
+  // BUSINESS_CARD_UPLOADED — was a direct lifecycle_events insert (audit-only,
+  // no reactor fan-out: notification_rules' live business_card_uploaded row
+  // never fired). Real moment: right after the scan row lands, tenant/entity
+  // read off it. void/catch so a fan-out hiccup never fails the upload.
+  void emitKernelEvent({
+    event:       KernelEvent.BUSINESS_CARD_UPLOADED,
+    brokerageId,
+    entityType:  "business_card",
+    entityId:    scan!.id,
+    agentId,
+    metadata:    { confidence: confidence_score, viable },
+  }).catch((err) => console.error("[businessCardUpload] BUSINESS_CARD_UPLOADED emit failed:", err))
 
   if (!viable) {
     // Notify agent of failed extraction

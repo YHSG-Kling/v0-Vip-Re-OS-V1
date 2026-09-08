@@ -185,8 +185,28 @@ export async function evaluateAndAssignLead(params: {
   // An already-assigned lead reports as assigned to this caller: the historical
   // contract is "does the lead now have an owner", and it does. The distinction
   // is preserved on autoAssignLead's own result for callers that need it.
+  const assigned = out.assigned || !!out.alreadyAssigned
+
+  // LEAD_ASSIGNMENT_FAILED — a live notification_rules trigger_event with no
+  // emitter anywhere in the tree. This is the SOLE agent-assignment path
+  // (per the header above), so wiring it here covers every caller —
+  // ai-isa qualification, lead-acquisition-handlers, voice commands, signal
+  // ingest — rather than repeating the emit at each call site. void/catch so
+  // a fan-out hiccup never blocks the caller's own handoff chain.
+  if (!assigned) {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    void emitKernelEvent({
+      event:       KernelEvent.LEAD_ASSIGNMENT_FAILED,
+      brokerageId: params.brokerageId,
+      entityType:  "lead",
+      entityId:    params.leadId,
+      source:      "system",
+      metadata:    { reason: out.reason, trigger: "ai_isa_qualified" },
+    }).catch((err) => console.error("[evaluateAndAssignLead] LEAD_ASSIGNMENT_FAILED emit failed:", err))
+  }
+
   return {
-    assigned: out.assigned || !!out.alreadyAssigned,
+    assigned,
     agentId: out.agentId,
     reason: out.reason,
   }

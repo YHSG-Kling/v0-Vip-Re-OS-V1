@@ -2,6 +2,7 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
+import { usd2Grouped } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 
@@ -42,9 +43,8 @@ function fmtAgo(iso: string | null) {
   return `${Math.round(ms / 86_400_000)}d ago`
 }
 
-function fmtMoney(n: number) {
-  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtMoney` lived here; survivor lib/format/money.ts:usd2Grouped
+const fmtMoney = usd2Grouped
 
 // vendor_invoices status CHECK: draft|submitted|viewed|paid|overdue|cancelled|disputed.
 // Outstanding = issued and awaiting payment.

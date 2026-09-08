@@ -210,7 +210,13 @@ export function normalizeState(value: string | null | undefined): string | null 
 }
 
 /** PURE — a 5-digit ZIP, or null. ZIP+4 is truncated to its 5-digit prefix,
- *  which is the grain every other table in this repo stores. */
+ *  which is the grain every other table in this repo stores.
+ *  NOT a duplicate of lib/application/transactions.ts:88's normalizeZip (§1/§6,
+ *  2026-09-08): different contract on purpose — this one returns `null` (not
+ *  `undefined`) on no match, rejects malformed input instead of passing it
+ *  through, and truncates a ZIP+4 to 5 digits instead of formatting it with a
+ *  dash. Exported and consumed by app/actions/vendor-service-areas.ts and
+ *  scripts/vendor-service-area-simulator.ts; do not fold it into the other. */
 export function normalizeZip(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null
   const m = value.trim().match(/^(\d{5})(?:-\d{4})?$/)

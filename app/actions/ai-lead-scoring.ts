@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 /**
  * The caller, and the tenant they may score inside.
@@ -15,22 +16,11 @@ import { z } from "zod"
  * it and write scores back, with only RLS between them and another brokerage's
  * book. The duplicate had the gate; the survivor did not. Merging the two the
  * other way round would have lost it.
+ *
+ * TOMBSTONE (§1.1, 2026-09-08): the gate body itself has since moved again —
+ * survivor lib/auth/require-caller.ts:requireCaller (this lane's fold-in of
+ * the 2026-09-03 wave-26 survivor)
  */
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
 
 /**
  * The scoring contract, as a SCHEMA rather than as a hope.

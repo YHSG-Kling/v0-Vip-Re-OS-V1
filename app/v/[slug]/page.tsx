@@ -32,6 +32,7 @@ export const revalidate = 300
 import { siteUrl } from "@/lib/platform/site-url"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import { VideoPlayer } from "./video-player"
+import { usdOrNull } from "@/lib/format/money"
 
 interface RenderRow {
   id:             string
@@ -274,9 +275,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   }
 }
 
-function usd(n: number | null): string | null {
-  return n != null ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n) : null
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrNull
+const usd = usdOrNull
 
 export default async function VideoLandingPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params

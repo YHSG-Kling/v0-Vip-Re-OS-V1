@@ -6,6 +6,7 @@ import { redirect } from "next/navigation"
 import { generateStrategyInsights } from "@/lib/strategy-learning/strategy-insights"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { usdOrDash } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 
@@ -17,7 +18,8 @@ export const dynamic = "force-dynamic"
  * Agent), so this panel and the recommender share one source of truth.
  */
 function pct(n: number | null): string { return n == null ? "—" : `${Math.round(n * 100)}%` }
-function usd(n: number | null): string { return n == null ? "—" : `$${Math.round(n).toLocaleString()}` }
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usdOrDash
+const usd = usdOrDash
 
 export default async function StrategyInsightsPage() {
   const supabase = await createClient()

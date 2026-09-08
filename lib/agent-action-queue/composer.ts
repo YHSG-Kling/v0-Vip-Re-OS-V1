@@ -34,6 +34,8 @@
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { latestByContact } from "@/lib/lifetime-customer-npv/current"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
+import { clamp as mathClamp } from "@/lib/format/math"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -101,14 +103,20 @@ function severityImpactMultiplier(s: ActionSeverity): number {
        : 0.1
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the day-diff arithmetic lived here; survivor
+// lib/format/dates.ts:daysBetween. The 9999 "unknown" sentinel and the
+// round-to-nearest-day rule are this queue's own ranking policy, not shared
+// date math, so they stay as a thin wrapper around the survivor.
 function daysBetween(from: string | null, to: Date = new Date()): number {
   if (!from) return 9999
-  const diff = (to.getTime() - new Date(from).getTime()) / 86_400_000
-  return Math.round(diff)
+  return dateDaysBetween(from, to, { round: "round" })
 }
 
+// TOMBSTONE (§1.1, 2026-09-08): the clamp arithmetic lived here; survivor
+// lib/format/math.ts:clamp. The 0–100 defaults are this queue's own score
+// range, not shared math, so they stay as a thin wrapper around the survivor.
 function clamp(n: number, lo = 0, hi = 100): number {
-  return Math.max(lo, Math.min(hi, n))
+  return mathClamp(n, lo, hi)
 }
 
 function dollarsToImpact(n: number): number {

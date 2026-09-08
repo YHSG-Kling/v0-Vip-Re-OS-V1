@@ -26,6 +26,7 @@ import {
   type WhisperSynthesizer,
 } from "@/lib/intelligence/appointment-whisper"
 import { mapUserTypeToTier } from "@/lib/kernel/0.1-feature-access"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -224,7 +225,7 @@ interface ForecastSummary {
   body: string
 }
 
-const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 /**
  * PURE. The agent-facing brief tying it together — every line earned from real numbers.

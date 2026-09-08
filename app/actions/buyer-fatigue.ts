@@ -4,6 +4,7 @@ import { createServiceClient }      from "@/lib/supabase/service"
 import { createClient }              from "@/lib/supabase/server"
 import { calculateFatigue }          from "@/lib/fatigue/fatigue-calculator"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // Every read in this file used to be unauthenticated and accepted
 // caller-supplied contactId / brokerageId. Any signed-in user could read
@@ -11,21 +12,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // passing the brokerage's UUID. Now: session is required and brokerage
 // is resolved from the session.
 
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 async function verifyContactAccess(contactId: string, brokerageId: string): Promise<boolean> {
   const svc = createServiceClient()

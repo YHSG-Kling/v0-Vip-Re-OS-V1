@@ -15,6 +15,7 @@ import {
 } from "@/lib/home-value/listing-appointment"
 import { composeHomeValueReportEmail } from "@/lib/home-value/report-email"
 import { bestEffort } from "@/lib/db/best-effort"
+import { usd } from "@/lib/format/money"
 
 // ============================================================================
 // WHY THIS FILE USES THE SERVICE CLIENT FOR THE PUBLIC LANE
@@ -750,8 +751,7 @@ async function deliverHomeValueReport(args: {
 
   const address = estimate.property_address ?? "your home"
   const compsCount = Array.isArray(estimate.comps_json) ? estimate.comps_json.length : 0
-  const usd = (n: number) =>
-    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
   // ── 1. THE PORTAL ────────────────────────────────────────────────────────
   // transparency_updates is the portal's "what's happening" feed — the same

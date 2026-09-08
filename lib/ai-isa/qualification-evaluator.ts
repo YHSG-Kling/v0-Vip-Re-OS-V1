@@ -147,6 +147,24 @@ export async function persistQualificationSignals(
     })
     .eq('id', leadId)
 
+  // ISA_QUALIFIED_LEAD — a live notification_rules/campaign_sequences
+  // trigger_event with no emitter: LEAD_READY_FOR_ASSIGNMENT below only fires
+  // on the no-agent-found branch, so the plain "the ISA qualified this lead"
+  // fact — the write just above — had no writer of its own. Fires regardless
+  // of whether assignment succeeds afterward; void/catch so a fan-out hiccup
+  // never blocks the handoff chain.
+  {
+    const { emitKernelEvent } = await import('@/lib/kernel/emit')
+    void emitKernelEvent({
+      event:       KernelEvent.ISA_QUALIFIED_LEAD,
+      brokerageId: lead.brokerage_id,
+      entityType:  'lead',
+      entityId:    leadId,
+      contactId:   (lead as { contact_id?: string | null }).contact_id ?? undefined,
+      metadata:    { score: qualificationScore, confirmed_intent: signals.confirmedIntent, urgency: signals.urgency },
+    }).catch((err) => console.error('[AI ISA] ISA_QUALIFIED_LEAD emit failed:', err))
+  }
+
   // Step 4: Score the lead (governLead in scoring-only mode keeps the score
   //         current for Engine 2's rule conditions like min_score).
   const { governLead } = await import('@/app/actions/lead-governance/govern-lead')

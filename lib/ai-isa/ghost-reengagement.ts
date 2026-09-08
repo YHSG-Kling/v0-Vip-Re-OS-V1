@@ -140,6 +140,21 @@ export async function runGhostReengagement(
           .from('leads')
           .update({ reengagement_status: 'completed' })
           .eq('id', leadId)
+        // REENGAGEMENT_COMPLETED — a live notification_rules trigger_event with
+        // no emitter: REENGAGEMENT_STARTED below fires when the loop begins, but
+        // nothing told the reactor when it stopped. Real moment: right here,
+        // tenant/contact from the row already loaded this iteration. void/catch
+        // so a fan-out hiccup never blocks the sweep.
+        const { emitKernelEvent } = await import('@/lib/kernel/emit')
+        void emitKernelEvent({
+          event:       KernelEvent.REENGAGEMENT_COMPLETED,
+          brokerageId,
+          entityType:  'lead',
+          entityId:    leadId,
+          contactId:   lead.contact_id ?? undefined,
+          source:      'cron',
+          metadata:    { reason: stopReason, attempts: lead.reengagement_attempt_count ?? 0 },
+        }).catch((err) => console.error(`[ghost-reengagement] REENGAGEMENT_COMPLETED emit failed for ${leadId}:`, err))
         stopped++
         continue
       }

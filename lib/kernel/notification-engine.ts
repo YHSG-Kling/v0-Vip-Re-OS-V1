@@ -402,6 +402,12 @@ function generateTitle(event: KernelEvent): string {
     [KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN]:      "Listing Submitted to Admin for MLS Activation",
     [KernelEvent.LISTING_OPEN_HOUSE_COMPLETED]:        "Open House Completed",
     [KernelEvent.LISTING_SHOWING_COMPLETED]:           "Showing Completed",
+    // Vendor bookings (lane CB, 2026-09-08 — VENDOR_BOOKING_CREATED's title/body
+    // fell back to the raw enum string, which read as "vendor_booking_created"
+    // on a DECLINE before the naming-bug fix below even existed).
+    [KernelEvent.VENDOR_BOOKING_CREATED]:              "Vendor Booking Confirmed",
+    [KernelEvent.VENDOR_BOOKING_DECLINED]:             "Vendor Booking Declined",
+    [KernelEvent.VENDOR_BOOKING_COMPLETED]:            "Vendor Job Completed",
   }
 
   return titles[event] ?? event
@@ -427,6 +433,12 @@ function generateBody(event: KernelEvent, entityType: string): string {
       "Open house event has been completed. Review attendee notes and follow up.",
     [KernelEvent.LISTING_SHOWING_COMPLETED]:
       "A showing has been completed. Feedback token created — follow up with buyer's agent.",
+    [KernelEvent.VENDOR_BOOKING_CREATED]:
+      "The vendor accepted the booking and it is confirmed.",
+    [KernelEvent.VENDOR_BOOKING_DECLINED]:
+      "The vendor declined the booking — route the job to another vendor.",
+    [KernelEvent.VENDOR_BOOKING_COMPLETED]:
+      "The vendor marked this job complete.",
   }
   return bodies[event] ?? `${entityType}: ${event}`
 }

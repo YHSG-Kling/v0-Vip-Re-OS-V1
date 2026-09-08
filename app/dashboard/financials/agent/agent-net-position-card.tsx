@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { ArrowRight, Scale, TrendingUp, Receipt } from "lucide-react"
 import Link from "next/link"
 import type { AgentFeeCharge } from "@/app/actions/brokerage-fees"
+import { usd } from "@/lib/format/money"
 
 /**
  * Net position — owned by finance_manager.
@@ -20,8 +21,7 @@ import type { AgentFeeCharge } from "@/app/actions/brokerage-fees"
  * to the detail, not a second copy of it.
  */
 
-const usd = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 export function AgentNetPositionCard({
   ytdNet,

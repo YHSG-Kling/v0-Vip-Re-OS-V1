@@ -6,6 +6,8 @@ import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 // bestEffort import left with the deleted confirmShowing — see its tombstone below.
 
 export async function requestShowing(data: {
@@ -482,14 +484,32 @@ export async function completeShowing(showingId: string) {
   try {
     const supabase = await createClient()
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("showings")
       .update({ status: "completed", completed_at: new Date().toISOString() })
       .eq("id", showingId)
+      .select("id, brokerage_id, contact_id, listing_id, agent_id")
+      .maybeSingle()
 
     if (error) {
       console.error("Error completing showing:", error)
       return { success: false, error: error.message }
+    }
+
+    // SHOWING_COMPLETED — a live notification_rules trigger_event with no
+    // emitter: the mobile day-panel marked the row completed and told nobody.
+    // Tenant/entity from the row this update just returned; void/catch so a
+    // fan-out hiccup never fails the completion the caller is waiting on.
+    if (data?.brokerage_id) {
+      void emitKernelEvent({
+        event:       KernelEvent.SHOWING_COMPLETED,
+        brokerageId: data.brokerage_id,
+        entityType:  "showing",
+        entityId:    data.id,
+        contactId:   data.contact_id ?? undefined,
+        listingId:   data.listing_id ?? undefined,
+        metadata:    { agent_id: data.agent_id },
+      }).catch((err) => console.error(`[completeShowing] SHOWING_COMPLETED emit failed for ${data.id}:`, err))
     }
 
     return { success: true }

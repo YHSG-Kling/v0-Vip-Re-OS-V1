@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { mintMarketingQr } from "@/lib/marketing/marketing-qr"
+import { requireCaller } from "@/lib/auth/require-caller"
 
 // Stage values that indicate the listing is live on MLS and eligible for packet generation
 const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale", "MLS_ACTIVE"]
@@ -16,21 +17,9 @@ const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale",
 // packetId. Any signed-in user could trigger packet generation against any
 // listing in any brokerage, drain AI budget, and read the resulting
 // packet (which embeds seller contact data and disclosures).
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
+// 2026-09-03 wave-26 survivor)
 
 // =====================================================
 // AI LISTING PACKET SYSTEM

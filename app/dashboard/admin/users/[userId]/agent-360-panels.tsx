@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { DollarSign, Target, Trophy, TrendingUp, Receipt, GraduationCap, Users, ClipboardCheck } from "lucide-react"
 import type { Agent360 } from "@/app/actions/admin/agent-360"
 import { AssignAcademyControl, OnboardingControl } from "./agent-360-controls"
+import { usd } from "@/lib/format/money"
 
 /**
  * Agent 360 — the manager's read of one agent, rendered server-side beside the
@@ -10,8 +11,7 @@ import { AssignAcademyControl, OnboardingControl } from "./agent-360-controls"
  * commission-agreement e-sign card renders separately (existing component).
  */
 
-const usd = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+// TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
 
 // The live agent_goals.goal_type CHECK vocabulary.
 const GOAL_LABELS: Record<string, string> = {

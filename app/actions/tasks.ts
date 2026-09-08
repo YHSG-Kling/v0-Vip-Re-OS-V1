@@ -376,11 +376,27 @@ export async function completeTask(taskId: string) {
       })
       .eq("id", taskId)
       .eq("brokerage_id", ctx.brokerageId)
-      .select()
+      .select("id, title, contact_id, transaction_id, listing_id, assigned_to_agent_id")
       .maybeSingle()
 
     if (error) throw error
     if (!data) return { success: false, error: "Task not found in your brokerage" }
+
+    // TASK_COMPLETED — a live notification_rules trigger_event with no emitter:
+    // completeTask wrote the status but never told the reactor. Tenant/entity from
+    // the row this update just returned; void/catch so a fan-out hiccup never
+    // fails the completion the caller is waiting on.
+    void emitKernelEvent({
+      event:         KernelEvent.TASK_COMPLETED,
+      brokerageId:   ctx.brokerageId,
+      entityType:    "task",
+      entityId:      data.id,
+      contactId:     (data as any).contact_id ?? undefined,
+      transactionId: (data as any).transaction_id ?? undefined,
+      listingId:     (data as any).listing_id ?? undefined,
+      actorUserId:   ctx.userId ?? undefined,
+      metadata:      { title: data.title, assigned_to_agent_id: (data as any).assigned_to_agent_id },
+    }).catch((err) => console.error(`[completeTask] TASK_COMPLETED emit failed for task ${data.id}:`, err))
 
     revalidatePath("/dashboard")
     revalidatePath("/tasks")

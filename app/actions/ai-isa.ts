@@ -8,8 +8,8 @@ import {
   retryFailedCallsService,
   type LaunchAIISACampaignResult,
 } from "@/lib/application"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
 // TOMBSTONE: `evaluateOutbound` from "@/lib/kernel/compliance" was imported here
 // and never called. The compliance gate this file actually uses is the local
@@ -39,21 +39,10 @@ import { clampMaxTouches } from "@/lib/ai-isa/isa-outreach-logger"
 // param, which let any signed-in user enumerate / mutate ANY brokerage's ISA
 // data simply by passing that brokerage's UUID. Now: brokerage is resolved
 // from the session, params.brokerageId is ignored.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `requireCaller` lived here; survivor
+// lib/auth/require-caller.ts:requireCaller (named at that file's foot,
+// measured 2026-09-03 wave 26 lane H4 — "NOT folded in this wave: other
+// lanes hold app/actions/**"; this lane is that fold-in)
 
 async function runAiIsaComplianceCheck(params: {
   userId: string

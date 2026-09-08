@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
+import { emitKernelEvent } from '@/lib/kernel/emit'
 import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
 export const dynamic = 'force-dynamic'
@@ -106,13 +107,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .eq('id', submission.id)
 
     // ── Step 7: Emit lifecycle event ──────────────────────────────────────────
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id: form.brokerage_id,
-      entity_type: 'contact',
-      entity_id: contactId,
-      event_type: KernelEvent.FORM_SUBMISSION_RECEIVED,
-      metadata: { formId: form.id, action },
-    })
+    // Was a direct lifecycle_events insert — audit-only, no reactor fan-out, so
+    // notification_rules' live form_submission_received row never fired. Real
+    // moment: right after captureContact + consent land, tenant/contact from
+    // the rows already loaded above. void/catch so the emit never fails the
+    // 200 the form's caller is waiting on.
+    void emitKernelEvent({
+      event:       KernelEvent.FORM_SUBMISSION_RECEIVED,
+      brokerageId: form.brokerage_id,
+      entityType:  'contact',
+      entityId:    contactId,
+      contactId,
+      metadata:    { formId: form.id, action },
+    }).catch((err) => console.error('[forms/submit] FORM_SUBMISSION_RECEIVED emit failed:', err))
 
     // ── Step 8: Return ────────────────────────────────────────────────────────
     return NextResponse.json({

@@ -20,6 +20,7 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { getScenarioByKey } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
+import { clamp } from "@/lib/format/math"
 
 // OBJECTION_SCENARIOS + ObjectionScenario were re-exported here but "use server"
 // rejects non-async exports. Consumers import them directly from
@@ -591,6 +592,4 @@ Return ONLY a JSON object with:
   }
 }
 
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n))
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp` lived here; survivor lib/format/math.ts:clamp

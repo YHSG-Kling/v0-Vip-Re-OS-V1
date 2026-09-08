@@ -58,6 +58,8 @@ import {
   listContactsDueForLifeChangeCheck,
 } from "@/lib/enrichment/contact-enrichment-core"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -164,6 +166,20 @@ export async function GET(request: Request) {
           if (result.skipped === "live_deal") results.suppressedByLiveDeal++
         } else {
           results.newEnrichments.failed++
+          // CONTACT_ENRICHMENT_FAILED — a live notification_rules trigger_event
+          // with no emitter: this direct-call lane (distinct from the queue-based
+          // lead-pipeline orchestrator) enriches contacts and never told the
+          // reactor when it failed. Real moment: right here, the contact id this
+          // loop is already iterating. void/catch — never blocks the sweep.
+          void emitKernelEvent({
+            event:       KernelEvent.CONTACT_ENRICHMENT_FAILED,
+            brokerageId,
+            entityType:  "contact",
+            entityId:    contact.id,
+            contactId:   contact.id,
+            source:      "cron",
+            metadata:    { error: result.error ?? null },
+          }).catch((err) => console.error(`[ContactEnrichmentCron] CONTACT_ENRICHMENT_FAILED emit failed for ${contact.id}:`, err))
         }
 
         await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_MS))

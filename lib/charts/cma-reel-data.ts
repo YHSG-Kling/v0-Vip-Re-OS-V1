@@ -155,7 +155,9 @@ export function buildCmaReelInputProps(input: BuildCmaReelInput): Record<string,
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-function clamp01(v: number): number { return Math.min(1, Math.max(0, v)) }
+import { clamp } from "@/lib/format/math"
+// TOMBSTONE (§1.1, 2026-09-08): local `clamp01` lived here; survivor lib/format/math.ts:clamp
+const clamp01 = (v: number) => clamp(v, 0, 1)
 function meanOf(values: number[]): number {
   const nums = values.filter((v) => Number.isFinite(v) && v > 0)
   return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : 0

@@ -8,6 +8,7 @@
 // No server imports — testable, and importable by the render endpoint without dragging server deps.
 
 import { composePartnersMeetingScript, type WeekInBusiness } from "@/lib/intelligence/partners-meeting"
+import { compactDollarsMoney } from "@/lib/format/money"
 
 export type ReelCardKind = "team" | "finance" | "compliance"
 export interface ReelCard {
@@ -39,12 +40,8 @@ export interface PartnersMeetingReelProps {
   brand: PartnersMeetingReelBrand
 }
 
-const fmtUsd = (n: number) => {
-  const v = Math.round(Math.max(0, n))
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000)}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): local `fmtUsd` lived here; survivor lib/format/money.ts:compactDollarsMoney
+const fmtUsd = compactDollarsMoney
 
 /**
  * PURE: WeekInBusiness → reel props. Cards appear ONLY when earned (count/amount > 0); the Finance

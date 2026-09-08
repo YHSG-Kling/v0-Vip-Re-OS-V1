@@ -67,6 +67,7 @@ import {
 import {
   MANAGERS, MANAGER_COLLABORATIONS, canRefer, type ManagerKey,
 } from "@/lib/kernel/manager-registry"
+import { usd } from "@/lib/format/money"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -280,7 +281,7 @@ async function publishLeadQualityReferrals(client?: Svc): Promise<SlaReferralSwe
   const svc = client ?? createServiceClient()
   const result: SlaReferralSweepResult = { candidates: 0, published: 0, skippedRecent: 0, errors: [] }
   const sinceIso = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
   try {
     const { data: camps } = await svc.from("ad_campaigns")
       .select("id, brokerage_id, campaign_name, status")
@@ -356,7 +357,7 @@ async function publishLeadQualityReferrals(client?: Svc): Promise<SlaReferralSwe
 async function publishRecruitOfferReferrals(client?: Svc): Promise<SlaReferralSweepResult> {
   const svc = client ?? createServiceClient()
   const result: SlaReferralSweepResult = { candidates: 0, published: 0, skippedRecent: 0, errors: [] }
-  const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`
+  // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
   try {
     const { data } = await svc.from("recruits")
       .select("id, brokerage_id, first_name, last_name, annual_volume, years_experience, current_brokerage")

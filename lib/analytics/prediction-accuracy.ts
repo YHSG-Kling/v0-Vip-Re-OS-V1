@@ -92,6 +92,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { medianOf, type AccuracyLine, type ClosingCostSide } from "@/lib/offers/closing-cost-accuracy"
 import { MATERIAL_ABS, MATERIAL_PCT } from "@/lib/net-sheet/net-sheet-reconciler"
 import { applyTenantScope, platformScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
+import { usd } from "@/lib/format/money"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -440,7 +441,7 @@ function describeClosingCostSample(rows: ClosingCostObsRow[], medianLineError: n
   const prices = rows.map((r) => num(r.purchase_price)).filter((v): v is number => v != null && v > 0)
   if (prices.length > 0) {
     const sorted = [...prices].sort((a, b) => a - b)
-    const usd = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`
+    // TOMBSTONE (§1.1, 2026-09-08): local `usd` lived here; survivor lib/format/money.ts:usd
     notes.push(
       `Measured on ${prices.length} deal(s) from ${usd(sorted[0])} to ${usd(sorted[sorted.length - 1])} ` +
       `(median ${usd(fractionalMedian(prices))}).`,
