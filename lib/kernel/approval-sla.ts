@@ -114,7 +114,8 @@ export interface ApprovalKindSla {
 }
 
 /** PURE: classify one age (hours) against the aggregate thresholds. */
-export function classifyApprovalAge(hours: number): ApprovalSlaStatus {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function classifyApprovalAge(hours: number): ApprovalSlaStatus {
   if (hours >= APPROVAL_SLA_BREACH_HOURS) return "breach"
   if (hours >= APPROVAL_SLA_WARN_HOURS) return "warning"
   return "ok"

@@ -178,7 +178,8 @@ async function loadTransaction(svc: Svc, transactionId: string, brokerageId: str
  * (listing side) and "dual" (in-house both sides) deals; a plain "buyer" deal is
  * an outside purchase — the buyer agent's job, not ours. Honest and explicit.
  */
-export function representsSeller(dealType: string | null | undefined): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function representsSeller(dealType: string | null | undefined): boolean {
   const t = (dealType ?? "").toLowerCase()
   return t === "seller" || t === "dual"
 }

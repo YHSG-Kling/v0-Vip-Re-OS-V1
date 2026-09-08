@@ -28,7 +28,8 @@ type Svc = { from: (table: string) => any }
 const STOPWORDS = new Set(["the","a","an","and","or","for","to","of","in","on","with","your","how","what","why","this","that","is","are","you","real","estate"])
 
 /** Keyphrases from a title — the detected_keywords/detected_topics heuristic. */
-export function extractKeyphrases(title: string, max = 6): string[] {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function extractKeyphrases(title: string, max = 6): string[] {
   return Array.from(new Set(
     title.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").split(/\s+/)
       .filter((w) => w.length > 3 && !STOPWORDS.has(w))
@@ -36,7 +37,8 @@ export function extractKeyphrases(title: string, max = 6): string[] {
 }
 
 /** Hook classification from the caption/title (the brief surfaces hook_type). */
-export function classifyHook(title: string): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function classifyHook(title: string): string {
   const t = title.toLowerCase()
   if (t.includes("?")) return "question"
   if (/^\d|top \d|\d (ways|tips|things|reasons|steps)/.test(t)) return "list"

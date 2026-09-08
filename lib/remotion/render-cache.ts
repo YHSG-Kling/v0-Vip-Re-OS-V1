@@ -146,7 +146,8 @@ export async function probeRenderCache(
 }
 
 /** The lookup. Tenant-scoped, succeeded-only, newest first. */
-export async function lookupCachedArtifact(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function lookupCachedArtifact(
   svc: ReturnType<typeof createServiceClient>,
   brokerageId: string,
   artifactKey: string,

@@ -53,7 +53,8 @@ const STATE_TO_IANA_TIMEZONE: Record<string, string> = {
 // ─── Phone parsing ───────────────────────────────────────────────────────────
 
 /** Extract the area code from any US/Canada phone string */
-export function parseAreaCode(phone: string): string | null {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function parseAreaCode(phone: string): string | null {
   const digits = phone.replace(/\D/g, "")
   const local = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits
   if (local.length < 10) return null

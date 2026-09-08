@@ -51,7 +51,8 @@ const PUBLIC_EMAIL_DOMAINS: ReadonlySet<string> = new Set([
   "aol.com",
 ])
 
-export const PUBLIC_DOMAIN_ERROR = (domain: string) =>
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+const PUBLIC_DOMAIN_ERROR = (domain: string) =>
   `${domain} is a public email provider — SSO connects your brokerage's OWN identity provider to a domain ` +
   "your company controls (e.g. yourbrokerage.com). Everyone on a public domain would be claimed by your " +
   "connection, so public inbox domains can't be used."

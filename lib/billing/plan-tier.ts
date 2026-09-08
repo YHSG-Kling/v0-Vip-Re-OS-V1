@@ -37,7 +37,8 @@ export type PlanTier = (typeof CANONICAL_TIERS)[number]
  *  upgrade — the same fail-safe direction lib/billing/phone-plan.ts documents. */
 export const FALLBACK_TIER: PlanTier = "solo_agent"
 
-export function isPlanTier(v: string | null | undefined): v is PlanTier {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isPlanTier(v: string | null | undefined): v is PlanTier {
   return !!v && (CANONICAL_TIERS as readonly string[]).includes(v)
 }
 

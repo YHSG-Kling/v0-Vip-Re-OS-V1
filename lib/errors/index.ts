@@ -189,14 +189,15 @@ export function logError(error: Error | AppError, options: ErrorLogOptions = {})
 // ERROR RESPONSE HELPERS
 // ============================================
 
-export interface ErrorResponse {
+interface ErrorResponse {
   success: false
   error: string
   code?: string
   details?: any
 }
 
-export function createErrorResponse(error: Error | AppError, includeDetails = false): ErrorResponse {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function createErrorResponse(error: Error | AppError, includeDetails = false): ErrorResponse {
   const response: ErrorResponse = {
     success: false,
     error: error.message,
@@ -213,13 +214,14 @@ export function createErrorResponse(error: Error | AppError, includeDetails = fa
   return response
 }
 
-export interface SuccessResponse<T = any> {
+interface SuccessResponse<T = any> {
   success: true
   data?: T
   message?: string
 }
 
-export function createSuccessResponse<T>(data?: T, message?: string): SuccessResponse<T> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function createSuccessResponse<T>(data?: T, message?: string): SuccessResponse<T> {
   return {
     success: true,
     ...(data !== undefined && { data }),

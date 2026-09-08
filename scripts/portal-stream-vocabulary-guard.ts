@@ -55,8 +55,28 @@ check("the kernel emitter writes the enum spelling (the reason the alias is need
 
 // Writers of the dotted spelling in product code (comment- and string-blind on purpose:
 // the literal IS the thing we look for, so use stripComments only).
+//
+// 2026-09-08 (lane W hidden-wire hunt) — bare `corpus.includes('"${k}"')` was a false-
+// reachability trap of exactly the shape this guard exists to catch: it credited a kind
+// as "dotted-written" whenever the STRING appeared ANYWHERE, including in code that has
+// nothing to do with lifecycle_events / portal_event_stream — lib/events/types.ts's
+// unrelated orchestrator EVENT_TYPES (a different table, a coincidentally identical
+// spelling), lib/kernel/portal.ts's own separate getPortalMilestones vocabulary,
+// lib/intelligence/small-wins.ts's WINS lookup table (a READER of portal_event_stream,
+// not a writer), lib/orchestrator/internal.ts's routing table, and
+// lib/platform/tenant-webhooks-core.ts's external webhook event name. All seven kinds
+// this tripped on (offer.accepted, transaction.under_contract, financing.cleared,
+// transaction.closing_scheduled, transaction.closed, listing.went_live,
+// lifetime.anniversary) had ZERO real `event_type: "<dotted>"` writes before this fix —
+// the guard was crediting reachability that did not exist, silently, because a
+// coincidental string match elsewhere stood in for a writer. Narrowed to the actual
+// write shape: an object-literal `event_type:` field (the lifecycle_events / EventInput
+// column both real emitters use) assigned that exact dotted string — not a bare
+// occurrence, and not a `type:`/`===` comparison, which is what every false positive
+// above actually was.
 const productFiles = [...walkTs("app"), ...walkTs("lib")].filter((f) => !/portal-stream\/(event-translator|event-to-stage-tags)\.ts$|price-improvement-label\.ts$/.test(f))
 const corpus = productFiles.map((f) => src(f)).join("\n")
+const isDottedWrite = (k: string) => new RegExp(`event_type\\s*:\\s*["']${k.replace(/\./g, "\\.")}["']`).test(corpus)
 // The unresolved list is CODE (PORTAL_KINDS_WITHOUT_KERNEL_MOMENT), imported —
 // never a comment parsed by hand (§2). The translator is pure (no server-only).
 const unresolvedKinds = [...PORTAL_KINDS_WITHOUT_KERNEL_MOMENT]
@@ -64,7 +84,7 @@ check("the unresolved list is declared in code and every entry is a translator k
   unresolvedKinds.length >= 1 && unresolvedKinds.every((k) => keys.includes(k)), unresolvedKinds.join(", "))
 const reach = keys.map((k) => ({
   key: k,
-  dotted: corpus.includes(`"${k}"`),
+  dotted: isDottedWrite(k),
   aliased: aliases.some((a) => a.portal === k),
   unresolved: unresolvedKinds.includes(k),
 }))
@@ -94,6 +114,16 @@ console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the writer finder sees a literal and not a comment",
   blankStrings('x("offer.submitted")').length > 0 && !stripComments('// "offer.submitted"\n').includes("offer.submitted") && stripComments('emit("offer.submitted")').includes('"offer.submitted"'))
 check("POSITIVE CONTROL: an invented alias key would be caught", !enumValues.has("offer_teleported"))
+// Planted specimens for isDottedWrite (2026-09-08 fix) — a real write shape must still be
+// caught, and the exact false-positive shape this fix closed (a bare occurrence in an
+// unrelated lookup table, comparison, or import path) must NOT be.
+const dottedWriteOnCorpus = (corpusText: string) => new RegExp(`event_type\\s*:\\s*["']some\\.kind["']`).test(corpusText)
+check("POSITIVE CONTROL: isDottedWrite recognises a real `event_type:` write",
+  dottedWriteOnCorpus('await svc.from("lifecycle_events").insert({ event_type: "some.kind" })'))
+check("NEGATIVE CONTROL: a bare coincidental string (lookup table, ===, import path) is not credited as a writer — the false-reachability bug this fix closed",
+  !dottedWriteOnCorpus('const WINS = { "some.kind": { line: "x" } }') &&
+  !dottedWriteOnCorpus('if (type === "some.kind") return "x"') &&
+  !dottedWriteOnCorpus('// lib/some-module/some.kind.ts'))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(" BLIND SPOTS (§2): static. Whether the projector cron fires and whether a kernel row's metadata carries the fields a card reads (offer_price, counter_price, scheduled_date, appraisal_value, document_name) is not observed here — those cards degrade to their field-less copy.")

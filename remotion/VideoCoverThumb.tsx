@@ -82,7 +82,8 @@ export interface VideoCoverThumbProps {
 
 /** The summary line is shown only when it adds something: a hint that just
  *  repeats the title or subtitle would print the same sentence twice. */
-export function seoHintLine(seoHint: string | undefined, title: string, subtitle: string | null | undefined): string | null {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function seoHintLine(seoHint: string | undefined, title: string, subtitle: string | null | undefined): string | null {
   const hint = (seoHint ?? "").trim()
   if (!hint) return null
   const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase()

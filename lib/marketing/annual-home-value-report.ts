@@ -60,7 +60,8 @@ export interface AnnualHomeValueReport {
  * original purchase price plus a regional appreciation default so the
  * report is never empty.
  */
-export async function buildAnnualHomeValueReport(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function buildAnnualHomeValueReport(
   input: ReportInput,
 ): Promise<AnnualHomeValueReport | null> {
   const supabase = createServiceClient()

@@ -245,7 +245,8 @@ async function resolveSpokenOffer(
  * The approvals-queue decision guard, mirrored check-for-check (see module
  * header). Returns null when the offer may be decided, else the spoken refusal.
  */
-export function offerDecisionGuardReason(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function offerDecisionGuardReason(
   offer: DecisionOfferRow,
   ctx: { brokerageId: string; agentScopeId: string | null },
 ): string | null {
@@ -519,7 +520,8 @@ async function findWithdrawableOffers(svc: Svc, brokerageId: string): Promise<De
  * status. Inbound-only does NOT apply — a withdraw retracts OUR side's offer,
  * whichever direction the deal runs.
  */
-export function withdrawGuardReason(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function withdrawGuardReason(
   offer: DecisionOfferRow,
   ctx: { brokerageId: string; agentScopeId: string | null },
 ): string | null {

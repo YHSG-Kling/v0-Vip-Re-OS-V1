@@ -110,7 +110,8 @@ export interface VariantArmEvidence {
 
 /** PURE. Classifies an arm's evidence as cold / stale / warm relative to `now`.
  *  Exported so the classification can be proven without a database. */
-export function classifyArmState(o: VariantArmEvidence, now: Date = new Date()): VariantArmState {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function classifyArmState(o: VariantArmEvidence, now: Date = new Date()): VariantArmState {
   if ((o.sends_count ?? 0) === 0) return "cold"
   const cutoff = now.getTime() - STALE_AFTER_DAYS * 86_400_000
   const sendMs = o.last_send_at ? new Date(o.last_send_at).getTime() : Number.NaN

@@ -28,7 +28,7 @@ export function extractBearerToken(authHeader: string | null | undefined): strin
   return tok && tok.startsWith(TOKEN_PREFIX) ? tok : null
 }
 
-export interface ResolvedAgentToken {
+interface ResolvedAgentToken {
   credentialId: string
   brokerageId: string | null
   scopes: string[]
@@ -38,7 +38,8 @@ export interface ResolvedAgentToken {
  * Resolve a raw agent bearer token to its credential. Returns null when the token is
  * unknown, inactive, or expired. Touches last_used_at (fire-and-forget). Never throws.
  */
-export async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken | null> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveAgentToken(rawToken: string): Promise<ResolvedAgentToken | null> {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()

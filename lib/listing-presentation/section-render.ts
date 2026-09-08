@@ -24,11 +24,12 @@ import { missingContentProps, describeMissingContent } from "@/lib/remotion/cont
 import { companionCard, seoHintFromNarration, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
-export type SectionRenderResult =
+type SectionRenderResult =
   | { ok: true; renderId: string }
   | { ok: false; skipped: string }
 
-export async function renderCmaSectionForPresentation(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function renderCmaSectionForPresentation(
   presentationId: string,
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<SectionRenderResult> {

@@ -131,7 +131,7 @@ export async function uploadConsentVideo(
   }
 }
 
-export interface ConsentStatus {
+interface ConsentStatus {
   ok: boolean
   exists: boolean
   /** D-ID's own status string, when it reports one. */
@@ -140,7 +140,8 @@ export interface ConsentStatus {
 }
 
 /** Read a consent back — used to confirm a stored consent is still good. */
-export async function getConsent(consentId: string): Promise<ConsentStatus> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function getConsent(consentId: string): Promise<ConsentStatus> {
   try {
     const res = await callConnector<{ status?: string }>({
       connector: "did", baseUrl: DID_BASE, path: `/consents/${encodeURIComponent(consentId)}`,

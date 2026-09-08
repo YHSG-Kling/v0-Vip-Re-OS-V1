@@ -40,7 +40,8 @@ export type TerminalDealOutcome = "closed" | "lost"
 export const WIN_PROBABILITY_PREDICTION_TYPE = "win_probability"
 
 /** The provenance stamp written into actual_outcome — outcomes trace to the real event. */
-export function buildTerminalOutcomePayload(outcome: TerminalDealOutcome): Record<string, unknown> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buildTerminalOutcomePayload(outcome: TerminalDealOutcome): Record<string, unknown> {
   return {
     outcome,
     source: "transactions.stage_progression",

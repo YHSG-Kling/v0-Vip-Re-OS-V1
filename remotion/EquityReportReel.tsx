@@ -113,7 +113,8 @@ function fmtPct(n: number): string {
  * assert the null-equity appreciation-only branch without a Remotion context.
  * estimatedEquity null → "appreciation_only" (NEVER a fabricated equity number).
  */
-export function equityDisplayMode(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function equityDisplayMode(
   estimatedEquity: number | null,
 ): "value_minus_balance" | "appreciation_only" {
   return estimatedEquity == null ? "appreciation_only" : "value_minus_balance"

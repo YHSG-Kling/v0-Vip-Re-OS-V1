@@ -152,7 +152,8 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
  * (owner_type, owner_id). This is what lets a VENDOR or CONTACT (no agents row) use their OWN
  * connected mailbox; agent/team/brokerage owner scopes resolve here too.
  */
-export async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function loadOwnerEmailCred(owner: EmailOwner): Promise<PersonalCred | null> {
   const svc = createServiceClient()
   const { data: rows } = await svc
     .from("platform_credentials")

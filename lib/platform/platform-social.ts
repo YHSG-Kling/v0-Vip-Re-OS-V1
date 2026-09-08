@@ -71,7 +71,8 @@ export const CHANNEL_LABELS: Record<PlatformSocialChannel, string> = {
 
 /** The platform_credentials.platform key for a company channel (see header — the
  *  keys are DISTINCT from tenant provider ids so the tenant cascade can't hit them). */
-export function credentialPlatformKey(channel: PlatformSocialChannel): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function credentialPlatformKey(channel: PlatformSocialChannel): string {
   return `platform_social_${channel}`
 }
 

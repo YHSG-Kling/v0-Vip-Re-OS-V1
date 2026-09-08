@@ -61,7 +61,8 @@ const KIND_LABEL: Record<AgentKind, string> = {
  * for both the brokerage name and tier label. Previously this file kept its own
  * TIER_LABEL copy — code-review caught the duplication.
  */
-export async function resolveAgentDisplayName(brokerageId: string, kind: AgentKind): Promise<string> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveAgentDisplayName(brokerageId: string, kind: AgentKind): Promise<string> {
   const { resolveBrokerageContext } = await import("./brokerage-context")
   const ctx = await resolveBrokerageContext({
     brokerageId,

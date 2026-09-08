@@ -28,7 +28,8 @@ type Svc = { from: (table: string) => any }
  * error resolves to the tightest (solo) bundle rather than handing out a free
  * upgrade, and never throws.
  */
-export async function resolveTenantPhoneAllowance(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveTenantPhoneAllowance(
   svc: Svc,
   brokerageId: string,
 ): Promise<{ tier: string; allowance: PhoneAllowance }> {

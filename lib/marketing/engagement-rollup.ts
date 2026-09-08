@@ -84,7 +84,8 @@ interface CampaignRateRollup {
  * Conservative by construction: an unrecognised or absent user agent is treated
  * as HUMAN, so this can under-report machine opens and can never invent one.
  */
-export function isMachineOpenUserAgent(ua: string | null | undefined): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isMachineOpenUserAgent(ua: string | null | undefined): boolean {
   if (!ua) return false
   const s = ua.toLowerCase()
   return (

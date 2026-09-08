@@ -433,7 +433,8 @@ export interface ListingArchiveResult {
 /**
  * One caller-safe sentence for a failed archive.
  */
-export function describeArchiveFailure(out: ListingArchiveOutcome): string | null {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function describeArchiveFailure(out: ListingArchiveOutcome): string | null {
   if (out.ok) return null
   switch (out.reason) {
     case "no-listing-id":

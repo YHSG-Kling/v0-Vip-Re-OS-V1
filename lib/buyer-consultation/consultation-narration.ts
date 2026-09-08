@@ -49,7 +49,8 @@ export const BUYER_SLIDE_COMPOSITION = "BuyerConsultationSlide"
 
 /** What one slide's script is allowed to be — derived from the composition's
  *  real geometry (180f / 30fps ⇒ ~12 words), never a literal. */
-export function buyerSlideNarrationBudget(): NarrationBudget {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buyerSlideNarrationBudget(): NarrationBudget {
   return sectionNarrationBudget(BUYER_SLIDE_COMPOSITION)
 }
 
@@ -81,7 +82,8 @@ export interface BuyerSlideNarration {
  * script below is written UNDER the 6-second budget on purpose; the trim in
  * generateBuyerSlideNarration is a belt, not the sizing.
  */
-export function buildBuyerSlideNarration(input: BuyerNarrationInput): BuyerSlideNarration {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function buildBuyerSlideNarration(input: BuyerNarrationInput): BuyerSlideNarration {
   const agent = (input.agentName || "your agent").trim()
   const brokerage = (input.brokerageName || "our brokerage").trim()
   const name = input.buyerFirstName?.trim()

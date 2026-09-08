@@ -15,7 +15,8 @@ import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status
 type Svc = ReturnType<typeof createServiceClient>
 
 /** An agent's WORKING LOAD = active contacts + owned leads + active deals. */
-export async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function agentWorkingLoad(supabase: Svc, brokerageId: string, agentId: string): Promise<number> {
   const [c, l, d] = await Promise.all([
     supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).is("deleted_at", null),
     supabase.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId),

@@ -140,7 +140,8 @@ const CALENDAR_SYNC_ADAPTERS: Partial<Record<CalendarProviderType, CalendarProvi
 }
 
 /** Resolve the sync adapter for a provider, or null while none is built/registered. */
-export function resolveCalendarSyncAdapter(providerType: CalendarProviderType): CalendarProvider | null {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function resolveCalendarSyncAdapter(providerType: CalendarProviderType): CalendarProvider | null {
   return CALENDAR_SYNC_ADAPTERS[providerType] ?? null
 }
 

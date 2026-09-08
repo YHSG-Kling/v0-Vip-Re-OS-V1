@@ -372,7 +372,10 @@ const TRANSLATIONS: Record<string, Builder> = {
   },
 
   "lifetime.anniversary": ({ metadata, persona }) => {
-    const years = metadata?.years_owned as number | undefined
+    // The ONLY emitter of ANNIVERSARY_TRIGGERED (app/api/cron/lifetime-customer-touchpoints/route.ts)
+    // writes `years_ago`, never `years_owned` — this read the wrong spelling and always fell
+    // through to the yearless copy below (§6: one vocabulary, moved onto the writer's key).
+    const years = metadata?.years_ago as number | undefined
     const yearStr = years ? `${years}-year` : ""
     return {
       customerCopy: byPersona(persona, {
@@ -467,6 +470,16 @@ const TRANSLATIONS: Record<string, Builder> = {
  * aliasing one that already has a dotted writer would card the moment twice.
  * Kinds with no kernel moment are listed in PORTAL_KINDS_WITHOUT_KERNEL_MOMENT
  * below — unresolved, not guessed.
+ *
+ * 2026-09-08 — the above was itself incomplete: five more kinds (offer.accepted,
+ * transaction.closing_scheduled, transaction.closed, listing.went_live,
+ * lifetime.anniversary) had live kernel emitters but no alias AND weren't listed
+ * as unresolved, so they were exactly as dead as the fourteen this comment
+ * describes fixing — just not counted. Aliased below, plus the two that turned
+ * out to be genuinely unresolved (transaction.under_contract, financing.cleared —
+ * see PORTAL_KINDS_WITHOUT_KERNEL_MOMENT) are now DOCUMENTED as such instead of
+ * silently missing from both lists. All 21 TRANSLATIONS kinds are now accounted
+ * for: 15 aliased, 6 documented as having no kernel moment.
  */
 export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   offer_submitted:            "offer.submitted",
@@ -482,6 +495,17 @@ export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   negotiation_strategy_ready: "negotiation.strategy_ready",
   offer_strategy_recommended: "negotiation.strategy_ready",
   contract_signed:            "portal.document_signed",
+  // 2026-09-08 (lane W hidden-wire hunt) — SEVEN of the TRANSLATIONS entries below had
+  // neither a kernel alias here NOR a PORTAL_KINDS_WITHOUT_KERNEL_MOMENT entry: the header's
+  // "unresolved, not guessed" bookkeeping had gone stale since this map was introduced, so
+  // these dotted kinds were as unreachable as the fourteen the 2026-09-07 fix addressed —
+  // just uncounted. Five have a real, verified live emitter (checked its metadata against
+  // the builder's reads before aliasing):
+  offer_accepted:             "offer.accepted",             // lib/transactions/offer-bridge.ts — builder reads no metadata
+  closing_scheduled:          "transaction.closing_scheduled", // lib/application/transactions.ts emitClosingScheduled — writes closing_date, matches the read
+  transaction_closed:         "transaction.closed",          // lib/kernel/transactions.ts closeTransactionCommand — builder reads no metadata
+  listing_published:          "listing.went_live",           // app/actions/listing-lifecycle-core.ts executeListingTransition — builder reads no metadata
+  anniversary_triggered:      "lifetime.anniversary",        // app/api/cron/lifetime-customer-touchpoints — key fixed above (years_ago)
 }
 
 /**
@@ -496,6 +520,17 @@ export const PORTAL_KINDS_WITHOUT_KERNEL_MOMENT: readonly string[] = [
   "portal.message_sent_by_agent",
   "wealth.refinance_opportunity",
   "wealth.equity_milestone",
+  // The remaining two of the seven found 2026-09-08 (see KERNEL_EVENT_TO_PORTAL comment) —
+  // these two do NOT get an alias because the candidate kernel event is itself dead:
+  "transaction.under_contract", // KernelEvent.BUYER_UNDER_CONTRACT exists but is never emitted
+                                 // anywhere in app/ or lib/ (grep-verified) — a reader-less AND
+                                 // writer-less enum member, not a moment this map can wire to.
+                                 // OFFER_ACCEPTED already covers "your offer was accepted" via
+                                 // offer.accepted above; aliasing it here too would double-card
+                                 // the same moment, which the header above forbids.
+  "financing.cleared",          // KernelEvent.FINANCING_CLEAR_TO_CLOSE has an event-fanout.ts
+                                 // template but zero emitKernelEvent/processKernelEvent call
+                                 // sites anywhere (grep-verified) — registered, never published.
 ]
 
 /** The portal kind a lifecycle_events.event_type projects as (identity for portal spellings). */

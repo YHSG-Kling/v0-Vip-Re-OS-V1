@@ -39,7 +39,8 @@ export interface PlatformStaffNotification {
  *  `error` is destructured: supabase-js RESOLVES a refused query, so `{ data }`
  *  alone turns "this read was refused" into "there is no platform staff", and a
  *  platform alert then silently reaches nobody while reporting 0 notified. */
-export async function resolvePlatformStaffIds(supabase: SupabaseClient): Promise<string[]> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolvePlatformStaffIds(supabase: SupabaseClient): Promise<string[]> {
   const platformRoles = (PLATFORM_STAFF_ROLES as readonly string[]).join(",")
   const { data: staff, error } = await supabase
     .from("users")

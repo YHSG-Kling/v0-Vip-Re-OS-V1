@@ -222,7 +222,8 @@ export function isPathAdmitted(href: string, reachable: ReadonlySet<string>): bo
 }
 
 /** Every pathname the given navigation links, across all four lanes, children included. */
-export function collectReachablePaths(nav: NavigationConfig): Set<string> {
+// Module-private since 2026-09-08 — no importer outside this file (lane V).
+function collectReachablePaths(nav: NavigationConfig): Set<string> {
   const out = new Set<string>()
   const walk = (items?: readonly NavItem[]) => {
     for (const item of items ?? []) {

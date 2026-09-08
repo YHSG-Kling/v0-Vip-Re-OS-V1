@@ -32,7 +32,8 @@ export interface DefaultAssignmentResult {
 /** The configured default, or 'load_balance' — which is what the code did before
  *  m305, so an unset or unrecognised value preserves the old behaviour rather
  *  than inventing a new one. */
-export async function resolveDefaultMethod(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function resolveDefaultMethod(
   supabase: ReturnType<typeof createServiceClient>,
   brokerageId: string,
 ): Promise<string> {

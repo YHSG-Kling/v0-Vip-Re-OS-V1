@@ -275,7 +275,8 @@ export async function assertVendorAssignedToContact(
  * (supabase-js RESOLVES refusals) and §4 (fail closed). This is an access gate:
  * a read that did not happen must never be spoken as a settled "no".
  */
-export async function readVendorContactAccessFacts(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function readVendorContactAccessFacts(
   svc: SupabaseClient,
   params: { vendorUserId: string; contactId: string; requiredScopes?: VendorAccessScope[] },
 ): Promise<VendorContactAccessFacts> {

@@ -36,7 +36,8 @@ const MANAGER_SESSION_STATUSES: readonly ManagerSessionStatus[] = ["running", "i
 /** Boundary narrower for ManagerSessionStatus — the door a DB-row status walks through before it
  *  may sit on a CommandCenterSession. The CHECK guarantees membership; a miss means the cache and
  *  database have drifted. */
-export function isManagerSessionStatus(v: unknown): v is ManagerSessionStatus {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isManagerSessionStatus(v: unknown): v is ManagerSessionStatus {
   return typeof v === "string" && (MANAGER_SESSION_STATUSES as readonly string[]).includes(v)
 }
 

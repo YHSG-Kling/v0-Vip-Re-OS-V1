@@ -198,7 +198,8 @@ const DEADLINE_BEARING: Array<{
   calendarEventType: e.deadline.calendarEventType,
 }))
 
-export async function ensureTransactionDeadlines(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function ensureTransactionDeadlines(
   transactionId: string,
   brokerageId: string,
   contractTerms: Record<string, string | Date>

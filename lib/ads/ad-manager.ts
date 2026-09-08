@@ -229,11 +229,22 @@ export async function proposeAdLaunches(
 export interface AdActionResult { status: "succeeded" | "failed" | "skipped"; result: Record<string, unknown> }
 
 /** Execute an approved ad action. Claims the row (stamps approved_by), runs the
- *  handler under the spend cap, records the outcome. Never self-fires. */
+ *  handler under the spend cap, records the outcome. Never self-fires.
+ *
+ *  `executed_at` is stamped on COMPLETION, not on claim — it used to be set in
+ *  the same update as `status: "executing"`, which made stuck-ad-action-reaper's
+ *  whole reason for existing unreachable: the reaper looks for status IN
+ *  (approved, executing) AND executed_at IS NULL to catch a launch that crashed
+ *  mid-handler, but a row could never be "executing" with executed_at null — the
+ *  two were always written together. The guard could not see the failure it was
+ *  built to catch (CLAUDE.md §2 — a guard that cannot see the code it judges is
+ *  worse than no guard). Moving the stamp to the final update below makes
+ *  "executing, executed_at still null" the real, catchable signature of a crash
+ *  between claim and completion. */
 export async function executeAdManagerAction(actionId: string, approverUserId: string): Promise<AdActionResult> {
   const svc = createServiceClient()
   const { data: claimed } = await svc.from("ad_manager_actions")
-    .update({ status: "executing", approved_at: new Date().toISOString(), approved_by: approverUserId, executed_at: new Date().toISOString() })
+    .update({ status: "executing", approved_at: new Date().toISOString(), approved_by: approverUserId })
     .eq("id", actionId)
     .in("status", ["proposed", "approved"])
     .select("brokerage_id, action_type, action_input")
@@ -247,7 +258,7 @@ export async function executeAdManagerAction(actionId: string, approverUserId: s
   } catch (e) {
     outcome = { status: "failed", result: { error: (e as Error).message } }
   }
-  await svc.from("ad_manager_actions").update({ status: outcome.status, result: outcome.result }).eq("id", actionId)
+  await svc.from("ad_manager_actions").update({ status: outcome.status, result: outcome.result, executed_at: new Date().toISOString() }).eq("id", actionId)
   return outcome
 }
 

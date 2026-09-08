@@ -69,8 +69,8 @@ export interface StageCtvCampaignResult {
 // ─── CREATIVE VALIDATION (pure) ──────────────────────────────────────────────
 
 /** Standard CTV spot lengths the lane accepts, with tolerance for encoder drift. */
-export const CTV_SPOT_LENGTHS_SECONDS = [15, 30] as const
-export const CTV_DURATION_TOLERANCE_SECONDS = 2
+const CTV_SPOT_LENGTHS_SECONDS = [15, 30] as const
+const CTV_DURATION_TOLERANCE_SECONDS = 2
 
 interface CreativeFacts {
   videoUrl: string | null
@@ -80,7 +80,7 @@ interface CreativeFacts {
   status: string | null
 }
 
-export interface CtvCreativeCheck {
+interface CtvCreativeCheck {
   ok: boolean
   /** Hard failures — the video cannot run as a CTV spot. */
   reasons: string[]
@@ -93,7 +93,8 @@ const NON_LANDSCAPE_FORMATS = ["9:16", "1:1", "vertical", "square", "portrait"]
 
 /** The CTV checks we CAN honestly run from recorded metadata. Anything we
  *  cannot verify becomes a warning + checklist item, never a fabricated pass. */
-export function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function validateCtvCreative(facts: CreativeFacts): CtvCreativeCheck {
   const reasons: string[] = []
   const warnings: string[] = []
 
@@ -135,7 +136,8 @@ function normalizeList(list?: string[]): string[] {
   return (list ?? []).map((s) => s.trim()).filter(Boolean)
 }
 
-export function summarizeCtvTargeting(t: CtvTargeting): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function summarizeCtvTargeting(t: CtvTargeting): string {
   const parts: string[] = []
   const dmas = normalizeList(t.dmas)
   const cities = normalizeList(t.cities)
@@ -146,7 +148,8 @@ export function summarizeCtvTargeting(t: CtvTargeting): string {
   return parts.join(" · ")
 }
 
-export function summarizeCtvBudget(dailyBudgetCents: number): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function summarizeCtvBudget(dailyBudgetCents: number): string {
   return `$${(dailyBudgetCents / 100).toFixed(2)}/day`
 }
 

@@ -67,7 +67,8 @@ function listPlatforms(platforms: string[]): string {
  * Pure: the consolidated weekly card copy — null when there is NOTHING real to report
  * (no card beats an empty brag; honesty over noise).
  */
-export function composeMarketingWeekCard(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function composeMarketingWeekCard(
   address: string,
   facts: MarketingWeekFacts,
 ): { title: string; summary: string } | null {

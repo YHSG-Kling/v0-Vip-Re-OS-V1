@@ -13,7 +13,8 @@ import { buildPersonaContext, CONTACT_PERSONA_COLUMNS, LEAD_PERSONA_COLUMNS, typ
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Load the persona + safe facts for a contact or lead from its OWNING table. */
-export async function loadEntityPersonaContext(svc: Svc, entity: PersonaEntity, id: string, now: Date = new Date()): Promise<PersonaContext> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function loadEntityPersonaContext(svc: Svc, entity: PersonaEntity, id: string, now: Date = new Date()): Promise<PersonaContext> {
   const table = entity === "lead" ? "leads" : "contacts"
   const cols = entity === "lead" ? LEAD_PERSONA_COLUMNS : CONTACT_PERSONA_COLUMNS
   const { data } = await svc.from(table).select(cols).eq("id", id).maybeSingle()

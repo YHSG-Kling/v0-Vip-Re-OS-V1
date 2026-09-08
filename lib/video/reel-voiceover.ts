@@ -59,7 +59,8 @@ export interface ReelVoiceover {
 }
 
 /** The narration's length in seconds, from the alignment. Pure. */
-export function narrationDurationSeconds(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function narrationDurationSeconds(
   alignment: CharacterAlignment | null | undefined,
 ): number | null {
   const ends = alignment?.character_end_times_seconds

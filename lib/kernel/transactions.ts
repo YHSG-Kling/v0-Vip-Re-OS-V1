@@ -1220,6 +1220,13 @@ export async function closeTransactionCommand(params: {
         entity_id:     params.transactionId,
         event_type:    KernelEvent.TRANSACTION_CLOSED,
         actor_user_id: params.agentId,
+        // Must match the metadata handed to the skipInsert emitKernelEvent call
+        // below: that call fans out with { reason, close_date } in memory, but
+        // THIS is the row a later reader (the portal-stream-projector cron)
+        // re-reads from the table. Without it here the persisted audit row
+        // carried metadata: null forever — a one-sided wire of the same shape
+        // this sweep was named for (rich payload in-process, empty on disk).
+        metadata:      { reason: params.reason ?? null, close_date: today },
         created_at:    nowIso,
       }),
       ...activityWrites,

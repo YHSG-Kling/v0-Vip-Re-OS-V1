@@ -68,7 +68,8 @@ const PACKET_DISCLAIMER =
 const WALKER_SKIP_KEYS = new Set(["disclaimer", "qr"])
 
 /** "avgMonthlyCost" / "flood_zone_status" → "Avg Monthly Cost" / "Flood Zone Status". */
-export function titleCase(key: string): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function titleCase(key: string): string {
   return key
     .replace(/[_-]+/g, " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -99,7 +100,8 @@ function scalarText(value: unknown, maxLen = 90): string {
  * heading = titleCase(key); strings → paragraphs, arrays → bullets, flat
  * objects → a 2-column table. Honest about ANY shape a stored row carries.
  */
-export function objectToSections(obj: Record<string, unknown>): ClientPdfSection[] {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function objectToSections(obj: Record<string, unknown>): ClientPdfSection[] {
   const sections: ClientPdfSection[] = []
   for (const [key, value] of Object.entries(obj)) {
     if (value == null || WALKER_SKIP_KEYS.has(key)) continue

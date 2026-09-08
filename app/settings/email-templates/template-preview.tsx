@@ -19,7 +19,8 @@ import { AlertTriangle, Eye, Mail } from "lucide-react"
 
 const TOKEN_RE = /\{\{(\w+)\}\}/g
 
-export function extractTokens(text: string): string[] {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function extractTokens(text: string): string[] {
   const out = new Set<string>()
   for (const m of (text ?? "").matchAll(TOKEN_RE)) out.add(m[1])
   return [...out]

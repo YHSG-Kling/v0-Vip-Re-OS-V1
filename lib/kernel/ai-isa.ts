@@ -185,7 +185,8 @@ export interface AiIsaHandoffContextPackage {
 
 /** Pick the curated fields out of a context_package jsonb value; anything that
  *  is not an object (NULL, a string, an array) yields an empty package. */
-export function readHandoffContextPackage(raw: unknown): AiIsaHandoffContextPackage {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function readHandoffContextPackage(raw: unknown): AiIsaHandoffContextPackage {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
   const r = raw as Record<string, unknown>
   return {

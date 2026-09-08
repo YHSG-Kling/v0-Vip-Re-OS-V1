@@ -49,7 +49,8 @@ export const PROVIDER_CATALOG: Record<ProviderName, ProviderCatalogEntry> = {
   formsimplicity: { name: "formsimplicity", label: "Form Simplicity", implemented: true,  capabilities: { esign: true,  transactionForms: true,  embed: true  } },
 }
 
-export function isKnownProvider(name?: string | null): name is ProviderName {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isKnownProvider(name?: string | null): name is ProviderName {
   return !!name && name.toLowerCase() in PROVIDER_CATALOG
 }
 

@@ -626,7 +626,8 @@ const MAIL_CONVERTING_RESPONSE_TYPES = new Set(["call", "form_submit", "appointm
  *   rows       — the raw row count the old code reported as "leads"
  *   anonymous  — rows naming neither id (each is one of `persons`)
  */
-export function collapseMailResponsesToPersons(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function collapseMailResponsesToPersons(
   rows: Array<{ id?: string | null; response_type: string | null; contact_id?: string | null; lead_id?: string | null }>
 ): { persons: number; converters: number; rows: number; anonymous: number } {
   const seen = new Set<string>()

@@ -71,7 +71,8 @@ export interface WordPressCredential {
  * Derived from the Connection OS so it can never disagree with the settings UI:
  * if the Connection Center does not offer it, nothing here pretends it exists.
  */
-export function isWordPressConnectable(): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isWordPressConnectable(): boolean {
   const providers = (CONNECTOR_PROVIDERS as Record<string, readonly string[]>)[WORDPRESS_DOMAIN]
   return Array.isArray(providers) && providers.includes(WORDPRESS_PROVIDER)
 }

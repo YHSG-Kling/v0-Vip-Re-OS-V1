@@ -52,8 +52,8 @@ const READABILITY_SHORT_THRESHOLD = 300
 const READABILITY_LONG_THRESHOLD = 1000
 
 /** Recommendation trigger thresholds. */
-export const READABILITY_RECOMMEND_BELOW = 70
-export const SEO_RECOMMEND_BELOW = 70
+const READABILITY_RECOMMEND_BELOW = 70
+const SEO_RECOMMEND_BELOW = 70
 
 /**
  * Escape a user-supplied keyword so it is matched literally inside the
@@ -107,7 +107,8 @@ export function computeSeoScore(input: SeoScoreContentInput): SeoScoreBreakdown 
   }
 }
 
-export function generateSeoRecommendations(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function generateSeoRecommendations(
   seoScore: number,
   readabilityScore: number,
   hasH1: boolean,

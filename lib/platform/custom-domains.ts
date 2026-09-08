@@ -118,7 +118,8 @@ export function platformReservedHosts(): string[] {
 }
 
 /** PURE: apex = exactly two labels (foo.com). Multi-label hosts get CNAME advice. */
-export function isApexDomain(domain: string): boolean {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function isApexDomain(domain: string): boolean {
   return domain.split(".").length === 2
 }
 

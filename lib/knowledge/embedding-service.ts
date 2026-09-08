@@ -30,7 +30,8 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 /**
  * Generate embeddings for multiple texts (batch)
  */
-export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   // Truncate each text
   const truncatedTexts = texts.map(t => t.slice(0, MAX_TOKENS * 4))
 

@@ -58,7 +58,8 @@ export interface ContactBrief {
  * raw engagement_score and the contact's recent activity cadence. Pure
  * function — no side effects, can also be reused by deal-card badges.
  */
-export function computeMomentum(input: {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function computeMomentum(input: {
   engagementScore: number | null
   lastContactedAt: string | null
   recentActivityCount: number

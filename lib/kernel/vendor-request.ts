@@ -20,7 +20,8 @@ import { VENDOR_CATEGORY_LABELS, type VendorCategory } from "@/lib/kernel/vendor
 
 /** PURE — the human label for a stored category token, falling back to a
  *  title-cased form so an unrecognised legacy value still reads as a word. */
-export function vendorCategoryLabel(raw: string): string {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function vendorCategoryLabel(raw: string): string {
   const known = VENDOR_CATEGORY_LABELS[raw as VendorCategory]
   if (known) return known
   return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
