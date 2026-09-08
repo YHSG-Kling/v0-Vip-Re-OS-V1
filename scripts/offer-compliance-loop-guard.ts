@@ -85,8 +85,13 @@ check("the loop's gate-state write is counted and tenant-filtered",
 console.log("\n── 5 · five doors, each with the right trigger ──")
 const wired = (s: string, trig: string) => new RegExp(`runOfferComplianceLoop\\([\\s\\S]{0,300}?trigger:\\s*"${trig}"`).test(s)
 check("finalize-packet (counter fully executed) → agreement_executed", wired(FINAL, "agreement_executed"))
+// ORDER, not distance (§2): the stamp must precede the loop call. A 600-char
+// window went red on 2026-09-08 when the OFFER_OS_ESIGN_COMPLETED emit landed
+// between them — the order was untouched.
+const stampAt = FINAL.search(/status:\s*"accepted",\s*\}\)\s*\.eq\("id", matchedOffer\.id\)/)
+const loopAt  = FINAL.indexOf("runOfferComplianceLoop", stampAt)
 check("…placed after the fully_signed + accepted stamp, not before it",
-  /status:\s*"accepted",\s*\}\)\s*\.eq\("id", matchedOffer\.id\)[\s\S]{0,600}runOfferComplianceLoop/.test(FINAL))
+  stampAt >= 0 && loopAt > stampAt && !FINAL.slice(0, stampAt).includes("runOfferComplianceLoop("))
 check("dotloop (loop fully signed) → agreement_executed", wired(DOTLOOP, "agreement_executed"))
 check("record-seller-response (accepted) → agreement_executed, through the loop and not the bare driver",
   wired(SELLER, "agreement_executed") && !/autoExecuteFullySignedOffer/.test(SELLER))
