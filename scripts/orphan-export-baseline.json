@@ -1,7 +1,6 @@
 {
   "files": {
     "app/actions/accounting-sync.ts": 1,
-    "app/actions/ai-auto-response.ts": 1,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-predictions.ts": 4,
@@ -80,7 +79,6 @@
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
     "lib/billing/dunning.ts": 3,
-    "lib/billing/stripe-account-scope.ts": 2,
     "lib/billing/stripe-webhook-secrets.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 1,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
@@ -300,7 +298,6 @@
     "lib/lead-scoring/behavioral-events.ts": 1,
     "lib/lead-scoring/record-behavioral-event.ts": 1,
     "lib/learning-router/composer.ts": 1,
-    "lib/lifetime-customer-npv/current.ts": 1,
     "lib/listing-lifecycle/recordable-events.ts": 1,
     "lib/listing-presentation/prelisting-delivery.ts": 2,
     "lib/listing-presentation/section-drip.ts": 3,
@@ -368,7 +365,6 @@
     "lib/portal/climate.ts": 1,
     "lib/portal/home-assistant.ts": 1,
     "lib/portal/home-maintenance.ts": 1,
-    "lib/portal/lifetime-segment.ts": 1,
     "lib/portal/portal-showing-feed.ts": 2,
     "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
@@ -398,7 +394,7 @@
     "lib/social/token-refresh.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
     "lib/storage/file-limits.ts": 3,
-    "lib/storage/signed-upload-url.ts": 5,
+    "lib/storage/signed-upload-url.ts": 4,
     "lib/strategy-learning/strategy-insights.ts": 1,
     "lib/transactions/buyer-move.ts": 3,
     "lib/transactions/cda-esign.ts": 1,
@@ -444,7 +440,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9342,
+  "census": 9344,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -461,7 +457,7 @@
     "app/academy/components/os/training-progress-panel.tsx": 1,
     "app/academy/module/[id]/module-reader-client.tsx": 1,
     "app/actions/a2p-registration.ts": 3,
-    "app/actions/academy-learning.ts": 6,
+    "app/actions/academy-learning.ts": 7,
     "app/actions/academy.ts": 7,
     "app/actions/accounting-sync.ts": 12,
     "app/actions/activities.ts": 4,
@@ -539,7 +535,7 @@
     "app/actions/ai-predictions.ts": 24,
     "app/actions/ai-property-matching.ts": 4,
     "app/actions/ai-referral-management.ts": 5,
-    "app/actions/ai-reply-coach.ts": 4,
+    "app/actions/ai-reply-coach.ts": 6,
     "app/actions/ai-review-automation.ts": 7,
     "app/actions/ai-showing-management.ts": 9,
     "app/actions/ai-sphere-management.ts": 6,
@@ -562,7 +558,7 @@
     "app/actions/avatar-voice-catalog.ts": 3,
     "app/actions/billing.ts": 9,
     "app/actions/blog-cadence-policy.ts": 2,
-    "app/actions/blog.ts": 12,
+    "app/actions/blog.ts": 13,
     "app/actions/brand-template-registry.ts": 12,
     "app/actions/brand-voice.ts": 2,
     "app/actions/brief-audio.ts": 1,
@@ -3597,7 +3593,7 @@
     "lib/learning-router/resolve-agent-learning-context.ts": 1,
     "lib/learning-router/resolve-staff-learning-context.ts": 1,
     "lib/lifecycle/offer-lifecycle.ts": 2,
-    "lib/lifetime-customer-npv/current.ts": 4,
+    "lib/lifetime-customer-npv/current.ts": 3,
     "lib/lifetime-customer-npv/scorer.ts": 2,
     "lib/listing-health/health-scorer.ts": 1,
     "lib/listing-lifecycle/event-storage.ts": 6,
@@ -3983,7 +3979,7 @@
     "lib/storage/platform-contract-document.ts": 1,
     "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
-    "lib/storage/signed-upload-url.ts": 6,
+    "lib/storage/signed-upload-url.ts": 5,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
     "lib/stripe.ts": 1,
@@ -4301,6 +4297,7 @@
       "markModuleViewed",
       "submitModuleQuiz",
       "getMyLearningProgress",
+      "dismissLearningAssignmentAction",
       "getAcademyViewer",
       "getFeaturedModule"
     ],
@@ -4855,7 +4852,9 @@
       "generateAIReplyDraft",
       "acceptDraft",
       "rejectDraft",
-      "loadConversationDrafts"
+      "loadConversationDrafts",
+      "recordDraftSent",
+      "loadRecentDraftOutcomes"
     ],
     "app/actions/ai-review-automation.ts": [
       "aiDetermineReviewTiming",
@@ -4999,6 +4998,7 @@
       "updateBlogPost",
       "publishBlogPost",
       "publishToWordPress",
+      "getBlogTrafficOverview",
       "getBlogPosts",
       "addSeoKeyword",
       "getSeoKeywords",
@@ -18088,7 +18088,6 @@
     ],
     "lib/lifetime-customer-npv/current.ts": [
       "latestByContact",
-      "isNewestFirst",
       "topByValue",
       "loadCurrentLedger"
     ],
@@ -20027,7 +20026,6 @@
       "sanitizeUploadFileName",
       "buildUploadObjectPath",
       "purposesMissingTenantPrefix",
-      "purposesWithNoBucketCeiling",
       "planSignedUpload",
       "mintSignedUpload"
     ],

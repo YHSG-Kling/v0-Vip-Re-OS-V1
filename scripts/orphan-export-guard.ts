@@ -533,8 +533,15 @@ const proofOnlyExports: Array<{ file: string; name: string }> = []
 for (const o of orphans) {
   const re = new RegExp(`\\b${o.name.replace(/\$/g, "\\$")}\\b`)
   const selfHits = (useCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
-  if (proofCorpus.some((p) => re.test(p))) { cat.proofOnly++; proofOnlyExports.push({ file: o.file, name: o.name }) }
-  else if (reachedModule.get(o.file) && selfHits > 1) { cat.internal++; internalExports.push({ file: o.file, name: o.name }) }
+  // ORDER (2026-09-08): LIVE before PROOF. A helper its own reached module
+  // calls is live code whether or not a simulator also imports it; checking
+  // the proof corpus first filed 193 of one tranche's 200 "proof-only" exports
+  // as orphans that a lane then verified are called in-file and reached from
+  // product (lane DA). A is now exactly "exported for a proof, used by nothing
+  // else — not even its own file"; the proof mention of a live helper is a
+  // test seam, not an orphan.
+  if (reachedModule.get(o.file) && selfHits > 1) { cat.internal++; internalExports.push({ file: o.file, name: o.name }) }
+  else if (proofCorpus.some((p) => re.test(p))) { cat.proofOnly++; proofOnlyExports.push({ file: o.file, name: o.name }) }
   else {
     cat.trulyDead++
     deadByFile[o.file] = (deadByFile[o.file] ?? 0) + 1
@@ -558,7 +565,7 @@ if (process.argv.includes("--list-a")) {
   const byFile = new Map<string, string[]>()
   for (const d of proofOnlyExports) { if (!byFile.has(d.file)) byFile.set(d.file, []); byFile.get(d.file)!.push(d.name) }
   const ordered = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-  console.log(`\n[category A — proof-only, no product caller] ${cat.proofOnly} exports across ${ordered.length} files\n`)
+  console.log(`\n[category A — proof-only: a simulator names it and nothing else does, not even its own file] ${cat.proofOnly} exports across ${ordered.length} files\n`)
   for (const [file, names] of ordered) for (const n of names.sort()) console.log(`${file}::${n}`)
   process.exit(0)
 }
@@ -646,7 +653,7 @@ if (process.env.ORPHAN_EXPORT_BASELINE === "1") {
     trulyDead: cat.trulyDead,
   } as Baseline & { trulyDead: number }
   writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`)
-  console.log(`Baseline written: ${orphans.length} orphaned of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
+  console.log(`Baseline written: ${cat.proofOnly + cat.trulyDead} orphaned (A+C) + ${cat.internal} live internal seams (B) = ${orphans.length} unreferenced of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
   console.log(`  A. proof-only ${cat.proofOnly} · B. internal/live ${cat.internal} · C. referenced nowhere ${cat.trulyDead}`)
   process.exit(0)
 }
@@ -702,7 +709,7 @@ const regressionsDead: string[] = []
 //
 // Reported, not enforced, except for C: A and B move for legitimate reasons, but
 // C growing means a genuinely unreachable export was just added.
-console.log(`     A. proof-only (a simulator names it, no surface does)  ${cat.proofOnly}`)
+console.log(`     A. proof-only (a simulator names it, nothing else — not its own file)  ${cat.proofOnly}`)
 console.log(`     B. internal helper of a REACHED module — LIVE CODE     ${cat.internal}`)
 console.log(`     C. referenced NOWHERE — the real burn-down list        ${cat.trulyDead}`)
 if (cat.proofOnly + cat.internal + cat.trulyDead !== orphans.length) {
@@ -910,4 +917,4 @@ if (regressions.length > 0) {
   process.exit(1)
 }
 
-console.log(` ✅ ORPHAN_EXPORT_PASS — no NEW unwired export (${orphans.length} on the wire-list, burn-down)`)
+console.log(` ✅ ORPHAN_EXPORT_PASS — no NEW unwired export (${cat.proofOnly + cat.trulyDead} orphaned A+C on the wire-list, ${cat.internal} live internal seams B)`)

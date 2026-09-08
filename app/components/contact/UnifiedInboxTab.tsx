@@ -3,12 +3,16 @@
 /**
  * app/components/contact/UnifiedInboxTab.tsx
  *
- * Unified cross-channel message timeline for a contact or lead record.
+ * Unified cross-channel message timeline for a CONTACT record — `contactId`
+ * is always a `contacts.id` (CLAUDE.md §3: contacts/leads are disjoint id
+ * spaces; never pass a `leads.id` here).
  *
  * Pulls from three sources (merged + sorted chronologically):
  *   1. messages     — email, sms, social, direct_mail, in_app rows
  *   2. voice_calls  — phone channel (inbound + outbound calls)
- *   3. isa_outreach_log — ISA first-touch logs with channel metadata
+ *   3. isa_outreach_log — ISA first-touch logs, filtered by `contact_id`
+ *      (re-pointed at conversion by history-carry.ts) so lead-era outreach
+ *      shows up on the contact too, not only sends made after conversion.
  *
  * Renders as a vertical timeline with per-channel icons, direction
  * badges (inbound / outbound), and status chips.
@@ -206,10 +210,20 @@ export default function UnifiedInboxTab({
       .limit(20)
 
     // 3. ISA outreach log
+    //
+    // BUG FIXED (2026-09-08, lane DE, CLAUDE.md §5 lead-history brief): this
+    // filtered `.eq("lead_id", contactId)` — but `contactId` is a
+    // `contacts.id`, never a `leads.id` (CLAUDE.md §3 — the two are disjoint
+    // id spaces), so this predicate matched ZERO rows for every caller,
+    // always. `isa_outreach_log` is one of `lib/contact-promotion/
+    // history-carry.ts`'s REPOINTED_HISTORY_TABLES — its lead-era rows are
+    // re-pointed onto `contact_id` at conversion — so `contact_id` is the
+    // column that actually answers "this contact's ISA outreach, lead-era
+    // included".
     const { data: outreach } = await supabase
       .from("isa_outreach_log")
       .select("id, channel, subject, body_snippet, created_at, agent_id, them_first_score, provider_job_id, lob_letter_id")
-      .eq("lead_id", contactId)
+      .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(20)
 

@@ -24,7 +24,7 @@ import { EducationTutorCard } from "@/app/components/portal/education-tutor-card
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { maintenanceDeck } from "@/lib/portal/home-maintenance"
-import { normalizeLifetimeSegment, lifetimeCardPlan } from "@/lib/portal/lifetime-segment"
+import { normalizeLifetimeSegment, lifetimeCardPlan, isRelocatedSegment } from "@/lib/portal/lifetime-segment"
 import {
   Bell,
   BookOpen,
@@ -102,7 +102,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   // stay-in-touch lane instead. Fair housing: only the neutral segment is used.
   const segment = normalizeLifetimeSegment((contact as { lifetime_segment?: string | null }).lifetime_segment)
   const plan = lifetimeCardPlan(segment)
-  const isRelocated = segment === "relocated"
+  const isRelocated = isRelocatedSegment(segment)
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the

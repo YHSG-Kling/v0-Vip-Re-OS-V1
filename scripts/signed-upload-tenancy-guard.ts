@@ -41,11 +41,39 @@ import {
   buildUploadObjectPath,
   sanitizeUploadFileName,
   purposesMissingTenantPrefix,
-  purposesWithNoBucketCeiling,
   UPLOAD_PURPOSES,
   type UploadPurpose,
 } from "../lib/storage/signed-upload-url"
-import { bucketCeilingBytes } from "../lib/storage/file-limits"
+import { checkUpload, bucketCeilingBytes } from "../lib/storage/file-limits"
+
+// TOMBSTONE (§1.3, 2026-09-08): purposesWithNoBucketCeiling lived at
+// lib/storage/signed-upload-url.ts; its only caller was this guard and it
+// exists purely to expose a repo-integrity fact (which upload purposes carry
+// no declared bucket ceiling), not a product capability — so it moved in,
+// undiluted, rather than staying an unwired export on the product surface.
+const PROJECT_FLOOR = checkUpload({
+  bucket: "__no-such-bucket-probe__",
+  transport: "direct_to_storage",
+  bytes: 0,
+  contentType: "application/octet-stream",
+}).ceilingBytes
+
+/** PURE — purposes whose bucket declares no file_size_limit, so the only
+ *  ceiling on them is the transport. DERIVED from the live bucket cache
+ *  rather than written down, because a bucket gaining a limit should shrink
+ *  this list by itself (§2: assert the rule, derive the number). */
+function purposesWithNoBucketCeiling(): UploadPurpose[] {
+  const names = Object.keys(UPLOAD_PURPOSES) as UploadPurpose[]
+  return names.filter((n) => {
+    const gate = checkUpload({
+      bucket: UPLOAD_PURPOSES[n].bucket,
+      transport: "direct_to_storage",
+      bytes: 0,
+      contentType: "application/octet-stream",
+    })
+    return gate.ok && gate.ceilingBytes === PROJECT_FLOOR
+  })
+}
 
 let passed = 0
 let failed = 0

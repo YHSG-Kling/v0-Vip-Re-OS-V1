@@ -8,11 +8,18 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeTeamPnl, monthLabel, type TeamCommissionRow } from "@/lib/finance/team-pl"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
+// TOMBSTONE (§1.1, 2026-09-08): a local OPEN_STATUSES lived here
+// (["active","under_contract","pending","contingent","in_progress"]) — "contingent" and
+// "in_progress" are not in the transactions_status_check vocabulary (see
+// lib/transactions/transaction-status.ts), so they never matched a row, and the list
+// omitted "clear_to_close", a real open state. Survivor:
+// lib/transactions/transaction-status.ts:TRANSACTION_STATUSES_OPEN.
 /** Deals still in flight (not a terminal state) — the denominator side of the conversion rate. */
-const OPEN_STATUSES = ["active", "under_contract", "pending", "contingent", "in_progress"]
+const OPEN_STATUSES: readonly string[] = TRANSACTION_STATUSES_OPEN
 
 export interface TeamPnlResult { teams: number; written: number; withProduction: number }
 

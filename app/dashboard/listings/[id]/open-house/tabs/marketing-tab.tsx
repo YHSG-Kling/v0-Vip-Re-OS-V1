@@ -55,7 +55,7 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
   const [channel, setChannel] = useState<"email" | "sms" | "both">("email")
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
-  const { listing, socialPosts, events: dataEvents, invitations } = data
+  const { listing, socialPosts, events: dataEvents, invitations, rsvpTracking } = data
 
   // Schedule open house state
   const [eventDate, setEventDate] = useState("")
@@ -118,7 +118,16 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
     )
 
   useEffect(() => {
-    const ids = invitees.map((i) => i.contactId)
+    // Union of invitee ids AND rsvp-tracking contact ids — the tracking table
+    // carries RSVPs (e.g. an AI-reception phone call, a kiosk sign-in) from
+    // people who were never on the invitation list at all, so a lookup keyed
+    // only to `invitees` would leave them permanently "Invited contact".
+    const ids = [
+      ...new Set([
+        ...invitees.map((i) => i.contactId),
+        ...((rsvpTracking ?? []) as any[]).map((r) => r.contact_id).filter(Boolean),
+      ]),
+    ]
     if (ids.length === 0) return
     const supabase = createClient()
     void (async () => {
@@ -141,7 +150,29 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
       setInviteeNames(map)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invitations])
+  }, [invitations, rsvpTracking])
+
+  /** Relative "last updated" label. `rsvp_updated_at` is null for a tracking
+   *  row that has never moved off its inserted status — `created_at` is the
+   *  honest fallback rather than rendering nothing. */
+  function relativeSince(iso: string | null | undefined): string {
+    if (!iso) return "unknown"
+    const ms = Date.now() - new Date(iso).getTime()
+    if (!Number.isFinite(ms) || ms < 0) return "just now"
+    const mins = Math.floor(ms / 60000)
+    if (mins < 1) return "just now"
+    if (mins < 60) return `${mins}m ago`
+    const hours = Math.floor(mins / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.floor(hours / 24)
+    return `${days}d ago`
+  }
+
+  const RSVP_STATUS_COLORS: Record<string, string> = {
+    yes: "bg-green-100 text-green-800 border-green-200",
+    maybe: "bg-yellow-100 text-yellow-800 border-yellow-200",
+    no: "bg-muted text-muted-foreground border-border",
+  }
 
   function responseOf(i: { contactId: string; response: "yes" | "maybe" | "no" | null }) {
     return rsvpOverrides[i.contactId] ?? i.response
@@ -568,6 +599,49 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
                     </div>
                   )
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* RSVP activity — open_house_rsvp_tracking, ordered by rsvp_updated_at
+              (readerless-write census: this column had a writer — updateRsvp,
+              recordRsvpResponse, the AI-reception voice line — and no reader
+              anywhere until this list). Includes RSVPs from people who were
+              never invited (a phone call the AI reception line answered, a
+              kiosk sign-in), which the invitation-only tracker above cannot. */}
+          {(rsvpTracking ?? []).length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Recent RSVP activity
+              </h4>
+              <div className="rounded-md border border-border divide-y divide-border">
+                {(rsvpTracking as any[]).map((r) => (
+                  <div key={r.id} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm truncate">
+                        {inviteeNames[r.contact_id] ?? "Contact"}
+                      </span>
+                      {r.source && r.source !== "invitation" && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 capitalize shrink-0">
+                          {String(r.source).replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {r.rsvp_status && (
+                        <Badge
+                          variant="outline"
+                          className={`text-[11px] capitalize ${RSVP_STATUS_COLORS[r.rsvp_status] ?? ""}`}
+                        >
+                          {r.rsvp_status}
+                        </Badge>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        {relativeSince(r.rsvp_updated_at ?? r.created_at)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}

@@ -277,38 +277,12 @@ export function purposesMissingTenantPrefix(): UploadPurpose[] {
   return bad
 }
 
-/**
- * PURE — purposes whose bucket declares no file_size_limit, so the only ceiling
- * on them is the transport. DERIVED from the live bucket cache rather than
- * written down, because a bucket gaining a limit should shrink this list by
- * itself (§2: assert the rule, derive the number).
- */
-const PROJECT_FLOOR = checkUpload({
-  bucket: "__no-such-bucket-probe__",
-  transport: "direct_to_storage",
-  bytes: 0,
-  contentType: "application/octet-stream",
-}).ceilingBytes
-
-export function purposesWithNoBucketCeiling(): UploadPurpose[] {
-  // bucketCeilingBytes resolves a null bucket limit to the PROJECT GLOBAL FLOOR,
-  // so "no bucket limit" is detected by comparing the bucket's resolved ceiling
-  // against that floor rather than by reading null (which file-limits.ts
-  // deliberately does not publish, precisely so it cannot be misread as
-  // "unlimited").
-  const names = Object.keys(UPLOAD_PURPOSES) as UploadPurpose[]
-  return names.filter((n) => {
-    const gate = checkUpload({
-      bucket: UPLOAD_PURPOSES[n].bucket,
-      transport: "direct_to_storage",
-      bytes: 0,
-      contentType: "application/octet-stream",
-    })
-    // A bucket with a real declared limit yields a finite ceiling well below the
-    // project floor; one with none yields the floor itself.
-    return gate.ok && gate.ceilingBytes === PROJECT_FLOOR
-  })
-}
+// TOMBSTONE (§1.3, 2026-09-08): purposesWithNoBucketCeiling lived here. It had
+// no product role — its only caller was scripts/signed-upload-tenancy-guard.ts,
+// which published it as a repo-integrity fact ("which upload purposes carry no
+// declared bucket ceiling"), not a capability any product surface used. It now
+// lives at scripts/signed-upload-tenancy-guard.ts (with its own PROJECT_FLOOR),
+// undiluted, next to the one place that ever read it.
 
 // ─── THE GATE ───────────────────────────────────────────────────────────────
 

@@ -13,7 +13,7 @@ import {
   type ResolvedStripeAccount,
   type TenantStripeContext,
 } from "@/lib/billing/resolve-stripe-account"
-import { connectDestinationReachable } from "@/lib/billing/stripe-account-scope"
+import { connectDestinationReachable, stripeAccountSideFor, stripeMoneyPath } from "@/lib/billing/stripe-account-scope"
 
 const STRIPE_BASE = "https://api.stripe.com"
 
@@ -44,13 +44,35 @@ const STRIPE_BASE = "https://api.stripe.com"
 // credential.
 
 /** Which account a call is made on. `tenant` REFUSES when that tenant has no
- *  Stripe credential — it never falls through to the platform's. */
-export type StripeCallScope = { side: "platform" } | ({ side: "tenant" } & TenantStripeContext)
+ *  Stripe credential — it never falls through to the platform's.
+ *
+ *  `pathId`, when supplied, names the call's row in
+ *  lib/billing/stripe-account-scope.ts :: STRIPE_MONEY_PATHS — optional so
+ *  every existing caller keeps compiling unchanged, but a caller that DOES
+ *  supply it gets a second, independent check: `resolveCallAccount` cross-checks
+ *  the requested `side` against that path's declared payee direction and
+ *  refuses (fail-closed) on a mismatch, rather than moving money on whichever
+ *  side the caller happened to compute. */
+export type StripeCallScope = ({ side: "platform" } | ({ side: "tenant" } & TenantStripeContext)) & { pathId?: string }
 
 /** Resolve the account a call runs on, fail-closed, with the refusal as a value. */
 async function resolveCallAccount(
   on: StripeCallScope,
 ): Promise<{ ok: true; account: ResolvedStripeAccount } | { ok: false; error: string; notConfigured: boolean }> {
+  if (on.pathId) {
+    const path = stripeMoneyPath(on.pathId)
+    if (!path) {
+      return { ok: false, error: `Unknown Stripe money path "${on.pathId}" — refusing rather than guessing which account collects.`, notConfigured: false }
+    }
+    const declaredSide = stripeAccountSideFor(path.payee)
+    if (declaredSide !== on.side) {
+      return {
+        ok: false,
+        error: `Stripe money path "${on.pathId}" (${path.says}) resolves to the ${declaredSide} account, but this call requested the ${on.side} account. Refusing rather than moving money on the wrong side.`,
+        notConfigured: false,
+      }
+    }
+  }
   const res =
     on.side === "platform"
       ? await resolvePlatformStripeAccount()

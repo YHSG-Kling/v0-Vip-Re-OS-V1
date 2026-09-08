@@ -132,6 +132,29 @@ export async function getOpenHouseDashboard(listingId: string) {
         .in("event_id", eventIds)
     : { data: [] }
 
+  // `open_house_rsvp_tracking` — the BROADER RSVP source of truth, not just
+  // invited contacts: lib/voice/twilio-voice.ts files a row here from an
+  // AI-reception phone call with `source:"ai_reception"` even when the caller
+  // was never on the invitation list, and app/api/open-house/attend/route.ts's
+  // kiosk sign-in does the same. `open_house_invitations` alone would miss
+  // both. Ordered by `rsvp_updated_at` (falling back to `created_at` for a row
+  // whose status has never changed since insert) so the dashboard list reads
+  // "who moved most recently" — this column had a writer
+  // (app/actions/seller-open-house.ts updateRsvp / app/actions/
+  // open-house-automation.ts recordRsvpResponse / lib/voice/twilio-voice.ts)
+  // and no reader anywhere until this query (readerless-write census).
+  const { data: rsvpTrackingRows, error: rsvpTrackingError } = eventIds.length
+    ? await supabase
+        .from("open_house_rsvp_tracking")
+        .select("id, event_id, contact_id, rsvp_status, rsvp_updated_at, source, created_at")
+        .in("event_id", eventIds)
+        .order("rsvp_updated_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false })
+    : { data: [], error: null }
+  if (rsvpTrackingError) {
+    console.error("[seller-open-house] open_house_rsvp_tracking read failed:", rsvpTrackingError.message)
+  }
+
   // Latest completed listing packet for this listing. Two honesty fixes:
   //   1. This used to filter job_type='open_house_booklet' — a vocabulary
   //      value NO writer produces (every real packet is 'full_packet' via
@@ -161,6 +184,7 @@ export async function getOpenHouseDashboard(listingId: string) {
     attendees: attendees ?? [],
     socialPosts: posts ?? [],
     invitations: realInvitations ?? [],
+    rsvpTracking: rsvpTrackingRows ?? [],
     packetJob: packetJobs?.[0] ?? null,
   }
 }

@@ -101,11 +101,5 @@
   "showing_communications.sms_content",
   "vendor_communications.communication_type",
   "vendor_communications.sent_at",
-  "vendor_communications.service_id",
-  "agent_intro_videos.trigger_year",
-  "ai_subscription_tier.admin_user_id",
-  "contact_suppression_list.mailing_address_key",
-  "mail_response_tracking.response_metadata",
-  "open_house_rsvp_tracking.rsvp_updated_at",
-  "usage_counters.period_end"
+  "vendor_communications.service_id"
 ]

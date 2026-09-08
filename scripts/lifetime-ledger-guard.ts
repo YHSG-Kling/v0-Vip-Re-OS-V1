@@ -26,8 +26,22 @@
  * this guard keeps it that way.
  */
 import { readFileSync } from "node:fs"
-import { latestByContact, isNewestFirst, topByValue } from "../lib/lifetime-customer-npv/current"
+import { latestByContact, topByValue, type LedgerRow } from "../lib/lifetime-customer-npv/current"
 import { stripComments } from "./strip-comments"
+
+// MOVED HERE (§1.3, 2026-09-08) from lib/lifetime-customer-npv/current.ts — the
+// product source's own doc-comment already said "used by the guard, not at
+// runtime": no product file called it, only this proof did. Kept private to the
+// proof it serves rather than left exported for no product caller.
+/** Is this result set actually newest-first? */
+function isNewestFirst(rows: readonly LedgerRow[]): boolean {
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i - 1].computed_at, b = rows[i].computed_at
+    if (!a || !b) continue
+    if (Date.parse(a) < Date.parse(b)) return false
+  }
+  return true
+}
 
 let pass = 0, fail = 0
 const failures: string[] = []

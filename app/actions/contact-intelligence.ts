@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { bestEffort } from "@/lib/db/best-effort"
+import { getLeadScore } from "@/app/actions/ai-auto-response"
 
 export interface ContactIntelligence {
   // Scores
@@ -88,14 +89,22 @@ export async function getContactIntelligence(contactId: string): Promise<{
     return { success: false, error: "Not authorized for this contact." }
   }
 
-  // Most recent lead_scores row for this contact, if any.
-  const { data: leadScore } = await service
-    .from("lead_scores")
-    .select("score, score_factors, ai_confidence, computed_at")
-    .eq("contact_id", contactId)
-    .order("computed_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // Most recent lead_scores row for this contact — WIRED to getLeadScore
+  // (app/actions/ai-auto-response.ts) so a contact with no snapshot yet gets
+  // one computed through the canonical scorer instead of reading back null
+  // forever (that action's own auto-compute-on-miss branch). Falls back to a
+  // direct read if the action call fails for any reason (best-effort).
+  const scoreResult = await getLeadScore(contactId).catch(() => null)
+  const leadScore = scoreResult?.success
+    ? (scoreResult.score as { score: number | null; score_factors: unknown; ai_confidence: number | null; computed_at: string | null } | null)
+    : await service
+        .from("lead_scores")
+        .select("score, score_factors, ai_confidence, computed_at")
+        .eq("contact_id", contactId)
+        .order("computed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then((r) => r.data)
 
   return {
     success: true,

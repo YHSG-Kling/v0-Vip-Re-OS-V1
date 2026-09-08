@@ -58,15 +58,10 @@ export function latestByContact<T extends LedgerRow>(rows: readonly T[]): T[] {
   return Array.from(seen.values())
 }
 
-/** Is this result set actually newest-first? Used by the guard, not at runtime. */
-export function isNewestFirst(rows: readonly LedgerRow[]): boolean {
-  for (let i = 1; i < rows.length; i++) {
-    const a = rows[i - 1].computed_at, b = rows[i].computed_at
-    if (!a || !b) continue
-    if (Date.parse(a) < Date.parse(b)) return false
-  }
-  return true
-}
+// TOMBSTONE (§1.3, 2026-09-08): isNewestFirst lived here; it was already
+// documented as "used by the guard, not at runtime" (no product caller, ever).
+// Moved to survivor scripts/lifetime-ledger-guard.ts (module-private there,
+// beside the only proof that named it).
 
 /**
  * Rank CURRENT ledger rows by value.

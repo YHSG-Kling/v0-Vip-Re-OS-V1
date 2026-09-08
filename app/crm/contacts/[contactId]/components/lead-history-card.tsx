@@ -31,6 +31,17 @@
  * column NULL. Rendering that as a lineage entry would invent a phantom lead, so
  * rows without a `lead_id` are dropped and reported as "no lead lineage", which
  * is a true answer and distinct from both "loading" and "could not read".
+ *
+ * OWNER RULING (2026-09-08, restating CLAUDE.md §5): "agents can't claim leads
+ * because they can only see contacts (with access to leads history)." This card
+ * is that access. Below the funnel-lineage list it also renders the three
+ * sections the route added: RE-POINTED HISTORY (activities + communications +
+ * ISA outreach — the rows `lib/contact-promotion/history-carry.ts` re-points
+ * onto `contact_id` at conversion, plus the pre-conversion `activities` rows
+ * that stay filed under `entity_type:'lead'`) and ASSIGNMENT HISTORY
+ * (assignment_log — lead_id-only, resolved through this contact's own lead
+ * ids). None of it is the leads desk: no raw scraped data, no scoring
+ * internals, no other agent's leads — every row here belongs to THIS contact.
  */
 
 import { useCallback, useEffect, useState } from "react"
@@ -46,6 +57,11 @@ interface LeadHistoryRow {
   source_family: string | null
   source_channel: string | null
   source_subtype: string | null
+  source_page_url?: string | null
+  utm_source?: string | null
+  utm_medium?: string | null
+  utm_campaign?: string | null
+  campaign_attribution_id?: string | null
   lead_stage: string | null
   lead_score: number | null
   motivation_type: string | null
@@ -60,6 +76,53 @@ interface LeadHistoryRow {
   lead_created_at: string | null
 }
 
+interface ActivityRow {
+  id: string
+  activity_type: string | null
+  title: string | null
+  description: string | null
+  status: string | null
+  created_at: string | null
+  completed_at: string | null
+  outcome: string | null
+  channel: string | null
+}
+
+interface CommunicationRow {
+  id: string
+  communication_type: string | null
+  channel: string | null
+  subject: string | null
+  body_snippet: string | null
+  sent_at: string | null
+  created_at: string | null
+  compliance_passed: boolean | null
+}
+
+interface OutreachRow {
+  id: string
+  channel: string | null
+  subject: string | null
+  body_snippet: string | null
+  status: string | null
+  sent_at: string | null
+  opened_at: string | null
+  replied_at: string | null
+  created_at: string | null
+  them_first_score: number | null
+}
+
+interface AssignmentRow {
+  id: string
+  lead_id: string | null
+  assignment_method: string | null
+  routing_reason: string | null
+  claimed: boolean | null
+  claimed_at: string | null
+  score_at_assignment: number | null
+  created_at: string | null
+}
+
 function when(value: string | null): string | null {
   if (!value) return null
   const d = new Date(value)
@@ -68,6 +131,11 @@ function when(value: string | null): string | null {
 
 export function LeadHistoryCard({ contactId }: { contactId: string }) {
   const [rows, setRows] = useState<LeadHistoryRow[] | null>(null)
+  const [activities, setActivities] = useState<ActivityRow[]>([])
+  const [communications, setCommunications] = useState<CommunicationRow[]>([])
+  const [outreach, setOutreach] = useState<OutreachRow[]>([])
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([])
+  const [extendedError, setExtendedError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -90,6 +158,11 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
       }
       // Drop the LEFT-JOIN placeholder row (see the header note).
       setRows((payload.history as LeadHistoryRow[]).filter((r) => r?.lead_id))
+      setActivities(Array.isArray(payload.activities) ? payload.activities : [])
+      setCommunications(Array.isArray(payload.communications) ? payload.communications : [])
+      setOutreach(Array.isArray(payload.outreach) ? payload.outreach : [])
+      setAssignments(Array.isArray(payload.assignments) ? payload.assignments : [])
+      setExtendedError(typeof payload.extendedError === "string" ? payload.extendedError : null)
     } catch (err: unknown) {
       setRows(null)
       setError(err instanceof Error ? err.message : "Lead lineage could not be read.")
@@ -178,6 +251,24 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
                       </Badge>
                     )}
                   </div>
+                  {(r.utm_campaign || r.utm_source || r.utm_medium || r.campaign_attribution_id) && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {r.utm_campaign && (
+                        <Badge variant="outline" className="text-[11px]">campaign: {r.utm_campaign}</Badge>
+                      )}
+                      {(r.utm_source || r.utm_medium) && (
+                        <Badge variant="outline" className="text-[11px]">
+                          {[r.utm_source, r.utm_medium].filter(Boolean).join(" / ")}
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+                  {r.source_page_url && (
+                    <p className="text-xs text-muted-foreground break-all">
+                      <span className="font-medium text-foreground">Form/landing page: </span>
+                      {r.source_page_url}
+                    </p>
+                  )}
                   {r.qualification_summary && (
                     <p className="text-sm text-muted-foreground">{r.qualification_summary}</p>
                   )}
@@ -200,6 +291,83 @@ export function LeadHistoryCard({ contactId }: { contactId: string }) {
               )
             })}
           </ol>
+        )}
+
+        {!loading && !error && (
+          <div className="mt-4 space-y-4">
+            {extendedError && (
+              <p className="text-xs text-destructive">
+                Assignment/activity/communication history could not be fully read: {extendedError}
+              </p>
+            )}
+
+            {assignments.length > 0 && (
+              <section className="space-y-1.5">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Assignment history
+                </h4>
+                <ul className="space-y-1">
+                  {assignments.map((a) => (
+                    <li key={a.id} className="text-xs text-muted-foreground rounded border px-2 py-1.5">
+                      {[
+                        a.assignment_method ? `via ${a.assignment_method}` : null,
+                        a.claimed ? `claimed ${when(a.claimed_at) ?? ""}`.trim() : "not claimed",
+                        a.score_at_assignment != null ? `score at assignment ${a.score_at_assignment}` : null,
+                        a.routing_reason,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                      {" — "}
+                      {when(a.created_at) ?? "date unrecorded"}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {(activities.length > 0 || communications.length > 0 || outreach.length > 0) && (
+              <section className="space-y-1.5">
+                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Activity &amp; communication history (lead-era + since)
+                </h4>
+                <ul className="space-y-1">
+                  {activities.map((a) => (
+                    <li key={`act-${a.id}`} className="text-xs text-muted-foreground rounded border px-2 py-1.5">
+                      <span className="font-medium text-foreground">{a.activity_type ?? "activity"}</span>
+                      {a.title ? ` — ${a.title}` : ""}
+                      {a.status ? ` (${a.status})` : ""}
+                      {" — "}
+                      {when(a.created_at) ?? "date unrecorded"}
+                    </li>
+                  ))}
+                  {communications.map((c) => (
+                    <li key={`comm-${c.id}`} className="text-xs text-muted-foreground rounded border px-2 py-1.5">
+                      <span className="font-medium text-foreground">{c.communication_type ?? "communication"}</span>
+                      {c.channel ? ` via ${c.channel}` : ""}
+                      {c.subject ? ` — ${c.subject}` : ""}
+                      {" — "}
+                      {when(c.sent_at ?? c.created_at) ?? "date unrecorded"}
+                    </li>
+                  ))}
+                  {outreach.map((o) => (
+                    <li key={`out-${o.id}`} className="text-xs text-muted-foreground rounded border px-2 py-1.5">
+                      <span className="font-medium text-foreground">ISA outreach</span>
+                      {o.channel ? ` via ${o.channel}` : ""}
+                      {o.status ? ` (${o.status})` : ""}
+                      {" — "}
+                      {when(o.sent_at ?? o.created_at) ?? "date unrecorded"}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {assignments.length === 0 && activities.length === 0 && communications.length === 0 && outreach.length === 0 && !extendedError && (
+              <p className="text-xs text-muted-foreground">
+                No lead-era activity, communication or assignment history on record for this contact.
+              </p>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

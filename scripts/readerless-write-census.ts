@@ -191,6 +191,75 @@ const SCRAPING_TABLES = new Set([
   "lead_deduplication_log", "lead_enrichment_queue", "batchdata_motivated_sellers_raw",
 ])
 
+/**
+ * DB-ONLY-READ EXEMPTIONS, curated (CLAUDE.md §3: "a column written only by a
+ * migration backfill, an .rpc(), or a DB trigger reads as writerless without
+ * being writerless" — extended here to the SIBLING blind spot this scanner's
+ * automatic dbOnlyReads bucket cannot see structurally: a UNIQUE INDEX
+ * expression (no CHECK/RLS/trigger keyword the scanner looks for), or an RLS
+ * POLICY defined ON A DIFFERENT TABLE that subqueries this column (the
+ * CREATE-POLICY pass at scanSqlFileInto only tests the policy's OWN table's
+ * columns against the body — a column named only inside a cross-table
+ * subquery is invisible to it, by construction, not by omission).
+ *
+ * Each entry names the EXACT object VERIFIED present on disk — grep the cited
+ * file:line before trusting an entry; a name that no longer matches on disk
+ * is a stale exemption hiding a real regression, which is exactly what §2
+ * warns a guard that cannot see its own subject looks like ("reports zero and
+ * reads as a clean bill of health").
+ *
+ * Classified identically to the automatic dbOnlyReads bucket: NOT an offender,
+ * reported separately.
+ */
+const DB_ONLY_READ_EXEMPTIONS: Record<string, string> = {
+  "agent_intro_videos.trigger_year":
+    "UNIQUE INDEX uq_agent_intro_videos_per_trigger (contact_id, agent_id, trigger, coalesce(trigger_year, 0)) — " +
+    "supabase/migrations/m121-agent-intro-videos.sql:24 — the mechanism behind \"one anniversary video per " +
+    "contact per YEAR\" (the 23505 branch lib/video/intro-video-reactor.ts:400+ depends on). Also documented " +
+    "in-line at lib/video/intro-video-reactor.ts:387.",
+  "ai_subscription_tier.admin_user_id":
+    "RLS POLICY ai_usage_monthly_view ON public.ai_usage_monthly — supabase/migrations/" +
+    "042-platform-role-superadmin-rename-fix.sql:30 — subqueries ai_subscription_tier.admin_user_id in all " +
+    "three of its brokerage_id/team_id/agent_id arms (`... IN (SELECT ... FROM ai_subscription_tier WHERE " +
+    "admin_user_id = auth.uid() AND is_active)`). scanSqlFileInto's CREATE POLICY pass only tests the policy's " +
+    "OWN table (ai_usage_monthly) against its body; a column named only inside a cross-table subquery is " +
+    "structurally invisible to it. Also documented at lib/security/authorization.ts:75-107.",
+  "usage_counters.period_end":
+    "UNIQUE(brokerage_id, period_start, period_end, metric) — scripts/120-create-usage-tracking-billing.sql:51 " +
+    "— plus idx_usage_counters_lookup (same file:58) and the v_brokerage_ai_quota view's join predicate " +
+    "`uc.period_end = (SELECT period_end FROM period)` — scripts/1054-ai-fair-use-quotas.sql:117-118. NOTE: " +
+    "both founding files live under scripts/, not supabase/migrations/ — this census's SQL corpus " +
+    "(MIGRATIONS_DIR) only reads supabase/migrations/*.sql, so this table's DDL sits structurally outside the " +
+    "scan root. Recorded here rather than widening the scan root, which would change the corpus (and every " +
+    "other table's count) for reasons unrelated to this column.",
+}
+
+/**
+ * MIGRATION-ONLY-WRITE EXEMPTIONS — a column whose ONLY writer left in the
+ * tree is a migration's own SELF-VERIFYING PROBE (an insert made, asserted
+ * against, then deleted again within the SAME migration transaction — never a
+ * production write path), where the application-level writer was DELETED on
+ * purpose as a duplicate (orphan doctrine §1.1) and the tombstone recording
+ * that is cited below. Distinct from DB_ONLY_READ_EXEMPTIONS: this is not "the
+ * database reads it", it is "nothing outside this one migration file writes it
+ * either, and that is the intended end state" — reported separately so the
+ * count is not silently folded into ordinary readerless-write offenders OR
+ * into DB-only reads, either of which would misname what actually happened.
+ */
+const MIGRATION_ONLY_WRITE_EXEMPTIONS: Record<string, string> = {
+  "mail_response_tracking.response_metadata":
+    "The application-level writer was REMOVED on purpose — TOMBSTONE at app/actions/direct-mail.ts:653 " +
+    "(2026-09-07): \"response_metadata is NO LONGER WRITTEN HERE... It was a DUPLICATE (orphan doctrine §1.1). " +
+    "SURVIVOR: direct_mail_responses.response_metadata\", because mail_response_tracking's only consumers " +
+    "(app/api/cron/bundle-attribution-rollup/route.ts:166, lib/campaigns/roi-calculator.ts:316,812) read a " +
+    "COUNT or id/type/contact/lead columns, never metadata — the twin write at app/api/qr/scan/route.ts was " +
+    "dropped in the same edit. The ONLY remaining writer is supabase/migrations/" +
+    "m491-a-lead-can-be-mailed-but-there-is-no-column-that-can-say-who-answered.sql:399-402, a SELF-VERIFYING " +
+    "PROBE row inserted, asserted against, then explicitly deleted at line 454 within the same migration — " +
+    "never a production write. The column is genuinely dead going forward; this is recorded rather than " +
+    "reported as a live readerless write.",
+}
+
 // ─── EVIDENCE SINK ───────────────────────────────────────────────────────────
 interface Evidence { tag: string; file: string }
 type ColMap = Map<string, Map<string, Evidence[]>>
@@ -372,6 +441,28 @@ function scanTsSourceInto(rawSrc: string, file: string, sink: Sink) {
       const col = fm[2]
       if (col.includes(".")) continue // embed path — not a column on THIS table
       sink.addRead(table, col, fm[1], file)
+    }
+    // `.eq(CONST, val)` etc. — an IDENTIFIER first arg, resolved through the
+    // SAME module-string-const map the write side already uses (fileConsts,
+    // built above from moduleStringConsts()/loopStringSets()). Mirrors the
+    // `.select(CONST)` resolution a few lines up: a shared const naming a
+    // column (the `contact_suppression_list.mailing_address_key` shape —
+    // `export const ADDRESS_SUPPRESSION_COLUMN = "mailing_address_key" as
+    // const`, written via `[ADDRESS_SUPPRESSION_COLUMN]: …` and read via
+    // `.eq(ADDRESS_SUPPRESSION_COLUMN, …)`) was previously invisible on the
+    // READ side only, so a column both written and read through the same
+    // const misreported as write-only. Resolved ONLY to a single string —
+    // a name loopStringSets() bound to an ARRAY names a column per loop
+    // iteration and stays the write side's business, not guessed here as a
+    // filter value. `true`/`false`/`null`/`undefined` are excluded because
+    // they are never in fileConsts anyway, named for clarity at the call site.
+    for (const fm of filterChain.matchAll(
+      /\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|order|not)\(\s*([a-zA-Z_$][\w$]*)\s*[,)]/g,
+    )) {
+      const ident = fm[2]
+      if (["true", "false", "null", "undefined"].includes(ident)) continue
+      const resolved = fileConsts.get(ident)
+      if (typeof resolved === "string") sink.addRead(table, resolved, `${fm[1]}(const)`, file)
     }
     for (const fm of filterChain.matchAll(/\.filter\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_]*)["'`]/g)) {
       sink.addRead(table, fm[1], "filter", file)
@@ -721,6 +812,46 @@ function runSelfTests(): string[] {
     check("TS positive: .select(localVar) resolves the nearest local string const", (readers.get("agents")?.get("career_tier")?.length ?? 0) > 0)
   }
 
+  // POSITIVE — `.eq(CONST, val)` where CONST is a module-level string const
+  // resolves the filter column (the contact_suppression_list.mailing_address_key
+  // shape — a shared const spelling the SAME column name on both the write
+  // and the read side must not read as write-only just because the read
+  // side's identifier is not a quoted literal).
+  {
+    const writers: ColMap = new Map(), readers: ColMap = new Map(), whole = new Map<string, Evidence[]>()
+    const sink = makeSink(writers, readers, whole)
+    scanTsSourceInto(
+      'export const ADDRESS_SUPPRESSION_COLUMN = "career_tier" as const\n' +
+        'await supabase.from("agents").insert({ [ADDRESS_SUPPRESSION_COLUMN]: key })\n' +
+        'await supabase.from("agents").select("id").eq(ADDRESS_SUPPRESSION_COLUMN, key)',
+      "spec.ts",
+      sink,
+    )
+    check(
+      "TS positive: .eq(CONST, …) resolves the module-level string const to a read",
+      (readers.get("agents")?.get("career_tier")?.length ?? 0) > 0,
+    )
+  }
+
+  // NEGATIVE — an identifier `.eq()` arg that is NOT a resolvable module
+  // string const (an ordinary local variable, e.g. a loop index or a value
+  // being filtered FOR) must not be misread as a column named after that
+  // variable — proves the resolver only fires on an actual fileConsts hit,
+  // never on the bare identifier text itself.
+  {
+    const writers: ColMap = new Map(), readers: ColMap = new Map(), whole = new Map<string, Evidence[]>()
+    const sink = makeSink(writers, readers, whole)
+    scanTsSourceInto(
+      'const someAgentId = "a1"\nawait supabase.from("agents").select("id").eq(someAgentId, true)',
+      "spec.ts",
+      sink,
+    )
+    check(
+      "TS negative: an unresolvable identifier .eq() arg invents no column named after itself",
+      !readers.get("agents")?.has("someAgentId"),
+    )
+  }
+
   // POSITIVE — a migration backfill `UPDATE … SET col = …` is a WRITE.
   {
     const writers: ColMap = new Map(), readers: ColMap = new Map(), whole = new Map<string, Evidence[]>()
@@ -764,6 +895,18 @@ function runSelfTests(): string[] {
     )
     check("SQL negative: block comment is not a write", !writers.get("agents")?.has("career_tier"))
     check("SQL positive: a string containing /* does not swallow the real UPDATE it sits inside", (writers.get("agents")?.get("bio")?.length ?? 0) > 0)
+  }
+
+  // POSITIVE — every curated exemption key names a table.column that ACTUALLY
+  // EXISTS in the live schema cache. A stale exemption (a renamed or dropped
+  // column) would silently exempt nothing while still reading as "handled" —
+  // exactly the "reports zero and reads as a clean bill of health" failure
+  // CLAUDE.md §2 names. This is that check for the two curated maps.
+  for (const key of [...Object.keys(DB_ONLY_READ_EXEMPTIONS), ...Object.keys(MIGRATION_ONLY_WRITE_EXEMPTIONS)]) {
+    const dot = key.indexOf(".")
+    const table = key.slice(0, dot)
+    const col = key.slice(dot + 1)
+    check(`curated exemption "${key}" names a live schema column`, !!SCHEMA_SNAPSHOT[table]?.includes(col))
   }
 
   return fails
@@ -826,6 +969,7 @@ function main() {
   let totalWritten = 0
   let totalRead = 0
   const dbOnlyReads: Array<{ table: string; column: string; tags: string[] }> = []
+  const migrationOnlyWrites: Array<{ table: string; column: string; reason: string }> = []
   const findingsByTable = new Map<string, Finding[]>()
 
   for (const table of tables) {
@@ -835,6 +979,8 @@ function main() {
       if (isScraping) { scrapingSkipped++; continue }
       if (isBookkeeping(col)) { bookkeepingExempt++; continue }
 
+      const key = `${table}.${col}`
+
       const wEv = writers.get(table)?.get(col) ?? []
       const rEvDirect = readers.get(table)?.get(col) ?? []
       const rEvWhole = wholeReads.get(table) ?? []
@@ -842,6 +988,21 @@ function main() {
       const isRead = rEvDirect.length > 0 || rEvWhole.length > 0
       if (isWritten) totalWritten++
       if (isRead) totalRead++
+
+      // Curated exemptions run BEFORE the offender bucket — each is a case the
+      // scanner cannot see structurally (a cross-table RLS subquery, a UNIQUE
+      // INDEX expression, or a founding DDL file outside the scan root), not a
+      // free pass on a column the scanner simply missed by bug. See the two
+      // maps' own headers for what distinguishes them from each other and from
+      // the automatic dbOnlyReads bucket below.
+      if (key in DB_ONLY_READ_EXEMPTIONS) {
+        dbOnlyReads.push({ table, column: col, tags: ["curated-exemption"] })
+        continue
+      }
+      if (key in MIGRATION_ONLY_WRITE_EXEMPTIONS) {
+        migrationOnlyWrites.push({ table, column: col, reason: MIGRATION_ONLY_WRITE_EXEMPTIONS[key] })
+        continue
+      }
 
       if (isWritten && !isRead) {
         const arr = findingsByTable.get(table) ?? []
@@ -880,6 +1041,8 @@ function main() {
   console.log(` ${dbOnlyReads.length} columns read ONLY by the database (CHECK/RLS/trigger, no app-level reader):`)
   for (const d of dbOnlyReads.slice(0, 60)) console.log(`   · ${d.table}.${d.column}  [${d.tags.join(", ")}]`)
   if (dbOnlyReads.length > 60) console.log(`   … and ${dbOnlyReads.length - 60} more`)
+  console.log(` ${migrationOnlyWrites.length} columns written ONLY by a migration self-verifying probe (no production writer, no reader — see MIGRATION_ONLY_WRITE_EXEMPTIONS):`)
+  for (const d of migrationOnlyWrites) console.log(`   · ${d.table}.${d.column}`)
   console.log(` readerless writes: ${offenderKeys.length} (densest table first)`)
   for (const [table, arr] of sortedTables) {
     console.log(`  ${table} (${arr.length}):`)
