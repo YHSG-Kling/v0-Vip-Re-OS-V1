@@ -528,10 +528,12 @@ const deadByFile: Record<string, number> = {}
 const deadExports: Array<{ file: string; name: string }> = []
 /** Category B members — `--list-b` prints them so an un-export tranche can be exact, not guessed. */
 const internalExports: Array<{ file: string; name: string }> = []
+/** Category A members — `--list-a` prints them so the wire-to-product tranche can be exact. */
+const proofOnlyExports: Array<{ file: string; name: string }> = []
 for (const o of orphans) {
   const re = new RegExp(`\\b${o.name.replace(/\$/g, "\\$")}\\b`)
   const selfHits = (useCache.get(o.file)!.match(new RegExp(re.source, "g")) ?? []).length
-  if (proofCorpus.some((p) => re.test(p))) cat.proofOnly++
+  if (proofCorpus.some((p) => re.test(p))) { cat.proofOnly++; proofOnlyExports.push({ file: o.file, name: o.name }) }
   else if (reachedModule.get(o.file) && selfHits > 1) { cat.internal++; internalExports.push({ file: o.file, name: o.name }) }
   else {
     cat.trulyDead++
@@ -551,6 +553,16 @@ for (const o of orphans) {
  * exits 0 regardless, so it can never be mistaken for a passing guard run and
  * can never be wired into the chain as one.
  */
+if (process.argv.includes("--list-a")) {
+  // Read-only like --list: category A (a proof names it, no product file does), densest file first, exit 0.
+  const byFile = new Map<string, string[]>()
+  for (const d of proofOnlyExports) { if (!byFile.has(d.file)) byFile.set(d.file, []); byFile.get(d.file)!.push(d.name) }
+  const ordered = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+  console.log(`\n[category A — proof-only, no product caller] ${cat.proofOnly} exports across ${ordered.length} files\n`)
+  for (const [file, names] of ordered) for (const n of names.sort()) console.log(`${file}::${n}`)
+  process.exit(0)
+}
+
 if (process.argv.includes("--list-b")) {
   // Read-only like --list: category B, densest file first, exit 0 without asserting.
   const byFile = new Map<string, string[]>()
