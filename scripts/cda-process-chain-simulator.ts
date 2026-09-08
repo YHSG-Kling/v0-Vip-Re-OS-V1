@@ -156,7 +156,11 @@ console.log("\n── nothing was lost when the duplicate went away ──")
   const submit  = fnBody(portal, "submitCdaForApprovalAction")
   const approve = fnBody(portal, "approveCdaAction")
   check("the kernel still records cda.submitted", /eventType:\s*"cda\.submitted"/.test(submit))
-  check("the kernel still records cda.approved",  /eventType:\s*"cda\.approved"/.test(approve))
+  // 2026-09-08: "cda.approved" was a dotted string lib/kernel/lifecycle.ts's identity arm
+  // never resolved, so processKernelEvent never fired here; the canonical value
+  // KernelEvent.CDA_APPROVED ('cda_approved') is the live campaign_sequences trigger.
+  check("the kernel still records the CDA approval — as KernelEvent.CDA_APPROVED, not a dotted spelling",
+    /eventType:\s*KernelEvent\.CDA_APPROVED/.test(approve) && !/eventType:\s*"cda\.approved"/.test(approve))
   check("a contract discrepancy still raises the review activity",
     /activity_type:\s*"cda_review_required"/.test(submit))
 }
