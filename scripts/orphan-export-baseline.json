@@ -31,7 +31,6 @@
     "lib/ads/connectors/google.ts": 1,
     "lib/ads/connectors/meta.ts": 1,
     "lib/ads/connectors/pii.ts": 3,
-    "lib/ads/creative-fatigue-runner.ts": 3,
     "lib/ads/fb-audience-templates.ts": 1,
     "lib/ads/promote-post.ts": 1,
     "lib/agentic-os/agent-credentials.ts": 1,
@@ -445,7 +444,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9332,
+  "census": 9329,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2573,7 +2572,7 @@
     "lib/ads/connectors/pii.ts": 5,
     "lib/ads/connectors/registry.ts": 2,
     "lib/ads/connectors/types.ts": 2,
-    "lib/ads/creative-fatigue-runner.ts": 5,
+    "lib/ads/creative-fatigue-runner.ts": 2,
     "lib/ads/ctv-campaign.ts": 3,
     "lib/ads/facebook-audience-sync.ts": 6,
     "lib/ads/fb-audience-templates.ts": 2,
@@ -12876,10 +12875,7 @@
     ],
     "lib/ads/creative-fatigue-runner.ts": [
       "recordAdPerformanceSnapshot",
-      "detectCreativeFatigue",
-      "fallbackRefreshCreative",
-      "buildFatigueRefreshPrompt",
-      "proposeFatigueRefreshCreative"
+      "detectCreativeFatigue"
     ],
     "lib/ads/ctv-campaign.ts": [
       "stageCtvCampaign",

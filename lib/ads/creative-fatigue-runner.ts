@@ -105,12 +105,13 @@ export async function detectCreativeFatigue(
   return { decay, flagged: true, signalId, refreshCreativeId }
 }
 
-export interface GeneratedFatigueCreative { variationName: string; headline: string; primaryText: string; description: string; callToAction: string }
-export interface FatigueRefreshResult { proposed: boolean; creativeId?: string; reason?: string }
+interface GeneratedFatigueCreative { variationName: string; headline: string; primaryText: string; description: string; callToAction: string }
+interface FatigueRefreshResult { proposed: boolean; creativeId?: string; reason?: string }
 
 /** Pure deterministic fallback when the AI gateway is unavailable — seller-safe and
  *  Fair-Housing-clean, deliberately a different angle than any prior creative. */
-export function fallbackRefreshCreative(campaignName: string | null): GeneratedFatigueCreative {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche 3).
+function fallbackRefreshCreative(campaignName: string | null): GeneratedFatigueCreative {
   return {
     variationName: `Fresh angle — ${campaignName ?? "campaign"} refresh`,
     headline: "New Listings Just Hit the Market",
@@ -121,7 +122,8 @@ export function fallbackRefreshCreative(campaignName: string | null): GeneratedF
 }
 
 /** Pure: the prompt asking for a NEW angle that avoids the fatigued creative's hook. */
-export function buildFatigueRefreshPrompt(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche 3).
+function buildFatigueRefreshPrompt(
   campaignName: string | null, brokerageName: string,
   priorHeadline: string | null, priorPrimaryText: string | null, decay: EngagementDecay,
 ): string {
@@ -142,7 +144,8 @@ export function buildFatigueRefreshPrompt(
  * campaign at a time, so a repeated HIGH-risk read on the same fatigue episode doesn't
  * spam the queue.
  */
-export async function proposeFatigueRefreshCreative(
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche 3).
+async function proposeFatigueRefreshCreative(
   brokerageId: string, adCampaignId: string, campaignName: string | null, decay: EngagementDecay, client?: Svc,
 ): Promise<FatigueRefreshResult> {
   const svc = client ?? createServiceClient()
