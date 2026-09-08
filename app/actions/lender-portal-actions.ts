@@ -259,6 +259,30 @@ export async function issueClearToClose(data: {
     console.error("[lenderPortal:CTC] fan-out failed (non-blocking)", err)
   }
 
+  // FINANCING_CLEAR_TO_CLOSE — declared in lib/kernel/events.ts with a live
+  // event-fanout.ts template ("You're clear to close!") but zero emitters anywhere
+  // (CLAUDE.md §1.2: BUILD the missing half). This IS the clear-to-close moment:
+  // the lender vendor issuing CTC, right after transaction_lenders.clear_to_close_date
+  // is stamped above. Separate from the generic MILESTONE_COMPLETED emit above (kept
+  // for its own consumers) so the specific, higher-signal event reaches its own
+  // fanout template and the portal's "financing.cleared" alias. Best-effort.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:        KernelEvent.FINANCING_CLEAR_TO_CLOSE,
+      brokerageId:  actor.brokerageId,
+      entityId:     data.transactionId,
+      actorUserId:  actor.userId,
+      metadata: {
+        issued_by_vendor_id: actor.vendorId,
+        lender_company:      actor.lenderCompany ?? null,
+        property_address:    transaction.property_address ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[lenderPortal:CTC] emitTransactionEvent(FINANCING_CLEAR_TO_CLOSE) failed (non-blocking)", err)
+  }
+
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
 }

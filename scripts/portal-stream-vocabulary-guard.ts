@@ -79,9 +79,21 @@ const corpus = productFiles.map((f) => src(f)).join("\n")
 const isDottedWrite = (k: string) => new RegExp(`event_type\\s*:\\s*["']${k.replace(/\./g, "\\.")}["']`).test(corpus)
 // The unresolved list is CODE (PORTAL_KINDS_WITHOUT_KERNEL_MOMENT), imported —
 // never a comment parsed by hand (§2). The translator is pure (no server-only).
+//
+// 2026-09-08 (hidden-wire hunt, round 2) — this check used to also assert
+// `unresolvedKinds.length >= 1`, which pinned to a WAYPOINT (§2): true only while
+// at least one portal kind had no kernel moment built for it yet. All seven kinds
+// PORTAL_KINDS_WITHOUT_KERNEL_MOMENT ever named were built this round (each has its
+// own tombstone in event-translator.ts's header comment), so the list is now
+// legitimately empty — a length floor would have forced leaving one kind broken
+// forever just to keep this assertion green, which is the opposite of what the
+// list is for. The RULE (an unresolved entry must be a real translator key) holds
+// vacuously over an empty list and is still enforced below; "every portal kind is
+// reachable" a few lines down is the assertion that actually catches a kind
+// silently falling off all three paths (dotted write / alias / named-unresolved).
 const unresolvedKinds = [...PORTAL_KINDS_WITHOUT_KERNEL_MOMENT]
 check("the unresolved list is declared in code and every entry is a translator key",
-  unresolvedKinds.length >= 1 && unresolvedKinds.every((k) => keys.includes(k)), unresolvedKinds.join(", "))
+  unresolvedKinds.every((k) => keys.includes(k)), unresolvedKinds.join(", "))
 const reach = keys.map((k) => ({
   key: k,
   dotted: isDottedWrite(k),

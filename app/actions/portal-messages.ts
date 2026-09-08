@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
 import { requireContactAccess } from "@/lib/portal/require-contact-access"
@@ -216,12 +217,24 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       }
     }
 
-    // Emit kernel event (non-blocking)
-    processKernelEvent({
+    // Emit kernel event (non-blocking). Switched from processKernelEvent (notifications +
+    // reactor dispatch ONLY — it never inserts a lifecycle_events row, see emit.ts:194) to
+    // emitKernelEvent, which does the lifecycle_events insert AND calls processKernelEvent
+    // internally for the same fan-out. Without this, CLIENT_PORTAL_MESSAGE_SENT was
+    // genuinely writer-less from the portal-stream projector's point of view — it scans
+    // lifecycle_events, and this event never landed a row there (CLAUDE.md §1.2: BUILD the
+    // missing half). CLIENT_PORTAL_MESSAGE_SENT is also direction-agnostic at the kernel
+    // layer (this ONE chokepoint handles both agent_to_client and client_to_agent), so
+    // metadata.direction is what lets event-translator.ts's "portal.message_sent_by_agent"
+    // card fire ONLY for the agent→client direction (a client→agent send is not "your
+    // agent sent you a message").
+    emitKernelEvent({
       event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
       entityType: "contact",
       entityId: contactId,
       brokerageId: contact.brokerage_id,
+      contactId,
+      metadata: { direction },
     }).catch(() => {})
 
     return { success: true, message }

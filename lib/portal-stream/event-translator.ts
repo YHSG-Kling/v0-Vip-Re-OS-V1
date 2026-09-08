@@ -480,6 +480,30 @@ const TRANSLATIONS: Record<string, Builder> = {
  * see PORTAL_KINDS_WITHOUT_KERNEL_MOMENT) are now DOCUMENTED as such instead of
  * silently missing from both lists. All 21 TRANSLATIONS kinds are now accounted
  * for: 15 aliased, 6 documented as having no kernel moment.
+ *
+ * 2026-09-08 (hidden-wire hunt, round 2) — the two "genuinely unresolved" kinds above
+ * were re-examined and BUILT rather than left dead (CLAUDE.md §1.2): BUYER_UNDER_CONTRACT
+ * is now emitted at the buyer-side transaction-creation moment (lib/transactions/
+ * offer-bridge.ts createTransactionFromOffer, gated on representsBuyer so a pure
+ * seller-side deal — which has no buyer contact of ours — never fires it), and
+ * FINANCING_CLEAR_TO_CLOSE is now emitted where clear-to-close is actually issued
+ * (app/actions/lender-portal-actions.ts issueClearToClose). Both aliased below. Three
+ * more of the six PORTAL_KINDS_WITHOUT_KERNEL_MOMENT entries were also built: a new
+ * KernelEvent.INSPECTION_COMPLETED (inspection report-received, distinct from
+ * INSPECTION_ORDERED) emitted from app/actions/transaction-inspections.ts
+ * markInspectionCompleteAction; KernelEvent.EQUITY_MILESTONE / REFINANCE_OPPORTUNITY
+ * emitted from lib/kernel/equity-trigger.ts runEquityTrigger at the same decision point
+ * that already pushes the transparency_updates value card (a different table this
+ * projector never read — the kernel event is the missing half, not a duplicate: the
+ * card and the event now both flow from one crossing). The sixth,
+ * portal.message_sent_by_agent, turned out not to be moment-less either: CLIENT_PORTAL_
+ * MESSAGE_SENT was ALREADY emitted (app/actions/portal-messages.ts sendPortalMessage)
+ * but through processKernelEvent directly, which fans out notifications + the reactor
+ * WITHOUT ever inserting a lifecycle_events row — this projector's only input — so the
+ * event was invisible to it regardless of aliasing. Switched to emitKernelEvent (which
+ * does the insert, then calls processKernelEvent itself) and given metadata.direction so
+ * translateEvent below can resolve it to this kind ONLY for the agent→client direction.
+ * All SEVEN of that round's kinds are now accounted for as built, not just documented.
  */
 export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   offer_submitted:            "offer.submitted",
@@ -487,6 +511,7 @@ export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   offer_os_countered:         "offer.countered",
   offer_rejected:             "offer.rejected",
   inspection_ordered:         "inspection.scheduled",
+  inspection_completed:       "inspection.completed",       // app/actions/transaction-inspections.ts markInspectionCompleteAction
   appraisal_ordered:          "appraisal.ordered",
   appraisal_completed:        "appraisal.completed",
   listing_price_reduced:      "listing.price_reduced",
@@ -506,31 +531,29 @@ export const KERNEL_EVENT_TO_PORTAL: Record<string, string> = {
   transaction_closed:         "transaction.closed",          // lib/kernel/transactions.ts closeTransactionCommand — builder reads no metadata
   listing_published:          "listing.went_live",           // app/actions/listing-lifecycle-core.ts executeListingTransition — builder reads no metadata
   anniversary_triggered:      "lifetime.anniversary",        // app/api/cron/lifetime-customer-touchpoints — key fixed above (years_ago)
+  // 2026-09-08 (hidden-wire hunt, round 2) — built, not merely aliased (see header comment):
+  buyer_under_contract:       "transaction.under_contract",  // lib/transactions/offer-bridge.ts — writes property_address + closing_date, matches the read
+  financing_clear_to_close:   "financing.cleared",           // app/actions/lender-portal-actions.ts issueClearToClose — builder reads no metadata
+  equity_milestone:           "wealth.equity_milestone",     // lib/kernel/equity-trigger.ts runEquityTrigger — writes estimated_equity, matches the read
+  refinance_opportunity:      "wealth.refinance_opportunity", // lib/kernel/equity-trigger.ts runEquityTrigger — writes monthly_savings_estimate, matches the read
+  // client_portal_message_sent DOES get a canonical-storage alias (so a projected row's
+  // event_type reads "portal.message_sent_by_agent" like every other portal kind), but
+  // translateEvent below gates it on metadata.direction BEFORE this map is ever
+  // consulted for it — a client_to_agent row returns null translation and the
+  // projector skips it without reaching canonicalPortalEventType. This map cannot see
+  // metadata itself, which is why the gate has to live in translateEvent, not here.
+  client_portal_message_sent: "portal.message_sent_by_agent",
 }
 
 /**
- * Portal kinds no KernelEvent carries (§1: "unresolved", not guessed). Each stays
- * reachable only by a dotted direct insert, which nothing writes today:
- *  · inspection.completed — INSPECTION_DUE / INSPECTION_ORDERED are not completion.
- *  · portal.message_sent_by_agent — CLIENT_PORTAL_MESSAGE_SENT does not say who sent it.
- *  · wealth.refinance_opportunity, wealth.equity_milestone — no kernel event exists.
+ * Portal kinds no KernelEvent carries (§1: "unresolved", not guessed). Reachable only
+ * by a dotted direct insert, which nothing writes today.
  */
 export const PORTAL_KINDS_WITHOUT_KERNEL_MOMENT: readonly string[] = [
-  "inspection.completed",
-  "portal.message_sent_by_agent",
-  "wealth.refinance_opportunity",
-  "wealth.equity_milestone",
-  // The remaining two of the seven found 2026-09-08 (see KERNEL_EVENT_TO_PORTAL comment) —
-  // these two do NOT get an alias because the candidate kernel event is itself dead:
-  "transaction.under_contract", // KernelEvent.BUYER_UNDER_CONTRACT exists but is never emitted
-                                 // anywhere in app/ or lib/ (grep-verified) — a reader-less AND
-                                 // writer-less enum member, not a moment this map can wire to.
-                                 // OFFER_ACCEPTED already covers "your offer was accepted" via
-                                 // offer.accepted above; aliasing it here too would double-card
-                                 // the same moment, which the header above forbids.
-  "financing.cleared",          // KernelEvent.FINANCING_CLEAR_TO_CLOSE has an event-fanout.ts
-                                 // template but zero emitKernelEvent/processKernelEvent call
-                                 // sites anywhere (grep-verified) — registered, never published.
+  // portal.message_sent_by_agent is NOT here: CLIENT_PORTAL_MESSAGE_SENT now carries
+  // metadata.direction (app/actions/portal-messages.ts sendPortalMessage) and
+  // translateEvent below projects it onto this kind ONLY for the agent→client
+  // direction — a real kernel moment, gated by metadata rather than aliased outright.
 ]
 
 /** The portal kind a lifecycle_events.event_type projects as (identity for portal spellings). */
@@ -539,6 +562,16 @@ export function canonicalPortalEventType(eventType: string): string {
 }
 
 export function translateEvent(input: TranslatorInput): TranslatedEvent | null {
+  // client_portal_message_sent is direction-agnostic at the kernel layer — the SAME
+  // event fires for both agent_to_client and client_to_agent sends (one chokepoint,
+  // app/actions/portal-messages.ts sendPortalMessage). Only the agent→client direction
+  // is "your agent sent you a message"; a client→agent send has no customer-facing card.
+  // Checked here (not in KERNEL_EVENT_TO_PORTAL) because the decision needs
+  // input.metadata, which that string→string alias map cannot see.
+  if (input.eventType === "client_portal_message_sent") {
+    if (input.metadata?.direction !== "agent_to_client") return null
+    return TRANSLATIONS["portal.message_sent_by_agent"]?.(input) ?? null
+  }
   const builder = TRANSLATIONS[canonicalPortalEventType(input.eventType)]
   if (!builder) return null
   return builder(input)

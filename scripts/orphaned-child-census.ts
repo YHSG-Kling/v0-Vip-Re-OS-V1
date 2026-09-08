@@ -391,18 +391,21 @@ for (const table of snapshotTables) {
 // live arm re-measures it and fails on drift. A declared number that is checked
 // where it can be checked beats a category that quietly does not run.
 interface DeclaredSetNull { column: string; parent: string; count: number }
-const SET_NULL_MEASURED_ON = "2026-08-22"
+// Re-measured 2026-09-08 after m535 (brokerage_id → RESTRICT, live 0) and m611
+// (seven lead_id links): the 2026-08-22 numbers stood as a WAYPOINT for two
+// weeks and OC2 kept reporting a tenant-anchor SET NULL that no longer existed.
+const SET_NULL_MEASURED_ON = "2026-09-08"
 const SET_NULL_DECLARED: DeclaredSetNull[] = [
-  { column: "brokerage_id", parent: "brokerages", count: 68 },
+  { column: "brokerage_id", parent: "brokerages", count: 0 },
   { column: "contact_id", parent: "contacts", count: 41 },
   { column: "agent_id", parent: "agents", count: 39 },
-  { column: "transaction_id", parent: "transactions", count: 18 },
+  { column: "transaction_id", parent: "transactions", count: 16 },
   { column: "team_id", parent: "teams", count: 16 },
   { column: "lead_id", parent: "leads", count: 14 },
-  { column: "listing_id", parent: "listings", count: 14 },
+  { column: "listing_id", parent: "listings", count: 13 },
 ]
-const SET_NULL_TOTAL_DECLARED = 401 // all ON DELETE SET NULL FKs onto a nullable column
-const FK_TOTAL_DECLARED = 1784
+const SET_NULL_TOTAL_DECLARED = 335 // all ON DELETE SET NULL FKs onto a nullable column
+const FK_TOTAL_DECLARED = 1927
 const FK_NOT_VALID_DECLARED = 0
 
 // THE TENANT ANCHOR IS THE ONE THAT IS REPORTED AS A FINDING, because a
@@ -410,7 +413,10 @@ const FK_NOT_VALID_DECLARED = 0
 // from the product. The other six are counted on the coverage line.
 {
   const tenant = SET_NULL_DECLARED.find((d) => d.column === "brokerage_id")!
-  add(
+  // A finding only while the measurement says the hole EXISTS. m535 converted
+  // every brokerage_id → brokerages SET NULL to RESTRICT (live count 0 on
+  // 2026-09-08); reporting it unconditionally kept a closed hole on the census.
+  if (tenant.count > 0) add(
     "oc2",
     "brokerage_id:on_delete_set_null",
     `pg_constraint · ${tenant.count} tables`,

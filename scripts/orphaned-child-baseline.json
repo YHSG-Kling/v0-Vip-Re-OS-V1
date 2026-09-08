@@ -1,21 +1,16 @@
 {
-  "generated": "2026-09-07",
+  "generated": "2026-09-08",
   "counts": {
-    "oc1": 19,
-    "oc2": 1,
+    "oc1": 12,
+    "oc2": 0,
     "oc3": 0,
     "oc4": 0
   },
   "keys": {
     "oc1": [
-      "audience_members.lead_id",
-      "campaign_bundle_dispatches.lead_id",
-      "communication_audit_log.lead_id",
       "google_search_activity.lead_id",
       "journey_states.user_id",
       "lead_behavioral_data.lead_id",
-      "lead_deduplication_log.lead_id",
-      "lead_engagement_scores.lead_id",
       "lead_intelligence.lead_id",
       "lead_osint_data.lead_id",
       "lead_people_data.lead_id",
@@ -23,14 +18,10 @@
       "lead_property_searches.lead_id",
       "motivated_seller_signals.lead_id",
       "nextdoor_activity.lead_id",
-      "outcome_reconciliations.lead_id",
       "tax_categories.provider_account_id",
-      "unified_lead_profile.lead_id",
       "vendor_subscriptions.brokerage_id"
     ],
-    "oc2": [
-      "brokerage_id:on_delete_set_null"
-    ],
+    "oc2": [],
     "oc3": [],
     "oc4": []
   }

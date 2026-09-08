@@ -206,6 +206,10 @@ export enum KernelEvent {
   TRANSACTION_STAGE_CHANGED           = 'transaction_stage_changed',
   TRANSACTION_CLOSED                  = 'transaction_closed',
   INSPECTION_ORDERED                  = 'inspection_ordered',
+  /** The inspection report is in and the milestone is marked complete
+   *  (app/actions/transaction-inspections.ts markInspectionCompleteAction).
+   *  Portal alias: inspection.completed (event-translator.ts). */
+  INSPECTION_COMPLETED                = 'inspection_completed',
   INSPECTION_QUOTE_REQUESTED          = 'inspection_quote_requested',
   INSPECTION_QUOTE_APPROVED           = 'inspection_quote_approved',
   INSURANCE_QUOTE_REQUESTED           = 'insurance_quote_requested',
@@ -434,6 +438,16 @@ export enum KernelEvent {
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
   LIFETIME_CUSTOMER_TOUCHPOINT_SENT  = 'lifetime_customer_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
+  /** Past client's estimated home equity crosses a cash-out-worthy threshold
+   *  (lib/kernel/equity-trigger.ts runEquityTrigger — signal.triggerTypes
+   *  includes "cash_out"). Informational only — nothing here sends or spends.
+   *  Portal alias: wealth.equity_milestone (event-translator.ts). */
+  EQUITY_MILESTONE                   = 'equity_milestone',
+  /** Past client's rate-gap vs today's authoritative market rate crosses the
+   *  modeled-savings threshold (lib/kernel/equity-trigger.ts runEquityTrigger —
+   *  signal.triggerTypes includes "refi"). Never fires on a fabricated rate.
+   *  Portal alias: wealth.refinance_opportunity (event-translator.ts). */
+  REFINANCE_OPPORTUNITY              = 'refinance_opportunity',
   MARKET_UPDATE_SENT                 = 'market_update_sent',
   REFERRAL_ASK_SENT                  = 'referral_ask_sent',
   REFERRAL_PARTNER_CREATED           = 'referral_partner_created',

@@ -659,6 +659,58 @@ export async function runEquityTrigger(
     }, supabase)
     if (card.pushed) result.portalCardsPushed += 1
 
+    // (2b) KERNEL EVENTS — EQUITY_MILESTONE / REFINANCE_OPPORTUNITY. Declared in
+    // lib/kernel/events.ts but the producer (this decision, right here) only ever
+    // wrote the transparency_updates card above — a separate table the portal-stream
+    // projector never reads. That left wealth.equity_milestone and
+    // wealth.refinance_opportunity (event-translator.ts) genuinely writer-less
+    // (CLAUDE.md §1.2: BUILD the missing half). entityType "contact" + the resolved
+    // contactId so the projector's resolveEntityContext needs no extra lookup.
+    // metadata keys match exactly what the translator reads: estimated_equity for
+    // wealth.equity_milestone, monthly_savings_estimate for
+    // wealth.refinance_opportunity. Best-effort — never blocks the note/card above.
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      if (signal.triggerTypes.includes("cash_out")) {
+        await emitKernelEvent({
+          event:       KernelEvent.EQUITY_MILESTONE,
+          brokerageId,
+          entityType:  "contact",
+          entityId:    contactId,
+          contactId,
+          actorUserId: null,
+          dedupeKey:   `equity_milestone:${qKey}`,
+          dedupeWindowSec: 7 * 86_400,
+          metadata: {
+            estimated_equity: signal.line.estimatedEquity,
+            transaction_id:   t.id,
+            quarter:          qKey,
+          },
+        })
+      }
+      if (signal.triggerTypes.includes("refi")) {
+        await emitKernelEvent({
+          event:       KernelEvent.REFINANCE_OPPORTUNITY,
+          brokerageId,
+          entityType:  "contact",
+          entityId:    contactId,
+          contactId,
+          actorUserId: null,
+          dedupeKey:   `refinance_opportunity:${qKey}`,
+          dedupeWindowSec: 7 * 86_400,
+          metadata: {
+            monthly_savings_estimate: signal.refiMonthlySavings,
+            rate_delta_bps:           signal.rateDeltaBps,
+            transaction_id:           t.id,
+            quarter:                  qKey,
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[equity-trigger] wealth kernel event emit failed (non-blocking)", err)
+    }
+
     // (3) Director-commissioned equity/refi reel — EquityReportReel via commissionVideo
     // (D-ID + ElevenLabs, NEVER HeyGen). Requires an agent on the transaction to attribute
     // the render to (agents.user_id). A render failure NEVER fails the note.

@@ -249,6 +249,27 @@ export async function markInspectionCompleteAction(params: {
     console.error("[markInspectionCompleteAction] fan-out failed (non-blocking)", err)
   }
 
+  // INSPECTION_COMPLETED — added to lib/kernel/events.ts beside INSPECTION_ORDERED
+  // (CLAUDE.md §1.2: BUILD the missing half — INSPECTION_ORDERED/INSPECTION_DUE are
+  // not completion, so the portal's "inspection.completed" card had no kernel moment
+  // it could alias to). This IS that completion moment. Kept separate from the
+  // generic MILESTONE_COMPLETED emit above so the portal alias fires on its own
+  // dedicated event rather than a same-spelling coincidence with other milestones.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.INSPECTION_COMPLETED,
+      brokerageId: auth.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: auth.userId,
+      metadata: {
+        inspection_id: params.inspectionId,
+      },
+    })
+  } catch (err) {
+    console.error("[markInspectionCompleteAction] emitTransactionEvent(INSPECTION_COMPLETED) failed (non-blocking)", err)
+  }
+
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true }
 }

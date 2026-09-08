@@ -64,15 +64,23 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(limit)
 
+    // THE KEY THE WRITERS WRITE (2026-09-08). Every dedup-log writer records the
+    // lead a record was judged a duplicate OF — `duplicate_of_lead_id`
+    // (lib/kernel/scraping.ts) or `duplicate_of_contact_id` (lib/kernel/crm.ts);
+    // none writes `lead_id`, so scoping and filtering on `lead_id` returned an
+    // empty log for every caller since the route was written (a reader with no
+    // writer of its key — the same shape as event-reactor's `new_stage`). The
+    // reader now keys on what is written. `lead_id` keeps its m611 foreign key
+    // for any future writer; nothing here pretends it is populated.
     if (scopedIds.leadIds !== null) {
       query = scopedIds.leadIds.length > 0
-        ? query.in("lead_id", scopedIds.leadIds)
+        ? query.in("duplicate_of_lead_id", scopedIds.leadIds)
         // A team with no in-scope leads gets NO rows, not every row.
-        : query.eq("lead_id", "00000000-0000-0000-0000-000000000000")
+        : query.eq("duplicate_of_lead_id", "00000000-0000-0000-0000-000000000000")
     }
 
     if (lead_id) {
-      query = query.eq("lead_id", lead_id)
+      query = query.eq("duplicate_of_lead_id", lead_id)
     }
     if (raw_record_id) {
       query = query.eq("raw_record_id", raw_record_id)

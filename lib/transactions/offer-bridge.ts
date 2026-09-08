@@ -596,6 +596,38 @@ export async function createTransactionFromOffer(params: {
     console.error("[offer-bridge] emitTransactionEvent(OFFER_ACCEPTED) failed", err)
   }
 
+  // BUYER_UNDER_CONTRACT — the buyer-side "you're under contract" moment. Was declared
+  // in lib/kernel/events.ts but never emitted anywhere (a reader-less AND writer-less
+  // enum member — CLAUDE.md §1.2: BUILD the missing half). Distinct from
+  // LISTING_UNDER_CONTRACT (the seller-side event, fired separately from a listing
+  // stage transition in app/actions/listing-lifecycle-core.ts): this is the audience
+  // the transaction.under_contract portal card and its celebratory copy is written
+  // for. Only fired when WE represent the buyer on this deal (representsBuyer) — on a
+  // pure 'seller' deal there is no buyer contact of ours to card. entityType
+  // "transaction" so the portal-stream projector's resolveEntityContext reads
+  // transactions.contact_id, which on a buyer/dual deal IS the buyer (clientContactId
+  // above). Best-effort: never break transaction creation on a fan-out failure.
+  if (representsBuyer) {
+    try {
+      const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      await emitTransactionEvent({
+        event:       KernelEvent.BUYER_UNDER_CONTRACT,
+        brokerageId: params.brokerageId,
+        entityId:    transaction.id,
+        actorUserId: "",
+        metadata: {
+          property_address:   resolvedAddress,
+          closing_date:        contractDeadlines.closingDate,
+          inspection_deadline: contractDeadlines.inspectionDeadline,
+          created_from_offer:  params.offerId,
+        },
+      })
+    } catch (err) {
+      console.error("[offer-bridge] emitTransactionEvent(BUYER_UNDER_CONTRACT) failed", err)
+    }
+  }
+
   // Auto-populate transaction_participants from offer + listing + brokerage
   // preferred-vendor directory. Never inserts placeholders — only rows for
   // which we can resolve real names/emails. Idempotent (skips when the
