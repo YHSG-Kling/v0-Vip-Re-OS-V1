@@ -142,6 +142,15 @@ check("the Root registers the compositions the Director names", compIds.length >
 check("videoTypeForSituation is TOTAL over the situation kinds (no kind falls out of the vocabulary)",
   kinds.length >= 10 && kinds.every((k) => new RegExp(`case "${k}":`).test(DIRECTOR)), kinds.filter((k) => !new RegExp(`case "${k}":`).test(DIRECTOR)).join(", "))
 
+console.log("\n── 9 · owner ruling 2026-09-08: no video nudges for under contract ──")
+const REACTOR = src("lib/kernel/event-reactor.ts")
+const NUDGE   = src("lib/ai-isa/saved-home-nudge.ts")
+check("the reactor never auto-dispatches the under_contract promo video",
+  /if \(eventType !== "under_contract"\) \{[\s\S]{0,300}dispatchListingPromoVideo\(/.test(REACTOR))
+check("…while the saved-home path can still note it (a portal message, never a reel): the classifier rules under_contract non-avatar",
+  /NO_VIDEO_NUDGE_KINDS[^=]*=\s*\["under_contract"\]/.test(NUDGE) && /NO_VIDEO_NUDGE_KINDS as readonly string\[\]\)\.includes\(nudge\.kind\)\) return \{ \.\.\.nudge, avatarWorthy: false \}/.test(NUDGE))
+check("…and routeSavedHomeNudge picks the bus from that flag alone", /const toManager = nudge\.avatarWorthy \? "asset_manager" : "campaign_orchestrator"/.test(SIGNALS))
+
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the emitter finder catches a literal publish, a same-line ternary, and ignores a comment",
   emitterRegex("x_reel_handoff").test('publishManagerSignal({ signalType: "x_reel_handoff" })')

@@ -35,7 +35,23 @@ export interface SavedHomeNudge {
  * market) are avatar-worthy — a personal video from their agent. Status/new-match/open-house keep
  * momentum. Returns null for an unknown kind (never fabricate a reason to reach out).
  */
+/**
+ * OWNER RULING (2026-09-08): "no video nudges for under contract." A saved home
+ * going under contract may earn a gated portal NOTE; it never fronts an avatar
+ * reel. Enforced here (the classifier answers avatarWorthy=false for these kinds
+ * no matter what the case below says) and asserted by
+ * scripts/video-lanes-audit-guard.ts — routeSavedHomeNudge picks the bus from
+ * this flag, so this is the one place the ruling has to hold.
+ */
+export const NO_VIDEO_NUDGE_KINDS: readonly SavedHomeNudgeKind[] = ["under_contract"]
+
 export function classifySavedHomeNudge(kind: string): SavedHomeNudge | null {
+  const nudge = classifySavedHomeNudgeUnruled(kind)
+  if (nudge && (NO_VIDEO_NUDGE_KINDS as readonly string[]).includes(nudge.kind)) return { ...nudge, avatarWorthy: false }
+  return nudge
+}
+
+function classifySavedHomeNudgeUnruled(kind: string): SavedHomeNudge | null {
   switch (kind) {
     case "price_drop":
       return {

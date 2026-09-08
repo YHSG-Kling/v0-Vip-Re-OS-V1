@@ -667,13 +667,19 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           // 'active' is covered by LISTING_PUBLISHED above; don't double-fire.
         }
         if (eventType) {
-          const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
-          void dispatchListingPromoVideo({
-            brokerageId: params.brokerageId,
-            listingId:   params.entityId,
-            agentUserId,
-            eventType,
-          })
+          // OWNER RULING (2026-09-08): "no video nudges for under contract." The
+          // under_contract promo VIDEO is never auto-dispatched from here; the
+          // variant stays in listing-promo-reactor for an agent-initiated launch.
+          // Direct mail below is unchanged (policy-gated, not video).
+          if (eventType !== "under_contract") {
+            const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+            void dispatchListingPromoVideo({
+              brokerageId: params.brokerageId,
+              listingId:   params.entityId,
+              agentUserId,
+              eventType,
+            })
+          }
           // Wave 36 — parallel direct-mail dispatch (policy-gated).
           const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
           void dispatchLifecycleMail({
