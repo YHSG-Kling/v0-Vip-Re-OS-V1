@@ -251,9 +251,35 @@ export async function logCommunication(params: LogCommunicationParams) {
         }
       }
 
+      // communication_audit_log.lead_id (m611 FK, unapplied) — WRITERLESS
+      // until now: this insert never set it, so lib/contact-promotion/
+      // history-carry.ts's REPOINTED_HISTORY_TABLES re-point
+      // (`.eq("lead_id", leadId)` at conversion time) always matched zero
+      // rows here. contacts and leads are disjoint (CLAUDE.md §4) and linked
+      // only via `leads.contact_id = contacts.id` (the LINK stamped by
+      // history-carry.ts on conversion) — never via contacts.contact_id,
+      // which is an unrelated secondary uuid on the SAME table (§3 trap).
+      // Best-effort reverse lookup: a contact can in principle trace back to
+      // more than one lead after a dedup merge, so this picks the most
+      // recently converted one; a miss (never a lead, e.g. a direct contact
+      // import) leaves lead_id null exactly as before.
+      let auditLeadId: string | null = null
+      if (params.contactId && isValidUUID(params.contactId)) {
+        const { data: leadRow } = await supabase
+          .from("leads")
+          .select("id")
+          .eq("contact_id", params.contactId)
+          .eq("brokerage_id", auditBrokerageId)
+          .order("converted_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        auditLeadId = (leadRow?.id as string | undefined) ?? null
+      }
+
       const { error: auditLogError } = await supabase.from("communication_audit_log").insert({
         brokerage_id: auditBrokerageId,
         contact_id: params.contactId ?? null,
+        lead_id: auditLeadId,
         agent_id: params.agentId ?? contactRow?.agent_id ?? null,
         communication_type: params.communicationType,
         channel,

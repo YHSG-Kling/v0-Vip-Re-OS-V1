@@ -26,6 +26,9 @@ const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<CalendarEventType, KernelEvent> = {
   [CalendarEventType.WALKTHROUGH]:         KernelEvent.WALKTHROUGH_DUE,
   [CalendarEventType.CLOSING]:             KernelEvent.CLOSING_SCHEDULED,
   [CalendarEventType.TASK_DUE]:            KernelEvent.TASK_DUE,
+  // The fifth of the "five *_DUE events" the comment above names — see
+  // lib/kernel/calendar-types.ts CLOSING_DISCLOSURE (lane Z1, 2026-09-08 hunt 2).
+  [CalendarEventType.CLOSING_DISCLOSURE]:  KernelEvent.CD_DUE,
   isa_outreach_email:                      KernelEvent.ISA_OUTREACH_SENT,
   isa_followup_email:                      KernelEvent.ISA_OUTREACH_SENT,
   isa_direct_mail:                         KernelEvent.ISA_OUTREACH_SENT,

@@ -585,12 +585,39 @@ export async function writePortalUpdate(
   const supabase = createServiceClient()
   let wrote = false
 
+  // MILESTONE_COMPLETED lost the single-emitter assumption the template above documents
+  // (CLAUDE.md §1, hunt 1 forwarded-metadata sweep, lane Z1 2026-09-08): title-portal's
+  // closing-prep items, the lender's clear-to-close, and milestone-service's generic
+  // completions (appraisal / walkthrough / financing / repair / earnest money / closing)
+  // all emit it too, each with its OWN milestone_name and none carrying inspection_type —
+  // so this template's inspection-worded copy rendered "The TBD inspection is finished"
+  // and mislabeled every non-inspection milestone as "Inspection complete". The lender's
+  // clear-to-close already gets its own correctly-worded card from a dedicated event
+  // (FINANCING_CLEAR_TO_CLOSE, emitted right after this one at its call site in
+  // app/actions/lender-portal-actions.ts) — this generic card is skipped there so it
+  // doesn't duplicate that card with the wrong copy. Everything else gets neutral,
+  // milestone_name-driven copy instead of borrowed inspection wording.
+  const rawMilestoneName = ctx.event === KernelEvent.MILESTONE_COMPLETED && typeof ctx.metadata?.milestone_name === "string"
+    ? (ctx.metadata.milestone_name as string)
+    : undefined
+  if (rawMilestoneName === "clear_to_close_received") return false
+  const genericMilestoneTemplate: PortalUpdateTemplate | undefined =
+    rawMilestoneName && rawMilestoneName !== "inspection_completed"
+      ? {
+          title: "Milestone complete",
+          plainLanguageSummary:
+            `A key milestone — ${rawMilestoneName.replace(/_/g, " ")} — is complete. Your agent will review next steps with you.`,
+          responsibleParty: "agent",
+          nextStep: "Check in with your agent about what's next.",
+        }
+      : undefined
+
   for (const contactId of contactIds) {
     // Resolve role — buyer / seller / lifetime — so per-role overrides apply.
     const role = await resolveContactRole(supabase, contactId, ctx)
     const merged: PortalUpdateTemplate = {
-      ...tpl,
-      ...(role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
+      ...(genericMilestoneTemplate ?? tpl),
+      ...(!genericMilestoneTemplate && role && tpl.perRole?.[role] ? tpl.perRole[role]! : {}),
     }
 
     // Audience gating (representation + domain semantics): a seller-side notice (our listing /

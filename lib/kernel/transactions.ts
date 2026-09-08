@@ -1258,6 +1258,33 @@ export async function closeTransactionCommand(params: {
       console.error("[closeTransactionCommand] emitKernelEvent failed", e)
     }
 
+    // KernelEvent.DEAL_CLOSED — CLAUDE.md §1/§2 (BUILD the missing half, lane Z1 2026-09-08
+    // hunt 2): the live database (hrvaqgvukzxfskkcrwbt) carries active notification_rules rows
+    // on trigger_event='deal_closed' (a brokerage genuinely asked to be notified on this exact
+    // spelling), but nothing anywhere emitted KernelEvent.DEAL_CLOSED — only the newer, differently
+    // -spelled TRANSACTION_CLOSED above, which those rules don't match (notification-engine.ts
+    // compares trigger_event to the event string exactly). Both are canonical KernelEvent members
+    // (DEAL_CLOSED predates the Layer-6 transaction-orchestration TRANSACTION_CLOSED) so rather than
+    // pick one spelling and orphan the configured rule, this IS the same real-world moment for a
+    // closing transaction — emit both. Best-effort / non-blocking: the close already succeeded.
+    try {
+      const { emitKernelEvent } = await import("./emit")
+      await emitKernelEvent({
+        event:           KernelEvent.DEAL_CLOSED,
+        brokerageId:     params.brokerageId,
+        entityType:      "transaction",
+        entityId:        params.transactionId,
+        transactionId:   params.transactionId,
+        listingId:       txBefore?.listing_id ?? undefined,
+        buyerContactId:  txBefore?.buyer_contact_id ?? undefined,
+        sellerContactId: txBefore?.seller_contact_id ?? undefined,
+        agentUserId:     params.agentId,
+        metadata:        { reason: params.reason ?? null, close_date: today },
+      })
+    } catch (e) {
+      console.error("[closeTransactionCommand] emitKernelEvent(DEAL_CLOSED) failed (non-blocking)", e)
+    }
+
     // ── Propagate close to related entities ────────────────────────────────
     // 1. Listing → CLOSED on its lifecycle stage machine + status='closed'
     //    (closes the loop: prior to this fix the listing stayed UNDER_CONTRACT

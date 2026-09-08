@@ -68,11 +68,23 @@ export interface LifecycleTransitionEvent {
  */
 function resolveBuyerKernelEvent(toState: BuyerState): KernelEvent {
   const milestones: Partial<Record<BuyerState, KernelEvent>> = {
+    // CLAUDE.md §1/§6 (lane Z1, 2026-09-08 hunt 3): this map covered 8 of the 13 BuyerState
+    // values; the other 5 fell to the BUYER_STATE_CHANGED catch-all below and their specific
+    // KernelEvent (read by the reactor / portal / sequences per lib/kernel/lifecycle.ts's older
+    // LIFECYCLE_TO_KERNEL_EVENT table, which already names these same 5 mappings) never fired —
+    // same defect class this function's own docstring documents having fixed for the first 5.
+    // BUYER_OFFER_SUBMITTED was the confirmed live gap: app/actions/buyer-offers.ts:872 drives a
+    // buyer to it on every offer submission and got BUYER_STATE_CHANGED instead of OFFER_SUBMITTED.
+    BUYER_CONTACT_CREATED:      KernelEvent.CONTACT_CREATED,
     BUYER_FINANCIALLY_VERIFIED: KernelEvent.BUYER_FINANCIALLY_VERIFIED,
     BUYER_SEARCH_CONFIGURED:    KernelEvent.BUYER_SEARCH_CONFIGURED,
+    BUYER_SEARCHING:            KernelEvent.BUYER_SEARCH_EXECUTED,
     BUYER_TOUR_ELIGIBLE:        KernelEvent.TOUR_ELIGIBLE,
+    BUYER_TOURING:              KernelEvent.TOUR_PLANNED,
     BUYER_OFFER_ELIGIBLE:       KernelEvent.OFFER_ELIGIBLE,
+    BUYER_OFFER_SUBMITTED:      KernelEvent.OFFER_SUBMITTED,
     BUYER_UNDER_CONTRACT:       KernelEvent.CONTRACT_SIGNED,
+    BUYER_ON_HOLD:              KernelEvent.DEAL_ON_HOLD,
     BUYER_CLOSED:               KernelEvent.DEAL_CLOSED,
     BUYER_LIFETIME:             KernelEvent.LIFETIME_CUSTOMER,
     BUYER_DISENGAGED:           KernelEvent.BUYER_DISENGAGED,

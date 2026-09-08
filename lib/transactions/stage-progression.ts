@@ -237,6 +237,32 @@ export async function advanceStage(params: {
     metadata:     { reason: params.reason ?? null },
   })
 
+  // 4b. KernelEvent.TRANSACTION_STAGE_CHANGED — CLAUDE.md §1 (BUILD the missing half, lane Z1
+  // 2026-09-08 hunt 3): the dotted `lifecycle.stage.advanced` row above is the audit trail, but
+  // nothing was ever emitting the ENUM event that the kernel event-reactor, the portal ("Deal
+  // update" card), the just-in-time education firer, the deal-ended contact-recheck, and the Deal
+  // Coordinator spawn trigger all read (lib/kernel/event-reactor.ts, lib/kernel/event-fanout.ts) —
+  // every one of them was silently dead on the real stage-advance path since this IS where a
+  // transaction's stage actually changes. Best-effort / non-blocking: the stage write above already
+  // succeeded, so a fan-out failure here must not undo or fail the advance.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.TRANSACTION_STAGE_CHANGED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: params.userId,
+      metadata: {
+        from_stage: currentStage,
+        to_stage:   params.targetStage,
+        reason:     params.reason ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[stage-progression] emitTransactionEvent(TRANSACTION_STAGE_CHANGED) failed (non-blocking)", err)
+  }
+
   // 5. Seed stage auto-tasks for the new stage
   await seedStageAutoTasks({
     transactionId: params.transactionId,

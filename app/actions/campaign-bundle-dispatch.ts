@@ -89,6 +89,33 @@ export async function sendCampaignBundleToContactAction(params: {
   const recipientName =
     `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Neighbor"
 
+  // campaign_bundle_dispatches.lead_id (m611 FK, unapplied) — the dispatcher
+  // (lib/direct-mail/orchestrate-bundle-send.ts:125) has always written
+  // `args.leadId ?? null`, but this, its sole caller, never supplied leadId,
+  // so every row landed null and app/api/cron/bundle-attribution-rollup/
+  // route.ts's LEAD-recipient attribution branch (it reads lead_id back and
+  // counts mail_response_tracking / conversions against it) never had
+  // anything to find for a contact-side send. This action is contact-only by
+  // design (`sendCampaignBundleToContactAction`), so leadId here is never the
+  // send TARGET — it is the lead this same contact converted FROM, resolved
+  // through the cookie client so RLS still scopes it to the caller's tenant.
+  // `leads.contact_id = contacts.id` is the LINK stamped at conversion
+  // (lib/contact-promotion/history-carry.ts) — never contacts.contact_id,
+  // an unrelated secondary uuid on the same table (CLAUDE.md §3 trap). A
+  // contact can in principle trace back to more than one lead after a dedup
+  // merge, so this picks the most recently converted one; a miss (a contact
+  // that was never a lead) leaves lead_id null exactly as before, and the
+  // rollup's `if (d.lead_id)` branch simply does not run for it.
+  const { data: sourceLead } = await supabase
+    .from("leads")
+    .select("id")
+    .eq("contact_id", params.contactId)
+    .eq("brokerage_id", brokerageId)
+    .order("converted_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const leadId = (sourceLead?.id as string | undefined) ?? undefined
+
   // Direct-mail items need a deliverable address. A bundle with no mail item
   // does not need one, so a missing address is NOT a refusal here — the
   // dispatcher records `no deliverable address` against the mail item only and
@@ -102,6 +129,7 @@ export async function sendCampaignBundleToContactAction(params: {
     brokerageId,
     bundleId:  params.bundleId,
     contactId: params.contactId,
+    leadId,
     userId:    ctx.userId ?? undefined,
     // agents.id, NOT users.id — a disjoint id space. The preset orchestrators
     // take the agents-class id; ctx.agentId is already that.
