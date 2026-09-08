@@ -60,14 +60,14 @@ import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import type { ApprovalSource, UnifiedApprovalItem } from "@/lib/kernel/approval-queue-aggregator"
 
 /** A business day without review — worth a look. */
-export const APPROVAL_SLA_WARN_HOURS = 24
+const APPROVAL_SLA_WARN_HOURS = 24
 /** Two days unreviewed — Exception Center chip turns red + bus referral raised. */
 export const APPROVAL_SLA_BREACH_HOURS = 48
 
 /** Owning manager per approval kind — QUEUE_MANAGER + table stewardship restated
  *  for the SLA rail (the aggregator itself is manager-agnostic). This is the
  *  approval_queue_slo collaboration domain's edge set. */
-export const APPROVAL_KIND_MANAGER: Record<ApprovalSource, ManagerKey> = {
+const APPROVAL_KIND_MANAGER: Record<ApprovalSource, ManagerKey> = {
   newsletter:     "campaign_orchestrator", // QUEUE_MANAGER.newsletter + newsletter_campaigns steward
   email:          "campaign_orchestrator", // email_campaigns steward
   ad_creative:    "ads_manager",           // QUEUE_MANAGER.ad_creative + ad_creative_variations steward
@@ -80,7 +80,7 @@ export const APPROVAL_KIND_MANAGER: Record<ApprovalSource, ManagerKey> = {
   legacy:         "data_steward",          // approval_items steward
 }
 
-export const APPROVAL_KIND_LABEL: Record<ApprovalSource, string> = {
+const APPROVAL_KIND_LABEL: Record<ApprovalSource, string> = {
   newsletter:     "Newsletters",
   email:          "Email campaigns",
   ad_creative:    "Ad creatives",
@@ -125,7 +125,8 @@ function classifyApprovalAge(hours: number): ApprovalSlaStatus {
  * PURE: fold the aggregator's unified rows into per-kind aging telemetry,
  * worst-first. Kinds with nothing pending produce NO row (honest — never padded).
  */
-export function computeApprovalSla(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function computeApprovalSla(
   items: Array<Pick<UnifiedApprovalItem, "type" | "created_at">>,
   now: Date = new Date(),
 ): ApprovalKindSla[] {

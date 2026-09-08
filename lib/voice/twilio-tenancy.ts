@@ -37,7 +37,8 @@ export interface TwilioCreds {
  * DB and two env vars). Keeping the ORDER here and the FETCHING there is what
  * makes the ordering testable at all.
  */
-export function pickCredTier(has: { byo: boolean; subaccount: boolean; master: boolean }): TwilioCreds["tier"] | null {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function pickCredTier(has: { byo: boolean; subaccount: boolean; master: boolean }): TwilioCreds["tier"] | null {
   if (has.byo) return "byo"
   if (has.subaccount) return "subaccount"
   if (has.master) return "master"

@@ -18,14 +18,15 @@ export function nudgeTag(brokerageId: string, read: ConnectionImpactRead): strin
   return `[CONN_NUDGE:${brokerageId}] [${sig}]`
 }
 
-export interface NudgeResult { notified: number; skipped: boolean }
+interface NudgeResult { notified: number; skipped: boolean }
 
 /**
  * Fire the proactive nudge for one brokerage when its connectivity needs
  * attention. Best-effort; deduped per attention-signature so the same broken
  * set never re-notifies until it changes or clears.
  */
-export async function runConnectionNudge(svc: any, brokerageId: string): Promise<NudgeResult> {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function runConnectionNudge(svc: any, brokerageId: string): Promise<NudgeResult> {
   const { scanConnectivity } = await import("@/lib/agentic-os/resolve-connectivity")
   const { composeConnectionImpact, composeConnectionHeadline } = await import("@/lib/agentic-os/connection-impact")
 

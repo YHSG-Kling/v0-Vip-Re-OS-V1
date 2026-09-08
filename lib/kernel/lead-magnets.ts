@@ -402,7 +402,7 @@ export async function publishLeadMagnet(
 // KERNEL COMMAND 2b: enqueueLeadMagnetCard — the LeadMagnetCard producer
 // ============================================================================
 
-export interface EnqueueLeadMagnetCardResult {
+interface EnqueueLeadMagnetCardResult {
   ok: boolean
   renderId?: string
   /** Why no render was queued — a refusal names its reason, never fakes success. */
@@ -442,7 +442,8 @@ function cardEyebrowForMagnetType(magnetType: string | null | undefined): string
  * generateQRCode header). A card already queued/rendering, or already succeeded
  * with the SAME copy, is not re-enqueued; changed copy renders a fresh card.
  */
-export async function enqueueLeadMagnetCard(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function enqueueLeadMagnetCard(
   magnetId: string,
   brokerageId: string,
   client?: ReturnType<typeof createServiceClient>,

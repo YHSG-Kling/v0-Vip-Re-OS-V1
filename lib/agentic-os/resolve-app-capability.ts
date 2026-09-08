@@ -154,7 +154,8 @@ async function loadHealingProviders(): Promise<Set<string>> {
  * Never throws — a probe failure reads as "not operable" with an honest reason,
  * so a discovery endpoint degrades into truthful caution rather than a 500.
  */
-export async function resolveAppCapability(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function resolveAppCapability(
   capability: AppCapability,
   ctx: CapabilityResolutionContext,
 ): Promise<AppCapabilityResolution> {

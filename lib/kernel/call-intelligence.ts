@@ -27,7 +27,8 @@ export interface CallIntelligence {
 const HIGH_URGENCY = 70
 
 /** PURE: fold a period's call analyses into the coaching brief's numbers. */
-export function rollupCallIntelligence(rows: CallAnalysisRow[]): CallIntelligence {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function rollupCallIntelligence(rows: CallAnalysisRow[]): CallIntelligence {
   const objectionCounts = new Map<string, number>()
   const sentimentMix = { positive: 0, neutral: 0, negative: 0 }
   const intentCounts = new Map<string, number>()

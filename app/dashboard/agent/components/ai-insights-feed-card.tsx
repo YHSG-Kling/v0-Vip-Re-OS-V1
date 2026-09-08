@@ -55,7 +55,8 @@ export interface AiInsightRow {
  *
  * Anything else (a future vocabulary entry) gets no link rather than a guess.
  */
-export function insightEntityHref(entityType: string | null, entityId: string | null): string | null {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function insightEntityHref(entityType: string | null, entityId: string | null): string | null {
   if (!entityId) return null
   switch (entityType) {
     case "transaction": return `/dashboard/transactions/${entityId}`

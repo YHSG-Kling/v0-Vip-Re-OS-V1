@@ -69,7 +69,8 @@ export type TranscriptLoad =
 /** Pure: "Speaker: text" lines (the shape parseZoomVtt emits — speakers kept,
  *  cue timestamps dropped) into rows the panel can label. A line with no
  *  speaker prefix renders as an unlabeled continuation. */
-export function splitTranscriptLines(transcript: string): Array<{ speaker: string | null; text: string }> {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function splitTranscriptLines(transcript: string): Array<{ speaker: string | null; text: string }> {
   return transcript
     .split(/\r?\n/)
     .map((l) => l.trim())

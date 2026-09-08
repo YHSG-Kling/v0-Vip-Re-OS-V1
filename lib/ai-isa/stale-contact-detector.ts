@@ -261,7 +261,8 @@ export async function detectStaleContacts(
  * Returns contacts that have been ghosted — agent sent outreach but received
  * no reply in ghostedDays. Reads isa_outreach_log for sent events.
  */
-export async function detectGhostedContacts(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function detectGhostedContacts(
   brokerageId: string,
   thresholds: Partial<DetectionThresholds> = {},
 ): Promise<StaleContact[]> {

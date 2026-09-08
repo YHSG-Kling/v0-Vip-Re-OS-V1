@@ -99,7 +99,8 @@ const PHONE_CALL_TYPES: ReadonlySet<string> = new Set(["agent_call", "ai_inbound
  * shape that produced this defect: the next meeting kind would have needed a
  * second special case, and forgetting it would have been silent.
  */
-export function analysisCallType(call: { call_type?: string | null; direction: string | null }): string {
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function analysisCallType(call: { call_type?: string | null; direction: string | null }): string {
   const direction = call.direction === "outbound" ? "outbound" : "inbound"
   const kind = (call.call_type ?? "").trim()
   if (!kind || PHONE_CALL_TYPES.has(kind)) return direction

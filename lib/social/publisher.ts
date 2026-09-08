@@ -326,7 +326,8 @@ async function publishToGoogleBusiness(params: PublishParams): Promise<PublishRe
 /**
  * Validate platform-specific content requirements
  */
-export function validateContentForPlatform(
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+function validateContentForPlatform(
   platform: string,
   content: string,
   mediaUrls?: string[]

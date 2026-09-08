@@ -20,8 +20,6 @@
     "app/actions/video-repurposing.ts": 3,
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
-    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 1,
-    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 1,
     "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
@@ -39,14 +37,13 @@
     "lib/agentic-os/agent-credentials.ts": 1,
     "lib/agentic-os/app-capability-registry.ts": 1,
     "lib/agentic-os/capability-ownership.ts": 1,
-    "lib/agentic-os/connection-nudge.ts": 2,
+    "lib/agentic-os/connection-nudge.ts": 1,
     "lib/agentic-os/connector-gateway.ts": 1,
     "lib/agentic-os/connector-probe.ts": 2,
     "lib/agentic-os/connector-registry.ts": 1,
     "lib/agentic-os/connector-shape.ts": 3,
     "lib/agentic-os/invocation-log.ts": 1,
     "lib/agentic-os/mcp-tools.ts": 2,
-    "lib/agentic-os/resolve-app-capability.ts": 1,
     "lib/agentic-os/vendor-ownership.ts": 3,
     "lib/agents/agent-deactivation.ts": 1,
     "lib/agents/buyer-match-reel-producer.ts": 1,
@@ -75,13 +72,11 @@
     "lib/ai-isa/post-call-outcome.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 2,
     "lib/ai-isa/resolve-isa-settings.ts": 1,
-    "lib/ai-isa/stale-contact-detector.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
     "lib/analytics/assignment-outcomes.ts": 4,
     "lib/analytics/prediction-accuracy.ts": 14,
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
-    "lib/auth/isa-actor.ts": 1,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -102,7 +97,6 @@
     "lib/cma/customer-facing-guard.ts": 1,
     "lib/commission/cda-discrepancy.ts": 2,
     "lib/commission/ledger-sync.ts": 5,
-    "lib/communication/phone-reachability.ts": 1,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 2,
@@ -193,13 +187,12 @@
     "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
     "lib/kernel/appraiser-packet.ts": 1,
-    "lib/kernel/approval-sla.ts": 1,
     "lib/kernel/area-query.ts": 2,
     "lib/kernel/bidding-war-concierge.ts": 4,
     "lib/kernel/billing.ts": 1,
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
-    "lib/kernel/call-intelligence.ts": 2,
+    "lib/kernel/call-intelligence.ts": 1,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/client-pulse.ts": 2,
     "lib/kernel/client-story-drafts.ts": 9,
@@ -234,7 +227,7 @@
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
-    "lib/kernel/lead-magnets.ts": 2,
+    "lib/kernel/lead-magnets.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 3,
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/lookalike-audience.ts": 1,
@@ -338,7 +331,6 @@
     "lib/marketing/social-media-pairing.ts": 2,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/video-content-kit.ts": 2,
-    "lib/net-sheet/net-sheet-guard-runner.ts": 1,
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
     "lib/newsletter/seo-score.ts": 1,
     "lib/offers/closing-cost-accuracy.ts": 5,
@@ -404,7 +396,6 @@
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
     "lib/showings/showingtime-ingest.ts": 1,
-    "lib/social/publisher.ts": 1,
     "lib/social/token-refresh.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
     "lib/storage/file-limits.ts": 3,
@@ -439,13 +430,12 @@
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
-    "lib/voice/call-analysis.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/platform-reception.ts": 2,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 7,
     "lib/voice/twilio-outbound.ts": 1,
-    "lib/voice/twilio-tenancy.ts": 2,
+    "lib/voice/twilio-tenancy.ts": 1,
     "lib/voice/twilio-voice.ts": 1,
     "lib/voice/voice-bus.ts": 2,
     "lib/voice-admin/kernel-command-surface.ts": 1,
@@ -455,7 +445,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9346,
+  "census": 9332,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1864,7 +1854,7 @@
     "app/dashboard/agent/components/agent-operating-radar.tsx": 1,
     "app/dashboard/agent/components/agent-superpowers-panel.tsx": 1,
     "app/dashboard/agent/components/agent-system-readiness.tsx": 1,
-    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 2,
+    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 1,
     "app/dashboard/agent/components/connection-health-card.tsx": 1,
     "app/dashboard/agent/components/conversion/newly-converted-contacts-panel.tsx": 1,
     "app/dashboard/agent/components/deal-risk-widget.tsx": 1,
@@ -2154,7 +2144,7 @@
     "app/dashboard/marketing/video-pages/client.tsx": 1,
     "app/dashboard/meetings/[eventId]/join-fallback.tsx": 1,
     "app/dashboard/meetings/[eventId]/meeting-embed.tsx": 1,
-    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 3,
+    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 2,
     "app/dashboard/motivation/motivation-client.tsx": 1,
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": 1,
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": 1,
@@ -2601,7 +2591,7 @@
     "lib/agentic-os/capability-ownership.ts": 3,
     "lib/agentic-os/connected-vendor-registry.ts": 3,
     "lib/agentic-os/connection-impact.ts": 2,
-    "lib/agentic-os/connection-nudge.ts": 3,
+    "lib/agentic-os/connection-nudge.ts": 2,
     "lib/agentic-os/connectivity-agent.ts": 4,
     "lib/agentic-os/connector-auto-applier.ts": 1,
     "lib/agentic-os/connector-gateway.ts": 2,
@@ -2614,7 +2604,7 @@
     "lib/agentic-os/invocation-log.ts": 3,
     "lib/agentic-os/invoke-planner.ts": 3,
     "lib/agentic-os/mcp-tools.ts": 3,
-    "lib/agentic-os/resolve-app-capability.ts": 4,
+    "lib/agentic-os/resolve-app-capability.ts": 3,
     "lib/agentic-os/resolve-connected-capability.ts": 1,
     "lib/agentic-os/resolve-connectivity.ts": 1,
     "lib/agentic-os/resolve-vendor-capability.ts": 1,
@@ -2724,7 +2714,7 @@
     "lib/ai-isa/situational-voicemail.ts": 1,
     "lib/ai-isa/speed-to-lead-policy.ts": 2,
     "lib/ai-isa/speed-to-lead.ts": 1,
-    "lib/ai-isa/stale-contact-detector.ts": 3,
+    "lib/ai-isa/stale-contact-detector.ts": 2,
     "lib/ai-isa/tools.ts": 1,
     "lib/ai-isa/transaction-propensity.ts": 2,
     "lib/ai-isa/video-generator.ts": 1,
@@ -2748,7 +2738,7 @@
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/crm-contact-staff.ts": 1,
-    "lib/auth/isa-actor.ts": 2,
+    "lib/auth/isa-actor.ts": 1,
     "lib/auth/lead-visibility.ts": 5,
     "lib/auth/permissions-client.ts": 3,
     "lib/auth/platform-guard.ts": 2,
@@ -2892,7 +2882,7 @@
     "lib/commission/waterfall/11-validate-persist.ts": 1,
     "lib/communication/call-compliance.ts": 2,
     "lib/communication/call-disclosures.ts": 4,
-    "lib/communication/phone-reachability.ts": 2,
+    "lib/communication/phone-reachability.ts": 1,
     "lib/communication/tcpa-gate.ts": 2,
     "lib/communication-spine/conversation-manager.ts": 1,
     "lib/communication-spine/ingest-message-service.ts": 1,
@@ -3300,7 +3290,7 @@
     "lib/kernel/appraisal-negotiation.ts": 1,
     "lib/kernel/appraiser-packet.ts": 2,
     "lib/kernel/approval-queue-aggregator.ts": 6,
-    "lib/kernel/approval-sla.ts": 4,
+    "lib/kernel/approval-sla.ts": 3,
     "lib/kernel/approval-sources.ts": 4,
     "lib/kernel/area-query.ts": 3,
     "lib/kernel/assistant-starter.ts": 1,
@@ -3314,7 +3304,7 @@
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync.ts": 6,
-    "lib/kernel/call-intelligence.ts": 6,
+    "lib/kernel/call-intelligence.ts": 5,
     "lib/kernel/campaign-center.ts": 4,
     "lib/kernel/capability-radar.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
@@ -3391,7 +3381,7 @@
     "lib/kernel/launch-war-room.ts": 3,
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
-    "lib/kernel/lead-magnets.ts": 9,
+    "lib/kernel/lead-magnets.ts": 8,
     "lib/kernel/lender-linkage.ts": 7,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
@@ -3707,7 +3697,7 @@
     "lib/negotiation/auto-trigger.ts": 2,
     "lib/negotiation/copilot-ai.ts": 1,
     "lib/negotiation/strategy-writer.ts": 1,
-    "lib/net-sheet/net-sheet-guard-runner.ts": 2,
+    "lib/net-sheet/net-sheet-guard-runner.ts": 1,
     "lib/net-sheet/net-sheet-reconciler.ts": 4,
     "lib/newsletter/insider-edit.ts": 1,
     "lib/newsletter/schedule-time.ts": 1,
@@ -3971,7 +3961,7 @@
     "lib/social/get-published-post-url.ts": 1,
     "lib/social/oauth-config.ts": 3,
     "lib/social/orchestrate-social-preset-publish.ts": 1,
-    "lib/social/publisher.ts": 2,
+    "lib/social/publisher.ts": 1,
     "lib/social/token-refresh.ts": 2,
     "lib/sphere/lifetime-touchpoint-reaper-policy.ts": 1,
     "lib/sphere/lifetime-touchpoint-reaper.ts": 1,
@@ -4134,7 +4124,7 @@
     "lib/video/viral-script-share.ts": 1,
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
-    "lib/voice/call-analysis.ts": 5,
+    "lib/voice/call-analysis.ts": 4,
     "lib/voice/call-coaching.ts": 1,
     "lib/voice/call-recording.ts": 5,
     "lib/voice/campaign-command.ts": 1,
@@ -4163,7 +4153,7 @@
     "lib/voice/text-command.ts": 1,
     "lib/voice/tool-registry.ts": 3,
     "lib/voice/twilio-outbound.ts": 5,
-    "lib/voice/twilio-tenancy.ts": 5,
+    "lib/voice/twilio-tenancy.ts": 4,
     "lib/voice/twilio-voice.ts": 9,
     "lib/voice/voice-bus.ts": 3,
     "lib/voice/voice-coverage.ts": 2,
@@ -10612,7 +10602,6 @@
       "AgentSystemReadiness"
     ],
     "app/dashboard/agent/components/ai-insights-feed-card.tsx": [
-      "insightEntityHref",
       "AiInsightsFeedCard"
     ],
     "app/dashboard/agent/components/connection-health-card.tsx": [
@@ -11502,7 +11491,6 @@
       "MeetingEmbed"
     ],
     "app/dashboard/meetings/[eventId]/transcript-panel.tsx": [
-      "splitTranscriptLines",
       "loadMeetingTranscript",
       "TranscriptPanel"
     ],
@@ -12971,7 +12959,6 @@
     ],
     "lib/agentic-os/connection-nudge.ts": [
       "nudgeTag",
-      "runConnectionNudge",
       "runConnectionNudgeAll"
     ],
     "lib/agentic-os/connectivity-agent.ts": [
@@ -13027,7 +13014,6 @@
       "manifestToMcpTools"
     ],
     "lib/agentic-os/resolve-app-capability.ts": [
-      "resolveAppCapability",
       "resolveAllAppCapabilities",
       "blockExplanation",
       "attentionExplanation"
@@ -13515,7 +13501,6 @@
     ],
     "lib/ai-isa/stale-contact-detector.ts": [
       "detectStaleContacts",
-      "detectGhostedContacts",
       "detectAllEligibleContacts"
     ],
     "lib/ai-isa/tools.ts": [
@@ -13732,7 +13717,6 @@
       "isCrmContactStaff"
     ],
     "lib/auth/isa-actor.ts": [
-      "getIsaSystemUserId",
       "getIsaSystemUserIdCached"
     ],
     "lib/auth/lead-visibility.ts": [
@@ -14503,7 +14487,6 @@
       "withAiCallDisclosures"
     ],
     "lib/communication/phone-reachability.ts": [
-      "pickReachablePhone",
       "hasReachablePhone"
     ],
     "lib/communication/tcpa-gate.ts": [
@@ -16390,7 +16373,6 @@
     ],
     "lib/kernel/approval-sla.ts": [
       "evaluateApprovalSla",
-      "computeApprovalSla",
       "slaBreaches",
       "loadApprovalSla"
     ],
@@ -16459,7 +16441,6 @@
       "listSyncLogs"
     ],
     "lib/kernel/call-intelligence.ts": [
-      "rollupCallIntelligence",
       "composeCallIntelBrief",
       "loadCallIntelligence",
       "rollupVoiceActivity",
@@ -16944,7 +16925,6 @@
       "leadMagnetQrLabel",
       "createLeadMagnet",
       "publishLeadMagnet",
-      "enqueueLeadMagnetCard",
       "captureFormSubmission",
       "generateQRCode",
       "trackMagnetEvent",
@@ -18598,7 +18578,6 @@
       "writeNegotiationStrategy"
     ],
     "lib/net-sheet/net-sheet-guard-runner.ts": [
-      "parseSettlementFigures",
       "runNetSheetSurpriseGuard"
     ],
     "lib/net-sheet/net-sheet-reconciler.ts": [
@@ -19955,8 +19934,7 @@
       "orchestrateSocialPresetPublish"
     ],
     "lib/social/publisher.ts": [
-      "publishToSocialPlatform",
-      "validateContentForPlatform"
+      "publishToSocialPlatform"
     ],
     "lib/social/token-refresh.ts": [
       "planTokenAction",
@@ -20702,7 +20680,6 @@
     "lib/voice/call-analysis.ts": [
       "isAnalyzableCall",
       "extractVoiceIntel",
-      "analysisCallType",
       "analyzeVoiceCallRow",
       "sweepVoiceCallIntelligence"
     ],
@@ -20850,7 +20827,6 @@
       "endOutboundAiCall"
     ],
     "lib/voice/twilio-tenancy.ts": [
-      "pickCredTier",
       "resolveTenantTwilioCreds",
       "ensureTenantSubaccount",
       "rollupVoiceUsage",
