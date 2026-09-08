@@ -286,6 +286,7 @@ function NewTicketDialog({
         status: "open", priority, category, agentId: null,
         lane, vendorId: null, submittedByUserId: null,
         createdAt: new Date().toISOString(), updatedAt: null,
+        satisfactionRating: null, satisfactionAt: null, satisfactionComment: null,
       })
       toast({
         title: "Ticket raised",
