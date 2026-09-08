@@ -1,7 +1,7 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { listPendingApprovalModulesAction } from "@/app/actions/learning-modules-approvals"
+import { listPendingApprovalModulesAction, listRecentModuleDecisionsAction } from "@/app/actions/learning-modules-approvals"
 import { ApprovalsClient } from "./approvals-client"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -13,7 +13,10 @@ export const metadata = {
 }
 
 async function ApprovalsData() {
-  const result = await listPendingApprovalModulesAction()
+  const [result, decisions] = await Promise.all([
+    listPendingApprovalModulesAction(),
+    listRecentModuleDecisionsAction(),
+  ])
   if (!result.ok) {
     return (
       <div className="rounded-md border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
@@ -21,7 +24,12 @@ async function ApprovalsData() {
       </div>
     )
   }
-  return <ApprovalsClient initialRows={result.rows} />
+  return (
+    <ApprovalsClient
+      initialRows={result.rows}
+      recentDecisions={decisions.ok ? decisions.rows : []}
+    />
+  )
 }
 
 export default async function ApprovalsPage() {

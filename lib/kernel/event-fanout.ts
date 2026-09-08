@@ -553,6 +553,62 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     chatBody: "When you have a moment, I need a quick document from you — details are in your portal.",
   },
 
+  // ── Offer intake + due-diligence vendor quotes (kernel-event-census-z1, lane BB,
+  // 2026-09-08) — all five were EMITTED with zero portal consumer: entityType
+  // "offer"/"transaction" already resolves buyer + seller via resolveEventContacts,
+  // so a template is the whole fix (no plumbing gap, unlike CONTRACT_SENT_FOR_SIGNATURE's
+  // "transaction_document" entityType, which resolveEventContacts has no branch for and
+  // stays audit-only until that's added). ──────────────────────────────────────
+  [KernelEvent.OFFER_UPLOADED]: {
+    title: "New offer uploaded",
+    plainLanguageSummary:
+      "An offer document was uploaded for review. Your agent is looking it over now.",
+    responsibleParty: "agent",
+    audience: "both",
+    perRole: {
+      seller: {
+        title: "A new offer came in",
+        plainLanguageSummary: "An offer document was just uploaded on your listing. Your agent is reviewing it now.",
+        chatBody: "A new offer just came in — reviewing it now and I'll walk you through it.",
+      },
+      buyer: {
+        title: "Your offer was uploaded",
+        plainLanguageSummary: "Your offer document was uploaded and is on its way to the seller's side.",
+        chatBody: "Your offer is uploaded and headed to the seller's agent.",
+      },
+    },
+  },
+  [KernelEvent.INSPECTION_QUOTE_REQUESTED]: {
+    title: "Inspection quote requested",
+    plainLanguageSummary:
+      "Your agent requested a quote from an inspector for {quote_amount}. We'll confirm once it's approved.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "I requested an inspection quote — I'll confirm the amount with you shortly.",
+  },
+  [KernelEvent.INSPECTION_QUOTE_APPROVED]: {
+    title: "Inspection quote approved",
+    plainLanguageSummary: "The inspection quote from {vendor_name} was approved and scheduling can move forward.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    nextStep: "Inspector will be scheduled.",
+    chatBody: "Inspection quote approved — getting it scheduled with {vendor_name}.",
+  },
+  [KernelEvent.INSURANCE_QUOTE_REQUESTED]: {
+    title: "Insurance quote requested",
+    plainLanguageSummary: "A homeowner's insurance quote was requested from {vendor_name}. We'll share it once it's back.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "I requested an insurance quote from {vendor_name} — I'll pass it along as soon as it's in.",
+  },
+  [KernelEvent.INSURANCE_QUOTE_APPROVED]: {
+    title: "Insurance quote approved",
+    plainLanguageSummary: "The insurance quote from {vendor_name} was approved.",
+    responsibleParty: "agent",
+    audience: "buyer",
+    chatBody: "Insurance quote from {vendor_name} is approved — one more box checked toward closing.",
+  },
+
   // ── Lifetime / post-close touchpoints ────────────────────────────────────────
   [KernelEvent.REVIEW_REQUEST_SENT]: {
     title: "How did we do?",

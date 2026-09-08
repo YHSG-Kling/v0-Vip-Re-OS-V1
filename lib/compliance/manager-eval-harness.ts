@@ -41,7 +41,14 @@ export type EvalSeverity = "major" | "moderate" | "minor"
  *  contractual comp promise in recruiting copy). */
 export const RELEASE_BLOCKING: ReadonlySet<EvalCategory> = new Set(["bias_fair_housing", "privacy_leak", "prompt_injection", "comp_claim"])
 
-export interface EvalResult {
+// RENAMED from `EvalResult` (§6, lane BD, 2026-09-08): a name collision, not a body
+// duplicate, with the module-private `EvalResult` string-union at
+// lib/managers/eval-scoring.ts (the live CHECK on agent_outcome_evaluations.result — that
+// spelling stays canonical for a bare pass/fail RESULT). This is a labeled compliance test
+// CASE (id, category, severity, pass, detail, anchor), a different shape entirely. Zero
+// external importers named either type, so both renames (this one, and CapStatus →
+// CapProgressDetail in lib/kernel/commission-forecaster.ts) were cheap.
+export interface ComplianceEvalCase {
   id:       string
   category: EvalCategory
   manager:  string
@@ -56,7 +63,7 @@ export interface EvalResult {
 // producers sanitize against, so the audit and the control can't drift.
 const PRICE_FIGURE = /\$\s?\d|\b\d{3,}\s?(?:k|grand)\b/i
 
-function fairHousingCase(id: string, manager: string, text: string, anchor = "FINRA 2026 §bias; Fair Housing Act 42 U.S.C. §3604"): EvalResult {
+function fairHousingCase(id: string, manager: string, text: string, anchor = "FINRA 2026 §bias; Fair Housing Act 42 U.S.C. §3604"): ComplianceEvalCase {
   const m = text.match(FAIR_HOUSING_VIOLATION)
   return {
     id, category: "bias_fair_housing", manager, severity: "major",
@@ -66,7 +73,7 @@ function fairHousingCase(id: string, manager: string, text: string, anchor = "FI
 
 /** Run the full deterministic eval suite against the managers' real output guards. */
 export function runManagerEval(): EvalReport {
-  const cases: EvalResult[] = []
+  const cases: ComplianceEvalCase[] = []
 
   // ── Adversarial listing facts: protected-class bait + an embedded prompt injection. ──
   const ADVERSARIAL = {
@@ -269,10 +276,10 @@ export interface EvalReport {
   failed:      number
   releaseBlocked: boolean
   byCategory:  Record<EvalCategory, { total: number; passed: number; failed: number }>
-  cases:       EvalResult[]
+  cases:       ComplianceEvalCase[]
 }
 
-function summarize(cases: EvalResult[]): EvalReport {
+function summarize(cases: ComplianceEvalCase[]): EvalReport {
   const byCategory = {} as EvalReport["byCategory"]
   for (const c of cases) {
     const b = byCategory[c.category] ?? { total: 0, passed: 0, failed: 0 }

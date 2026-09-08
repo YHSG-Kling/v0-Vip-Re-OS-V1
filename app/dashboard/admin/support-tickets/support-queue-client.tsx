@@ -211,7 +211,15 @@ export function SupportQueueClient({
                       {t.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.description}</p>}
                       <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
                         <Clock className="h-3 w-3" />{new Date(t.createdAt).toLocaleString()}
+                        {t.satisfactionRating != null && (
+                          <span className="ml-2">
+                            · CSAT {t.satisfactionRating}/5{t.satisfactionAt ? ` (${new Date(t.satisfactionAt).toLocaleDateString()})` : ""}
+                          </span>
+                        )}
                       </p>
+                      {t.satisfactionComment && (
+                        <p className="text-xs text-muted-foreground italic mt-1">&ldquo;{t.satisfactionComment}&rdquo;</p>
+                      )}
                       <AdminTicketThread ticketId={t.id} />
                     </div>
                     <Select value={t.status} onValueChange={(v) => setStatus(t.id, v as TicketStatus)}>

@@ -318,7 +318,12 @@ export function AdminOnboardingOsClient({
                               <td className="py-2">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   {a.verificationStatus === 'verified' && (
-                                    <Badge className="bg-emerald-100 text-emerald-800 text-[10px]"><CheckCircle2 className="h-3 w-3 mr-1" />Verified</Badge>
+                                    <Badge className="bg-emerald-100 text-emerald-800 text-[10px]" title={a.verifiedAt ? `Verified ${new Date(a.verifiedAt).toLocaleDateString()}` : undefined}>
+                                      <CheckCircle2 className="h-3 w-3 mr-1" />Verified
+                                    </Badge>
+                                  )}
+                                  {!a.eoCertificateUrl && (
+                                    <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">No E&amp;O on file</Badge>
                                   )}
                                   {a.needsManualReview && (
                                     <Badge variant="destructive" className="text-[10px]"><AlertCircle className="h-3 w-3 mr-1" />Needs review</Badge>

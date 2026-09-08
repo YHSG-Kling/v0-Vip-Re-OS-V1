@@ -47,7 +47,7 @@ const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", 
 /** The columns every ticket read in this file selects. One list so a lane can
  *  never be dropped from one query and present in another. */
 const TICKET_COLUMNS =
-  "id, subject, description, status, priority, category, agent_id, lane, vendor_id, submitted_by_user_id, created_at, updated_at"
+  "id, subject, description, status, priority, category, agent_id, lane, vendor_id, submitted_by_user_id, created_at, updated_at, satisfaction_rating, satisfaction_at, satisfaction_comment"
 
 /**
  * Does this caller administer their own brokerage? MIRRORS public.is_brokerage_admin()
@@ -125,6 +125,9 @@ function mapTicket(r: Record<string, unknown>): SupportTicket {
     submittedByUserId: (r.submitted_by_user_id as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: (r.updated_at as string | null) ?? null,
+    satisfactionRating: (r.satisfaction_rating as number | null) ?? null,
+    satisfactionAt: (r.satisfaction_at as string | null) ?? null,
+    satisfactionComment: (r.satisfaction_comment as string | null) ?? null,
   }
 }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestMessageService } from "@/lib/communication-spine/ingest-message-service"
+import { safeHexEqual } from "@/lib/meta/verify-signature"
 import crypto from "crypto"
 
 /**
@@ -64,18 +65,12 @@ type LinkedInSignatureVerdict =
   | { ok: true }
   | { ok: false; status: 401 | 503; reason: string }
 
-/** Constant-time hex compare; false (never a throw) on any malformed input. */
-function safeHexEqual(expectedHex: string, actualHex: string): boolean {
-  if (!/^[0-9a-fA-F]+$/.test(expectedHex) || !/^[0-9a-fA-F]+$/.test(actualHex)) return false
-  if (expectedHex.length % 2 !== 0 || actualHex.length % 2 !== 0) return false
-  try {
-    const a = Buffer.from(expectedHex, "hex")
-    const b = Buffer.from(actualHex, "hex")
-    return a.length === b.length && crypto.timingSafeEqual(a, b)
-  } catch {
-    return false
-  }
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `safeHexEqual` (constant-time hex
+// compare, false — never a throw — on any malformed input) lived here; it was
+// byte-identical to the one in lib/meta/verify-signature.ts, which is now the
+// survivor and exports it. Comparing two hex digests carries no Meta-specific
+// policy, so this LinkedIn route imports the shared one instead of holding a
+// second copy.
 
 function verifyLinkedInSignature(rawBody: string, signatureHeader: string | null): LinkedInSignatureVerdict {
   if (!CLIENT_SECRET) {

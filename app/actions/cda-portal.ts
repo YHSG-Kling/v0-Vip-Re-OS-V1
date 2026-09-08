@@ -49,6 +49,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { KernelEvent } from "@/lib/kernel/events"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
@@ -820,6 +821,17 @@ export async function approveCdaAction(input: { cdaId: string }) {
   // process is compliance approves → the BROKER SIGNS → it is sent to the closing
   // agent with a record of the send, so the milestone stays with
   // sendCdaToTitleAction where the delivery actually happens.
+  //
+  // eventType was the dotted string "cda.approved" (CLAUDE.md §6 defect class —
+  // lib/kernel/lifecycle.ts's identity arm only accepts a lifecycle STATE name it
+  // has a key for, or a canonical KernelEvent VALUE; "cda.approved" is neither, so
+  // processKernelEvent was NEVER CALLED here). KernelEvent.CDA_APPROVED IS that
+  // value ('cda_approved') and is a live campaign_sequences.trigger_event
+  // (scripts/check-vocabularies.ts) with zero writers before this — a brokerage
+  // that configured a sequence on it could never have had it fire (kernel-event-census-z1
+  // NEITHER list). The reactor's enrollMatchingSequences (lib/kernel/event-reactor.ts:144)
+  // runs generically on every processKernelEvent call, so naming the canonical value
+  // is the whole fix — no new fanout template needed for this compliance-facing event.
   try {
     const { transitionLifecycle } = await import("@/lib/kernel/lifecycle")
     await transitionLifecycle({
@@ -830,7 +842,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
       toState:     "cda_approved",
       actorUserId: auth.userId,
       actorRole:   (auth.userType ?? "compliance_officer") as never,
-      eventType:   "cda.approved",
+      eventType:   KernelEvent.CDA_APPROVED,
       metadata:    { cda_id: cda.id, approver_role: auth.userType },
     })
   } catch { /* ledger is best-effort — the approval is already recorded */ }

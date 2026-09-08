@@ -255,7 +255,7 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
             <div className="space-y-1">
               {pendingInvites.map((i) => (
                 <div key={i.id} className="flex items-center gap-2 text-sm">
-                  <span className="flex-1 truncate">{i.email} · <span className="text-xs text-muted-foreground">{i.role}{i.status === "expired" ? " · expired" : ""}</span></span>
+                  <span className="flex-1 truncate">{i.email} · <span className="text-xs text-muted-foreground">{i.role}{i.teamName ? ` · ${i.teamName}` : ""}{i.status === "expired" ? " · expired" : ""}</span></span>
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => invite("resend", i.id)}>Resend</Button>
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => invite("revoke", i.id)}>Revoke</Button>
                 </div>

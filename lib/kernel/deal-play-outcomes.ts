@@ -12,6 +12,9 @@
 // real Ns. Observational, not randomized — the why-string says so (agents may
 // run the play on already-hot listings).
 
+import { median } from "@/lib/format/stats"
+export { median } // re-exported: scripts/deal-play-simulator.ts imports it from here by name
+
 export const MIN_COHORT = 10
 // TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: DAYS_MARGIN_FLOOR, DAYS_MARGIN_PCT.
 // Nothing in the product imported them, and no simulator did either; the
@@ -45,12 +48,8 @@ export interface DealPlayLift {
   controlTotal: number
 }
 
-export function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const s = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(s.length / 2)
-  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `median` lived here; survivor
+// lib/format/stats.ts:median, imported above.
 
 /** PURE: fold outcome rows into the honest lift verdict. */
 export function scoreDealPlayOutcomes(rows: OutcomeRow[]): DealPlayLift {

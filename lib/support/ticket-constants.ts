@@ -71,6 +71,10 @@ export interface SupportTicket {
   submittedByUserId: string | null
   createdAt: string
   updatedAt: string | null
+  /** Post-resolution CSAT, stamped by the same satisfaction survey action across both lanes. */
+  satisfactionRating: number | null
+  satisfactionAt: string | null
+  satisfactionComment: string | null
 }
 
 export interface HelpArticle {

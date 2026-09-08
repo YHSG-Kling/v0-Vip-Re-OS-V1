@@ -29,6 +29,8 @@ import { narrowReportAgentIds, type EgressScopeKind } from "./reporting-scope"
 import type { ReportingActorContext, KernelReportingResult } from "./reporting"
 import { DEADLINE_OPEN_STATUSES, deadlineAtRisk } from "@/lib/transactions/coordination-status"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { median } from "@/lib/format/stats"
+export { median } // re-exported: scripts/autonomy-report-simulator.ts imports it from here
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -299,13 +301,10 @@ export interface CoachingSignalsReport {
   deadlines: { atRisk: number; missed: number }
 }
 
-/** PURE: median of a number list (exported for the sim). */
-export function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `median` lived here (same computation as
+// lib/kernel/deal-play-outcomes.ts and lib/managers/teamwork-metrics.ts, with renamed
+// locals — same duplicate in substance, outside the census's stated no-identifier-rename
+// scope); survivor lib/format/stats.ts:median, imported+re-exported above.
 
 export async function generateCoachingSignalsReport(input: {
   ctx: ReportingActorContext

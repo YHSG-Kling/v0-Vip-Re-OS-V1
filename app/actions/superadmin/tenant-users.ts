@@ -43,7 +43,12 @@ export interface TenantUserRow {
    *  admin API) — null when Auth has no record, rendered as an honest "—". */
   lastLoginAt: string | null
 }
-export interface TenantInviteRow { id: string; email: string; role: string; status: string; expiresAt: string | null; createdAt: string }
+export interface TenantInviteRow {
+  id: string; email: string; role: string; status: string; expiresAt: string | null; createdAt: string
+  teamName: string | null
+  /** Set once accepted — the users.id the invite resolved to (onboarding/state-machine.ts). */
+  acceptedUserId: string | null
+}
 export interface TenantTeamRow { id: string; name: string; leadName: string | null; memberCount: number }
 
 /** auth.users.last_sign_in_at for a set of user ids — SAME source as the
@@ -95,7 +100,7 @@ export async function listTenantUsersAction(brokerageId: string): Promise<
   const svc = createServiceClient()
   const [{ data: users }, { data: invites }, { data: teams }, { data: brk }] = await Promise.all([
     svc.from("users").select("id, email, first_name, last_name, user_type, status, team_id").eq("brokerage_id", brokerageId).is("deleted_at", null).limit(500),
-    svc.from("user_invitations").select("id, email, user_type, status, expires_at, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(200),
+    svc.from("user_invitations").select("id, email, user_type, status, expires_at, created_at, team_id, accepted_user_id").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(200),
     svc.from("teams").select("id, name, team_lead_id").eq("brokerage_id", brokerageId).is("deleted_at", null).order("name").limit(100),
     svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle(),
   ])
@@ -126,7 +131,11 @@ export async function listTenantUsersAction(brokerageId: string): Promise<
       role: u.user_type, status: u.status,
       lastLoginAt: lastSignIn.get(u.id) ?? null,
     })),
-    invites: ((invites ?? []) as any[]).map((i) => ({ id: i.id, email: i.email, role: i.user_type, status: i.status, expiresAt: i.expires_at, createdAt: i.created_at })),
+    invites: ((invites ?? []) as any[]).map((i) => ({
+      id: i.id, email: i.email, role: i.user_type, status: i.status, expiresAt: i.expires_at, createdAt: i.created_at,
+      teamName: i.team_id ? (teamRows.find((t) => t.id === i.team_id)?.name ?? null) : null,
+      acceptedUserId: i.accepted_user_id ?? null,
+    })),
     teams: teamRows,
     planTier: ((brk as any)?.plan_tier as string | null) ?? null,
   }

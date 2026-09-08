@@ -325,6 +325,12 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     protocolVersion: "LinkedIn webhook validation (learn.microsoft.com/linkedin/shared/api-guide/webhook-validation, read 2026-09-03): challengeResponse = hex(HMACSHA256(challengeCode, clientSecret)); X-LI-Signature = hex(HMACSHA256(\"hmacsha256=\" + rawBody, clientSecret))",
     consoleField: "LinkedIn Developer Portal → app webhook URL",
     failureVisibility: null,
+    // §1.1 (2026-09-08, lane BD): safeHexEqual moved out of the route onto the shared
+    // verifier at lib/meta/verify-signature.ts (constant-time hex compare, no Meta-specific
+    // policy) — declared here so the scheme-construct reachability check below still finds
+    // timingSafeEqual( on the file it now actually lives in, instead of accusing a route
+    // that verifies correctly of losing its verification.
+    implementedIn: ["lib/meta/verify-signature.ts"],
     notes: "GAP CLOSED 2026-09-03: GET returns {challengeCode, challengeResponse} and POST verifies X-LI-Signature over the raw body with LINKEDIN_CLIENT_SECRET (503 unset, 401 mismatch).",
   },
   {

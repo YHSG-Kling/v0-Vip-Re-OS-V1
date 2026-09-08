@@ -444,7 +444,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9329,
+  "census": 9330,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -734,7 +734,7 @@
     "app/actions/lead-scraping-config.ts": 15,
     "app/actions/lead-signal-ingest.ts": 5,
     "app/actions/leads.ts": 11,
-    "app/actions/learning-modules-approvals.ts": 3,
+    "app/actions/learning-modules-approvals.ts": 4,
     "app/actions/learning-modules.ts": 6,
     "app/actions/lender-portal-actions.ts": 5,
     "app/actions/lender-status-request.ts": 1,
@@ -3120,7 +3120,9 @@
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
+    "lib/format/money.ts": 1,
     "lib/format/ordinal.ts": 2,
+    "lib/format/stats.ts": 1,
     "lib/forms/esign-anchor-adapters.ts": 4,
     "lib/forms/esign-anchor-eval.ts": 2,
     "lib/forms/esign-anchor-plan.ts": 1,
@@ -3343,7 +3345,7 @@
     "lib/kernel/cron-logging.ts": 6,
     "lib/kernel/deal-autopsy.ts": 3,
     "lib/kernel/deal-confidence.ts": 1,
-    "lib/kernel/deal-play-outcomes.ts": 3,
+    "lib/kernel/deal-play-outcomes.ts": 2,
     "lib/kernel/deal-play.ts": 2,
     "lib/kernel/deal-room-reel.ts": 4,
     "lib/kernel/deal-save-huddle.ts": 9,
@@ -3439,7 +3441,7 @@
     "lib/kernel/referral-radar.ts": 6,
     "lib/kernel/regulatory-watcher.ts": 6,
     "lib/kernel/repair-digest.ts": 3,
-    "lib/kernel/reporting-autonomy.ts": 4,
+    "lib/kernel/reporting-autonomy.ts": 3,
     "lib/kernel/reporting-scope.ts": 2,
     "lib/kernel/reporting.ts": 11,
     "lib/kernel/reputation.ts": 5,
@@ -3645,7 +3647,7 @@
     "lib/managers/outcome-attribution.ts": 3,
     "lib/managers/regional-convention-review.ts": 1,
     "lib/managers/team-argument-map.ts": 1,
-    "lib/managers/teamwork-metrics.ts": 4,
+    "lib/managers/teamwork-metrics.ts": 3,
     "lib/marketing/annual-home-value-report.ts": 2,
     "lib/marketing/attribution.ts": 2,
     "lib/marketing/audience-resolver.ts": 1,
@@ -3691,7 +3693,7 @@
     "lib/marketing/vendor-ranking.ts": 5,
     "lib/marketing/video-content-kit.ts": 4,
     "lib/marketing/video-provider-resolver.ts": 2,
-    "lib/meta/verify-signature.ts": 2,
+    "lib/meta/verify-signature.ts": 3,
     "lib/negotiation/analyzer.ts": 1,
     "lib/negotiation/auto-trigger.ts": 2,
     "lib/negotiation/copilot-ai.ts": 1,
@@ -6107,6 +6109,7 @@
     ],
     "app/actions/learning-modules-approvals.ts": [
       "listPendingApprovalModulesAction",
+      "listRecentModuleDecisionsAction",
       "approveLearningModuleAction",
       "rejectLearningModuleAction"
     ],
@@ -15616,9 +15619,15 @@
     "lib/financing/rate-lock-watch.ts": [
       "computeRateLockRisk"
     ],
+    "lib/format/money.ts": [
+      "compactCentsMoney"
+    ],
     "lib/format/ordinal.ts": [
       "ordinal",
       "ordinalWord"
+    ],
+    "lib/format/stats.ts": [
+      "median"
     ],
     "lib/forms/esign-anchor-adapters.ts": [
       "anchorsForProvider",
@@ -16660,7 +16669,6 @@
       "distillDealConfidence"
     ],
     "lib/kernel/deal-play-outcomes.ts": [
-      "median",
       "scoreDealPlayOutcomes",
       "loadDealPlayLift"
     ],
@@ -17256,7 +17264,6 @@
     ],
     "lib/kernel/reporting-autonomy.ts": [
       "generateAutonomyImpactReport",
-      "median",
       "generateCoachingSignalsReport",
       "composeKpiNarrative"
     ],
@@ -18357,7 +18364,6 @@
       "composeTeamArgumentMap"
     ],
     "lib/managers/teamwork-metrics.ts": [
-      "median",
       "rollupTeamwork",
       "composeTeamworkLines",
       "loadTeamworkMetrics"
@@ -18557,6 +18563,7 @@
       "initialProviderColumns"
     ],
     "lib/meta/verify-signature.ts": [
+      "safeHexEqual",
       "verifyMetaSignature",
       "metaSubscriptionHandshake"
     ],

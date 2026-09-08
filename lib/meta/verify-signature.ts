@@ -107,9 +107,16 @@ function hmacSha256Hex(secret: string, message: string): string {
  * Constant-time equality of two hex digests. Returns false on ANY malformed
  * input (odd length, non-hex, length mismatch) rather than throwing — a
  * verifier that throws on a crafted header is a verifier that can be crashed.
+ *
+ * EXPORTED since 2026-09-08 (lane BD, §1.1 duplicate sweep): the identical
+ * body lived a second time as a module-private copy in
+ * app/api/webhooks/linkedin/route.ts, verifying LinkedIn's X-LI-Signature
+ * candidates the same constant-time way this file verifies Meta's
+ * X-Hub-Signature-256. Comparing two hex digests carries no Meta-specific
+ * policy, so that route now imports this one instead of holding its own —
+ * tombstone at app/api/webhooks/linkedin/route.ts:68.
  */
-// Module-private since 2026-09-07 — no importer outside this file (lane O / opposite-missing cascade).
-function safeHexEqual(expectedHex: string, actualHex: string): boolean {
+export function safeHexEqual(expectedHex: string, actualHex: string): boolean {
   if (!/^[0-9a-fA-F]+$/.test(expectedHex) || !/^[0-9a-fA-F]+$/.test(actualHex)) return false
   if (expectedHex.length % 2 !== 0 || actualHex.length % 2 !== 0) return false
   try {

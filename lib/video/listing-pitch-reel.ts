@@ -23,6 +23,7 @@ import { geometryFor } from "@/lib/remotion/composition-geometry"
 // the sentence the refusal log names.
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { describeMissingContent } from "@/lib/remotion/content-contract"
+import { compactCentsMoney } from "@/lib/format/money"
 
 export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
 
@@ -32,12 +33,8 @@ export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
  */
 const LISTING_PITCH_COMPOSITION = "PartnersMeetingReel"
 
-const money = (cents: number) => {
-  const v = Math.round(Math.max(0, cents) / 100)
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000).toLocaleString("en-US")}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `money` (cents → "$1.2M"/"$45K"/"$900")
+// lived here; survivor lib/format/money.ts:compactCentsMoney.
 
 /** PURE: the pitch props — earned proof only (a young brokerage gets a shorter,
  *  still-honest pitch; zero-proof tenants get the team-promise card alone). */
@@ -51,7 +48,7 @@ export function buildListingPitchReelProps(
   })
   if (p.roi.attributedGciCents > 0) {
     cards.push({
-      value: money(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
+      value: compactCentsMoney(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
       sub: `across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} in ${p.roi.periodDays} days — attribution-measured, not claimed`,
       kind: "finance",
     })
@@ -78,7 +75,7 @@ export function buildListingPitchReelProps(
       `Hi, I'm ${p.agentName} with ${p.brand.brokerageName}. Here's what listing ${p.address} with us looks like.`,
       `From day one, an AI team works your listing around the clock — every inquiry answered, every showing followed up.`,
       p.roi.attributedGciCents > 0
-        ? `In the last ${p.roi.periodDays} days, our marketing produced ${money(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
+        ? `In the last ${p.roi.periodDays} days, our marketing produced ${compactCentsMoney(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
         : null,
       p.roi.callsAnswered > 0
         ? `${p.roi.callsAnswered} buyer call${p.roi.callsAnswered === 1 ? "" : "s"} answered live${p.roi.appointmentsBooked > 0 ? `, ${p.roi.appointmentsBooked} appointment${p.roi.appointmentsBooked === 1 ? "" : "s"} booked on the call` : ""} — no buyer goes to voicemail.`

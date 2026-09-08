@@ -80,6 +80,10 @@ export interface AgentLicenseStatus {
   ceHoursCompleted: number
   ceHoursRequired: number
   verificationStatus: string | null
+  /** Stamped by reviewLicenseManually() below when a human clears the license. */
+  verifiedAt: string | null
+  eoCertificateUrl: string | null
+  eoCoverageAmount: number | null
   /** true when auto-verification couldn't clear the license (pending/failed) → needs a human decision. */
   needsManualReview: boolean
   /** Latest automated attempt (method, evidence, confidence, portal link) — null when never attempted. */
@@ -116,7 +120,10 @@ export async function getBrokerageAgentLicenseStatuses(
           license_number,
           license_state,
           expiration_date,
-          verification_status
+          verification_status,
+          verified_at,
+          eo_certificate_url,
+          eo_coverage_amount
         )
       )
     `)
@@ -201,6 +208,10 @@ export async function getBrokerageAgentLicenseStatuses(
       ceHoursCompleted: Number(agentRow?.ce_hours_completed ?? 0),
       ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
       verificationStatus,
+      verifiedAt: license?.verified_at ?? null,
+      eoCertificateUrl: license?.eo_certificate_url ?? null,
+      eoCoverageAmount: license?.eo_coverage_amount !== null && license?.eo_coverage_amount !== undefined
+        ? Number(license.eo_coverage_amount) : null,
       needsManualReview: licenseNeedsManualReview(verificationStatus, !!license?.license_number),
       lastVerification: license?.id ? latestAttemptByLicense.get(license.id) ?? null : null,
     }

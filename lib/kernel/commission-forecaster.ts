@@ -67,7 +67,13 @@ interface GciForecast {
 }
 
 // Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
-interface CapStatus {
+// RENAMED from `CapStatus` (§6, lane BD, 2026-09-08): this is a computed numeric-progress
+// object, a DIFFERENT concept from the DB-CHECK-backed status ENUM at
+// lib/finance/cap-progress.ts:CapStatus ("below_cap"|"at_cap"|"post_cap") — a name collision
+// between the two, not a body duplicate. Zero importers outside this file made the rename
+// cheap; the DB-tied spelling in lib/finance/cap-progress.ts stays canonical for the word
+// "CapStatus".
+interface CapProgressDetail {
   /** The configured cap when present, else null (cap unconfigured). */
   cap: number | null
   /** GCI booked YTD applied against the cap. */
@@ -167,7 +173,7 @@ export function forecastGci(
  * PURE. Distance to the commission cap. When `cap` is null/≤0 the cap is UNCONFIGURED —
  * distanceToCap/progress are null and isCapped is false (we never invent a cap).
  */
-export function capDistance(gciYtd: number, cap: number | null): CapStatus {
+export function capDistance(gciYtd: number, cap: number | null): CapProgressDetail {
   const gci = Math.max(0, Number(gciYtd) || 0)
   if (cap == null || !Number.isFinite(cap) || cap <= 0) {
     return { cap: null, gciYtd: gci, distanceToCap: null, isCapped: false, progress: null }
@@ -229,7 +235,7 @@ const usd = (n: number) => `$${Math.round(n).toLocaleString()}`
 export function composeForecastSummary(
   agentName: string,
   forecast: GciForecast,
-  cap: CapStatus,
+  cap: CapProgressDetail,
   push: PipelineDeal[],
 ): ForecastSummary {
   // `agentName` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — so the one
@@ -310,7 +316,7 @@ export const STALL_CAP_PROGRESS = 0.25
 export const STALL_THIN_PIPELINE = 5_000
 
 export function classifyAgentForRecruiting(
-  capStatus: CapStatus,
+  capStatus: CapProgressDetail,
   forecast: GciForecast,
   closedYtd: number,
 ): "crushed" | "stalling" | null {

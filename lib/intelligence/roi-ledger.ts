@@ -9,6 +9,8 @@
 // anti-churn weapon in one tile: competitors show brokers their agents'
 // numbers — we show brokers the SOFTWARE's numbers, measured, not claimed.
 
+import { compactCentsMoney } from "@/lib/format/money"
+
 export interface RoiLedger {
   periodDays: number
   sinceIso: string
@@ -28,17 +30,13 @@ export interface RoiLedger {
   headline: string
 }
 
-const money = (cents: number) => {
-  const v = Math.round(Math.max(0, cents) / 100)
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
-  if (v >= 10_000) return `$${Math.round(v / 1000).toLocaleString("en-US")}K`
-  return `$${v.toLocaleString("en-US")}`
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `money` (cents → "$1.2M"/"$45K"/"$900")
+// lived here; survivor lib/format/money.ts:compactCentsMoney.
 
 /** PURE: the headline sentence — earned lines only, silence when nothing earned. */
 export function composeRoiHeadline(l: Omit<RoiLedger, "headline">): string {
   const parts: string[] = []
-  if (l.attributedGciCents > 0) parts.push(`${money(l.attributedGciCents)} closed volume attributed to AI marketing across ${l.attributedDeals} deal${l.attributedDeals === 1 ? "" : "s"}`)
+  if (l.attributedGciCents > 0) parts.push(`${compactCentsMoney(l.attributedGciCents)} closed volume attributed to AI marketing across ${l.attributedDeals} deal${l.attributedDeals === 1 ? "" : "s"}`)
   if (l.callsAnswered > 0) parts.push(`${l.callsAnswered} call${l.callsAnswered === 1 ? "" : "s"} answered${l.appointmentsBooked > 0 ? ` (${l.appointmentsBooked} booked live)` : ""}`)
   if (l.draftsSent > 0) parts.push(`${l.draftsSent} AI draft${l.draftsSent === 1 ? "" : "s"} your agents sent`)
   if (parts.length === 0) return ""

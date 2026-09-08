@@ -1775,12 +1775,21 @@ export async function generateStatusUpdate(transactionId: string) {
   // this prompt rendered "Current Stage: undefined / Days in Stage: 0" on every run.
   // The stage lives in `transactions.stage`; how long it has been there is recorded by
   // the lifecycle event the stage engine emits (transitionLifecycle, "stage.advanced").
+  //
+  // DOTTED WRITE PATH (CLAUDE.md §1, lane BC 2026-09-08 hunt 1): transitionLifecycle
+  // (lib/kernel/lifecycle.ts) writes `event_type = \`lifecycle.${eventType}\`` — never the
+  // bare eventType string. stage-progression.ts passes eventType "stage.advanced", so the
+  // row actually lands as "lifecycle.stage.advanced" (confirmed by
+  // lib/platform/tenant-webhooks-core.ts:94, which already names it correctly). This query
+  // read the undotted string and so matched ZERO rows on every call — `stageEnteredAt`
+  // silently fell back to `transaction.updated_at` (any field write, not just a stage
+  // advance) for every AI status-update generation. Fixed onto what is actually written.
   const { data: lastAdvance } = await supabase
     .from("lifecycle_events")
     .select("created_at")
     .eq("entity_type", "transaction")
     .eq("entity_id", transactionId)
-    .eq("event_type", "stage.advanced")
+    .eq("event_type", "lifecycle.stage.advanced")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

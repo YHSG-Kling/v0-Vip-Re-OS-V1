@@ -183,7 +183,7 @@ export default function AgentTransactionDetailPage() {
     // AI contract reviews for these documents — keep only the LATEST review per document
     supabase
       .from("contract_reviews")
-      .select("id, document_id, overall_score, overall_assessment, issues, recommendations, reviewed_at")
+      .select("id, document_id, overall_score, overall_assessment, issues, recommendations, reviewed_at, missing_items, signature_status, risk_factors, document_type")
       .eq("transaction_id", transactionId)
       .order("reviewed_at", { ascending: false })
       .limit(50)
@@ -1034,6 +1034,23 @@ export default function AgentTransactionDetailPage() {
                                 ))}
                               </div>
                             )}
+                            <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                              {review.signature_status && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  signatures: {review.signature_status}
+                                </Badge>
+                              )}
+                              {Array.isArray(review.missing_items) && review.missing_items.length > 0 && (
+                                <Badge variant="destructive" className="text-[10px]">
+                                  {review.missing_items.length} missing item{review.missing_items.length === 1 ? "" : "s"}
+                                </Badge>
+                              )}
+                              {Array.isArray(review.risk_factors) && review.risk_factors.length > 0 && (
+                                <Badge variant="destructive" className="text-[10px]">
+                                  {review.risk_factors.length} risk factor{review.risk_factors.length === 1 ? "" : "s"}
+                                </Badge>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>

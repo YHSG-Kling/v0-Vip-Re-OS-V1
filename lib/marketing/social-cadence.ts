@@ -7,6 +7,7 @@
 // one brand-social batch per agent per day.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { isoWeekNumber } from "@/lib/marketing/cadence-policy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -78,7 +79,7 @@ export async function stageSocialFromCadence(
     if (topics.length > 0) { topicTitle = topics[0].topic_title ?? null; topicAngle = topics[0].value_angle ?? null }
   } catch { /* topic pool best-effort — the evergreen caption below keeps it real */ }
 
-  const isoWeek = isoWeekOf(now)
+  const isoWeek = isoWeekNumber(now)
   const postType = pickBrandPostType(input.postTypes, isoWeek)
   const caption = topicTitle
     ? `${topicTitle}${topicAngle ? ` — ${topicAngle}` : ""}`
@@ -181,13 +182,6 @@ export async function stageSocialFromCadence(
     : { staged: false, count: 0, reason: "insert_failed" }
 }
 
-/** ISO-8601 week number (1..53), UTC — matches lib/marketing/cadence-policy.isoWeekNumber. */
-function isoWeekOf(d: Date): number {
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
-  const dayNum = (date.getUTCDay() + 6) % 7
-  date.setUTCDate(date.getUTCDate() - dayNum + 3)
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4))
-  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3)
-  return 1 + Math.round((date.getTime() - firstThursday.getTime()) / (7 * 24 * 3600 * 1000))
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `isoWeekOf` (byte-identical body to
+// this file's own comment admitting the match) lived here; survivor
+// lib/marketing/cadence-policy.ts:isoWeekNumber, imported above.
