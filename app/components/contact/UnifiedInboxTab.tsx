@@ -67,6 +67,13 @@ interface TimelineEntry {
   status?: string
   callDuration?: number
   createdAt: string
+  /** isa_outreach_log.them_first_score — the compliance/quality score the
+   *  send was graded on. Null/undefined for every non-ISA-outreach entry. */
+  themFirstScore?: number | null
+  /** isa_outreach_log.agent_id / provider_job_id / lob_letter_id, joined into
+   *  one tooltip string — the send's provenance (which agent, which vendor
+   *  job) without cluttering the timeline row itself. */
+  provenance?: string
 }
 
 // ─── CHANNEL META ─────────────────────────────────────────────────────────────
@@ -201,7 +208,7 @@ export default function UnifiedInboxTab({
     // 3. ISA outreach log
     const { data: outreach } = await supabase
       .from("isa_outreach_log")
-      .select("id, channel, subject, body_snippet, created_at")
+      .select("id, channel, subject, body_snippet, created_at, agent_id, them_first_score, provider_job_id, lob_letter_id")
       .eq("lead_id", contactId)
       .order("created_at", { ascending: false })
       .limit(20)
@@ -244,6 +251,10 @@ export default function UnifiedInboxTab({
           Math.abs(new Date(t.createdAt).getTime() - new Date(o.created_at).getTime()) < 5000
       )
       if (!duplicate) {
+        const provenanceParts: string[] = []
+        if (o.agent_id) provenanceParts.push(`agent ${String(o.agent_id).slice(0, 8)}`)
+        if (o.provider_job_id) provenanceParts.push(`video job ${String(o.provider_job_id).slice(0, 8)}`)
+        if (o.lob_letter_id) provenanceParts.push(`mail piece ${String(o.lob_letter_id).slice(0, 8)}`)
         timeline.push({
           id: `outreach-${o.id}`,
           source: "isa_outreach",
@@ -253,6 +264,8 @@ export default function UnifiedInboxTab({
           body: o.body_snippet?.slice(0, 180) ?? undefined,
           status: "sent",
           createdAt: o.created_at,
+          themFirstScore: o.them_first_score ?? null,
+          provenance: provenanceParts.length > 0 ? provenanceParts.join(" · ") : undefined,
         })
       }
     }
@@ -390,9 +403,20 @@ export default function UnifiedInboxTab({
                     </span>
                   )}
                   {entry.source === "isa_outreach" && (
-                    <span className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+                    <span
+                      className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground"
+                      title={entry.provenance}
+                    >
                       <Bot size={9} />
                       AI ISA
+                    </span>
+                  )}
+                  {entry.themFirstScore != null && (
+                    <span
+                      className="text-[9px] px-1 py-0.5 rounded bg-emerald-50 text-emerald-700"
+                      title="Them-first score — how much this send centers the recipient's stated needs over a pitch"
+                    >
+                      Them-first {Math.round(entry.themFirstScore)}
                     </span>
                   )}
                 </div>

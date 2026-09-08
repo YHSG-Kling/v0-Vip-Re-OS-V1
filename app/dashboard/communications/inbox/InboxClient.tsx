@@ -15,6 +15,7 @@ import {
 } from "@/app/actions/ai-communication-hub"
 import { getLeadThreadMessages, convertLeadFromInbox, markInboxRead } from "@/app/actions/inbox"
 import { sendSocialDmReply } from "@/app/actions/social-dm"
+import { recordDraftSent } from "@/app/actions/ai-reply-coach"
 import { socialDmSupport } from "@/lib/social/dm-support"
 import { analyzeConversation } from "@/app/actions/ai-predictions"
 import { Sparkles, Loader2 } from "lucide-react"
@@ -121,6 +122,12 @@ export default function InboxClient({
   const [lastInboundBody, setLastInboundBody] = useState<string | undefined>(undefined)
   // ComposeBar controlled body — lets AIReplyCoachPanel inject accepted drafts
   const [composePrefill, setComposePrefill]   = useState<{ body: string; subject?: string } | null>(null)
+  // The draft an accepted AI reply came from, so the NEXT successful send in
+  // this conversation reconciles ai_message_drafts.sent_message_id back onto
+  // it (AIReplyCoachPanel's "Recent AI drafts" outcome strip reads this).
+  // Cleared on send (success or not) and on conversation switch so a send
+  // unrelated to the accepted draft is never mis-attributed to it.
+  const [pendingDraftId, setPendingDraftId]   = useState<string | null>(null)
   const [conversationInsight, setConversationInsight] = useState<any>(null)
   const [analyzingConversation, setAnalyzingConversation] = useState(false)
 
@@ -266,6 +273,7 @@ export default function InboxClient({
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id)
     setMobileView("thread")
+    setPendingDraftId(null) // a send in the NEW thread must never reconcile onto the old one's draft
     if (id.startsWith("lead:")) {
       loadLeadThread(id.slice(5))
       return
@@ -376,7 +384,7 @@ export default function InboxClient({
       channel:        resolvedChannel,
       body,
       subject:        subject || undefined,
-    }) as { success: boolean; error?: string; tcpaBlocked?: boolean; suppressed?: boolean }
+    }) as { success: boolean; error?: string; tcpaBlocked?: boolean; suppressed?: boolean; message?: { id: string } }
 
     if (result.success) {
       setMessages(prev => [...prev, {
@@ -389,6 +397,12 @@ export default function InboxClient({
         type:        resolvedChannel,
         channel:     resolvedChannel,
       }])
+      // Reconcile the accepted AI draft (if this send followed one) to the
+      // real message it produced — best-effort, never blocks the send.
+      if (pendingDraftId && result.message?.id) {
+        void recordDraftSent({ draftId: pendingDraftId, messageId: result.message.id })
+      }
+      setPendingDraftId(null)
     } else if (result.tcpaBlocked) {
       toast.error("TCPA Consent Required", {
         description: result.error ?? "This contact has not opted in to SMS. Obtain written consent first.",
@@ -402,7 +416,7 @@ export default function InboxClient({
     }
 
     return { success: result.success, error: result.error }
-  }, [selectedId, contact?.id, agentId, selectedConvo?.type, isSocialThread, socialDispatchable])
+  }, [selectedId, contact?.id, agentId, selectedConvo?.type, isSocialThread, socialDispatchable, pendingDraftId])
 
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
     // If the AI Reply Coach has injected an accepted draft, consume it first
@@ -618,7 +632,10 @@ export default function InboxClient({
             lastInboundId={lastInboundId}
             lastInboundBody={lastInboundBody}
             channel={(selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"}
-            onAccepted={(body, subject) => setComposePrefill({ body, subject })}
+            onAccepted={(body, subject, draftId) => {
+              setComposePrefill({ body, subject })
+              setPendingDraftId(draftId)
+            }}
           />
         </div>
       )}

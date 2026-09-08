@@ -18,6 +18,15 @@ import { revalidatePath } from "next/cache"
 
 export type NpvTier = "platinum" | "gold" | "silver" | "bronze" | "dormant"
 
+export interface NpvFactorBreakdown {
+  transactionHistory: number
+  referralHistory:    number
+  engagement:         number
+  wealth:             number
+  recency:            number
+  previousScore:      number | null
+}
+
 export interface NpvRow {
   contactId:          string
   contactName:        string | null
@@ -31,6 +40,7 @@ export interface NpvRow {
   signals:            Array<{ label: string; weight?: number; dollars?: number }>
   scoreDelta:         number | null
   computedAt:         string
+  factors:            NpvFactorBreakdown
 }
 
 export interface AgentIncomeForecast {
@@ -72,7 +82,7 @@ export async function getAgentLifetimeNpvRanked(params: {
   // We approximate "latest per contact" by ordering DESC and de-duping in JS.
   let q = supabase
     .from("lifetime_customer_npv_scores")
-    .select("contact_id, npv_score, npv_dollars, tier, recommended_action, recommended_cadence, next_touchpoint_due, signals, score_delta, computed_at")
+    .select("contact_id, npv_score, npv_dollars, tier, recommended_action, recommended_cadence, next_touchpoint_due, signals, score_delta, computed_at, transaction_history_score, referral_history_score, engagement_score, wealth_score, recency_score, previous_score")
     .eq("agent_id", params.agentId)
     .order("computed_at", { ascending: false })
     .limit(2000)
@@ -89,7 +99,10 @@ export async function getAgentLifetimeNpvRanked(params: {
     recommended_action: string | null; recommended_cadence: string | null;
     next_touchpoint_due: string | null;
     signals: Array<{ label: string; weight?: number; dollars?: number }> | null;
-    score_delta: number | null; computed_at: string
+    score_delta: number | null; computed_at: string;
+    transaction_history_score: number | null; referral_history_score: number | null;
+    engagement_score: number | null; wealth_score: number | null;
+    recency_score: number | null; previous_score: number | null
   }>)) {
     latestByContact.set(r.contact_id, {
       contactId:          r.contact_id,
@@ -104,6 +117,14 @@ export async function getAgentLifetimeNpvRanked(params: {
       signals:            r.signals ?? [],
       scoreDelta:         r.score_delta != null ? Number(r.score_delta) : null,
       computedAt:         r.computed_at,
+      factors: {
+        transactionHistory: Number(r.transaction_history_score ?? 0),
+        referralHistory:    Number(r.referral_history_score ?? 0),
+        engagement:          Number(r.engagement_score ?? 0),
+        wealth:              Number(r.wealth_score ?? 0),
+        recency:             Number(r.recency_score ?? 0),
+        previousScore:       r.previous_score != null ? Number(r.previous_score) : null,
+      },
     })
   }
 

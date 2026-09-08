@@ -13,6 +13,7 @@ import {
   acceptDraft,
   rejectDraft,
   loadConversationDrafts,
+  loadRecentDraftOutcomes,
 } from "@/app/actions/ai-reply-coach"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -28,6 +29,17 @@ interface Draft {
   status:           string
   /** only present on freshly-generated drafts, not from DB load */
   brandVoiceNotes?: string[]
+  listing_id?: string | null
+  source_message_id?: string | null
+}
+
+interface DraftOutcome {
+  id: string
+  status: string
+  confidence_score: number | null
+  listing_id: string | null
+  sent_message_id: string | null
+  created_at: string
 }
 
 interface AIReplyCoachPanelProps {
@@ -40,8 +52,10 @@ interface AIReplyCoachPanelProps {
   lastInboundId?:   string
   lastInboundBody?: string
   channel:          "email" | "sms" | "in_app"
-  /** Called when agent accepts a draft — populates the ComposeBar */
-  onAccepted: (body: string, subject?: string) => void
+  /** Called when agent accepts a draft — populates the ComposeBar. draftId
+   *  lets the caller reconcile the eventual send back onto the draft
+   *  (recordDraftSent) once the compose bar actually sends it. */
+  onAccepted: (body: string, subject: string | undefined, draftId: string) => void
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -94,6 +108,7 @@ export default function AIReplyCoachPanel({
   const [isActing, startAct]          = useTransition()
   const [error, setError]             = useState<string | null>(null)
   const [toneOverride, setToneOverride] = useState<"professional"|"friendly"|"empathetic"|"assertive">("professional")
+  const [outcomes, setOutcomes]       = useState<DraftOutcome[]>([])
 
   // Load persisted pending drafts on conversation change
   useEffect(() => {
@@ -113,6 +128,16 @@ export default function AIReplyCoachPanel({
       }
     })
   }, [conversationId, channel])
+
+  // Load recent draft OUTCOMES — did what the agent accepted actually go out?
+  // Reloaded whenever a draft is accepted/rejected (isActing settling) so a
+  // just-accepted draft appears here once its send is reconciled.
+  useEffect(() => {
+    if (!conversationId || isActing) return
+    loadRecentDraftOutcomes(conversationId).then(r => {
+      if (r.success && r.outcomes) setOutcomes(r.outcomes)
+    })
+  }, [conversationId, isActing])
 
   const handleGenerate = useCallback(() => {
     if (!conversationId || !contactId || !lastInboundId || !lastInboundBody) return
@@ -162,7 +187,7 @@ export default function AIReplyCoachPanel({
       if (result.success) {
         setDrafts(prev => prev.filter(d => d.id !== draft.id))
         setEditingId(null)
-        onAccepted(body, draft.draft_subject ?? undefined)
+        onAccepted(body, draft.draft_subject ?? undefined, draft.id)
       } else {
         setError(result.error ?? "Accept failed")
       }
@@ -388,6 +413,32 @@ export default function AIReplyCoachPanel({
           )
         })}
       </div>
+
+      {/* Recent AI draft outcomes — reconciles accepted drafts against
+          whether they actually went out (sent_message_id). An accepted draft
+          with no sent_message_id means the agent bailed before sending. */}
+      {outcomes.length > 0 && (
+        <div className="border-t border-border shrink-0 px-3 py-2 space-y-1">
+          <p className="text-[10px] font-medium text-muted-foreground">Recent AI drafts</p>
+          {outcomes.map(o => (
+            <div key={o.id} className="flex items-center justify-between gap-2 text-[10px]">
+              <span className="text-muted-foreground truncate">
+                {new Date(o.created_at).toLocaleDateString()}
+                {o.listing_id && " · listing-linked"}
+              </span>
+              {o.sent_message_id ? (
+                <Badge className="h-4 px-1.5 bg-green-100 text-green-800 border-green-200 shrink-0">
+                  Sent
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="h-4 px-1.5 text-muted-foreground shrink-0">
+                  Accepted, not sent
+                </Badge>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

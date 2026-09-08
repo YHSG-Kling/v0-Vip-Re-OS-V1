@@ -987,6 +987,8 @@ export interface DocumentFolderSummary {
   relatedLeadId: string | null
   relatedContactId: string | null
   createdAt: string | null
+  /** document_folders.parent_folder_id — null for a top-level folder. */
+  parentFolderId: string | null
 }
 
 export async function createDocumentFolder(data: {
@@ -1062,7 +1064,7 @@ export async function createDocumentFolder(data: {
       // USERS class — never agents.id, and never a caller-supplied value.
       created_by: ctx.userId,
     })
-    .select("id, folder_name, folder_type, related_transaction_id, related_lead_id, related_contact_id, created_at")
+    .select("id, folder_name, folder_type, related_transaction_id, related_lead_id, related_contact_id, created_at, parent_folder_id")
     .single()
 
   // Surfaced, not thrown: the caller is a UI control and needs a message.
@@ -1081,6 +1083,7 @@ export async function createDocumentFolder(data: {
       relatedLeadId: folder.related_lead_id ?? null,
       relatedContactId: folder.related_contact_id ?? null,
       createdAt: folder.created_at ?? null,
+      parentFolderId: folder.parent_folder_id ?? null,
     },
   }
 }
@@ -1108,7 +1111,7 @@ export async function getDocumentFolders(filters?: {
   // unstamped folders into this list; the filter is what actually scopes it.
   let query = supabase
     .from("document_folders")
-    .select("id, folder_name, folder_type, related_transaction_id, related_lead_id, related_contact_id, created_at")
+    .select("id, folder_name, folder_type, related_transaction_id, related_lead_id, related_contact_id, created_at, parent_folder_id")
     .eq("brokerage_id", ctx.brokerageId)
 
   if (filters?.transactionId) query = query.eq("related_transaction_id", filters.transactionId)
@@ -1129,6 +1132,7 @@ export async function getDocumentFolders(filters?: {
       relatedLeadId: f.related_lead_id ?? null,
       relatedContactId: f.related_contact_id ?? null,
       createdAt: f.created_at ?? null,
+      parentFolderId: f.parent_folder_id ?? null,
     })),
   }
 }
@@ -1204,6 +1208,7 @@ export interface DocumentAccessLogEntry {
   accessedByName: string | null
   accessType: string | null
   ipAddress: string | null
+  userAgent: string | null
 }
 
 /**
@@ -1249,7 +1254,7 @@ export async function getDocumentAccessLog(
 
   const { data, error } = await svc
     .from("document_access_log")
-    .select("id, accessed_at, accessed_by_type, accessed_by_id, accessed_by_email, access_type, ip_address")
+    .select("id, accessed_at, accessed_by_type, accessed_by_id, accessed_by_email, access_type, ip_address, user_agent")
     .eq("document_id", documentId)
     .order("accessed_at", { ascending: false })
     .limit(100)
@@ -1287,6 +1292,7 @@ export async function getDocumentAccessLog(
       accessedByName: r.accessed_by_id ? names.get(r.accessed_by_id) ?? null : null,
       accessType: r.access_type ?? null,
       ipAddress: r.ip_address ?? null,
+      userAgent: r.user_agent ?? null,
     })),
   }
 }

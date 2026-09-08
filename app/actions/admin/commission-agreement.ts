@@ -216,6 +216,17 @@ export interface CommissionAgreementStatus {
   signingUrl: string | null
   sentAt: string | null
   fullySignedAt: string | null
+  /** The brokerage_forms.id the agent actually filled out — null on a legacy
+   *  row recorded before form_id existed. Lets the card link back to the
+   *  exact template rather than only naming a status. */
+  formId: string | null
+  /** The field values the admin filled in when sending — so the record is
+   *  reconstructable without re-opening the (possibly since-changed) form. */
+  fieldValues: Record<string, string> | null
+  /** team_agreement rows are pinned to the team being joined (m481) — null
+   *  for commission_agreement / independent_contractor, which bind the whole
+   *  brokerage. */
+  teamId: string | null
 }
 
 export async function getCommissionAgreementStatusAction(
@@ -241,7 +252,7 @@ export async function getCommissionAgreementStatusAction(
 
   const { data: row } = await svc
     .from("contract_signatures")
-    .select("esign_status, provider_name, document_url, signing_url, sent_at, fully_signed_at")
+    .select("esign_status, provider_name, document_url, signing_url, sent_at, fully_signed_at, form_id, field_values, team_id")
     .eq("agent_id", (agent as { id: string }).id)
     .eq("contract_type", contractType)
     .order("created_at", { ascending: false })
@@ -251,7 +262,10 @@ export async function getCommissionAgreementStatusAction(
   if (!row) {
     return {
       ok: true,
-      status: { exists: false, esignStatus: null, provider: null, documentUrl: null, signingUrl: null, sentAt: null, fullySignedAt: null },
+      status: {
+        exists: false, esignStatus: null, provider: null, documentUrl: null, signingUrl: null,
+        sentAt: null, fullySignedAt: null, formId: null, fieldValues: null, teamId: null,
+      },
     }
   }
   const r = row as any
@@ -265,6 +279,9 @@ export async function getCommissionAgreementStatusAction(
       signingUrl: r.signing_url ?? null,
       sentAt: r.sent_at ?? null,
       fullySignedAt: r.fully_signed_at ?? null,
+      formId: r.form_id ?? null,
+      fieldValues: (r.field_values ?? null) as Record<string, string> | null,
+      teamId: r.team_id ?? null,
     },
   }
 }

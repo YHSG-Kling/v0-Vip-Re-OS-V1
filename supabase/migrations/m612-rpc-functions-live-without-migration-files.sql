@@ -1,9 +1,23 @@
 -- m612 — THIRTEEN RPC FUNCTIONS THE APP CALLS THAT NO MIGRATION FILE DEFINED
 --
--- STATUS: ALREADY LIVE. Every function below exists on hrvaqgvukzxfskkcrwbt
--- (verified via pg_proc on 2026-09-08); this file was written FROM
--- pg_get_functiondef(), not the other way round. Applying it is a no-op
--- (CREATE OR REPLACE with the identical body). It exists so the schema is
+-- STATUS: ALREADY LIVE, WITH ONE DELIBERATE AMENDMENT. Twelve of the thirteen
+-- functions below are byte-identical captures of what exists on
+-- hrvaqgvukzxfskkcrwbt (verified via pg_proc on 2026-09-08) — applying those
+-- twelve is a no-op. `contact_memory_recall` is the ONE EXCEPTION: its
+-- RETURNS TABLE and SELECT list have been widened (below) to also return
+-- `source_table`/`source_id` — contact_memory writes those two columns on
+-- every insert (embedContactMemory, lib/agents/contact-memory.ts:87-88) but
+-- the live RPC never selected them, leaving them write-only from the app's
+-- side no matter how many callers read the RPC's result (the trap CLAUDE.md
+-- §3 names by name: "a column written only by a migration backfill, an
+-- .rpc(), or a DB trigger reads as writerless without being writerless").
+-- recallContactMemory (lib/agents/contact-memory.ts) and its consumer
+-- (loadBrandVoicePrompt, lib/ai-isa/brand-voice-prompt.ts, which annotates
+-- the injected "Relevant history" block with each memory's source) read the
+-- widened shape. APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-08 (integrator,
+-- as m612b_contact_memory_recall_provenance_columns): a RETURNS TABLE change
+-- cannot go through CREATE OR REPLACE, so the amended function is DROPped
+-- and re-created below. This file exists so the schema is
 -- reproducible from supabase/migrations alone — scripts/rpc-census-z1.ts
 -- reported these thirteen `.rpc()` targets as "called but no migration
 -- defines it" (a reader with no writer in the migration ledger), and a
@@ -60,8 +74,11 @@ BEGIN
   RETURN current_status;
 END$function$;
 
+-- AMENDED and APPLIED 2026-09-08 (see the file header): +source_table/+source_id
+-- so contact_memory's two write-only provenance columns get a real reader.
+DROP FUNCTION IF EXISTS public.contact_memory_recall(uuid, text, uuid, vector, integer, text[]);
 CREATE OR REPLACE FUNCTION public.contact_memory_recall(p_brokerage_id uuid, p_entity_type text, p_entity_id uuid, p_query_embedding vector, p_k integer, p_memory_kinds text[])
- RETURNS TABLE(id uuid, memory_kind text, content text, created_at timestamp with time zone, similarity double precision, metadata jsonb)
+ RETURNS TABLE(id uuid, memory_kind text, content text, created_at timestamp with time zone, similarity double precision, metadata jsonb, source_table text, source_id uuid)
  LANGUAGE sql
  STABLE SECURITY DEFINER
  SET search_path TO 'public', 'extensions'
@@ -72,7 +89,9 @@ AS $function$
     m.content,
     m.created_at,
     1 - (m.embedding OPERATOR(extensions.<=>) p_query_embedding) AS similarity,
-    m.metadata
+    m.metadata,
+    m.source_table,
+    m.source_id
   FROM public.contact_memory m
   WHERE m.brokerage_id = p_brokerage_id
     AND m.entity_type  = p_entity_type

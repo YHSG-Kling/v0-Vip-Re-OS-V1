@@ -404,6 +404,8 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
     channel: string
     created_at: string
     status: string
+    listing_id: string | null
+    source_message_id: string | null
   }>
   error?: string
 }> {
@@ -416,7 +418,7 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   const { data, error } = await supabase
     .from("ai_message_drafts")
-    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status")
+    .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status, listing_id, source_message_id")
     .eq("conversation_id", conversationId)
     .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "pending")
@@ -425,4 +427,72 @@ export async function loadConversationDrafts(conversationId: string): Promise<{
 
   if (error) return { success: false, error: error.message }
   return { success: true, drafts: data ?? [] }
+}
+
+// ─── ACTION 5: RECORD THE MESSAGE A DRAFT WAS ACTUALLY SENT AS ──────────────
+//
+// acceptDraft only stages the draft's body into the compose bar — the agent
+// can still edit further before sending, and the send itself goes through the
+// unrelated messages pipeline (sendMessage in app/actions/communications.ts).
+// sent_message_id is the RECONCILIATION column: it closes the loop from
+// "the AI proposed this" to "and this is what actually went out", which
+// outcomeForConversationDrafts below reads to grade acceptance-vs-real-send.
+
+export async function recordDraftSent(params: {
+  draftId: string
+  messageId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { error } = await supabase
+    .from("ai_message_drafts")
+    .update({ sent_message_id: params.messageId, status: "sent" })
+    .eq("id", params.draftId)
+    .eq("brokerage_id", ctx.brokerageId)
+    // Only a draft the agent actually accepted can be reconciled to a send —
+    // a still-pending or already-dismissed draft has no business being marked
+    // sent underneath the agent.
+    .in("status", ["accepted", "edited"])
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// ─── ACTION 6: RECENT DRAFT OUTCOMES FOR A CONVERSATION ─────────────────────
+//
+// The reconciliation surface: for a conversation's last few AI drafts, whether
+// each one was actually sent (sent_message_id set) or accepted-then-abandoned
+// (accepted with no sent_message_id — the agent edited it away from the
+// compose bar, or navigated off before sending). Read by AIReplyCoachPanel's
+// "Recent AI drafts" strip.
+
+export async function loadRecentDraftOutcomes(conversationId: string): Promise<{
+  success: boolean
+  outcomes?: Array<{
+    id: string
+    status: string
+    confidence_score: number | null
+    listing_id: string | null
+    sent_message_id: string | null
+    created_at: string
+  }>
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("ai_message_drafts")
+    .select("id, status, confidence_score, listing_id, sent_message_id, created_at")
+    .eq("conversation_id", conversationId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("status", ["accepted", "edited", "sent"])
+    .order("created_at", { ascending: false })
+    .limit(5)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, outcomes: data ?? [] }
 }

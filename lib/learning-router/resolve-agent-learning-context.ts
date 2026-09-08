@@ -27,6 +27,14 @@ export interface AgentLearningContext {
   brokerageId:         string
   tenureDays:          number | null
   completedModuleIds:  string[]
+  /** Modules the agent explicitly dismissed ("not now") — excluded from new
+   *  recommendations same as completed ones, so a dismiss actually sticks
+   *  instead of the same module reappearing on the next composer run.
+   *  Filtered on dismissed_at rather than status='dismissed' alone: a row
+   *  the retake-reset clears (onboarding/progress.ts) sets dismissed_at back
+   *  to null, so the timestamp is the honest "still dismissed" signal even
+   *  if a future writer ever moves status without touching the timestamp. */
+  dismissedModuleIds:  string[]
   /** Performance gap tags this agent currently exhibits. Used to match
    *  against learning_modules.gap_tags. Possible values are open-ended
    *  but the canonical set is documented in the migration: 'low_close_rate',
@@ -64,6 +72,16 @@ export async function resolveAgentLearningContext(
     .eq("agent_user_id", userId)
     .eq("status", "completed")
   const completedModuleIds = (completedRows ?? [])
+    .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
+
+  // Dismissed modules ("not now") — see the field doc above for why this
+  // filters on dismissed_at rather than status.
+  const { data: dismissedRows } = await supabase
+    .from("learning_assignments")
+    .select("module_id")
+    .eq("agent_user_id", userId)
+    .not("dismissed_at", "is", null)
+  const dismissedModuleIds = (dismissedRows ?? [])
     .map((r: Record<string, unknown>) => (r as { module_id: string }).module_id)
 
   // ─── Performance gaps ────────────────────────────────────────────────
@@ -139,6 +157,7 @@ export async function resolveAgentLearningContext(
     brokerageId,
     tenureDays,
     completedModuleIds,
+    dismissedModuleIds,
     gapTags:             Array.from(new Set(gapTags)),
     unadoptedInsightIds,
   }

@@ -63,6 +63,9 @@ export interface PortalStreamRow {
   occurredAt:              string
   transactionId:           string | null
   listingId:               string | null
+  /** portal_event_stream.metadata.learning_module_id — the lesson the
+   *  stream projector matched to this event's stage, when it found one. */
+  learningModuleId:        string | null
 }
 
 interface RawRow {
@@ -83,10 +86,14 @@ interface RawRow {
   occurred_at:                   string
   transaction_id:                string | null
   listing_id:                    string | null
+  /** The projector (portal-stream-projector cron) stamps learning_module_id
+   *  into this event's metadata when a published lesson matches the event's
+   *  stage tags — the "related lesson" the customer/agent stream can link to. */
+  metadata?:                     Record<string, unknown> | null
 }
 
 const AGENT_STREAM_COLS =
-  "id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, agent_action_completed_by, agent_action_notes, severity, occurred_at, transaction_id, listing_id"
+  "id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, agent_action_completed_by, agent_action_notes, severity, occurred_at, transaction_id, listing_id, metadata"
 
 interface CompleterNames {
   byId: Map<string, string>
@@ -129,6 +136,7 @@ function rowToStream(
     occurredAt:             r.occurred_at,
     transactionId:          r.transaction_id,
     listingId:              r.listing_id,
+    learningModuleId:       typeof r.metadata?.learning_module_id === "string" ? r.metadata.learning_module_id : null,
   }
 }
 
@@ -176,7 +184,7 @@ export async function getCustomerPortalFeed(params: {
   // contact (state "withheld", never a fabricated null-as-"not recorded").
   const { data, error } = await supabase
     .from("portal_event_stream")
-    .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
+    .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id, metadata")
     .eq("contact_id", params.contactId)
     .not("customer_copy", "is", null)
     .order("occurred_at", { ascending: false })

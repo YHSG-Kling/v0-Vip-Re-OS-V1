@@ -18,6 +18,10 @@ export interface QueuedReview {
   verification_method: string | null
   moderation_status: string
   flag_count: number
+  /** DISTINCT flaggers (vendor_review_flags.flagged_by, deduped) — separates
+   *  "five different staff flagged this" (a real signal) from "one person
+   *  flagged it five times" (a UI retry), which flag_count alone can't. */
+  distinct_flaggers: number
   created_at: string | null
   reviewer_name: string | null
   /** Why people flagged it — vendor_review_flags.reason, tallied (§1.2). */
@@ -105,8 +109,17 @@ export function ReviewModerationClient({ initialQueue }: { initialQueue: QueuedR
                     {review.moderation_status.replace(/_/g, " ")}
                   </Badge>
                   {review.flag_count > 0 && (
-                    <Badge variant="destructive" className="text-[10px]">
+                    <Badge
+                      variant="destructive"
+                      className="text-[10px]"
+                      title={
+                        review.distinct_flaggers > 0 && review.distinct_flaggers !== review.flag_count
+                          ? `${review.distinct_flaggers} distinct people flagged this`
+                          : undefined
+                      }
+                    >
                       <Flag className="h-3 w-3 mr-1" />{review.flag_count}
+                      {review.distinct_flaggers > 1 ? ` (${review.distinct_flaggers} people)` : ""}
                     </Badge>
                   )}
                   {review.is_verified && (

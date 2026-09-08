@@ -158,6 +158,11 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
                   {STATUS_LABEL[status.esignStatus ?? ""] ?? status.esignStatus}
                 </Badge>
                 {status.provider && <span className="text-xs text-muted-foreground">via {status.provider}</span>}
+                {status.formId && (
+                  <span className="text-xs text-muted-foreground">
+                    · {forms.find((f) => f.id === status.formId)?.name ?? "form on file"}
+                  </span>
+                )}
                 {status.documentUrl && (
                   <a
                     href={status.documentUrl}
@@ -169,6 +174,28 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
                   </a>
                 )}
               </div>
+            )}
+
+            {/* What was actually recorded — the fields the admin filled in when
+                sending, so the signed record is reconstructable without
+                re-opening the (possibly since-edited) form template. */}
+            {status?.exists && status.fieldValues && Object.keys(status.fieldValues).length > 0 && (
+              <div className="rounded-md border p-2.5 text-xs space-y-1">
+                <p className="font-medium text-muted-foreground">Recorded field values</p>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  {Object.entries(status.fieldValues).map(([key, value]) => (
+                    <div key={key} className="contents">
+                      <dt className="text-muted-foreground truncate">{key}</dt>
+                      <dd className="truncate">{String(value ?? "") || "—"}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
+            {status?.exists && status.teamId && (
+              <p className="text-xs text-muted-foreground">
+                Pinned to team <span className="font-mono">{status.teamId.slice(0, 8)}</span> — this agreement joins that team, not the whole brokerage.
+              </p>
             )}
 
             {/* Send a (new) agreement */}

@@ -62,7 +62,7 @@ export async function computeWeeklyMetrics(
     if (negativeCount >= 2) {
       const { data: negativeFeedback } = await supabase
         .from("ai_feedback_log")
-        .select("feedback_text")
+        .select("feedback_text, ai_output_snapshot")
         .eq("brokerage_id", brokerageId)
         .eq("source_system", sourceSystem)
         .eq("rating", -1)
@@ -71,19 +71,27 @@ export async function computeWeeklyMetrics(
         .not("feedback_text", "is", null)
         .limit(20)
 
-      const feedbackTexts = negativeFeedback
-        ?.map((f) => f.feedback_text)
-        .filter(Boolean)
+      // Pair each complaint with the AI OUTPUT it was rated against — the
+      // theme detector reasons about actual failure modes ("cited a wrong
+      // price") instead of only the complaint's own wording ("was wrong"),
+      // which was previously the entire signal.
+      const feedbackEntries = (negativeFeedback ?? [])
+        .filter((f) => f.feedback_text)
+        .map((f) =>
+          f.ai_output_snapshot
+            ? `Complaint: ${f.feedback_text}\nAI said: ${f.ai_output_snapshot}`
+            : `Complaint: ${f.feedback_text}`,
+        )
 
-      if (feedbackTexts && feedbackTexts.length > 0) {
+      if (feedbackEntries.length > 0) {
         try {
           const { object } = await generateObjectRouted({
             feature: "feedback_theme_analysis",
             brokerageId,
             schema: ThemesSchema,
             system:
-              "Identify the top 3 themes in negative feedback. Return JSON: {themes: string[]}",
-            prompt: feedbackTexts.join("\n---\n"),
+              "Identify the top 3 themes in negative feedback. Each entry pairs the complaint with the AI output it was rated against, when available. Return JSON: {themes: string[]}",
+            prompt: feedbackEntries.join("\n---\n"),
             maxTokens: 150,
           })
           topNegativeThemes = object.themes

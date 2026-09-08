@@ -346,6 +346,11 @@ export function DocumentActionsDialog({
                   <span className="text-muted-foreground">
                     {e.accessedAt ? new Date(e.accessedAt).toLocaleString() : ""}
                   </span>
+                  {e.userAgent && (
+                    <span className="text-muted-foreground" title={e.userAgent}>
+                      {/mobile|android|iphone|ipad/i.test(e.userAgent) ? "· mobile" : "· desktop"}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>

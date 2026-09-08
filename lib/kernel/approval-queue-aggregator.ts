@@ -339,7 +339,7 @@ export async function aggregatePendingApprovals(
         .limit(PER_TABLE_LIMIT),
       svc
         .from("ad_creative_variations")
-        .select("id, ad_campaign_id, variation_name, headline, primary_text, approval_status, created_at, updated_at")
+        .select("id, ad_campaign_id, variation_name, headline, primary_text, approval_status, created_at, updated_at, source_marketing_asset_id")
         .eq("brokerage_id", brokerageId)
         // Both pre-spend review states — shared with the Command Center (no drift).
         .in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES])
@@ -487,7 +487,7 @@ export async function aggregatePendingApprovals(
       agent_id: null, // ad creatives are scoped via ad_campaigns; future: join + check
       status: String(row.approval_status ?? "draft"),
       priority: "medium",
-      content: `${String(row.variation_name ?? "(unnamed)")} — ${String(row.headline ?? "")}`.trim(),
+      content: `${String(row.variation_name ?? "(unnamed)")} — ${String(row.headline ?? "")}${row.source_marketing_asset_id ? " (from a brand asset)" : ""}`.trim(),
       created_at: String(row.created_at ?? new Date().toISOString()),
       updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
     })

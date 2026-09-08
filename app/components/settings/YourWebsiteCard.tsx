@@ -186,6 +186,13 @@ export function YourWebsiteCard() {
                     <p className="text-[11px] text-red-700">{d.errorDetail}</p>
                   )}
 
+                  {d.addedBy && (
+                    <p className="text-[11px] text-gray-500" title={d.addedBy}>
+                      Added by team member {d.addedBy.slice(0, 8)}
+                      {d.createdAt ? ` · ${new Date(d.createdAt).toLocaleDateString()}` : ""}
+                    </p>
+                  )}
+
                   {d.status !== "active" && (
                     <div className="space-y-1">
                       <p className="text-[11px] text-gray-600">Set these DNS records at your domain provider:</p>

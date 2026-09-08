@@ -272,21 +272,70 @@ export async function getMyLearningProgress(): Promise<MyLearningProgress> {
   const svc = createServiceClient()
   const { data } = await svc
     .from("learning_assignments")
-    .select("status, module_id, learning_modules ( id, title )")
+    .select("status, module_id, priority_score, learning_modules ( id, title )")
     .eq("agent_user_id", ctx.userId)
     .order("viewed_at", { ascending: false })
     .limit(100)
 
   const completed: MyLearningProgress["completed"] = []
-  const inProgress: MyLearningProgress["inProgress"] = []
+  const inProgressRanked: Array<{ id: string; title: string; type: string; priorityScore: number }> = []
   for (const r of (data ?? []) as any[]) {
     const mod = Array.isArray(r.learning_modules) ? r.learning_modules[0] : r.learning_modules
     if (!mod?.id) continue
     const row = { id: mod.id as string, title: (mod.title as string) ?? "Module", type: "module" }
     if (r.status === "completed") completed.push(row)
-    else if (r.status === "viewed" || r.status === "assigned") inProgress.push(row)
+    // 'dismissed' deliberately excluded — a learner who dismissed an assignment
+    // asked it OFF their "Continue Learning" list, not to see it forever.
+    else if (r.status === "viewed" || r.status === "assigned") {
+      inProgressRanked.push({ ...row, priorityScore: Number(r.priority_score ?? 0) })
+    }
   }
+  // Highest priority_score first — the "Continue Learning" strip only shows the
+  // top 3 (training-progress-panel.tsx), so which 3 THAT is depends on this.
+  inProgressRanked.sort((a, b) => b.priorityScore - a.priorityScore)
+  const inProgress: MyLearningProgress["inProgress"] = inProgressRanked.map(({ priorityScore, ...row }) => row)
   return { completed, inProgress }
+}
+
+/**
+ * Dismiss an assigned-but-unwanted module — the "not now" the learner never had
+ * (status='dismissed' + dismissed_at is a CHECK-valid pair that nothing wrote
+ * before this: only the retake reset in onboarding/progress.ts CLEARED the
+ * field, and getMyLearningProgress above is the reader that now honors it).
+ * Never dismisses a REQUIRED module — those stay on the list until completed.
+ */
+export async function dismissLearningAssignmentAction(
+  moduleId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Not authenticated" }
+
+  const svc = createServiceClient()
+  const { data: mod } = await svc
+    .from("learning_modules")
+    .select("id, required")
+    .eq("id", moduleId)
+    .maybeSingle()
+  if ((mod as { required?: boolean } | null)?.required) {
+    return { success: false, error: "Required modules can't be dismissed" }
+  }
+
+  const { data, error } = await svc
+    .from("learning_assignments")
+    .update({ status: "dismissed", dismissed_at: new Date().toISOString() })
+    .eq("agent_user_id", ctx.userId)
+    .eq("module_id", moduleId)
+    // 'assigned' is NOT a member of learning_assignments_status_check (live
+    // vocabulary: completed | dismissed | open | superseded | viewed) — only
+    // 'open' and 'viewed' name an active, not-yet-resolved row.
+    .in("status", ["open", "viewed"])
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Assignment not found or already resolved" }
+
+  revalidatePath("/academy")
+  return { success: true }
 }
 
 export async function getAcademyViewer(): Promise<

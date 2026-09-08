@@ -895,7 +895,7 @@ async function analyzeDealHealth(transactionIds: string[], ctx: AgentContext) {
 
   const { data: transactions, error } = await supabase
     .from("transactions")
-    .select("*, document_requests(*)")
+    .select("*, document_requests(id, status, due_date, document_type, contact_id, requested_by, metadata)")
     .in("id", transactionIds)
     .eq("brokerage_id", ctx.brokerageId)
 
@@ -929,7 +929,17 @@ async function analyzeDealHealth(transactionIds: string[], ctx: AgentContext) {
     
     if (overdueDocs && overdueDocs.length > 0) {
       healthScore -= overdueDocs.length * 15
-      issues.push(`${overdueDocs.length} documents overdue`)
+      // Name WHAT is overdue (document_type) rather than only a count — the
+      // types are the fact an agent acts on ("chase the appraisal", not
+      // "chase a document"); a request with no named type falls back honestly.
+      const docTypes = overdueDocs
+        .map((d: any) => d.document_type)
+        .filter((t: unknown): t is string => typeof t === "string" && t.length > 0)
+      issues.push(
+        docTypes.length > 0
+          ? `${overdueDocs.length} documents overdue (${docTypes.join(", ")})`
+          : `${overdueDocs.length} documents overdue`,
+      )
     }
     
     // Check communication frequency

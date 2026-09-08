@@ -104,6 +104,14 @@ export function ManagerActivityFeed({ activity }: { activity: ManagerActivityEnt
                       {SOURCE_LABEL[a.source]}
                     </span>
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.chip}`}>{s.label}</span>
+                    {a.approvedByUserId && (
+                      <span
+                        className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700"
+                        title="A human approved this action before it ran"
+                      >
+                        human-approved
+                      </span>
+                    )}
                     <span className="ml-auto text-[11px] text-muted-foreground">{relTime(a.whenISO)}</span>
                   </div>
                   <p className="text-sm text-foreground">{a.action}</p>

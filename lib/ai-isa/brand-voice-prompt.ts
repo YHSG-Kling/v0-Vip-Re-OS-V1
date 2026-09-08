@@ -338,7 +338,12 @@ export async function loadBrandVoicePrompt(
         k: 4,
       })
       if (rec.ok && rec.memories.length > 0) {
-        const memBlock = rec.memories.map((m) => `- ${m.content}`).join("\n")
+        // Provenance (source_table) when the memory was written FROM a specific
+        // row (a showing, a portal message, …) — never invented for memories
+        // written without one (a free-standing agent note).
+        const memBlock = rec.memories
+          .map((m) => `- ${m.content}${m.sourceTable ? ` (from ${m.sourceTable})` : ""}`)
+          .join("\n")
         parts.push(`Relevant history with this contact — recall and stay consistent with it:\n${memBlock}`)
       }
     } catch { /* memory unavailable — brand voice still stands */ }

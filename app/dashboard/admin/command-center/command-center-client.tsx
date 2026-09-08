@@ -1092,6 +1092,31 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
   const isClientMsg = action.queue === "client_message"
   const [editedBody, setEditedBody] = useState<string>(isClientMsg ? String(action.actionInput.body ?? "") : "")
 
+  // The session that PROPOSED this action — an approver can open the reasoning
+  // transcript behind the proposal instead of approving a rationale blind.
+  const [sessionOpen, setSessionOpen] = useState(false)
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [sessionDetail, setSessionDetail] = useState<ManagerSessionDetail | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+
+  async function toggleSession() {
+    const next = !sessionOpen
+    setSessionOpen(next)
+    if (next && !sessionDetail && !sessionLoading && action.managedAgentSessionId) {
+      setSessionLoading(true)
+      setSessionError(null)
+      try {
+        const res = await getManagerSessionDetail(action.managedAgentSessionId)
+        if (res.ok) setSessionDetail(res.detail)
+        else setSessionError(res.error)
+      } catch {
+        setSessionError("The session detail read failed to run.")
+      } finally {
+        setSessionLoading(false)
+      }
+    }
+  }
+
   // Display label for the action type (AdActionPreview precedent: a per-type label
   // map). approve_prelisting_delivery is ONE action type serving two audiences —
   // the label reads the proposer's `audience` key from action_input, never
@@ -1151,6 +1176,35 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
                 <li key={i} className={`text-xs ${action.compliance!.status === "blocked" ? "text-red-700" : "text-amber-700"}`}>⚖️ {f}</li>
               ))}
             </ul>
+          )}
+          {action.managedAgentSessionId && (
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={toggleSession}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                {sessionOpen ? "Hide session ▲" : "View proposing session ▼"}
+              </button>
+              {sessionOpen && (
+                <div className="mt-1 rounded-md border bg-muted/30 p-2 text-xs">
+                  {sessionLoading && <p className="text-muted-foreground">Loading session detail…</p>}
+                  {sessionError && <p className="text-red-600">Could not load this session: {sessionError}</p>}
+                  {sessionDetail && (
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+                        {sessionDetail.model && <span>model: <span className="font-medium text-foreground">{sessionDetail.model}</span></span>}
+                        {sessionDetail.agentKind && <span>kind: {sessionDetail.agentKind}</span>}
+                        {sessionDetail.stopReason && <span>stop reason: {sessionDetail.stopReason}</span>}
+                      </div>
+                      {sessionDetail.lastAgentMessage && (
+                        <p className="whitespace-pre-wrap max-h-32 overflow-auto">{sessionDetail.lastAgentMessage}</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
           {action.queue === "social" && <SocialPreview input={action.actionInput} />}

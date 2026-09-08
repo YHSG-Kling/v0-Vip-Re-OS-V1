@@ -139,6 +139,10 @@ export interface CommandCenterAction {
   /** Compliance Officer PRE-FLIGHT verdict (client_message proposals only) — the consent +
    *  Fair Housing sign-off the human sees BEFORE approving. Absent for non-outbound queues. */
   compliance?: { status: "clear" | "advisory" | "blocked"; manager: ManagerKey; findings: string[] }
+  /** The managed_agent_sessions.id that proposed this action (marketing/asset/ads
+   *  queues only) — lets the approver open the session transcript that led to
+   *  this proposal instead of approving a rationale blind. */
+  managedAgentSessionId?: string | null
 }
 
 export interface ManagerBreakdownEntry {
@@ -397,7 +401,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const marketingQuery = supabase
     .from("marketing_agent_actions")
-    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at")
+    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at, managed_agent_session_id")
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
@@ -406,7 +410,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const assetQuery = supabase
     .from("asset_manager_actions")
-    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at")
+    .select("id, brokerage_id, action_type, rationale, action_input, status, proposed_at, managed_agent_session_id")
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
@@ -562,6 +566,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       proposedAt:  a.proposed_at ?? null,
       ageHours:    sla.ageHours,
       slaLevel:    sla.level,
+      managedAgentSessionId: a.managed_agent_session_id ?? null,
     }
   }
 

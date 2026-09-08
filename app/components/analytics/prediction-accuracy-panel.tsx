@@ -153,6 +153,9 @@ export function PredictionAccuracyPanel({
                               {b.pending} not yet measured
                             </span>
                           )}
+                          {b.note && (
+                            <span className="block text-[10px] text-muted-foreground/70 mt-0.5">{b.note}</span>
+                          )}
                         </td>
                         <td className="px-4 py-1.5 text-right text-xs text-muted-foreground tabular-nums">{b.observations}</td>
                         <td className="px-4 py-1.5 text-right text-xs text-muted-foreground tabular-nums">

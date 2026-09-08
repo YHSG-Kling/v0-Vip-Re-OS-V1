@@ -26,6 +26,8 @@ import {
   TrendingUp,
   TrendingDown,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
@@ -59,10 +61,19 @@ function daysFromIso(iso: string | null): number | null {
   return Math.floor((new Date(iso).getTime() - Date.now()) / 86_400_000)
 }
 
+const FACTOR_LABELS: Array<{ key: "transactionHistory" | "referralHistory" | "engagement" | "wealth" | "recency"; label: string }> = [
+  { key: "transactionHistory", label: "Transactions" },
+  { key: "referralHistory",    label: "Referrals" },
+  { key: "engagement",         label: "Engagement" },
+  { key: "wealth",             label: "Wealth" },
+  { key: "recency",            label: "Recency" },
+]
+
 export function LifetimeNpvPanel({ rows, agentUserId, brokerageId }: Props) {
   const router = useRouter()
   const [refreshing, setRefreshing] = useState(false)
   const [tierFilter, setTierFilter] = useState<NpvTier | "all">("all")
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   async function handleRefresh() {
     if (refreshing) return
@@ -158,69 +169,106 @@ export function LifetimeNpvPanel({ rows, agentUserId, brokerageId }: Props) {
             {filtered.slice(0, 50).map((r) => {
               const tier = TIER_STYLE[r.tier]
               const dueDays = daysFromIso(r.nextTouchpointDue)
+              const isExpanded = expandedId === r.contactId
               return (
-                <li key={r.contactId} className="py-2.5 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <span className={cn("inline-flex items-center justify-center w-7 h-7 rounded-full font-bold text-xs", tier.bg, tier.text)}>
-                      {r.npvScore}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Link
-                          href={`/crm?contact=${r.contactId}`}
-                          className="text-sm font-medium hover:underline truncate"
-                        >
-                          {r.contactName ?? "Unknown contact"}
-                        </Link>
-                        <Badge className={cn("text-[10px] gap-0.5", tier.bg, tier.text)}>
-                          {tier.icon} {tier.label}
-                        </Badge>
-                        {r.scoreDelta != null && r.scoreDelta !== 0 && (
-                          <span className={cn(
-                            "inline-flex items-center gap-0.5 text-[10px]",
-                            r.scoreDelta > 0 ? "text-emerald-700" : "text-red-700",
-                          )}>
-                            {r.scoreDelta > 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
-                            {r.scoreDelta > 0 ? "+" : ""}{r.scoreDelta}
-                          </span>
+                <li key={r.contactId} className="py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className={cn("inline-flex items-center justify-center w-7 h-7 rounded-full font-bold text-xs", tier.bg, tier.text)}>
+                        {r.npvScore}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Link
+                            href={`/crm?contact=${r.contactId}`}
+                            className="text-sm font-medium hover:underline truncate"
+                          >
+                            {r.contactName ?? "Unknown contact"}
+                          </Link>
+                          <Badge className={cn("text-[10px] gap-0.5", tier.bg, tier.text)}>
+                            {tier.icon} {tier.label}
+                          </Badge>
+                          {r.scoreDelta != null && r.scoreDelta !== 0 && (
+                            <span className={cn(
+                              "inline-flex items-center gap-0.5 text-[10px]",
+                              r.scoreDelta > 0 ? "text-emerald-700" : "text-red-700",
+                            )}>
+                              {r.scoreDelta > 0 ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
+                              {r.scoreDelta > 0 ? "+" : ""}{r.scoreDelta}
+                            </span>
+                          )}
+                        </div>
+                        {r.recommendedAction && (
+                          <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{r.recommendedAction}</p>
+                        )}
+                        {r.signals.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.signals.slice(0, 3).map((s, i) => (
+                              <span key={i} className="text-[10px] bg-muted/40 text-muted-foreground rounded-full px-1.5 py-0.5">
+                                {s.label}
+                              </span>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      {r.recommendedAction && (
-                        <p className="text-[11px] text-muted-foreground mt-0.5 truncate">{r.recommendedAction}</p>
+                    </div>
+                    <div className="text-right flex flex-col items-end gap-0.5 shrink-0">
+                      <p className="text-sm font-bold tabular-nums">{formatUsd(r.npvDollars)}</p>
+                      <p className="text-[10px] text-muted-foreground">5-yr NPV</p>
+                      {dueDays != null && (
+                        <span className={cn(
+                          "text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap",
+                          dueDays < 0 ? "bg-red-100 text-red-700" :
+                          dueDays <= 7 ? "bg-amber-100 text-amber-700" :
+                                         "bg-gray-100 text-gray-600",
+                        )}>
+                          {dueDays < 0 ? `${Math.abs(dueDays)}d overdue` :
+                           dueDays === 0 ? "due today" :
+                                           `due in ${dueDays}d`}
+                        </span>
                       )}
-                      {r.signals.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {r.signals.slice(0, 3).map((s, i) => (
-                            <span key={i} className="text-[10px] bg-muted/40 text-muted-foreground rounded-full px-1.5 py-0.5">
-                              {s.label}
-                            </span>
-                          ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(isExpanded ? null : r.contactId)}
+                      className="text-muted-foreground hover:text-foreground shrink-0"
+                      aria-label={isExpanded ? "Hide score breakdown" : "Show score breakdown"}
+                    >
+                      {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    </button>
+                    <Link
+                      href={`/crm?contact=${r.contactId}`}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </div>
+                  {isExpanded && (
+                    <div className="mt-2 ml-10 grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      {FACTOR_LABELS.map(({ key, label }) => {
+                        const value = r.factors[key]
+                        return (
+                          <div key={key} className="min-w-0">
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>{label}</span>
+                              <span className="tabular-nums font-medium text-foreground">{Math.round(value)}</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-muted/50 mt-0.5 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-violet-400"
+                                style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+                              />
+                            </div>
+                          </div>
+                        )
+                      })}
+                      {r.factors.previousScore != null && (
+                        <div className="col-span-2 sm:col-span-5 text-[10px] text-muted-foreground">
+                          Previous score: <span className="font-medium text-foreground">{Math.round(r.factors.previousScore)}</span>
                         </div>
                       )}
                     </div>
-                  </div>
-                  <div className="text-right flex flex-col items-end gap-0.5 shrink-0">
-                    <p className="text-sm font-bold tabular-nums">{formatUsd(r.npvDollars)}</p>
-                    <p className="text-[10px] text-muted-foreground">5-yr NPV</p>
-                    {dueDays != null && (
-                      <span className={cn(
-                        "text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap",
-                        dueDays < 0 ? "bg-red-100 text-red-700" :
-                        dueDays <= 7 ? "bg-amber-100 text-amber-700" :
-                                       "bg-gray-100 text-gray-600",
-                      )}>
-                        {dueDays < 0 ? `${Math.abs(dueDays)}d overdue` :
-                         dueDays === 0 ? "due today" :
-                                         `due in ${dueDays}d`}
-                      </span>
-                    )}
-                  </div>
-                  <Link
-                    href={`/crm?contact=${r.contactId}`}
-                    className="text-muted-foreground hover:text-foreground"
-                  >
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
+                  )}
                 </li>
               )
             })}

@@ -3528,11 +3528,24 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                               <p className="text-xs text-red-600">{qrPerformance[qr.id].error}</p>
                             ) : (
                               <div className="space-y-1.5">
-                                <div className="flex items-center gap-3 text-xs">
+                                <div className="flex items-center gap-3 text-xs flex-wrap">
                                   <span className="font-medium">{qrPerformance[qr.id].uniqueScans} unique</span>
                                   <span className="text-muted-foreground">
                                     {qrPerformance[qr.id].conversionRate}% converted
                                   </span>
+                                  {qrPerformance[qr.id].deviceBreakdown && (
+                                    <span className="text-muted-foreground">
+                                      {qrPerformance[qr.id].deviceBreakdown.mobile}📱 / {qrPerformance[qr.id].deviceBreakdown.desktop}💻
+                                    </span>
+                                  )}
+                                  {typeof qrPerformance[qr.id].uniqueIpCount === "number" && (
+                                    <span
+                                      className="text-muted-foreground"
+                                      title="Distinct source IPs among recent scans — a cross-check on the unique-scan count above"
+                                    >
+                                      {qrPerformance[qr.id].uniqueIpCount} unique IPs
+                                    </span>
+                                  )}
                                 </div>
                                 {qrPerformance[qr.id].recentScans?.length ? (
                                   <ul className="text-[11px] text-muted-foreground space-y-0.5">
@@ -4832,11 +4845,23 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                     ) : (
                       <div className="space-y-1">
                         {campaignDetail.tasks.map((t: any) => (
-                          <div key={t.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
+                          <div key={t.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5 gap-2">
                             {/* `title` is the column (NOT NULL). `task_name` was a
                                 spelling this table has never had. */}
-                            <span className="truncate">{t.title}</span>
-                            <Badge variant="outline" className="capitalize text-xs">{t.status}</Badge>
+                            <div className="min-w-0">
+                              <span className="truncate block">{t.title}</span>
+                              {t.description && (
+                                <span className="text-xs text-muted-foreground truncate block">{t.description}</span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {t.assigned_user_id && (
+                                <Badge variant="secondary" className="text-[10px]" title={t.assigned_user_id}>
+                                  assigned
+                                </Badge>
+                              )}
+                              <Badge variant="outline" className="capitalize text-xs">{t.status}</Badge>
+                            </div>
                           </div>
                         ))}
                       </div>

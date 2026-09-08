@@ -713,7 +713,7 @@ export async function getShowingFeedbackCards(listingId: string) {
   const { data } = await supabase
     .from("showing_feedback")
     .select(`
-      id, created_at, ai_summary,
+      id, created_at, ai_summary, request_id,
       presentation_rating, cleanliness_rating, price_opinion,
       meets_buyer_needs, offer_interest, overall_impression,
       buyer_interest_level, sentiment_score,
@@ -723,5 +723,23 @@ export async function getShowingFeedbackCards(listingId: string) {
     .eq("showings.listing_id", listingId)
     .order("created_at", { ascending: false })
 
-  return data ?? []
+  const rows = data ?? []
+
+  // showing_feedback.request_id -> showing_feedback_requests.id carries no
+  // live FK constraint (schema-fk-map.ts has no entry for it), so PostgREST
+  // cannot auto-embed it — joined by hand instead. Response-latency context
+  // (when the request went out vs when feedback actually landed) for the panel.
+  const requestIds = [...new Set(rows.map((r: any) => r.request_id).filter(Boolean))] as string[]
+  if (requestIds.length > 0) {
+    const { data: requests } = await supabase
+      .from("showing_feedback_requests")
+      .select("id, sent_at, sent_to_email")
+      .in("id", requestIds)
+    const byId = new Map((requests ?? []).map((r: any) => [r.id, r]))
+    for (const r of rows as any[]) {
+      r.request = r.request_id ? byId.get(r.request_id) ?? null : null
+    }
+  }
+
+  return rows
 }

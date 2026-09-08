@@ -147,6 +147,11 @@ export interface RailBreakdownRow {
   /** ADDITIVE: rows this group covers that have no outcome yet. Rendered as
    *  "not yet measured" — never as a zero. */
   pending?: number
+  /** ADDITIVE: free-text supplemental line for a rail whose breakdown carries
+   *  more than a single rate/error pair (e.g. assignment_policy's speed-to-claim
+   *  + score-at-assignment). Rendered under the row when present; absent on
+   *  every other rail's rows. */
+  note?: string
 }
 
 export interface RailAccuracy {

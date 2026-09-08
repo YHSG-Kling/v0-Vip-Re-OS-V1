@@ -465,14 +465,15 @@ async function main() {
   ]
   const asg = (over: Partial<AssignedCohortRow>): AssignedCohortRow => ({
     key: "lead:l1", brokerageId: "b1", contactId: "c1", leadId: "l1",
-    ruleId: "ra", method: "geo_based", assignedAt: "2026-01-01T00:00:00Z", ...over,
+    ruleId: "ra", method: "geo_based", assignedAt: "2026-01-01T00:00:00Z",
+    claimedAt: null, scoreAtAssignment: null, ...over,
   })
   const apCohort: AssignedCohortRow[] = [
     asg({}),                                                                                 // ruleA — appt on c1 at day 9 → hit
     asg({ key: "lead:l1", assignedAt: "2026-02-01T00:00:00Z" }),                             // duplicate identity — first assignment wins
     asg({ key: "lead:l2", leadId: "l2", contactId: "c2" }),                                  // ruleA — no appt, window elapsed → miss
     asg({ key: "lead:l3", leadId: "l3", contactId: null, ruleId: "rb", method: "round_robin" }),      // ruleB — appt joins via the LEAD entity at day 59 → miss (past horizon)
-    asg({ key: "lead:l4", leadId: "l4", contactId: "c4", ruleId: "rb", method: "round_robin" }),      // ruleB — appt day 4 → hit
+    asg({ key: "lead:l4", leadId: "l4", contactId: "c4", ruleId: "rb", method: "round_robin", claimedAt: "2026-01-01T02:00:00Z", scoreAtAssignment: 82 }),      // ruleB — appt day 4 → hit; claimed 2h later at score 82
     asg({ key: "lead:l5", leadId: "l5", contactId: "c5", ruleId: null, method: "load_balance", assignedAt: "2026-07-10T00:00:00Z" }), // fallback — open window → pending
     asg({ key: "lead:l6", leadId: "l6", contactId: "c6" }),                                  // appt BEFORE assignment → refused
     asg({ key: "contact:c9", leadId: null, contactId: "c9", ruleId: "rb", method: "round_robin", assignedAt: "2026-01-20T00:00:00Z" }), // Track-B contact — appt day 12 → hit
@@ -497,6 +498,14 @@ async function main() {
     apRail.honestNotes.some((n) => n.includes("still inside the window")) && apRail.honestNotes.some((n) => n.includes("refused")), JSON.stringify(apRail.honestNotes))
   check("assignment policy: an appointment joining via the LEAD entity grades (no contact row required)",
     (() => { const r = computePolicyOutcomes(apCohort, apRules, apEvents, NOW); return r.stats.find((s) => s.policyKey === "rule:rb")?.observations === 3 })())
+  check("assignment policy: speed-to-claim + score-at-assignment surface on the graded breakdown (one claimed row, 120min, score 82)",
+    (() => {
+      const r = computePolicyOutcomes(apCohort, apRules, apEvents, NOW)
+      const rb = r.stats.find((s) => s.policyKey === "rule:rb")
+      return rb?.claimedCount === 1 && rb?.medianClaimMinutes === 120 && rb?.avgScoreAtAssignment === 82
+    })())
+  check("assignment policy: breakdown row's note names the claim time and score when present",
+    Boolean(apRail.breakdown?.[0]?.note?.includes("2h") && apRail.breakdown?.[0]?.note?.includes("82")), apRail.breakdown?.[0]?.note ?? "")
   check("assignment policy: empty cohort → available:false with a why", summarizeAssignmentPolicyRows([], apRules, [], NOW).available === false)
   const apPendingOnly = summarizeAssignmentPolicyRows([asg({ key: "lead:l9", leadId: "l9", contactId: "c99", assignedAt: "2026-07-15T00:00:00Z" })], apRules, [], NOW)
   check("assignment policy: open windows only → available:false (never graded early)",
@@ -509,7 +518,8 @@ async function main() {
   // — the divergence detector (the deliberation feed's trigger) —
   const stat = (over: Partial<PolicyOutcomeStat>): PolicyOutcomeStat => ({
     policyKey: "rule:ra", ruleId: "ra", isActiveRule: true, label: "A",
-    observations: 10, hits: 6, rate: 0.6, pending: 0, ...over,
+    observations: 10, hits: 6, rate: 0.6, pending: 0,
+    medianClaimMinutes: null, claimedCount: 0, avgScoreAtAssignment: null, ...over,
   })
   const divergent = findDivergentRulePair([
     stat({}), stat({ policyKey: "rule:rb", ruleId: "rb", label: "B", hits: 2, rate: 0.2 }),

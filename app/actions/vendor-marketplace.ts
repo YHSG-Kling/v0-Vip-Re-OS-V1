@@ -756,6 +756,8 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
   verification_method: string | null
   moderation_status: string
   flag_count: number
+  /** DISTINCT flaggers (vendor_review_flags.flagged_by, deduped). */
+  distinct_flaggers: number
   created_at: string | null
   reviewer_name: string | null
   /**
@@ -823,10 +825,15 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
   // proved above, so a flag filed in another brokerage can never be counted here.
   const queuedIds = (data ?? []).map((r: any) => r.id as string)
   const reasonsByReview = new Map<string, Map<string, number>>()
+  // Distinct flaggers per review — moderation-relevant DIFFERENTLY from the
+  // raw flag_count above: five distinct staff flagging one review is a strong
+  // moderation signal, one person flagging it five times (retries, a UI
+  // double-submit) is not, and flag_count alone cannot tell them apart.
+  const flaggersByReview = new Map<string, Set<string>>()
   if (queuedIds.length > 0) {
     const { data: flagRows, error: flagError } = await svc
       .from("vendor_review_flags")
-      .select("review_id, reason")
+      .select("review_id, reason, flagged_by")
       .eq("brokerage_id", brokerageId)
       .in("review_id", queuedIds)
       .limit(2000)
@@ -836,11 +843,16 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
       console.error("[vendor-marketplace] flag reasons unreadable:", flagError.message)
       for (const id of queuedIds) reasonsByReview.set(id, new Map([["(flag reasons could not be read)", 0]]))
     } else {
-      for (const f of (flagRows ?? []) as Array<{ review_id: string; reason: string | null }>) {
+      for (const f of (flagRows ?? []) as Array<{ review_id: string; reason: string | null; flagged_by: string | null }>) {
         const perReview = reasonsByReview.get(f.review_id) ?? new Map<string, number>()
         const reason = f.reason ?? "unspecified"
         perReview.set(reason, (perReview.get(reason) ?? 0) + 1)
         reasonsByReview.set(f.review_id, perReview)
+        if (f.flagged_by) {
+          const flaggers = flaggersByReview.get(f.review_id) ?? new Set<string>()
+          flaggers.add(f.flagged_by)
+          flaggersByReview.set(f.review_id, flaggers)
+        }
       }
     }
   }
@@ -856,6 +868,7 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
     verification_method: r.verification_method ?? null,
     moderation_status: r.moderation_status,
     flag_count: r.flag_count ?? 0,
+    distinct_flaggers: flaggersByReview.get(r.id)?.size ?? 0,
     created_at: r.created_at,
     reviewer_name: [r.users?.first_name, r.users?.last_name].filter(Boolean).join(" ") || null,
     flag_reasons: [...(reasonsByReview.get(r.id) ?? new Map<string, number>()).entries()]

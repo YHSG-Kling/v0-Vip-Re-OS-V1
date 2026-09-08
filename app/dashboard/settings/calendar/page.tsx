@@ -351,7 +351,7 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
                           Last sync attempt: {new Date(account.last_sync_at).toLocaleString()}
                         </p>
                       )}
-                      <div className="mt-2">
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
                         <span
                           className={`inline-block px-2 py-1 rounded text-xs font-medium ${
                             account.is_active
@@ -361,6 +361,23 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
                         >
                           {account.is_active ? "Active" : "Inactive"}
                         </span>
+                        {account.token_expires_at && (
+                          (() => {
+                            const expired = new Date(account.token_expires_at) < new Date()
+                            return (
+                              <span
+                                className={`inline-block px-2 py-1 rounded text-xs font-medium ${
+                                  expired ? "bg-red-100 text-red-800" : "bg-blue-50 text-blue-700"
+                                }`}
+                                title={new Date(account.token_expires_at).toLocaleString()}
+                              >
+                                {expired
+                                  ? "Access expired — reconnect"
+                                  : `Access expires ${new Date(account.token_expires_at).toLocaleDateString()}`}
+                              </span>
+                            )
+                          })()
+                        )}
                       </div>
                     </div>
                     <div className="flex gap-2 flex-col">

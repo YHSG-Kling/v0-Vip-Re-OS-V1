@@ -42,7 +42,7 @@ import {
   RefreshCw,
   AlertCircle,
 } from "lucide-react"
-import { generateBlogPost, generateTopicIdeas, saveBlogPost, getBlogPosts } from "@/app/actions/blog"
+import { generateBlogPost, generateTopicIdeas, saveBlogPost, getBlogPosts, getBlogTrafficOverview, type BlogTrafficOverview } from "@/app/actions/blog"
 import { getMyBlogCadencePolicy } from "@/app/actions/blog-cadence-policy"
 import type { TopicIdea } from "@/app/actions/blog"
 import { format } from "date-fns"
@@ -58,6 +58,7 @@ interface BlogPost {
   created_at: string
   published_at: string | null
   agent_user_id: string | null
+  visibility_scope?: string | null
 }
 
 interface Keyword {
@@ -192,7 +193,18 @@ export function BlogDashboardClient({
   const publishedPosts = posts.filter((p) => p.publish_status === "published").length
   const draftPosts = posts.filter((p) => p.publish_status === "draft").length
   const avgWordsPerPost = 800 // industry estimate for generated posts
-  const estimatedMonthlyReaders = publishedPosts * 150 // rough estimate: 150 readers/post/month
+
+  // REAL readership — blog_post_views (written on every page load, previously
+  // read by nothing). Replaces the "publishedPosts * 150" guess this card
+  // used to show, which moved with post count alone and never with actual
+  // traffic. Loaded once on mount; null while loading so the card can say so
+  // rather than flash a stale/zero number.
+  const [traffic, setTraffic] = useState<BlogTrafficOverview | null>(null)
+  useEffect(() => {
+    void getBlogTrafficOverview().then((r) => {
+      if (r.success && r.overview) setTraffic(r.overview)
+    })
+  }, [])
 
   // ── THE SERVER-FILTERED RELOAD ─────────────────────────────────────────────
   // One request at a time wins: responses can land out of order, and a slow
@@ -716,16 +728,72 @@ export function BlogDashboardClient({
                 </div>
                 <div>
                   <p className="text-2xl font-bold">
-                    {estimatedMonthlyReaders > 999
-                      ? `${Math.round(estimatedMonthlyReaders / 1000)}k`
-                      : estimatedMonthlyReaders}
+                    {traffic == null
+                      ? "—"
+                      : traffic.uniqueViewers > 999
+                        ? `${Math.round(traffic.uniqueViewers / 1000)}k`
+                        : traffic.uniqueViewers}
                   </p>
-                  <p className="text-xs text-muted-foreground">Est. Monthly Readers</p>
+                  <p className="text-xs text-muted-foreground">Unique Readers</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Traffic sources — real blog_post_views.source/referrer, not an estimate */}
+        {traffic && traffic.totalViews > 0 && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                Traffic sources
+                <span className="font-normal text-xs text-muted-foreground">
+                  {traffic.totalViews.toLocaleString()} views · {traffic.uniqueViewers.toLocaleString()} unique readers
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">By source</p>
+                  {traffic.topSources.map((s) => (
+                    <div key={s.source} className="flex items-center justify-between text-xs">
+                      <span className="capitalize">{s.source}</span>
+                      <span className="text-muted-foreground">{s.count.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Top referrers</p>
+                  {traffic.topReferrers.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No referrer data yet</p>
+                  ) : (
+                    traffic.topReferrers.map((r) => (
+                      <div key={r.referrer} className="flex items-center justify-between text-xs">
+                        <span className="truncate">{r.referrer}</span>
+                        <span className="text-muted-foreground shrink-0 ml-2">{r.count.toLocaleString()}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Shares by channel</p>
+                  {traffic.sharesByChannel.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No shares recorded yet</p>
+                  ) : (
+                    traffic.sharesByChannel.map((s) => (
+                      <div key={s.channel} className="flex items-center justify-between text-xs">
+                        <span className="capitalize">{s.channel}</span>
+                        <span className="text-muted-foreground">{s.count.toLocaleString()}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Category Filter Tabs */}
         <div className="flex flex-wrap gap-2">
@@ -921,6 +989,11 @@ export function BlogDashboardClient({
                       <ExternalLink className="h-3 w-3" />
                       <span>Published {format(new Date(post.published_at), "MMM d, yyyy")}</span>
                     </div>
+                  )}
+                  {post.visibility_scope && post.visibility_scope !== "brokerage" && (
+                    <Badge variant="outline" className="mt-2 text-[10px]">
+                      {post.visibility_scope === "agent" ? "Private draft" : post.visibility_scope}
+                    </Badge>
                   )}
                 </CardContent>
               </Card>

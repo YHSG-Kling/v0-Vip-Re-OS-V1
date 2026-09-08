@@ -281,7 +281,7 @@ export async function checkAndAwardBadges(agentId: string, currentPoints: number
   // defaults plus whatever this brokerage added on top — and nothing else.
   const { data: eligibleBadges, error: badgesError } = await supabase
     .from("gamification_badges")
-    .select("id, badge_name, badge_tier, required_points")
+    .select("id, badge_name, badge_tier, required_points, trigger_event")
     .eq("is_active", true)
     .lte("required_points", currentPoints)
     .order("required_points", { ascending: true })
@@ -290,7 +290,14 @@ export async function checkAndAwardBadges(agentId: string, currentPoints: number
 
   const awardedBadges = []
 
-  for (const badge of eligibleBadges || []) {
+  // Only badges seeded 'points_threshold' award off a points total (m484's seed
+  // comment, verbatim: "a badge whose trigger_event named an event nothing
+  // emits would be exactly the inert catalog this migration is fixing"). This
+  // is the ONE awarder that exists, so a future event-triggered badge (a
+  // distinct trigger_event value) must NOT be awarded here on points alone —
+  // it stays un-awarded, honestly, until an event-based awarder is built for
+  // it, rather than being silently mis-awarded by whichever awarder runs first.
+  for (const badge of (eligibleBadges ?? []).filter((b) => (b.trigger_event ?? "points_threshold") === "points_threshold")) {
     const result = await awardBadge({
       agentId,
       badgeId: badge.id,

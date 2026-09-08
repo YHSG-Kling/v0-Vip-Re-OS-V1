@@ -427,24 +427,13 @@ export async function listProviderAccounts(params: {
   const supabase = await createClient()
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
-  // Explicitly select only safe columns — never include token fields
-  const selectColumns = [
-    "id",
-    "brokerage_id",
-    "user_id",
-    "provider_type",
-    "provider_account_id",
-    "token_expires_at",
-    "is_active",
-    "last_sync_at",
-    "sync_direction",
-    "created_at",
-    "updated_at",
-  ].join(", ")
-
+  // Explicitly select only safe columns — never include token fields. A plain
+  // string literal (not an array-then-join) so a static scanner over the
+  // literal `.select(...)` argument (e.g. the readerless-write census) can see
+  // exactly which columns this reads, same as every other query in this file.
   let query = supabase
     .from("calendar_provider_accounts")
-    .select(selectColumns)
+    .select("id, brokerage_id, user_id, provider_type, provider_account_id, token_expires_at, is_active, last_sync_at, sync_direction, created_at, updated_at")
     .eq("brokerage_id", brokerageId)
 
   if (userType === "agent") {

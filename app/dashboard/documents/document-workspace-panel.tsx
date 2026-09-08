@@ -244,14 +244,25 @@ export function DocumentWorkspacePanel() {
             <p className="text-xs text-muted-foreground mt-1">No folders yet.</p>
           ) : (
             <ul className="mt-1 text-xs space-y-0.5 max-h-32 overflow-y-auto">
-              {folders.map((f) => (
-                <li key={f.id} className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-[10px] capitalize">
-                    {f.folderType ?? "—"}
-                  </Badge>
-                  <span className="truncate">{f.folderName}</span>
-                </li>
-              ))}
+              {folders.map((f) => {
+                const parentName = f.parentFolderId
+                  ? folders.find((p) => p.id === f.parentFolderId)?.folderName
+                  : null
+                return (
+                  <li key={f.id} className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px] capitalize">
+                      {f.folderType ?? "—"}
+                    </Badge>
+                    <span className="truncate">
+                      {f.parentFolderId && <span className="text-muted-foreground">↳ </span>}
+                      {f.folderName}
+                    </span>
+                    {parentName && (
+                      <span className="text-muted-foreground text-[10px] shrink-0">in {parentName}</span>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           )}
 

@@ -327,8 +327,8 @@ export async function getCampaignById(campaignId: string) {
       *,
       listing:listings(id, address, city, state, list_price, mls_number),
       assets:marketing_assets(*),
-      tasks:marketing_campaign_tasks(*),
-      comments:marketing_campaign_comments(*, author:users(id, first_name, last_name)),
+      tasks:marketing_campaign_tasks(id, campaign_id, title, description, status, assigned_user_id, due_at, created_at, updated_at),
+      comments:marketing_campaign_comments(id, campaign_id, comment_body, author_user_id, created_at, author:users(id, first_name, last_name)),
       calendar_events:campaign_calendar(*)
     `)
     .eq("id", campaignId)

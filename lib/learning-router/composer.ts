@@ -195,7 +195,9 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
     brokerageId   = ctx.brokerageId
     audienceRole  = "agent"
     gapTags       = ctx.gapTags
-    completedIds  = ctx.completedModuleIds
+    // Dismissed ("not now") modules never get re-recommended by the composer,
+    // same as completed ones — merged into the ONE exclusion set below.
+    completedIds  = [...ctx.completedModuleIds, ...ctx.dismissedModuleIds]
     signalSource  = ctx.gapTags[0] ? `gap:${ctx.gapTags[0]}` : `tenure:agent_${ctx.tenureDays ?? 0}d`
     signalMetadata = { tenureDays: ctx.tenureDays, gapTags: ctx.gapTags, unadoptedInsightIds: ctx.unadoptedInsightIds }
   } else if (actorKind === "staff") {

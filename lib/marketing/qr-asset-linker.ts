@@ -257,6 +257,13 @@ export async function getQrCodePerformance(
       isFirstScan: boolean
       contactId?: string
     }>
+    /** Mobile vs desktop vs other, parsed from qr_scan_events.user_agent —
+     *  never the raw string (device class only, nothing identifying). */
+    deviceBreakdown: { mobile: number; desktop: number; other: number }
+    /** Distinct qr_scan_events.ip_address among the loaded window — a
+     *  cross-check on isFirstScan-based uniqueScans (never displayed as a raw
+     *  IP, only as a count; the addresses themselves stay server-side). */
+    uniqueIpCount: number
   }
   error?: string
 }> {
@@ -278,7 +285,7 @@ export async function getQrCodePerformance(
   // Get recent scan events
   const { data: scanEvents, error: scanError } = await supabase
     .from("qr_scan_events")
-    .select("scanned_at, is_first_scan, contact_id")
+    .select("scanned_at, is_first_scan, contact_id, ip_address, user_agent")
     .eq("qr_code_id", qrCodeId)
     .eq("brokerage_id", brokerageId)
     .order("scanned_at", { ascending: false })
@@ -293,6 +300,17 @@ export async function getQrCodePerformance(
   const leadsGenerated = qrCode.lead_count ?? 0
   const conversionRate = totalScans > 0 ? (leadsGenerated / totalScans) * 100 : 0
 
+  const deviceBreakdown = { mobile: 0, desktop: 0, other: 0 }
+  const ipSet = new Set<string>()
+  for (const e of (scanEvents ?? []) as Array<{ ip_address: string | null; user_agent: string | null }>) {
+    if (e.ip_address) ipSet.add(e.ip_address)
+    const ua = (e.user_agent ?? "").toLowerCase()
+    if (!ua) { deviceBreakdown.other++; continue }
+    if (/mobile|android|iphone|ipad/.test(ua)) deviceBreakdown.mobile++
+    else if (/windows|macintosh|linux|x11/.test(ua)) deviceBreakdown.desktop++
+    else deviceBreakdown.other++
+  }
+
   return {
     success: true,
     performance: {
@@ -305,6 +323,8 @@ export async function getQrCodePerformance(
         isFirstScan: e.is_first_scan,
         contactId: e.contact_id ?? undefined,
       })),
+      deviceBreakdown,
+      uniqueIpCount: ipSet.size,
     },
   }
 }

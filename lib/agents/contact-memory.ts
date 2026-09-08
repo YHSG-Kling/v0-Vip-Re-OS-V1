@@ -110,6 +110,12 @@ export interface RecallMemoryRow {
   createdAt:  string
   similarity: number
   metadata:   Record<string, unknown>
+  /** The table this memory was written from (e.g. "showings", "portal_messages"),
+   *  when embedContactMemory's caller named one. Null for memories written
+   *  without a source (e.g. a free-standing agent note). */
+  sourceTable: string | null
+  /** The source row's id within sourceTable — null whenever sourceTable is. */
+  sourceId:    string | null
 }
 
 export interface RecallResult {
@@ -156,6 +162,11 @@ export async function recallContactMemory(input: RecallInput): Promise<RecallRes
     createdAt:  r.created_at as string,
     similarity: typeof r.similarity === "number" ? r.similarity : 0,
     metadata:   (r.metadata ?? {}) as Record<string, unknown>,
+    // Present once m613 (contact_memory_recall provenance columns) is applied;
+    // undefined on the RPC's pre-migration shape reads as null here, never as
+    // a fabricated source.
+    sourceTable: (r.source_table ?? null) as string | null,
+    sourceId:    (r.source_id ?? null) as string | null,
   }))
 
   return { ok: true, memories }

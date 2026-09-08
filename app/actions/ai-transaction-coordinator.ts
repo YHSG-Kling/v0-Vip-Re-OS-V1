@@ -775,7 +775,7 @@ export async function listTransactionCommunications(transactionId: string) {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("transaction_communications")
-    .select("id, recipient_role, communication_type, ai_draft, final_content, status, sent_at, created_at")
+    .select("id, recipient_role, communication_type, ai_draft, final_content, status, sent_at, created_at, agent_id")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", scope.brokerageId!)
     .order("created_at", { ascending: false })

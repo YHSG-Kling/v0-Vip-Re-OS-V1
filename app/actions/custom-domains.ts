@@ -136,6 +136,8 @@ export interface CustomDomainView {
   verifiedAt: string | null
   lastCheckedAt: string | null
   createdAt: string | null
+  /** users.id of whoever added this domain — tenant_custom_domains.added_by. */
+  addedBy: string | null
 }
 
 export interface CustomDomainsPanel {
@@ -165,10 +167,11 @@ function rowToView(row: any): CustomDomainView {
     verifiedAt: row.verified_at ?? null,
     lastCheckedAt: row.last_checked_at ?? null,
     createdAt: row.created_at ?? null,
+    addedBy: row.added_by ?? null,
   }
 }
 
-const ROW_COLUMNS = "id, brokerage_id, domain, status, verification, error_detail, created_at, verified_at, last_checked_at"
+const ROW_COLUMNS = "id, brokerage_id, domain, status, verification, error_detail, created_at, verified_at, last_checked_at, added_by"
 
 // ── READ: the settings-card panel ────────────────────────────────────────────
 

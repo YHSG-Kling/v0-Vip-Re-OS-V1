@@ -52,6 +52,9 @@ export interface ManagerActivityEntry {
   /** Normalized outcome for the status pill. */
   status: "done" | "executed" | "sent" | "skipped" | "escalated" | "failed"
   whenISO: string
+  /** The human who approved this action (marketing/asset/ads *_actions.approved_by),
+   *  when the row was human-approved rather than auto-resolved. */
+  approvedByUserId?: string | null
 }
 
 function labelFor(key: string): string {
@@ -77,7 +80,7 @@ export async function loadManagerActivity(
   if (!brokerageId) return []
   const supabase = client ?? createServiceClient()
 
-  const actionSelect = "id, action_type, rationale, status, proposed_at, approved_at, executed_at"
+  const actionSelect = "id, action_type, rationale, status, proposed_at, approved_at, executed_at, approved_by, result"
   // A manager's COMPLETED work (past the 'proposed'/'approved'/'executing' in-flight
   // states the pending queue already shows): it ran, it was skipped, or it failed.
   const resolvedStatuses = ["succeeded", "failed", "skipped"]
@@ -146,15 +149,24 @@ export async function loadManagerActivity(
       const status: ManagerActivityEntry["status"] =
         r.status === "skipped" ? "skipped" : r.status === "failed" ? "failed" : "executed"
       const verb = status === "skipped" ? "skipped" : status === "failed" ? "failed to run" : "ran"
+      // On a failed/skipped row, WHY beats the proposal rationale — the
+      // executor's own result.error/result.reason is the concrete cause;
+      // rationale only explains why the action was PROPOSED, not why it
+      // didn't complete.
+      const result = (r.result ?? null) as { error?: string; reason?: string } | null
+      const detail = (status !== "executed" && (result?.error || result?.reason))
+        || r.rationale
+        || null
       entries.push({
         id: `${source}:${r.id}`,
         managerKey: key,
         managerLabel: labelFor(key),
         source,
         action: `${verb} ${humanizeActionType(r.action_type)}`,
-        detail: r.rationale ?? null,
+        detail,
         status,
         whenISO: r.executed_at ?? r.approved_at ?? r.proposed_at,
+        approvedByUserId: r.approved_by ?? null,
       })
     }
   }

@@ -233,6 +233,18 @@ export default function FeedbackSummaryPanel({ analytics, feedbackCards }: Props
                       {fb.ai_summary && (
                         <p className="text-xs text-muted-foreground">{fb.ai_summary}</p>
                       )}
+                      {fb.request?.sent_at && fb.created_at && (
+                        <p className="text-xs text-muted-foreground">
+                          Requested {new Date(fb.request.sent_at).toLocaleDateString()} · received{" "}
+                          {Math.max(
+                            0,
+                            Math.round(
+                              (new Date(fb.created_at).getTime() - new Date(fb.request.sent_at).getTime())
+                                / 86_400_000,
+                            ),
+                          )}d later
+                        </p>
+                      )}
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                         {fb.presentation_rating != null && (
                           <>

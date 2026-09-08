@@ -69,6 +69,11 @@ interface CommunicationRow {
   status: string | null
   sent_at: string | null
   created_at: string | null
+  /** transaction_communications.agent_id — who drafted/sent it. Surfaced only
+   *  when a transaction has communications from more than one agent (a
+   *  co-listed deal); on the common single-agent transaction it would only
+   *  repeat information the panel's own header already carries. */
+  agent_id: string | null
 }
 
 /** What the server said. Never a hard-coded "Success!". */
@@ -493,7 +498,10 @@ export function AiCoordinatorPanel({
               <p className="text-xs text-muted-foreground mt-1">None recorded yet.</p>
             ) : (
               <ul className="mt-1 divide-y border rounded">
-                {communications.map((c) => (
+                {(() => {
+                  const distinctAgents = new Set(communications.map((c) => c.agent_id).filter(Boolean))
+                  const showAgent = distinctAgents.size > 1
+                  return communications.map((c) => (
                   <li key={c.id} className="px-2 py-1.5 text-xs">
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant="outline" className="text-[10px] capitalize">
@@ -502,6 +510,11 @@ export function AiCoordinatorPanel({
                       <span className="capitalize">
                         {c.communication_type} &rarr; {String(c.recipient_role ?? "").replace(/_/g, " ")}
                       </span>
+                      {showAgent && c.agent_id && (
+                        <span className="text-muted-foreground" title={c.agent_id}>
+                          by agent {c.agent_id.slice(0, 8)}
+                        </span>
+                      )}
                       <span className="text-muted-foreground">
                         {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
                       </span>
@@ -557,7 +570,8 @@ export function AiCoordinatorPanel({
                       </div>
                     ) : null}
                   </li>
-                ))}
+                  ))
+                })()}
               </ul>
             )}
             <VerdictNote verdict={sendVerdict} />

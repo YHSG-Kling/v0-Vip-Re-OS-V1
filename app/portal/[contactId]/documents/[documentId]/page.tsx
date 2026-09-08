@@ -371,12 +371,23 @@ export default function DocumentViewerPage() {
                 (owner rule) — with a direct route to the envelope when the provider gave one. */}
             {signaturePacket && (
               signaturePacket.signingUrl ? (
-                <Button className="w-full" asChild>
-                  <a href={signaturePacket.signingUrl} target="_blank" rel="noopener noreferrer">
-                    <PenTool className="h-4 w-4 mr-2" />
-                    Sign Document
-                  </a>
-                </Button>
+                <>
+                  <Button className="w-full" asChild>
+                    <a href={signaturePacket.signingUrl} target="_blank" rel="noopener noreferrer">
+                      <PenTool className="h-4 w-4 mr-2" />
+                      Sign Document
+                    </a>
+                  </Button>
+                  {signaturePacket.signingOrder.length > 1 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Signing order: {signaturePacket.signingOrder.map((s, i) => `${i + 1}. ${s.name} (${s.role})`).join(" → ")}
+                    </p>
+                  ) : signaturePacket.signers.length > 1 && (
+                    <p className="text-xs text-muted-foreground">
+                      Also signing: {signaturePacket.signers.map((s) => `${s.name} (${s.role})`).join(", ")}
+                    </p>
+                  )}
+                </>
               ) : (
                 <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-800 dark:text-blue-200">
                   <p className="font-medium flex items-center gap-1.5"><PenTool className="h-4 w-4" /> Ready for your signature</p>
@@ -384,6 +395,15 @@ export default function DocumentViewerPage() {
                     Your signing invite{signaturePacket.sentAt ? ` was sent ${new Date(signaturePacket.sentAt).toLocaleDateString()}` : " is on its way"} — open the email from your e-sign provider to sign.
                     {signaturePacket.expiresAt ? ` It expires ${new Date(signaturePacket.expiresAt).toLocaleDateString()}.` : ""}
                   </p>
+                  {signaturePacket.signingOrder.length > 1 ? (
+                    <p className="mt-1 text-xs">
+                      Signing order: {signaturePacket.signingOrder.map((s, i) => `${i + 1}. ${s.name} (${s.role})`).join(" → ")}
+                    </p>
+                  ) : signaturePacket.signers.length > 1 && (
+                    <p className="mt-1 text-xs">
+                      Also signing: {signaturePacket.signers.map((s) => `${s.name} (${s.role})`).join(", ")}
+                    </p>
+                  )}
                 </div>
               )
             )}

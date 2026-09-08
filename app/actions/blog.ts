@@ -255,7 +255,15 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       content: blogResult.content,
       featured_image_url: featuredImageUrl,
       publish_status: "draft",
-      visibility_scope: params.agentUserId ? "private" : "brokerage",
+      // "private" is NOT a member of blog_posts_visibility_scope_check
+      // (agent | brokerage | multi_location | platform | team, verified
+      // live) — the same drifted literal fixed 60 lines below for the
+      // sibling seo_keywords insert in THIS function (see the comment
+      // there). Every agent-scoped AI blog post this branch tried to save
+      // was refused with SQLSTATE 23514, checked and reported as a failure
+      // (never silent), but a failure nonetheless: the agent got "Failed to
+      // save blog post" for every AI-generated post scoped to themselves.
+      visibility_scope: params.agentUserId ? "agent" : "brokerage",
       created_by: userId,
       is_ai_generated: true,
     })
@@ -703,6 +711,92 @@ export async function publishToWordPress(
 // ~670 lines of real code from every such analyzer's view, including the query
 // this file's projection check anchors on. Do not reintroduce one.
 
+// ─── Traffic sources — reads blog_post_views.source/referrer/viewer_ip_hash ──
+//
+// Written on every POST /api/blog/track-view but never read anywhere until
+// now: the daily content-intel aggregator (lib/content-intel/performance-
+// aggregator.ts) only reads blog_post_id + viewer_persona_snapshot for its
+// topic/persona scoring, which is a DIFFERENT question ("which persona reads
+// this") from the one this action answers ("where do readers come from, and
+// how many distinct people is that"). viewer_ip_hash is never a raw IP
+// (hashed at write time, per-brokerage salted) — it is read here ONLY to
+// count DISTINCT hashes, never displayed or exported as an identifier.
+export interface BlogTrafficOverview {
+  totalViews: number
+  uniqueViewers: number
+  topSources: Array<{ source: string; count: number }>
+  topReferrers: Array<{ referrer: string; count: number }>
+  /** blog_post_share_clicks.share_channel, rolled up brokerage-wide — which
+   *  platform readers actually use to share posts out. */
+  sharesByChannel: Array<{ channel: string; count: number }>
+}
+
+export async function getBlogTrafficOverview(): Promise<{
+  success: boolean
+  overview?: BlogTrafficOverview
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("blog_post_views")
+    .select("source, referrer, viewer_ip_hash")
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("viewed_at", { ascending: false })
+    .limit(5000)
+
+  if (error) return { success: false, error: error.message }
+
+  const rows = (data ?? []) as Array<{ source: string | null; referrer: string | null; viewer_ip_hash: string | null }>
+  const sourceCounts = new Map<string, number>()
+  const referrerCounts = new Map<string, number>()
+  const uniqueHashes = new Set<string>()
+
+  for (const r of rows) {
+    const source = (r.source ?? "direct").trim() || "direct"
+    sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1)
+    if (r.referrer) {
+      // Referrers are full URLs — bucket by hostname so "utm-tagged" variants
+      // of the same site don't fragment the top-referrers list.
+      let bucket = r.referrer
+      try { bucket = new URL(r.referrer).hostname } catch { /* not a URL — keep raw */ }
+      referrerCounts.set(bucket, (referrerCounts.get(bucket) ?? 0) + 1)
+    }
+    if (r.viewer_ip_hash) uniqueHashes.add(r.viewer_ip_hash)
+  }
+
+  const topN = (m: Map<string, number>, n: number) =>
+    Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, n)
+
+  const { data: shareRows, error: shareError } = await supabase
+    .from("blog_post_share_clicks")
+    .select("share_channel")
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("clicked_at", { ascending: false })
+    .limit(2000)
+  if (shareError) console.error("[getBlogTrafficOverview] share-clicks read failed:", shareError.message)
+  const channelCounts = new Map<string, number>()
+  for (const r of (shareRows ?? []) as Array<{ share_channel: string | null }>) {
+    const ch = r.share_channel ?? "unknown"
+    channelCounts.set(ch, (channelCounts.get(ch) ?? 0) + 1)
+  }
+
+  return {
+    success: true,
+    overview: {
+      totalViews: rows.length,
+      uniqueViewers: uniqueHashes.size,
+      topSources: topN(sourceCounts, 5).map(([source, count]) => ({ source, count })),
+      topReferrers: topN(referrerCounts, 5).map(([referrer, count]) => ({ referrer, count })),
+      sharesByChannel: topN(channelCounts, 10).map(([channel, count]) => ({ channel, count })),
+    },
+  }
+}
+
 export async function getBlogPosts(
   filters?: {
     publishStatus?: string
@@ -723,6 +817,7 @@ export async function getBlogPosts(
     created_at: string
     published_at: string | null
     agent_user_id: string | null
+    visibility_scope: string | null
   }>
   error?: string
 }> {
@@ -735,7 +830,7 @@ export async function getBlogPosts(
 
   let query = supabase
     .from("blog_posts")
-    .select("id, title, slug, excerpt, publish_status, category, seo_score, created_at, published_at, agent_user_id")
+    .select("id, title, slug, excerpt, publish_status, category, seo_score, created_at, published_at, agent_user_id, visibility_scope")
     .eq("brokerage_id", ctx.brokerageId)
     .order("created_at", { ascending: false })
 
