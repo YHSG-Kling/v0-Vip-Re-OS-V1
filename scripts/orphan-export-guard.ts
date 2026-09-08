@@ -522,7 +522,31 @@ for (const o of orphans) {
   )
 }
 
-const cat = { proofOnly: 0, internal: 0, trulyDead: 0 }
+const cat = { proofOnly: 0, internal: 0, trulyDead: 0, adjudicated: 0 }
+/**
+ * ADJUDICATED SEAMS (2026-09-08). Two doc tags, placed on the line(s) directly
+ * above an export, take it OFF the wire list with its reason kept beside it:
+ *   /** @proofSeam <why the seam must stay exported> *\/   — a proof-only door over
+ *       module-private state (a memo reset, an executor injector) that cannot
+ *       move beside its proof.
+ *   /** @ownerRuled <date + the ruling> *\/                   — kept and NOT wired
+ *       by an owner ruling (trigger-match "KEPT, NOT WIRED", protected-class
+ *       signals, sendEmailCampaign).
+ * Read from RAW source on purpose — the tag IS a comment. Published as its own
+ * count so an exemption can never hide inside a total (§2). A tag with no
+ * reason text does not count.
+ */
+const adjudicatedExports: Array<{ file: string; name: string; tag: string }> = []
+const rawCache = new Map<string, string>()
+function adjudicationTag(file: string, name: string): string | null {
+  let raw = rawCache.get(file)
+  if (raw === undefined) { try { raw = readFileSync(file, "utf8") } catch { raw = "" } rawCache.set(file, raw) }
+  const decl = raw.search(new RegExp(`^export\\s+(?:async\\s+)?(?:function\\*?|const|let|class|type|interface|enum)\\s+${name.replace(/\$/g, "\\$")}\\b`, "m"))
+  if (decl < 0) return null
+  const above = raw.slice(Math.max(0, decl - 600), decl)
+  const m = above.match(/@(proofSeam|ownerRuled)\s+\S[^*\n]*(?:[\s\S]{0,300})?$/)
+  return m ? m[1] : null
+}
 const deadByFile: Record<string, number> = {}
 /** Category C members, kept so the backlog can actually be READ (see --list). */
 const deadExports: Array<{ file: string; name: string }> = []
@@ -540,7 +564,9 @@ for (const o of orphans) {
   // product (lane DA). A is now exactly "exported for a proof, used by nothing
   // else — not even its own file"; the proof mention of a live helper is a
   // test seam, not an orphan.
-  if (reachedModule.get(o.file) && selfHits > 1) { cat.internal++; internalExports.push({ file: o.file, name: o.name }) }
+  const tag = adjudicationTag(o.file, o.name)
+  if (tag) { cat.adjudicated++; adjudicatedExports.push({ file: o.file, name: o.name, tag }) }
+  else if (reachedModule.get(o.file) && selfHits > 1) { cat.internal++; internalExports.push({ file: o.file, name: o.name }) }
   else if (proofCorpus.some((p) => re.test(p))) { cat.proofOnly++; proofOnlyExports.push({ file: o.file, name: o.name }) }
   else {
     cat.trulyDead++
@@ -653,7 +679,7 @@ if (process.env.ORPHAN_EXPORT_BASELINE === "1") {
     trulyDead: cat.trulyDead,
   } as Baseline & { trulyDead: number }
   writeFileSync(baselinePath, `${JSON.stringify(next, null, 2)}\n`)
-  console.log(`Baseline written: ${cat.proofOnly + cat.trulyDead} orphaned (A+C) + ${cat.internal} live internal seams (B) = ${orphans.length} unreferenced of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
+  console.log(`Baseline written: ${cat.proofOnly + cat.trulyDead} orphaned (A+C) + ${cat.internal} live internal seams (B) + ${cat.adjudicated} adjudicated (@proofSeam/@ownerRuled) = ${orphans.length} unreferenced of ${exportsFound.length} exports across ${Object.keys(counts).length} files.`)
   console.log(`  A. proof-only ${cat.proofOnly} · B. internal/live ${cat.internal} · C. referenced nowhere ${cat.trulyDead}`)
   process.exit(0)
 }
@@ -712,7 +738,8 @@ const regressionsDead: string[] = []
 console.log(`     A. proof-only (a simulator names it, nothing else — not its own file)  ${cat.proofOnly}`)
 console.log(`     B. internal helper of a REACHED module — LIVE CODE     ${cat.internal}`)
 console.log(`     C. referenced NOWHERE — the real burn-down list        ${cat.trulyDead}`)
-if (cat.proofOnly + cat.internal + cat.trulyDead !== orphans.length) {
+console.log(`     D. adjudicated by tag (@proofSeam / @ownerRuled)      ${cat.adjudicated}${adjudicatedExports.length ? " — " + adjudicatedExports.map((a) => `${a.file}::${a.name} [${a.tag}]`).join(", ") : ""}`)
+if (cat.proofOnly + cat.internal + cat.trulyDead + cat.adjudicated !== orphans.length) {
   console.log(`     ! classification does not reconcile with ${orphans.length} — treat the split as unproven`)
 }
 const baselineDead = (baselineObj as any).trulyDead as number | undefined
