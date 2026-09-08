@@ -154,6 +154,7 @@ export function composeCdaDisbursementLines(f: CdaDisbursementFigures): string[]
  * reach it. Deleting it would break a live proof, so the figures are shared
  * through composeCdaDisbursementLines above instead of copied.
  */
+/** @proofSeam merge already done onto the survivor (app/actions/cda-portal.ts:sendCdaToTitleAction — see KEEP-ONE NOTE above); kept only because scripts/cda-flow-simulator.ts:71 calls it directly and scripts/cda-process-chain-simulator.ts:171 asserts the survivor does NOT reach it (proving there is exactly one send path) */
 export async function deliverCdaToClosingAgent(
   supabase: Svc,
   params: { transactionId: string; brokerageId: string; grossCommission: number; agentNet: number; brokerageNet: number; tcNet?: number | null; dealName?: string | null },

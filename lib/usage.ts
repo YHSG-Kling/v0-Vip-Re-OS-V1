@@ -130,6 +130,7 @@ export async function incrementUsage(brokerageId: string, metric: string, amount
  * survivor returns UNLIMITED (check-cap.ts:81-84) — but it is a real widening
  * and not a proof that every string is a metric.
  */
+/** @proofSeam name-only anchor for scripts/stream-routing-simulator.ts:192 (see header above) — logic lives in the survivor, lib/usage/check-cap.ts:checkUsageCap */
 export async function checkLimit(brokerageId: string, metric: string): Promise<UsageLimit> {
   // DYNAMIC on purpose: lib/usage/check-cap.ts is `import "server-only"`, and
   // this module is reachable (via services/supabaseService.ts and the shared

@@ -262,6 +262,7 @@ export function buildUploadObjectPath(params: {
  *
  * Returns the offending purpose names; empty means the rule holds.
  */
+/** @proofSeam a positive control by design (CLAUDE.md §2) — its reader is the guard, scripts/signed-upload-tenancy-guard.ts (guard chain) */
 export function purposesMissingTenantPrefix(): UploadPurpose[] {
   const probe: UploadIdentity = { brokerageId: "BROKERAGE-PROBE", userId: "USER-PROBE" }
   const other: UploadIdentity = { brokerageId: "OTHER-BROKERAGE", userId: "USER-PROBE" }

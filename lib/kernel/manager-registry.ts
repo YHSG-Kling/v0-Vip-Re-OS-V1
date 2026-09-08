@@ -2344,7 +2344,8 @@ export function resolveMaintenanceManager(domain: string): ManagerInfo {
 
 /** Resolve the manager accountable for a guarded table's data integrity (never undefined).
  *  CENSUS NOTE: guard-consumed — scripts/schema-drift-guard.ts:2016 labels every fresh drift with
- *  its owner (guard chain), scripts/manager-ownership-simulator.ts:90 pins the table→manager law. */
+ *  its owner (guard chain), scripts/manager-ownership-simulator.ts:90 pins the table→manager law.
+ *  @proofSeam see CENSUS NOTE above */
 export function resolveTableManager(table: string): ManagerInfo {
   const key = TABLE_MANAGER[table]
   return key ? MANAGERS[key] : FALLBACK_MANAGER

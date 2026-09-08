@@ -52,6 +52,7 @@ import {
   describeMissingContent,
   consumesVoiceover,
 } from "@/lib/remotion/content-contract"
+import { isPickableStatus } from "@/lib/remotion/render-decision"
 // ONE spelling of the buyer-slide composition id (§6) — the same constant the
 // narration budget derives from. Not server-only; no cycle (consultation-*
 // modules import THIS file only via dynamic import at call sites).
@@ -257,7 +258,11 @@ export async function enqueueAvatarCompositionForProject(
       staged = (stagedRow as StagedRender | null) ?? null
     }
 
-    if (staged && staged.render_status === "queued") {
+    // THE ONE SPELLING (§6) — isPickableStatus is this exact rule as a predicate for
+    // code that already holds a row (lib/remotion/render-decision.ts), so a future
+    // change to the pickable status can't drift between the queue's SQL claim and
+    // this in-memory check.
+    if (staged && isPickableStatus(staged.render_status ?? "")) {
       // Same gate as buildAvatarRenderRow: a voiceover is merged (and flagged)
       // only when the target composition actually plays it — on any other
       // composition `used_voiceover: true` would assert a narration that plays

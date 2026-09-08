@@ -38,7 +38,7 @@ import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
 import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
 import { PROVIDER_TENANCY, providerTenancy, type TenancyModel } from "@/lib/providers/tenancy-matrix"
-import { PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "@/lib/agentic-os/vendor-ownership"
+import { PLATFORM_VENDORS, USER_CONNECTED_VENDORS, vendorOwnership } from "@/lib/agentic-os/vendor-ownership"
 import { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 import { VENDOR_PRICING } from "@/lib/vendor-governance/cost-normalizer"
 import { CONNECTED_CAPABILITY_REGISTRY, type ConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
@@ -742,9 +742,16 @@ function getPlatformProviderRegistry(): PlatformProviderEntry[] {
     }
   }
 
-  // 3. Ownership sets — the budget-gate vs connection-gate axis.
-  for (const v of PLATFORM_VENDORS) { const a = get(v, "vendor-ownership (platform)"); a.platformHint = true }
-  for (const v of USER_CONNECTED_VENDORS) { const a = get(v, "vendor-ownership (user-connected)"); a.tenantHint = true }
+  // 3. Ownership sets — the budget-gate vs connection-gate axis. Branched THROUGH
+  // vendorOwnership() rather than by which raw set a name was iterated from (§6):
+  // the classification decision is made in exactly one place, and this reader
+  // cannot drift from it even if the two sets are ever restructured.
+  for (const v of new Set([...PLATFORM_VENDORS, ...USER_CONNECTED_VENDORS])) {
+    const owned = vendorOwnership(v)
+    const a = get(v, `vendor-ownership (${owned === "platform" ? "platform" : "user-connected"})`)
+    if (owned === "platform") a.platformHint = true
+    else a.tenantHint = true
+  }
 
   // 4. Integration Guardian probe surface — platform-keyed probes + specs.
   for (const [provider, envKey] of Object.entries(PLATFORM_PROVIDER_KEYS)) {

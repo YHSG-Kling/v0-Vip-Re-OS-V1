@@ -27,6 +27,7 @@ export interface LifecycleTrigger {
 }
 
 /** Triggers whose value + brokerage match this event. */
+/** @ownerRuled 2026-09-03 wave 26 lane L3 — KEPT, NOT WIRED (System B retired; see file header) */
 export function matchTriggersForEvent(
   triggers: LifecycleTrigger[],
   eventType: string,
@@ -36,6 +37,7 @@ export function matchTriggersForEvent(
 }
 
 /** Is a (campaign × contact) still inside its cooldown window? cooldown_days <= 0 = never throttle. */
+/** @ownerRuled 2026-09-03 wave 26 lane L3 — KEPT, NOT WIRED (System B retired; see file header) */
 export function isCooldownActive(
   lastSentAtIso: string | null | undefined,
   cooldownDays: number,

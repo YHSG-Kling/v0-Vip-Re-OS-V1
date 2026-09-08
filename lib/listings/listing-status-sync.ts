@@ -246,6 +246,7 @@ export function isGatedStage(stage: string): boolean {
 /** PURE. Every lifecycle_stage this module maps at all, gated or not — so a guard can enumerate the
  *  map without reaching into module internals or re-typing it (a re-typed list is a second
  *  vocabulary, §6). */
+/** @proofSeam guard-consumed by design (see doc above) — scripts/listing-status-sync-simulator.ts and scripts/listing-status-two-senses-guard.ts (guard chain) */
 export function mappedStages(): { stage: string; status: ListingStatus; gate: keyof ListingStatusGate | null }[] {
   return [
     ...Object.entries(STATUS_FOR_STAGE).map(([stage, status]) => ({ stage, status, gate: null })),

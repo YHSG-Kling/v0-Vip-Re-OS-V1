@@ -254,6 +254,29 @@ export async function connectApiKeyProvider(params: {
   if (!actor.ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
 
+  // ACCOUNTING OWNER, THROUGH THE CANONICAL RESOLVER (§6). The general actor.ownerId
+  // above is computed once for every domain by a hand-rolled scope ternary; for the
+  // financial domain specifically, re-derive it through resolveAccountingOwner — the
+  // ONE function lib/connections/accounting-scopes.ts exists to be — and refuse
+  // rather than write if the two ever disagree. "contact" is not an accounting scope
+  // (ACCOUNTING_SCOPES has no such member), so it fails closed there too.
+  if (params.domain === "financial") {
+    const { resolveAccountingOwner, ACCOUNTING_SCOPES } = await import("@/lib/connections/accounting-scopes")
+    if (!(ACCOUNTING_SCOPES as readonly string[]).includes(actor.scope)) {
+      return { ok: false, error: `Your account type ("${actor.scope}") does not have a financial-connection scope.` }
+    }
+    const resolved = resolveAccountingOwner(actor.scope as import("@/lib/connections/accounting-scopes").AccountingScope, {
+      brokerageId: actor.scope === "brokerage" ? actor.brokerageId : null,
+      teamId:      actor.scope === "team" ? actor.ownerId : null,
+      agentUserId: actor.scope === "agent" ? actor.ownerId : null,
+      vendorId:    actor.scope === "vendor" ? actor.ownerId : null,
+    })
+    if (!resolved || resolved.ownerId !== actor.ownerId) {
+      console.error("[connection-center] accounting owner mismatch — refusing rather than writing a drifted owner_id", { scope: actor.scope, actorOwnerId: actor.ownerId, resolved })
+      return { ok: false, error: "Could not resolve the accounting owner for your account — refused rather than risk a misfiled connection." }
+    }
+  }
+
   // Bring-your-own CARRIER (phone/SMS) is available on EVERY plan, but the SUBSCRIBER
   // decides whether their MANAGED agents may BYO — otherwise the platform provisions +
   // bills the number (docs/PHONE-SYSTEM-SETUP.md). A tenancy PRINCIPAL (a solo agent —

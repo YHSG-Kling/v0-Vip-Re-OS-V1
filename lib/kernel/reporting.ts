@@ -48,6 +48,12 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { resolveReportScope } from "./reporting-scope"
+import { TRANSACTION_STATUSES, isOpenDeal } from "@/lib/transactions/transaction-status"
+
+/** The live "still working this deal" status set, derived through the canonical predicate
+ *  rather than a second hand-copy of the array — isOpenDeal stays the one place that
+ *  decision is made. */
+const OPEN_DEAL_STATUSES = TRANSACTION_STATUSES.filter(isOpenDeal)
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -445,7 +451,9 @@ export async function loadReportingWorkspace(
       .select("id, purchase_price")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("agent_id", ctx.agentId)
-      .in("status", ["active", "under_contract"])
+      // THE ONE VOCABULARY (§6): the canonical open-deal set — this hand-rolled pair
+      // dropped "pending" and "clear_to_close" from the agent's own pipeline value.
+      .in("status", OPEN_DEAL_STATUSES)
 
     const pendingPipelineValue = (pipeline ?? []).reduce(
       (s, t) => s + (t.purchase_price ?? 0), 0

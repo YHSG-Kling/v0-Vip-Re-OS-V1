@@ -359,6 +359,7 @@ export function isProtectedClassSource(source: string): boolean {
  * scripts/batchdata-seller-signal-simulator.ts:171-174, which proves the
  * classifier's teeth are real rather than merely declared.
  */
+/** @ownerRuled wave 15 (2026-09-03, lane L2) — no production caller; re-adding one would break the sourcing lane (see header above) */
 export function assertSellerSignalSourceAllowed(source: string, declaredBy: string): void {
   const reason = protectedClassReasonFor(source)
   if (reason) {
@@ -678,6 +679,7 @@ export function screenProtectedClassCriteria(
  * scripts/compliance-scope-simulator.ts. An unwired forward guard on the one
  * lane that still refuses is work to keep, not work to delete (CLAUDE.md §1).
  */
+/** @ownerRuled 2026-08-22 finding #297 — "297 just release it from fairhousing"; no production caller by design (see header above) */
 export function stripProtectedClassCriteria(
   criteria: Record<string, unknown> | null | undefined,
 ): { criteria: Record<string, unknown>; removed: string[]; labelled: ProtectedClassBasis[] } {

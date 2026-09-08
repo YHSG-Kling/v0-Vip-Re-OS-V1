@@ -59,10 +59,12 @@ export function vendorOwnership(vendor: string): VendorOwnership {
 // pins the classification). Product readers use the SETS directly (resolve-connectivity.ts:141,
 // provider-posture.ts:741-742) and the two manifests stamp ownership by construction
 // (app-capability-registry.ts) — there is no inline duplicate of the classifier to merge.
+/** @proofSeam see CENSUS NOTE above */
 export function isPlatformVendor(vendor: string): boolean {
   return vendorOwnership(vendor) === "platform"
 }
 
+/** @proofSeam see CENSUS NOTE above */
 export function isUserConnectedVendor(vendor: string): boolean {
   return vendorOwnership(vendor) === "user_connected"
 }

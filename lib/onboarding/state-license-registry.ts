@@ -380,7 +380,8 @@ export function resolveLookupUrl(
 }
 
 /** All registry entries (read-only) — used by simulators/audits. PURE.
- *  CENSUS NOTE: guard-consumed — scripts/license-review-simulator.ts:45-46 (guard chain). */
+ *  CENSUS NOTE: guard-consumed — scripts/license-review-simulator.ts:45-46 (guard chain).
+ *  @proofSeam see CENSUS NOTE above */
 export function listStateLicenseSources(): readonly StateLicenseSource[] {
   return SOURCES
 }

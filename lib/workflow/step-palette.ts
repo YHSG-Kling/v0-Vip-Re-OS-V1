@@ -494,7 +494,8 @@ export function stepSpec(channel: string): StepTypeSpec | undefined {
 
 /** PURE — every channel the palette offers.
  *  CENSUS NOTE: guard-consumed — scripts/sequence-step-palette-guard.ts:80 (guard chain) and
- *  scripts/step-palette-consolidation-simulator.ts:71. */
+ *  scripts/step-palette-consolidation-simulator.ts:71.
+ *  @proofSeam see CENSUS NOTE above */
 export function paletteChannels(): string[] {
   return STEP_PALETTE.map((s) => s.channel)
 }

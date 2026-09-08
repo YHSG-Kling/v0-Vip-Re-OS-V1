@@ -57,6 +57,11 @@ export interface AnchorExecutionResult {
  * evalAnchorExecution — the close of the loop: a form that CARRIED signature anchors must be fully
  * signed before we certify "ready." A form with zero anchors needs no signature and is fine. Pure.
  */
+/** @proofSeam needs real per-form FormAnchorStatus[] (formKey/anchorCount/signed); the live
+ *  getEsignStatus (lib/kernel/forms.ts) returns aggregate total/signed/pending counts only —
+ *  assembling the per-form shape means threading esign-anchor-adapters.ts's per-tag data
+ *  through the packet-finalize path, which is a real integration, not a caller stub.
+ *  Exercised by scripts/esign-anchor-simulator.ts */
 export function evalAnchorExecution(forms: FormAnchorStatus[]): AnchorExecutionResult {
   const incomplete: string[] = []
   const reasons: string[] = []

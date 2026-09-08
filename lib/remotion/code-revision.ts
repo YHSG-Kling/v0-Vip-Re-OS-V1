@@ -108,7 +108,8 @@ export function resolveCodeRevision(
   return memo
 }
 
-/** Test seam — lets a proof exercise both branches without a real deploy. */
+/** Test seam — lets a proof exercise both branches without a real deploy.
+ *  @proofSeam mutable module-level memo; scripts/render-cache-simulator.ts is the only caller by design. */
 export function __resetCodeRevisionMemo(): void {
   memo = undefined
 }

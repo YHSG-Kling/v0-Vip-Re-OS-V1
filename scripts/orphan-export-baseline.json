@@ -19,7 +19,6 @@
     "app/actions/video-repurposing.ts": 3,
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
-    "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -42,7 +41,7 @@
     "lib/agentic-os/connector-shape.ts": 3,
     "lib/agentic-os/invocation-log.ts": 1,
     "lib/agentic-os/mcp-tools.ts": 2,
-    "lib/agentic-os/vendor-ownership.ts": 3,
+    "lib/agentic-os/vendor-ownership.ts": 2,
     "lib/agents/agent-deactivation.ts": 1,
     "lib/agents/buyer-match-reel-producer.ts": 1,
     "lib/agents/buyer-reel-delivery.ts": 2,
@@ -98,7 +97,7 @@
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 2,
     "lib/compliance/vendor-respa.ts": 6,
-    "lib/connections/accounting-scopes.ts": 3,
+    "lib/connections/accounting-scopes.ts": 2,
     "lib/connections/scope.ts": 1,
     "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
@@ -268,7 +267,7 @@
     "lib/kernel/vendor-orchestration.ts": 3,
     "lib/kernel/vendor-price-intelligence.ts": 2,
     "lib/kernel/vendor-rating-governance.ts": 4,
-    "lib/kernel/vendor-subscription.ts": 2,
+    "lib/kernel/vendor-subscription.ts": 1,
     "lib/kernel/vendor-verification.ts": 1,
     "lib/kernel/video-coordination.ts": 3,
     "lib/kernel/voice-delegation.ts": 7,
@@ -386,7 +385,6 @@
     "lib/referrals/referral-reciprocity.ts": 1,
     "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
-    "lib/remotion/render-decision.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 1,
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
@@ -405,7 +403,6 @@
     "lib/transactions/final-compliance-check.ts": 1,
     "lib/transactions/offer-bridge.ts": 1,
     "lib/transactions/sync-from-provider.ts": 1,
-    "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 1,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendors/rank.ts": 1,
@@ -419,7 +416,7 @@
     "lib/video/director-eval-harness.ts": 2,
     "lib/video/format-learning.ts": 2,
     "lib/video/listing-pitch-reel.ts": 1,
-    "lib/video/multilingual-reel.ts": 4,
+    "lib/video/multilingual-reel.ts": 2,
     "lib/video/promo-composition.ts": 1,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
@@ -440,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9344,
+  "census": 9343,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2546,7 +2543,6 @@
     "hooks/use-click-outside.ts": 1,
     "hooks/use-debounce.ts": 1,
     "hooks/use-local-storage.ts": 1,
-    "hooks/use-toast.ts": 1,
     "lib/academy/quiz.ts": 3,
     "lib/activities/activity-tenant.ts": 3,
     "lib/ads/ad-creative-engine.ts": 3,
@@ -12760,9 +12756,6 @@
     ],
     "hooks/use-local-storage.ts": [
       "useLocalStorage"
-    ],
-    "hooks/use-toast.ts": [
-      "reducer"
     ],
     "lib/academy/quiz.ts": [
       "parseQuizQuestions",

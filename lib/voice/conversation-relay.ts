@@ -58,6 +58,7 @@ export type RelayInbound =
 
 /** PURE: parse one relay WebSocket frame — malformed frames become 'unknown',
  *  never a crash mid-call. */
+/** @proofSeam typed spec for tools/relay-companion/server.mjs (plain JS, cannot import TS); see NOT AN ORPHAN note above */
 export function parseRelayFrame(raw: string): RelayInbound {
   try {
     const p = JSON.parse(raw)
@@ -76,12 +77,14 @@ export function parseRelayFrame(raw: string): RelayInbound {
   }
 }
 
-/** PURE: the speak frame. */
+/** PURE: the speak frame.
+ *  @proofSeam typed spec for tools/relay-companion/server.mjs (plain JS, cannot import TS); see NOT AN ORPHAN note above */
 export function relaySpeak(text: string): string {
   return JSON.stringify({ type: "text", token: text.slice(0, 1000), last: true })
 }
 
-/** PURE: the end frame (optionally carrying handoff context Twilio returns on the action URL). */
+/** PURE: the end frame (optionally carrying handoff context Twilio returns on the action URL).
+ *  @proofSeam typed spec for tools/relay-companion/server.mjs (plain JS, cannot import TS); see NOT AN ORPHAN note above */
 export function relayEnd(handoffData?: Record<string, unknown>): string {
   return JSON.stringify(handoffData ? { type: "end", handoffData: JSON.stringify(handoffData) } : { type: "end" })
 }

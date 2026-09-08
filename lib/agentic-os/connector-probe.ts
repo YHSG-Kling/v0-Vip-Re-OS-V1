@@ -273,6 +273,7 @@ export async function probeConnector(
   let httpStatus: number | null = null
   let networkError = false
   let drift: ShapeDrift | null = null
+  let drifted = false
   let error: string | null = null
 
   try {
@@ -282,6 +283,7 @@ export async function probeConnector(
       const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
       const adapted = adaptResponse(json, spec.shape)
       drift = adapted.drift
+      drifted = adapted.drifted
     } else {
       error = `HTTP ${res.status}`
     }
@@ -290,6 +292,9 @@ export async function probeConnector(
     error = err instanceof Error ? err.message : String(err)
   }
 
+  // shapeHealthy(drift) is stricter than !drifted (an aliased-but-present field still
+  // counts as "drifted" for the UI notice but is HEALTHY for classification — see its
+  // own doc) — so classifyProbe reads missingRequired directly, not the drifted flag.
   const status = classifyProbe({
     configured: true,
     httpStatus,
@@ -300,7 +305,9 @@ export async function probeConnector(
     provider,
     status,
     httpStatus,
-    drifted: !!drift && (drift.aliased.length > 0 || drift.missingRequired.length > 0),
+    // ONE VOCABULARY (§6): reuse adaptResponse's own `drifted` rather than recomputing
+    // the same aliased/missingRequired formula a second time.
+    drifted,
     drift,
     checkedAt,
     error: status === "ok" ? null : error,

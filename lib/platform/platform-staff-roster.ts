@@ -146,6 +146,7 @@ export type PlatformActorRole = (typeof PLATFORM_ACTOR_ROLES)[number]
  * (e.g. manage-required-docs.ts uses isPlatformStaffRole on purpose): answering YES for
  * `ai_isa_system` would let the service account administer tenant configuration.
  */
+/** @proofSeam see CENSUS NOTE above — deliberately NOT a gate; guard-consumed by scripts/isa-scope-per-user-simulator.ts */
 export function isPlatformActorRole(role: string | null | undefined): role is PlatformActorRole {
   return isPlatformStaffRole(role) || isNonHumanPlatformRole(role)
 }

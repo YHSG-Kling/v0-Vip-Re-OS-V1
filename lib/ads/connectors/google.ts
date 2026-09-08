@@ -14,6 +14,7 @@ const ADS_API = "https://googleads.googleapis.com/v17"
 
 /** Pure: map a Google Ads searchStream report row → our normalized performance row.
  *  Google reports micros for cost/value; metrics are nested under `metrics`. */
+/** @proofSeam pure mapper, already wired internally by googleConnector.fetchPerformance below; exported for scripts/ad-connector-simulator.ts */
 export function mapReport(row: Record<string, any> | null | undefined): ProviderPerformanceRow {
   const m = (row?.metrics ?? {}) as Record<string, unknown>
   const num = (v: unknown) => (v == null ? 0 : Number(v) || 0)

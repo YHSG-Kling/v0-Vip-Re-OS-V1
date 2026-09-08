@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 /**
  * GET /api/dashboard/badge-counts
@@ -124,7 +125,9 @@ export async function GET() {
             .from("transactions")
             .select("id", { count: "exact", head: true })
             .eq("brokerage_id", brokerageId)
-            .in("status", ["active", "under_contract"])
+            // THE ONE VOCABULARY (§6) — this hand-rolled pair missed "pending" and
+            // "clear_to_close", undercounting the badge for deals already past under_contract.
+            .in("status", [...TRANSACTION_STATUSES_OPEN])
         : Promise.resolve({ count: 0 }),
 
       // Vendor pending jobs (vendor role only)

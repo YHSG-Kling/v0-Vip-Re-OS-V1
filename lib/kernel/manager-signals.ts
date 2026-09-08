@@ -885,6 +885,47 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         asset_type: "situational_reel", asset_id: r.videoProjectId, used_at: new Date().toISOString(),
       }).then(() => {}, () => {})
     }
+    // MULTILINGUAL VARIANT — the contact has no `preferred_language` column (checked
+    // scripts/schema-snapshot.ts; none exists — a product-data gap, not a code gap), so
+    // the closest LIVE signal is the language ElevenLabs/the transcriber actually detected
+    // on this contact's most recent inbound call (call_transcriptions.language via
+    // voice_calls.contact_id). Non-English + newly staged (not deduped) → commission the
+    // translated variant too, gated exactly like every other reel (commissionVideo's own
+    // compliance gate runs per-locale inside commissionMultilingualReel).
+    if (r.ok && r.status === "staged" && r.videoProjectId) {
+      try {
+        const { data: lastCall } = await ctx.supabase
+          .from("voice_calls")
+          .select("id")
+          .eq("contact_id", contactId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        const lastCallId = (lastCall as { id?: string } | null)?.id ?? null
+        if (lastCallId) {
+          const { data: transcript } = await ctx.supabase
+            .from("call_transcriptions")
+            .select("language")
+            .eq("voice_call_id", lastCallId)
+            .maybeSingle()
+          const detectedLocale = (transcript as { language?: string | null } | null)?.language ?? null
+          if (detectedLocale) {
+            const { isMultilingualLocale, commissionMultilingualReel } = await import("@/lib/video/multilingual-reel")
+            if (isMultilingualLocale(detectedLocale)) {
+              await commissionMultilingualReel(
+                {
+                  situation,
+                  locales: [{ locale: detectedLocale }],
+                  opts: { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: persona }, copyGenerator: realCopyGenerator },
+                },
+                ctx.supabase,
+              )
+            }
+          }
+        }
+      } catch (e) { console.error("[manager-signals] multilingual reel variant failed (non-fatal):", e) }
+    }
     if (r.status === "already_staged") return `${persona} reel on ${topicLabel} already commissioned (${r.compositionId}, deduped)`
     if (r.ok) return `commissioned the ${persona} reel on ${topicLabel} (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null

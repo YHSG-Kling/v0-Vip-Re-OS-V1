@@ -983,6 +983,7 @@ function compare(a: unknown, b: unknown): number {
  * Mirrors the query builder in `syncAudience` clause for clause — including the
  * rule that an EMPTY join id-set yields an EMPTY audience.
  */
+/** @proofSeam pure in-memory mirror of the syncAudience SQL query builder (lib/kernel/ads.ts), kept for scripts/audience-source-rules-simulator.ts to prove the two agree clause for clause */
 export function contactMatchesNarrowing(
   contact: Record<string, unknown>,
   narrowing: SourceRuleNarrowingOk,

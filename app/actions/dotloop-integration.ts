@@ -62,7 +62,7 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
 
         if (!existing) {
           // Create new document record — stamp brokerage_id from session
-          const { error } = await supabase.from("client_documents").insert({
+          const { data: inserted, error } = await supabase.from("client_documents").insert({
             brokerage_id: ctx.brokerageId,
             contact_id: data.contactId,
             transaction_id: data.transactionId,
@@ -73,9 +73,22 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
             document_type: mapFolderToDocType(folder.name),
             status: document.is_signed ? "signed" : "pending_signature",
             document_url: document.url,
-          })
+          }).select("id").maybeSingle()
 
-          if (!error) syncedCount++
+          if (!error) {
+            syncedCount++
+            // AUDIT — this is exactly the "event custody does not mint a URL for" the
+            // logger's own header names: a document ARRIVING via provider sync, never
+            // opened through issueGovernedDocumentUrl, so nothing else logs it. Best-
+            // effort: a failed audit row must never fail the sync that already succeeded.
+            if (inserted?.id) {
+              await logDocumentAccess({
+                documentId: inserted.id,
+                accessedByType: "external",
+                accessType: "upload",
+              }).catch((e) => console.error("[dotloop] logDocumentAccess (sync upload) failed:", e))
+            }
+          }
         }
       }
     }
@@ -1140,8 +1153,8 @@ export async function getDocumentFolders(filters?: {
 /**
  * Append a row to document_access_log.
  *
- * ── DELIBERATELY NOT WIRED TO A SURFACE ──────────────────────────────────────
- * document_access_log already has a writer on every path a UI would use:
+ * ── WIRED (orphan burn-down) — the ONE event custody does not cover ─────────
+ * document_access_log already has a writer on every VIEW/DOWNLOAD path:
  *
  *     lib/kernel/document-custody.ts : issueGovernedDocumentUrl
  *       -> reached from app/actions/document-center.ts : getGovernedDocumentUrl
@@ -1151,11 +1164,14 @@ export async function getDocumentFolders(filters?: {
  *          mints the TIME-LIMITED signed URL the log entry is actually ABOUT,
  *          and returns the audit row id.
  *
- * Adding a second UI writer would double-log every open and make the log's own
- * counts wrong. So the Document Center opens documents through the custody path
- * (which logs), and this file supplies the READER — getDocumentAccessLog below,
- * which had no caller at all. This function is kept and hardened, not deleted:
- * it is the only logger for events custody does not mint a URL for.
+ * A SECOND writer on that same path would double-log every open, so the
+ * Document Center keeps opening documents through the custody path. What
+ * custody's URL-minting never covers is a document ARRIVING without anyone
+ * opening it — syncDotloopDocuments above inserting a new client_documents row
+ * pulled from dotloop's own loop. That is a real access event (upload, from
+ * the provider) with no other logger, so it is now the caller, accessType
+ * "upload" / accessedByType "external". getDocumentAccessLog below is the
+ * reader for both writers' rows.
  */
 export async function logDocumentAccess(data: {
   documentId: string

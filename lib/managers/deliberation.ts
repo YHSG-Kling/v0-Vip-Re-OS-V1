@@ -154,7 +154,8 @@ export function isDeliberativeDomain(domainKey: string | null | undefined): bool
 /** Every deliberative collaboration domain (governance surface / sim). PURE.
  *  CENSUS NOTE: proof-only by design — read by scripts/manager-deliberation-simulator.ts:105
  *  (every deliberative domain has a loader + a raiser); no product surface enumerates the set
- *  (team-argument-map derives per-manager via collaborationsFor). */
+ *  (team-argument-map derives per-manager via collaborationsFor).
+ *  @proofSeam no duplicate to merge — the set has no other reader by design (see note above) */
 export function deliberativeDomains(): CollaborationDomain[] {
   return Object.values(MANAGER_COLLABORATIONS).filter((d) => d.deliberate === true)
 }
@@ -225,7 +226,8 @@ export function applyPrincipalOverride(
 /** PURE: what actually governs — the principal's call when recorded, else the argued winner.
  *  CENSUS NOTE: proof-only by design — scripts/manager-deliberation-simulator.ts:298,551. The
  *  governance surface (manager-trust-client.tsx DeliberationBlock) deliberately renders the argued
- *  winner AND the principal's call side by side, so it never collapses them to one value. */
+ *  winner AND the principal's call side by side, so it never collapses them to one value.
+ *  @proofSeam no duplicate to merge — the UI deliberately does not collapse to this value (see note above) */
 export function effectiveWinner(record: DeliberationRecord): ManagerKey | null {
   return record.override?.winner ?? record.winner
 }

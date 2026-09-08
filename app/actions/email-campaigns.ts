@@ -493,6 +493,7 @@ Return ONLY valid JSON with NO markdown:
 
 // ─── SEND ─────────────────────────────────────────────────────────────────────
 
+/** @ownerRuled documented-hold — manual counterpart to the live send-email-campaigns cron lane, waiting on an email-campaign management surface not yet built (see the note above scheduleEmailCampaign below); do not repoint at newsletters to satisfy the orphan count */
 export async function sendEmailCampaign(campaignId: string, _actorUserId?: string, _brokerageId?: string) {
   try {
     if (!isValidUUID(campaignId)) {

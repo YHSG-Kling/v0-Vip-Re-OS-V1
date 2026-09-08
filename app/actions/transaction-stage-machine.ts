@@ -8,6 +8,7 @@ import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { revalidatePath } from "next/cache"
+import { isTransactionStatus } from "@/lib/transactions/transaction-status"
 
 // Helper: resolve session user + caller brokerage; verifies the
 // caller-supplied brokerageId matches the session brokerage. The
@@ -105,6 +106,16 @@ export async function advanceTransactionStage(params: {
       .maybeSingle()
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
 
+    // FAIL CLOSED (§4) — STAGE_TO_STATUS_MAP lives in transaction-stages.ts, a SEPARATE
+    // vocabulary file from transaction-status.ts's TRANSACTION_STATUSES (§6: two files
+    // naming one column). Nothing previously cross-checked that every mapped value is
+    // still a value the CHECK constraint admits; a drift here would have reached the
+    // database as an opaque constraint violation instead of a named, actionable refusal.
+    const mappedStatus = STAGE_TO_STATUS_MAP[params.targetStage]
+    if (!isTransactionStatus(mappedStatus)) {
+      return { success: false, error: `Stage "${params.targetStage}" maps to an unrecognized transaction status "${mappedStatus}" — refusing the override rather than writing an invalid status` }
+    }
+
     // Force the transition. Keep status (lowercase coarse state) in lockstep with stage — the
     // override previously wrote only stage, leaving status stale (e.g. stage CLOSING_PREP while
     // status still under_contract), which is what the dashboards + status filters read.
@@ -112,7 +123,7 @@ export async function advanceTransactionStage(params: {
       .from("transactions")
       .update({
         stage: params.targetStage,
-        status: STAGE_TO_STATUS_MAP[params.targetStage],
+        status: mappedStatus,
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.transactionId)

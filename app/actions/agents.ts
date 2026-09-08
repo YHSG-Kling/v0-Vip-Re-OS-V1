@@ -13,6 +13,11 @@ import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // A new `agents` row invalidates any memoized "this user has no agent record" answer.
 import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
+import { TRANSACTION_STATUSES, isInEscrow } from "@/lib/transactions/transaction-status"
+
+/** The live "in escrow" status set, derived through the canonical predicate rather than a
+ *  second hand-copy of the array — isInEscrow stays the one place that decision is made. */
+const IN_ESCROW_STATUSES = TRANSACTION_STATUSES.filter(isInEscrow)
 
 /** Roles allowed to administer OTHER people's agent records / brokerage rollups. */
 // ==================== AGENT CRUD ====================
@@ -992,7 +997,10 @@ export async function getAgentStats(userIdOrAgentId: string) {
       .from("transactions")
       .select("*", { count: "exact", head: true })
       .eq("agent_id", agentId)
-      .in("status", ["under_contract"])
+      // THE ONE VOCABULARY (§6): "active transaction" = a live contract, not yet closed
+      // (isInEscrow's own set) — this hand-rolled single value silently dropped "pending"
+      // and "clear_to_close" deals from an agent's own active-transaction count.
+      .in("status", IN_ESCROW_STATUSES)
     activeTransactions = count || 0
   } catch (e) {
     // Table may not exist
@@ -1119,7 +1127,8 @@ export async function getBrokerageStats(): Promise<{
       .from("transactions")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
-      .in("status", ["under_contract"]),
+      // THE ONE VOCABULARY (§6) — same fix as above: a live contract, not yet closed.
+      .in("status", IN_ESCROW_STATUSES),
     supabase
       .from("agents")
       .select("id", { count: "exact", head: true })

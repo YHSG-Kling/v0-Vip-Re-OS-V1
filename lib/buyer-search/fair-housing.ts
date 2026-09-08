@@ -99,7 +99,8 @@ export function scanFairHousing(text: string, opts: FairHousingOpts = {}): FairH
   return { clean: flagged.length ? tidy(out) : text, flagged: Array.from(new Set(flagged)) }
 }
 
-/** Convenience: the cleaned string only. Pure. */
+/** Convenience: the cleaned string only. Pure.
+ *  @proofSeam convenience arity of scanFairHousing (which IS wired, search-engine.ts); kept for the scan/sanitize pair symmetry (§6), exercised by scripts/compliance-scope-simulator.ts and buyer-nl-search-simulator.ts */
 export function sanitizeFairHousing(text: string, opts: FairHousingOpts = {}): string {
   return scanFairHousing(text, opts).clean
 }
@@ -161,6 +162,7 @@ export function scanExplanation<T extends { headline: string; bullets: string[];
  * BOTH halves together; deleting one spelling and leaving the other is the drift this rule exists
  * to stop.
  */
+/** @proofSeam convenience arity of scanExplanation (which IS wired, lib/buyer-search/search-engine.ts:254,395); kept for the scan/sanitize pair symmetry (§6), exercised by scripts/buyer-nl-search-simulator.ts:74 */
 export function sanitizeExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(exp: T, opts: FairHousingOpts = {}): T {
   return scanExplanation(exp, opts).clean
 }

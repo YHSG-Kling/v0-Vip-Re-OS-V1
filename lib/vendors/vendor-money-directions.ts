@@ -183,6 +183,7 @@ export const VENDOR_PACKAGE_BILLING_DIRECTION = "vendor_pays_brokerage" as const
  * TRUE only for the one direction a vendor package may ever have. Deliberately
  * not a generic comparator: the point is that there is nothing to configure.
  */
+/** @proofSeam the write side (app/actions/vendors/vendor-plan-subscriptions.ts) writes VENDOR_PACKAGE_BILLING_DIRECTION directly (no branch to validate); no live read-side check needs the comparator yet. Exercised by scripts/vendor-package-direction-simulator.ts */
 export function isVendorPackageDirection(payer: MoneyParty, payee: MoneyParty): boolean {
   return payer === VENDOR_PACKAGE.payer && payee === VENDOR_PACKAGE.payee
 }

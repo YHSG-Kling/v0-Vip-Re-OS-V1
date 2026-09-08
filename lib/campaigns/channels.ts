@@ -138,7 +138,10 @@ export const BROADCAST_CHANNELS: readonly CampaignChannelSpec[] =
 const CHANNEL_KEYS = new Set<string>(CAMPAIGN_CHANNELS.map((c) => c.key))
 const OUTREACH_KEYS = new Set<string>(OUTREACH_CHANNELS.map((c) => c.key))
 
-/** Keep only recognized channel keys (drops unknown/garbage). */
+/** Keep only recognized channel keys (drops unknown/garbage) — the ALL-scope sibling of
+ *  sanitizeOutreachChannels (which IS wired, app/actions/ai-isa.ts) for any surface that
+ *  is not outreach-only.
+ *  @proofSeam no live all-scope (outreach+broadcast) channel-input surface exists yet to sanitize — exercised by scripts/campaign-channels-simulator.ts */
 export function sanitizeChannels(channels: string[]): CampaignChannelKey[] {
   return channels.filter((c): c is CampaignChannelKey => CHANNEL_KEYS.has(c))
 }

@@ -87,14 +87,49 @@ export async function resolveContactVendors(
   // is. Portal bookings FK to vendors(id) and the AfBA config matches on it.
   const { data, error } = await supabase
     .from("vendors")
-    .select("id, name, category, phone, email, website, rating, notes, brokerage_id, team_id, preferred, audience_tags, stage_tags, display_priority, visible_in_portal")
+    .select("id, name, category, phone, email, website, rating, notes, brokerage_id, team_id, preferred, audience_tags, stage_tags, display_priority, visible_in_portal, platform_vendor_id")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("status", "active")
     .neq("visible_in_portal", false)
 
   if (error || !data) return []
 
-  const rows: VendorDirectoryEntry[] = (data as Array<Record<string, any>>).map((r): VendorDirectoryEntry => ({
+  // SURFACING TIER GATE. A vendor with a platform_vendor_id is a MARKETPLACE
+  // vendor whose "AI client surfacing" eligibility is a PAID capability
+  // (VENDOR_TIERS.basic.surfacingEligible === false — the vendor-pays-platform
+  // model in lib/kernel/vendor-subscription.ts). Before this gate, every
+  // active + portal-visible vendor rendered to a client whether or not its
+  // subscription actually admits client surfacing, so a basic-tier vendor got
+  // the paid placement's benefit for free. A brokerage's own hand-added vendor
+  // (no platform_vendor_id — never went through the marketplace) is unaffected:
+  // the gate only applies to rows that opted into the paid marketplace.
+  const platformVendorIds = (data as Array<Record<string, any>>)
+    .map((r) => r.platform_vendor_id as string | null)
+    .filter((id): id is string => !!id)
+
+  let surfacingByProfileId = new Map<string, boolean>()
+  if (platformVendorIds.length > 0) {
+    const { tierAllows } = await import("@/lib/kernel/vendor-subscription")
+    const { data: profiles } = await supabase
+      .from("vendor_marketplace_profiles")
+      .select("id, subscription_tier, subscription_status")
+      .in("id", platformVendorIds)
+    for (const p of (profiles as Array<Record<string, any>> | null) ?? []) {
+      surfacingByProfileId.set(
+        p.id as string,
+        tierAllows(p.subscription_tier as string | null, p.subscription_status as string | null, "surfacing"),
+      )
+    }
+  }
+
+  const surfaceable = (data as Array<Record<string, any>>).filter((r) => {
+    const pvId = r.platform_vendor_id as string | null
+    if (!pvId) return true // not a marketplace vendor — tier gate doesn't apply
+    // Unknown profile (row deleted/refused) reads as NOT surfacing-eligible — fail closed.
+    return surfacingByProfileId.get(pvId) === true
+  })
+
+  const rows: VendorDirectoryEntry[] = surfaceable.map((r): VendorDirectoryEntry => ({
     id:       r.id as string,
     name:     r.name as string | null,
     category: r.category as string | null,

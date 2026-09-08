@@ -404,7 +404,7 @@ export async function prefillFormWithContext(input: {
         .from("offers")
         .select(`
           id, offer_price, offer_date:submitted_at, closing_date, earnest_money,
-          financing_type, contingencies, contact_id,
+          financing_type, contingencies, contact_id, listing_id, transaction_id, property_address,
           contacts!contact_id (
             first_name, last_name, email, phone
           ),
@@ -435,6 +435,27 @@ export async function prefillFormWithContext(input: {
           state:             listing?.state ?? null,
           zip_code:          listing?.zip_code ?? null,
           list_price:        listing?.list_price ?? null,
+        }
+
+        // GROUNDED FALLBACK CHAIN (orphan burn-down). The bare `listings` embed above
+        // is null whenever the offer has no linked listing row (an off-MLS or
+        // external-listing buy) — property_address/city/state/zip then went out
+        // blank even though the offer's OWN transaction or its own property_address
+        // column often carries the answer. resolveKnownPropertyFacts is the one
+        // resolver that already walks listing → transaction → offer's own address;
+        // it only fills what THIS query left null, never overwrites a real value.
+        if (!fields.property_address || !fields.city) {
+          const { resolveKnownPropertyFacts } = await import("@/lib/intelligence/offer-property-prefill-runner")
+          const facts = await resolveKnownPropertyFacts({
+            listingId:       (offer as any).listing_id ?? null,
+            transactionId:   (offer as any).transaction_id ?? null,
+            offerId:         offer.id,
+            propertyAddress: (offer as any).property_address ?? null,
+          }, supabase)
+          fields.property_address = fields.property_address ?? facts.address ?? null
+          fields.city             = fields.city ?? facts.propertyCity ?? null
+          fields.state             = fields.state ?? facts.propertyState ?? null
+          fields.zip_code          = fields.zip_code ?? facts.propertyZip ?? null
         }
       }
     } else if (input.context_type === "transaction") {

@@ -1038,6 +1038,11 @@ Identify:
  * NOT unfixed: the three defects below were real and are corrected, so the
  * capability is whole for whoever consolidates the two.
  */
+/** @proofSeam kept unwired on purpose — scripts/wired-surface-guard.ts:204-205 and
+ *  scripts/transaction-document-wiring-simulator.ts:296-297,655-729 use this exact
+ *  duplicate (prepareForClosing/getClosingPrep vs the survivor aiGenerateClosingChecklist)
+ *  as their live specimen for "is a same-file-only caller correctly read as unreachable".
+ *  Merging it away would blank both proofs' test fixture, not just this orphan. */
 export async function prepareForClosing(params: {
   transactionId: string
   /** Ignored — identity comes from the session (see scopeTransaction). */
@@ -1318,6 +1323,7 @@ Create a comprehensive plan including:
 
 // Backward compatibility alias — wrapped because "use server" rejects `const = fn`.
 // Shares prepareForClosing's "not wired, second writer" verdict; see the note there.
+/** @proofSeam kept unwired on purpose — see the tag on prepareForClosing above; same proofs. */
 export async function getClosingPrep(...args: Parameters<typeof prepareForClosing>) {
   return prepareForClosing(...args)
 }

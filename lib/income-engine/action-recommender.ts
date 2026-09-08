@@ -33,6 +33,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { GapAnalysisResult } from "./gap-analyzer"
 import { loadCurrentLedger, topByValue } from "@/lib/lifetime-customer-npv/current"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export type ActionCategory =
   | "prospecting" | "listing_acquisition" | "referral_ask" | "conversion_focus"
@@ -133,7 +134,11 @@ export async function recommendActionsForAgent(params: {
     .from("transactions")
     .select("id, property_address, stage, status, estimated_close_date, purchase_price, commission_amount")
     .eq("agent_id", params.agentId)
-    .in("status", ["active", "under_contract"])
+    // THE ONE VOCABULARY (§6, lib/transactions/transaction-status.ts). This hand-rolled
+    // ["active","under_contract"] missed "pending" and "clear_to_close" — a deal past
+    // under_contract is CLOSER to close, not out of scope for a "drive to close" nudge,
+    // and it was silently excluded from this recommender the whole time.
+    .in("status", [...TRANSACTION_STATUSES_OPEN])
     .not("estimated_close_date", "is", null)
     .order("estimated_close_date", { ascending: true })
     .limit(10)

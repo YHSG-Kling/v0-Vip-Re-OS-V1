@@ -406,6 +406,7 @@ export function templateAudienceUse(template: AudienceTemplate): AudienceUse {
  * ads-dashboard-client.tsx handleUseTemplate; see the tombstone in
  * app/actions/fb-audience-templates.ts.)
  */
+/** @proofSeam the pure by-id lookup named as survivor in the app/actions/fb-audience-templates.ts tombstone (the client dashboard already holds the full object, so no in-app caller needs the id form); exercised by scripts/fb-audience-templates-simulator.ts */
 export function findAudienceTemplate(templateId: string): AudienceTemplate | undefined {
   return FB_AUDIENCE_TEMPLATES.find((t) => t.id === templateId)
 }

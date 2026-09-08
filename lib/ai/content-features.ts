@@ -126,7 +126,8 @@ export const CONTENT_GENERATION_FEATURES: readonly string[] = [
   "video_script_generation",
 ]
 
-/** Is this ai_tool_usage row a content generation? */
+/** Is this ai_tool_usage row a content generation?
+ *  @proofSeam boolean companion of CONTENT_GENERATION_FEATURES (the array IS wired — app/actions/ai-content-generation.tsx:3751's .in() query); no live single-row check needs the predicate form yet. Exercised by scripts/content-lane-ledger-simulator.ts */
 export function isContentFeature(feature: string | null | undefined): boolean {
   return !!feature && CONTENT_GENERATION_FEATURES.includes(feature)
 }
