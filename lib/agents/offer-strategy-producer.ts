@@ -418,6 +418,44 @@ export async function produceOfferStrategyBrief(
     return { proposed: 0, outcome: "propose_failed", propertyAddress }
   }
 
+  // OFFER_STRATEGY_RECOMMENDED — read by event-fanout.ts ("You're ready to make an
+  // offer" portal card + campaign_sequences.trigger_event) and by event-reactor.ts's
+  // own D-ter handler (which calls THIS function), but nothing ever emitted it
+  // (CLAUDE.md §1: a reader with no writer). buyer_stage can never actually reach
+  // the 'offer_strategy' value the old LIFECYCLE_TO_KERNEL_EVENT map keyed on — the
+  // live buyer_stage CHECK only admits the 13 BUYER_* constants
+  // (scripts/check-vocabularies.ts) — so that map entry was structurally dead, which
+  // is exactly why lib/agents/offer-ready-detector.ts had to bypass the event chain
+  // and call this producer directly. THIS insert (the brief the buyer actually sees)
+  // is the real "recommendation is written" moment for both entry points (the button
+  // lane and the cron readiness check). Emitted only on a FRESH proposal — never on
+  // "already_proposed" — so the reactor's own re-entrant call into this same function
+  // (triggered by the event this fires) hits the idempotency guard above and returns
+  // without re-emitting: one event per buyer journey, no feedback loop. void'd — a
+  // fan-out failure must never undo the brief already written; emitKernelEvent never
+  // throws (lib/kernel/emit.ts).
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    void emitKernelEvent({
+      event:          KernelEvent.OFFER_STRATEGY_RECOMMENDED,
+      brokerageId,
+      entityType:     "contact",
+      entityId:       contactId,
+      contactId,
+      buyerContactId: contactId,
+      agentUserId:    agentUserId ?? undefined,
+      metadata: {
+        saved_property_id: savedPropertyId,
+        property_address:  propertyAddress,
+      },
+    }).catch((e) => {
+      console.error("[offer-strategy-producer] OFFER_STRATEGY_RECOMMENDED emit failed:", e)
+    })
+  } catch (e) {
+    console.error("[offer-strategy-producer] OFFER_STRATEGY_RECOMMENDED emit setup failed:", e)
+  }
+
   // TEAM PLAY — pair the analytical plan with a human push: hand off to the Asset Manager to
   // commission a personal "offer confidence" reel (number-free, fronted by the assigned agent).
   // The reel rides the gated 1:1 email + portal CTA on completion. Managers working together to

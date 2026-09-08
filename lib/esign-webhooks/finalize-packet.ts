@@ -33,6 +33,7 @@ import { notifyEsignSigned }   from "@/lib/notifications/notify-helpers"
 import { downloadSignedPackage } from "./download-signed-package"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { OFFER_EVENT, EVENT_TO_STATUS, OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 
 export type ESignProviderName = "dotloop" | "docusign" | "skyslope" | "authentisign"
@@ -101,11 +102,30 @@ export async function finalizeVoiceCockpitPacket(
       })
       .eq("id", docRow.id)
 
+    // ESIGN_PACKET_SIGNED IS already fanned out (logEventAndTrigger's own 2026-09-03
+    // fix routes any KernelEvent-valued event_type through emitKernelEvent with
+    // skipInsert, reaching the reactor's staff bell + sequence enrollment + the
+    // event-fanout.ts "Document signed" portal card) — the kernel-event-census-z1
+    // static scan just cannot see a fan-out that isn't a literal emitKernelEvent(
+    // call (CLAUDE.md §2 blind-spot warning). What WAS missing: `payload` carried
+    // no `contact_id`, only `user_id` (the EventInput field, which lands on
+    // lifecycle_events.actor_user_id — a users(id) FK a contacts.id can never
+    // satisfy as "who"). emitKernelEvent's contactId forward reads `pl.contact_id`
+    // specifically, and entityType "document" has no resolveEventContacts branch
+    // (lib/kernel/resolve-event-contacts.ts), so with neither, the portal card and
+    // sequence enrollment silently had zero contacts to write to. Added below —
+    // the contact this document belongs to was already loaded on docRow.
     await logEventAndTrigger({
       brokerage_id: docRow.brokerage_id as string,
       event_type:   KernelEvent.ESIGN_PACKET_SIGNED,
       user_id:      (docRow.contact_id as string | null) ?? "",
-      payload:      { documentId: docRow.id, documentType: docRow.document_type, envelopeId, provider },
+      payload:      {
+        documentId: docRow.id,
+        documentType: docRow.document_type,
+        envelopeId,
+        provider,
+        contact_id: docRow.contact_id ?? undefined,
+      },
       source:       "webhook",
       dedupe_key:   `voice-packet-signed-${docRow.id}`,
     } as any)
@@ -247,6 +267,32 @@ async function finalizeMatchingOffer(
         status:                           "accepted",
       })
       .eq("id", matchedOffer.id)
+
+    // OFFER_OS_ESIGN_COMPLETED — read by event-fanout.ts ("Your offer is signed
+    // / all parties have e-signed... fully executed and on file") but nothing
+    // ever emitted it (CLAUDE.md §1: a reader with no writer). This IS the real
+    // moment: esign_status just flipped to 'fully_signed' because BOTH sides'
+    // signatures landed (isCounterFullyExecuted). Deliberately NOT the
+    // buyer-first branch below (only one side signed there — that path already
+    // documents why it withholds an acceptance-shaped event until the
+    // compliance gate runs). void'd — a fan-out failure must never undo the
+    // esign_status flip already committed above; emitKernelEvent never throws
+    // (lib/kernel/emit.ts).
+    void emitKernelEvent({
+      event:       KernelEvent.OFFER_OS_ESIGN_COMPLETED,
+      brokerageId: matchedOffer.brokerage_id as string,
+      entityType:  "offer",
+      entityId:    matchedOffer.id as string,
+      contactId:   (matchedOffer.contact_id as string | null) ?? undefined,
+      buyerContactId: (matchedOffer.contact_id as string | null) ?? undefined,
+      metadata: {
+        envelope_id: envelopeId,
+        provider,
+        signed_at:   now,
+      },
+    }).catch((e) => {
+      console.error("[finalize-packet] OFFER_OS_ESIGN_COMPLETED emit failed:", e)
+    })
 
     // THE OFFER COMPLIANCE LOOP STARTS HERE (owner, 2026-09-06: "…looped for
     // offers turning into active transactions after pass and if fail, same as

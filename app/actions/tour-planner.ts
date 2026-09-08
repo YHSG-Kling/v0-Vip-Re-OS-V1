@@ -12,6 +12,8 @@ import { emitLifecycleTransition } from '@/lib/buyer-lifecycle/lifecycle-logger'
 import { updateBuyerPreferences } from '@/lib/behavior-learning'
 import { isValidUUID } from '@/lib/validations'
 import { dispatchStopScheduling } from '@/app/actions/dispatch-showing'
+import { emitKernelEvent } from '@/lib/kernel/emit'
+import { KernelEvent } from '@/lib/kernel/events'
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -699,14 +701,37 @@ export async function finalizeTour(params: {
   } catch { /* non-critical */ }
 
   if (tour.contact_id) {
-    await supabase.from('lifecycle_events').insert({
-      brokerage_id:  brokerageId,
-      entity_type:   'buyer_lifecycle',
-      entity_id:     tour.contact_id,
-      event_type:    'tour.confirmed',
-      actor_user_id: agentUserId,
-      metadata:      { tour_id: tourId, departure_time: departureTime ?? null },
-    }).then(() => null, () => null)
+    // TOUR_SCHEDULED — read by event-fanout.ts's PORTAL_UPDATE_TEMPLATES ("Your tour
+    // is scheduled") and campaign_sequences.trigger_event = 'tour_scheduled', but
+    // nothing ever emitted it (CLAUDE.md §1 orphan doctrine: a reader with no writer).
+    // The dotted `event_type: 'tour.confirmed'` direct insert this replaces matched
+    // neither KernelEvent.TOUR_SCHEDULED's value ('tour_scheduled', underscored) nor
+    // routed through the reactor at all — an audit-only dead end (§1.1: this WAS the
+    // duplicate; survivor is emitKernelEvent below). entityType 'contact' matches the
+    // convention every other buyer-milestone KernelEvent uses (BUYER_FINANCIALLY_
+    // VERIFIED, OFFER_STRATEGY_RECOMMENDED) so campaign-sequence contact-matching and
+    // the portal-card contact resolution both work without a second lookup. void'd —
+    // a fan-out failure must never undo the tour confirmation already committed above;
+    // emitKernelEvent never throws by its own contract (lib/kernel/emit.ts).
+    void emitKernelEvent({
+      event:           KernelEvent.TOUR_SCHEDULED,
+      brokerageId:     brokerageId,
+      entityType:      'contact',
+      entityId:        tour.contact_id,
+      actorUserId:     agentUserId,
+      contactId:       tour.contact_id,
+      buyerContactId:  tour.contact_id,
+      metadata: {
+        tour_id:          tourId,
+        tour_date:        tour.tour_date,
+        start_time:       tour.start_time,
+        stop_count:       (stops ?? []).length,
+        all_confirmed:    allConfirmed,
+        departure_time:   departureTime ?? null,
+      },
+    }).catch((e) => {
+      console.error('[finalizeTour] TOUR_SCHEDULED emit failed:', e)
+    })
   }
 
   return { success: true, calendarEventCount }
@@ -1253,21 +1278,34 @@ export async function completeTour(params: CompleteTourParams) {
   // Update preference model from new signals
   await updateBuyerPreferences(contactId, brokerageId).catch(() => {})
 
-  // Lifecycle event
+  // TOUR_COMPLETED — read by event-reactor.ts:260 (spawns produceTourFollowUp, GATED on
+  // entityType === "contact") and event-fanout.ts's "How were the homes you toured?"
+  // portal card, but nothing ever emitted it (CLAUDE.md §1: a reader with no writer).
+  // The dotted `event_type: 'tour.completed'` direct insert below this replaces matched
+  // neither KernelEvent.TOUR_COMPLETED's value ('tour_completed') nor routed through the
+  // reactor — an audit-only dead end (§1.1: that WAS the duplicate; survivor is
+  // emitKernelEvent here). entityType 'contact' is not cosmetic: the reactor's
+  // tour-completed handoff checks it by name. void'd — a fan-out failure must never
+  // undo the completion already committed above; emitKernelEvent never throws
+  // (lib/kernel/emit.ts).
   const lovedCount  = stopRatings.filter(r => r.interestLevel === 'love_it').length
   const likedCount  = stopRatings.filter(r => r.interestLevel === 'like_it').length
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  brokerageId,
-    entity_type:   'buyer_lifecycle',
-    entity_id:     contactId,
-    event_type:    'tour.completed',
-    actor_user_id: agentUserId,
+  void emitKernelEvent({
+    event:          KernelEvent.TOUR_COMPLETED,
+    brokerageId:    brokerageId,
+    entityType:     'contact',
+    entityId:       contactId,
+    actorUserId:    agentUserId,
+    contactId:      contactId,
+    buyerContactId: contactId,
     metadata:      {
       tour_id:     tourId,
       stops_count: stopRatings.length,
       loved_count: lovedCount,
       liked_count: likedCount,
     },
+  }).catch((e) => {
+    console.error('[completeTour] TOUR_COMPLETED emit failed:', e)
   })
 
   return {

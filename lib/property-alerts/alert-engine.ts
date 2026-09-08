@@ -15,6 +15,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { enrollMatchingSequences } from "@/lib/kernel/event-fanout"
 import { searchIDXForAlert, type AlertSearchRefusal } from "./idx-alert-search"
 import { scorePropertyForAlert } from "./alert-matcher"
 import { deliverAlertResults } from "./alert-notifier"
@@ -249,6 +250,27 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
       agentUserId: alert.agent_user_id,
       metadata:    { alert_id: alertId, properties_matched: propertiesMatched, batch_id: batchId },
     })
+
+    // PROPERTY_MATCH_FOUND — read by event-fanout.ts's "New homes matching your
+    // search" portal card AND, more consequentially, by the LIVE
+    // campaign_sequences.trigger_event CHECK, which admits 'property_match_found'
+    // and does NOT admit 'property_alert_matched' (scripts/check-vocabularies.ts).
+    // A brokerage that configures a sequence on the only trigger name the
+    // database lets them type for this concept could never have it fire — this
+    // engine only ever emitted the sibling spelling above (CLAUDE.md §1: a
+    // reader/DB-vocabulary member with no writer). PROPERTY_ALERT_MATCHED stays
+    // exactly as it was (its own audit row, portal card and notification
+    // continue unchanged) — this adds ONLY sequence enrollment on the second
+    // spelling, via the same enrollMatchingSequences the reactor itself calls,
+    // so a matching sequence fires without a second lifecycle_events row or a
+    // second, duplicate portal card for the same match (§6: one portal moment,
+    // not two). Best-effort — a sequence-enrollment failure must never turn a
+    // successful alert match into an error.
+    try {
+      await enrollMatchingSequences(KernelEvent.PROPERTY_MATCH_FOUND, brokerageId, [alert.contact_id], alert.agent_user_id ?? undefined)
+    } catch (e) {
+      console.error("[alert-engine] PROPERTY_MATCH_FOUND sequence enrollment failed:", e)
+    }
   }
 
   return { success: true, alertId, propertiesChecked, propertiesMatched, propertiesSent, source: searchResult.source }

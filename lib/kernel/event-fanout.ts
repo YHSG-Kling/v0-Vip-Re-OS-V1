@@ -453,6 +453,20 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Review matches and tell your agent which to tour.",
     chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to tour.",
   },
+  // UNRESOLVED, NOT A DUPLICATE TO DELETE (CLAUDE.md §1/§6, 2026-09-08 lane AB
+  // hidden-wire hunt) — this describes the exact same real-world moment as
+  // KernelEvent.PROPERTY_ALERT_MATCHED below (lib/property-alerts/alert-engine.ts,
+  // the ONE live saved-search/IDX-alert matcher), and neither
+  // 'search_alert_triggered' nor 'property_alert_matched' is a value
+  // campaign_sequences.trigger_event's live CHECK admits (only
+  // 'property_match_found' is — see the PROPERTY_MATCH_FOUND enrollment added
+  // there). Left as its own template rather than grep-verified as dead: no write
+  // site was found for it anywhere in the tree, but a second, narrower "search
+  // alert" concept distinct from a "property alert" (e.g. a saved SEARCH as
+  // opposed to a configured ALERT) may still be intended and simply unbuilt.
+  // Building a second emitter here would duplicate the portal card
+  // PROPERTY_ALERT_MATCHED already renders for the identical match — so this
+  // stays unresolved rather than guessed.
   [KernelEvent.SEARCH_ALERT_TRIGGERED]: {
     title: "New homes for you",
     plainLanguageSummary:

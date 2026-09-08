@@ -33,6 +33,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // The portal banner's activity type. Read by the seller portal's offers screen;
 // written by our own offer wizard at submission and — since this wave — here, at
@@ -242,6 +244,35 @@ export async function presentOfferToSeller(params: {
   } else {
     warnings.push("The offer is released, but this listing has no seller contact, so no portal alert was raised.")
   }
+
+  // OFFER_RECEIVED — this IS the seller-side "an offer came in" moment (an offer
+  // written by inbound-mail intake never runs through the buyer stage machine that
+  // emits OFFER_SUBMITTED, so nothing else ever fires it). Emitted here rather than
+  // at offer insertion because §-owner ruling above: the seller must not learn of an
+  // offer before the agent releases it — the release IS the moment "received" becomes
+  // true for the seller side, staff bell, and campaign_sequences.trigger_event =
+  // 'offer_received'. void'd — a fan-out failure must never undo the release the
+  // seller-visible `.update` above already committed. Never fails the write per
+  // lib/kernel/emit.ts's own contract (never throws).
+  void emitKernelEvent({
+    event:         KernelEvent.OFFER_RECEIVED,
+    brokerageId:   listing.brokerage_id,
+    entityType:    "offer",
+    entityId:      offerId,
+    actorUserId:   auth.userId,
+    agentId:       approverAgentId,
+    agentUserId:   auth.userId,
+    contactId:     sellerContactId ?? undefined,
+    sellerContactId: sellerContactId ?? undefined,
+    listingId:     listing.id,
+    metadata: {
+      offer_price:      offer.offer_price,
+      listing_address:  listing.address,
+      note,
+    },
+  }).catch((e) => {
+    console.error("[presentOfferToSeller] OFFER_RECEIVED emit failed:", e)
+  })
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
   if (sellerContactId) revalidatePath(`/portal/${sellerContactId}/offers`)

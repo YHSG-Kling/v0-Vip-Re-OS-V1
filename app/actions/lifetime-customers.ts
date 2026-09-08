@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import {
   aiScoreSphereEngagement,
   aiSegmentSphere,
@@ -84,7 +85,7 @@ export async function sendMarketUpdate({
   messageBody: string
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
 
   // Insert client portal message
   const { data: message, error: msgError } = await supabase
@@ -140,6 +141,29 @@ export async function sendMarketUpdate({
     }),
     "the message row and the touchpoint ledger above are the record of the send and both are error-checked; this timeline echo must not fail a market update that already went out. The old rejection handler could not see a REFUSED row at all — bestEffort logs both.",
   )
+
+  // MARKET_UPDATE_SENT — read by event-fanout.ts's "Your market update is ready" portal
+  // card + campaign_sequences.trigger_event, but the activities row above only ever
+  // NAMED the kernel event in its notes JSON (`kernel_event: KernelEvent.MARKET_UPDATE_SENT`)
+  // — it was never actually emitted, so this was a reader with no writer (CLAUDE.md §1).
+  // This send — the client_portal_messages insert above, error-checked — IS the real
+  // moment. void'd — a fan-out failure must never undo a market update that already
+  // went out; emitKernelEvent never throws (lib/kernel/emit.ts).
+  void emitKernelEvent({
+    event:          KernelEvent.MARKET_UPDATE_SENT,
+    brokerageId,
+    entityType:     "contact",
+    entityId:       contactId,
+    actorUserId:    userId,
+    agentId,
+    agentUserId:    userId,
+    contactId,
+    metadata: {
+      message_id: message.id,
+    },
+  }).catch((e) => {
+    console.error("[sendMarketUpdate] MARKET_UPDATE_SENT emit failed:", e)
+  })
 
   return { success: true, message }
 }
