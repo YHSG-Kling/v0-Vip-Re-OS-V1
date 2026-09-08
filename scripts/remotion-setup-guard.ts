@@ -1104,6 +1104,12 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
       for (const e of entries) {
         if (e.name === "node_modules" || e.name === ".git" || e.name === ".next" || e.name === ".vercel") continue
         const full = join(dir, e.name)
+        // `.claude/worktrees/<agent>/` holds parallel-agent worktrees — whole
+        // copies of this repository, git-ignored. Each carries both sanctioned
+        // copies again, which read here as a "third copy reappearing" (2026-09-08).
+        // This walker must still enter `.claude/` (the survivor lives there), so it
+        // skips the one subtree rather than the dot-directory.
+        if (e.isDirectory() && relative(root, full).replace(/\\/g, "/") === ".claude/worktrees") continue
         if (e.isDirectory()) walk(full)
         else if (e.name === "SKILL.md") {
           let src = ""
