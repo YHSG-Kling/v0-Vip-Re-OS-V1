@@ -41,6 +41,7 @@ import {
   Bell,
   HeartHandshake,
 } from "lucide-react"
+import { VerdictNote, type Verdict } from "@/app/components/shared/VerdictNote"
 import {
   generateSmartTasks,
   predictAndManageDeadlines,
@@ -76,34 +77,11 @@ interface CommunicationRow {
   agent_id: string | null
 }
 
-/** What the server said. Never a hard-coded "Success!". */
-interface Verdict {
-  ok: boolean
-  headline: string
-  detail?: string
-  skipped?: string[]
-}
-
-function VerdictNote({ verdict }: { verdict: Verdict | null }) {
-  if (!verdict) return null
-  return (
-    <Alert variant={verdict.ok ? "default" : "destructive"} className="mt-2">
-      <AlertDescription className="text-xs space-y-1">
-        <p className="font-medium">{verdict.headline}</p>
-        {verdict.detail ? <p>{verdict.detail}</p> : null}
-        {verdict.skipped && verdict.skipped.length > 0 ? (
-          <ul className="list-disc pl-4 space-y-0.5">
-            {verdict.skipped.map((s, i) => (
-              <li key={i} className="text-[11px] break-words">
-                {s}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </AlertDescription>
-    </Alert>
-  )
-}
+// `Verdict`/`VerdictNote` — same-body census, round 4 (2026-09-09, lane FC):
+// this was the SUPERSET copy (the `skipped` bullet list) — its shape became
+// app/components/shared/VerdictNote.tsx (imported below), merging it with
+// the two plain-form copies at document-actions-dialog.tsx and
+// document-workspace-panel.tsx per §6 (one vocabulary).
 
 export function AiCoordinatorPanel({
   transactionId,

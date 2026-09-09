@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { FolderPlus, FileSignature, Loader2, Sparkles, FolderOpen } from "lucide-react"
+import { VerdictNote, type Verdict } from "@/app/components/shared/VerdictNote"
 import {
   createDocumentFolder,
   getDocumentFolders,
@@ -68,23 +69,9 @@ const AI_DOCUMENT_TYPES = [
 ] as const
 type AiDocumentType = (typeof AI_DOCUMENT_TYPES)[number]
 
-interface Verdict {
-  ok: boolean
-  headline: string
-  detail?: string
-}
-
-function VerdictNote({ verdict }: { verdict: Verdict | null }) {
-  if (!verdict) return null
-  return (
-    <Alert variant={verdict.ok ? "default" : "destructive"} className="mt-2">
-      <AlertDescription className="text-xs">
-        <span className="font-medium">{verdict.headline}</span>
-        {verdict.detail ? <span className="block mt-0.5">{verdict.detail}</span> : null}
-      </AlertDescription>
-    </Alert>
-  )
-}
+// `Verdict`/`VerdictNote` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to app/components/shared/VerdictNote.tsx (imported
+// below).
 
 export function DocumentWorkspacePanel() {
   const router = useRouter()

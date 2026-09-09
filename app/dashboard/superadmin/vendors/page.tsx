@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { usd2Grouped } from "@/lib/format/money"
+import { agoOrNever } from "@/lib/format/dates"
 
 export const dynamic = "force-dynamic"
 
@@ -34,14 +35,8 @@ export const dynamic = "force-dynamic"
 //                              m355 remapped them and added the FK.
 // Nothing here is fabricated: every badge is exactly what those tables hold.
 
-function fmtAgo(iso: string | null) {
-  if (!iso) return "never"
-  const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return "just now"
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrNever` (imported above).
 
 // TOMBSTONE (§1.1, 2026-09-08): local `fmtMoney` lived here; survivor lib/format/money.ts:usd2Grouped
 const fmtMoney = usd2Grouped
@@ -290,7 +285,7 @@ export default async function SuperadminVendorsPage() {
                         <span className="text-muted-foreground">0</span>
                       )}
                     </td>
-                    <td className="p-2 text-xs text-muted-foreground" title={r.createdAt ?? undefined}>{fmtAgo(r.createdAt)}</td>
+                    <td className="p-2 text-xs text-muted-foreground" title={r.createdAt ?? undefined}>{agoOrNever(r.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -23,6 +23,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import {
   resolveAssistantVoiceId,
   whisperTierCapability,
+  realSynthesizer,
   type WhisperSynthesizer,
 } from "@/lib/intelligence/appointment-whisper"
 import { mapUserTypeToTier } from "@/lib/kernel/0.1-feature-access"
@@ -424,14 +425,10 @@ interface CommissionForecasterResult {
   errors: string[]
 }
 
-/** The real synthesizer seam — reuses the whisper TTS rail; null → text fallback. */
-const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
-  try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
-  } catch { return null }
-}
+// `realSynthesizer` — same-body census, round 4 (2026-09-09, lane FC):
+// survivor is lib/intelligence/appointment-whisper.ts:77, imported above
+// (this file already imported the `WhisperSynthesizer` TYPE from there; now
+// it imports the implementation too instead of pasting its own copy).
 
 /**
  * Resolve the agent's commission cap (OPTIONAL). Null when unconfigured.

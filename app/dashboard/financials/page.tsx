@@ -31,6 +31,7 @@ import {
   CheckCircle2,
   AlertTriangle
 } from "lucide-react"
+import { usd } from "@/lib/format/money"
 
 export const dynamic = "force-dynamic"
 
@@ -173,14 +174,10 @@ export default async function FinancialsPage() {
   ])
   const summary = summaryResult.success ? summaryResult.data ?? null : null
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatCurrency = usd
 
   return (
     <div className="container mx-auto p-6 space-y-6">

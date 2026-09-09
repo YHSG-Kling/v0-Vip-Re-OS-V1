@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Mail, Clock, CheckCircle2, X, AlertTriangle, UserPlus } from "lucide-react"
+import { Mail, CheckCircle2, UserPlus } from "lucide-react"
 import { listPendingInvitationsAction } from "@/app/actions/admin/invitations"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
@@ -9,15 +9,10 @@ import { SetupCompleteCard } from "./setup-complete-card"
 
 export const dynamic = "force-dynamic"
 
-function statusBadge(s: string) {
-  switch (s) {
-    case "pending":  return <Badge className="bg-amber-100 text-amber-800"><Clock className="h-3 w-3 mr-1" />Pending</Badge>
-    case "accepted": return <Badge className="bg-emerald-100 text-emerald-800"><CheckCircle2 className="h-3 w-3 mr-1" />Accepted</Badge>
-    case "expired":  return <Badge className="bg-slate-100 text-slate-700"><AlertTriangle className="h-3 w-3 mr-1" />Expired</Badge>
-    case "revoked":  return <Badge className="bg-red-100 text-red-800"><X className="h-3 w-3 mr-1" />Revoked</Badge>
-    default:         return <Badge variant="outline">{s}</Badge>
-  }
-}
+// `statusBadge` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to app/dashboard/admin/users/invitations/invitations-table.tsx:9
+// `defaultStatusBadge` — which InvitationsTable already applies as its own
+// default, so this page no longer needs to build or pass one.
 
 export default async function InvitationsPage() {
   const supabase = await createClient()
@@ -74,7 +69,7 @@ export default async function InvitationsPage() {
           <CardTitle className="text-sm">Invitation log</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <InvitationsTable initialRows={r.rows} statusBadge={statusBadge as unknown as (s: string) => React.ReactNode} />
+          <InvitationsTable initialRows={r.rows} />
         </CardContent>
       </Card>
     </div>

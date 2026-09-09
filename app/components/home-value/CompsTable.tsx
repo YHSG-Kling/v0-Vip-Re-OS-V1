@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/table"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { MapPin, Calendar, Home } from "lucide-react"
+import { formatDateShort } from "@/lib/format/dates"
 
 interface Comp {
   address: string
@@ -42,14 +43,8 @@ export function CompsTable({ comps }: CompsTableProps) {
       maximumFractionDigits: 0,
     }).format(value)
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   if (!comps || comps.length === 0) {
     return (
@@ -133,7 +128,7 @@ export function CompsTable({ comps }: CompsTableProps) {
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
                       <Calendar className="h-3 w-3 text-muted-foreground" />
-                      {formatDate(comp.sale_date)}
+                      {formatDateShort(comp.sale_date)}
                     </div>
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">

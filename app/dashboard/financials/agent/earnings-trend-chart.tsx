@@ -11,6 +11,7 @@ import {
   ComposedChart,
   Legend,
 } from "recharts"
+import { usd } from "@/lib/format/money"
 
 interface EarningsTrendChartProps {
   data: Array<{
@@ -28,14 +29,10 @@ export function EarningsTrendChart({ data }: EarningsTrendChartProps) {
     return `$${value}`
   }
 
-  const formatTooltipValue = (value: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value)
-  }
+  // `formatTooltipValue` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatTooltipValue = usd
 
   return (
     <div className="h-[300px]">

@@ -30,6 +30,7 @@ import Link from "next/link"
 import { DocumentUploadDialog } from "@/components/portal/DocumentUploadDialog"
 import { analyzeDocument, askDocumentQuestion, getEducationalOverlay } from "@/app/actions/documents"
 import { formatDistanceToNow } from "date-fns"
+import { formatFieldName } from "@/lib/format/strings"
 
 // ─── TYPE DEFINITIONS ────────────────────────────────────────────────────────
 
@@ -164,12 +165,9 @@ function getConfidenceBadge(score: number | null): { label: string; className: s
   return { label: `${pct}% confidence`, className: "bg-red-100 text-red-800" }
 }
 
-function formatFieldName(key: string): string {
-  return key
-    .replace(/_/g, " ")
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (str) => str.toUpperCase())
-}
+// `formatFieldName` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to lib/format/strings.ts `formatFieldName`
+// (imported above).
 
 function formatFieldValue(value: any): string {
   if (typeof value === "number") {

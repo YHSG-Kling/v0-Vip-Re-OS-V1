@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { resolveIntervention, draftSellerActionEmail, type ListingHealthBoard, type ListingHealthRow, type RiskLevel } from "./actions"
+import { agoShort } from "@/lib/format/dates"
 
 interface Props { board: ListingHealthBoard }
 
@@ -29,12 +30,8 @@ const RISK_META: Record<RiskLevel, { label: string; tone: string; Icon: typeof A
 
 const dollars = (n: number | null) =>
   n == null ? "—" : `$${Math.round(n).toLocaleString("en-US")}`
-const relative = (iso: string) => {
-  const diff = Date.now() - new Date(iso).getTime()
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h ago`
-  return `${Math.round(diff / 86_400_000)}d ago`
-}
+// `relative` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoShort` (imported above).
 
 export function ListingHealthBoardClient({ board }: Props) {
   const router = useRouter()
@@ -291,7 +288,7 @@ export function ListingHealthBoardClient({ board }: Props) {
                                 {iv.severity}
                               </Badge>
                               {iv.category && <span className="text-[10px] text-muted-foreground uppercase">{iv.category}</span>}
-                              <span className="text-[10px] text-muted-foreground">· {relative(iv.createdAt)}</span>
+                              <span className="text-[10px] text-muted-foreground">· {agoShort(iv.createdAt)}</span>
                             </div>
                             {iv.issueDetected && <p className="text-sm font-medium">{iv.issueDetected}</p>}
                             {iv.aiRecommendation && <p className="text-xs text-muted-foreground mt-1">{iv.aiRecommendation}</p>}
@@ -379,7 +376,7 @@ export function ListingHealthBoardClient({ board }: Props) {
                   <Badge variant="secondary" className="text-[10px]">{iv.severity}</Badge>
                   {iv.category && <span className="text-[10px] text-muted-foreground uppercase">{iv.category}</span>}
                   {iv.sellerImpacted && <span className="text-[10px] text-amber-700">· seller impacted</span>}
-                  <span className="text-[10px] text-muted-foreground">· raised {relative(iv.createdAt)}</span>
+                  <span className="text-[10px] text-muted-foreground">· raised {agoShort(iv.createdAt)}</span>
                 </div>
                 <p className="text-sm font-medium">
                   <Link href={`/dashboard/listings/${iv.listingId}`} className="hover:underline">

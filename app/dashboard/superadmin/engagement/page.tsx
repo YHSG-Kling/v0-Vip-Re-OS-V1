@@ -10,12 +10,13 @@ import {
   type EngagementTier,
 } from "@/lib/platform/engagement-risk"
 import {
-  lastNPeriods,
   rollupNpsByPeriod,
   classifyNps,
   NPS_DETRACTOR_MAX_SCORE,
   type NpsRollupByPeriod,
 } from "@/lib/platform/nps"
+import { lastMonthKeys } from "@/lib/kernel/intelligence-report"
+import { agoOrNever } from "@/lib/format/dates"
 
 export const dynamic = "force-dynamic"
 
@@ -47,14 +48,8 @@ export const dynamic = "force-dynamic"
 
 const CORE_TABLES = ["contacts", "listings", "transactions"] as const
 
-function fmtAgo(iso: string | null) {
-  if (!iso) return "never"
-  const ms = Date.now() - new Date(iso).getTime()
-  if (ms < 60_000) return "just now"
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
-  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
-  return `${Math.round(ms / 86_400_000)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrNever` (imported above).
 
 function fmtPeriod(period: string) {
   const m = /^(\d{4})-(\d{2})$/.exec(period)
@@ -199,7 +194,7 @@ export default async function SuperadminEngagementPage() {
   // ── Tenant→platform NPS rollup (platform_nps_responses, last 6 periods) ────
   // Same ledger the tenant survey card writes and the sentinel's detractor
   // feed reads. A read failure degrades to an inline error, not a dead page.
-  const npsPeriods = lastNPeriods(6, now)
+  const npsPeriods = lastMonthKeys(6, now)
   let nps: NpsRollupByPeriod | null = null
   let npsError: string | null = null
   try {
@@ -288,7 +283,7 @@ export default async function SuperadminEngagementPage() {
                       </span>
                     </td>
                     <td className="p-2 text-xs text-muted-foreground" title={r.lastSignIn ?? undefined}>
-                      {fmtAgo(r.lastSignIn)}
+                      {agoOrNever(r.lastSignIn)}
                     </td>
                     <td className="p-2 text-right tabular-nums">{r.active7}</td>
                     <td className="p-2 text-right tabular-nums">{r.active30}</td>
@@ -384,7 +379,7 @@ export default async function SuperadminEngagementPage() {
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">&ldquo;{r.verbatim}&rdquo;</p>
                         <p className="mt-0.5 text-[11px] text-muted-foreground">
-                          {fmtPeriod(r.period)} · {fmtAgo(r.createdAt)}
+                          {fmtPeriod(r.period)} · {agoOrNever(r.createdAt)}
                         </p>
                       </li>
                     ))}
@@ -425,7 +420,7 @@ export default async function SuperadminEngagementPage() {
                         </div>
                         {r.verbatim && <p className="mt-1 text-xs text-muted-foreground">&ldquo;{r.verbatim}&rdquo;</p>}
                         <p className="mt-0.5 text-[11px] text-muted-foreground">
-                          {fmtPeriod(r.period)} · {fmtAgo(r.createdAt)} · flows into the platform sentinel as an
+                          {fmtPeriod(r.period)} · {agoOrNever(r.createdAt)} · flows into the platform sentinel as an
                           engagement-risk check-in draft
                         </p>
                       </li>

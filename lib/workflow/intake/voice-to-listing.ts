@@ -239,6 +239,15 @@ function summarizeIntake(intake: ListingIntake): string {
   return lines.join("\n")
 }
 
+// KEPT, not merged with lib/workflow/intake/voice-to-offer.ts's
+// `intakeToOfferDraftParams` (same-body census, round 4, 2026-09-09, lane
+// FC): the two share a structural template but not a contract — this one
+// takes a `ListingIntake` (a different field set than `OfferIntake`), always
+// hard-codes `listingId: null` (a fresh listing draft never has one yet),
+// and its error names "listing agreement" rather than "offer". Forcing a
+// generic over the two intake types would trade a real behavioral
+// difference (the offer twin reads `intake.listingId.value`) for a thinner
+// abstraction, which §1.1 forbids.
 export function intakeToListingDraftParams(input: {
   intake:       ListingIntake
   brokerageId:  string

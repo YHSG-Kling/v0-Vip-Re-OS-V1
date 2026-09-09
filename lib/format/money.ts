@@ -124,3 +124,43 @@ export function usd2(n: number): string {
 export function usd2OrNull(n: number | null | undefined): string | null {
   return n == null ? null : usd2(n)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SAME-BODY CENSUS, ROUND 4 (2026-09-09, lane FC). Two more `formatCurrency`
+// contracts pasted across lender/title surfaces and offer cards — both
+// whole-dollar `usd()`, but disagreeing on what counts as "missing":
+
+/** Whole-dollar USD, or `"N/A"` for any FALSY amount (`0`, `null`,
+ *  `undefined`, `NaN`) — the loose null-check four identical private
+ *  `formatCurrency` copies used. Survivor for
+ *  app/components/lender/loan-list.tsx:56, app/components/title/transaction-list.tsx:74,
+ *  app/portal/lender/[transactionId]/page.tsx:68, app/portal/title/[transactionId]/page.tsx:48. */
+export function usdOrNA(amount: number | null | undefined): string {
+  if (!amount) return "N/A"
+  return usd(amount)
+}
+
+/** Whole-dollar USD, or `"N/A"` — but ONLY for `null`/`undefined`, so a real
+ *  `$0` still renders. A genuinely different contract from `usdOrNA` (which
+ *  swallows zero), not a formatting variant of it. Survivor for
+ *  app/components/portal/OfferStatusCard.tsx:49 and
+ *  app/portal/[contactId]/offers/page.tsx:102. */
+export function usdOrNAOnNullish(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined) return "N/A"
+  return usd(amount)
+}
+
+/** Dollars → compact CHART-AXIS tick label: "$1.2M" / "$45K" / "$180" — no
+ *  Intl, no thousands separator below $1K, and (unlike `compactDollarsMoney`)
+ *  the "M" branch keeps a trailing ".0" and the "K" branch's threshold is
+ *  $1,000 not $10,000. Kept as its OWN function rather than reusing
+ *  `compactDollarsMoney` because changing either one's thresholds would visibly
+ *  move numbers on the chart it wasn't written for (§1.1 forbids that
+ *  side-effect). Survivor for the byte-identical private `formatCurrency`
+ *  pasted into app/dashboard/financials/brokerage/forecast-chart.tsx:23 and
+ *  app/dashboard/financials/brokerage/pl-trend-chart.tsx:25. */
+export function axisCompactDollars(val: number): string {
+  if (val >= 1000000) return `$${(val / 1000000).toFixed(1)}M`
+  if (val >= 1000) return `$${(val / 1000).toFixed(0)}K`
+  return `$${val}`
+}

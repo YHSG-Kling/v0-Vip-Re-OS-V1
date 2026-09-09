@@ -476,17 +476,11 @@ export const supabaseService = {
     }
   },
 
-  async getListingById(id: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("listings").select("*").eq("id", id).single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching listing:", error)
-      return null
-    }
-  },
+  // TOMBSTONE (wave 47) — getListingById removed from here. It was the WORSE
+  // twin (admin client, no auth, no tenant predicate, ate a refused read as a
+  // silent null) of app/actions/listings.ts:138 getListingById, and had no
+  // caller either — see the doc comment on the survivor for the full verdict
+  // (lane G4, 2026-08-28) naming this file as the merge target.
 
   async createListing(listing: Record<string, unknown>) {
     try {
@@ -1573,17 +1567,16 @@ export const supabaseService = {
     }
   },
 
-  async logUserActivity(activity: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("user_activity").insert(activity).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error logging user activity:", error)
-      return null
-    }
-  },
+  // TOMBSTONE (wave 47) — logUserActivity removed from here. It had no caller,
+  // wrote whatever `activity: any` object the caller handed it straight into
+  // `user_activity` with no session-derived identity (the §4 anti-shape the
+  // deleted `logAuditEvent` was also removed for — types.ts:126-130 and
+  // app/dashboard/superadmin/engagement/page.tsx:33 both already investigated
+  // and rejected `user_activity` as an activity source for exactly this
+  // reason). Session-derived activity logging's one live, properly-scoped
+  // home is app/actions/workflows.ts:936 logUserActivity (writes audit_log,
+  // identity from getAgentContext()) — that function itself still awaits a
+  // real caller; see the wave-47 wired-surface-guard report.
 
   // =====================================================
   // GENERIC OPERATIONS

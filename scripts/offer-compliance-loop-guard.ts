@@ -36,6 +36,9 @@ const GATE    = src("app/actions/buyer-offer/submit-to-compliance.ts")
 const SCAN    = src("lib/documents/scan-uploaded-document.ts")
 const FINAL   = src("lib/esign-webhooks/finalize-packet.ts")
 const DOTLOOP = src("app/api/webhooks/dotloop/route.ts")
+// 2026-09-09 (wave 47): the offer stamp + loop moved into the provider-agnostic core
+// lib/forms/esign-execution-loop.ts; dotloop (and every other provider) delegates to it.
+const ESIGN_CORE = src("lib/forms/esign-execution-loop.ts")
 const SELLER  = src("app/actions/buyer-offer/record-seller-response.ts")
 
 console.log("══════════════════════════════════════════════════")
@@ -92,7 +95,7 @@ const stampAt = FINAL.search(/status:\s*"accepted",\s*\}\)\s*\.eq\("id", matched
 const loopAt  = FINAL.indexOf("runOfferComplianceLoop", stampAt)
 check("…placed after the fully_signed + accepted stamp, not before it",
   stampAt >= 0 && loopAt > stampAt && !FINAL.slice(0, stampAt).includes("runOfferComplianceLoop("))
-check("dotloop (loop fully signed) → agreement_executed", wired(DOTLOOP, "agreement_executed"))
+check("dotloop (loop fully signed) → shared e-sign core → agreement_executed", /evaluateEnvelopeExecution\(/.test(DOTLOOP) && wired(ESIGN_CORE, "agreement_executed"))
 check("record-seller-response (accepted) → agreement_executed, through the loop and not the bare driver",
   wired(SELLER, "agreement_executed") && !/autoExecuteFullySignedOffer/.test(SELLER))
 check("scanUploadedDocument → document_uploaded (the re-entry), keyed on metadata.linked_offer_id",
@@ -105,13 +108,13 @@ check("linkInboundDocumentsToOffer → document_uploaded, once per offer after t
   wired(INTAKE, "document_uploaded") && /linkedDocumentIds\.length > 0\) \{[\s\S]{0,300}runOfferComplianceLoop/.test(INTAKE))
 
 console.log("\n── 6 · dotloop stamps the columns the predicate READS ──")
-check("dotloop's offer select carries the three execution columns",
-  /select\("id, contact_id, brokerage_id, transaction_id, buyer_signed_at, seller_signed_at, fully_signed_contract_received_at"\)/.test(DOTLOOP))
+check("the core's offer select carries the three execution columns (the columns the predicate reads, not a pinned literal)",
+  (() => { const m = /const offerSelect = "([^"]+)"/.exec(ESIGN_CORE); const cols = (m?.[1] ?? "").split(",").map((c) => c.trim()); return ["buyer_signed_at", "seller_signed_at", "fully_signed_contract_received_at"].every((c) => cols.includes(c)) })())
 check("…and stamps each only where empty (a leg a human recorded is never overwritten)",
-  /buyer_signed_at:\s*\(matchedOffer as any\)\.buyer_signed_at \?\? now/.test(DOTLOOP)
-  && /seller_signed_at:\s*\(matchedOffer as any\)\.seller_signed_at \?\? now/.test(DOTLOOP)
-  && /fully_signed_contract_received_at:\s*\(matchedOffer as any\)\.fully_signed_contract_received_at \?\? now/.test(DOTLOOP))
-check("…reading the write's error before entering the loop", /offerStampError/.test(DOTLOOP) && /!offerStampError && /.test(DOTLOOP))
+  /buyer_signed_at:\s*\(matchedOffer as any\)\.buyer_signed_at \?\? now/.test(ESIGN_CORE)
+  && /seller_signed_at:\s*\(matchedOffer as any\)\.seller_signed_at \?\? now/.test(ESIGN_CORE)
+  && /fully_signed_contract_received_at:\s*\(matchedOffer as any\)\.fully_signed_contract_received_at \?\? now/.test(ESIGN_CORE))
+check("…reading the write's error before entering the loop", /offerStampError/.test(ESIGN_CORE) && /!offerStampError && /.test(ESIGN_CORE))
 
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the trigger finder sees a wired call",

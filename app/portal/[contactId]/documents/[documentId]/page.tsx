@@ -21,6 +21,7 @@ import {
 import Link from "next/link"
 import { getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance } from "@/app/actions/documents"
 import { loadActiveSignaturePacket, type ActiveSignaturePacket } from "@/app/actions/portal-document-requests"
+import { formatFieldName } from "@/lib/format/strings"
 
 export default function DocumentViewerPage() {
   const params = useParams()
@@ -90,12 +91,9 @@ export default function DocumentViewerPage() {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }))
   }
 
-  const formatFieldName = (key: string) => {
-    return key
-      .replace(/_/g, " ")
-      .replace(/([A-Z])/g, " $1")
-      .replace(/^./, (str) => str.toUpperCase())
-  }
+  // `formatFieldName` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to lib/format/strings.ts `formatFieldName`
+  // (imported above).
 
   const formatFieldValue = (value: any) => {
     if (typeof value === "number") {

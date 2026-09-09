@@ -8,13 +8,16 @@
     "app/actions/email-campaigns.ts": 1,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
+    "app/actions/listings.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/video/create-video-project.ts": 1,
     "app/actions/video-repurposing.ts": 3,
+    "app/actions/workflows.ts": 1,
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
+    "app/components/shared/ManagerChip.tsx": 2,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -431,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9382,
+  "census": 9413,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1653,9 +1656,13 @@
     "app/components/shared/HealthScoreRing.tsx": 1,
     "app/components/shared/HotLeadCard.tsx": 1,
     "app/components/shared/LifeSignalBadge.tsx": 1,
+    "app/components/shared/ManagerChip.tsx": 4,
     "app/components/shared/SendForSignaturesPanel.tsx": 1,
     "app/components/shared/SignatureStatusBadge.tsx": 1,
+    "app/components/shared/StatCard.tsx": 1,
+    "app/components/shared/StatusChip.tsx": 1,
     "app/components/shared/TourPipelineStepper.tsx": 1,
+    "app/components/shared/VerdictNote.tsx": 1,
     "app/components/shared/internal-ai-assistant.tsx": 1,
     "app/components/shared/page-context-assistant.tsx": 1,
     "app/components/shared/push-permission-toggle.tsx": 1,
@@ -2547,7 +2554,11 @@
     "constants/crm-standards.ts": 2,
     "contexts/AuthContext.tsx": 2,
     "hooks/use-click-outside.ts": 1,
+    "hooks/use-copy-to-clipboard.ts": 1,
     "hooks/use-debounce.ts": 1,
+    "hooks/use-enter-to-submit.ts": 1,
+    "hooks/use-form-change.ts": 1,
+    "hooks/use-goto-tab.ts": 1,
     "hooks/use-local-storage.ts": 1,
     "lib/academy/quiz.ts": 3,
     "lib/activities/activity-tenant.ts": 3,
@@ -3124,16 +3135,20 @@
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
-    "lib/format/dates.ts": 3,
+    "lib/format/collections.ts": 1,
+    "lib/format/dates.ts": 13,
     "lib/format/html.ts": 3,
     "lib/format/math.ts": 1,
-    "lib/format/money.ts": 9,
+    "lib/format/money.ts": 12,
     "lib/format/ordinal.ts": 2,
     "lib/format/stats.ts": 1,
+    "lib/format/strings.ts": 2,
+    "lib/format/style.ts": 1,
     "lib/forms/esign-anchor-adapters.ts": 4,
     "lib/forms/esign-anchor-eval.ts": 2,
     "lib/forms/esign-anchor-plan.ts": 1,
     "lib/forms/esign-anchors.ts": 2,
+    "lib/forms/esign-execution-loop.ts": 2,
     "lib/forms/pdf-form-fill.ts": 2,
     "lib/forms/prefill-property-into-pdf.ts": 1,
     "lib/gamification/award-points.ts": 1,
@@ -3177,7 +3192,7 @@
     "lib/intelligence/adoption-pulse.ts": 1,
     "lib/intelligence/agent-registry.ts": 3,
     "lib/intelligence/agent-scorecard.ts": 3,
-    "lib/intelligence/appointment-whisper.ts": 4,
+    "lib/intelligence/appointment-whisper.ts": 5,
     "lib/intelligence/brokerage-pnl.ts": 3,
     "lib/intelligence/buyer-stall-predictor-runner.ts": 1,
     "lib/intelligence/buyer-stall-predictor.ts": 1,
@@ -3775,7 +3790,7 @@
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
     "lib/platform/manager-ops.ts": 3,
-    "lib/platform/nps.ts": 6,
+    "lib/platform/nps.ts": 5,
     "lib/platform/os-sentinel.ts": 5,
     "lib/platform/platform-controls.ts": 5,
     "lib/platform/platform-providers.ts": 3,
@@ -4249,6 +4264,7 @@
     "remotion/charts/CompsBar.tsx": 1,
     "remotion/charts/DaysOnMarketBars.tsx": 1,
     "remotion/charts/PriceTrendLine.tsx": 1,
+    "remotion/components/AvatarPIP.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
     "remotion/components/SafeImg.tsx": 1,
@@ -10055,14 +10071,29 @@
     "app/components/shared/LifeSignalBadge.tsx": [
       "LifeSignalBadge"
     ],
+    "app/components/shared/ManagerChip.tsx": [
+      "accentFor",
+      "domainFor",
+      "initials",
+      "ManagerChip"
+    ],
     "app/components/shared/SendForSignaturesPanel.tsx": [
       "SendForSignaturesPanel"
     ],
     "app/components/shared/SignatureStatusBadge.tsx": [
       "SignatureStatusBadge"
     ],
+    "app/components/shared/StatCard.tsx": [
+      "StatCard"
+    ],
+    "app/components/shared/StatusChip.tsx": [
+      "StatusChip"
+    ],
     "app/components/shared/TourPipelineStepper.tsx": [
       "TourPipelineStepper"
+    ],
+    "app/components/shared/VerdictNote.tsx": [
+      "VerdictNote"
     ],
     "app/components/shared/internal-ai-assistant.tsx": [
       "InternalAIAssistant"
@@ -12805,8 +12836,20 @@
     "hooks/use-click-outside.ts": [
       "useClickOutside"
     ],
+    "hooks/use-copy-to-clipboard.ts": [
+      "useCopyToClipboard"
+    ],
     "hooks/use-debounce.ts": [
       "useDebounce"
+    ],
+    "hooks/use-enter-to-submit.ts": [
+      "useEnterToSubmit"
+    ],
+    "hooks/use-form-change.ts": [
+      "useFormChange"
+    ],
+    "hooks/use-goto-tab.ts": [
+      "useGotoTab"
     ],
     "hooks/use-local-storage.ts": [
       "useLocalStorage"
@@ -15697,10 +15740,23 @@
     "lib/financing/rate-lock-watch.ts": [
       "computeRateLockRisk"
     ],
+    "lib/format/collections.ts": [
+      "groupByPriority"
+    ],
     "lib/format/dates.ts": [
       "daysBetween",
       "daysSince",
-      "formatTime24To12"
+      "formatTime24To12",
+      "formatDateOrTBD",
+      "formatDateOrTBDWithWeekday",
+      "formatDateTimeShort",
+      "formatDateShort",
+      "formatMonthDay",
+      "agoOrNever",
+      "agoOrDash",
+      "agoShort",
+      "agoFloorOrEmpty",
+      "agoMinutesFloor"
     ],
     "lib/format/html.ts": [
       "escapeHtmlFull",
@@ -15719,7 +15775,10 @@
       "usdOrDash",
       "usd2Grouped",
       "usd2",
-      "usd2OrNull"
+      "usd2OrNull",
+      "usdOrNA",
+      "usdOrNAOnNullish",
+      "axisCompactDollars"
     ],
     "lib/format/ordinal.ts": [
       "ordinal",
@@ -15727,6 +15786,13 @@
     ],
     "lib/format/stats.ts": [
       "median"
+    ],
+    "lib/format/strings.ts": [
+      "formatFieldName",
+      "getTimeOfDayGreeting"
+    ],
+    "lib/format/style.ts": [
+      "marginColorClass"
     ],
     "lib/forms/esign-anchor-adapters.ts": [
       "anchorsForProvider",
@@ -15744,6 +15810,10 @@
     "lib/forms/esign-anchors.ts": [
       "deriveEsignAnchors",
       "rolesInAnchors"
+    ],
+    "lib/forms/esign-execution-loop.ts": [
+      "resolveEnvelopeBrokerageId",
+      "evaluateEnvelopeExecution"
     ],
     "lib/forms/pdf-form-fill.ts": [
       "listPdfFields",
@@ -15946,7 +16016,8 @@
       "whisperTierCapability",
       "buildWhisperScript",
       "resolveAssistantVoiceId",
-      "produceAppointmentWhispers"
+      "produceAppointmentWhispers",
+      "realSynthesizer"
     ],
     "lib/intelligence/brokerage-pnl.ts": [
       "rollupSplits",
@@ -19045,7 +19116,6 @@
     "lib/platform/nps.ts": [
       "classifyNps",
       "quarterPeriods",
-      "lastNPeriods",
       "shouldPromptNps",
       "submitNps",
       "rollupNpsByPeriod"
@@ -21260,6 +21330,9 @@
     "remotion/charts/PriceTrendLine.tsx": [
       "PriceTrendLine"
     ],
+    "remotion/components/AvatarPIP.tsx": [
+      "AvatarPIP"
+    ],
     "remotion/components/CaptionLayer.tsx": [
       "CaptionLayer"
     ],
@@ -21284,5 +21357,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }

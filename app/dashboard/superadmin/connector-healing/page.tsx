@@ -22,6 +22,7 @@ import { getConnectorSpec } from "@/lib/agentic-os/connector-registry"
 import { ProposalActions } from "./proposal-actions"
 import { redirect } from "next/navigation"
 import { AlertTriangle, CheckCircle2, XCircle, ExternalLink } from "lucide-react"
+import { agoOrDash } from "@/lib/format/dates"
 
 export const dynamic = "force-dynamic"
 
@@ -36,16 +37,8 @@ function safeHref(url: unknown): string | null {
   } catch { return null }
 }
 
-function fmtAgo(iso: string | null): string {
-  if (!iso) return "—"
-  const ms = Date.now() - new Date(iso).getTime()
-  const m = Math.round(ms / 60000)
-  if (m < 1) return "just now"
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrDash` (imported above).
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   pending:    { label: "Pending review",  variant: "secondary"   },
@@ -118,7 +111,7 @@ export default async function ConnectorHealingPage() {
                         <Badge variant="outline">
                           confidence {Math.round((Number(p.confidence) || 0) * 100)}%
                         </Badge>
-                        <span className="text-xs text-muted-foreground">detected {fmtAgo(p.detected_at)}</span>
+                        <span className="text-xs text-muted-foreground">detected {agoOrDash(p.detected_at)}</span>
                       </div>
                     </div>
                   </CardHeader>
@@ -206,7 +199,7 @@ export default async function ConnectorHealingPage() {
                             <Badge variant={s.variant}>{s.label}</Badge>
                           </span>
                         </td>
-                        <td className="p-3 text-xs text-muted-foreground">{fmtAgo(r.applied_at ?? r.detected_at)}</td>
+                        <td className="p-3 text-xs text-muted-foreground">{agoOrDash(r.applied_at ?? r.detected_at)}</td>
                       </tr>
                     )
                   })}

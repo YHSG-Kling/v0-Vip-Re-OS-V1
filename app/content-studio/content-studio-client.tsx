@@ -34,6 +34,7 @@ import {
 } from "lucide-react"
 import {
   generateContentIdeas,
+  getContentIdeas,
   researchKeywords,
   getCompetitorContent,
   getContentCalendar,
@@ -195,9 +196,19 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
       // inside them — were unreachable no matter what the account owned. Both
       // list actions already existed and had no callers; the long-video list is
       // the same rows the upload on this page writes.
+      //
+      // The ideas strip used to call generateContentIdeas on EVERY mount — an
+      // AI call that also INSERTS 5 fresh rows into content_ideas — so opening
+      // this page burned model cost and wrote duplicate rows on every visit,
+      // and anything a teammate had generated or the user had left unreviewed
+      // was invisible until the next AI round overwrote it in memory.
+      // getContentIdeas (app/actions/content-studio.ts) is the free reader of
+      // that same table and had no caller at all. Mount now loads what is
+      // already there; handleGenerateIdeas (the explicit "Generate Ideas"
+      // button) is the only path that still calls the AI writer.
       const [ideasData, savedData, competitorData, calendarData, statsData, newsletterRes, mailRes] =
         await Promise.all([
-          generateContentIdeas(undefined, userId, userRole),
+          getContentIdeas(userId, userRole),
           getSavedIdeas(userId, userRole),
           getCompetitorContent(userId, userRole),
           getContentCalendar(userId, userRole),
@@ -206,7 +217,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           getDirectMailCampaigns(),
         ])
 
-      if (ideasData.success && ideasData.ideas) setContentIdeas(ideasData.ideas)
+      setContentIdeas(ideasData ?? [])
       setSavedIdeas(savedData)
       setCompetitors(competitorData)
       setCalendar(calendarData)

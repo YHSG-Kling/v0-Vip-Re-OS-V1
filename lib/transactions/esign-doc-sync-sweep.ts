@@ -26,6 +26,7 @@ import {
   syncListingDocumentsFromProvider,
   type SyncFromProviderResult,
 } from "@/lib/transactions/sync-from-provider"
+import { evaluateEnvelopeExecution } from "@/lib/forms/esign-execution-loop"
 
 type AnySupabase = SupabaseClient<any, any, any>
 
@@ -75,7 +76,7 @@ export async function sweepEsignDocSync(
   const [byProvider, byLinkedOffer] = await Promise.all([
     supabase
       .from("transactions")
-      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id")
+      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id, external_provider_source")
       .not("stage", "eq", "closed")
       .not("external_provider_source", "is", null)
       .or(`last_provider_sync_at.is.null,last_provider_sync_at.lt.${staleCutoff}`)
@@ -86,7 +87,7 @@ export async function sweepEsignDocSync(
       // offers.transaction_id → transactions); a bare `offers(...)` embed is PGRST201 and
       // kills the whole read (CLAUDE.md §3). The accepted offer a deal was opened FROM is
       // the transactions.offer_id side.
-      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id, offers!transactions_offer_id_fkey!inner(provider_envelope_id)")
+      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id, offers!transactions_offer_id_fkey!inner(provider_envelope_id, esign_provider)")
       .not("stage", "eq", "closed")
       .is("external_provider_source", null)
       .not("offers.provider_envelope_id", "is", null)
@@ -100,20 +101,23 @@ export async function sweepEsignDocSync(
     return { outcome: "read_refused", error: `transactions (offer-linked) read failed: ${byLinkedOffer.error.message}` }
   }
 
-  const txnRows = new Map<string, { id: string; brokerage_id: string; contactId: string | null }>()
-  for (const r of [...(byProvider.data ?? []), ...(byLinkedOffer.data ?? [])]) {
+  const txnRows = new Map<string, { id: string; brokerage_id: string; contactId: string | null; providerSource: string | null }>()
+  for (const r of (byProvider.data ?? [])) {
     const row = r as Record<string, unknown>
-    const contactId = (row.buyer_contact_id as string | null)
-      ?? (row.seller_contact_id as string | null)
-      ?? (row.contact_id as string | null)
-      ?? null
-    txnRows.set(row.id as string, { id: row.id as string, brokerage_id: row.brokerage_id as string, contactId })
+    const contactId = (row.buyer_contact_id as string | null) ?? (row.seller_contact_id as string | null) ?? (row.contact_id as string | null) ?? null
+    txnRows.set(row.id as string, { id: row.id as string, brokerage_id: row.brokerage_id as string, contactId, providerSource: (row.external_provider_source as string | null) ?? null })
+  }
+  for (const r of (byLinkedOffer.data ?? [])) {
+    const row = r as Record<string, unknown>
+    const contactId = (row.buyer_contact_id as string | null) ?? (row.seller_contact_id as string | null) ?? (row.contact_id as string | null) ?? null
+    const linkedOffer = (row.offers as Record<string, unknown> | null) ?? null
+    txnRows.set(row.id as string, { id: row.id as string, brokerage_id: row.brokerage_id as string, contactId, providerSource: (linkedOffer?.esign_provider as string | null) ?? null })
   }
 
   // ── Listing lane ────────────────────────────────────────────────────────
   const { data: listingRows, error: listingErr } = await supabase
     .from("listings")
-    .select("id, brokerage_id, seller_contact_id, contact_id")
+    .select("id, brokerage_id, seller_contact_id, contact_id, external_provider_source")
     .not("status", "eq", "sold")
     .not("external_provider_source", "is", null)
     .or(`last_provider_sync_at.is.null,last_provider_sync_at.lt.${staleCutoff}`)
@@ -136,6 +140,25 @@ export async function sweepEsignDocSync(
       staleAfterSec,
     })
     entries.push({ kind: "transaction", id: t.id, result })
+
+    // PROVIDER-AGNOSTIC LOOP-EXECUTION GATE (wave 47 lane FA) — the
+    // autonomous half for providers with NO webhook at all (Brokermint,
+    // FormSimplicity): a webhook-driven provider gets this same gate from its
+    // own route handler on a signed/completed event; a provider this OS only
+    // ever POLLS gets it here, right after the pull that could have changed
+    // whether the loop just became fully executed. Best-effort — a stale sync
+    // outcome must never block the sweep from moving on to the next row.
+    if (result.ok && t.providerSource) {
+      try {
+        await evaluateEnvelopeExecution(supabase, {
+          brokerageId:    t.brokerage_id,
+          providerSource: t.providerSource,
+          transactionId:  t.id,
+        })
+      } catch (err) {
+        console.error(`[esign-doc-sync-sweep] loop-execution eval failed for transaction ${t.id} (non-blocking):`, err)
+      }
+    }
   }
 
   for (const l of listingRows ?? []) {
@@ -149,6 +172,20 @@ export async function sweepEsignDocSync(
       staleAfterSec,
     })
     entries.push({ kind: "listing", id: row.id as string, result })
+
+    // Same gate, listing lane — see the comment above the transaction-lane call.
+    const listingProviderSource = row.external_provider_source as string | null
+    if (result.ok && listingProviderSource) {
+      try {
+        await evaluateEnvelopeExecution(supabase, {
+          brokerageId:    row.brokerage_id as string,
+          providerSource: listingProviderSource,
+          listingId:      row.id as string,
+        })
+      } catch (err) {
+        console.error(`[esign-doc-sync-sweep] loop-execution eval failed for listing ${row.id} (non-blocking):`, err)
+      }
+    }
   }
 
   return {

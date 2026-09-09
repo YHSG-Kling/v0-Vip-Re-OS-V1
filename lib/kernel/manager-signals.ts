@@ -281,6 +281,33 @@ async function maybePublishRepurposeHandoff(videoProjectId: string, ctx: { broke
   }, ctx.supabase)
 }
 
+/**
+ * Shared body for shopping_agent:isa_appointment_scheduled / listing_concierge:
+ * isa_appointment_scheduled (wave 47) — AI ISA booked an appointment through the GENERAL
+ * booking path (lib/ai-isa/appointment-scheduler.ts), routed by contact side. Only acts
+ * once the entity is a real CONTACT (a lead has no portal thread to message into yet);
+ * a lead-side booking is left for the concierge to pick up once it converts.
+ */
+async function proposeIsaAppointmentPrep(
+  signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }, agentKind: "shopping_agent" | "listing_concierge",
+): Promise<string | null> {
+  if (signal.entityType !== "contact" || !signal.entityId) {
+    return "appointment booked for a lead — prep follow-up applies once they convert to a contact"
+  }
+  const contactId = signal.entityId
+  const audience: "seller" | "buyer" = agentKind === "listing_concierge" ? "seller" : "buyer"
+  const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+  const res = await proposeClientMessage({
+    brokerageId: ctx.brokerageId, agentKind, entityType: "contact",
+    entityId: contactId, recipientContactId: contactId, audience,
+    subject: "Looking forward to our appointment",
+    body: "Great news — your appointment is booked! I'll get everything ready ahead of time — reply here with anything you'd like me to cover.",
+    rationale: `AI ISA scheduled an appointment (signal ${signal.signalType}) — prep follow-up.`,
+    channel: "portal",
+  }, ctx.supabase)
+  return res.ok ? `proposed appointment prep follow-up (gate message ${res.id})` : null
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
@@ -2213,6 +2240,181 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       entity_type: "contact", entity_id: contactId, priority: "high", is_read: false,
     })
     return `escalated relocation referral to responsible agent${newArea ? ` (${newArea})` : ""}`
+  },
+
+  // ── Wave 47 (2026-09-09): handlers for the 8 HANDLED signals published from
+  // ── lib/kernel/event-reactor.ts D-decies (kernel-event census round 4, lane EF).
+  // AI ISA → Shopping Agent / Listing Concierge: an appointment was booked through the
+  // GENERAL booking path (not a dial-batch call). Same prep-follow-up shape as
+  // shopping_agent:isa_call_appointment / listing_concierge:isa_call_appointment above,
+  // shared here since both consumers do the identical thing for the routed side.
+  "shopping_agent:isa_appointment_scheduled": (signal, ctx) => proposeIsaAppointmentPrep(signal, ctx, "shopping_agent"),
+  "listing_concierge:isa_appointment_scheduled": (signal, ctx) => proposeIsaAppointmentPrep(signal, ctx, "listing_concierge"),
+
+  // Data Steward → AI ISA: a client portal message went unanswered past the reply SLA.
+  // payload.agent_id is an AGENTS id (the message's own agent_id) resolved to the user
+  // here so the notification lands on a real inbox, not a dead agents-table key.
+  "ai_isa:message_needs_response": async (signal, ctx) => {
+    const agentId = signal.payload?.agent_id as string | undefined
+    if (!agentId) return null
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id")
+      .eq("id", agentId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return "client message needs a response but the assigned agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "message_needs_response",
+      title: "A client is waiting on your reply",
+      body: signal.message, entity_type: "message", entity_id: signal.entityId,
+      priority: "high", is_read: false,
+    })
+    return error ? null : "notified the assigned agent their client message is overdue for a reply"
+  },
+
+  // Recruiting Manager → Campaign Orchestrator: an agent finished onboarding +
+  // certification — propose a gated welcome/congrats social post. Same shape as
+  // campaign_orchestrator:certification_issued above (positive-milestone → marketing
+  // asset), deduped the same way on a post_brief prefix.
+  "campaign_orchestrator:onboarding_completed": async (signal, ctx) => {
+    const onboardingId = signal.entityId
+    if (!onboardingId) return null
+    const { data: onboarding } = await ctx.supabase.from("agent_onboarding").select("agent_id")
+      .eq("id", onboardingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const agentRowId = (onboarding as { agent_id?: string | null } | null)?.agent_id ?? null
+    if (!agentRowId) return null
+
+    const brief = `ONBOARDING SOCIAL PROOF — onboarding:${onboardingId}`
+    const { data: prior } = await ctx.supabase.from("social_posts").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("agent_id", agentRowId).ilike("post_brief", `${brief}%`).limit(1).maybeSingle()
+    if (prior) return "onboarding welcome post already proposed"
+
+    const { sanitizeProperNoun } = await import("@/lib/compliance/client-text-guard")
+    let name = "our newest agent"
+    const { data: ag } = await ctx.supabase.from("agents").select("user_id").eq("id", agentRowId).maybeSingle()
+    const uid = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await ctx.supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+      const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+      name = sanitizeProperNoun(full, 60) ?? "our newest agent"
+    }
+
+    const { error } = await ctx.supabase.from("social_posts").insert({
+      brokerage_id: ctx.brokerageId, agent_id: agentRowId, platform: "all", post_type: "custom",
+      content: `Please join us in welcoming ${name}, who just completed onboarding and is ready to help you buy or sell! 🎉`,
+      status: "draft", approval_status: "pending", ai_generated: true,
+      post_brief: `${brief} — gated welcome post for ${name}; review before it posts.`,
+    })
+    return error ? null : "proposed a gated welcome social-proof post for the newly onboarded agent"
+  },
+
+  // Data Steward → Sphere of Influence: a scanned business card was approved into a real
+  // contact — propose the warm first-touch intro.
+  "sphere_of_influence:business_card_approved": async (signal, ctx) => {
+    const contactId = signal.entityId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject: `Great meeting you, ${firstName}!`,
+      body: `Hi ${firstName} — it was great connecting! I've saved your info and I'm here whenever you have real estate questions, now or down the road.`,
+      rationale: "A business card was scanned and approved into a contact — a warm first-touch intro.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a warm intro message to the new contact (gate message ${res.id})` : null
+  },
+
+  // Data Steward → Deal Coordinator: a task is due within 24h — remind the assigned
+  // agent directly. payload.assigned_to_agent_id is an AGENTS id, resolved here.
+  "deal_coordinator:task_due": async (signal, ctx) => {
+    const agentId = signal.payload?.assigned_to_agent_id as string | undefined
+    if (!agentId) return null
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id")
+      .eq("id", agentId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return "task due soon but no user could be resolved for the assigned agent"
+    const title = (signal.payload?.title as string | undefined) ?? "A task"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "task_due",
+      title: `Due soon: ${title}`.slice(0, 120), body: signal.message,
+      entity_type: "task", entity_id: signal.entityId, priority: "medium", is_read: false,
+    })
+    return error ? null : "reminded the assigned agent their task is due within 24h"
+  },
+
+  // Data Steward → Finance Manager: a commission was recorded (canonical table
+  // agent_commissions) — flag the earnings ledger to the producing agent.
+  "finance_manager:commission_paid": async (signal, ctx) => {
+    const commissionId = signal.entityId
+    if (!commissionId) return null
+    const { data: commission } = await ctx.supabase.from("agent_commissions")
+      .select("agent_id, transaction_id").eq("id", commissionId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const row = commission as { agent_id?: string | null; transaction_id?: string | null } | null
+    if (!row?.agent_id) return null
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", row.agent_id).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return "commission recorded but the earning agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "commission_recorded",
+      title: "A commission was recorded on the ledger",
+      body: "Your commission for this transaction has been recorded and is moving through approval.",
+      entity_type: "commission", entity_id: commissionId, priority: "low", is_read: false,
+    })
+    return error ? null : "flagged the new commission on the agent's earnings ledger notification"
+  },
+
+  // Data Steward → Sphere of Influence: a review landed — propose a gated thank-you when
+  // the rating is positive or unrated; a lower rating is left open for a human (never an
+  // automated thank-you on a bad review).
+  "sphere_of_influence:review_received": async (signal, ctx) => {
+    const contactId = signal.contactId
+    if (!contactId) return null
+    const rating = signal.payload?.rating as number | null | undefined
+    if (typeof rating === "number" && rating < 4) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject: `Thank you, ${firstName}!`,
+      body: `Hi ${firstName} — thank you so much for taking the time to leave a review! It genuinely means a lot and helps other clients find us.`,
+      rationale: "A positive (or unrated) review landed — a warm, gated thank-you.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a thank-you message for the review (gate message ${res.id})` : null
+  },
+
+  // Data Steward → Campaign Orchestrator: a known website visitor was re-identified —
+  // ensure they're enrolled in the passive newsletter channel. Same idempotent,
+  // unsubscribe/opt-out-honoring helper campaign_orchestrator:newsletter_touch_handoff uses.
+  "campaign_orchestrator:website_visitor_identified": async (signal, ctx) => {
+    const id = signal.entityId
+    if (!id) return null
+    try {
+      if (signal.entityType === "lead") {
+        const { enrollLeadInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+        const r = await enrollLeadInNewsletter({ leadId: id, brokerageId: ctx.brokerageId }, ctx.supabase)
+        return `known visitor identified (lead) — newsletter enrollment: ${r.reason}${r.enrolled ? " (now nurturing via content)" : ""}`
+      }
+      if (signal.entityType === "contact") {
+        const { enrollContactInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+        const r = await enrollContactInNewsletter({ contactId: id, brokerageId: ctx.brokerageId }, ctx.supabase)
+        return `known visitor identified (contact) — newsletter enrollment: ${r.reason}${r.enrolled ? " (now nurturing via content)" : ""}`
+      }
+    } catch (e) {
+      return `website-visitor newsletter enrollment failed: ${e instanceof Error ? e.message : String(e)}`
+    }
+    return null
   },
 }
 

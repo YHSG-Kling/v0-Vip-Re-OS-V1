@@ -165,6 +165,31 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   newsletter_seo_score_low:     { consumers: [], disposition: "feed_only", kind: "update", what: "a scheduled newsletter was DEFERRED because its stored SEO score is under the send gate — Campaign Orchestrator → Marketing Agent (app/api/cron/publish-newsletters)" },
   esign_loop_partially_signed:  { consumers: [], disposition: "feed_only", kind: "update", what: "a dotloop document.signed arrived but the loop is not fully executed — evalAnchorExecution held the ready-writes; Compliance Officer → Deal Coordinator" },
 
+  // ── Wave 47 (2026-09-09): readers built for TWENTY MORE emitted-only kernel events
+  // ── (lane EF round 4, lib/kernel/event-reactor.ts D-decies). Eight are HANDLED with a
+  // ── real SIGNAL_HANDLERS consumer; the rest are feed_only visibility, same shape as
+  // ── most of wave 46.
+  isa_appointment_scheduled:   { consumers: ["shopping_agent", "listing_concierge"], disposition: "handled", kind: "handoff", what: "AI ISA booked an appointment through the GENERAL booking path (not a dial-batch call) — the side-appropriate concierge proposes the prep follow-up (lib/ai-isa/appointment-scheduler.ts)" },
+  message_needs_response:      { consumers: ["ai_isa"], disposition: "handled", kind: "update", what: "a client portal message has gone unanswered past the reply SLA — AI ISA notifies the assigned agent directly (app/api/cron/message-needs-response)" },
+  onboarding_completed:        { consumers: ["campaign_orchestrator"], disposition: "handled", kind: "update", what: "an agent finished onboarding + certification — Recruiting Manager hands it to Campaign Orchestrator, which proposes a gated welcome/congrats social post (lib/onboarding/certification-engine.ts completeOnboarding)" },
+  business_card_approved:      { consumers: ["sphere_of_influence"], disposition: "handled", kind: "update", what: "a scanned business card was approved into a real contact — Sphere of Influence proposes the warm first-touch intro (app/actions/business-card/business-card-actions.ts)" },
+  task_due:                    { consumers: ["deal_coordinator"], disposition: "handled", kind: "update", what: "a task is due within 24h — Deal Coordinator reminds the assigned agent directly (app/api/cron/task-due)" },
+  commission_paid:             { consumers: ["finance_manager"], disposition: "handled", kind: "update", what: "a commission was recorded — Finance Manager flags the earnings ledger to the producing agent (lib/kernel/financial.ts createCommissionRecord, canonical table agent_commissions)" },
+  review_received:             { consumers: ["sphere_of_influence"], disposition: "handled", kind: "update", what: "a review landed — Sphere of Influence proposes a gated thank-you when the rating is positive/unrated; a lower rating is left for a human (lib/reputation/review-landed.ts)" },
+  website_visitor_identified:  { consumers: ["campaign_orchestrator"], disposition: "handled", kind: "update", what: "a known website visitor was re-identified — Campaign Orchestrator ensures newsletter enrollment (the same idempotent, opt-out-honoring path newsletter_touch_handoff uses; app/api/track/identify)" },
+  task_completed:              { consumers: [], disposition: "feed_only", kind: "update", what: "a transaction task was completed — Deal Coordinator sees it (app/actions/tasks.ts completeTask)" },
+  listing_archived:            { consumers: [], disposition: "feed_only", kind: "update", what: "a listing was archived — Listing Concierge sees it (app/actions/listings.ts)" },
+  listing_unarchived:          { consumers: [], disposition: "feed_only", kind: "update", what: "a listing was restored from the archive — Listing Concierge sees it (app/actions/listings.ts)" },
+  lead_scored:                 { consumers: [], disposition: "feed_only", kind: "update", what: "a lead was scored — visibility only; the ISA qualification loop already runs synchronously off this same event (lib/kernel/lead-acquisition-handlers.ts)" },
+  contact_scored:              { consumers: [], disposition: "feed_only", kind: "update", what: "a contact's relationship score was recomputed — Sphere of Influence sees it (lib/contact-pipeline/contact-capture.ts)" },
+  lead_assignment_failed:      { consumers: [], disposition: "feed_only", kind: "update", what: "a lead could not be auto-assigned — AI ISA sees the routing gap (lib/lead-assignment/assignment-engine.ts, the sole assignment path)" },
+  lead_import_completed:       { consumers: [], disposition: "feed_only", kind: "update", what: "a bulk lead import finished — AI ISA sees the new leads that landed (app/actions/lead-import/import-actions.ts)" },
+  contact_dedup_merged:        { consumers: [], disposition: "feed_only", kind: "update", what: "a duplicate contact was merged into the surviving record — Sphere of Influence sees it (lib/contact-pipeline/contact-capture.ts)" },
+  newsletter_sent:             { consumers: [], disposition: "feed_only", kind: "update", what: "a newsletter campaign finished sending — Marketing Agent sees it (app/api/cron/publish-newsletters)" },
+  subscription_created:        { consumers: [], disposition: "feed_only", kind: "update", what: "a new brokerage subscription was created — Finance Manager sees the moment day one (app/actions/auth/signup-brokerage.ts)" },
+  negotiation_strategy_drafted:{ consumers: [], disposition: "feed_only", kind: "update", what: "an AI negotiation strategy finished drafting for an offer — Deal Coordinator sees it (lib/negotiation/strategy-writer.ts; the portal's own 'ready' card is a separate KERNEL_EVENT_TO_PORTAL alias)" },
+  cron_failed:                 { consumers: [], disposition: "feed_only", kind: "update", what: "a scheduled cron job failed — Data Steward sees it (lib/kernel/cron-logging.ts; skipped for the platform-wide 'system' pseudo-tenant, which has no brokerage to route to)" },
+
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */

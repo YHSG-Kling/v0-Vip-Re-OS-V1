@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Loader2, CheckCircle, XCircle, Clock, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
+import { groupByPriority } from "@/lib/format/collections"
+import { agoMinutesFloor } from "@/lib/format/dates"
 
 interface ApprovalItem {
   id: string
@@ -214,29 +216,11 @@ export default function ApprovalsPage() {
     }
   }
 
-  function groupByPriority(items: ApprovalItem[]): GroupedItems {
-    return items.reduce(
-      (acc, item) => {
-        acc[item.priority].push(item)
-        return acc
-      },
-      { high: [], medium: [], standard: [] } as GroupedItems
-    )
-  }
-
-  function formatTimeAgo(dateString: string): string {
-    const date = new Date(dateString)
-    const now = new Date()
-    const diffMs = now.getTime() - date.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-
-    if (diffMins < 1) return "just now"
-    if (diffMins < 60) return `${diffMins}m ago`
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-    const diffDays = Math.floor(diffHours / 24)
-    return `${diffDays}d ago`
-  }
+  // `groupByPriority`/`formatTimeAgo` — same-body census, round 4
+  // (2026-09-09, lane FC): DELETED, byte-identical to
+  // lib/format/collections.ts `groupByPriority` and lib/format/dates.ts
+  // `agoMinutesFloor` (both imported above).
+  const formatTimeAgo = agoMinutesFloor
 
   // Offers are DEAL DECISIONS — their own section with the full accept /
   // reject / counter response set, never mixed into the marketing feed.

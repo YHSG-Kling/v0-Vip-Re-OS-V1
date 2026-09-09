@@ -15,8 +15,8 @@
 
 import { useMemo, useState } from "react"
 import { Card } from "@/components/ui/card"
-import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import type { ManagerActivityEntry } from "@/lib/kernel/manager-activity"
+import { ManagerChip, relTime } from "@/app/components/shared/ManagerChip"
 
 const STATUS_STYLE: Record<ManagerActivityEntry["status"], { chip: string; label: string }> = {
   executed:  { chip: "bg-emerald-100 text-emerald-800", label: "executed" },
@@ -36,41 +36,9 @@ const SOURCE_LABEL: Record<ManagerActivityEntry["source"], string> = {
   reaper: "Self-heal",
 }
 
-function accentFor(key: string): string {
-  return key in MANAGERS ? MANAGERS[key as ManagerKey].accent : "bg-slate-100 text-slate-700"
-}
-function domainFor(key: string): string {
-  return key in MANAGERS ? MANAGERS[key as ManagerKey].domain : ""
-}
-function initials(label: string): string {
-  return label.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()
-}
-function relTime(iso: string): string {
-  const t = new Date(iso).getTime()
-  if (!Number.isFinite(t)) return ""
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000))
-  if (s < 60) return "just now"
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  const d = Math.floor(h / 24)
-  return `${d}d ago`
-}
-
-function ManagerChip({ mkey, label }: { mkey: string; label: string }) {
-  return (
-    <span
-      title={domainFor(mkey)}
-      className={`inline-flex items-center gap-1 rounded-full py-0.5 pl-0.5 pr-2 text-[11px] font-medium ${accentFor(mkey)}`}
-    >
-      <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-white/70 text-[9px] font-bold">
-        {initials(label)}
-      </span>
-      {label}
-    </span>
-  )
-}
+// `accentFor`/`domainFor`/`initials`/`relTime`/`ManagerChip` — same-body
+// census, round 4 (2026-09-09, lane FC): DELETED, byte-identical to
+// app/components/shared/ManagerChip.tsx (imported above).
 
 export function ManagerActivityFeed({ activity }: { activity: ManagerActivityEntry[] }) {
   const [showAll, setShowAll] = useState(false)

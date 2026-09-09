@@ -85,15 +85,10 @@ export function quarterPeriods(now: Date): string[] {
   return [0, 1, 2].map((i) => `${y}-${String(q0 + i + 1).padStart(2, "0")}`)
 }
 
-/** PURE: the last N "YYYY-MM" periods, newest first (current month included). */
-export function lastNPeriods(n: number, now: Date): string[] {
-  const out: string[] = []
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
-    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`)
-  }
-  return out
-}
+// `lastNPeriods` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/kernel/intelligence-report.ts:74 `lastMonthKeys`
+// (imported above). Its only caller, the superadmin engagement page, now
+// calls `lastMonthKeys` directly.
 
 /** Minimum tenancy age before the survey ever shows. */
 // module-private since 2026-09-07 — its only readers are this module's own (un-exported) helpers

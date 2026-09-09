@@ -18,6 +18,8 @@ import {
   Mail,
 } from "lucide-react"
 import { LenderDocumentUpload } from "./document-upload"
+import { usdOrNA } from "@/lib/format/money"
+import { formatDateOrTBDWithWeekday } from "@/lib/format/dates"
 import { LenderActions } from "./lender-actions"
 import { LenderConditionsPanel } from "./lender-conditions-panel"
 import { Progress } from "@/components/ui/progress"
@@ -65,24 +67,9 @@ function mergeLenderMilestones(rows: any[]) {
   })
 }
 
-function formatCurrency(amount: number | null | undefined): string {
-  if (!amount) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function formatDate(date: string | null | undefined): string {
-  if (!date) return "TBD"
-  return new Date(date).toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-}
+// `formatCurrency`/`formatDate` — same-body census, round 4 (2026-09-09, lane
+// FC): DELETED, byte-identical to lib/format/money.ts `usdOrNA` and
+// lib/format/dates.ts `formatDateOrTBDWithWeekday` (both imported above).
 
 export default async function LenderTransactionDetailPage({
   params,
@@ -189,7 +176,7 @@ export default async function LenderTransactionDetailPage({
                         : `${Math.abs(daysUntilClose)} days past scheduled close`}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Scheduled: {formatDate(transaction.close_date)}
+                    Scheduled: {formatDateOrTBDWithWeekday(transaction.close_date)}
                   </p>
                 </div>
               </div>
@@ -213,19 +200,19 @@ export default async function LenderTransactionDetailPage({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <p className="text-sm text-muted-foreground">Loan Amount</p>
-                  <p className="font-semibold text-lg">{formatCurrency(transaction.loan_amount || transaction.purchase_price)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(transaction.loan_amount || transaction.purchase_price)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Purchase Price</p>
-                  <p className="font-semibold text-lg">{formatCurrency(transaction.purchase_price)}</p>
+                  <p className="font-semibold text-lg">{usdOrNA(transaction.purchase_price)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Contract Date</p>
-                  <p className="font-medium">{formatDate(transaction.contract_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.contract_date)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Closing Date</p>
-                  <p className="font-medium">{formatDate(transaction.close_date)}</p>
+                  <p className="font-medium">{formatDateOrTBDWithWeekday(transaction.close_date)}</p>
                 </div>
               </div>
             </CardContent>
@@ -280,7 +267,7 @@ export default async function LenderTransactionDetailPage({
                             </p>
                             {milestone.target_date && (
                               <p className="text-sm text-muted-foreground">
-                                {formatDate(milestone.target_date)}
+                                {formatDateOrTBDWithWeekday(milestone.target_date)}
                               </p>
                             )}
                           </div>

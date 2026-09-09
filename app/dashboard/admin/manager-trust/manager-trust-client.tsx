@@ -13,6 +13,7 @@ import {
   type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
+import { StatCard as SummaryCard } from "@/app/components/shared/StatCard"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
 // Type-only imports — erased at build time (the modules themselves are server-side).
 import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
@@ -970,13 +971,6 @@ function DeliberationBlock({
   )
 }
 
-function SummaryCard({ label, value, icon: Icon }: { label: string; value: string | number; icon: React.ComponentType<{ className?: string }> }) {
-  return (
-    <Card>
-      <CardContent className="p-4 flex items-center gap-3">
-        <Icon className="h-7 w-7 text-muted-foreground" />
-        <div><p className="text-2xl font-bold">{value}</p><p className="text-xs text-muted-foreground">{label}</p></div>
-      </CardContent>
-    </Card>
-  )
-}
+// `SummaryCard` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to app/components/shared/StatCard.tsx (imported above as
+// `SummaryCard` so every call site below is unchanged).

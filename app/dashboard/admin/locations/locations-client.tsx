@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
 import { Building2, MapPin, Plus, Trash2, Users, Pencil } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { StatCard } from "@/app/components/shared/StatCard"
 import {
   createLocationAction, deleteLocationAction, assignUserToLocationAction,
   updateLocationAction,
@@ -170,16 +171,9 @@ export function LocationsClient({
   )
 }
 
-function StatCard({ label, value, icon: Icon }: { label: string; value: number; icon: React.ComponentType<{ className?: string }> }) {
-  return (
-    <Card>
-      <CardContent className="p-4 flex items-center gap-3">
-        <Icon className="h-7 w-7 text-muted-foreground" />
-        <div><p className="text-2xl font-bold">{value}</p><p className="text-xs text-muted-foreground">{label}</p></div>
-      </CardContent>
-    </Card>
-  )
-}
+// `StatCard` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical (in effect) to app/components/shared/StatCard.tsx (imported
+// above).
 
 function NewOfficeDialog({ onCreated }: { onCreated: (loc: OfficeLocation) => void }) {
   const { toast } = useToast()

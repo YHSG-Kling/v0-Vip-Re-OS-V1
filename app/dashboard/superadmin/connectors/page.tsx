@@ -15,19 +15,12 @@ import { buildLaunchChecklist } from "@/lib/platform/launch-checklist"
 import { TwilioFleetPostureCard, SendgridPostureCard, FullProviderRegistryCard } from "./provider-posture-cards"
 import { WebhookContractCard } from "./webhook-contract-card"
 import { CapabilityResolverCard } from "./capability-resolver-card"
+import { agoOrDash } from "@/lib/format/dates"
 
 export const dynamic = "force-dynamic"
 
-function fmtAgo(iso: string | null): string {
-  if (!iso) return "—"
-  const ms = Date.now() - new Date(iso).getTime()
-  const m = Math.round(ms / 60000)
-  if (m < 1) return "just now"
-  if (m < 60) return `${m}m ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
-}
+// `fmtAgo` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `agoOrDash` (imported above).
 
 const STATUS_STYLE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   expired: { label: "Expired", variant: "destructive" },
@@ -67,7 +60,7 @@ export default async function SuperadminConnectorsPage() {
             <PlugZap className="h-6 w-6" /> Connector Connectivity
           </h1>
           <p className="text-sm text-muted-foreground">
-            Live api / oauth / mcp connection health across all brokerages. Last scan {fmtAgo(lastRunAt)}.
+            Live api / oauth / mcp connection health across all brokerages. Last scan {agoOrDash(lastRunAt)}.
           </p>
         </div>
       </div>
@@ -130,7 +123,7 @@ export default async function SuperadminConnectorsPage() {
                         </td>
                         <td className="py-2 pr-4">{r.httpStatus ?? "—"}</td>
                         <td className="py-2 pr-4 text-muted-foreground max-w-xs truncate">{r.error ?? "—"}</td>
-                        <td className="py-2 pr-4 text-muted-foreground">{fmtAgo(r.checkedAt)}</td>
+                        <td className="py-2 pr-4 text-muted-foreground">{agoOrDash(r.checkedAt)}</td>
                       </tr>
                     )
                   })}
@@ -193,7 +186,7 @@ export default async function SuperadminConnectorsPage() {
                     {inv.recent.map((r, i) => (
                       <li key={i}>
                         <span className="font-medium">{r.capability}</span> · {r.decision}
-                        {r.error ? ` — ${r.error}` : ""} <span className="opacity-60">({fmtAgo(r.createdAt)})</span>
+                        {r.error ? ` — ${r.error}` : ""} <span className="opacity-60">({agoOrDash(r.createdAt)})</span>
                       </li>
                     ))}
                   </ul>

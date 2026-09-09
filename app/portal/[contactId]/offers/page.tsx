@@ -12,6 +12,7 @@ import { recordSellerView } from "@/app/actions/seller-offers"
 import { getSellerOffers, getSellerNetSheetInputs, getSellerOfferComparison } from "@/app/actions/portal-seller"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { usdOrNAOnNullish } from "@/lib/format/money"
 // ONE earnest-AMOUNT formatter (wave 26). lib/transactions/earnest-terms.ts exists
 // to keep the earnest DEPOSIT (currency) and the earnest DUE DATE (a calendar
 // date) typed apart after the round-28 correction where the amount was fed into
@@ -43,7 +44,7 @@ function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
               <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <DollarSign className="h-3.5 w-3.5" />
-                  {formatCurrency(offer.offer_price)}
+                  {usdOrNAOnNullish(offer.offer_price)}
                 </span>
                 {listPrice && offer.offer_price && (
                   <span className={cn(
@@ -99,14 +100,9 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-600" },
 }
 
-function formatCurrency(amount: number | null): string {
-  if (amount === null || amount === undefined) return "N/A"
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
+// `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to lib/format/money.ts `usdOrNAOnNullish`
+// (imported above).
 
 /**
  * THE INTERACTIVE NET SHEET, ON THE SELLER'S SCREEN (wave 12, R4b).
@@ -244,7 +240,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                     Congratulations! Your offer was accepted!
                   </h3>
                   <p className="text-green-700">
-                    {((acceptedOffer.listing as any)?.address || (acceptedOffer.listing as any)?.property_address) || "Property"} - {formatCurrency(acceptedOffer.offer_price)}
+                    {((acceptedOffer.listing as any)?.address || (acceptedOffer.listing as any)?.property_address) || "Property"} - {usdOrNAOnNullish(acceptedOffer.offer_price)}
                   </p>
                   <Button className="bg-green-600 hover:bg-green-700" asChild>
                     <Link href={`/portal/${contactId}/journey`}>
@@ -752,11 +748,11 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             {topNetOffer && (
               <div className="mt-3 rounded-lg border border-green-300 bg-white p-3">
                 <p className="text-sm font-semibold text-green-900">
-                  Most money in your pocket: {formatCurrency(topNetOffer.seller_net_estimate)} <span className="font-normal text-green-700">(net, after costs)</span>
+                  Most money in your pocket: {usdOrNAOnNullish(topNetOffer.seller_net_estimate)} <span className="font-normal text-green-700">(net, after costs)</span>
                 </p>
                 {netBeatsPrice && (
                   <p className="text-xs text-green-700 mt-1">
-                    💡 The highest offer ({formatCurrency(topPriceOffer.offer_price)}) isn&apos;t the most you&apos;d keep — a different offer nets you more after commission, payoff, and fees. Your agent will walk you through why.
+                    💡 The highest offer ({usdOrNAOnNullish(topPriceOffer.offer_price)}) isn&apos;t the most you&apos;d keep — a different offer nets you more after commission, payoff, and fees. Your agent will walk you through why.
                   </p>
                 )}
               </div>
@@ -843,9 +839,9 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                           </Badge>
                         )}
                       </td>
-                      <td className="py-2 text-right tabular-nums">{formatCurrency(row.offerPrice)}</td>
+                      <td className="py-2 text-right tabular-nums">{usdOrNAOnNullish(row.offerPrice)}</td>
                       <td className="py-2 text-right tabular-nums font-semibold text-green-700">
-                        {formatCurrency(row.netToSeller)}
+                        {usdOrNAOnNullish(row.netToSeller)}
                       </td>
                       <td className="py-2 text-right">{row.financingType ?? "Not specified"}</td>
                       <td className="py-2 text-right">

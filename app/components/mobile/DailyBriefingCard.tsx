@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { AlertCircle, RefreshCw, User, CheckCircle2 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { getTimeOfDayGreeting } from "@/lib/format/strings"
 
 interface PriorityContact {
   id: string
@@ -36,12 +37,9 @@ interface DailyBriefingCardProps {
   onRefresh?: () => void
 }
 
-function getTimeOfDayGreeting(): string {
-  const hour = new Date().getHours()
-  if (hour < 12) return "Good morning"
-  if (hour < 17) return "Good afternoon"
-  return "Good evening"
-}
+// `getTimeOfDayGreeting` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to lib/format/strings.ts `getTimeOfDayGreeting`
+// (imported above).
 
 function getBuyerStageBadgeColor(stage: string): string {
   switch (stage?.toLowerCase()) {

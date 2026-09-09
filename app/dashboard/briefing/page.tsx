@@ -26,6 +26,7 @@ import {
   Target,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { getTimeOfDayGreeting } from "@/lib/format/strings"
 import {
   getTodaysBriefing,
   generateBriefing,
@@ -284,13 +285,10 @@ export default function BriefingPage() {
   const [churnRiskContacts, setChurnRiskContacts] = useState<ChurnRiskContact[]>([])
   const [churnRiskTotal, setChurnRiskTotal] = useState<number>(0)
 
-  // Get greeting based on time of day
-  const getGreeting = () => {
-    const hour = new Date().getHours()
-    if (hour < 12) return "Good morning"
-    if (hour < 17) return "Good afternoon"
-    return "Good evening"
-  }
+  // `getGreeting` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/strings.ts `getTimeOfDayGreeting` (imported
+  // above).
+  const getGreeting = getTimeOfDayGreeting
 
   // Format date
   const formatDate = () => {

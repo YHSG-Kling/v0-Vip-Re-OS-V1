@@ -8,6 +8,7 @@ import {
 } from '@/app/actions/settings/brokerage-identity';
 import { US_STATES } from '@/lib/constants/us-states';
 import { SettingsCard } from './SettingsCard';
+import { useFormChange } from '@/hooks/use-form-change';
 
 interface GeneralSettingsFormProps {
   initialData: any;
@@ -63,13 +64,10 @@ export function GeneralSettingsForm({
     currency_symbol: initialData?.currency_symbol || '$',
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
+  // `handleChange` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-form-change.ts `useFormChange`
+  // (used below).
+  const handleChange = useFormChange(setFormData);
 
   const handleIdentityChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;

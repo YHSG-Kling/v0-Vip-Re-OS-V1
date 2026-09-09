@@ -25,6 +25,7 @@ import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status
 import {
   whisperTierCapability,
   resolveAssistantVoiceId,
+  realSynthesizer as defaultSynthesizer,
   type WhisperSynthesizer,
 } from "@/lib/intelligence/appointment-whisper"
 
@@ -154,13 +155,11 @@ export interface FireDrillRunResult {
   text: number
 }
 
-const defaultSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
-  try {
-    const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
-    const res = await synthesizeSpeechStream({ text: script, voiceId })
-    return (res as { audioUrl?: string | null })?.audioUrl ?? null
-  } catch { return null }
-}
+// `defaultSynthesizer` — same-body census, round 4 (2026-09-09, lane FC):
+// survivor is lib/intelligence/appointment-whisper.ts:77 `realSynthesizer`,
+// imported above under this file's existing local name (this file already
+// imported the `WhisperSynthesizer` TYPE from there; now it imports the
+// implementation too instead of pasting its own copy).
 
 /**
  * Run fire drills for a brokerage: scan live deals for uncovered deadlines inside the

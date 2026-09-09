@@ -135,6 +135,7 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * the wire, and none exists today. Build the surface, then wire this; do not
  * invent a caller for it.
  */
+/** @ownerRuled lane G4 (2026-08-28), re-affirmed wave 47 — the by-id resolver has no caller BY DESIGN: every existing by-id read is narrower on purpose and a select("*") row would push commission_rate / seller_walkaway_price onto an agent-facing bundle (§5); build the whole-record surface first, then wire this (see header above). Its worse twin services/supabaseService.ts::getListingById was merged onto it and deleted. */
 export async function getListingById(listingId: string) {
   try {
     // Validate listingId is a proper UUID (not "new" or other invalid values)

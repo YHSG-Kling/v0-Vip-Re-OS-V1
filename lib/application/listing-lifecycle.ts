@@ -440,7 +440,7 @@ export async function handleSellerToLifetimeTransition(
   listingId: string,
   agentId: string,
   brokerageId: string,
-) {
+): Promise<{ contactId: string | null }> {
   // agentId here is an agents.id (listings.agent_id → agents(id)), and both
   // client_portal_messages.agent_id and agents.id below are the SAME id space —
   // verified via pg_constraint (cpm_agent_id_fkey → agents(id)). "" means the
@@ -458,9 +458,13 @@ export async function handleSellerToLifetimeTransition(
 
   if (listingError) {
     console.error("[handleSellerToLifetimeTransition] listing read failed — seller NOT converted:", listingError.message)
-    return
+    return { contactId: null }
   }
-  if (!listingWithContact?.seller_contact_id) return
+  // Returns the resolved contactId (or null) so the caller can hand the SAME
+  // contact to the sphere_of_influence manager without a second listings read —
+  // one query answers both "who is the seller" and "did we find them" (§6: one
+  // fetch, one vocabulary for "the seller on this listing").
+  if (!listingWithContact?.seller_contact_id) return { contactId: null }
 
   const { seller_contact_id: contactId, address, city, state } = listingWithContact
   const propertyAddress = [address, city, state].filter(Boolean).join(", ")
@@ -537,6 +541,8 @@ export async function handleSellerToLifetimeTransition(
       console.error("[handleSellerToLifetimeTransition] points not awarded:", awarded.error)
     }
   }
+
+  return { contactId }
 }
 
 export async function advanceListingStageService(
@@ -652,7 +658,65 @@ export async function advanceListingStageService(
   // same place allowedFrom/readinessChecks/requiredRoles live.
   if (getStageDefinition(toStage as ListingStage)?.triggersLifetimeTransition) {
     try {
-      await handleSellerToLifetimeTransition(supabase, listingId, gate.listingAgentRecordId ?? "", gate.brokerageId)
+      const { contactId } = await handleSellerToLifetimeTransition(supabase, listingId, gate.listingAgentRecordId ?? "", gate.brokerageId)
+
+      // ── OWNER RULING 2026-09-09: "lifetime transition should not send back on the
+      // ── market to the shopping manager, should be closed and sent to sphere. the
+      // ── back on market is only when the listing doesnt close." ────────────────
+      // handleSellerToLifetimeTransition above converts the seller record; this is
+      // the SECOND half — handing the client to the manager who owns the ongoing
+      // relationship. SAME signal vocabulary the transaction-close path already
+      // publishes (app/actions/transaction-stage-machine.ts:244, consumed by
+      // "sphere_of_influence:deal_closed" in lib/kernel/manager-signals.ts) — not a
+      // second spelling of "a deal closed" (§6). The back-on-market handoff below is
+      // structurally unreachable from this stage (see isBackOnMarket's terminal-stage
+      // filter in lib/listings/back-on-market.ts) so there is no branch to suppress —
+      // this IS the replacement for it on the path that actually closes.
+      //
+      // DEDUPE ACROSS THE TWO deal_closed PRODUCERS (this lane's item 3): once a
+      // listing has a linked transaction, that transaction's OWN stage machine is
+      // the richer producer (it also closes referrals and resolves consult
+      // outcomes — see transaction-stage-machine.ts:219-266) and owns this handoff
+      // when the TRANSACTION reaches ITS OWN closed stage. Publishing here too would
+      // hand the same client to Sphere twice for one deal. So this path publishes
+      // ONLY when no transaction is linked to this listing — the one case the
+      // transaction-close producer can never fire for. A REFUSED lookup fails
+      // CLOSED (skips the publish, logs loudly) rather than risking a duplicate
+      // welcome — "nobody checked" must not render as "checked and fine" (§4).
+      if (contactId) {
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svc = createServiceClient()
+        const { data: linkedTransaction, error: txnLookupError } = await svc
+          .from("transactions")
+          .select("id")
+          .eq("listing_id", listingId)
+          .eq("brokerage_id", gate.brokerageId)
+          .limit(1)
+          .maybeSingle()
+        if (txnLookupError) {
+          console.error(
+            "[advanceListingStageService] transaction lookup for the deal_closed dedupe was REFUSED — sphere handoff skipped rather than risking a duplicate welcome:",
+            txnLookupError.message,
+          )
+        } else if (!linkedTransaction) {
+          const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+          const dealClosed = await publishManagerSignal({
+            brokerageId: gate.brokerageId,
+            fromManager: "listing_concierge",
+            toManager: "sphere_of_influence",
+            signalType: "deal_closed",
+            entityType: "listing",
+            entityId: listingId,
+            contactId,
+            message: "A listing just closed — this client is now lifetime territory. Over to you for the welcome.",
+          }, svc)
+          if (!dealClosed.ok) {
+            console.error("[advanceListingStageService] deal_closed signal to Sphere failed:", dealClosed.reason)
+          }
+        }
+        // else: a transaction is already linked — its own stage machine owns the
+        // deal_closed handoff (app/actions/transaction-stage-machine.ts:219-266).
+      }
     } catch (err) {
       console.error("[advanceListingStageService] seller-to-lifetime transition threw:", err)
     }

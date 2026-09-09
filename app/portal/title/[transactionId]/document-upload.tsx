@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Upload, FileText, CheckCircle2, AlertCircle, Download, AlertTriangle } from "lucide-react"
 import { uploadTitleDocument } from "@/app/actions/title-portal"
 import { createClient } from "@/lib/supabase/client"
+import { formatDateTimeShort } from "@/lib/format/dates"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THIS COMPONENT USED TO STORE NOTHING.
@@ -58,15 +59,8 @@ const DOCUMENT_TYPES: Array<{ value: string; label: string; sensitive?: boolean 
 
 type DocumentType = "title_commitment" | "settlement_statement" | "final_closing_disclosure" | "wire_instructions"
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })
-}
+// `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `formatDateTimeShort` (imported above).
 
 export function TitleDocumentUpload({
   transactionId,
@@ -301,7 +295,7 @@ export function TitleDocumentUpload({
                         <FileText className={`h-5 w-5 shrink-0 ${type.sensitive ? "text-amber-600" : "text-muted-foreground"}`} />
                         <div className="min-w-0">
                           <p className="font-medium text-sm truncate">{doc.file_name}</p>
-                          <p className="text-xs text-muted-foreground">{formatDate(doc.created_at)}</p>
+                          <p className="text-xs text-muted-foreground">{formatDateTimeShort(doc.created_at)}</p>
                         </div>
                       </div>
                       {doc.file_url && (

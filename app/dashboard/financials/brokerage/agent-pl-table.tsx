@@ -4,19 +4,16 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { TrendingUp, Brain, DollarSign, AlertTriangle } from "lucide-react"
 import type { AgentPLRow } from "@/app/actions/pl-truth-engine"
+import { usd } from "@/lib/format/money"
 
 interface Props {
   rows: AgentPLRow[]
   monthYear: string
 }
 
-function fmt(val: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(val)
-}
+// `fmt` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/money.ts `usd` (imported above).
+const fmt = usd
 
 function fmtCents(cents: number) {
   return fmt(cents / 100)

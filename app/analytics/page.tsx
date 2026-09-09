@@ -3,6 +3,7 @@
 import React from "react"
 
 import { useState, useEffect } from "react"
+import { usd } from "@/lib/format/money"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -722,11 +723,7 @@ function MetricRow({ label, value, highlight }: { label: string; value: string |
   )
 }
 
-function formatCurrency(amount: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
+// `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+// (imported above).
+const formatCurrency = usd

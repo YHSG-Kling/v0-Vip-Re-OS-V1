@@ -34,11 +34,11 @@
  * just renders.
  */
 import React from "react"
-import { Video } from "@remotion/media"
 import { AbsoluteFill, Sequence, interpolate, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export type StatDirection = "up_good" | "up_bad" | "down_good" | "down_bad" | "flat"
@@ -190,46 +190,8 @@ const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string
   </div>
 )
 
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  startFrame:     number
-  endFrame:       number
-  accentColor:    string
-  primaryColor:   string
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, startFrame, endFrame, accentColor, primaryColor }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", top: 32, right: 32,
-    width: 200, height: 200, borderRadius: 100,
-    boxShadow: `0 0 0 4px ${accentColor}, 0 18px 36px rgba(0,0,0,0.25)`,
-    overflow: "hidden", backgroundColor: primaryColor,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
-          style={{ width: "100%", height: "100%" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <SafeImg src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 80, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// `AvatarPIP` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to remotion/components/AvatarPIP.tsx (imported below).
 
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,

@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select"
 import { Send, Loader2, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useEnterToSubmit } from "@/hooks/use-enter-to-submit"
 
 const MAX_CHARS = 2000
 
@@ -74,12 +75,10 @@ export function MessageComposer({
     }
   }, [message, channel, onSend, status])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  // `handleKeyDown` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical to hooks/use-enter-to-submit.ts `useEnterToSubmit`
+  // (used below).
+  const handleKeyDown = useEnterToSubmit(handleSend)
 
   const handleRetry = () => {
     setStatus("idle")

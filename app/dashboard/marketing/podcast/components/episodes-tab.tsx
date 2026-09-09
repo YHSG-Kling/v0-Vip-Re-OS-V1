@@ -52,6 +52,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/app/components/ui/dropdown-menu"
+import { formatDateShort } from "@/lib/format/dates"
 import {
   generatePodcastAudio,
   publishPodcastEpisode,
@@ -218,13 +219,8 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
     return `${mins}:${secs.toString().padStart(2, "0")}`
   }
 
-  function formatDate(dateStr: string): string {
-    return new Date(dateStr).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   function getStatusBadge(status: Episode["status"]) {
     const variants: Record<
@@ -389,7 +385,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels, initialEpi
                   </div>
                   <div className="flex items-center gap-1">
                     <Calendar className="h-4 w-4" />
-                    <span>{formatDate(episode.created_at)}</span>
+                    <span>{formatDateShort(episode.created_at)}</span>
                   </div>
                 </div>
 

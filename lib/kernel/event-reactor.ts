@@ -1156,6 +1156,398 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (D-decies) CROSS-MANAGER SIGNALS — kernel-event census round 4 (2026-09-09, wave 47).
+  //
+  // scripts/kernel-event-census-z1.ts classified these TWENTY MORE KernelEvent members
+  // "emitted only" after wave 46's fifteen (D-octies): a real emitter fires them and
+  // lifecycle_events records them, but nothing downstream ever reacted. Same ruling as
+  // D-octies (CLAUDE.md §1.2 + the owner's "every capability should run autonomously"):
+  // each publishes a manager_signals row addressed to the manager whose domain should act
+  // on it. EIGHT of the twenty are HANDLED — a real consumer proposes a gated deliverable
+  // (a client message, a task-due reminder, a social post, an earnings notification)
+  // through the SAME existing gated primitives D-octies and the rest of this file use
+  // (proposeClientMessage / transaction task / notifications insert) — never an outbound
+  // send, never spend. The rest are feed_only: visibility for the owning manager, same as
+  // most of D-octies. Every block is best-effort and independently caught — a signal-
+  // publish failure must never turn an event emission into a thrown error for whatever
+  // produced it. Idempotent per (toManager, signalType, entityId) via publishManagerSignal's
+  // own dedupe.
+  if (params.brokerageId) {
+    // 16 — AI ISA scheduled an appointment through the GENERAL booking path
+    // (lib/ai-isa/appointment-scheduler.ts — self-serve/chat/link booking; distinct from
+    // the dial-batch CALL outcome, which already fires isa_call_appointment above). Routed
+    // by contact side so the right concierge preps the follow-up: seller contacts to
+    // Listing Concierge, everyone else (buyer contacts; a lead defaults buyer-side until it
+    // converts, since a lead has no contact_type to read) to Shopping Agent. HANDLED —
+    // both consumers propose the same gated prep-follow-up message.
+    if (params.event === KernelEvent.ISA_APPOINTMENT_SCHEDULED) {
+      try {
+        let toManager: "shopping_agent" | "listing_concierge" = "shopping_agent"
+        if (params.entityType === "contact" && params.entityId) {
+          const { data: c } = await svc
+            .from("contacts").select("contact_type")
+            .eq("id", params.entityId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          if ((c as { contact_type?: string } | null)?.contact_type === "seller") toManager = "listing_concierge"
+        }
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager,
+          signalType:  "isa_appointment_scheduled",
+          message:     "AI ISA scheduled an appointment.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.entityType === "contact" ? params.entityId : (params.contactId ?? null),
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 17 — a client portal message has gone past the reply SLA (app/api/cron/
+    // message-needs-response). HANDLED — AI ISA notifies the assigned agent directly
+    // (metadata.agent_id is an AGENTS id, resolved to the user in the handler) so the
+    // overdue reply surfaces beyond the portal's own unread badge.
+    if (params.event === KernelEvent.MESSAGE_NEEDS_RESPONSE) {
+      try {
+        const meta = (params.metadata as { agent_id?: string | null; sla_hours?: number } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "message_needs_response",
+          message:     `A client portal message has gone unanswered past the ${meta.sla_hours ?? "SLA"}h target.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     { agent_id: meta.agent_id ?? null },
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — an agent finished onboarding + certification (lib/onboarding/
+    // certification-engine.ts completeOnboarding). HANDLED — Recruiting Manager (owns
+    // onboarding) hands it to Campaign Orchestrator (content/social owner), which
+    // proposes a GATED welcome/congrats social post — the positive-milestone mirror of
+    // the certification_issued handoff wave 46 already built.
+    if (params.event === KernelEvent.ONBOARDING_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "onboarding_completed",
+          message:     "An agent completed onboarding and certification.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — a scanned business card was approved into a real CONTACT (app/actions/
+    // business-card/business-card-actions.ts). HANDLED — Sphere of Influence (lifetime
+    // relationship owner) proposes the warm first-touch intro so a card scanned at an
+    // event doesn't sit as a silent row.
+    if (params.event === KernelEvent.BUSINESS_CARD_APPROVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "business_card_approved",
+          message:     "A scanned business card was approved into a contact.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.entityType === "contact" ? params.entityId : (params.contactId ?? null),
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — a task is due within 24h (app/api/cron/task-due). HANDLED — Deal Coordinator
+    // reminds the assigned agent directly (metadata.assigned_to_agent_id is an AGENTS id,
+    // resolved to the user in the handler) rather than leaving it to be found on a board.
+    if (params.event === KernelEvent.TASK_DUE) {
+      try {
+        const meta = (params.metadata as { assigned_to_agent_id?: string | null; title?: string | null } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "task_due",
+          message:     `"${meta.title ?? "A task"}" is due within 24 hours.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     { assigned_to_agent_id: meta.assigned_to_agent_id ?? null, title: meta.title ?? null },
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 21 — a commission was recorded (lib/kernel/financial.ts createCommissionRecord —
+    // canonical table agent_commissions). HANDLED — Finance Manager flags the earnings
+    // ledger to the producing agent (resolved through agent_commissions.agent_id in the
+    // handler) so the new commission is visible beyond the financials page.
+    if (params.event === KernelEvent.COMMISSION_PAID) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "commission_paid",
+          message:     "A commission was recorded.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 22 — a review landed (lib/reputation/review-landed.ts). HANDLED — Sphere of
+    // Influence proposes a gated thank-you to the reviewer when the rating is positive
+    // (or unrated); a lower rating is left feed-visible for a human to follow up
+    // personally rather than an automated thank-you.
+    if (params.event === KernelEvent.REVIEW_RECEIVED) {
+      try {
+        const meta = (params.metadata as { platform?: string | null; rating?: number | null } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "review_received",
+          message:     `A ${meta.platform ?? ""} review landed${typeof meta.rating === "number" ? ` (${meta.rating}★)` : ""}.`.replace("  ", " "),
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     { platform: meta.platform ?? null, rating: meta.rating ?? null },
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 23 — a known website visitor was identified (app/api/track/identify). HANDLED —
+    // Campaign Orchestrator ensures they're enrolled in the passive newsletter channel
+    // (the same idempotent, unsubscribe/opt-out-honoring enrollment newsletter_touch_handoff
+    // uses) — a known visitor returning to the site is a nurture signal, not a page view
+    // to discard.
+    if (params.event === KernelEvent.WEBSITE_VISITOR_IDENTIFIED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "campaign_orchestrator",
+          signalType:  "website_visitor_identified",
+          message:     "A known website visitor was identified.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies. No automated consumer by design (see each `what` in signal-registry.ts).
+
+    // 24 — a transaction task was completed (app/actions/tasks.ts completeTask).
+    if (params.event === KernelEvent.TASK_COMPLETED) {
+      try {
+        const meta = (params.metadata as { title?: string | null } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "task_completed",
+          message:     `"${meta.title ?? "A task"}" was completed.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 25/26 — a listing was archived / restored from the archive (app/actions/listings.ts).
+    if (params.event === KernelEvent.LISTING_ARCHIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "listing_archived",
+          message:     "A listing was archived.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.LISTING_UNARCHIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "listing_unarchived",
+          message:     "A listing was restored from the archive.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 27 — a lead was scored (lib/kernel/lead-acquisition-handlers.ts). The ISA
+    // qualification loop already runs synchronously right after this fires
+    // (handleISAQualificationStarted) — this signal is purely visibility so AI ISA's own
+    // feed shows the score that drove its next move, not a duplicate action.
+    if (params.event === KernelEvent.LEAD_SCORED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_scored",
+          message:     "A lead was scored.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 28 — a contact was (re-)scored (lib/contact-pipeline/contact-capture.ts).
+    if (params.event === KernelEvent.CONTACT_SCORED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "contact_scored",
+          message:     "A contact's relationship score was recomputed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 29 — auto-assignment failed for a lead (lib/lead-assignment/assignment-engine.ts —
+    // the sole assignment path per its own header, so this covers every caller).
+    if (params.event === KernelEvent.LEAD_ASSIGNMENT_FAILED) {
+      try {
+        const meta = (params.metadata as { reason?: string | null } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_assignment_failed",
+          message:     `A lead could not be auto-assigned${meta.reason ? ` (${meta.reason})` : ""}.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 30 — a bulk lead import finished (app/actions/lead-import/import-actions.ts).
+    if (params.event === KernelEvent.LEAD_IMPORT_COMPLETED) {
+      try {
+        const meta = (params.metadata as { created?: number; merged?: number; failed?: number } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_import_completed",
+          message:     `A lead import finished — ${meta.created ?? 0} created, ${meta.merged ?? 0} merged, ${meta.failed ?? 0} failed.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 31 — two contact records were merged (lib/contact-pipeline/contact-capture.ts).
+    if (params.event === KernelEvent.CONTACT_DEDUP_MERGED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "contact_dedup_merged",
+          message:     "A duplicate contact was merged into the surviving record.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 32 — a newsletter campaign send completed (app/api/cron/publish-newsletters).
+    if (params.event === KernelEvent.NEWSLETTER_SENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "marketing_agent",
+          signalType:  "newsletter_sent",
+          message:     "A newsletter campaign finished sending.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 33 — a brokerage subscribed (app/actions/auth/signup-brokerage.ts).
+    if (params.event === KernelEvent.SUBSCRIPTION_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "subscription_created",
+          message:     "A new brokerage subscription was created.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 34 — an AI negotiation strategy finished drafting for an offer
+    // (lib/negotiation/strategy-writer.ts). Named negotiation_strategy_drafted (not the
+    // event's own "ready" spelling) so the feed-render kind stays "update" — the strategy
+    // is a customer-mirror artifact for the portal, not a manager hand-off (the portal
+    // already carries the live "ready" moment via KERNEL_EVENT_TO_PORTAL).
+    if (params.event === KernelEvent.NEGOTIATION_STRATEGY_READY) {
+      try {
+        const meta = (params.metadata as { side?: string | null; recommended_action?: string | null } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "negotiation_strategy_drafted",
+          message:     `An AI negotiation strategy is ready to review${meta.side ? ` (${meta.side} side)` : ""}.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 35 — a scheduled cron job failed (lib/kernel/cron-logging.ts logCronComplete). That
+    // module stamps brokerageId as the literal string "system" for a platform-wide cron
+    // with no single tenant (`logEntry.brokerage_id || "system"`) — manager_signals is
+    // tenant-anchored (brokerage_id NOT NULL, a real FK), so "system" is skipped rather
+    // than attempted and silently swallowed by the catch below.
+    if (params.event === KernelEvent.CRON_FAILED && params.brokerageId !== "system") {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "cron_failed",
+          message:     "A scheduled job failed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
   // matched/enrolled/skipped/errors are legacy marketing-trigger counters — System B enrollment
   // is retired, so they are always zero now (shape kept for callers of ReactorResult).
   return { matched: 0, enrolled: 0, skipped: 0, errors: 0, sequencesEnrolled, portalUpdated }

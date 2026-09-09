@@ -11,6 +11,7 @@ import {
   type CustomDomainsPanel,
   type CustomDomainView,
 } from "@/app/actions/custom-domains"
+import { StatusChip } from "@/app/components/shared/StatusChip"
 
 // "Your live website" — surfaces the zero-hosting public sites the OS already
 // serves (brokerage /site, team /team, agent /p) right where the tenant edits
@@ -27,14 +28,9 @@ const STATUS_CHIP: Record<string, { label: string; cls: string }> = {
   error:       { label: "Error",       cls: "bg-red-50 text-red-700 border-red-200" },
 }
 
-function StatusChip({ status }: { status: string }) {
-  const chip = STATUS_CHIP[status] ?? { label: status, cls: "bg-gray-50 text-gray-600 border-gray-200" }
-  return (
-    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${chip.cls}`}>
-      {chip.label}
-    </span>
-  )
-}
+// `StatusChip` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to app/components/shared/StatusChip.tsx (imported above).
+// This file's own STATUS_CHIP map stays local — only the component moved.
 
 export function YourWebsiteCard() {
   const [links, setLinks] = useState<PublicSiteLinks | null>(null)
@@ -159,7 +155,7 @@ export function YourWebsiteCard() {
                 <div key={d.id} className="rounded border border-gray-200 p-2.5 space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-gray-900 truncate">{d.domain}</span>
-                    <StatusChip status={d.status} />
+                    <StatusChip status={d.status} map={STATUS_CHIP} />
                     {panel.canManage && (
                       <span className="ml-auto flex items-center gap-2">
                         <button

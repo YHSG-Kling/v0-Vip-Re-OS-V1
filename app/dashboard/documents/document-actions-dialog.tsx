@@ -45,24 +45,11 @@ import type {
   DocumentSigningContext,
 } from "@/app/actions/dotloop-integration"
 import { aiClassifyDocument, aiVerifySignatures } from "@/app/actions/ai-document-intelligence"
+import { VerdictNote, type Verdict } from "@/app/components/shared/VerdictNote"
 
-interface Verdict {
-  ok: boolean
-  headline: string
-  detail?: string
-}
-
-function VerdictNote({ verdict }: { verdict: Verdict | null }) {
-  if (!verdict) return null
-  return (
-    <Alert variant={verdict.ok ? "default" : "destructive"} className="mt-2">
-      <AlertDescription className="text-xs">
-        <span className="font-medium">{verdict.headline}</span>
-        {verdict.detail ? <span className="block mt-0.5">{verdict.detail}</span> : null}
-      </AlertDescription>
-    </Alert>
-  )
-}
+// `Verdict`/`VerdictNote` — same-body census, round 4 (2026-09-09, lane FC):
+// DELETED, byte-identical to app/components/shared/VerdictNote.tsx (imported
+// above).
 
 export function DocumentActionsDialog({
   documentId,

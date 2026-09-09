@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Upload, FileText, CheckCircle2, AlertCircle, Download } from "lucide-react"
 import { uploadLenderDocument } from "@/app/actions/lender-portal-actions"
 import { createClient } from "@/lib/supabase/client"
+import { formatDateTimeShort } from "@/lib/format/dates"
 
 interface Document {
   id: string
@@ -27,15 +28,8 @@ const DOCUMENT_TYPES = [
 
 type DocumentType = typeof DOCUMENT_TYPES[number]["value"]
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })
-}
+// `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+// byte-identical to lib/format/dates.ts `formatDateTimeShort` (imported above).
 
 export function LenderDocumentUpload({
   transactionId,
@@ -230,7 +224,7 @@ export function LenderDocumentUpload({
                         <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
                         <div className="min-w-0">
                           <p className="font-medium text-sm truncate">{doc.file_name}</p>
-                          <p className="text-xs text-muted-foreground">{formatDate(doc.created_at)}</p>
+                          <p className="text-xs text-muted-foreground">{formatDateTimeShort(doc.created_at)}</p>
                         </div>
                       </div>
                       {doc.file_url && (

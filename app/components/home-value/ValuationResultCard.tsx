@@ -3,6 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { MapPin, Calendar, Percent, Sparkles } from "lucide-react"
+import { formatDateShort } from "@/lib/format/dates"
 
 interface ValuationResultCardProps {
   propertyAddress: string
@@ -32,14 +33,8 @@ export function ValuationResultCard({
       maximumFractionDigits: 0,
     }).format(value)
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr)
-    return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    })
-  }
+  // `formatDate` — same-body census, round 4 (2026-09-09, lane FC): DELETED,
+  // byte-identical to lib/format/dates.ts `formatDateShort` (imported above).
 
   // The badge names the method that actually produced the number. A range built
   // from a regional $/sqft rate is NOT a CMA and must not wear that badge —
@@ -138,7 +133,7 @@ export function ValuationResultCard({
           <div className="text-center">
             <div className="flex items-center justify-center gap-1 mb-1">
               <Calendar className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">{formatDate(generatedAt)}</span>
+              <span className="text-sm font-semibold">{formatDateShort(generatedAt)}</span>
             </div>
             <p className="text-xs text-muted-foreground">Generated</p>
           </div>

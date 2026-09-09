@@ -40,6 +40,11 @@ const KERNEL  = src("lib/kernel/listings.ts")
 const SCAN    = src("lib/documents/scan-uploaded-document.ts")
 const FINAL   = src("lib/esign-webhooks/finalize-packet.ts")
 const DOTLOOP = src("app/api/webhooks/dotloop/route.ts")
+// 2026-09-09 (wave 47, owner ruling "dotloop is not the only esign provider"): the loop-level
+// signature work moved out of the dotloop webhook into ONE provider-agnostic core that every
+// provider webhook and the doc-sync sweep call. The rule is asserted on the core, plus the
+// fact that dotloop reaches it.
+const ESIGN_CORE = src("lib/forms/esign-execution-loop.ts")
 const AUTOCR  = src("lib/workflow-orchestrator/chains/compliance-listing-auto-create.ts")
 
 console.log("══════════════════════════════════════════════════")
@@ -92,15 +97,15 @@ check("markAgreementSigned → agreement_executed", wired(ENGINE, "agreement_exe
 check("activateMLS refusal → activation_refused", wired(ENGINE, "activation_refused"))
 check("launchListing refusal → activation_refused", wired(KERNEL, "activation_refused"))
 check("finalize-packet webhook → agreement_executed", wired(FINAL, "agreement_executed"))
-check("dotloop webhook → agreement_executed", wired(DOTLOOP, "agreement_executed"))
+check("dotloop webhook → shared e-sign core → agreement_executed", /evaluateEnvelopeExecution\(/.test(DOTLOOP) && wired(ESIGN_CORE, "agreement_executed"))
 check("scanUploadedDocument → document_uploaded (the re-entry), guarded on doc.listing_id",
   wired(SCAN, "document_uploaded") && /listing_id\)\s*\{[\s\S]{0,200}runListingComplianceLoop/.test(SCAN))
 
 console.log("\n── 6 · no signature-time writer stamps coming_soon any more ──")
 check("finalize-packet writes stage_entered_at only after the signed transition",
   /update\(\{ stage_entered_at: now \}\)/.test(FINAL) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(FINAL))
-check("dotloop likewise",
-  /update\(\{ stage_entered_at: now \}\)/.test(DOTLOOP) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(DOTLOOP))
+check("the shared e-sign core likewise (dotloop delegates to it)",
+  /update\(\{ stage_entered_at: now \}\)/.test(ESIGN_CORE) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(ESIGN_CORE) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(DOTLOOP))
 check("the auto-create INSERT uses the START status constant, not the passed one",
   /STATUS_AT_LISTING_AGREEMENT_SIGNED/.test(AUTOCR) && !/STATUS_AFTER_LISTING_AGREEMENT_GATE/.test(AUTOCR))
 

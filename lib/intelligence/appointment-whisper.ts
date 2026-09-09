@@ -74,7 +74,12 @@ export async function resolveAssistantVoiceId(supabase: Svc, agentUserId: string
 /** Vendor seam: synthesize the brief → audio URL (or null → text fallback). */
 export type WhisperSynthesizer = (script: string, voiceId: string) => Promise<string | null>
 
-const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
+/** THE real synthesizer seam — same-body census, round 4 (2026-09-09, lane
+ *  FC). Exported (was module-private) so lib/kernel/commission-forecaster.ts
+ *  and lib/kernel/fire-drills.ts — which already imported the `WhisperSynthesizer`
+ *  TYPE from here — import this IMPLEMENTATION too instead of each pasting an
+ *  identical `realSynthesizer`/`defaultSynthesizer` const. */
+export const realSynthesizer: WhisperSynthesizer = async (script, voiceId) => {
   try {
     const { synthesizeSpeechStream } = await import("@/lib/voice/elevenlabs-tts")
     const res = await synthesizeSpeechStream({ text: script, voiceId })
