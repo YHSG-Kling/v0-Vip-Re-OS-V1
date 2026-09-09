@@ -1,6 +1,8 @@
 -- m616 — tax_categories.provider_account_id: NO FK ADDED (wave 47 re-verification)
 --
--- NOT APPLIED. Per CLAUDE.md §3, lanes write migrations; only the integrator
+-- NO-OP BY DESIGN (2026-09-09): this file carries NO DDL — it records the ruled omission of a
+-- foreign key on tax_categories.provider_account_id (an external QuickBooks/Xero chart-of-accounts
+-- id with no internal parent). There is nothing to apply; the claim proof reads it as a declaration.
 -- applies them. This file makes no schema change — it is the wave-47
 -- orphaned-child-census (OC1) verdict for this one column, written down where
 -- the next lane that meets it will look first, so it is re-derived once and
