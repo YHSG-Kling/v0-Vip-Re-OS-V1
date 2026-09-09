@@ -331,14 +331,14 @@ const ASSERTIONS: Assertion[] = [
     name: "LAUNCH_STAGES contains only real ListingStage values",
     run: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.APP, "LAUNCH_STAGES", "[", "]")
+      const block = balancedBlock(S.CORE, "LAUNCH_STAGES", "[", "]")
       if (!block || union.size === 0) return false
       const vals = stringLiterals(block)
       return vals.length > 0 && vals.every((v) => union.has(v))
     },
     detail: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.APP, "LAUNCH_STAGES", "[", "]") ?? ""
+      const block = balancedBlock(S.CORE, "LAUNCH_STAGES", "[", "]") ?? ""
       const bad = stringLiterals(block).filter((v) => !union.has(v))
       return bad.length ? `phantom stages: ${bad.join(", ")}` : `values = ${stringLiterals(block).join(", ")}`
     },
@@ -349,12 +349,15 @@ const ASSERTIONS: Assertion[] = [
     run: (S) => {
       // Construct: the identity helper is actually CALLED (an import alone proves
       // nothing), and no agentUserId is assigned straight off a .agent_id field.
-      const called = countCalls(S.APP, "resolveAgentRecordToUserId") >= 1
-      const substituted = /agentUserId\s*=\s*[^\n]*\.agent_id/.test(S.APP)
+      // Scoped to the SURVIVOR writer: the module has a second, unrelated call (the actor
+      // resolver in the gate), so a file-wide count could not be zeroed by the mutation.
+      const fn = functionBody(S.APP, "advanceListingStageService") ?? ""
+      const called = countCalls(fn, "resolveAgentRecordToUserId") >= 1
+      const substituted = /agentUserId\s*=\s*[^\n]*\.agent_id/.test(fn)
       return called && !substituted
     },
     detail: (S) =>
-      countCalls(S.APP, "resolveAgentRecordToUserId") < 1
+      countCalls(functionBody(S.APP, "advanceListingStageService") ?? "", "resolveAgentRecordToUserId") < 1
         ? "resolveAgentRecordToUserId is never called"
         : "an agentUserId is assigned directly from .agent_id",
   },

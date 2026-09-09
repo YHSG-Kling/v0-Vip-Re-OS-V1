@@ -166,6 +166,11 @@ const repurpose  = strip(rawRepurpose)
 const repurposeL = stripCommentsOnly(rawRepurpose)
 const utilsL     = stripCommentsOnly(rawUtils)
 const create     = strip(rawCreate)
+// requireCaller MOVED (2026-09-09, SAME-BODY census round 3): three byte-identical private
+// copies merged onto lib/auth/require-caller.ts:requireCaller (§1/§6); create-video-project.ts
+// imports it. The error-destructuring rule is asserted on the survivor, not on the import.
+const REQUIRE_CALLER = "lib/auth/require-caller.ts"
+const requireCallerSrc = strip(load(REQUIRE_CALLER))
 const createL    = stripCommentsOnly(rawCreate)
 const genScript  = strip(rawGenScript)
 const pollCronL  = stripCommentsOnly(rawPollCron)
@@ -535,7 +540,8 @@ console.log("\n[Layer 1 · defect fixes hold]")
   //     functions must destructure `error`.
   for (const [file, canonical, fns] of [
     [REPURPOSE_ACTIONS, repurpose, ["getRepurposedContentLogs", "deleteSnippet", "getSnippetById", "logRepurposedContent"]],
-    [CREATE_PROJECT, create, ["getVideoProject", "getVideoProjects", "getSocialAccountsForDistribution", "requireCaller", "requireProjectInCallerBrokerage"]],
+    [CREATE_PROJECT, create, ["getVideoProject", "getVideoProjects", "getSocialAccountsForDistribution", "requireProjectInCallerBrokerage"]],
+    [REQUIRE_CALLER, requireCallerSrc, ["requireCaller"]],
   ] as const) {
     for (const fn of fns) {
       const slice = body(canonical as string, fn)
