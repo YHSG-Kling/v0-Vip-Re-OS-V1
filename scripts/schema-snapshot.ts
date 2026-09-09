@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 703 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 702 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-04
+ * generated: 2026-09-09
  * source: public.live_schema_json()
- * body-sha256: 6676e05620e7ec8e4c3dc58b8f0c126197145fc8b579a00c106d5408477621e2
+ * body-sha256: 9cd0d162bd9c8effd1d04cf81f0cac0f575163e4c4cdf3133ae8a6e5ba635316
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -226,8 +226,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   connector_health_log: ["brokerage_id", "checked_at", "detail", "drifted", "error", "http_status", "id", "provider", "status", "transport"],
   connector_shape_memory: ["connector", "entity", "fingerprint", "first_seen_at", "hits", "id", "last_seen_at", "shape_keys"],
   contact_consent_events: ["agent_id", "brokerage_id", "consent_source", "consent_text", "consent_type", "consented", "contact_id", "created_at", "id", "ip_address", "lead_id", "user_agent"],
-  contact_enrichment_queue: ["attempts", "brokerage_id", "completed_at", "contact_id", "created_at", "error_message", "id", "last_attempt_at", "metadata", "source", "status"],
-  contact_lead_history: ["contact_agent_id", "contact_brokerage_id", "contact_id", "converted_at", "handed_to_agent_at", "isa_handoff_brief", "last_contacted_at", "lead_created_at", "lead_id", "lead_score", "lead_stage", "lifecycle_state", "motivation_confidence", "motivation_type", "qualification_summary", "source", "source_channel", "source_family", "source_subtype", "urgency_level"],
+  contact_lead_history: ["campaign_attribution_id", "contact_agent_id", "contact_brokerage_id", "contact_id", "converted_at", "handed_to_agent_at", "isa_handoff_brief", "last_contacted_at", "lead_created_at", "lead_id", "lead_score", "lead_stage", "lifecycle_state", "motivation_confidence", "motivation_type", "qualification_summary", "source", "source_channel", "source_family", "source_page_url", "source_subtype", "urgency_level", "utm_campaign", "utm_medium", "utm_source"],
   contact_memory: ["archived_at", "brokerage_id", "content", "created_at", "embedding", "entity_id", "entity_type", "id", "memory_kind", "metadata", "source_id", "source_table"],
   contact_notes: ["author_user_id", "body", "brokerage_id", "contact_id", "created_at", "id", "is_private", "updated_at"],
   contact_portal_modules: ["brokerage_id", "contact_id", "enabled_at", "enabled_by_agent_id", "id", "is_enabled", "module_key"],

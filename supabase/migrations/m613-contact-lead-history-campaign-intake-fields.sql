@@ -1,8 +1,7 @@
 -- m613 — contact_lead_history WIDENED WITH CAMPAIGN/INTAKE PROVENANCE
 --
--- Nothing in this file has been run against hrvaqgvukzxfskkcrwbt. Lanes write
--- migrations; only the integrator applies them and regenerates the schema
--- caches (CLAUDE.md §3/§7).
+-- APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-09 by the integrator (measured first:
+-- all five leads columns exist, the view had no dependents, 20 columns before).
 --
 -- ── WHY ────────────────────────────────────────────────────────────────────
 -- Owner ruling (2026-09-08, restating CLAUDE.md §5): "agents can't claim leads
@@ -40,11 +39,6 @@ SELECT
   l.source_family,
   l.source_channel,
   l.source_subtype,
-  l.source_page_url,
-  l.utm_source,
-  l.utm_medium,
-  l.utm_campaign,
-  l.campaign_attribution_id,
   l.lead_stage,
   l.lead_score,
   l.motivation_type,
@@ -56,7 +50,14 @@ SELECT
   l.converted_at,
   l.last_contacted_at,
   l.lifecycle_state,
-  l.created_at               AS lead_created_at
+  l.created_at               AS lead_created_at,
+  -- m613: appended AFTER the m039 columns — CREATE OR REPLACE VIEW only accepts
+  -- new columns at the END; inserting them mid-list is refused (42P16).
+  l.source_page_url,
+  l.utm_source,
+  l.utm_medium,
+  l.utm_campaign,
+  l.campaign_attribution_id
 FROM public.contacts c
 LEFT JOIN public.leads l ON l.contact_id = c.id;
 
