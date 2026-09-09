@@ -246,6 +246,10 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   // client documents belong to the contact, and a script is a marketing asset.
   { table: "activities", column: "listing_id", disposition: "detach", why: "the agent's activity history; owned by agent / contact / transaction" },
   { table: "client_documents", column: "listing_id", disposition: "detach", why: "owned by the contact; a disclosure or contract is a retention record" },
+  // m614 (2026-09-09) gave transaction_documents a LISTING lane for pre-contract packets
+  // (listing agreement, seller disclosures) synced from the e-sign provider before any
+  // transaction row exists. A signed packet outlives the listing it was signed for.
+  { table: "transaction_documents", column: "listing_id", disposition: "detach", why: "a synced pre-contract packet is a retention record owned by brokerage / contact; the listing pointer is how it is found later" },
   { table: "video_scripts_library", column: "listing_id", disposition: "detach", why: "a marketing asset owned by the brokerage / agent" },
   { table: "vendor_invoices", column: "listing_id", disposition: "detach", why: "owned by a vendor; a bill outlives the listing" },
   { table: "vendor_bookings", column: "listing_id", disposition: "detach", why: "owned by a vendor" },
