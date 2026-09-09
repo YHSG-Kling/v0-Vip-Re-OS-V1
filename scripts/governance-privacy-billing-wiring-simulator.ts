@@ -857,7 +857,7 @@ def({
 
 def({
   id: "forms.m614.migration-shapes-the-listing-lane",
-  what: "m614 exists (written, not applied) and gives transaction_documents a listing parent + the columns its writer already assumed",
+  what: "m614 gives transaction_documents a listing parent + the columns its writer already assumed (its applied/not-applied claim is NOT pinned — CLAUDE.md §2: a waypoint assertion fails the day the work finishes; test:migration-claim owns that claim)",
   file: F.migration614,
   mutate: [
     "CHECK (transaction_id IS NOT NULL OR listing_id IS NOT NULL)",
@@ -872,11 +872,10 @@ def({
     const relaxesTransactionId = /ALTER COLUMN transaction_id DROP NOT NULL/i.test(mig)
     const hasParentCheck = /CHECK\s*\(transaction_id IS NOT NULL OR listing_id IS NOT NULL\)/i.test(mig)
     const listingsGetProviderCols = /ALTER TABLE public\.listings[\s\S]{0,400}external_provider_source/i.test(mig)
-    const notApplied = !/^\s*--\s*APPLIED/im.test(mig) // m614 carries no such banner — the file itself is the proof it was never claimed applied
-    const ok = addsListingId && addsContactId && addsSignatureStatus && relaxesTransactionId && hasParentCheck && listingsGetProviderCols && notApplied
+    const ok = addsListingId && addsContactId && addsSignatureStatus && relaxesTransactionId && hasParentCheck && listingsGetProviderCols
     return {
       ok,
-      detail: `listing_id=${addsListingId} contact_id=${addsContactId} signature_status=${addsSignatureStatus} transaction_id-nullable=${relaxesTransactionId} parent-check=${hasParentCheck} listings-provider-cols=${listingsGetProviderCols} not-claimed-applied=${notApplied}`,
+      detail: `listing_id=${addsListingId} contact_id=${addsContactId} signature_status=${addsSignatureStatus} transaction_id-nullable=${relaxesTransactionId} parent-check=${hasParentCheck} listings-provider-cols=${listingsGetProviderCols}`,
     }
   },
 })
