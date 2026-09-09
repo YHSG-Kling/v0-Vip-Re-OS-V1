@@ -82,7 +82,11 @@ export async function sweepEsignDocSync(
       .limit(limit),
     supabase
       .from("transactions")
-      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id, offers!inner(provider_envelope_id)")
+      // transactions↔offers are joined by TWO FKs (transactions.offer_id → offers AND
+      // offers.transaction_id → transactions); a bare `offers(...)` embed is PGRST201 and
+      // kills the whole read (CLAUDE.md §3). The accepted offer a deal was opened FROM is
+      // the transactions.offer_id side.
+      .select("id, brokerage_id, buyer_contact_id, seller_contact_id, contact_id, offers!transactions_offer_id_fkey!inner(provider_envelope_id)")
       .not("stage", "eq", "closed")
       .is("external_provider_source", null)
       .not("offers.provider_envelope_id", "is", null)

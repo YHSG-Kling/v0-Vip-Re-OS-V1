@@ -96,7 +96,10 @@ export function parseSelectColumns(literal: string): string[] {
   // fully removed (a `[^)]*` regex stops at the first ')' and leaks inner columns).
   let cleaned = ""
   for (let i = 0; i < literal.length; ) {
-    const mm = literal.slice(i).match(/^([a-z_][a-z0-9_]*\s*:\s*)?[a-z_][a-z0-9_]*\s*(![a-z_]+)?\s*\(/i)
+    // `(![a-z_]+)?` admits ONE `!token`; PostgREST also allows `name!hint!inner(…)` (see
+    // parseEmbedTree, 2026-09-09) — without the second optional token that spelling was
+    // not stripped here and its relation name leaked into the COLUMN check as a phantom.
+    const mm = literal.slice(i).match(/^([a-z_][a-z0-9_]*\s*:\s*)?[a-z_][a-z0-9_]*\s*(![a-z_]+)?\s*(![a-z_]+)?\s*\(/i)
     if (mm) {
       const parenOpen = i + mm[0].length - 1
       const close = matchParen(literal, parenOpen)
@@ -519,9 +522,19 @@ export function parseEmbedNodes(literal: string): EmbedNode[] {
     if (!part) continue
     // `...relation(…)` is PostgREST's spread embed — same target resolution.
     const body = part.startsWith("...") ? part.slice(3).trim() : part
-    const m = body.match(/^(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*)\s*(?:!\s*([A-Za-z_]\w*))?\s*\(([\s\S]*)\)$/)
+    // PostgREST allows a disambiguation hint AND a join modifier on one embed —
+    // `offers!transactions_offer_id_fkey!inner(…)` — and that is the only spelling that
+    // is BOTH unambiguous on a two-FK pair and inner-joined. Until 2026-09-09 this regex
+    // admitted a single `!token`, so the two-token form was not recognised as an embed at
+    // all and fell through to the COLUMN check, which then accused `transactions.offers`
+    // of being a phantom column (found the day lib/transactions/esign-doc-sync-sweep.ts
+    // wrote the correct spelling). The hint is the first token that is not a join
+    // modifier; a bare `!inner` still carries no hint.
+    const m = body.match(/^(?:([A-Za-z_]\w*)\s*:\s*)?([A-Za-z_]\w*)\s*(?:!\s*([A-Za-z_]\w*))?\s*(?:!\s*([A-Za-z_]\w*))?\s*\(([\s\S]*)\)$/)
     if (!m) continue
-    out.push({ alias: m[1] ?? null, relation: m[2], hint: m[3] ?? null, inner: m[4] })
+    const tokens = [m[3], m[4]].filter((t): t is string => !!t)
+    const hint = tokens.find((t) => !EMBED_JOIN_MODIFIERS.has(t.toLowerCase())) ?? tokens[0] ?? null
+    out.push({ alias: m[1] ?? null, relation: m[2], hint, inner: m[5] })
   }
   return out
 }
@@ -1230,6 +1243,12 @@ function testPure() {
       jr("id, brokerages(name)", "contacts").joinRefs
         .some((j) => j.table === "contacts" && j.column === "brokerage_id") &&
       jr("id, brokerages(name)", "contacts").joinUnresolved === 0)
+    check("parseSelectColumns: a hint PLUS a join modifier embed is stripped whole — its relation name never reaches the column check",
+      (() => { const c = parseSelectColumns("id, offers!transactions_offer_id_fkey!inner(provider_envelope_id, status)"); return c.length === 1 && c[0] === "id" })(),
+      "expected only [id]")
+    check("joinRefs: a hint PLUS a join modifier (`offers!transactions_offer_id_fkey!inner(…)` off transactions) is parsed as ONE embed with the hint kept — the two-token spelling that the column check used to accuse as a phantom column",
+      (() => { const r = jr("id, offers!transactions_offer_id_fkey!inner(provider_envelope_id)", "transactions"); return r.joinRefs.some((j) => j.table === "transactions" && j.column === "offer_id") && r.joinUnresolved === 0 })(),
+      "hint+modifier embed must resolve to transactions.offer_id with nothing unresolved")
     check("joinRefs: a CONSTRAINT-NAME hint resolves through the counted ^<parent>_<col>_fkey$ fallback (agents!pattern_adoptions_agent_id_fkey)",
       jr("agents!pattern_adoptions_agent_id_fkey(id)", "pattern_adoptions").joinRefs
         .map((j) => `${j.table}.${j.column}`).join() === "pattern_adoptions.agent_id")
