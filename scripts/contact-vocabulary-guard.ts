@@ -288,7 +288,10 @@ console.log("\n[3 · promotion writers — contact_type and lifecycle_state are 
 const PROMOTION_WRITERS = [
   "lib/kernel/transactions.ts",
   "lib/transactions/stage-progression.ts",
-  "app/actions/listing-lifecycle-core.ts",
+  // 2026-09-09 (wave 46): handleSellerToLifetimeTransition MOVED from
+  // app/actions/listing-lifecycle-core.ts onto the surviving stage writer's module when the
+  // listing two-writer hazard was merged (§1) — the promotion write lives here now.
+  "lib/application/listing-lifecycle.ts",
 ]
 for (const rel of PROMOTION_WRITERS) {
   let src = ""
