@@ -288,6 +288,10 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   "ai_isa:relist_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "re-list recovery call"),
   // Shopping Agent → AI ISA: a rejected-offer same-day regroup call.
   "ai_isa:offer_rejection_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "post-rejection regroup call"),
+  // Data Steward → AI ISA: an appointment NO-SHOW. The no-show autopilot already proposes the
+  // gated re-book MESSAGE; the ISA additionally picks up a warm re-book CALL so the moment is
+  // not lost to a text nobody answers (wave 46 — the signal was feed-only until then).
+  "ai_isa:appointment_no_show": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "no-show re-book call"),
   // Shopping Agent → AI ISA: a stale/expired pre-approval re-qualification call.
   "ai_isa:stale_preapproval_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "financing re-qualification call"),
   // Shopping Agent → AI ISA: a fresh listing matches a saved buyer — a reverse-prospecting call.

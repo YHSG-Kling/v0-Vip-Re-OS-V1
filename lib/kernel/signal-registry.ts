@@ -142,6 +142,29 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
 
   // ── Manual CRM sync-out (Connection Center "Sync now") — Data Steward → Sphere ──
   contact_crm_synced:             { consumers: [], disposition: "feed_only", kind: "update", what: "the Data Steward pushed a contact OUT to the connected CRM via a MANUAL 'Sync a contact now' (sync-out only — nothing syncs back in). Announced to the Sphere Manager (lifetime-relationship owner) so the Command Center feed shows the record was mirrored to the external CRM. Feed-only: the push already completed, nothing for an automated consumer to do — and the AUTONOMOUS per-update sync stays silent to avoid feed spam, so ONLY the human-triggered manual sync surfaces here. Idempotent per (contact) via the bus dedupe" },
+  // ── Wave 46 (2026-09-09): readers built for emitted-only kernel events (lane EF), the
+  // ── autonomous disclosure / e-sign / newsletter / orchestrator loops (lanes EC/ED). All
+  // ── feed_only except the no-show hand-off, which the AI ISA consumes (a re-book call).
+  deal_health_score_updated:    { consumers: [], disposition: "feed_only", kind: "update", what: "a deal-health scan scored a deal below healthy — Deal Coordinator sees the drift before it becomes an at-risk alert (lib/kernel/event-reactor.ts D-octies)" },
+  deal_at_risk_detected:        { consumers: [], disposition: "feed_only", kind: "update", what: "the deal-health scan flagged a deal AT RISK — Deal Coordinator's cue to open the save huddle path" },
+  listing_health_score_updated: { consumers: [], disposition: "feed_only", kind: "update", what: "a listing-health scan scored a listing below healthy — Listing Concierge sees stalling early" },
+  listing_at_risk_detected:     { consumers: [], disposition: "feed_only", kind: "update", what: "the listing-health scan flagged a listing AT RISK — Listing Concierge's re-prospect cue" },
+  lead_sla_breached:            { consumers: [], disposition: "feed_only", kind: "update", what: "a lead's first-response SLA was breached — the AI ISA's dial queue is behind for this lead" },
+  buyer_fatigue_detected:       { consumers: [], disposition: "feed_only", kind: "alert",  what: "a buyer is showing search fatigue — Shopping Agent should slow the cadence, not push more homes" },
+  video_high_performer_detected:{ consumers: [], disposition: "feed_only", kind: "update", what: "a delivered video is outperforming — Asset Manager's cue to reuse the format (promotion stays gated via content_winner)" },
+  video_low_performer_detected: { consumers: [], disposition: "feed_only", kind: "update", what: "a delivered video is underperforming — Asset Manager's cue to retire the format" },
+  campaign_roi_updated:         { consumers: [], disposition: "feed_only", kind: "update", what: "a campaign's ROI was recomputed by Finance — Campaign Orchestrator sees the number the budget decision uses" },
+  subscription_cancelled:       { consumers: [], disposition: "feed_only", kind: "update", what: "a tenant subscription was cancelled — Finance Manager sees the churn moment the day it happens" },
+  social_post_failed:           { consumers: [], disposition: "feed_only", kind: "update", what: "a scheduled social post failed at the provider — Marketing Agent sees the miss instead of an empty slot" },
+  agent_license_failed:         { consumers: [], disposition: "feed_only", kind: "update", what: "a recruited agent's license verification failed — Compliance Officer must review before the seat goes live" },
+  appointment_no_show:          { consumers: ["ai_isa"], disposition: "handled", kind: "handoff", what: "an appointment was a no-show — the AI ISA picks up a warm re-book call (gated proposal, beside the autopilot's re-book message)" },
+  listing_stage_transition_failed:{ consumers: [], disposition: "feed_only", kind: "update", what: "a listing stage transition was refused by the gate — Listing Concierge sees what blocked it" },
+  sequence_paused_on_reply:     { consumers: [], disposition: "feed_only", kind: "update", what: "a nurture sequence paused because the contact replied — the AI ISA sees a live conversation to take over" },
+  disclosure_check_incomplete:  { consumers: [], disposition: "feed_only", kind: "update", what: "the autonomous disclosure check on an arriving transaction document came up short — Compliance Officer → Deal Coordinator (lib/compliance/disclosure-check-runner.ts)" },
+  event_processing_repeated_failure:{ consumers: [], disposition: "feed_only", kind: "update", what: "an orchestrator handler failed 3+ times in the last hour — Cron Manager → Data Steward (event_processing_log reader, lib/orchestrator/internal.ts)" },
+  newsletter_seo_score_low:     { consumers: [], disposition: "feed_only", kind: "update", what: "a scheduled newsletter was DEFERRED because its stored SEO score is under the send gate — Campaign Orchestrator → Marketing Agent (app/api/cron/publish-newsletters)" },
+  esign_loop_partially_signed:  { consumers: [], disposition: "feed_only", kind: "update", what: "a dotloop document.signed arrived but the loop is not fully executed — evalAnchorExecution held the ready-writes; Compliance Officer → Deal Coordinator" },
+
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */
