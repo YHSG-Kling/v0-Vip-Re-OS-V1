@@ -203,3 +203,38 @@ export async function requireContactAccess(contactId: string): Promise<ContactAc
 
   return { ok: false, error: "Forbidden" }
 }
+
+/** The `error` half of {@link ContactAccess}'s refusal branch, named so callers
+ *  don't have to re-derive it via `Extract<..., {ok:false}>["error"]`. */
+export type PortalAccessRefusal = Extract<ContactAccess, { ok: false }>["error"]
+
+/**
+ * THE GATE'S REFUSAL, SAID TO A BUYER. `requireContactAccess` answers in
+ * internal vocabulary ("Forbidden"), and a buyer told "Forbidden" learns
+ * nothing they can act on — every branch below names the NEXT MOVE, because a
+ * refusal that only says no is a dead end on a self-serve portal surface.
+ *
+ * Survivor for two byte-identical private copies (SAME BODY census round 3,
+ * 2026-09-09): app/actions/buyer-offer-tools.ts:107 and
+ * app/actions/portal-nl-search.ts:68. Deliberately a plain, non-async, EXPORTED
+ * function — a "use server" file's exports must all be async public endpoints
+ * (CLAUDE.md §4), so this pure sentence table could not stay in either of
+ * them; it lives here, next to the gate whose refusals it translates.
+ *
+ * The four answers are deliberately DISTINCT: "Access check failed" is a
+ * REFUSED READ (an outage) and "Forbidden" is a DECISION — telling a
+ * legitimate buyer they are signed in with the wrong account because a lookup
+ * was denied sends them to change something that was never wrong.
+ */
+export function accessRefusal(error: PortalAccessRefusal): string {
+  switch (error) {
+    case "Unauthorized":
+      return "Please sign in to your portal and try again."
+    case "Forbidden":
+      return "You're signed in with a different account than this page belongs to — sign in with the email your agent invited you at, or reply to their last message."
+    case "Contact not found":
+      return "We couldn't find your client record — reply to your agent's last message and they'll get this to the right place."
+    default:
+      return "We couldn't verify your account just now — please try again in a moment."
+  }
+}

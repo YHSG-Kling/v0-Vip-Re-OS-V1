@@ -14,29 +14,11 @@ import {
   type CtvTargeting,
 } from "@/lib/ads/ctv-campaign"
 import type { CtvDispatchResult } from "@/lib/providers/vibe"
+import { requireAdsActor as requireActor } from "@/lib/auth/require-caller"
 
-interface SessionActor {
-  userId: string
-  brokerageId: string
-}
-
-/** Resolve the signed-in user's brokerage; refuse when unauthenticated. */
-async function requireActor(): Promise<{ actor?: SessionActor; error?: string }> {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { error: "Not authenticated" }
-
-  const { data: profile, error } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (error) return { error: error.message }
-  if (!profile?.brokerage_id) return { error: "No brokerage on this account" }
-  return { actor: { userId: user.id, brokerageId: profile.brokerage_id } }
-}
+// TOMBSTONE: local requireActor merged onto lib/auth/require-caller.ts
+// requireAdsActor (imported above as `requireActor`) — §1/§6 SAME BODY census
+// round 3, 2026-09-09.
 
 export async function stageCtvCampaignAction(input: {
   listingId?: string | null

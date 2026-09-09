@@ -62,7 +62,6 @@ export {
 // ─── LISTING LIFECYCLE ────────────────────────────────────────────────────────
 export {
   scheduleListingAppointmentService,
-  updateListingStageService,
   advanceListingStageService,
   scheduleClosingGift,
   getListingTimelineService,

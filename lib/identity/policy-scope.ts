@@ -142,3 +142,25 @@ export async function resolvePolicyScopeAccess(): Promise<PolicyScopeAccess> {
     effectiveRole,
   }
 }
+
+/**
+ * Build the `or(...)` PostgREST clause for every (scope_type, scope_id) tuple
+ * a caller with this {@link PolicyScopeAccess} can read. Survivor for two
+ * byte-identical private copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/campaign-bundles.ts:103 and app/actions/channel-presets.ts:88 —
+ * both callers of resolvePolicyScopeAccess above, so the filter it builds
+ * belongs next to the access it reads.
+ */
+export function buildScopeFilters(access: PolicyScopeAccess): string[] {
+  const filters: string[] = []
+  if (access.canEditAgent && access.agentScopeId) {
+    filters.push(`and(scope_type.eq.agent,scope_id.eq.${access.agentScopeId})`)
+  }
+  for (const teamId of access.teamScopeIds) {
+    filters.push(`and(scope_type.eq.team,scope_id.eq.${teamId})`)
+  }
+  if (access.canEditBrokerage && access.brokerageScopeId) {
+    filters.push(`and(scope_type.eq.brokerage,scope_id.eq.${access.brokerageScopeId})`)
+  }
+  return filters
+}

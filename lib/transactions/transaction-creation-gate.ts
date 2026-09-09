@@ -207,16 +207,37 @@ export interface TransactionCreationGateParams {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function refuse(
+/**
+ * Build a refused gate result: `{allowed:false, refusals, reason, detail}`,
+ * with `reason` derived from `refusals` (never re-typed at a call site).
+ * Generic over `Detail` so both gates that share the `GateRefusal` vocabulary
+ * (this module's own TransactionCreationGateResult AND
+ * lib/listings/listing-activation-gate.ts's ListingActivationGateResult, which
+ * already imports GateRefusal/GateRequirement from here because "the owner
+ * ruled these are the SAME gate") can build their own shaped result off ONE
+ * function instead of each restating the four-field object literal.
+ *
+ * Survivor for two byte-identical private `refuse` copies (SAME BODY census
+ * round 3, 2026-09-09): this file's own (now a thin wrapper below) and
+ * lib/listings/listing-activation-gate.ts:170.
+ */
+export function buildGateRefusal<Detail>(
   refusals: GateRefusal[],
-  detail: TransactionCreationGateResult["detail"],
-): TransactionCreationGateResult {
+  detail: Detail,
+): { allowed: false; refusals: GateRefusal[]; reason: string; detail: Detail } {
   return {
     allowed: false,
     refusals,
     reason: refusals.map((r) => r.message).join(" "),
     detail,
   }
+}
+
+function refuse(
+  refusals: GateRefusal[],
+  detail: TransactionCreationGateResult["detail"],
+): TransactionCreationGateResult {
+  return buildGateRefusal(refusals, detail)
 }
 
 /**

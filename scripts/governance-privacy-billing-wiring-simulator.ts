@@ -22,7 +22,7 @@
 // closer inside a string literal. Where one is needed it is built by
 // concatenation, so a comment-stripper reading this file cannot swallow it.
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 
@@ -46,6 +46,12 @@ const F = {
   esignPoller: "app/components/forms/EsignStatusTracker.tsx",
   syncSurvivor:"lib/transactions/sync-from-provider.ts",
   portalDocs:  "app/portal/[contactId]/documents/page.tsx",
+  // m614 — the listing lane (this lane's build)
+  kernelForms: "lib/kernel/forms.ts",
+  esignSweep:  "lib/transactions/esign-doc-sync-sweep.ts",
+  esignRoute614: "app/api/cron/esign-doc-sync/route.ts",
+  cronDispatch:"lib/kernel/cron-dispatch.ts",
+  migration614:"supabase/migrations/m614-esign-doc-sync-needs-a-listing-lane-and-columns-code-already-assumes.sql",
   oversight:   "lib/platform/subscription-oversight.ts",
   // The GATED entry point to the oversight roster. The lib loader takes an
   // injected client and cannot hold a session gate, so the gate assertions live
@@ -785,6 +791,138 @@ def({
     return {
       ok: stillThere && survivorExists && survivorPersists && survivorWired,
       detail: `wrapper-kept=${stillThere} survivor-exists=${survivorExists} survivor-persists=${survivorPersists} survivor-wired=${survivorWired}`,
+    }
+  },
+})
+
+// ── m614: the listing lane the earlier pass named and left for this one ──────
+//
+// The RULE asserted below, not a waypoint: syncEsignDocsAction must delegate to
+// a PERSISTING core (never the fetch-only kernel function, which is gone), a
+// migration file must exist that gives transaction_documents a listing parent
+// and the columns its writer already assumed, the listing twin of the
+// persisting core must exist and actually upsert with listing_id, and the
+// autonomous sweep must be registered in CRON_REGISTRY and call both cores.
+
+function findMigration(slugPrefix: string): string | null {
+  const dir = resolve(ROOT, "supabase/migrations")
+  if (!existsSync(dir)) return null
+  const hit = readdirSync(dir).find((f) => f.startsWith(slugPrefix) && f.endsWith(".sql"))
+  return hit ? readFileSync(resolve(dir, hit), "utf8") : null
+}
+
+def({
+  id: "forms.syncEsignDocs.delegates-to-persisting-core-not-fetch-only",
+  what: "syncEsignDocsAction calls a PERSISTING core (never the deleted fetch-only kernel wrapper)",
+  file: F.forms,
+  mutate: [
+    "const result = await syncTransactionDocumentsFromProvider({",
+    "const result = await __disabled_syncTransactionDocumentsFromProvider({",
+  ],
+  run() {
+    const body = fnBody(src(F.forms), "syncEsignDocsAction")
+    const noKernelImport = !/\bsyncEsignDocuments\b/.test(src(F.forms))
+    // word-boundary anchored: a mutation prefixing the call name (e.g.
+    // `__disabled_syncTransactionDocumentsFromProvider`) must NOT still match —
+    // a bare substring test would let that mutation through unnoticed.
+    const callsTransactionCore = /(?<![\w])syncTransactionDocumentsFromProvider\s*\(/.test(body)
+    const callsListingCore = /(?<![\w])syncListingDocumentsFromProvider\s*\(/.test(body)
+    const branchesOnTransactionFirst = hasGuardBranch(body, /input\.transaction_id/, /(?<![\w])syncTransactionDocumentsFromProvider/)
+    return {
+      ok: noKernelImport && callsTransactionCore && callsListingCore && branchesOnTransactionFirst,
+      detail: `no-fetch-only-import=${noKernelImport} calls-transaction-core=${callsTransactionCore} calls-listing-core=${callsListingCore} transaction-branch-first=${branchesOnTransactionFirst}`,
+    }
+  },
+})
+
+def({
+  id: "forms.kernel.syncEsignDocuments-deleted-with-tombstone",
+  what: "the fetch-only duplicate is GONE from lib/kernel/forms.ts, with a tombstone naming its survivor",
+  file: F.kernelForms,
+  mutate: [
+    "// ─── (REMOVED) COMMAND 8: syncEsignDocuments ────────────────────────────────",
+    "export async function syncEsignDocuments() {}\n// ─── (REMOVED) COMMAND 8: syncEsignDocuments ────────────────────────────────",
+  ],
+  run() {
+    // gone: checked against STRIPPED source (§2) — a tombstone COMMENT naming
+    // syncEsignDocuments must not make the symbol read as still live.
+    const gone = !/export\s+async\s+function\s+syncEsignDocuments\b/.test(src(F.kernelForms))
+    // the tombstone itself lives IN a comment by construction, so it must be
+    // read from the RAW file, never the stripped one.
+    const rawFile = raw(F.kernelForms)
+    const tombstoneNamesSurvivor = /REMOVED[\s\S]{0,200}syncEsignDocuments/.test(rawFile) && /sync-from-provider/.test(rawFile)
+    return { ok: gone && tombstoneNamesSurvivor, detail: `symbol-gone=${gone} tombstone-names-survivor=${tombstoneNamesSurvivor}` }
+  },
+})
+
+def({
+  id: "forms.m614.migration-shapes-the-listing-lane",
+  what: "m614 exists (written, not applied) and gives transaction_documents a listing parent + the columns its writer already assumed",
+  file: F.migration614,
+  mutate: [
+    "CHECK (transaction_id IS NOT NULL OR listing_id IS NOT NULL)",
+    "CHECK (transaction_id IS NOT NULL)",
+  ],
+  run() {
+    const mig = findMigration("m614-")
+    if (!mig) return { ok: false, detail: "no supabase/migrations/m614-*.sql file found" }
+    const addsListingId = /ADD COLUMN IF NOT EXISTS listing_id\s+UUID REFERENCES public\.listings/i.test(mig)
+    const addsContactId = /ADD COLUMN IF NOT EXISTS contact_id\s+UUID REFERENCES public\.contacts/i.test(mig)
+    const addsSignatureStatus = /ADD COLUMN IF NOT EXISTS signature_status\s+JSONB/i.test(mig)
+    const relaxesTransactionId = /ALTER COLUMN transaction_id DROP NOT NULL/i.test(mig)
+    const hasParentCheck = /CHECK\s*\(transaction_id IS NOT NULL OR listing_id IS NOT NULL\)/i.test(mig)
+    const listingsGetProviderCols = /ALTER TABLE public\.listings[\s\S]{0,400}external_provider_source/i.test(mig)
+    const notApplied = !/^\s*--\s*APPLIED/im.test(mig) // m614 carries no such banner — the file itself is the proof it was never claimed applied
+    const ok = addsListingId && addsContactId && addsSignatureStatus && relaxesTransactionId && hasParentCheck && listingsGetProviderCols && notApplied
+    return {
+      ok,
+      detail: `listing_id=${addsListingId} contact_id=${addsContactId} signature_status=${addsSignatureStatus} transaction_id-nullable=${relaxesTransactionId} parent-check=${hasParentCheck} listings-provider-cols=${listingsGetProviderCols} not-claimed-applied=${notApplied}`,
+    }
+  },
+})
+
+def({
+  id: "forms.syncListingDocumentsFromProvider.exists-and-persists",
+  what: "the listing twin of the canonical writer exists and actually upserts transaction_documents with a listing_id",
+  file: F.syncSurvivor,
+  mutate: [
+    "export async function syncListingDocumentsFromProvider(",
+    "async function __disabled_syncListingDocumentsFromProvider(",
+  ],
+  run() {
+    const raw2 = src(F.syncSurvivor)
+    const exists = /export\s+async\s+function\s+syncListingDocumentsFromProvider\s*\(/.test(raw2)
+    const body = fnBody(raw2, "syncListingDocumentsFromProvider")
+    const readsListings = /\.from\(\s*["']listings["']\s*\)/.test(body)
+    const upsertsWithListingId = /\.from\(\s*["']transaction_documents["']\s*\)[\s\S]{0,120}\.upsert\(/.test(body) && /listing_id\s*:\s*input\.listingId/.test(body)
+    const stampsSync = /\.from\(\s*["']listings["']\s*\)[\s\S]{0,120}\.update\(/.test(body)
+    return {
+      ok: exists && readsListings && upsertsWithListingId && stampsSync,
+      detail: `exists=${exists} reads-listings=${readsListings} upserts-listing-id=${upsertsWithListingId} stamps-sync=${stampsSync}`,
+    }
+  },
+})
+
+def({
+  id: "forms.esignDocSync.cron-registered-and-calls-both-cores",
+  what: "the autonomous sweep is registered in CRON_REGISTRY and its route calls a sweeper that reaches both persisting cores",
+  file: F.cronDispatch,
+  mutate: [
+    '{ path: "/api/cron/esign-doc-sync",                 schedule: "17 */4 * * *" },',
+    "",
+  ],
+  run() {
+    const registered = /\{\s*path:\s*["']\/api\/cron\/esign-doc-sync["']/.test(src(F.cronDispatch))
+    const routeExists = existsSync(resolve(ROOT, F.esignRoute614))
+    const routeCallsSweep = /sweepEsignDocSync\s*\(/.test(src(F.esignRoute614))
+    const sweepExists = existsSync(resolve(ROOT, F.esignSweep))
+    const sweepCallsBoth =
+      /syncTransactionDocumentsFromProvider\s*\(/.test(src(F.esignSweep)) &&
+      /syncListingDocumentsFromProvider\s*\(/.test(src(F.esignSweep))
+    const sweepHasRefusedDiscriminant = /["']read_refused["']/.test(src(F.esignSweep))
+    return {
+      ok: registered && routeExists && routeCallsSweep && sweepExists && sweepCallsBoth && sweepHasRefusedDiscriminant,
+      detail: `registered=${registered} route-exists=${routeExists} route-calls-sweep=${routeCallsSweep} sweep-exists=${sweepExists} sweep-calls-both-cores=${sweepCallsBoth} refused-discriminant=${sweepHasRefusedDiscriminant}`,
     }
   },
 })

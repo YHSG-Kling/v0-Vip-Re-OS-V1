@@ -15,9 +15,9 @@ import {
   validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES,
   PLATFORM_CAPABILITIES, OVERRIDABLE_PLATFORM_ROLES, isOverridablePlatformRole,
   type CapabilityOverride, type OverridablePlatformRole, type PlatformCapability,
-  isPlatformSuperadminIdentity,
 } from "@/lib/platform/platform-staff-roster"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 
 // Map a platform role → the (user_type, platform_role) columns coherently. platform_role
 // carries the platform role for all staff; user_type is the CHECK-valid base type
@@ -31,15 +31,9 @@ function roleColumns(role: string): { user_type: string; platform_role: string }
   }
 }
 
-async function requireSuperadmin(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
-  if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireSuperadmin merged onto lib/auth/platform-guard.ts:91
+// requireSuperadmin (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
   try {

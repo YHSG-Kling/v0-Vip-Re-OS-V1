@@ -12,7 +12,7 @@
 // (which owns the auth read) and then act with the service client, because a portal contact cannot
 // read their own contacts row or write notifications under their RLS.
 import { createServiceClient } from "@/lib/supabase/service"
-import { requireContactAccess } from "@/lib/portal/require-contact-access"
+import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"
 import { buildOfferHelpAcknowledgement, type OfferHelpOutcome } from "@/lib/agents/offer-strategy-producer"
 
 /** A non-exported const is fine in a "use server" file — only EXPORTS must be async functions. */
@@ -100,22 +100,9 @@ async function recordPortalActivity(
   return true
 }
 
-/** THE GATE'S REFUSAL, SAID TO A BUYER. `requireContactAccess` answers in internal vocabulary
- *  ("Forbidden"), and a buyer told "Forbidden" learns nothing they can act on. Every branch below
- *  names the NEXT MOVE, because a refusal that only says no is a dead end on a self-serve surface.
- *  One mapper, shared by all four gated tools — a second auth pattern is what wave 14 removed. */
-function accessRefusal(error: "Unauthorized" | "Contact not found" | "Forbidden" | "Access check failed"): string {
-  switch (error) {
-    case "Unauthorized":
-      return "Please sign in to your portal and try again."
-    case "Forbidden":
-      return "You're signed in with a different account than this page belongs to — sign in with the email your agent invited you at, or reply to their last message."
-    case "Contact not found":
-      return "We couldn't find your client record — reply to your agent's last message and they'll get this to the right place."
-    default:
-      return "We couldn't verify your account just now — please try again in a moment."
-  }
-}
+// TOMBSTONE: local accessRefusal merged onto
+// lib/portal/require-contact-access.ts:accessRefusal (imported above) —
+// §1/§6 SAME BODY census round 3, 2026-09-09.
 
 type NotifyResult = { ok: boolean; reason?: "no_agent" | "write_failed" }
 

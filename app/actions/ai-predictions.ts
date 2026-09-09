@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
+import { resolveLeadVisibilityForSession } from "@/lib/auth/lead-visibility"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WHOSE INSIGHT IS THIS?
@@ -497,35 +498,41 @@ function calculateOptimalContactTime(behavioralData: unknown[]): string {
 // GET LEAD PREDICTION HISTORY
 // ============================================
 
+// WIRED (orphan doctrine §1.2, this lane). This was an orphan reader with no
+// UI caller — but not an empty one: ai_predictions carries live, wired writers
+// for entity_type lead/contact (detectClientChurn, analyzeConversation,
+// aiPropertyMatchGenius, massGenerateCMAs, findHiddenOpportunities,
+// mineSphereOfInfluence, findMarketArbitrage — all reached from real pages,
+// verified by grep), so the missing half was admission, not data. §5: leads
+// belong to the brokerage and agents never see leads — this now goes through
+// resolveLeadVisibilityForSession (lib/auth/lead-visibility.ts), THE single
+// answer to "may this actor reach leads" (LEAD_DESK_USER_TYPES + platform
+// staff), rather than the brokerage-only check this carried before, which
+// admitted every seat in the tenant, agents included — the identical IDOR
+// shape the tenant fix below closes on the OTHER axis. Wired to the lead-desk
+// "Lead Intelligence" panel (app/components/intelligence/LeadIntelligencePanel.tsx,
+// mounted only inside app/leads/page.tsx's `isAdminOrBroker` block).
 export async function getLeadPredictions(leadId: string) {
   const supabase = await createClient()
 
-  // TENANT — resolved the way THIS FILE's writer of these very rows resolves it
-  // (predictLeadConversion above: session user → users.brokerage_id). No new
-  // resolver is invented and no id space is crossed: `predictionReader.id` is a
-  // users.id and is read only against `users`.
+  // LEAD-DESK GATE, then TENANT. resolveLeadVisibilityForSession resolves the
+  // session itself (never a parameter — CLAUDE.md §4) and answers admission
+  // AND scope together; a caller who is not on the lead desk (an agent, a
+  // contact, an unresolved actor) gets `allowed:false` and reads nothing.
   //
-  // Why a predicate is needed at all, when RLS is on: `ai_predictions_select` is
+  // Why a brokerage predicate is STILL needed below, even with RLS on and the
+  // gate passed: `ai_predictions_select` is
   //   is_platform_admin() OR (brokerage_id IS NULL) OR has_brokerage_access(brokerage_id)
   // — the migration-029 escape. An untenanted prediction therefore matches for
-  // EVERY caller of every brokerage, so this read had no tenant boundary at all;
-  // the only thing between one tenant's deal-close call and another's was a uuid.
-  const {
-    data: { user: predictionReader },
-  } = await supabase.auth.getUser()
-  if (!predictionReader) return []
-  const { data: readerRow, error: readerError } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", predictionReader.id)
-    .maybeSingle()
-  // supabase-js RESOLVES a refused read, so the error is destructured: a refusal
-  // and "no such user" arrive identically, and widening on either is the defect.
-  if (readerError) {
-    console.error("[ai-predictions] getLeadPredictions: caller lookup refused:", readerError.message)
-    return []
-  }
-  const readerBrokerageId = (readerRow?.brokerage_id as string | null) ?? null
+  // EVERY caller of every brokerage, so the read still had no tenant boundary
+  // of its own; the only thing between one tenant's deal-close call and
+  // another's was a uuid.
+  const visibility = await resolveLeadVisibilityForSession(supabase)
+  if (!visibility.allowed) return []
+  // Platform-staff scope carries no single brokerage (§4: "platform sees all
+  // tenants") — this reader has no cross-tenant surface to serve that from, so
+  // it refuses rather than guessing which tenant's predictions to widen into.
+  const readerBrokerageId = visibility.scope.kind === "platform" ? null : visibility.scope.brokerageId
   if (!readerBrokerageId) return []
 
   const { data, error } = await supabase
@@ -553,69 +560,67 @@ export async function getLeadPredictions(leadId: string) {
 }
 
 // ============================================
-// GET PREDICTIVE LEAD SCORE
+// (REMOVED) GET PREDICTIVE LEAD SCORE
 // ============================================
-
-// UNWIRED BY CONSEQUENCE, not by choice: its only writer is predictLeadConversion
-// above, which is deliberately unwired, and predictive_lead_scores_select requires
-// is_lead_visible_role() (broker/admin only) so an agent surface could not read it
-// even once rows exist. Wiring this before its writer would ship a card that is
-// empty by construction.
-/**
- * ── UNGATED PUBLIC ENDPOINT, FIXED (BURN-C, 2026-09-04) ──────────────────────
- *
- * This is a `"use server"` export, so it is a PUBLIC HTTP ENDPOINT (CLAUDE.md
- * §4) — and it carried NO gate of any kind: no session check, and a query
- * predicated on `lead_id` alone. Anyone able to reach the endpoint with a lead
- * uuid read that lead's conversion probability, predicted deal size and
- * timeline, whichever tenant it belonged to. That is the IDOR shape §4 names,
- * on data §5 puts at the brokerage level.
- *
- * `predictive_lead_scores` carries `brokerage_id` (schema-snapshot), so the
- * boundary was available and simply unused. The gate is the one its sibling
- * getLeadPredictions already uses — session user → users.brokerage_id, ANDed as
- * its own `.eq` term (never inside an `.or()`, which would widen), and `.eq`
- * also excludes NULL so an untenanted row cannot leak the way migration-029's
- * escape lets `ai_predictions` rows leak. One spelling for the resolver (§6).
- *
- * FAILS CLOSED: no session, a refused caller lookup, or a caller with no
- * brokerage all return null — "nobody checked" must never render as "checked and
- * fine".
- */
-export async function getPredictiveLeadScore(leadId: string) {
-  const supabase = await createClient()
-
-  const { data: { user: scoreReader } } = await supabase.auth.getUser()
-  if (!scoreReader) return null
-  const { data: scoreReaderRow, error: scoreReaderError } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", scoreReader.id)
-    .maybeSingle()
-  // supabase-js RESOLVES a refused read: a refusal and "no such user" arrive
-  // identically, and widening on either is the defect this fix removes.
-  if (scoreReaderError) {
-    console.error("[ai-predictions] getPredictiveLeadScore: caller lookup refused:", scoreReaderError.message)
-    return null
-  }
-  const scoreReaderBrokerageId = (scoreReaderRow?.brokerage_id as string | null) ?? null
-  if (!scoreReaderBrokerageId) return null
-
-  const { data, error } = await supabase
-    .from("predictive_lead_scores")
-    .select("*")
-    .eq("brokerage_id", scoreReaderBrokerageId)
-    .eq("lead_id", leadId)
-    .maybeSingle()
-
-  if (error) {
-    console.error("[v0] Error fetching predictive score:", error)
-    return null
-  }
-
-  return data
-}
-
+//
+// DELETED (orphan doctrine §1.3, this lane) — the functionality already lives
+// elsewhere, on tables with real writers, and predictive_lead_scores never
+// will. This reader's ONLY writer is predictLeadConversion (line ~145 above),
+// which stays DELIBERATELY, PERMANENTLY unwired per the owner's "no third lead
+// scorer" ruling — that function's own header names the collision explicitly:
+// standing it up would be "a third independent model of the same subject", a
+// rival verdict on "will this lead convert" against the two scorers that
+// already own that question. predictive_lead_scores therefore holds, and will
+// keep holding, ZERO rows on the live database — this function could only
+// ever return null. Its own comment already said as much ("wiring this before
+// its writer would ship a card that is empty by construction"); the doctrine's
+// answer to a permanently-empty reader is not "wire it anyway", it is "delete,
+// naming where the capability actually lives" — and every field this read
+// exposed has a live home:
+//
+//   conversion_probability / predicted_conversion_date
+//     → contacts.ai_conversion_probability / .ai_predicted_close_date, written
+//       by app/actions/ai-lead-nurturing.ts:aiPredictConversion — the ONE
+//       conversion forecast an agent can reach (its own comment at
+//       app/crm/components/os/conversion-forecast-panel.tsx:1 names exactly
+//       this rejection: predictive_lead_scores' RLS admits broker/admin only,
+//       so a card fed from it would be empty on every agent screen).
+//   overall_ai_score / score_tier
+//     → lead_scores.score / contacts.lead_temperature, written by the
+//       CANONICAL scorer lib/services/lead-management.service.ts:
+//       calculateLeadScore (read back through app/actions/ai-auto-response.ts:
+//       getLeadScore) — see lib/lead-scoring/LAYERING.md rule 4: "do not
+//       create a fifth top-level scorer".
+//   recommended_actions / personalized_approach
+//     → app/actions/ai-lead-scoring.ts:scoreLeadWithAI's nextBestAction /
+//       priorities / reasoning (Layer 2, LAYERING.md) — persona, timeline
+//       bucket and risk-of-loss already live here too (buyerPersona,
+//       predictedTimeline, riskOfLoss), so persona/timeline/risk are not a
+//       gap either.
+//   best_communication_channel / optimal_contact_time
+//     → contacts.preferred_channel / .preferred_contact_time — a LIVE, heavily
+//       written and read field (lib/ai-isa/*, lib/compliance/
+//       contact-channel-gate.ts), not a stub. This read would have been a
+//       SECOND, always-empty spelling of a field that already answers the
+//       question.
+//
+// predicted_deal_size had no exact live twin — the one field genuinely unique
+// to this table — but it can never surface either while its sole writer stays
+// unwired, and inventing a NEW deal-size predictor to retire this comment
+// would be exactly the "third scorer" collision the owner ruled against.
+// Unresolved, recorded rather than guessed: if the brokerage ever wants a
+// deal-size forecast, it is a factor on an EXISTING layer (LEAD-DESK-visible,
+// LEAD_DESK_USER_TYPES-gated), never a new table with its own writer.
+//
+// getLeadPredictions (below) is NOT deleted alongside this — unlike
+// predictive_lead_scores, ai_predictions has real, wired, LIVE writers for
+// entity_type lead/contact (detectClientChurn, analyzeConversation,
+// aiPropertyMatchGenius, massGenerateCMAs, findHiddenOpportunities,
+// mineSphereOfInfluence, findMarketArbitrage — all reachable from real UI
+// callers, verified by grep), so it is a genuine prediction-history reader
+// with something to read, not a reader of a permanently-empty table. It is
+// wired below to a LEAD_DESK_USER_TYPES-gated surface instead.
+//
 // ============================================
 // BATCH PREDICT FOR MULTIPLE LEADS
 // ============================================

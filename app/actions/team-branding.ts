@@ -93,6 +93,7 @@ import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { parseCapAmountInput, ensureTeamCapWindows } from "@/lib/commission/cap-resolver"
 import { revalidatePath } from "next/cache"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 /**
  * THE ALLOW-LISTS. `teams` also carries tenancy (`brokerage_id`,
@@ -539,13 +540,9 @@ const SIGNATURE_ALLOWED_LIST = Object.keys(SIGNATURE_TAGS)
   .map((t) => `<${t}>`)
   .join(" ")
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 /** One tag, with quoted attribute values only. Anchored at the `<`. */
 const TAG_RE = /^<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:\s+[a-zA-Z][a-zA-Z0-9-]*(?:\s*=\s*(?:"[^"<>]*"|'[^'<>]*'))?)*)\s*(\/?)>/

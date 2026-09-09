@@ -13,6 +13,11 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  mapWorkflowWebhookEventRow,
+  type WorkflowWebhookEventDbRow,
+  type InboundWorkflowEventViewShape,
+} from "@/lib/workflow/inbound-event-view"
 import { isTenancyPrincipal } from "@/lib/kernel/tenancy-principal"
 import { TIER_LABELS, isCanonicalTier } from "@/lib/kernel/tier-role-matrix"
 import { generateAgentToken, hashAgentToken } from "@/lib/agentic-os/agent-credentials"
@@ -262,6 +267,39 @@ export async function listWebhookDeliveries(limit = 50): Promise<
       deliveredAt: (r.delivered_at as string | null) ?? null,
       nextAttemptAt: (r.next_attempt_at as string | null) ?? null,
     })),
+  }
+}
+
+// ─── Inbound workflow events (workflow_webhook_events reader) ───────────────
+//
+// READER (orphan doctrine §1.2). app/api/workflow/trigger/route.ts logs every
+// inbound trigger POST here (source, event_type, contact_id, payload,
+// received_at — schema-snapshot.ts:733) for audit, and nothing ever read the
+// 5 columns back — a tenant who wired GHL/IDX/Zapier/a QR scan into their own
+// signing secret had no way to see whether an inbound trigger actually
+// arrived, only whether the RESULTING sequence enrollment (a downstream
+// effect) happened to exist. This is the same "developers" surface as the
+// OUTBOUND webhook deliveries above — the inbound half of the same
+// self-serve automation rail — gated the same way (principalGate, tenant
+// from the SESSION, never a parameter).
+
+export type InboundWorkflowEventView = InboundWorkflowEventViewShape
+
+export async function listInboundWorkflowEvents(limit = 50): Promise<
+  { ok: true; rows: InboundWorkflowEventView[] } | { ok: false; error: string }
+> {
+  const gate = await principalGate()
+  if (!gate) return { ok: false, error: "Only the tenancy principal can view inbound workflow events" }
+  const { data, error } = await gate.svc
+    .from("workflow_webhook_events")
+    .select("id, source, event_type, contact_id, payload, received_at")
+    .eq("brokerage_id", gate.brokerageId)
+    .order("received_at", { ascending: false })
+    .limit(Math.max(1, Math.min(200, limit)))
+  if (error) return { ok: false, error: error.message }
+  return {
+    ok: true,
+    rows: ((data ?? []) as WorkflowWebhookEventDbRow[]).map(mapWorkflowWebhookEventRow),
   }
 }
 

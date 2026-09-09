@@ -37,46 +37,14 @@ import {
   type SellerContext,
   type ShowingFeedback,
 } from "@/lib/portal/resolve-seller-context"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
-// ─── Auth helper ──────────────────────────────────────────────────────────────
-// Returns ok=true only if the authed caller is either the contact themselves
-// or an agent/admin in the contact's brokerage. Also returns the contact's
-// brokerage_id so downstream queries can scope safely.
-async function requireContactAccess(contactId: string): Promise<
-  | { ok: true; userId: string; brokerageId: string; isContactSelf: boolean }
-  | { ok: false }
-> {
-  const authClient = await createClient()
-  const { data: { user: authUser } } = await authClient.auth.getUser()
-  if (!authUser) return { ok: false }
-
-  const svc = createServiceClient()
-  const { data: contact } = await svc
-    .from("contacts")
-    .select("brokerage_id, contact_user_id, email")
-    .eq("id", contactId)
-    .maybeSingle()
-  if (!contact || !contact.brokerage_id) return { ok: false }
-
-  const isContactSelf =
-    contact.contact_user_id === authUser.id ||
-    !!(contact.email && authUser.email && contact.email.toLowerCase() === authUser.email.toLowerCase())
-
-  if (isContactSelf) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: true }
-  }
-
-  // Otherwise must be an agent/admin in the same brokerage
-  const { data: callerRow } = await svc
-    .from("users").select("brokerage_id, user_type").eq("id", authUser.id).maybeSingle()
-  // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
-  // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
-  if (callerRow?.brokerage_id === contact.brokerage_id && ["agent","team_lead","tc","admin","broker","broker_owner"].includes(((callerRow as any)?.user_type) ?? "")) {
-    return { ok: true, userId: authUser.id, brokerageId: contact.brokerage_id, isContactSelf: false }
-  }
-
-  return { ok: false }
-}
+// TOMBSTONE: local requireContactAccess merged onto
+// lib/portal/require-contact-access.ts:107 requireContactAccess (imported
+// above) — §1/§6 SAME BODY census round 3, 2026-09-09. The survivor also
+// destructures `error` on both reads (§3) and additionally recognises an
+// accepted, unexpired portal_contact_invites row as "the contact themselves",
+// which this copy did not.
 
 // ─── SELLER CONTEXT ───────────────────────────────────────────────────────────
 

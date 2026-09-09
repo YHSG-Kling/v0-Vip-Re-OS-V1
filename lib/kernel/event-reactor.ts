@@ -20,6 +20,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { enrollMatchingSequences, writePortalUpdate } from "@/lib/kernel/event-fanout"
 import { resolveEventContacts } from "@/lib/kernel/resolve-event-contacts"
+import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // Valid KernelEvent string values — used to gate sequence enrollment + portal so a non-KernelEvent
@@ -790,6 +791,368 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
     } catch (err) {
       console.error("[event-reactor] open-house announce dispatch failed:", err)
+    }
+  }
+
+  // (D-octies) CROSS-MANAGER SIGNALS — kernel-event census round 3 (2026-09-09, lane EF).
+  //
+  // scripts/kernel-event-census-z1.ts classified these FIFTEEN KernelEvent members
+  // "emitted only": a real emitter fires them (verified against each call site below),
+  // and lifecycle_events records them, but nothing downstream ever reacted — the
+  // insight was generated and then discarded. Per CLAUDE.md §1.2 (no duplicate exists,
+  // the capability is wanted → BUILD) and the owner's ruling ("this OS runs autonomous
+  // loops; every capability should run autonomously... rather than waiting for a
+  // button"), each now publishes a manager_signals row (lib/kernel/manager-signals.ts,
+  // the inter-manager bus) addressed to the manager whose domain should act on it. A
+  // signal is NOT an outbound send and NOT spend — publishManagerSignal only inserts a
+  // row the addressed manager's own loop later reads (consumeManagerSignals) and acts
+  // on through its OWN gated deliverable path; nothing here dispatches anything.
+  // Idempotent per (toManager, signalType, entityId) — publishManagerSignal dedupes any
+  // still-open signal, so a re-emitted/retried event never doubles the inbox.
+  //
+  // Every block is best-effort and independently caught — a signal-publish failure must
+  // never turn an event emission into a thrown error for whatever produced it.
+  if (params.brokerageId) {
+    // 1/2 — deal-health scan (app/api/cron/deal-health-scan/route.ts). Fires per scored
+    // transaction; only signal when the score is not healthy, so a clean scan doesn't
+    // spam Deal Coordinator's inbox every 6 hours.
+    if (params.event === KernelEvent.DEAL_HEALTH_SCORE_UPDATED) {
+      const riskLevel = (params.metadata as { risk_level?: string } | undefined)?.risk_level
+      if (riskLevel && riskLevel !== "healthy") {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "deal_coordinator",
+            signalType:  "deal_health_score_updated",
+            message:     `Transaction health score updated — risk level "${riskLevel}".`,
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     params.metadata ?? {},
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+    }
+    if (params.event === KernelEvent.DEAL_AT_RISK_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "deal_at_risk_detected",
+          message:     "A transaction crossed into at-risk/critical health.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3/4 — listing-health scan (lib/listing-health/health-scorer.ts). Same shape as the
+    // deal-health pair above, addressed to Listing Concierge instead.
+    if (params.event === KernelEvent.LISTING_HEALTH_SCORE_UPDATED) {
+      const riskLevel = (params.metadata as { risk_level?: string } | undefined)?.risk_level
+      if (riskLevel && riskLevel !== "healthy") {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "listing_health_score_updated",
+            message:     `Listing health score updated — risk level "${riskLevel}".`,
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     params.metadata ?? {},
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+    }
+    if (params.event === KernelEvent.LISTING_AT_RISK_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "listing_at_risk_detected",
+          message:     "A listing crossed into at-risk/critical health.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — SLA breach (lib/lead-governance/stale-lead-processor.ts). AI ISA owns lead
+    // qualification/nurture and is the manager positioned to re-work a breached lead.
+    if (params.event === KernelEvent.LEAD_SLA_BREACHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_sla_breached",
+          message:     "A lead SLA target was missed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — buyer fatigue (lib/fatigue/fatigue-calculator.ts). Shopping Agent owns the
+    // buyer journey and should throttle/vary outreach before the buyer disengages.
+    if (params.event === KernelEvent.BUYER_FATIGUE_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "shopping_agent",
+          signalType:  "buyer_fatigue_detected",
+          message:     "A buyer's engagement signals show fatigue.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7/8 — video performance thresholds (app/api/video/engagement/route.ts). Campaign
+    // Orchestrator tracks content performance; Asset Manager owns the media library and
+    // decides whether to repurpose a high performer or retire a low one.
+    if (params.event === KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "video_high_performer_detected",
+          message:     "A video cleared the high-performer thresholds — consider repurposing it.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.VIDEO_LOW_PERFORMER_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "video_low_performer_detected",
+          message:     "A video fell below the low-performer thresholds — consider retiring or re-cutting it.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 9 — campaign ROI (lib/campaigns/roi-calculator.ts). Finance Manager tracks P&L and
+    // hands the read to Campaign Orchestrator, who owns the campaign that earns/spends it.
+    if (params.event === KernelEvent.CAMPAIGN_ROI_UPDATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "finance_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "campaign_roi_updated",
+          message:     "A campaign's ROI figures were recalculated.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — subscription cancelled (app/actions/billing.ts). Finance Manager owns the
+    // brokerage's books and subscription state.
+    if (params.event === KernelEvent.SUBSCRIPTION_CANCELLED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "subscription_cancelled",
+          message:     "The brokerage's subscription was cancelled.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 11 — social post publish failure (app/api/cron/publish-social-posts/route.ts).
+    // Campaign Orchestrator owns the schedule; Marketing Manager owns the brand/promotion
+    // channel that needs a human or a retry.
+    if (params.event === KernelEvent.SOCIAL_POST_FAILED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "marketing_agent",
+          signalType:  "social_post_failed",
+          message:     "A scheduled social post failed to publish.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 12 — agent license verification failure (lib/onboarding/license-verifier.ts).
+    // Recruiting Manager owns onboarding; Compliance Officer owns regulatory governance
+    // and is who can actually clear a license exception.
+    if (params.event === KernelEvent.AGENT_LICENSE_FAILED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "agent_license_failed",
+          message:     "An agent's license verification failed and needs manual review.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13 — appointment no-show (lib/kernel/appointment-noshow-autopilot.ts). That module
+    // already proposes a gated warm re-book message to the CONTACT; this additionally
+    // tells AI ISA (lead re-engagement) at the manager level so the no-show shows up in
+    // its queue even if the per-contact deliverable is never approved.
+    if (params.event === KernelEvent.APPOINTMENT_NO_SHOW) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "appointment_no_show",
+          message:     "A scheduled appointment was a no-show.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 14 — listing stage transition refused (lib/listing-lifecycle/lifecycle-logger.ts).
+    // Listing Concierge owns the seller side and needs to know a machine-gated move was
+    // blocked, not just that nothing happened.
+    if (params.event === KernelEvent.LISTING_STAGE_TRANSITION_FAILED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "listing_stage_transition_failed",
+          message:     "A listing stage transition was refused by the state machine.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 15 — sequence auto-paused on an inbound reply (lib/communication-spine/ingest-message-service.ts).
+    // Campaign Orchestrator owns the sequence that paused; AI ISA owns the live
+    // conversation the reply just started and should pick it up.
+    if (params.event === KernelEvent.SEQUENCE_PAUSED_ON_REPLY) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "ai_isa",
+          signalType:  "sequence_paused_on_reply",
+          message:     "A nurture sequence paused because the contact replied.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-novies) DISCLOSURE COMPLIANCE — AUTONOMOUS, on a transaction document
+  // arriving. Owner ruling: this OS runs autonomous loops; every capability
+  // should run on a manager signal / cron / kernel event rather than waiting
+  // for someone to open the transaction and press "Check Disclosures". Both
+  // KernelEvent.DOCUMENT_RECEIVED (app/actions/documents.ts::uploadDocument,
+  // the live client_documents upload+classify path) and
+  // KernelEvent.DOCUMENT_UPLOADED carry a transactionId when the document
+  // belongs to a deal; only that case runs the check — an untenanted or
+  // transaction-less upload (e.g. a vendor job document) has nothing for a
+  // disclosure checklist to grade.
+  //
+  // Runs the SAME implementation the manual action calls (§6) —
+  // lib/compliance/disclosure-check-runner.ts — so there is exactly one
+  // disclosure-check verdict, never two. Best-effort: a failed autonomous run
+  // must never break the upload that triggered it.
+  const DOCUMENT_UPLOAD_EVENTS: string[] = [KernelEvent.DOCUMENT_RECEIVED, KernelEvent.DOCUMENT_UPLOADED]
+  if (params.brokerageId && DOCUMENT_UPLOAD_EVENTS.includes(params.event)) {
+    try {
+      const meta = (params.metadata as Record<string, unknown> | null | undefined) ?? {}
+      const transactionId =
+        params.transactionId ||
+        (typeof meta.transaction_id === "string" && meta.transaction_id.length > 0 ? meta.transaction_id : null)
+
+      if (transactionId) {
+        const { data: txn } = await svc
+          .from("transactions")
+          .select("property_state")
+          .eq("id", transactionId)
+          .eq("brokerage_id", params.brokerageId)
+          .maybeSingle()
+
+        // No property_state on file — refuse rather than guess a jurisdiction
+        // (§4 fail closed: "nobody checked" must never render as "checked and
+        // fine", and a disclosure list for the wrong state is worse than none).
+        if (txn?.property_state) {
+          const { runDisclosureComplianceCheck } = await import("@/lib/compliance/disclosure-check-runner")
+          const check = await runDisclosureComplianceCheck(svc, {
+            transactionId,
+            brokerageId: params.brokerageId,
+            userId: params.agentUserId ?? null,
+            state: txn.property_state,
+          })
+
+          if (!check.success) {
+            console.error(`[event-reactor] autonomous disclosure check failed for transaction ${transactionId}: ${check.error}`)
+          } else if ((check.missingDisclosures?.length ?? 0) > 0 || (check.complianceScore ?? 100) < 100) {
+            // Incomplete — signal deal_coordinator (owns the deal file/tasks)
+            // rather than silently leaving the checklist for someone to find.
+            // Never marks anything "ready" here; that verdict belongs to the
+            // deal's own readiness gates, which read compliance_checklists.
+            const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+            await publishManagerSignal(
+              {
+                brokerageId: params.brokerageId,
+                fromManager: "compliance_officer",
+                toManager: "deal_coordinator",
+                signalType: "disclosure_check_incomplete",
+                message:
+                  `Disclosure compliance is at ${check.complianceScore ?? 0}% on this deal` +
+                  (check.missingDisclosures?.length ? ` — missing: ${check.missingDisclosures.join(", ")}` : ""),
+                entityType: "transaction",
+                entityId: transactionId,
+                payload: {
+                  complianceScore: check.complianceScore ?? null,
+                  missingDisclosures: check.missingDisclosures ?? [],
+                  issues: check.issues ?? [],
+                },
+              },
+              svc,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[event-reactor] autonomous disclosure check dispatch failed:", err)
     }
   }
 

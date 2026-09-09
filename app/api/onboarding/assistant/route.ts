@@ -51,6 +51,27 @@ export async function POST(request: Request) {
       }
     }
 
+    // READER for onboarding_ai_chats.question / .ai_response (readerless-write-
+    // census) — this agent's own prior Q&A, tenant- and agent-scoped from the
+    // session (§4), explicit columns. Without this the assistant re-answered
+    // the same question from scratch every turn and could contradict its own
+    // earlier answer to the same agent.
+    const { data: priorChats } = await supabase
+      .from('onboarding_ai_chats')
+      .select('question, ai_response, created_at')
+      .eq('agent_id', agentId)
+      .eq('brokerage_id', brokerageId)
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    let memoryContext = ''
+    if (priorChats && priorChats.length > 0) {
+      const turns = [...priorChats].reverse()
+        .map((c) => `Q: ${c.question}\nA: ${c.ai_response}`)
+        .join('\n\n')
+      memoryContext = `\n\nPrior questions this agent has already asked you (do not repeat these answers verbatim — build on them):\n${turns}`
+    }
+
     // Fire SETUP_ASSISTANT_QUERY_MADE kernel event — audit row + reactor.
     await emitKernelEvent({
       brokerageId,
@@ -63,7 +84,7 @@ export async function POST(request: Request) {
     const systemPrompt = `You are a helpful setup assistant for this real-estate platform. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
 Context:
-${kbContext || 'No specific documentation found for this query.'}`
+${kbContext || 'No specific documentation found for this query.'}${memoryContext}`
 
     // Routed streaming entry — routing table picks the model, the fair-use cap
     // is checked BEFORE streaming, and the cost ledger is written on finish.

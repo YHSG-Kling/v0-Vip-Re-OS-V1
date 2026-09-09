@@ -6,23 +6,16 @@
 // channels). Marketing-staff-gated (capability map), audited; drafts move
 // draft → approved → posted (permalink recorded when it actually goes out).
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { canTransitionDraft, isDraftStatus, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
-import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { requireMarketing } from "@/lib/auth/platform-guard"
 
-async function requireMarketing(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
-  if (!platformStaffCan(role, "marketing")) return { ok: false, error: "Forbidden — platform marketing access required" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireMarketing merged onto lib/auth/platform-guard.ts
+// requireMarketing (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
   try {

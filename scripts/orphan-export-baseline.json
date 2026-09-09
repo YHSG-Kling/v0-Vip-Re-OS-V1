@@ -1,17 +1,14 @@
 {
   "files": {
-    "app/actions/accounting-sync.ts": 1,
     "app/actions/ai-contract-review.ts": 1,
-    "app/actions/ai-document-intelligence.ts": 1,
-    "app/actions/ai-predictions.ts": 4,
+    "app/actions/ai-predictions.ts": 2,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/cda-portal.ts": 3,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
-    "app/actions/forms-kernel.ts": 1,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
-    "app/actions/listings-kernel.ts": 3,
+    "app/actions/listing-lifecycle-core.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
     "app/actions/vendor-payments.ts": 1,
@@ -146,7 +143,6 @@
     "lib/finance/tax-planning.ts": 3,
     "lib/finance/team-pl-writer.ts": 1,
     "lib/financials/revenue-projection.ts": 2,
-    "lib/forms/esign-anchor-eval.ts": 1,
     "lib/geo/citation-scope.ts": 1,
     "lib/geo/citation-share.ts": 1,
     "lib/geo/video-landing.ts": 1,
@@ -162,7 +158,6 @@
     "lib/intelligence/manager-touch-provenance.ts": 1,
     "lib/intelligence/manager-weekly-exec-plan.ts": 5,
     "lib/intelligence/negotiation-bands.ts": 2,
-    "lib/intelligence/offer-property-prefill-runner.ts": 1,
     "lib/intelligence/partners-meeting-reel-props.ts": 1,
     "lib/intelligence/partners-meeting.ts": 1,
     "lib/intelligence/playbook-engine.ts": 1,
@@ -402,7 +397,6 @@
     "lib/transactions/deal-vendor-notify.ts": 1,
     "lib/transactions/final-compliance-check.ts": 1,
     "lib/transactions/offer-bridge.ts": 1,
-    "lib/transactions/sync-from-provider.ts": 1,
     "lib/usage.ts": 1,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendors/rank.ts": 1,
@@ -437,7 +431,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9343,
+  "census": 9381,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -460,6 +454,7 @@
     "app/actions/activities.ts": 4,
     "app/actions/address-lookup.ts": 1,
     "app/actions/admin/agent-360.ts": 3,
+    "app/actions/admin/agent-assistant-tool-calls.ts": 2,
     "app/actions/admin/agent-profile.ts": 2,
     "app/actions/admin/assignment-rules.ts": 3,
     "app/actions/admin/billing.ts": 2,
@@ -503,7 +498,7 @@
     "app/actions/ai-content-generation.tsx": 40,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
-    "app/actions/ai-document-intelligence.ts": 7,
+    "app/actions/ai-document-intelligence.ts": 6,
     "app/actions/ai-financial-management.ts": 8,
     "app/actions/ai-generate.ts": 4,
     "app/actions/ai-identity.ts": 6,
@@ -529,12 +524,12 @@
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-newsletter.ts": 13,
     "app/actions/ai-offer-creation.ts": 9,
-    "app/actions/ai-predictions.ts": 24,
+    "app/actions/ai-predictions.ts": 23,
     "app/actions/ai-property-matching.ts": 4,
     "app/actions/ai-referral-management.ts": 5,
     "app/actions/ai-reply-coach.ts": 6,
     "app/actions/ai-review-automation.ts": 7,
-    "app/actions/ai-showing-management.ts": 9,
+    "app/actions/ai-showing-management.ts": 10,
     "app/actions/ai-sphere-management.ts": 6,
     "app/actions/ai-teammates.ts": 4,
     "app/actions/ai-tools-hub.ts": 4,
@@ -578,7 +573,7 @@
     "app/actions/buyer-offer/esign-anchor-plan.ts": 1,
     "app/actions/buyer-offer/flag-compliance.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 3,
-    "app/actions/buyer-offer/prefill-offer.ts": 1,
+    "app/actions/buyer-offer/prefill-offer.ts": 2,
     "app/actions/buyer-offer/prefill-storage-form.ts": 1,
     "app/actions/buyer-offer/record-seller-response.ts": 1,
     "app/actions/buyer-offer/record-seller-signed-counter.ts": 1,
@@ -617,6 +612,7 @@
     "app/actions/command-center.ts": 3,
     "app/actions/communications.ts": 10,
     "app/actions/compliance/dashboard.ts": 2,
+    "app/actions/compliance/document-access-audit.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 4,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
@@ -742,12 +738,12 @@
     "app/actions/listing-health-actions.ts": 2,
     "app/actions/listing-landing.ts": 9,
     "app/actions/listing-lifecycle-core.ts": 10,
-    "app/actions/listing-lifecycle.ts": 16,
+    "app/actions/listing-lifecycle.ts": 15,
     "app/actions/listing-media.ts": 16,
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
     "app/actions/listing-video.ts": 3,
-    "app/actions/listings-kernel.ts": 12,
+    "app/actions/listings-kernel.ts": 9,
     "app/actions/listings.ts": 7,
     "app/actions/market-insight-actions.ts": 10,
     "app/actions/market-insights.ts": 1,
@@ -772,7 +768,7 @@
     "app/actions/newsletter/create-template.ts": 1,
     "app/actions/newsletter/delete-template.ts": 1,
     "app/actions/newsletter/fetch-local-news.ts": 3,
-    "app/actions/newsletter/get-seo-score.ts": 1,
+    "app/actions/newsletter/get-seo-score.ts": 2,
     "app/actions/newsletter/list-templates.ts": 1,
     "app/actions/newsletter/schedule-newsletter.ts": 2,
     "app/actions/newsletter/update-template.ts": 1,
@@ -780,7 +776,7 @@
     "app/actions/notifications.ts": 4,
     "app/actions/nps.ts": 2,
     "app/actions/objection-training.ts": 5,
-    "app/actions/observability/observability-actions.ts": 3,
+    "app/actions/observability/observability-actions.ts": 4,
     "app/actions/offer-kernel-actions.ts": 3,
     "app/actions/offers/present-to-seller.ts": 3,
     "app/actions/onboarding/agent-onboarding-actions.ts": 1,
@@ -831,7 +827,7 @@
     "app/actions/property-alerts/alert-actions.ts": 16,
     "app/actions/property-buyer-matching.ts": 3,
     "app/actions/property-evaluation.ts": 1,
-    "app/actions/public/tos-acceptance.ts": 2,
+    "app/actions/public/tos-acceptance.ts": 5,
     "app/actions/push-listing-to-seller-portal.ts": 1,
     "app/actions/push-subscriptions.ts": 4,
     "app/actions/qr-management.ts": 2,
@@ -940,6 +936,7 @@
     "app/actions/superadmin/tenant-import.ts": 2,
     "app/actions/superadmin/tenant-message.ts": 3,
     "app/actions/superadmin/tenant-setup.ts": 1,
+    "app/actions/superadmin/tenant-transition-log.ts": 1,
     "app/actions/superadmin/tenant-users.ts": 6,
     "app/actions/support.ts": 13,
     "app/actions/system-health.ts": 10,
@@ -951,7 +948,7 @@
     "app/actions/tenant-connections.ts": 2,
     "app/actions/tenant-safety-actions.ts": 3,
     "app/actions/tenant-sso.ts": 5,
-    "app/actions/tenant-webhooks.ts": 10,
+    "app/actions/tenant-webhooks.ts": 11,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 6,
     "app/actions/tour-planner.ts": 12,
@@ -1134,6 +1131,7 @@
     "app/api/cron/engagement-scores/route.ts": 1,
     "app/api/cron/enrichment-processor/route.ts": 1,
     "app/api/cron/equity-trigger/route.ts": 1,
+    "app/api/cron/esign-doc-sync/route.ts": 1,
     "app/api/cron/farm-mail-weekly/route.ts": 1,
     "app/api/cron/farm-play/route.ts": 1,
     "app/api/cron/financing-pit-stop/route.ts": 1,
@@ -1180,6 +1178,7 @@
     "app/api/cron/newsletter-cadence-tick/route.ts": 1,
     "app/api/cron/newsletter-video-render/route.ts": 1,
     "app/api/cron/nothing-dropped-sweep/route.ts": 1,
+    "app/api/cron/notification-delivery-escalation/route.ts": 1,
     "app/api/cron/objection-library/route.ts": 1,
     "app/api/cron/offer-expiry/route.ts": 1,
     "app/api/cron/offer-net-sheet/route.ts": 1,
@@ -1248,6 +1247,7 @@
     "app/api/cron/territory-metrics/route.ts": 1,
     "app/api/cron/tour-optimizer/route.ts": 1,
     "app/api/cron/variant-outcomes-aggregator/route.ts": 1,
+    "app/api/cron/vendor-follow-up-cadence/route.ts": 1,
     "app/api/cron/vendor-orchestration/route.ts": 1,
     "app/api/cron/vendor-review-requests/route.ts": 1,
     "app/api/cron/video-plays/route.ts": 1,
@@ -1557,6 +1557,7 @@
     "app/components/layout/mobile-bottom-nav.tsx": 1,
     "app/components/layout/shell-context.tsx": 2,
     "app/components/layout/sidebar.tsx": 1,
+    "app/components/layout/tos-reacceptance-banner.tsx": 1,
     "app/components/layout/unified-inbox-slideout.tsx": 1,
     "app/components/layout/user-menu.tsx": 1,
     "app/components/lead/LeadQuickActions.tsx": 1,
@@ -2328,11 +2329,13 @@
     "app/dashboard/transactions/[id]/closing-war-room-section.tsx": 1,
     "app/dashboard/transactions/[id]/closing-watchtower-section.tsx": 1,
     "app/dashboard/transactions/[id]/components/transaction-form-esign-flow.tsx": 1,
+    "app/dashboard/transactions/[id]/esign-sync-button.tsx": 1,
     "app/dashboard/transactions/[id]/financing-pit-stop-section.tsx": 1,
     "app/dashboard/transactions/[id]/hazard-insurance-section.tsx": 1,
     "app/dashboard/transactions/[id]/lender-status-request-button.tsx": 1,
     "app/dashboard/transactions/[id]/milestone-deadlines-button.tsx": 1,
     "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": 1,
+    "app/dashboard/transactions/[id]/notification-delivery-section.tsx": 1,
     "app/dashboard/transactions/[id]/smart-checklist-panel.tsx": 1,
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": 1,
     "app/dashboard/transactions/closing-concierge/actions.ts": 5,
@@ -2482,6 +2485,7 @@
     "app/referrals/referrals-os-client.tsx": 1,
     "app/seed/seed-page-client.tsx": 1,
     "app/settings/accounting/error-log-table.tsx": 1,
+    "app/settings/accounting/manual-entry-card.tsx": 1,
     "app/settings/accounting/provider-connection-card.tsx": 1,
     "app/settings/accounting/qb-reconciliation-card.tsx": 1,
     "app/settings/accounting/sync-controls-card.tsx": 1,
@@ -2545,6 +2549,7 @@
     "hooks/use-local-storage.ts": 1,
     "lib/academy/quiz.ts": 3,
     "lib/activities/activity-tenant.ts": 3,
+    "lib/admin/tool-call-metrics.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
     "lib/ads/ad-creator.ts": 6,
     "lib/ads/ad-destination.ts": 1,
@@ -2652,6 +2657,7 @@
     "lib/ai/image-generation.ts": 1,
     "lib/ai/lead-analyzer.ts": 1,
     "lib/ai/models.ts": 9,
+    "lib/ai/parse-json-response.ts": 1,
     "lib/ai/pipeline.ts": 4,
     "lib/ai/reply-style.ts": 3,
     "lib/ai/resolve-model.ts": 1,
@@ -2734,11 +2740,11 @@
     "lib/auth/isa-actor.ts": 1,
     "lib/auth/lead-visibility.ts": 5,
     "lib/auth/permissions-client.ts": 3,
-    "lib/auth/platform-guard.ts": 2,
+    "lib/auth/platform-guard.ts": 5,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
-    "lib/auth/require-caller.ts": 2,
+    "lib/auth/require-caller.ts": 8,
     "lib/auth/resolve-user-role.ts": 12,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
@@ -2884,6 +2890,7 @@
     "lib/communication-spine/role-validator.ts": 1,
     "lib/communications/send-invitation.ts": 3,
     "lib/communications/vendor-communications.tsx": 2,
+    "lib/communications/vendor-follow-up-cadence.ts": 1,
     "lib/competitive-intel/content-intel-scan.ts": 1,
     "lib/competitive-intel/exa-competitor-ads.ts": 1,
     "lib/competitive-intel/promote-to-topic-bank.ts": 1,
@@ -2894,6 +2901,7 @@
     "lib/compliance/compliance-flag-reaper.ts": 1,
     "lib/compliance/contact-channel-gate.ts": 2,
     "lib/compliance/content-safety-checks.ts": 1,
+    "lib/compliance/disclosure-check-runner.ts": 1,
     "lib/compliance/document-classifications.ts": 2,
     "lib/compliance/federal-holidays.ts": 2,
     "lib/compliance/license-readiness.ts": 2,
@@ -3114,7 +3122,8 @@
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
-    "lib/format/dates.ts": 1,
+    "lib/format/dates.ts": 3,
+    "lib/format/html.ts": 3,
     "lib/format/math.ts": 1,
     "lib/format/money.ts": 9,
     "lib/format/ordinal.ts": 2,
@@ -3138,8 +3147,8 @@
     "lib/home-value/listing-appointment.ts": 1,
     "lib/home-value/report-email.ts": 1,
     "lib/identity/ensure-agent-context.ts": 1,
-    "lib/identity/get-agent-context.ts": 1,
-    "lib/identity/policy-scope.ts": 1,
+    "lib/identity/get-agent-context.ts": 2,
+    "lib/identity/policy-scope.ts": 2,
     "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/deal-doc-intake.ts": 1,
     "lib/inbound-mail/deal-doc-router.ts": 2,
@@ -3158,6 +3167,7 @@
     "lib/integrations/providers/brokerage-authority.ts": 7,
     "lib/integrations/providers/catalog.ts": 5,
     "lib/integrations/providers/provider-resolver.ts": 4,
+    "lib/integrations/providers/transaction-provider.interface.ts": 1,
     "lib/integrations/resolve-esign-provider.ts": 1,
     "lib/integrations/transaction-providers/embed-url.ts": 1,
     "lib/integrations/transaction-providers/resolve-transaction-provider.ts": 1,
@@ -3258,6 +3268,7 @@
     "lib/intelligence/user-type-briefs/index.ts": 1,
     "lib/intelligence/user-type-briefs/tc-compliance-lender-vendor.ts": 4,
     "lib/intelligence/user-type-briefs/team-lead.ts": 2,
+    "lib/intelligence/user-type-briefs/types.ts": 1,
     "lib/intelligence/winback-personalization.ts": 1,
     "lib/intelligence/winback-video.ts": 1,
     "lib/journey-conformance/conformance-checker.ts": 1,
@@ -3366,7 +3377,7 @@
     "lib/kernel/financing-pit-stop.ts": 8,
     "lib/kernel/fire-drills.ts": 3,
     "lib/kernel/flow-integrity.ts": 10,
-    "lib/kernel/forms.ts": 10,
+    "lib/kernel/forms.ts": 9,
     "lib/kernel/global-settings.ts": 2,
     "lib/kernel/helpers.ts": 6,
     "lib/kernel/idle-hands.ts": 3,
@@ -3387,7 +3398,7 @@
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-price-advisor.ts": 1,
     "lib/kernel/listing-propensity.ts": 3,
-    "lib/kernel/listings.ts": 10,
+    "lib/kernel/listings.ts": 8,
     "lib/kernel/local-lifestyle.ts": 1,
     "lib/kernel/lookalike-audience.ts": 2,
     "lib/kernel/manager-activity.ts": 1,
@@ -3815,7 +3826,7 @@
     "lib/portal/portal-clients-read.ts": 1,
     "lib/portal/portal-invite-core.ts": 3,
     "lib/portal/portal-showing-feed.ts": 5,
-    "lib/portal/require-contact-access.ts": 1,
+    "lib/portal/require-contact-access.ts": 2,
     "lib/portal/resolve-education-context.ts": 1,
     "lib/portal/resolve-seller-context.ts": 4,
     "lib/portal/seller-context-presentation.ts": 3,
@@ -4016,6 +4027,7 @@
     "lib/transactions/deal-vendor-notify.ts": 3,
     "lib/transactions/deal-vendor-targets.ts": 1,
     "lib/transactions/earnest-terms.ts": 4,
+    "lib/transactions/esign-doc-sync-sweep.ts": 1,
     "lib/transactions/final-compliance-check.ts": 2,
     "lib/transactions/gift-order-trigger.ts": 1,
     "lib/transactions/hazard-insurance.ts": 4,
@@ -4023,6 +4035,7 @@
     "lib/transactions/milestone-catalog.ts": 3,
     "lib/transactions/milestone-identity.ts": 2,
     "lib/transactions/milestone-service.ts": 6,
+    "lib/transactions/notification-service.ts": 1,
     "lib/transactions/offer-bridge.ts": 3,
     "lib/transactions/offer-compliance-loop.ts": 1,
     "lib/transactions/offer-execution-state.ts": 3,
@@ -4032,9 +4045,9 @@
     "lib/transactions/stage-progression.ts": 2,
     "lib/transactions/stranded-offer-policy.ts": 1,
     "lib/transactions/stranded-offer-reaper.ts": 1,
-    "lib/transactions/sync-from-provider.ts": 2,
+    "lib/transactions/sync-from-provider.ts": 3,
     "lib/transactions/task-vocabulary.ts": 1,
-    "lib/transactions/transaction-creation-gate.ts": 2,
+    "lib/transactions/transaction-creation-gate.ts": 3,
     "lib/transactions/transaction-status.ts": 5,
     "lib/transactions/vendor-quote-workflow.ts": 3,
     "lib/transactions/walkthrough-outcome.ts": 2,
@@ -4173,6 +4186,7 @@
     "lib/wire-fraud/wire-fraud-runner.ts": 1,
     "lib/wire-fraud/wire-fraud-sentinel.ts": 1,
     "lib/wizard-staging/content-staging.ts": 8,
+    "lib/workflow/inbound-event-view.ts": 1,
     "lib/workflow/intake/form-fill-engine.ts": 2,
     "lib/workflow/intake/voice-to-bba.ts": 1,
     "lib/workflow/intake/voice-to-listing.ts": 2,
@@ -4333,6 +4347,10 @@
       "getAgent360Action",
       "assignAcademyModuleAction",
       "setAgentOnboardingStatusAction"
+    ],
+    "app/actions/admin/agent-assistant-tool-calls.ts": [
+      "getAgentAssistantToolCallSummary",
+      "getAgentAssistantToolCallReplay"
     ],
     "app/actions/admin/agent-profile.ts": [
       "getAgentProfileForUserAction",
@@ -4642,7 +4660,6 @@
     "app/actions/ai-document-intelligence.ts": [
       "aiClassifyDocument",
       "aiAnalyzeContract",
-      "aiCheckDisclosures",
       "aiVerifySignatures",
       "aiGenerateDocument",
       "aiCompareDocuments",
@@ -4808,7 +4825,6 @@
     "app/actions/ai-predictions.ts": [
       "predictLeadConversion",
       "getLeadPredictions",
-      "getPredictiveLeadScore",
       "batchPredictLeadConversions",
       "getTopConversionCandidates",
       "refreshStalePredictions",
@@ -4868,6 +4884,7 @@
       "aiScheduleShowing",
       "aiOptimizeShowingRoute",
       "aiSendShowingConfirmation",
+      "getShowingCommunicationsAction",
       "aiCollectShowingFeedback",
       "aiAnalyzeShowingFeedback",
       "getAIShowingInsights"
@@ -5157,7 +5174,8 @@
       "getBuyerActiveOffers"
     ],
     "app/actions/buyer-offer/prefill-offer.ts": [
-      "fillPropertyDataWithAI"
+      "fillPropertyDataWithAI",
+      "resolveOfferPropertyPrefillAction"
     ],
     "app/actions/buyer-offer/prefill-storage-form.ts": [
       "prefillStorageFormAction"
@@ -5397,6 +5415,9 @@
     "app/actions/compliance/dashboard.ts": [
       "getComplianceDashboard",
       "resolveComplianceFlagAction"
+    ],
+    "app/actions/compliance/document-access-audit.ts": [
+      "getDocumentAccessAudit"
     ],
     "app/actions/compliance/manage-required-docs.ts": [
       "addRequiredDocument",
@@ -6216,7 +6237,6 @@
     ],
     "app/actions/listing-lifecycle.ts": [
       "scheduleListingAppointment",
-      "updateListingStage",
       "advanceListingStage",
       "getListingTimeline",
       "getListingTasks",
@@ -6268,11 +6288,8 @@
       "validateLaunchReadinessAction",
       "verifyMlsSyndicationAction",
       "launchListingAction",
-      "updateListingStageAction",
       "generateListingDescriptionAction",
-      "closeListingAction",
       "prefillListingFormAction",
-      "loadListingWorkspaceAction",
       "updateListingStatus"
     ],
     "app/actions/listings.ts": [
@@ -6446,7 +6463,8 @@
       "setupLocalNewsSource"
     ],
     "app/actions/newsletter/get-seo-score.ts": [
-      "getSEOScore"
+      "getSEOScore",
+      "getStoredSEOScore"
     ],
     "app/actions/newsletter/list-templates.ts": [
       "listTemplates"
@@ -6482,6 +6500,7 @@
     "app/actions/observability/observability-actions.ts": [
       "fetchAutomationErrors",
       "fetchCalendarSyncLogs",
+      "fetchEventProcessingHealth",
       "fetchObservabilityDashboard"
     ],
     "app/actions/offer-kernel-actions.ts": [
@@ -6825,7 +6844,10 @@
     ],
     "app/actions/public/tos-acceptance.ts": [
       "getCurrentTosVersionAction",
-      "recordTosAcceptanceAction"
+      "recordTosAcceptanceAction",
+      "checkCurrentUserTosStatusAction",
+      "acceptCurrentTosAsCurrentUserAction",
+      "listTosAcceptancesAction"
     ],
     "app/actions/push-listing-to-seller-portal.ts": [
       "pushListingToSellerPortal"
@@ -7484,6 +7506,9 @@
     "app/actions/superadmin/tenant-setup.ts": [
       "getTenantSetupReadinessAction"
     ],
+    "app/actions/superadmin/tenant-transition-log.ts": [
+      "listTenantTransitionLogAction"
+    ],
     "app/actions/superadmin/tenant-users.ts": [
       "listTenantUsersAction",
       "searchUsersByEmailAction",
@@ -7575,6 +7600,7 @@
       "deleteWebhookSubscription",
       "sendWebhookTestPing",
       "listWebhookDeliveries",
+      "listInboundWorkflowEvents",
       "getDeveloperTokenState",
       "mintTenantApiToken",
       "revokeTenantApiToken",
@@ -8421,6 +8447,9 @@
     "app/api/cron/equity-trigger/route.ts": [
       "GET"
     ],
+    "app/api/cron/esign-doc-sync/route.ts": [
+      "GET"
+    ],
     "app/api/cron/farm-mail-weekly/route.ts": [
       "GET"
     ],
@@ -8564,6 +8593,9 @@
       "GET"
     ],
     "app/api/cron/nothing-dropped-sweep/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/notification-delivery-escalation/route.ts": [
       "GET"
     ],
     "app/api/cron/objection-library/route.ts": [
@@ -8772,6 +8804,9 @@
       "GET"
     ],
     "app/api/cron/variant-outcomes-aggregator/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/vendor-follow-up-cadence/route.ts": [
       "GET"
     ],
     "app/api/cron/vendor-orchestration/route.ts": [
@@ -9724,6 +9759,9 @@
     ],
     "app/components/layout/sidebar.tsx": [
       "Sidebar"
+    ],
+    "app/components/layout/tos-reacceptance-banner.tsx": [
+      "TosReacceptanceBanner"
     ],
     "app/components/layout/unified-inbox-slideout.tsx": [
       "UnifiedInboxSlideOut"
@@ -12098,6 +12136,9 @@
     "app/dashboard/transactions/[id]/components/transaction-form-esign-flow.tsx": [
       "TransactionFormEsignFlow"
     ],
+    "app/dashboard/transactions/[id]/esign-sync-button.tsx": [
+      "EsignSyncButton"
+    ],
     "app/dashboard/transactions/[id]/financing-pit-stop-section.tsx": [
       "FinancingPitStopSection"
     ],
@@ -12112,6 +12153,9 @@
     ],
     "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": [
       "AddMilestoneForm"
+    ],
+    "app/dashboard/transactions/[id]/notification-delivery-section.tsx": [
+      "NotificationDeliverySection"
     ],
     "app/dashboard/transactions/[id]/smart-checklist-panel.tsx": [
       "SmartChecklistPanel"
@@ -12572,6 +12616,9 @@
     "app/settings/accounting/error-log-table.tsx": [
       "ErrorLogTable"
     ],
+    "app/settings/accounting/manual-entry-card.tsx": [
+      "ManualEntryCard"
+    ],
     "app/settings/accounting/provider-connection-card.tsx": [
       "ProviderConnectionCard"
     ],
@@ -12766,6 +12813,9 @@
       "resolveLeadBrokerageId",
       "resolveBrandTemplateBrokerageId",
       "resolveUserBrokerageId"
+    ],
+    "lib/admin/tool-call-metrics.ts": [
+      "percentile95"
     ],
     "lib/ads/ad-creative-engine.ts": [
       "rankCompetitorAds",
@@ -13252,6 +13302,9 @@
       "generatePublicContent",
       "generateOutboundMessage"
     ],
+    "lib/ai/parse-json-response.ts": [
+      "parseAIJsonResponse"
+    ],
     "lib/ai/pipeline.ts": [
       "runPipeline",
       "runPipelineSimple",
@@ -13612,7 +13665,7 @@
     ],
     "lib/application/listing-lifecycle.ts": [
       "scheduleListingAppointmentService",
-      "updateListingStageService",
+      "handleSellerToLifetimeTransition",
       "advanceListingStageService",
       "scheduleClosingGift",
       "getListingTimelineService",
@@ -13735,7 +13788,10 @@
     ],
     "lib/auth/platform-guard.ts": [
       "requirePlatformStaff",
-      "requireSuperadmin"
+      "requireSuperadmin",
+      "requirePlatformCapability",
+      "requireProviders",
+      "requireMarketing"
     ],
     "lib/auth/provision-isa-actor.ts": [
       "provisionIsaActorForBrokerage"
@@ -13748,7 +13804,13 @@
     ],
     "lib/auth/require-caller.ts": [
       "resolveCallerIdentity",
-      "requireCaller"
+      "requireCaller",
+      "requireCallerWithAgent",
+      "requireTenantAdminOrSoloOwner",
+      "assertRowBrokerageOwnership",
+      "authTenantAdminBrokerage",
+      "requireUserRowContext",
+      "requireAdsActor"
     ],
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
@@ -14520,6 +14582,9 @@
       "sendVendorBookingConfirmation",
       "sendVendorServiceReminder"
     ],
+    "lib/communications/vendor-follow-up-cadence.ts": [
+      "runVendorFollowUpCadence"
+    ],
     "lib/competitive-intel/content-intel-scan.ts": [
       "runContentIntelScan"
     ],
@@ -14554,6 +14619,9 @@
     ],
     "lib/compliance/content-safety-checks.ts": [
       "evaluateContentSafety"
+    ],
+    "lib/compliance/disclosure-check-runner.ts": [
+      "runDisclosureComplianceCheck"
     ],
     "lib/compliance/document-classifications.ts": [
       "classificationCarriesSignatures",
@@ -15623,7 +15691,14 @@
       "computeRateLockRisk"
     ],
     "lib/format/dates.ts": [
-      "daysBetween"
+      "daysBetween",
+      "daysSince",
+      "formatTime24To12"
+    ],
+    "lib/format/html.ts": [
+      "escapeHtmlFull",
+      "escapeHtmlBasic",
+      "escapeHtmlMinimal"
     ],
     "lib/format/math.ts": [
       "clamp"
@@ -15742,10 +15817,12 @@
       "ensureAgentContextInPlace"
     ],
     "lib/identity/get-agent-context.ts": [
-      "getAgentContext"
+      "getAgentContext",
+      "requireSessionAgentId"
     ],
     "lib/identity/policy-scope.ts": [
-      "resolvePolicyScopeAccess"
+      "resolvePolicyScopeAccess",
+      "buildScopeFilters"
     ],
     "lib/identity/resolve-contact-owner.ts": [
       "resolveContactOwnerAgent"
@@ -15829,6 +15906,9 @@
       "getTransactionProviderByName",
       "getAvailableProviders",
       "isProviderSupported"
+    ],
+    "lib/integrations/providers/transaction-provider.interface.ts": [
+      "mapProviderFormCategory"
     ],
     "lib/integrations/resolve-esign-provider.ts": [
       "resolveESignProviderForActor"
@@ -16229,6 +16309,9 @@
     "lib/intelligence/user-type-briefs/team-lead.ts": [
       "generateTeamLeadBrief",
       "isTeamLead"
+    ],
+    "lib/intelligence/user-type-briefs/types.ts": [
+      "parseMarketPulseMetrics"
     ],
     "lib/intelligence/winback-personalization.ts": [
       "winbackPersonalization"
@@ -16866,7 +16949,6 @@
       "loadFormDraft",
       "launchEsignEnvelope",
       "getEsignStatus",
-      "syncEsignDocuments",
       "recordBuyerPropertyAction",
       "loadBuyerSavedProperties"
     ],
@@ -16997,9 +17079,7 @@
       "saveListingDraft",
       "validateListingLaunchReadiness",
       "launchListing",
-      "updateListingStage",
       "generateListingDescription",
-      "closeListingLifecycle",
       "prefillListingFormFromRecord"
     ],
     "lib/kernel/local-lifestyle.ts": [
@@ -19260,7 +19340,8 @@
       "withFeedback"
     ],
     "lib/portal/require-contact-access.ts": [
-      "requireContactAccess"
+      "requireContactAccess",
+      "accessRefusal"
     ],
     "lib/portal/resolve-education-context.ts": [
       "resolveEducationContext"
@@ -20188,6 +20269,9 @@
       "deriveEarnestDueDate",
       "formatEarnestAmount"
     ],
+    "lib/transactions/esign-doc-sync-sweep.ts": [
+      "sweepEsignDocSync"
+    ],
     "lib/transactions/final-compliance-check.ts": [
       "evaluateFinalCompliance",
       "runFinalComplianceCheck"
@@ -20220,6 +20304,9 @@
       "overrideMilestone",
       "setMilestoneDate",
       "getMilestones"
+    ],
+    "lib/transactions/notification-service.ts": [
+      "escalateFailedNotificationDeliveries"
     ],
     "lib/transactions/offer-bridge.ts": [
       "deriveContractDeadlines",
@@ -20259,12 +20346,14 @@
     ],
     "lib/transactions/sync-from-provider.ts": [
       "syncTransactionDocumentsFromProvider",
+      "syncListingDocumentsFromProvider",
       "syncAllForContact"
     ],
     "lib/transactions/task-vocabulary.ts": [
       "coerceTaskPriority"
     ],
     "lib/transactions/transaction-creation-gate.ts": [
+      "buildGateRefusal",
       "findUnexecutedDocuments",
       "assertTransactionCreationAllowed"
     ],
@@ -20951,6 +21040,9 @@
       "stageDirectMailCampaign",
       "stageAdCampaign"
     ],
+    "lib/workflow/inbound-event-view.ts": [
+      "mapWorkflowWebhookEventRow"
+    ],
     "lib/workflow/intake/form-fill-engine.ts": [
       "fillOfferPacket",
       "fillListingPacket"
@@ -21185,5 +21277,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }

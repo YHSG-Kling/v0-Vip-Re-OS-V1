@@ -76,6 +76,8 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 type SessionClient = Awaited<ReturnType<typeof createClient>>
 
@@ -163,6 +165,163 @@ export async function requireCaller(): Promise<RequireCallerResult> {
     return { ok: false, reason: "no_brokerage", error: "Your account is not linked to a brokerage" }
   }
   return { ...id, brokerageId: id.brokerageId }
+}
+
+export type CallerWithAgentResult =
+  | { ok: true; userId: string; brokerageId: string; agentId: string | null; supabase: SessionClient }
+  | CallerRefusal
+
+/**
+ * requireCaller() + the caller's agents.id, crossed via agents.user_id (§3 —
+ * `agents.id` and `users.id` are DISJOINT). Survivor for THREE byte-identical
+ * private `requireCaller` copies (SAME BODY census round 3, 2026-09-09):
+ *   app/actions/ai-communication-hub.ts:31, app/actions/business-card/business-card-actions.ts:17,
+ *   app/actions/seller-open-house.ts:28
+ * Each copy swallowed the agents-read `error` (§3 — supabase-js resolves a
+ * refusal) and returned a bare "Unauthorized" for every refusal reason; this
+ * carries requireCaller()'s error-checked reads and `reason` discriminator and
+ * adds only the agentId lookup. Imported at each former site AS `requireCaller`
+ * so every existing `auth.userId` / `auth.brokerageId` / `auth.agentId` /
+ * `auth.error` call site needed no further edit.
+ */
+export async function requireCallerWithAgent(): Promise<CallerWithAgentResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return caller
+  const { data: a, error: agentError } = await caller.supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", caller.userId)
+    .maybeSingle()
+  if (agentError) {
+    return { ok: false, reason: "unreadable", error: `Could not resolve your agent record: ${agentError.message}` }
+  }
+  return { ok: true, userId: caller.userId, brokerageId: caller.brokerageId, agentId: a?.id ?? null, supabase: caller.supabase }
+}
+
+export type TenantAdminOrSoloOwnerResult =
+  | { ok: true; userId: string; brokerageId: string; userType: string }
+  | { ok: false; error: string }
+
+/**
+ * Tenant admin (isAdminOrBroker), OR a solo-tier subscriber acting on their OWN
+ * brokerage (`brokerages.plan_tier = 'solo_agent'`) — "TIER PARITY" (owner
+ * rule): a solo-tier subscriber IS their own broker, and their one working seat
+ * often carries `user_type` 'agent'/'solo_agent', which locked them out of
+ * their own admin-only rails.
+ *
+ * Survivor for TWO byte-identical private `requireAdmin` copies (SAME BODY
+ * census round 3, 2026-09-09): app/actions/marketing-ai-approvals.ts:25 and
+ * app/actions/marketing-campaigns-admin.ts:17. Same allowance the voice
+ * 'draft_save_plays' intent already applies (app/api/internal/voice-command).
+ */
+export async function requireTenantAdminOrSoloOwner(): Promise<TenantAdminOrSoloOwnerResult> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+
+  const { data: row } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
+  const userType = row.user_type as string
+  if (!isAdminOrBroker({ user_type: userType })) {
+    const svc = createServiceClient()
+    const { data: b } = await svc
+      .from("brokerages").select("plan_tier").eq("id", row.brokerage_id).maybeSingle()
+    if ((b as { plan_tier?: string } | null)?.plan_tier !== "solo_agent") {
+      return { ok: false, error: "Forbidden" }
+    }
+  }
+  return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
+}
+
+/**
+ * Confirm a row from `table` belongs to `brokerageId` — the service client is
+ * used deliberately so RLS never masks the check. Survivor for two
+ * byte-identical private copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/workflow-orchestrator.ts:37 `ensureBrokerageOwnership` and
+ * app/actions/workflows.ts:26 `assertOwnership`.
+ */
+export async function assertRowBrokerageOwnership(
+  table: string,
+  id: string,
+  brokerageId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const svc = createServiceClient()
+  const { data } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
+  if (!data) return { ok: false, error: `${table} not found` }
+  if ((data as { brokerage_id?: string | null }).brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
+  return { ok: true }
+}
+
+/**
+ * Session → tenant admin's brokerage, or `null` on any refusal. Survivor for
+ * two byte-identical private `authBrokerage` copies (SAME BODY census round
+ * 3, 2026-09-09): app/dashboard/admin/campaign-center/actions.ts:7 and
+ * app/dashboard/admin/content-studio/actions.ts:7.
+ */
+export async function authTenantAdminBrokerage(): Promise<{ brokerageId: string; userId: string } | null> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id || !isAdminOrBroker({ user_type: u.user_type ?? "" })) return null
+  return { brokerageId: u.brokerage_id, userId: user.id }
+}
+
+/**
+ * `users.brokerage_id` + `users.user_type` for an EXPLICIT `userId` (not the
+ * session — the caller already resolved which user it means, e.g. a webhook
+ * payload's linked user). Throws when the row is missing or refused, so
+ * callers that need a soft failure should catch, not add a third body.
+ *
+ * Survivor for two byte-identical private `requireUserContext` copies (SAME
+ * BODY census round 3, 2026-09-09): lib/kernel/agent-onboarding.ts:55 and
+ * lib/kernel/calendar-sync.ts:77.
+ */
+export async function requireUserRowContext(
+  userId: string,
+): Promise<{ brokerageId: string; userType: string }> {
+  const supabase = await createClient()
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", userId)
+    .single()
+
+  if (error || !user) throw new Error("User not found")
+  return { brokerageId: user.brokerage_id, userType: user.user_type }
+}
+
+export type AdsSessionActor = { userId: string; brokerageId: string }
+
+/**
+ * Resolve the signed-in user's brokerage for an ads-lane server action;
+ * refuse when unauthenticated or tenant-less. Survivor for two byte-identical
+ * private `requireActor` copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/chatgpt-ads.ts:31 and app/actions/ctv-ads.ts:24. The chatgpt-ads
+ * copy's own comment said it was "Copied ... per instruction — not imported,
+ * so this file's session gate stands on its own"; §6 (one vocabulary) now
+ * supersedes that — a THIRD ads lane duplicating this exact body is the
+ * failure mode that instruction invited.
+ */
+export async function requireAdsActor(): Promise<{ actor?: AdsSessionActor; error?: string }> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { error: "Not authenticated" }
+
+  const { data: profile, error } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (error) return { error: error.message }
+  if (!profile?.brokerage_id) return { error: "No brokerage on this account" }
+  return { actor: { userId: user.id, brokerageId: profile.brokerage_id } }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

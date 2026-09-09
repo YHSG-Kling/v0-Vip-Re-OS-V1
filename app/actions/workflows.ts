@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { assertRowBrokerageOwnership as assertOwnership } from "@/lib/auth/require-caller"
 import { getAgentContext } from "@/lib/identity"
 import { SEQUENCE_TYPES } from "@/lib/campaigns/sequence-constants"
 import {
@@ -20,20 +21,9 @@ import {
  * from getAgentContext().
  */
 
-// Helper: assert a row from `table` with `id` belongs to `brokerageId`.
-// Returns the row when valid; returns null on missing/forbidden so the caller
-// can short-circuit. Uses the service client so RLS doesn't mask the check.
-async function assertOwnership(
-  table: string,
-  id: string,
-  brokerageId: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const svc = createServiceClient()
-  const { data } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
-  if (!data) return { ok: false, error: `${table} not found` }
-  if (data.brokerage_id !== brokerageId) return { ok: false, error: "Forbidden" }
-  return { ok: true }
-}
+// TOMBSTONE: local assertOwnership merged onto lib/auth/require-caller.ts
+// assertRowBrokerageOwnership (imported above as `assertOwnership`) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 /**
  * Execute AI-powered tool for workflow automation.
@@ -586,10 +576,13 @@ export async function sendMessage(
 // app/dashboard/transactions/[id]/transaction-detail-client.tsx:1101), which
 // upserts the SAME compliance_checklists row on the same
 // (transaction_id, checklist_type) arbiter and, unlike this ensure-exists
-// twin, actually populates items and compliance_score. Sibling writer:
-// app/actions/ai-document-intelligence.ts:aiCheckDisclosures. This third
-// writer contributed only an empty shell row; a stripped-source census found
-// zero callers outside the app/actions/index.ts barrel, which itself has zero
+// twin, actually populates items and compliance_score. Sibling writer
+// app/actions/ai-document-intelligence.ts:aiCheckDisclosures was itself
+// deleted onto this same survivor in wave 46 lane EC (see the tombstone at
+// that file:283) after merging its stateSpecificRequirements/reasoning
+// fields on. This ensure-exists twin contributed only an empty shell row; a
+// stripped-source census found zero callers outside the app/actions/index.ts
+// barrel, which itself has zero
 // importers. Nothing merged.
 
 /**

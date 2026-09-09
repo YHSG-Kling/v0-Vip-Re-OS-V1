@@ -66,6 +66,8 @@ interface BookedService {
   estimated_cost: number | null
   actual_cost: number | null
   vendor: { company_name: string | null } | null
+  /** vendor_communications reader — last outbound contact for this service, if any. */
+  last_vendor_communication: { type: string; sentAt: string } | null
 }
 
 /**
@@ -390,6 +392,13 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                               ? ` · ${new Date(s.scheduled_date).toLocaleDateString()}`
                               : " · unscheduled"}
                           </p>
+                          {/* vendor_communications reader — last outbound contact for this service. */}
+                          {s.last_vendor_communication && (
+                            <p className="text-xs text-muted-foreground">
+                              Last contacted: {s.last_vendor_communication.type.replace(/_/g, " ")} on{" "}
+                              {new Date(s.last_vendor_communication.sentAt).toLocaleDateString()}
+                            </p>
+                          )}
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           {/* What was actually paid wins over the quote when it exists —

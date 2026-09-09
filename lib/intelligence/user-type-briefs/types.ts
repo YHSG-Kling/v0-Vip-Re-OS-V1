@@ -42,6 +42,22 @@ export interface BriefMetric {
   href?: string
 }
 
+/**
+ * `contacts.market_pulse` (a JSON-array-of-metrics string) → BriefMetric[],
+ * or `[]` on anything unparseable / not an array. Survivor for THREE
+ * byte-identical private copies (SAME BODY census round 3, 2026-09-09):
+ *   lib/intelligence/user-type-briefs/broker.ts:315 parseMarketPulseMetrics
+ *   lib/intelligence/user-type-briefs/tc-compliance-lender-vendor.ts:518 parseMarketPulse
+ *   lib/intelligence/user-type-briefs/team-lead.ts:249 parseMarketPulse
+ */
+export function parseMarketPulseMetrics(market_pulse: string): BriefMetric[] {
+  try {
+    const parsed = JSON.parse(market_pulse)
+    if (Array.isArray(parsed)) return parsed
+  } catch {}
+  return []
+}
+
 export interface UserTypeBrief {
   userId: string
   userType: string

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -39,24 +40,8 @@ import {
 // cannot import that module (it is the video-kernel door, a different rail), so
 // the gate is restated rather than shared.
 
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: auth, error: authError } = await supabase.auth.getUser()
-  if (authError || !auth?.user) return { ok: false, error: "Unauthorized" }
-  const { data: profile, error: profileError } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", auth.user.id)
-    .maybeSingle()
-  if (profileError) return { ok: false, error: profileError.message }
-  if (!profile?.brokerage_id) {
-    return { ok: false, error: "Your account is not linked to a brokerage yet" }
-  }
-  return { ok: true, userId: auth.user.id, brokerageId: profile.brokerage_id as string }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:159
+// requireCaller (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /**
  * Resolve a projectId to the caller's OWN brokerage, or refuse.

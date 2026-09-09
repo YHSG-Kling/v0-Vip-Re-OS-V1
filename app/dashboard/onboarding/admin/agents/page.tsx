@@ -182,6 +182,7 @@ export default async function AdminAgentsPage() {
                     <TableHead>Progress</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Certs</TableHead>
+                    <TableHead>Questions Asked</TableHead>
                     <TableHead>Last Activity</TableHead>
                     <TableHead></TableHead>
                   </TableRow>
@@ -226,6 +227,13 @@ export default async function AdminAgentsPage() {
                       <TableCell>
                         <span className="font-medium">{agent.certsEarned}</span>
                         <span className="text-muted-foreground">/3</span>
+                      </TableCell>
+                      <TableCell>
+                        {agent.assistantQuestionsAsked > 0 ? (
+                          <Badge variant="outline">{agent.assistantQuestionsAsked} asked</Badge>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1 text-sm text-muted-foreground">

@@ -18,6 +18,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { provisionNumber, logPhoneNumberEvent, searchAvailableNumbers } from "@/lib/voice/number-provisioning"
 import { evaluateTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ─── Brokerage-level settings ────────────────────────────────────────────────
 
@@ -565,9 +566,12 @@ export async function purchaseBrokerageNumberAction(params: {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+// TOMBSTONE: local isBrokerRole (["admin","broker","broker_owner","broker_admin"])
+// was the BROKERAGE_FINANCE_ADMIN_USER_TYPES roster restated — phone
+// provisioning is billing (monthlyOverageCents), same tier a2p-registration.ts
+// used it for. resolve-user-role.ts:539 isBrokerageFinanceAdmin (imported
+// above) is that roster's one predicate (§1/§6 SAME BODY census round 3,
+// 2026-09-09).
 function isBrokerRole(t?: string | null) {
-  // SCOPE LADDER (kept inline — also drives per-agent vs brokerage provisioning
-  // scope): 'superadmin' removed — dead as users.user_type (0 live rows);
-  // broker_owner added — storable seat that owns the brokerage.
-  return ["admin", "broker", "broker_owner", "broker_admin"].includes(t ?? "")
+  return isBrokerageFinanceAdmin({ user_type: t })
 }

@@ -1269,6 +1269,48 @@ async function logProcessingResults(eventId: string, results: ProcessingResult[]
   }))
 
   await supabase.from("event_processing_log").insert(logs)
+
+  // READER (orphan doctrine §1.2) for event_processing_log — until now the
+  // 5 columns written here (event_id, handler, status, processing_time_ms,
+  // error_message) had no reader anywhere. This is the health half: a
+  // REPEATED failure on the same handler is a system-health signal, not a
+  // per-event error to shrug off. Best-effort and non-blocking — a refused
+  // health check must never fail the event it is checking alongside.
+  if (brokerageId) {
+    const failedHandlers = Array.from(new Set(results.filter((r) => !r.success).map((r) => r.handler)))
+    for (const handler of failedHandlers) {
+      try {
+        const since = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+        const { count, error: countErr } = await supabase
+          .from("event_processing_log")
+          .select("id", { count: "exact", head: true })
+          .eq("brokerage_id", brokerageId)
+          .eq("handler", handler)
+          .eq("status", "failure")
+          .gte("created_at", since)
+        if (countErr) {
+          console.error(`[orchestrator] event_processing_log health-check refused for ${handler}:`, countErr.message)
+          continue
+        }
+        const REPEATED_FAILURE_THRESHOLD = 3
+        if ((count ?? 0) >= REPEATED_FAILURE_THRESHOLD) {
+          const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+          await publishManagerSignal({
+            brokerageId,
+            fromManager: "cron_manager",
+            toManager: "data_steward",
+            signalType: "event_processing_repeated_failure",
+            message: `Orchestrator handler "${handler}" has failed ${count} times in the last hour.`,
+            entityType: "event_processing_handler",
+            entityId: handler,
+            payload: { handler, failure_count: count, window: "1h" },
+          }, supabase as any)
+        }
+      } catch (err) {
+        console.error(`[orchestrator] event_processing_log health-check threw for ${handler}:`, err)
+      }
+    }
+  }
 }
 
 // Wire this module's orchestrateEvent as the lib/events dispatcher.

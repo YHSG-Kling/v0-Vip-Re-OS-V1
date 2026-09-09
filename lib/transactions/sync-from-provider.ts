@@ -184,6 +184,135 @@ export async function syncTransactionDocumentsFromProvider(
   return { ok: true, synced, skipped: null, error: null }
 }
 
+export interface SyncListingFromProviderInput {
+  brokerageId:    string
+  listingId:      string
+  /** The contact this packet is shown to on the portal — a listing packet's
+   *  seller, most commonly. Required: SyncDocumentsRequest.contactId is
+   *  required by every ITransactionProvider implementation, mirroring
+   *  SyncFromProviderInput.contactId on the transaction lane above. */
+  contactId:      string
+  staleAfterSec?: number
+}
+
+const LISTING_UPSERT_CONFLICT = "listing_id,provider_source,external_document_id"
+
+/**
+ * The LISTING twin of syncTransactionDocumentsFromProvider (m614). A pre-contract
+ * packet — a listing agreement, seller disclosures — is sent for signature before
+ * any `transactions` row exists, so it cannot be resolved or persisted through the
+ * transaction lane at all. Same provider resolution, same staleness gate, same
+ * idempotent upsert shape; the only structural difference is the parent column
+ * (`listing_id` instead of `transaction_id`, m614's second partial unique index)
+ * and the table read for provider identity (`listings`, m614's ported m106 columns,
+ * instead of `transactions`) — there is no `offers`-linked fallback here because an
+ * offer does not exist yet at the listing stage.
+ *
+ * BUILT rather than left unwired (orphan doctrine §1.2): this is the missing half
+ * app/actions/forms-kernel.ts:syncEsignDocsAction was kept, unwired and hardened
+ * FOR — its own comment named exactly this capability as the one thing the
+ * transaction-lane survivor lacked. Nothing here duplicates that function; it is
+ * the porting the earlier pass declined to do inside this file, done now that the
+ * schema it required (m614) exists as a migration file.
+ */
+export async function syncListingDocumentsFromProvider(
+  input: SyncListingFromProviderInput,
+): Promise<SyncFromProviderResult> {
+  const svc = createServiceClient()
+
+  // 1. Pull the listing row — provider identity + the staleness clock.
+  const { data: listing, error: listingErr } = await svc
+    .from("listings")
+    .select("id, brokerage_id, external_provider_source, external_provider_transaction_id, last_provider_sync_at")
+    .eq("id", input.listingId)
+    .eq("brokerage_id", input.brokerageId)
+    .maybeSingle()
+  if (listingErr) return { ok: false, synced: 0, skipped: null, error: `listing load failed: ${listingErr.message}` }
+  if (!listing)   return { ok: false, synced: 0, skipped: null, error: "listing not found in this brokerage" }
+
+  // 2. Staleness gate — identical contract to the transaction lane.
+  const staleAfter = input.staleAfterSec ?? DEFAULT_STALE_SEC
+  if (staleAfter > 0 && listing.last_provider_sync_at) {
+    const ageMs = Date.now() - new Date(listing.last_provider_sync_at as string).getTime()
+    if (ageMs < staleAfter * 1000) {
+      return { ok: true, synced: 0, skipped: "fresh", error: null }
+    }
+  }
+
+  // 3. Provider identity. No offer-linked fallback: an offer is a POST-contract
+  //    object (offers.transaction_id), and a listing packet is by definition
+  //    pre-contract — there is no earlier record to fall back to.
+  const providerSource = listing.external_provider_source as string | null
+  const externalId = listing.external_provider_transaction_id as string | null
+  if (!providerSource || !externalId) {
+    return { ok: true, synced: 0, skipped: "no-external-id", error: null }
+  }
+
+  // 4. Resolve the provider class and pull. Same failure posture as the
+  //    transaction lane: never throw past this function, never bump the sync
+  //    stamp on a failed pull.
+  let docs: ProviderDocument[] = []
+  try {
+    const provider = await getTransactionProvider(input.brokerageId)
+    const res = await provider.syncDocuments({
+      externalTransactionId: externalId,
+      listingId:             input.listingId,
+      contactId:             input.contactId,
+    })
+    if (!res.success) {
+      return { ok: false, synced: 0, skipped: null, error: res.error ?? "provider sync returned !success" }
+    }
+    docs = res.documents ?? []
+  } catch (e) {
+    return { ok: false, synced: 0, skipped: null, error: `provider sync threw: ${(e as Error).message}` }
+  }
+
+  // 5. Batch-upsert into transaction_documents on the LISTING lane's unique
+  //    index (m614) — transaction_id stays NULL, listing_id is the parent.
+  const now  = new Date().toISOString()
+  const rows = docs
+    .filter(d => !!d.externalDocumentId)
+    .map(d => ({
+      listing_id:            input.listingId,
+      transaction_id:        null,
+      contact_id:            input.contactId,
+      provider_source:       providerSource,
+      external_document_id:  d.externalDocumentId,
+      doc_type:              d.folderName?.toLowerCase().replace(/\s+/g, "_") ?? "unknown",
+      doc_label:             d.documentName,
+      status:                d.isSigned ? "signed" : "pending",
+      storage_url:           d.url ?? null,
+      uploaded_at:           d.uploadedAt ?? d.lastModified ?? now,
+      signature_status: {
+        is_signed: d.isSigned,
+        signers:   d.signers ?? [],
+        synced_at: now,
+      },
+    }))
+  let synced = 0
+  if (rows.length > 0) {
+    const { error: upErr, count } = await svc
+      .from("transaction_documents")
+      .upsert(rows, {
+        onConflict:       LISTING_UPSERT_CONFLICT,
+        ignoreDuplicates: false,
+        count:            "exact",
+      })
+    if (upErr) {
+      return { ok: false, synced: 0, skipped: null, error: `upsert failed: ${upErr.message}` }
+    }
+    synced = count ?? rows.length
+  }
+
+  // 6. Stamp last_provider_sync_at on the LISTING row.
+  await svc
+    .from("listings")
+    .update({ last_provider_sync_at: new Date().toISOString() })
+    .eq("id", input.listingId)
+
+  return { ok: true, synced, skipped: null, error: null }
+}
+
 /**
  * Convenience for portal pages — sweeps every transaction the contact is on either
  * side of and syncs each. Returns one entry per transaction so the caller can log /

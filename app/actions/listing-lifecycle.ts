@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import {
   scheduleListingAppointmentService,
-  updateListingStageService,
   advanceListingStageService,
   getListingTimelineService,
   getListingTasksService,
@@ -117,19 +116,10 @@ export async function scheduleListingAppointment(params: {
 // advanceListingStage (triggerStageActions owns those stage cases + the MLS packet queue). These
 // duplicated that with orphaned-event side effects that never fired.
 
-export async function updateListingStage(params: {
-  listing_id: string
-  stage: string
-  notes?: string
-}) {
-  if (!params.listing_id || !params.stage) throw new Error("listing_id and stage are required")
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  return updateListingStageService(params)
-}
+// updateListingStage RETIRED (2026-09-09, wave 46) — a THIRD writer of listings.lifecycle_stage with no
+// UI caller. Survivor: advanceListingStage below → lib/application/listing-lifecycle.ts::advanceListingStageService,
+// which runs the same gate, keeps listings.status in lockstep, writes stage history, emits the kernel events and
+// fires the seller-to-lifetime transition. The service half (updateListingStageService) was deleted with it.
 
 export async function advanceListingStage(
   listingId: string,

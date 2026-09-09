@@ -36,7 +36,7 @@ const AUDIT_EXEMPT: Record<string, string> = {
   security_audit_log: "compliance export + retention",
   // ── Telemetry / debugging ledgers ──
   agent_assistant_tool_calls: "assistant tool-call telemetry (debugging/analytics)",
-  ai_usage_log: "LLM token/cost record — billing & cost reconciliation export",
+  // ai_usage_log — RETIRED by m615 (2026-09-09); survivor ai_tool_usage via lib/ai/cost-tracking.ts logAIUsage.
   automation_logs: "automation-execution forensics (debugging)",
   event_processing_log: "orchestrator event replay/debugging ledger",
   workflow_webhook_events: "inbound webhook receipt — replay/debugging",

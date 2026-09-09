@@ -83,6 +83,7 @@ import {
 } from "@/app/actions/ai-newsletter"
 import { fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent } from "@/app/actions/newsletter/fetch-local-news"
 import { scheduleNewsletter, scheduleExistingNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
+import { getStoredSEOScore, type StoredSEOScore } from "@/app/actions/newsletter/get-seo-score"
 import { listTemplates } from "@/app/actions/newsletter/list-templates"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
 import { validateScheduleTime } from "@/lib/newsletter/schedule-time"
@@ -568,6 +569,13 @@ export function NewslettersClient({
   const [approvedTemplates, setApprovedTemplates] = useState<Array<{ id: string; template_name: string }>>([])
   const [scheduleTemplateId, setScheduleTemplateId] = useState("")
   const [isRegisteringSend, setIsRegisteringSend] = useState(false)
+  // The PERSISTED score (newsletter_seo_scores, orphan doctrine §1.2 reader) —
+  // distinct from `seoBreakdown` above, which is the live draft-time recompute.
+  // Set once handleRegisterScheduledSend lands a row; this is what the
+  // campaign_orchestrator/marketing_agent gate on publish-newsletters actually
+  // reasons over, so showing it here is "what the cron sees," not a duplicate
+  // of the live estimate.
+  const [storedSeoScore, setStoredSeoScore] = useState<StoredSEOScore | null>(null)
 
   // DnD sensors
   const sensors = useSensors(
@@ -927,6 +935,18 @@ export function NewslettersClient({
         toast.success(
           `Send registered for ${format(verdict.date, "MMM d 'at' h:mm a")} — the governed cron will deliver it`
         )
+        // Read back the PERSISTED score for this scheduled send — the row
+        // getSEOScore() just wrote inside scheduleNewsletter. Best-effort: a
+        // failed read must not undo the send registration that already
+        // succeeded above.
+        if (result.scheduledSendId) {
+          try {
+            const stored = await getStoredSEOScore(result.scheduledSendId)
+            setStoredSeoScore(stored)
+          } catch (seoErr) {
+            console.error("[newsletters] getStoredSEOScore failed:", seoErr)
+          }
+        }
       } else {
         toast.error("Failed to register scheduled send")
       }
@@ -1771,6 +1791,31 @@ export function NewslettersClient({
                           </>
                         )}
                       </Button>
+                      {/* PERSISTED score, read back from newsletter_seo_scores —
+                          what the publish-newsletters cron's composition gate
+                          actually reasons over, not the live estimate above. */}
+                      {storedSeoScore && (
+                        <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
+                          <TrendingUp className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                          <span className="text-muted-foreground">Locked SEO score:</span>
+                          <span
+                            className={`font-semibold tabular-nums ${
+                              storedSeoScore.overallScore >= 85
+                                ? "text-emerald-600"
+                                : storedSeoScore.overallScore >= 70
+                                ? "text-amber-600"
+                                : "text-red-600"
+                            }`}
+                          >
+                            {storedSeoScore.overallScore}/100
+                          </span>
+                          {storedSeoScore.overallScore < 70 && (
+                            <span className="text-amber-600">
+                              — below 70 will hold at send time
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 

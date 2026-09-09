@@ -47,6 +47,7 @@
 
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createClient } from "@/lib/supabase/server"
+import { requireCaller } from "@/lib/auth/require-caller"
 import { generateAIResponse } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -115,24 +116,8 @@ function buildTypeSystemContext(): Record<string, string> {
  * written into video_scripts_library.agent_id, which is a FK to agents(id) —
  * resolved below rather than substituted.
  */
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: auth, error: authError } = await supabase.auth.getUser()
-  if (authError || !auth?.user) return { ok: false, error: "Unauthorized" }
-  const { data: profile, error: profileError } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", auth.user.id)
-    .maybeSingle()
-  if (profileError) return { ok: false, error: profileError.message }
-  if (!profile?.brokerage_id) {
-    return { ok: false, error: "Your account is not linked to a brokerage yet" }
-  }
-  return { ok: true, userId: auth.user.id, brokerageId: profile.brokerage_id as string }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:159
+// requireCaller (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /**
  * What the caller learns about compliance, beyond the advisory list.

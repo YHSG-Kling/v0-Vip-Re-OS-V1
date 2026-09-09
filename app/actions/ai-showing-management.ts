@@ -672,6 +672,30 @@ export async function aiSendShowingConfirmation(showingId: string) {
       return { success: false, error: "Showing not found" }
     }
 
+    // READER for showing_communications.sent_at (readerless-write-census) —
+    // dedupe guard. A confirmation already on file for this showing means a
+    // duplicate call (a re-click, a retried request, or a future shopping_agent
+    // tool call) would burn a second paid model call AND double-send the
+    // buyer the same confirmation. Explicit columns only.
+    const { data: existingConfirmation } = await supabase
+      .from("showing_communications")
+      .select("id, sent_at, email_content, sms_content")
+      .eq("showing_id", showingId)
+      .eq("communication_type", "confirmation")
+      .eq("status", "sent")
+      .order("sent_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existingConfirmation) {
+      return {
+        success: true,
+        alreadySent: true,
+        sentAt: existingConfirmation.sent_at,
+        confirmationMessages: existingConfirmation.email_content,
+      }
+    }
+
     // Generate personalized confirmation message
     const { text: confirmationContent } = await generateText({
       brokerageId: spendActor.brokerageId,
@@ -731,6 +755,41 @@ Create JSON with both email and SMS versions:
   } catch (error) {
     return handleError(error, "aiSendShowingConfirmation")
   }
+}
+
+/**
+ * READER for showing_communications.email_content / .sms_content / .sent_at
+ * (readerless-write-census) — the showing detail communications timeline: what
+ * was sent to the buyer/agent for this showing and when. TENANT-SCOPED (§4):
+ * the showing must belong to the caller's own brokerage before any row is
+ * returned — the showing_id filter alone is not a tenant boundary.
+ */
+export async function getShowingCommunicationsAction(showingId: string) {
+  if (!isValidUUID(showingId)) {
+    return { success: false, error: "Invalid showing ID" }
+  }
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const supabase = await createClient()
+
+  const { data: showing } = await supabase
+    .from("showings")
+    .select("id, brokerage_id")
+    .eq("id", showingId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (!showing) return { success: false, error: "Showing not found" }
+
+  const { data, error } = await supabase
+    .from("showing_communications")
+    .select("id, communication_type, status, email_content, sms_content, sent_at")
+    .eq("showing_id", showingId)
+    .order("sent_at", { ascending: false })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, communications: data ?? [] }
 }
 
 /**

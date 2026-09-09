@@ -24,6 +24,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { defaultOrderFor, type NewsletterSectionType } from "./section-types"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 export interface NewsletterSection {
   id:              string
@@ -166,13 +167,9 @@ export function assembleNewsletterHtml(args: {
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 function stripHtml(s: string): string {
   return s.replace(/<\/?[^>]+>/g, "").replace(/\s+\n/g, "\n").trim()

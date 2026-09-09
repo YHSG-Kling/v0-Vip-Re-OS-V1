@@ -291,11 +291,12 @@ async function buildQuickBooks(
  * the session's value is not an input, and leaving it accepted-but-checked
  * invites the next caller to pass one.
  *
- * STILL UNCALLED, and here is what blocks the obvious wire (wave 26). The
- * proposed home was a "push this record" control on the sync-error row
- * (app/settings/accounting/error-log-table.tsx). It cannot be built honestly
- * from there: `sync_errors` carries only record_type / record_id / error_code /
- * error_message / payload_snapshot, and
+ * WAS UNCALLED (wave 26); WIRED THIS LANE — orphan doctrine §1.2, category A.
+ * The obvious wire is still blocked exactly as wave 26 recorded: the proposed
+ * home was a "push this record" control on the sync-error row
+ * (app/settings/accounting/error-log-table.tsx), and it still cannot be built
+ * honestly from there — `sync_errors` carries only record_type / record_id /
+ * error_code / error_message / payload_snapshot, and
  *   · payload_snapshot is NEVER WRITTEN — the sole writer,
  *     app/api/accounting/sync/route.ts:150, omits the column entirely; and
  *   · that writer is a stub. Its expense/commission loops increment
@@ -303,10 +304,43 @@ async function buildQuickBooks(
  *     provider // In production, this would call QuickBooks/Xero API"), so the
  *     catch that would produce an error row is unreachable.
  * A push needs an amount and an account/customer ref. Nothing on that row
- * carries them, so a per-error push would have to INVENT the figures it posts to
- * the brokerage's books. Reported instead of wired: this needs either a real
- * payload_snapshot from a real sync, or a manual-entry surface that supplies the
- * fields — a product decision, not a wiring gap.
+ * carries them, so a per-error push would have to INVENT the figures it posts
+ * to the brokerage's books — which this repo does not do.
+ *
+ * NOT A DUPLICATE OF THE TWO AUTOMATIC PUSHES, RESEARCHED THIS LANE: this is
+ * NOT the same job as lib/finance/accounting-egress.ts:pushExpenseToAccounting /
+ * pushCommissionToAccounting (already wired autonomously — the former off
+ * app/actions/financials.ts:logScopedExpense at the moment a brokerage expense
+ * is logged, the latter off commission creation in
+ * app/actions/ai-financial-management.ts). Those two resolve their account/
+ * customer refs from tax_categories.provider_account_id and refuse honestly on
+ * an unmapped category — they never trust a caller-supplied ref. This function
+ * is the one place that DOES accept an exact caller-supplied ref, which is
+ * exactly what makes it unsuitable to have those two call it (they would lose
+ * their honest-refusal-on-unmapped-category behaviour) and exactly what makes
+ * it the right generic core for a human-in-the-loop manual entry — the "commit
+ * an ad-hoc entry with the exact QuickBooks reference I already have" case
+ * neither automatic path covers. All three already share ONE connection
+ * builder (buildQuickBooksForBrokerage, lib/finance/accounting-egress.ts —
+ * this file's local `buildQuickBooks` is a one-line delegate to it) and ONE
+ * accounting_sync_log lifecycle, so there is no second dispatch path to the
+ * provider, only a second CALLER of the shared one.
+ *
+ * Also NOT a duplicate of pushTeamPnlToQuickBooksAction /
+ * pushAgentCommissionToQuickBooksAction below: those post into the TEAM's or
+ * AGENT's own connected QuickBooks company (lib/finance/scoped-accounting-
+ * export.ts, EXACT scope-owner credential, deliberately isolated from the
+ * brokerage's — see that file's header) via raw qboRequest calls, never this
+ * function's buildQuickBooksForBrokerage. Routing them through this function
+ * would cross a scope boundary the owner's ruling on team/agent books
+ * deliberately keeps separate.
+ *
+ * WIRED: app/settings/accounting/manual-entry-card.tsx, mounted on the same
+ * page this file's own gate already protects (app/settings/accounting/
+ * page.tsx checks isBrokerageFinanceAdmin before rendering ANY tab), picking
+ * the account/customer ref from a REAL tax_categories mapping this brokerage
+ * configured (or a typed QuickBooks customer id for an invoice) — nothing
+ * invented, same honesty contract as the two automatic pushes.
  */
 export async function pushAccountingEntry(
   params:

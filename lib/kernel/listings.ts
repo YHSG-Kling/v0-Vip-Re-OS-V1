@@ -9,8 +9,12 @@
  *   both app/actions/listings-kernel.ts (Server Actions) and RSC pages.
  * - AI ISA assignment is NEVER triggered from listing commands — it fires
  *   only from the CRM lead pipeline (lib/kernel/crm.ts).
- * - Stage transitions ALWAYS delegate to executeListingTransition in
- *   app/actions/listing-lifecycle-core.ts — never written directly.
+ * - Stage transitions do NOT live here. This module's own `updateListingStage`
+ *   (→ executeListingTransition) was REMOVED as the orphaned half of a
+ *   TWO-WRITER hazard — see the tombstone at the old call site, ~line 709.
+ *   SURVIVOR: lib/application/listing-lifecycle.ts:advanceListingStageService,
+ *   reached from the UI via stage-pipeline.tsx → app/actions/listing-lifecycle.ts
+ *   :advanceListingStage. That is the ONLY way stage changes happen now.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -706,48 +710,26 @@ export async function launchListing(input: {
   }
 }
 
-// ─── 7. updateListingStage ────────────────────────────────────────────────────
-
-/**
- * Single gate for all listing stage changes.
- * Input: { listingId, targetStage, actorUserId, notes?, overrideReason? }
- * Output: { transition }
- * Delegates to: executeListingTransition (listing-lifecycle-core.ts)
- * Rule: this is the ONLY way stage changes happen — never update current_stage directly.
- */
-export async function updateListingStage(input: {
-  listingId: string
-  targetStage: ListingStage
-  actorUserId: string
-  notes?: string
-  overrideReason?: string
-}): Promise<KernelResult<{ fromStage: string | null; toStage: string; enabledSystemGates: string[] }>> {
-  if (!isValidUUID(input.listingId))   return { success: false, error: "Invalid listing ID" }
-  if (!input.targetStage)              return { success: false, error: "Target stage is required" }
-
-  try {
-    // Dynamic import to avoid circular dependency — lifecycle-core imports supabase
-    const { executeListingTransition } = await import(
-      "@/app/actions/listing-lifecycle-core"
-    )
-    const result = await executeListingTransition({
-      listingId:      input.listingId,
-      targetStage:    input.targetStage,
-      notes:          input.notes,
-      overrideReason: input.overrideReason,
-    })
-
-    if (!result.success) return { success: false, error: result.error ?? "Stage transition failed" }
-    return {
-      success: true,
-      fromStage:          result.transition?.fromStage ?? null,
-      toStage:            result.transition?.toStage ?? input.targetStage,
-      enabledSystemGates: result.transition?.enabledSystemGates ?? [],
-    }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "updateListingStage failed" }
-  }
-}
+// ─── 7. (updateListingStage removed) ──────────────────────────────────────────
+//
+// REMOVED as the orphaned half of a TWO-WRITER hazard (orphan doctrine §1: the
+// functionality already lives elsewhere). This was reachable ONLY through
+// app/actions/listings-kernel.ts:updateListingStageAction (also removed, same
+// tombstone), which nothing in app/ components/ or hooks/ ever called. It wrote
+// listings.lifecycle_stage down a SECOND path — executeListingTransition
+// (app/actions/listing-lifecycle-core.ts) — independent of the one the UI
+// actually reaches, keeping no listing_stage_history and firing a kernel-event
+// fanout + the seller-to-lifetime handoff that the live path never got.
+//
+// SURVIVOR: lib/application/listing-lifecycle.ts:advanceListingStageService
+// (reached from stage-pipeline.tsx → app/actions/listing-lifecycle.ts
+// :advanceListingStage). It now does everything this path did AND MORE: the
+// same stage-table-derived gate, PLUS listing_stage_history (which this path
+// never wrote), PLUS — merged onto it in this pass — the LISTING_STAGE_CHANGED
+// kernel-event emit (with metadata), the seller-to-lifetime transition on
+// CLOSED, and the back-on-market manager-signal handoff that used to live only
+// on this orphaned path. Nothing this function did is missing on the survivor.
+// Do not reintroduce a second listings.lifecycle_stage writer.
 
 // ─── 8. (attachMediaToListing removed — see note above MediaAttachmentInput) ──
 
@@ -852,26 +834,20 @@ Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead wit
 // the cost breakdown, and stamped buyer_contact_id unconditionally — a defect
 // the bridge already fixed. Nothing it did is missing on the survivor.
 
-// ─── 11. closeListingLifecycle ────────────────────────────────────────────────
-
-/**
- * Close a listing and convert seller to lifetime customer.
- * Input: { listingId, actorUserId }
- * Output: void
- * Delegates to updateListingStage(CLOSED) which triggers handleSellerToLifetimeTransition.
- */
-export async function closeListingLifecycle(input: {
-  listingId: string
-  actorUserId: string
-}): Promise<KernelResult<object>> {
-  const result = await updateListingStage({
-    listingId:   input.listingId,
-    targetStage: "CLOSED",
-    actorUserId: input.actorUserId,
-  })
-  if (!result.success) return { success: false, error: result.error }
-  return { success: true }
-}
+// ─── 11. (closeListingLifecycle removed) ──────────────────────────────────────
+//
+// REMOVED — its only caller was app/actions/listings-kernel.ts:closeListingAction
+// (also removed, same tombstone) and its only job was updateListingStage(CLOSED)
+// (removed immediately above), so it went with it. CLOSED is, and always was, an
+// ordinary target stage on the stage pipeline (see MILESTONE_STAGES in
+// app/components/dashboard/listings/lifecycle/stage-pipeline.tsx) — there was no
+// missing "close this listing" control to build; the generic advance-to-CLOSED
+// flow IS the close flow, and it now carries the seller-to-lifetime conversion
+// this function used to be the only path to.
+//
+// SURVIVOR: advance a listing to CLOSED via
+// lib/application/listing-lifecycle.ts:advanceListingStageService (same path
+// named on the updateListingStage tombstone above).
 
 // ─── 12. prefillListingFormFromRecord ────────────────────────────────────────
 

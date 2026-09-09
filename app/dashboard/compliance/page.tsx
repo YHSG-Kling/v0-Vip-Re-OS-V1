@@ -8,6 +8,7 @@ import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink, FileWarning
 import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
+import { getDocumentAccessAudit } from "@/app/actions/compliance/document-access-audit"
 import { calculateComplianceRiskScore, getComplianceOfficerDashboard } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -61,6 +62,18 @@ export default async function ComplianceDashboardPage() {
     user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
     getComplianceOfficerDashboard().catch(() => ({ pendingReviews: [], recentViolations: [] })),
   ])
+
+  // Document access audit — the reader for document_audit_trail (wave 46 lane
+  // EC). Three writers in app/actions/dotloop-integration.ts (send-for-
+  // signature, share-link mint, generate-from-template) had stamped
+  // action/document_id/document_source/notes/performed_by_type for a while
+  // with no surface ever showing a compliance officer the trail. Gated inside
+  // the action itself (isAdminOrBroker), brokerage from the session — never
+  // trusted from this page.
+  const documentAccessAudit = await getDocumentAccessAudit().catch((e) => {
+    console.error("[compliance] document access audit read failed:", e)
+    return { success: false, rows: [], unresolvedCount: 0, error: "Could not load the document access audit" }
+  })
 
   const blockedGateEvents = (officerLedger?.pendingReviews ?? []) as Array<{
     id: string
@@ -689,6 +702,58 @@ export default async function ComplianceDashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Document Access Audit — the reader for document_audit_trail
+          (action/document_id/document_source/notes/performed_by_type) */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <ScrollText className="h-4 w-4 text-primary" />
+            Document Access Audit
+            {documentAccessAudit.rows.length > 0 && (
+              <Badge variant="outline" className="text-xs">{documentAccessAudit.rows.length}</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>
+            Sends for signature, share links, and template-generated documents — most recent first
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {documentAccessAudit.error ? (
+            <p className="text-sm text-muted-foreground py-2 text-center">{documentAccessAudit.error}</p>
+          ) : documentAccessAudit.rows.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2 text-center">
+              No document access events recorded yet.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {documentAccessAudit.rows.map((row) => (
+                <div key={row.id} className="flex items-center justify-between gap-2 p-3 rounded-lg border">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {row.documentName ?? "Document"}
+                    </p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {row.notes ?? row.action.replace(/_/g, " ")}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {row.performedByName ?? row.performedByType ?? "system"} · {new Date(row.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <Badge variant="outline" className="text-xs capitalize shrink-0">
+                    {row.action.replace(/_/g, " ")}
+                  </Badge>
+                </div>
+              ))}
+              {documentAccessAudit.unresolvedCount > 0 && (
+                <p className="text-xs text-muted-foreground pt-1">
+                  +{documentAccessAudit.unresolvedCount} event{documentAccessAudit.unresolvedCount !== 1 ? "s" : ""} on a document type this audit does not yet resolve.
+                </p>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Alert Banner */}
       <Alert>

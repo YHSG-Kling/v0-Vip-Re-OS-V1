@@ -10,21 +10,14 @@
 // The runner itself (lib/voice/a2p-registration.runVoiceIntegrityRegistration)
 // refuses before campaign approval and without master creds — never fabricates.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
-import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
+import { requireProviders } from "@/lib/auth/platform-guard"
 import { runVoiceIntegrityRegistration, describeVoiceIntegrityState, nextVoiceIntegrityStep } from "@/lib/voice/a2p-registration"
 
-async function requireProviders(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
-  if (!platformStaffCan(role, "providers")) return { ok: false, error: "Forbidden — platform providers access required" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireProviders merged onto lib/auth/platform-guard.ts
+// requireProviders (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 export async function registerVoiceIntegrityAction(brokerageId: string): Promise<{
   ok: boolean; statusLine: string; nextStep: string; error?: string

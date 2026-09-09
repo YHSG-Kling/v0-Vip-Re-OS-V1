@@ -12,16 +12,11 @@ import {
   sendFeedbackRequest,
 } from "@/lib/communications"
 import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
-function parseAIJsonResponse(text: string) {
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 // ============================================
 // OPEN HOUSE CRUD OPERATIONS

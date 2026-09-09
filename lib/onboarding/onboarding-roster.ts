@@ -42,6 +42,11 @@ export interface OnboardingRosterRow {
   daysSinceLastActivity: number | null
   isStalled: boolean
   daysSinceStart: number
+  /** READER for onboarding_ai_chats.question (readerless-write-census) — how
+   *  many setup-assistant questions this agent has asked. A stalled agent
+   *  who has been asking questions is stuck, not disengaged; recruiting_manager
+   *  needs that distinction to pick the right nudge. */
+  assistantQuestionsAsked: number
 }
 
 export interface OnboardingRoster {
@@ -149,6 +154,20 @@ export async function loadOnboardingRoster(
     if (!latestActivity.has(c.agent_id) && c.completed_at) latestActivity.set(c.agent_id, c.completed_at)
   }
 
+  // READER for onboarding_ai_chats.question (readerless-write-census) —
+  // question counts per agent, tenant-scoped by brokerage_id (§4), explicit
+  // column select.
+  const { data: chatRows } = await db
+    .from("onboarding_ai_chats")
+    .select("agent_id")
+    .eq("brokerage_id", brokerageId)
+    .in("agent_id", agentIds)
+
+  const questionCounts = new Map<string, number>()
+  for (const row of (chatRows ?? []) as Array<{ agent_id: string }>) {
+    questionCounts.set(row.agent_id, (questionCounts.get(row.agent_id) ?? 0) + 1)
+  }
+
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
   const agents: OnboardingRosterRow[] = (onboardings as any[]).map((o) => {
@@ -173,6 +192,7 @@ export async function loadOnboardingRoster(
         : null,
       isStalled: isOnboardingStalled(o.status, lastActivityAt, now),
       daysSinceStart: Math.ceil((now.getTime() - startDate.getTime()) / DAY_MS),
+      assistantQuestionsAsked: questionCounts.get(o.agent_id) ?? 0,
     }
   })
 

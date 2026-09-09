@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { requireUserRowContext as requireUserContext } from "@/lib/auth/require-caller"
 import type { CalendarProvider } from "@/lib/providers/calendar/types"
 import { googleCalendarSyncAdapter } from "@/lib/providers/calendar/google-calendar-sync-adapter"
 import { outlookCalendarSyncAdapter } from "@/lib/providers/calendar/outlook-calendar-sync-adapter"
@@ -74,18 +75,9 @@ function computeSyncHash(event: CalendarEventForHash): string {
 
 // ─── INTERNAL HELPERS ─────────────────────────────────────────────────────────
 
-async function requireUserContext(
-  userId: string
-): Promise<{ brokerageId: string; userType: string }> {
-  const supabase = await createClient()
-  const { data: user, error } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", userId)
-    .single()
-  if (error || !user) throw new Error("User not found")
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
-}
+// TOMBSTONE: local requireUserContext merged onto lib/auth/require-caller.ts
+// requireUserRowContext (imported above as `requireUserContext`) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 async function assertCanAccessAccount(params: {
   supabase: Awaited<ReturnType<typeof createClient>>

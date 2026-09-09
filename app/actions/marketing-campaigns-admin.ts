@@ -9,40 +9,13 @@
  */
 
 import { revalidatePath } from "next/cache"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishMarketingCampaignSafe } from "@/lib/marketing/campaign-publisher"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { requireTenantAdminOrSoloOwner as requireAdmin } from "@/lib/auth/require-caller"
 
-async function requireAdmin(): Promise<
-  | { ok: true; userId: string; brokerageId: string; userType: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-
-  const { data: row } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  const userType = row.user_type as string
-  if (!isAdminOrBroker({ user_type: userType })) {
-    // TIER PARITY (owner rule): a solo-tier subscriber IS their own broker — their
-    // one working seat often carries user_type 'agent'/'solo_agent', which locked
-    // them out of their own bulk-campaign rail. Same allowance the voice
-    // 'draft_save_plays' intent already applies (app/api/internal/voice-command).
-    const svc = createServiceClient()
-    const { data: b } = await svc
-      .from("brokerages").select("plan_tier").eq("id", row.brokerage_id).maybeSingle()
-    if ((b as { plan_tier?: string } | null)?.plan_tier !== "solo_agent") {
-      return { ok: false, error: "Forbidden" }
-    }
-  }
-  return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
-}
+// TOMBSTONE: local requireAdmin merged onto lib/auth/require-caller.ts
+// requireTenantAdminOrSoloOwner (imported above as `requireAdmin`) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 export interface MarketingCampaignRow {
   id:                     string

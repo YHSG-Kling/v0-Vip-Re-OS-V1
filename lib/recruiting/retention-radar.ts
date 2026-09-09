@@ -8,15 +8,12 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeRetentionScore, isAtRisk, scoreTrendOf, type RetentionSignals } from "@/lib/recruiting/retention-score"
+import { daysSince } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-const daysSince = (iso: string | null | undefined, now: Date): number | null => {
-  if (!iso) return null
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return null
-  return Math.max(0, Math.floor((now.getTime() - t) / 86_400_000))
-}
+// TOMBSTONE: local daysSince merged onto lib/format/dates.ts daysSince
+// (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /** Gather the real signals for one agent (best-effort; missing → null → neutral in the scorer). */
 async function gatherSignals(svc: Svc, agent: { id: string; created_at?: string | null }, now: Date): Promise<RetentionSignals> {

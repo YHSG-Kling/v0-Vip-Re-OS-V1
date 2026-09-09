@@ -13,11 +13,14 @@
  *
  * Run: npx tsx scripts/esign-anchor-simulator.ts   (npm run test:esign-anchors)
  */
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
 import { PDFDocument } from "pdf-lib"
 import { deriveEsignAnchors } from "../lib/forms/esign-anchors"
 import { anchorsForProvider, recipientRolesForProvider, docusignTabsByRecipient, tabsByCanonicalRole, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
 import { evalAnchorPlacement, evalAnchorExecution } from "../lib/forms/esign-anchor-eval"
 import { buildEsignAnchorPlan } from "../lib/forms/esign-anchor-plan"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -91,6 +94,71 @@ async function main() {
   ])
   check("a tagged-but-unsigned form blocks completion", !exec.allExecuted && exec.incomplete.includes("disclosure") && !exec.incomplete.includes("info_sheet"))
   check("all tagged forms signed → executed", evalAnchorExecution([{ formKey: "pa", anchorCount: 2, signed: true }]).allExecuted)
+
+  console.log("\n[runtime wire — the dotloop webhook actually CALLS evalAnchorExecution, and gates on it]")
+  // RULE, not a waypoint (§2): the assertion is "every ready-marking write in the
+  // webhook is reached only through a branch naming loopFullyExecuted (itself set
+  // from evalAnchorExecution's own verdict)", not a pinned line number or byte
+  // offset — a refactor that keeps the gate intact must not need this to change.
+  const dotloopWebhookSrc = blankComments(readFileSync(resolve(process.cwd(), "app/api/webhooks/dotloop/route.ts"), "utf8"))
+
+  check("the webhook imports evalAnchorExecution from lib/forms/esign-anchor-eval",
+    /import\s*\{[^}]*\bevalAnchorExecution\b[^}]*\}\s*from\s*["']@\/lib\/forms\/esign-anchor-eval["']/.test(dotloopWebhookSrc))
+  check("the webhook actually CALLS evalAnchorExecution (not just imports it)",
+    /evalAnchorExecution\s*\(/.test(dotloopWebhookSrc))
+  check("a gate variable is derived from evalAnchorExecution's own verdict (.allExecuted), not hand-typed",
+    /loopFullyExecuted\s*=\s*execResult\.allExecuted/.test(dotloopWebhookSrc))
+
+  // POSITIVE CONTROL (§2): a checker that always says "gated" is worse than no
+  // checker. isGated() is the SAME predicate the three checks below apply to
+  // the real file; run first against a synthetic PRE-FIX snippet (the historical
+  // defect this whole wire exists to close — the offer stamp fired on every
+  // `matchedOffer`, with no loop-completion check at all) to prove it can still
+  // fail. If this control does not fail, the real-file checks below are unproven.
+  const isGated = (src: string, writeMarker: string): boolean => {
+    const idx = src.indexOf(writeMarker)
+    if (idx < 0) return false
+    // Wide enough to span a long explanatory comment sitting between the `if`
+    // and the write it guards (comments are BLANKED, not removed, by
+    // blankComments, so their character length still counts) — 1200 chars
+    // comfortably covers the longest such comment in this file today, and the
+    // control below proves the window isn't so wide it stops meaning anything.
+    const before = src.slice(Math.max(0, idx - 1200), idx)
+    return /loopFullyExecuted/.test(before)
+  }
+  const preFixOfferBlock = `
+    if (matchedOffer) {
+      const { error: offerStampError } = await supabase
+        .from("offers")
+        .update({ esign_status: "fully_signed", esign_completed_at: now })
+        .eq("id", matchedOffer.id)
+    }
+  `
+  check("control · isGated() correctly FAILS on the pre-fix ungated offer-stamp shape",
+    !isGated(preFixOfferBlock, 'esign_status:                      "fully_signed"'))
+  const postFixSample = `
+    if (matchedOffer && loopFullyExecuted) {
+      const { error: offerStampError } = await supabase
+        .from("offers")
+        .update({ esign_status: "fully_signed" })
+        .eq("id", matchedOffer.id)
+    }
+  `
+  check("control · isGated() correctly PASSES on a gated shape (the checker isn't just always false)",
+    isGated(postFixSample, 'esign_status: "fully_signed"'))
+
+  // Now the real checks, using the same isGated() predicate the control just proved works.
+  check("the offer esign_status: \"fully_signed\" stamp is reached only under loopFullyExecuted",
+    isGated(dotloopWebhookSrc, 'esign_status:                      "fully_signed"'))
+  check("the listing_agreements esign_status: \"fully_signed\" stamp is reached only under loopFullyExecuted",
+    isGated(dotloopWebhookSrc, 'esign_status:      "fully_signed"'))
+  check("finalizeVoiceCockpitPacket (the voice-cockpit documents/BBA flip) is reached only under loopFullyExecuted",
+    isGated(dotloopWebhookSrc, 'await finalizeVoiceCockpitPacket(supabase as any, loop_id, "dotloop")'))
+
+  check("an incomplete loop signals deal_coordinator (not left silent)",
+    /toManager:\s*"deal_coordinator"/.test(dotloopWebhookSrc) && /signalType:\s*"esign_loop_partially_signed"/.test(dotloopWebhookSrc))
+  check("a refused loop-documents read fails CLOSED (§4) — loopFullyExecuted stays false, and the refusal is logged, not swallowed",
+    /if\s*\(\s*loopDocsError\s*\)[\s\S]{0,300}console\.error/.test(dotloopWebhookSrc))
 
   console.log("\n[end-to-end plan against a REAL PDF]")
   const pdf = await makeSignablePdf()

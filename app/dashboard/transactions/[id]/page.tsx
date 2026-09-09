@@ -7,6 +7,8 @@ import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
 import { BuyerMoveSection } from "./buyer-move-section"
 import { HazardInsuranceSection } from "./hazard-insurance-section"
+import { NotificationDeliverySection } from "./notification-delivery-section"
+import { EsignSyncButton } from "./esign-sync-button"
 import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-hazard-insurance"
 import { AiCoordinatorPanel } from "./ai-coordinator-panel"
 import { SmartChecklistPanel } from "./smart-checklist-panel"
@@ -361,6 +363,19 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
+  // READER (orphan doctrine §1.2) for cost_breakdown_tracking —
+  // generateCostBreakdown() (lib/application/transactions.ts) writes it and
+  // nothing read it back. Scoped by transaction_id, which is already proven
+  // to belong to this brokerage by the `.eq("brokerage_id", brokerageId)`
+  // predicate on the `transaction` fetch above (§4) — cost_breakdown_tracking
+  // rows written before the writer stamped brokerage_id have it NULL, so a
+  // brokerage_id predicate here would silently hide exactly those rows.
+  const { data: closingCosts } = await supabase
+    .from("cost_breakdown_tracking")
+    .select("id, item_name, cost_category, party, estimated_amount, actual_amount, status")
+    .eq("transaction_id", id)
+    .order("cost_category", { ascending: true })
+
   // 7-point score history for the inline trend sparkline. Separate query so
   // the destructure above stays positional. Cheap (<= 7 rows).
   const { data: healthScoreHistory } = await supabase
@@ -512,6 +527,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         brokerageId={(transaction as any).brokerage_id}
         view={hazardInsuranceView}
       />
+      {/* Client Notification Delivery — status/response reader for
+          notification_log (readerless-write-census). */}
+      <NotificationDeliverySection
+        transactionId={id}
+        brokerageId={(transaction as any).brokerage_id}
+      />
+      {/* E-sign document sync — manual "pull now" beside the autonomous sweep
+          (app/api/cron/esign-doc-sync); the one UI caller of syncEsignDocsAction. */}
+      <EsignSyncButton transactionId={id} contactId={transaction.contact_id ?? null} />
       {/* Buyer Move Services — post-contract move-in concierge (utilities, address, movers) with
           guided-DIY vs Utility Connect handoff (handoff execution feature-flagged until creds exist). */}
       <BuyerMoveSection
@@ -565,6 +589,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       lenderInfo={lenderInfo}
       complianceLogs={complianceLogs ?? []}
       commissions={commissions ?? []}
+      closingCosts={closingCosts ?? []}
       stages={stages}
       currentStageIndex={currentStageIndex}
       contactEmail={contactEmail}

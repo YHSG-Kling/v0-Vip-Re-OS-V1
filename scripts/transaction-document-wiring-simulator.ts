@@ -291,11 +291,20 @@ const WIRED: Array<{ fn: string; from: string; surface: string }> = [
   { fn: "aiCompareDocuments", from: F.docIntel, surface: F.docCenter },
 ]
 
-/** Deliberately NOT wired — each with the named duplicate that justifies it. */
+/**
+ * Deliberately NOT wired — each with the named duplicate that justifies it.
+ *
+ * `aiCheckDisclosures` is NOT here any more (wave 46 lane EC): unlike
+ * prepareForClosing/getClosingPrep/logDocumentAccess, which stay unwired
+ * because a second door onto the SAME row would race the first, the owner's
+ * orphan-doctrine ruling for this one was DELETE with a tombstone once its
+ * two capabilities the survivor lacked (stateSpecificRequirements, the AI
+ * reasoning field) were merged onto checkTransactionDisclosures. See D1B
+ * below, which asserts that RULE instead of pinning to the now-gone export.
+ */
 const UNWIRED: Array<{ fn: string; from: string; duplicate: string }> = [
   { fn: "prepareForClosing", from: F.coordinator, duplicate: "ai-closing-workflow.ts:aiGenerateClosingChecklist" },
   { fn: "getClosingPrep", from: F.coordinator, duplicate: "ai-closing-workflow.ts:aiGenerateClosingChecklist" },
-  { fn: "aiCheckDisclosures", from: F.docIntel, duplicate: "ai-transaction-documents.ts:checkTransactionDisclosures" },
   { fn: "logDocumentAccess", from: F.dotloop, duplicate: "lib/kernel/document-custody.ts:issueGovernedDocumentUrl" },
 ]
 
@@ -306,7 +315,6 @@ const TENANT_WRITES: Array<{ file: string; fn: string; table: string }> = [
   { file: F.coordinator, fn: "draftTransactionCommunication", table: "transaction_communications" },
   { file: F.coordinator, fn: "generatePostClosingPlan", table: "scheduled_touchpoints" },
   { file: F.coordinator, fn: "prepareForClosing", table: "transaction_closing_prep" },
-  { file: F.docIntel, fn: "aiCheckDisclosures", table: "compliance_checklists" },
   { file: F.dotloop, fn: "createDocumentFolder", table: "document_folders" },
   { file: F.dotloop, fn: "generateDocumentFromTemplate", table: "client_documents" },
 ]
@@ -709,6 +717,90 @@ ASSERTIONS.push({
   ],
 })
 
+// ── D1B · the aiCheckDisclosures merge-then-delete holds, and disclosure
+//         checks now run AUTONOMOUSLY on document upload ───────────────────
+// Not pinned to the deleted export's presence (that was D1's job for the
+// three capabilities that stay deliberately unwired) — a merge-then-delete
+// finishes BY the export going away, so asserting "aiCheckDisclosures still
+// exists" would go permanently red the moment the fix landed (§2: never pin
+// an assertion to a waypoint). This asserts the RULE instead: the export is
+// GONE, a tombstone names its survivor, the survivor carries what was merged
+// onto it, and the survivor's ONE implementation is reachable from both the
+// manual surface and the autonomous kernel path.
+ASSERTIONS.push({
+  id: "D1B",
+  what: "aiCheckDisclosures is deleted with a tombstone naming its survivor, the survivor carries the merged fields, and disclosure checks run autonomously on document upload (not only from a button)",
+  run: () => {
+    const problems: string[] = []
+
+    if (/export\s+async\s+function\s+aiCheckDisclosures\b/.test(code(F.docIntel))) {
+      problems.push("aiCheckDisclosures still exists as an export — the merge-then-delete never completed")
+    }
+    // The tombstone is a COMMENT — read raw source for this one check only;
+    // every other check in this assertion reads code() (comment-stripped).
+    if (!/TOMBSTONE[\s\S]{0,400}aiCheckDisclosures[\s\S]{0,400}checkTransactionDisclosures/.test(raw(F.docIntel))) {
+      problems.push("no tombstone at ai-document-intelligence.ts naming checkTransactionDisclosures as survivor")
+    }
+
+    // The survivor carries the two fields the deleted duplicate had and it lacked.
+    const survivorSrc = code(F.siblingDocs)
+    if (!/stateSpecificRequirements/.test(survivorSrc)) {
+      problems.push("checkTransactionDisclosures does not carry stateSpecificRequirements (merged capability lost)")
+    }
+    if (!/aiReasoning/.test(survivorSrc)) {
+      problems.push("checkTransactionDisclosures does not carry an AI-reasoning field (merged capability lost)")
+    }
+
+    // ONE implementation (§6): both the manual action and the runner it calls
+    // must be the SAME module — never a second disclosure-check spelling.
+    if (!/from\s+["']@\/lib\/compliance\/disclosure-check-runner["']/.test(survivorSrc)) {
+      problems.push("checkTransactionDisclosures no longer delegates to lib/compliance/disclosure-check-runner — a second implementation may have grown back")
+    }
+    const runnerPath = resolve(ROOT, "lib/compliance/disclosure-check-runner.ts")
+    let runnerSrc = ""
+    try {
+      runnerSrc = stripComments(readFileSync(runnerPath, "utf8"))
+    } catch {
+      problems.push("lib/compliance/disclosure-check-runner.ts is missing")
+    }
+    if (runnerSrc && !/\.from\(\s*["']compliance_checklists["']\s*\)/.test(runnerSrc)) {
+      problems.push("disclosure-check-runner.ts does not write compliance_checklists")
+    }
+
+    // AUTONOMOUS PATH — the owner ruling (CLAUDE.md / lane rules): every
+    // capability should run on a manager signal / cron / kernel event, not
+    // wait for a button. The reactor must call the SAME runner on a
+    // document-arrival kernel event.
+    const reactorPath = resolve(ROOT, "lib/kernel/event-reactor.ts")
+    let reactorSrc = ""
+    try {
+      reactorSrc = stripComments(readFileSync(reactorPath, "utf8"))
+    } catch {
+      problems.push("lib/kernel/event-reactor.ts is missing")
+    }
+    if (reactorSrc) {
+      if (!/disclosure-check-runner/.test(reactorSrc)) {
+        problems.push("event-reactor.ts never imports the disclosure-check-runner — no autonomous wire")
+      }
+      if (!/DOCUMENT_RECEIVED|DOCUMENT_UPLOADED/.test(reactorSrc)) {
+        problems.push("event-reactor.ts has no DOCUMENT_RECEIVED/DOCUMENT_UPLOADED branch")
+      }
+      if (!/runDisclosureComplianceCheck\s*\(/.test(reactorSrc)) {
+        problems.push("event-reactor.ts imports the runner but never calls runDisclosureComplianceCheck")
+      }
+    }
+
+    return { ok: problems.length === 0, detail: problems.join(" | ") }
+  },
+  breaks: [
+    {
+      file: "lib/compliance/disclosure-check-runner.ts",
+      find: '.from("compliance_checklists").upsert(',
+      replace: '.from("compliance_checklists_disabled").upsert(',
+    },
+  ],
+})
+
 // ── D2 · every named duplicate really exists and is really wired ────────────
 ASSERTIONS.push({
   id: "D2",
@@ -724,7 +816,18 @@ ASSERTIONS.push({
     if (!/checkTransactionDisclosures\s*\(/.test(code(F.txnDetail))) {
       problems.push("checkTransactionDisclosures is not called from the transaction detail surface")
     }
-    if (!/compliance_checklists/.test(sibling)) problems.push("the duplicate does not write compliance_checklists")
+    // The write itself now lives in the shared runner it delegates to (§6 — one
+    // implementation, not restated in the action) rather than inline here, so
+    // check either the action's own body OR the runner it calls.
+    let runnerWritesChecklists = false
+    try {
+      runnerWritesChecklists = /\.from\(\s*["']compliance_checklists["']\s*\)/.test(
+        code("lib/compliance/disclosure-check-runner.ts"),
+      )
+    } catch { /* checked below by absence */ }
+    if (!/\.from\(\s*["']compliance_checklists["']\s*\)/.test(sibling) && !runnerWritesChecklists) {
+      problems.push("neither the duplicate nor the runner it delegates to writes compliance_checklists")
+    }
 
     // aiGenerateClosingChecklist — the duplicate that keeps prepareForClosing unwired
     const closing = code(F.closingWorkflow)

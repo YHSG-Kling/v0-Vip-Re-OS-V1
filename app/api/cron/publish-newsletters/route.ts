@@ -281,6 +281,60 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     return await deferCampaign(svc, c, "sections_missing:no_universal_fallback")
   }
 
+  // Check (2.5) — SEO SCORE GATE/NUDGE (orphan doctrine §1.2 reader for
+  // newsletter_seo_scores — until now the 8 columns getSEOScore() writes had
+  // no reader at all, cron included). Looked up via the campaign's OWN
+  // scheduled-send ledger row (newsletter_scheduled_sends.newsletter_id =
+  // c.id — the same join get-seo-score.ts's tenant check uses), most recent
+  // first, since a re-scheduled campaign can carry more than one ledger row.
+  // A campaign with NO stored score (htmlContent was never supplied to
+  // getSEOScore — schedule-newsletter.ts:192) is NOT gated: scoring is
+  // opt-in, and blocking every unscored send would refuse campaigns that
+  // never asked to be measured. A LOW score defers exactly like the other
+  // composition-gate checks above AND nudges marketing_agent over the
+  // manager bus — a signal, never an outbound send (§ "Paid spend and
+  // outbound sends stay gated" / LANE_RULES). The threshold matches the
+  // editor's own amber/red boundary (newsletters-client.tsx:1533).
+  const SEO_SCORE_GATE_THRESHOLD = 70
+  try {
+    const { data: ledgerRow } = await svc
+      .from("newsletter_scheduled_sends")
+      .select("id")
+      .eq("newsletter_id", c.id)
+      .eq("brokerage_id", c.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (ledgerRow?.id) {
+      const { data: seoRow, error: seoError } = await svc
+        .from("newsletter_seo_scores")
+        .select("overall_seo_score")
+        .eq("scheduled_send_id", ledgerRow.id)
+        .maybeSingle()
+      if (seoError) {
+        console.error(`[publish-newsletters] SEO score lookup refused for ${c.id}:`, seoError.message)
+      } else if (seoRow && seoRow.overall_seo_score < SEO_SCORE_GATE_THRESHOLD) {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId: c.brokerage_id,
+          fromManager: "campaign_orchestrator",
+          toManager: "marketing_agent",
+          signalType: "newsletter_seo_score_low",
+          message: `"${c.campaign_name ?? c.subject_line ?? c.id}" scored ${seoRow.overall_seo_score}/100 — below the ${SEO_SCORE_GATE_THRESHOLD} send threshold. Held, not sent.`,
+          entityType: "newsletter_campaign",
+          entityId: c.id,
+          payload: { overall_seo_score: seoRow.overall_seo_score, threshold: SEO_SCORE_GATE_THRESHOLD },
+        }, svc)
+        return await deferCampaign(svc, c, `seo_score_low:${seoRow.overall_seo_score}`)
+      }
+    }
+  } catch (seoGateErr) {
+    // Fail OPEN here, deliberately: the SEO gate is a quality nudge layered on
+    // top of the compliance/composition gates above, not a substitute for
+    // them. A refused lookup must not silently hold every campaign hostage.
+    console.error(`[publish-newsletters] SEO score gate threw for ${c.id} (continuing):`, seoGateErr)
+  }
+
   // Check (3) — final-shape compliance gate. Per-section evaluateOutbound runs
   // at draft time inside aiWriteNewsletterContent (broadcast shape), but the
   // FINAL assembled email body (video embed + sections stitched into one

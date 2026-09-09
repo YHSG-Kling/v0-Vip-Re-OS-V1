@@ -12,13 +12,13 @@ import { createServiceClient } from "@/lib/supabase/service"
 // status read, resolveWriteContext for the profile save and the carrier filing.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
+import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
-function isBrokerRole(t?: string | null) {
-  // TENANT ADMIN GATE (kept inline, telecom infra): 'superadmin' removed — dead
-  // as users.user_type (0 live rows); broker_owner added — storable seat that
-  // owns the brokerage and was wrongly refused its own carrier registration.
-  return ["admin", "broker", "broker_owner", "broker_admin"].includes(t ?? "")
-}
+// TOMBSTONE: local isBrokerRole (["admin","broker","broker_owner","broker_admin"])
+// was the BROKERAGE_FINANCE_ADMIN_USER_TYPES roster restated — carrier
+// registration obligates the brokerage the same way finance does, and
+// resolve-user-role.ts:539 isBrokerageFinanceAdmin (imported above) is that
+// roster's one predicate (§1/§6 SAME BODY census round 3, 2026-09-09).
 
 /**
  * ONE gate, TWO channels (§6).
@@ -39,7 +39,7 @@ async function requireBrokerCtx(
   const ctx = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
   if (!ctx.ok) return { ok: false, error: ctx.error ?? "Unauthorized" }
   if (!ctx.brokerageId) return { ok: false, error: "Unauthorized" }
-  if (!isBrokerRole(ctx.userType)) return { ok: false, error: "Only broker / admin can manage carrier registration" }
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return { ok: false, error: "Only broker / admin can manage carrier registration" }
   return { ok: true, brokerageId: ctx.brokerageId }
 }
 

@@ -805,7 +805,36 @@ export async function getMarketingPackageServices(packageId: string) {
     return []
   }
 
-  return data || []
+  const services = data || []
+
+  // READER for vendor_communications.sent_at / .communication_type
+  // (readerless-write-census) — the vendor service detail's "last contacted"
+  // line. Tenant-scoped: filtered to this package's own brokerage AND to the
+  // service ids just resolved above, not to a caller-supplied id set (§4).
+  const serviceIds = services.map((s: any) => s.id).filter(Boolean)
+  if (serviceIds.length > 0) {
+    const { data: comms } = await supabase
+      .from("vendor_communications")
+      .select("service_id, communication_type, sent_at")
+      .eq("brokerage_id", auth.brokerageId)
+      .in("service_id", serviceIds)
+      .order("sent_at", { ascending: false })
+
+    const lastByService = new Map<string, { communication_type: string; sent_at: string }>()
+    for (const c of comms ?? []) {
+      if (!lastByService.has(c.service_id)) {
+        lastByService.set(c.service_id, { communication_type: c.communication_type, sent_at: c.sent_at })
+      }
+    }
+    for (const s of services as any[]) {
+      const last = lastByService.get(s.id)
+      s.last_vendor_communication = last
+        ? { type: last.communication_type, sentAt: last.sent_at }
+        : null
+    }
+  }
+
+  return services
 }
 
 /**

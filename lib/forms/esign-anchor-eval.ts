@@ -56,12 +56,30 @@ export interface AnchorExecutionResult {
 /**
  * evalAnchorExecution — the close of the loop: a form that CARRIED signature anchors must be fully
  * signed before we certify "ready." A form with zero anchors needs no signature and is fine. Pure.
- */
-/** @proofSeam needs real per-form FormAnchorStatus[] (formKey/anchorCount/signed); the live
- *  getEsignStatus (lib/kernel/forms.ts) returns aggregate total/signed/pending counts only —
- *  assembling the per-form shape means threading esign-anchor-adapters.ts's per-tag data
- *  through the packet-finalize path, which is a real integration, not a caller stub.
- *  Exercised by scripts/esign-anchor-simulator.ts */
+ *
+ * WIRED (wave 46 lane EC): app/api/webhooks/dotloop/route.ts calls this on every
+ * `document.signed` event to decide whether the WHOLE loop's packet may flip to
+ * ready — a Dotloop loop fires this event once PER DOCUMENT, and without this
+ * gate the offer's esign_status, the listing agreement's fully_executed_at, and
+ * the voice-cockpit packet finalize all flipped "fully signed" the moment the
+ * FIRST signer in a multi-document loop signed. FormAnchorStatus[] there is
+ * assembled from every client_documents row tracked under the loop's
+ * dotloop_loop_id (each carries anchorCount 1 — tracked-in-a-signature-loop
+ * implies at least one anchor by construction) with `signed` from its own
+ * status column. When evalAnchorExecution reports incomplete, the webhook
+ * publishes a manager signal (compliance_officer → deal_coordinator,
+ * signalType "esign_loop_partially_signed") and skips every ready-marking
+ * write for that event.
+ *
+ * STILL OPEN: the FormAnchorStatus[] above is coarse (anchorCount 1 per
+ * document, not the provider's real per-tag anchor count). The finer thread —
+ * assembling anchors from esign-anchor-adapters.ts's per-tag provider payload,
+ * which needs that count persisted at send time rather than only previewed by
+ * app/actions/buyer-offer/esign-anchor-plan.ts — is a further integration, not
+ * a caller stub. The coarse version already closes the real defect (partial
+ * loops no longer read as complete); the finer one would only sharpen which
+ * FIELD is still unsigned within an already-known-incomplete document.
+ * Exercised by scripts/esign-anchor-simulator.ts */
 export function evalAnchorExecution(forms: FormAnchorStatus[]): AnchorExecutionResult {
   const incomplete: string[] = []
   const reasons: string[] = []

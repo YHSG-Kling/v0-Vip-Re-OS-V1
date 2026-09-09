@@ -41,6 +41,7 @@ import {
   TRANSACTION_TASK_PRIORITY_PROMPT_UNION,
   coerceTaskPriority,
 } from "@/lib/transactions/task-vocabulary"
+import { runDisclosureComplianceCheck } from "@/lib/compliance/disclosure-check-runner"
 
 // CONTRACT-TYPE doc_type values — drives which analysis path is used
 const CONTRACT_TYPES = new Set([
@@ -430,6 +431,12 @@ export async function checkTransactionDisclosures(params: {
   missingDisclosures?: string[]
   issues?: string[]
   recommendations?: string[]
+  /** State-specific disclosure requirements the model identified for this transaction's jurisdiction. */
+  stateSpecificRequirements?: string[]
+  /** The model's stated reasoning for the score/verdict above — merged in from the
+   *  now-deleted app/actions/ai-document-intelligence.ts:aiCheckDisclosures, whose
+   *  schema carried this and this survivor's prompt asked for but silently dropped. */
+  aiReasoning?: string
   error?: string
 }> {
   if (!isValidUUID(params.transactionId)) {
@@ -447,105 +454,18 @@ export async function checkTransactionDisclosures(params: {
   // ★ ACT-AS WRITE SEAM ★ — see header. Tenant from the session; the claim is verified.
   const wc = await resolveWriteContextForTenant(params.brokerageId)
   if (!wc.ok) return { success: false, error: wc.error }
-  const supabase = wc.db
 
+  // The actual check + upsert is ONE implementation (§6), shared with the
+  // autonomous path the reactor runs on DOCUMENT_UPLOADED/DOCUMENT_RECEIVED —
+  // see lib/compliance/disclosure-check-runner.ts. This action's job is only
+  // the tenancy gate above; the runner does no gating of its own.
   try {
-    const { data: docs, error: docsError } = await supabase
-      .from("transaction_documents")
-      .select("doc_type, doc_label, status")
-      .eq("transaction_id", params.transactionId)
-      .eq("brokerage_id", wc.brokerageId)
-
-    // A refused read resolves rather than throwing. Left undestructured, `docs`
-    // would be null and the model would be asked to grade a deal it was told has
-    // no documents at all — a confidently wrong 0% compliance score.
-    if (docsError) {
-      return { success: false, error: `Could not read transaction documents: ${docsError.message}` }
-    }
-
-    const { text } = await generateText({
+    return await runDisclosureComplianceCheck(wc.db, {
+      transactionId: params.transactionId,
       brokerageId: wc.brokerageId,
       userId: wc.userId || null,
-      model: "openai/gpt-4o-mini",
-      system:
-        "You are a real estate compliance officer specializing in state disclosure requirements. Always respond with valid JSON only.",
-      messages: [
-        {
-          role: "user",
-          content: `Check disclosure compliance for a real estate transaction in ${params.state}.
-
-Documents present:
-${JSON.stringify(docs ?? [])}
-
-Return JSON:
-{
-  "complianceScore": number 0-100,
-  "requiredDisclosures": [{"name": string, "present": boolean, "status": "complete"|"missing"|"incomplete"}],
-  "missingDisclosures": [string],
-  "issues": [string],
-  "recommendations": [string],
-  "stateNotes": string
-}`,
-        },
-      ],
+      state: params.state,
     })
-
-    let result: Record<string, unknown>
-    try {
-      const cleaned = text.replace(/^```json\n?/, "").replace(/\n?```$/, "").trim()
-      result = JSON.parse(cleaned)
-    } catch {
-      return { success: false, error: "AI returned unparseable compliance data" }
-    }
-
-    // ── THE DISCLOSURE CHECK MUST BE RE-RUNNABLE ─────────────────────────────
-    // This was a plain .insert() under a comment that denied the unique index
-    // here existed. It does: compliance_checklists is UNIQUE on
-    // (transaction_id, checklist_type), so the FIRST run wrote a row and every
-    // run after it raised duplicate-key. The result was not destructured, so
-    // supabase-js RESOLVED the refusal and this action returned success while
-    // nothing was written — the check could only ever land once per deal.
-    //
-    // The fix is an UPSERT rather than a history table, because no reader of
-    // compliance_checklists orders by created_at or takes a latest row —
-    // lib/deal-health/health-scorer.ts, lib/application/compliance-monitoring.ts
-    // and app/actions/workflows.ts all read every row for a transaction and treat
-    // it as CURRENT STATE. Keeping a row per run would feed stale scores into the
-    // live deal-health number. One authoritative row per checklist_type;
-    // re-running UPDATES it, and updated_at makes the re-run visible.
-    //
-    // onConflict MUST name the arbiter: an upsert with no onConflict falls back
-    // to the primary key (id), which never collides, so Postgres re-raises the
-    // very same duplicate-key on the unique index. Naming the arbiter is the fix.
-    //
-    // brokerage_id is required, not optional: brok_compliance_checklists is the
-    // only policy covering INSERT/UPDATE and its WITH CHECK is
-    // (brokerage_id = current_user_brokerage_id()), which is FALSE for NULL.
-    // compliance_score is clamped to satisfy CHECK (>= 0 AND <= 100).
-    const { error: checklistError } = await supabase.from("compliance_checklists").upsert(
-      {
-        transaction_id: params.transactionId,
-        brokerage_id: wc.brokerageId,
-        checklist_type: "disclosures",
-        items: result.requiredDisclosures ?? [],
-        compliance_score: Math.max(0, Math.min(100, Math.round(Number(result.complianceScore ?? 0)))),
-        ai_recommendations: result.recommendations ?? [],
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "transaction_id,checklist_type" },
-    )
-
-    if (checklistError) {
-      return { success: false, error: `Disclosure check could not be recorded: ${checklistError.message}` }
-    }
-
-    return {
-      success: true,
-      complianceScore: result.complianceScore as number,
-      missingDisclosures: result.missingDisclosures as string[],
-      issues: result.issues as string[],
-      recommendations: result.recommendations as string[],
-    }
   } catch (error) {
     return handleError(error, "checkTransactionDisclosures")
   }

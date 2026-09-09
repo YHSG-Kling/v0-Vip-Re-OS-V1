@@ -10,6 +10,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeSkillFreshness, SKILL_LABEL, type SkillArea, type SkillSignal } from "@/lib/education/skill-freshness"
+import { daysSince } from "@/lib/format/dates"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -17,12 +18,8 @@ type Svc = ReturnType<typeof createServiceClient>
  *  agent is left alone (they're still onboarding — untested is expected, not a gap). */
 export const UNTESTED_TENURE_DAYS = 45
 
-const daysSince = (iso: string | null | undefined, now: Date): number | null => {
-  if (!iso) return null
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return null
-  return Math.max(0, Math.floor((now.getTime() - t) / 86_400_000))
-}
+// TOMBSTONE: local daysSince merged onto lib/format/dates.ts daysSince
+// (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /** Gather the last-practice signal for one agent across the three skill areas (best-effort). */
 async function gatherSkillSignals(svc: Svc, agent: { id: string; user_id: string | null }, now: Date): Promise<SkillSignal[]> {

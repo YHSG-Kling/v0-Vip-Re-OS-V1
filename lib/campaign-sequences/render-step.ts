@@ -20,6 +20,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { assembleEmail, type AssembledEmail } from "@/lib/kernel/communications/assemble-email"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
+import { escapeHtmlMinimal as escapeHtml } from "@/lib/format/html"
 
 export interface RenderStepInput {
   brokerageId:  string
@@ -230,9 +231,6 @@ function plainToHtml(text: string): string {
     .join("<br>")}</div>`
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts
+// escapeHtmlMinimal (imported above as `escapeHtml`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.

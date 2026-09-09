@@ -16,6 +16,7 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
@@ -100,15 +101,9 @@ async function verifySocialPostInBrokerage(
   return { ok: true, row: data as any }
 }
 
-function parseAIJsonResponse(text: string) {
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 // ============================================
 // SOCIAL MEDIA ACCOUNT MANAGEMENT

@@ -15,6 +15,8 @@ import { validateStageTransition } from "@/lib/listing-lifecycle/transition-vali
 import { evaluateReadinessChecks } from "@/lib/listing-lifecycle/readiness-checker"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
 import { statusForStage, isGatedStage, type ListingStatusGate } from "@/lib/listings/listing-status-sync"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // =====================================================
 // LISTING LIFECYCLE APPLICATION SERVICE
@@ -333,16 +335,28 @@ export async function scheduleListingAppointmentService(
     .single()
   if (calErr) throw calErr
 
+  // FOUND 2026-09-09 by scripts/lifecycle-lib-defects-simulator.ts once
+  // d1.both-stage-writers-are-gated DERIVED its writer list from the source instead
+  // of a hand-kept pair: this was a THIRD writer of listings.lifecycle_stage that ran
+  // no gate and pinned no tenant. The booking itself must still land (a seller who
+  // re-books from CMA_GENERATION is not "advancing"), so only the STAGE write is
+  // gated: it moves to APPOINTMENT_SET when the table admits the edge and is left
+  // alone otherwise — never regressed, never invented.
+  const gate = await requireListingStageAdvance(supabase, params.listing_id, "APPOINTMENT_SET")
+  if (!gate.ok) {
+    console.warn(`[scheduleListingAppointmentService] listing ${params.listing_id}: appointment booked, lifecycle_stage left as-is — ${gate.error}`)
+  }
   const { data, error } = await supabase
     .from("listings")
     .update({
       appointment_at:       appointmentAt,
       appointment_notes:    params.notes ?? null,
       appointment_event_id: calEvent.id,
-      lifecycle_stage:      "APPOINTMENT_SET",
+      ...(gate.ok ? { lifecycle_stage: "APPOINTMENT_SET" } : {}),
       updated_at:           new Date().toISOString(),
     })
     .eq("id", params.listing_id)
+    .eq("brokerage_id", brokerageId)
     .select()
     .single()
 
@@ -369,42 +383,10 @@ export async function scheduleListingAppointmentService(
  * Kept (not folded into advance) because it is a distinct exported capability
  * with its own caller — this is a fix, not a consolidation.
  */
-export async function updateListingStageService(params: {
-  listing_id: string
-  stage: string
-  notes?: string
-}) {
-  const supabase = await createClient()
-
-  const gate = await requireListingStageAdvance(supabase, params.listing_id, params.stage)
-  if (!gate.ok) return { success: false as const, error: gate.error }
-
-  // listings.status is kept in lockstep with the stage machine — the same rule
-  // lib/kernel/lifecycle.ts applies on its path. Without it a listing advanced
-  // through this writer reaches MLS_ACTIVE while status is still 'draft', and
-  // buyer search / the public pages never see it. (There is no `notes` column on
-  // listings.) This note sits above the statement, not inside the chain, so the
-  // brokerage filter stays visibly attached to the write it scopes.
-  // Same gate as the advance path below — only a gated target stage pays for a read.
-  const statusGate = await resolveListingStatusGate(supabase, params.stage, params.listing_id, gate.brokerageId)
-
-  const { data, error } = await supabase
-    .from("listings")
-    .update({
-      lifecycle_stage: params.stage,
-      ...(statusForStage(params.stage, statusGate) ? { status: statusForStage(params.stage, statusGate) } : {}),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", params.listing_id)
-    .eq("brokerage_id", gate.brokerageId)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return { success: true as const, listing: data, fromStage: gate.fromStage, stage: params.stage }
-}
-
+// updateListingStageService RETIRED (2026-09-09, wave 46) — duplicate writer of listings.lifecycle_stage.
+// Survivor: advanceListingStageService below (same requireListingStageAdvance gate, same statusForStage
+// lockstep, plus stage history, kernel events and the seller-to-lifetime transition the duplicate never had).
+// Caller app/actions/listing-lifecycle.ts::updateListingStage was retired with it.
 
 /**
  * Resolve the gate verdict the status map needs — ONCE, for both writers in this file.
@@ -438,6 +420,123 @@ async function resolveListingStatusGate(
     )
   }
   return { listingAgreementCompliancePassed: state === "passed" }
+}
+
+/**
+ * SELLER → LIFETIME CUSTOMER, on the survivor.
+ *
+ * MERGED FROM app/actions/listing-lifecycle-core.ts::executeListingTransition (the
+ * TWO-WRITER hazard the kernel path carried — see the note on updateListingStageAction,
+ * app/actions/listings-kernel.ts:774). That path is the orphan: nothing calls it
+ * (scripts/listings-kernel-wiring-simulator.ts only names the symbols). This is the
+ * ONLY writer of listings.lifecycle_stage the UI actually reaches
+ * (stage-pipeline.tsx → app/actions/listing-lifecycle.ts:advanceListingStage → here),
+ * so the CLOSED side effect belongs on this path or it never runs at all — moved, not
+ * copied: app/actions/listing-lifecycle-core.ts:691 now imports this export instead of
+ * keeping its own body, so there is exactly one seller→lifetime writer (§6).
+ */
+export async function handleSellerToLifetimeTransition(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  agentId: string,
+  brokerageId: string,
+) {
+  // agentId here is an agents.id (listings.agent_id → agents(id)), and both
+  // client_portal_messages.agent_id and agents.id below are the SAME id space —
+  // verified via pg_constraint (cpm_agent_id_fkey → agents(id)). "" means the
+  // listing has no agent record; it must become NULL, not an empty uuid string
+  // that fails the FK.
+  const agentRecordId: string | null = agentId?.trim() ? agentId : null
+
+  // Fetch listing with seller contact and address
+  const { data: listingWithContact, error: listingError } = await supabase
+    .from("listings")
+    .select("seller_contact_id, address, city, state")
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (listingError) {
+    console.error("[handleSellerToLifetimeTransition] listing read failed — seller NOT converted:", listingError.message)
+    return
+  }
+  if (!listingWithContact?.seller_contact_id) return
+
+  const { seller_contact_id: contactId, address, city, state } = listingWithContact
+  const propertyAddress = [address, city, state].filter(Boolean).join(", ")
+  const now = new Date().toISOString()
+  const closedDate = new Date().toLocaleDateString()
+
+  // 1. Convert contact to lifetime customer. THIS IS THE WHOLE POINT OF CLOSING A
+  //    LISTING — tenant-anchored and checked, never fire-and-forget. See the full
+  //    history of this write at the moved-from site (git blame on the tombstone
+  //    below names it); unchanged here, only relocated.
+  const { error: convertError } = await supabase
+    .from("contacts")
+    .update({
+      contact_type: LIFETIME_CUSTOMER_TYPE,
+      lifecycle_state: LIFETIME_CUSTOMER_TYPE,
+      notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
+      updated_at: now,
+    })
+    .eq("id", contactId)
+    .eq("brokerage_id", brokerageId)
+
+  if (convertError) {
+    console.error(
+      "[handleSellerToLifetimeTransition] seller was NOT converted to a lifetime customer:",
+      convertError.message,
+    )
+  }
+
+  // 2. Send portal message — brand-voiced via the AI gateway (them-first, Fair-Housing
+  //    redrafted), with the canned line as the deterministic FALLBACK floor.
+  const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const closingCopy = await generateSellerHandlerCopy({
+    brokerageId,
+    contactId,
+    purpose:
+      "Warmly congratulate the seller on their successful closing, let them know their portal now reflects their new status, and that you remain their lifetime real estate resource. Short, genuine, no pressure.",
+    facts: propertyAddress ? [{ label: "Property just sold", value: propertyAddress }] : undefined,
+    fallback: {
+      subject: "Congratulations on your closing!",
+      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
+    },
+  }, createServiceClient())
+  const { error: portalError } = await supabase
+    .from("client_portal_messages")
+    .insert({
+      contact_id: contactId,
+      brokerage_id: brokerageId,
+      // agents.id — same id space as the FK. NOT a users.id.
+      agent_id: agentRecordId,
+      body: closingCopy.body,
+      direction: "agent_to_client",
+    })
+
+  if (portalError) {
+    console.error(
+      "[handleSellerToLifetimeTransition] closing message never reached the seller's portal:",
+      portalError.message,
+    )
+  }
+
+  // 3. Award the agent their points for the transition — the one atomic award path
+  //    (m484: public.award_agent_points), increment + ledger row in one transaction.
+  if (agentRecordId) {
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    const awarded = await awardAgentPoints(supabase, {
+      agentId: agentRecordId,
+      points: POINT_VALUES.SELLER_LIFETIME_TRANSITION,
+      reason: "SELLER_LIFETIME_TRANSITION",
+      referenceType: "contact",
+      referenceId: contactId,
+    })
+    if (!awarded.ok) {
+      console.error("[handleSellerToLifetimeTransition] points not awarded:", awarded.error)
+    }
+  }
 }
 
 export async function advanceListingStageService(
@@ -533,6 +632,121 @@ export async function advanceListingStageService(
   // scheduleReviewRequests / trackClosingGift / notifySeller) were RETIRED: they never fired (legacy
   // lowercase stage vocabulary vs the canonical UPPERCASE stages) and were redundant with the canonical
   // flows (kernel transaction-close owns lifetime/reviews; marketing agents + crons own social/video).
+
+  // ── Convert the seller to a lifetime customer, on whichever stage the TABLE
+  // ── declares triggers it ─────────────────────────────────────────────────
+  // MERGED FROM THE ORPHANED KERNEL PATH (app/actions/listings-kernel.ts:934
+  // closeListingAction → lib/kernel/listings.ts:863 closeListingLifecycle →
+  // updateListingStage → executeListingTransition). Nothing calls that chain —
+  // scripts/listings-kernel-wiring-simulator.ts only names the symbols — so the
+  // seller-to-lifetime handoff never ran for a listing closed the only way a
+  // user actually can, through this service. Best-effort: the stage write above
+  // already committed, so a failure here must not be reported as a failed close.
+  //
+  // DERIVED, NOT HAND-WRITTEN: `toStage === "CLOSED"` would be exactly the
+  // stage-list-copied-out-of-the-table drift this file's own gate exists to
+  // prevent (see requireListingStageAdvance above, and
+  // scripts/lifecycle-lib-defects-simulator.ts, d1.service-holds-no-hand-
+  // written-stage-list). The flag lives on the stage's own row in
+  // LISTING_LIFECYCLE_STAGES (lib/listing-lifecycle/lifecycle-definitions.ts),
+  // same place allowedFrom/readinessChecks/requiredRoles live.
+  if (getStageDefinition(toStage as ListingStage)?.triggersLifetimeTransition) {
+    try {
+      await handleSellerToLifetimeTransition(supabase, listingId, gate.listingAgentRecordId ?? "", gate.brokerageId)
+    } catch (err) {
+      console.error("[advanceListingStageService] seller-to-lifetime transition threw:", err)
+    }
+  }
+
+  // ── Fan out the lifecycle event ───────────────────────────────────────────
+  // MERGED FROM THE SAME ORPHANED KERNEL PATH
+  // (app/actions/listing-lifecycle-core.ts:546-613 executeListingTransition).
+  // Maps stage → kernel event so brokerages can wire campaign_sequences AND the
+  // seller portal gets a transparency_update card automatically (the reactor
+  // this feeds also fires the listing_concierge → campaign_orchestrator manager
+  // handoff on COMING_SOON_SENT / LISTING_PUBLISHED). Every transition also
+  // fires the generic LISTING_STAGE_CHANGED so brokerages can listen on the
+  // catch-all. entityType stays "listing" (NOT "listing_stage_machine") —
+  // that second entity type belongs to transitionLifecycle's own audit row,
+  // which this path does not call; writing it here would be a second, disagreeing
+  // producer of the same stream (see the note on setMilestonePortalVisibility,
+  // app/actions/listing-lifecycle.ts:473, on why both streams must never merge
+  // into one write path).
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+
+    // Verified against the live listings_lifecycle_stage_check (scripts/check-vocabularies.ts) —
+    // every key below is one of the 34 admitted values, same list executeListingTransition uses.
+    const STAGE_TO_EVENT: Partial<Record<string, string | undefined>> = {
+      COMING_SOON_PREP:   KernelEvent.COMING_SOON_SENT,
+      COMING_SOON_ACTIVE: KernelEvent.COMING_SOON_SENT,
+      MLS_ACTIVE:         KernelEvent.LISTING_PUBLISHED,
+      UNDER_CONTRACT:     KernelEvent.LISTING_UNDER_CONTRACT,
+      LISTING_CANCELLED:  KernelEvent.LISTING_CANCELLED,
+      LISTING_EXPIRED:    KernelEvent.LISTING_EXPIRED,
+    }
+    const stageEvent = STAGE_TO_EVENT[toStage]
+    const sharedCtx = {
+      brokerageId:  gate.brokerageId,
+      entityType:   "listing" as const,
+      entityId:     listingId,
+      listingId,
+      agentUserId:  gate.actorUserId,
+      actorUserId:  gate.actorUserId,
+      metadata: {
+        from_stage: gate.fromStage,
+        to_stage:   toStage,
+        notes:      notes ?? null,
+      },
+    }
+    if (stageEvent) {
+      await emitKernelEvent({ event: stageEvent, ...sharedCtx })
+    }
+    await emitKernelEvent({
+      event: KernelEvent.LISTING_STAGE_CHANGED,
+      ...sharedCtx,
+      metadata: { ...sharedCtx.metadata, mapped_event: stageEvent ?? null },
+    })
+  } catch (err) {
+    console.error("[advanceListingStageService] emitKernelEvent failed", err)
+  }
+
+  // ── BACK ON MARKET — a deal fell through (a contract stage → active transition) ─
+  // MERGED FROM THE SAME ORPHANED KERNEL PATH. The normal go-live marketing is
+  // idempotent per (listing, just_listed), so a re-list silently re-markets
+  // NOTHING and the buyers who SAVED the home are never told it's available
+  // again. Best-effort; never affects the transition result.
+  try {
+    const { isBackOnMarket } = await import("@/lib/listings/back-on-market")
+    if (isBackOnMarket(gate.fromStage, toStage)) {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId: gate.brokerageId, fromManager: "listing_concierge", toManager: "shopping_agent",
+        signalType: "listing_back_on_market", entityType: "listing", entityId: listingId,
+        message: "A deal fell through — the listing is back on market. Re-engage the buyers who saved it.",
+      }, svc)
+      const agentUserId = gate.listingAgentRecordId
+        ? await resolveAgentRecordToUserId(gate.listingAgentRecordId)
+        : null
+      if (!agentUserId && gate.listingAgentRecordId) {
+        console.error(
+          "[advanceListingStageService] back-on-market: no users.id for agents.id",
+          gate.listingAgentRecordId,
+          "— re-marketing skipped rather than dispatched against the wrong id space",
+        )
+      }
+      if (agentUserId) {
+        const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+        void dispatchListingPromoVideo({ brokerageId: gate.brokerageId, listingId, agentUserId, eventType: "back_on_market" })
+        const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
+        void dispatchLifecycleMail({ brokerageId: gate.brokerageId, listingId, agentUserId, eventType: "back_on_market" })
+      }
+    }
+  } catch (err) {
+    console.error("[advanceListingStageService] back-on-market handoff failed", err)
+  }
 
   revalidatePath(`/listings/${listingId}`)
 

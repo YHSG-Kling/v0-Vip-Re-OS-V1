@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { requireUserRowContext as requireUserContext } from "@/lib/auth/require-caller"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -52,19 +53,9 @@ export type StepCompletionRow = {
 
 // ─── INTERNAL HELPERS ─────────────────────────────────────────────────────────
 
-async function requireUserContext(
-  userId: string
-): Promise<{ brokerageId: string; userType: string }> {
-  const supabase = await createClient()
-  const { data: user, error } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", userId)
-    .single()
-
-  if (error || !user) throw new Error("User not found")
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
-}
+// TOMBSTONE: local requireUserContext merged onto lib/auth/require-caller.ts
+// requireUserRowContext (imported above as `requireUserContext`) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 async function assertCanAccessAgent(params: {
   userId: string

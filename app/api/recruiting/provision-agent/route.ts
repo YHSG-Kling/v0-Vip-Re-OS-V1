@@ -333,21 +333,38 @@ export async function POST(req: Request) {
       }
     }
 
-    // Tenant transition audit (immutable cross-tenant log — migration 038)
-    await service.from("tenant_transition_log").insert({
-      actor_user_id: user.id,
-      action: "provision_recruit",
-      entity_type: "recruit",
-      entity_id: recruit.id,
-      from_brokerage_id: null,
-      to_brokerage_id: recruit.brokerage_id,
-      row_count_moved: 1,
-      metadata: {
-        new_user_id: resolvedUserId,
-        agent_id: agentId,
-        email: recruit.email,
-      },
-    }).then(() => {}, () => {})
+    // Tenant transition audit (immutable cross-tenant log — migration 038).
+    // READER (orphan doctrine §1.2): the recruiting_manager's own loop
+    // confirms the move it just recorded actually landed — row_count_moved
+    // is written and then read back in the SAME request, not assumed from
+    // "the insert did not throw" (§3: a resolved insert is not proof of the
+    // MOVE it claims). A landed provisioning (resolvedUserId + agentId both
+    // set) with a confirmed row_count_moved of 0 is a real anomaly and is
+    // logged as one; the response is unaffected either way — the login
+    // already exists and telling the recruiter it failed would be false.
+    const { data: transitionRow, error: transitionErr } = await service
+      .from("tenant_transition_log")
+      .insert({
+        actor_user_id: user.id,
+        action: "provision_recruit",
+        entity_type: "recruit",
+        entity_id: recruit.id,
+        from_brokerage_id: null,
+        to_brokerage_id: recruit.brokerage_id,
+        row_count_moved: 1,
+        metadata: {
+          new_user_id: resolvedUserId,
+          agent_id: agentId,
+          email: recruit.email,
+        },
+      })
+      .select("row_count_moved")
+      .maybeSingle()
+    if (transitionErr) {
+      console.error("[provision-agent] tenant_transition_log write refused (non-blocking):", transitionErr.message)
+    } else if (resolvedUserId && agentId && (transitionRow?.row_count_moved ?? 0) === 0) {
+      console.error(`[provision-agent] recruiting_manager: recruit ${recruit.id} provisioned but the transition log confirms row_count_moved=0 — the move may not have completed as recorded`)
+    }
 
     return NextResponse.json({
       success: true,

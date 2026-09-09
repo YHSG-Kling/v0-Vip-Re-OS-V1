@@ -530,10 +530,13 @@ const assertions: Assertion[] = [
     id: "d1.both-stage-writers-are-gated",
     defect: "d1",
     layer: "source",
-    what: "BOTH exported writers of listings.lifecycle_stage on this path (advanceListingStageService and updateListingStageService) run the gate and return on refusal before writing",
+    what: "EVERY exported writer of listings.lifecycle_stage in the service file (derived from the source, not a hand-kept pair — updateListingStageService was retired 2026-09-09) runs the gate and returns on refusal before writing; at least one such writer must exist",
     run: () => {
       const src = code(F.service)
-      for (const fn of ["advanceListingStageService", "updateListingStageService"]) {
+      const writers = [...src.matchAll(/export async function (\w+)\(/g)].map((m) => m[1])
+        .filter((fn) => /lifecycle_stage\s*:/.test(fnBody(src, fn) ?? "") && /\.from\("listings"\)[\s\S]{0,120}\.update\(/.test(fnBody(src, fn) ?? ""))
+      if (writers.length === 0) return { ok: false, detail: "no exported writer of listings.lifecycle_stage found — the finder is blind or the service lost its writer" }
+      for (const fn of writers) {
         const body = fnBody(src, fn)
         if (!body) return { ok: false, detail: `${fn} does not exist` }
         const gateAt = body.indexOf("requireListingStageAdvance(")
@@ -545,7 +548,6 @@ const assertions: Assertion[] = [
       return { ok: true }
     },
     breaks: [
-      { file: F.service, find: `  const gate = await requireListingStageAdvance(supabase, params.listing_id, params.stage)\n  if (!gate.ok) return { success: false as const, error: gate.error }`, replace: `  const gate = { ok: true, brokerageId: "", fromStage: null } as any` },
       { file: F.service, find: `  const gate = await requireListingStageAdvance(supabase, listingId, toStage)`, replace: `  const gate = { ok: true, brokerageId: "", fromStage: null, actorUserId: "", readinessPassed: [], readinessFailed: [], stageEnteredAt: null } as any\n  const unusedGate = async () => null` },
     ],
   },

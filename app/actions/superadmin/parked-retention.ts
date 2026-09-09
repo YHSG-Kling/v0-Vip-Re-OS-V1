@@ -15,29 +15,19 @@
 //   • Every execution is ledgered to superadmin_audit_log with the exact
 //     receipt (count + zip breakdown + who/IP/UA) — the audit idiom.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import {
   loadParkedRetention,
   executeStaleParkedPurge,
   type PurgeExecutionResult,
 } from "@/lib/lead-pipeline/parked-retention"
 
-async function requireSuperadmin(): Promise<
-  | { ok: true; userId: string; email: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
-  if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
+// TOMBSTONE: local requireSuperadmin merged onto lib/auth/platform-guard.ts:91
+// requireSuperadmin (imported above) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 // TOMBSTONE (orphan tranche 3): getParkedRetentionAction deleted — a read
 // wrapper no surface called. The live survivor is

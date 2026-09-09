@@ -4,29 +4,12 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeMentorLift, type MentorLift } from "@/lib/recruiting/mentor-lift"
 import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+import { requireCaller } from "@/lib/auth/require-caller"
 
-/**
- * Session → identity. The same `requireCaller()` shape app/actions/video-generation.ts:57
- * and app/actions/ai-identity.ts:17 carry (one copy per "use server" file — there is no
- * shared lib helper for this yet; consolidating the ~20 copies is a separate lane).
- * Reads `{ data, error }` (§3): a refused profile read must not read as "no profile".
- */
-async function requireCaller(): Promise<
-  | { ok: true; supabase: Awaited<ReturnType<typeof createClient>>; userId: string; brokerageId: string; userType: string }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Not authenticated" }
-  const { data: u, error } = await supabase
-    .from("users")
-    .select("brokerage_id, user_type")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (error) return { ok: false, error: `Could not resolve your profile: ${error.message}` }
-  if (!u?.brokerage_id) return { ok: false, error: "Your account is not linked to a brokerage" }
-  return { ok: true, supabase, userId: user.id, brokerageId: u.brokerage_id as string, userType: String(u.user_type ?? "") }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:159
+// requireCaller (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
+// `userType` is now `string | null` (was `String(u.user_type ?? "")`); every
+// downstream reader here (resolveTenantAdmin) already accepts null.
 
 /**
  * Log a mentor session (mentor-side). Records it in the canonical mentor_sessions table and awards the

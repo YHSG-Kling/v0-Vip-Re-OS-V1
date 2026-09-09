@@ -25,16 +25,12 @@ import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
 import {
   createListingRecord,
   createOrAttachSellerContact,
-  loadListingWorkspace,
   saveListingDraft,
   validateListingLaunchReadiness,
   launchListing,
-  updateListingStage,
   generateListingDescription,
-  closeListingLifecycle,
   prefillListingFormFromRecord,
   type ListingUpdate,
-  type ListingStage,
 } from "@/lib/kernel/listings"
 
 // ─── Auth context helper ──────────────────────────────────────────────────────
@@ -768,87 +764,24 @@ export async function launchListingAction(params: {
   return result
 }
 
-// ─── Action: updateListingStageAction ────────────────────────────────────────
-
-/**
- * DELIBERATELY NOT WIRED TO THE STAGE PIPELINE — DO NOT DELETE.
- *
- * SECOND-WRITER HAZARD. listings.lifecycle_stage already has a UI writer:
- *
- *   app/components/dashboard/listings/lifecycle/stage-pipeline.tsx
- *     → app/actions/listing-lifecycle.ts:advanceListingStage
- *       → lib/application/listing-lifecycle.ts:advanceListingStageService   (line 147)
- *
- * That path UPDATEs listings.lifecycle_stage + stage_entered_at, maintains the
- * listing_stage_history table (exit timestamps + duration_days), and fires
- * fireStageAutomations. This action's path —
- *
- *   updateListingStage → executeListingTransition → logStageTransition
- *     → transitionLifecycle → UPDATE listings.lifecycle_stage + lifecycle_events
- *
- * — writes the SAME COLUMN from an independent path, keeps NO listing_stage_history,
- * and fires the kernel-event fanout the other path does not. Wiring both would give
- * one row two owners that disagree about where its audit trail lives.
- *
- * THE GOVERNANCE GAP IS NOW CLOSED ON BOTH PATHS. advanceListingStageService used
- * to perform NO validation at all — no readiness checks, no role authority, no
- * stage-machine check — so the only gate on a normal advance was the client-side
- * check in StageAdvanceModal, which any caller can skip. It now runs
- * requireListingStageAdvance (lib/application/listing-lifecycle.ts), which reads the
- * listing's own lifecycle_stage and hands the target's declared allowedFrom /
- * readinessChecks / requiredRoles — straight out of LISTING_LIFECYCLE_STAGES — to the
- * same validateStageTransition executeListingTransition uses. Both paths now refuse
- * the same transitions for the same reasons, from the same table.
- *
- * What remains is the SECOND-WRITER hazard above, which is a different problem: two
- * paths writing one column with audit trails in two places. The correct resolution is
- * still a CONSOLIDATION — advanceListingStage delegating to executeListingTransition
- * and keeping the listing_stage_history write — and it is still out of scope here.
- * Until then this action stays exported, correct and unwired: two writers is the one
- * outcome worse than one.
-
- * ── STATUS-SYNC STAKE, ADDED 2026-09-05 (wave 30) ─────────────────────────────
- * The two writers' asymmetry now carries MORE weight than when the paragraph above
- * was written. Only the advanceListingStageService path keeps listings.status in
- * lockstep with lifecycle_stage (lib/listings/listing-status-sync.ts::statusForStage,
- * called with the compliance-gate VERDICT resolved from
- * lib/listings/listing-activation-gate.ts::listingAgreementComplianceState). The
- * executeListingTransition path this action takes reaches transitionLifecycle, which
- * ALSO syncs — but only for entityType listing_stage_machine, and the two code paths
- * resolve the gate verdict independently. Since wave 30 the map also stamps
- * `listing_signed` on LISTING_AGREEMENT_SIGNED (owner: "the listing signed is part of
- * the gate to start compliance") and `coming_soon` on COMING_SOON_PREP only when the
- * gate has PASSED. Wiring this action as a second door would therefore give a listing
- * two independent readers of one gate on one column — the CONSOLIDATION named above
- * must make executeListingTransition delegate the status sync to the same call, not
- * re-derive it. That is the stake; it is recorded here for whoever lands it.
- * *
- * Proof of the gate: scripts/lifecycle-lib-defects-simulator.ts (defect d1).
- */
-export async function updateListingStageAction(params: {
-  listingId: string
-  targetStage: ListingStage
-  notes?: string
-  overrideReason?: string
-}) {
-  const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
-
-  const result = await updateListingStage({
-    listingId:      params.listingId,
-    targetStage:    params.targetStage,
-    actorUserId:    ctx.userId,
-    notes:          params.notes,
-    overrideReason: params.overrideReason,
-  })
-
-  if (result.success) {
-    revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
-    revalidatePath("/dashboard/listings")
-  }
-
-  return result
-}
+// updateListingStageAction was REMOVED as the orphaned half of a TWO-WRITER
+// hazard (merge-then-delete, orphan doctrine §1). Nothing in app/, components/
+// or hooks/ ever called it — only scripts/listings-kernel-wiring-simulator.ts
+// named the symbol. It wrote listings.lifecycle_stage down an independent path
+// (lib/kernel/listings.ts:updateListingStage, also removed — see its tombstone)
+// that kept no listing_stage_history and skipped the kernel-event fanout /
+// seller-to-lifetime handoff on the UI's own write.
+//
+// SURVIVOR: app/actions/listing-lifecycle.ts:advanceListingStage → lib/
+// application/listing-lifecycle.ts:advanceListingStageService — the ONLY path
+// stage-pipeline.tsx (and the AI-chat tool) ever reach. This pass MERGED onto
+// it everything the orphaned path had and it lacked: the LISTING_STAGE_CHANGED
+// kernel-event emit (with from_stage/to_stage/notes metadata and the
+// stage-specific COMING_SOON_SENT / LISTING_PUBLISHED / LISTING_UNDER_CONTRACT /
+// LISTING_CANCELLED / LISTING_EXPIRED mapping), the seller-to-lifetime
+// transition on CLOSED, and the back-on-market manager-signal handoff. Nothing
+// the orphaned path did is missing on the survivor now. Do not reintroduce a
+// second listings.lifecycle_stage writer.
 
 // attachMediaAction was REMOVED as a duplicate (merge-then-delete, owner-sanctioned).
 // SURVIVOR: app/actions/listing-media.ts:uploadListingMedia — wired from
@@ -907,46 +840,21 @@ export async function generateListingDescriptionAction(params: {
 // a defect the bridge already fixed. Nothing it did is missing on the survivor.
 // Do not reintroduce a second transactions writer on the offer-accepted trigger.
 
-// ─── Action: closeListingAction ───────────────────────────────────────────────
+// closeListingAction was REMOVED (merge-then-delete, orphan doctrine §1). It
+// inherited updateListingStageAction's two-writer hazard (closeListingLifecycle
+// was updateListingStage(CLOSED) — both removed, see the tombstone above) and,
+// once investigated, carried no capability the UI actually lacked: CLOSED has
+// always been an ordinary target on the stage pipeline (MILESTONE_STAGES in
+// app/components/dashboard/listings/lifecycle/stage-pipeline.tsx), so a listing
+// is closed today by advancing it to CLOSED through the same picker as every
+// other stage — there was no missing "close this listing" control to build.
+//
+// SURVIVOR: advance a listing to CLOSED via
+// lib/application/listing-lifecycle.ts:advanceListingStageService (named on the
+// updateListingStageAction tombstone above), which now runs
+// handleSellerToLifetimeTransition on that stage — the one thing this action
+// existed for.
 
-/**
- * DELIBERATELY NOT WIRED — DO NOT DELETE.
- *
- * Inherits the second-writer hazard documented on updateListingStageAction above:
- * closeListingLifecycle is updateListingStage(CLOSED), so it writes
- * listings.lifecycle_stage down the kernel path while the stage pipeline writes the
- * same column down the advanceListingStageService path. A "Close listing" button
- * calling this would be the second writer.
- *
- * CLOSED is reachable today from the stage pipeline like any other stage, and the
- * CLOSED side effect this action exists for — handleSellerToLifetimeTransition,
- * which converts the seller to a lifetime customer — lives in
- * executeListingTransition and fires on that path, not this one. So nothing is
- * currently unreachable because this is unwired.
- *
- * Wire it once the stage-writer consolidation lands; it is then the natural home for
- * an explicit "Close this listing" control.
- *
- * STATUS-SYNC STAKE (wave 30): CLOSED maps to `sold` in listing-status-sync.ts, so
- * whichever writer lands the consolidation must keep that sync on ONE path — see the
- * paragraph of the same name on updateListingStageAction above.
- */
-export async function closeListingAction(listingId: string) {
-  const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
-
-  const result = await closeListingLifecycle({
-    listingId,
-    actorUserId: ctx.userId,
-  })
-
-  if (result.success) {
-    revalidatePath(`/dashboard/listings/${listingId}/lifecycle`)
-    revalidatePath("/dashboard/listings")
-  }
-
-  return result
-}
 
 // ─── Action: prefillListingFormAction ────────────────────────────────────────
 
@@ -981,59 +889,26 @@ export async function prefillListingFormAction(listingId: string) {
   return prefillListingFormFromRecord({ listingId })
 }
 
-// ─── Action: loadListingWorkspaceAction ──────────────────────────────────────
-
-/**
- * DELIBERATELY NOT WIRED — DO NOT DELETE. This is a complete capability held back
- * for a named reason, not an abandoned one.
- *
- * It loads listing + media + tasks + timeline + currentStage for a listing. The one
- * screen that needs that bundle — app/dashboard/listings/[id]/lifecycle/page.tsx —
- * already loads every part of it server-side and MORE COMPLETELY:
- *
- *   listing   page.tsx:67-88   (with the agent/team/broker auth scope this lacks)
- *   media     page.tsx:206     app/actions/listing-media.ts:getListingMedia
- *   tasks     page.tsx:110-115 (filtered to auto_generated, which this does not do)
- *   timeline  page.tsx:102-107 (entity_type='listing_stage_machine' — see below)
- *
- * Calling this from a component on that page would re-read all four over the wire
- * for no new information. It is a read, so there is no second-writer hazard; the
- * objection is purely duplication.
- *
- * THE LATENT DEFECT IT CARRIED IS FIXED. loadListingWorkspace read lifecycle_events
- * with entity_type "listing" only, while the stage machine writes
- * "listing_stage_machine" (ENTITY_MAP in lib/kernel/lifecycle.ts, via
- * lib/listing-lifecycle/lifecycle-logger.ts:56) — so its `timeline` was always empty
- * of stage transitions. BOTH entity types are written, by different producers, so it
- * now reads BOTH (LISTING_TIMELINE_ENTITY_TYPES in lib/kernel/listings.ts); swapping
- * one for the other would have dropped the create, the launch and the override audit
- * row instead. All four of its reads are error-checked, so a refused read is no
- * longer an empty list. Proof: scripts/lifecycle-lib-defects-simulator.ts (defect d2).
- *
- * Wire this when a listing surface exists that is NOT the lifecycle page — a mobile
- * workspace or an embedded panel.
- *
- * STATUS-SYNC STAKE (wave 30): a READ, so none — but any surface that wires this and
- * shows listings.status must expect the wave-30 sequence listing_signed → coming_soon
- * → active, and must not render `listing_signed` as "not yet signed".
- */
-export async function loadListingWorkspaceAction(listingId: string) {
-  const ctx = await resolveCallerContext()
-  if ("error" in ctx) return { success: false, error: ctx.error }
-
-  const supabase = await createClient()
-  const { data: owned, error: ownedError } = await supabase
-    .from("listings")
-    .select("id")
-    .eq("id", listingId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-
-  if (ownedError) return { success: false, error: `Could not verify the listing: ${ownedError.message}` }
-  if (!owned)     return { success: false, error: "Listing not found in your brokerage" }
-
-  return loadListingWorkspace({ listingId, userId: ctx.userId })
-}
+// loadListingWorkspaceAction was REMOVED — functionality already lives
+// elsewhere (orphan doctrine §1). It was a READ (listing + media + tasks +
+// timeline + currentStage), so it carried no second-writer hazard, only
+// duplication: the one screen that needs that bundle —
+// app/dashboard/listings/[id]/lifecycle/page.tsx — already loads every part of
+// it server-side and more completely (listing: page.tsx:67-88 with the
+// agent/team/broker auth scope this lacked; media: page.tsx:206
+// app/actions/listing-media.ts:getListingMedia; tasks: page.tsx:110-115,
+// filtered to auto_generated; timeline: page.tsx:102-107). No other surface —
+// mobile workspace, embedded panel — exists yet to wire it to; searched app/
+// and components/ for one and found none, so wiring it now would be a control
+// with no caller, the same defect this pass is removing elsewhere.
+//
+// SURVIVOR (for the bundle): app/dashboard/listings/[id]/lifecycle/page.tsx.
+//
+// The underlying lib/kernel/listings.ts:loadListingWorkspace function is KEPT,
+// not removed — scripts/lifecycle-lib-defects-simulator.ts (defect d2) asserts
+// its fix by reading its source directly, so deleting it would break a
+// registered proof. It simply has no "use server" wrapper calling it anymore;
+// re-add a thin action here if a non-lifecycle-page surface is ever built.
 
 // ─── Action: updateListingStatus (migrated from listings.ts) ─────────────────
 

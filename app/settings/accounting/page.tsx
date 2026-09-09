@@ -10,7 +10,7 @@ import {
   getSyncErrors,
   getTaxCategories,
 } from "@/app/actions/accounting-sync"
-import { LinkIcon, AlertCircle, Clock, Settings2 } from "lucide-react"
+import { LinkIcon, AlertCircle, Clock, Settings2, Send } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
 import { readScopedZoom, resolveZoomOwner } from "@/lib/connections/zoom"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -21,6 +21,7 @@ import { SyncControlsCard } from "./sync-controls-card"
 import { SyncHistoryTable } from "./sync-history-table"
 import { ErrorLogTable } from "./error-log-table"
 import { TaxCategoryManager } from "./tax-category-manager"
+import { ManualEntryCard } from "./manual-entry-card"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
@@ -104,7 +105,7 @@ export default async function AccountingSettingsPage() {
       </div>
 
       <Tabs defaultValue="connections" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="connections" className="flex items-center gap-2">
             <LinkIcon className="h-4 w-4" />
             <span className="hidden sm:inline">Connections</span>
@@ -125,6 +126,10 @@ export default async function AccountingSettingsPage() {
           <TabsTrigger value="mapping" className="flex items-center gap-2">
             <Settings2 className="h-4 w-4" />
             <span className="hidden sm:inline">Tax Mapping</span>
+          </TabsTrigger>
+          <TabsTrigger value="manual" className="flex items-center gap-2">
+            <Send className="h-4 w-4" />
+            <span className="hidden sm:inline">Manual Entry</span>
           </TabsTrigger>
         </TabsList>
 
@@ -260,6 +265,14 @@ export default async function AccountingSettingsPage() {
               />
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Section 6: Manual Entry — WIRED this lane (orphan doctrine §1.2):
+            app/actions/accounting-sync.ts:pushAccountingEntry had no caller
+            anywhere. Gated identically to this page (isBrokerageFinanceAdmin,
+            re-checked server-side inside the action itself). */}
+        <TabsContent value="manual" className="space-y-4">
+          <ManualEntryCard categories={taxCategories} />
         </TabsContent>
       </Tabs>
     </div>

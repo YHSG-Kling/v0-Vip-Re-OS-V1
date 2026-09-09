@@ -280,146 +280,19 @@ Provide a comprehensive analysis including:
   }
 }
 
-/**
- * AI-powered disclosure checker
- * Ensures all required disclosures are present and complete
- *
- * ── DELIBERATELY NOT WIRED TO A SURFACE ──────────────────────────────────────
- * compliance_checklists is UNIQUE on (transaction_id, checklist_type) —
- * compliance_checklists_transaction_id_checklist_type_key, the single surviving
- * constraint after m370 dropped the identical duplicate
- * compliance_checklists_txn_type_unique — so there is exactly ONE 'disclosures'
- * row per deal, and it already has a live writer reached from a real page:
- *
- *     app/actions/ai-transaction-documents.ts : checkTransactionDisclosures
- *       -> called by app/dashboard/transactions/[id]/transaction-detail-client.tsx:1077
- *       -> writes the same (transaction_id, 'disclosures') row, stamps
- *          brokerage_id (which this one did not), and reads the real
- *          transaction_documents doc_type taxonomy rather than free-text names.
- *
- * Wiring this to a second button would make one row two authors' — so it stays
- * unwired. Its defects are fixed below anyway, because an unwired capability is
- * work to finish, not to abandon.
- */
-export async function aiCheckDisclosures(params: {
-  transactionId: string
-  /** Ignored — identity comes from the session. */
-  agentId?: string
-  state: string
-  transactionType: "sale" | "purchase" | "lease"
-}): Promise<{
-  success: boolean
-  disclosureCheck?: {
-    requiredDisclosures: Array<{ name: string; required: boolean; present: boolean; status: string }>
-    missingDisclosures: string[]
-    incompleteDisclosures: string[]
-    complianceScore: number
-    recommendations: string[]
-    stateSpecificRequirements: string[]
-  }
-  error?: string
-}> {
-  if (!isValidUUID(params.transactionId)) {
-    return { success: false, error: "Invalid transaction ID" }
-  }
-
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  const supabase = await createClient()
-
-  {
-    const svc = createServiceClient()
-    const { data: txn, error: txnError } = await svc
-      .from("transactions")
-      .select("brokerage_id")
-      .eq("id", params.transactionId)
-      .maybeSingle()
-    if (txnError) return { success: false, error: `Could not verify the transaction: ${txnError.message}` }
-    if (!txn || txn.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden: transaction not in your brokerage" }
-    }
-  }
-
-  try {
-    // Get existing documents for transaction
-    const { data: documents, error: docsError } = await supabase
-      .from("client_documents")
-      .select("*")
-      .eq("transaction_id", params.transactionId)
-
-    if (docsError) {
-      // A refused read here used to make the gate report "None uploaded" — i.e.
-      // a compliance verdict of "everything is missing" produced by a failed
-      // query rather than by an empty deal. Never let a gate read clean (or
-      // dirty) because the query failed.
-      return { success: false, error: `Could not read this deal's documents: ${docsError.message}` }
-    }
-
-    const documentNames = documents?.map(d => d.document_name).join(", ") || "None uploaded"
-
-    const { object } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        requiredDisclosures: z.array(z.object({
-          name: z.string(),
-          required: z.boolean(),
-          present: z.boolean(),
-          status: z.enum(["complete", "incomplete", "missing", "not_required"]),
-        })),
-        missingDisclosures: z.array(z.string()),
-        incompleteDisclosures: z.array(z.string()),
-        complianceScore: z.number().describe("0-100 score"),
-        recommendations: z.array(z.string()),
-        stateSpecificRequirements: z.array(z.string()),
-      }),
-      prompt: `Check disclosure requirements for a ${params.transactionType} transaction in ${params.state}:
-
-Documents currently uploaded: ${documentNames}
-
-Analyze what disclosures are required by state law for this transaction type, which ones appear to be present, which are missing, and provide recommendations.
-
-Common required disclosures include:
-- Seller's Property Disclosure
-- Lead-Based Paint Disclosure (pre-1978 homes)
-- Agency Disclosure
-- Transfer Disclosure Statement
-- Natural Hazard Disclosure
-- Megan's Law Disclosure
-- Local Transfer Tax
-- HOA Disclosures
-- Smoke/CO Detector Compliance`,
-    })
-
-    // Store compliance check.
-    //  · brokerage_id MUST be stamped: brok_compliance_checklists is the only
-    //    policy that covers INSERT/UPDATE and its WITH CHECK is
-    //    (brokerage_id = current_user_brokerage_id()) — FALSE for NULL, so every
-    //    unstamped upsert was refused by RLS (live row count: 0).
-    //  · compliance_score has CHECK (>= 0 AND <= 100) — clamp, don't let a model
-    //    overshoot refuse the row.
-    //  · the write is checked.
-    const { error: checklistError } = await supabase.from("compliance_checklists").upsert({
-      transaction_id: params.transactionId,
-      brokerage_id: ctx.brokerageId,
-      checklist_type: "disclosures",
-      items: object.requiredDisclosures,
-      compliance_score: Math.max(0, Math.min(100, Math.round(object.complianceScore ?? 0))),
-      ai_recommendations: object.recommendations,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: "transaction_id,checklist_type" })
-
-    if (checklistError) {
-      return { success: false, error: `Disclosure check could not be recorded: ${checklistError.message}` }
-    }
-
-    return { success: true, disclosureCheck: object }
-  } catch (error) {
-    return handleError(error, "aiCheckDisclosures")
-  }
-}
+// TOMBSTONE (§1, wave 46 lane EC) — `aiCheckDisclosures` deleted. SURVIVOR:
+// app/actions/ai-transaction-documents.ts:checkTransactionDisclosures (~422),
+// wired at app/dashboard/transactions/[id]/transaction-detail-client.tsx:1101
+// and now also autonomously from lib/kernel/document-compliance-audit.ts on
+// DOCUMENT_UPLOADED/classify (compliance_officer manager) — see that file.
+// This function's own header already documented it as "DELIBERATELY NOT WIRED"
+// because both write the same UNIQUE(transaction_id, checklist_type) row and a
+// second author would race the first. Before deletion its two capabilities the
+// survivor lacked — the `stateSpecificRequirements` disclosure list and the
+// model's stated reasoning (survivor's prompt asked for `stateNotes` but never
+// returned it) — were merged onto checkTransactionDisclosures. A stripped-source
+// census found zero callers outside the app/actions/index.ts barrel, which
+// itself has zero importers. Nothing else merged.
 
 /**
  * AI-powered signature verification

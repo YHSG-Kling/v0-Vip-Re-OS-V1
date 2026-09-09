@@ -11,6 +11,7 @@ import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
 
 /**
  * AI Communication Hub
@@ -28,26 +29,9 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
  * AI inference.
  */
 
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const { data: a } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
+// requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 const SentimentSchema = z.object({
   sentiment: z.enum(["very_positive", "positive", "neutral", "negative", "very_negative", "urgent"]),

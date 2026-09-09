@@ -8,6 +8,7 @@
 // service client only after that gate has run.
 
 import { createClient } from "@/lib/supabase/server"
+import { requireAdsActor as requireActor } from "@/lib/auth/require-caller"
 import {
   stageChatgptCampaign,
   markChatgptCampaignLaunched,
@@ -20,30 +21,9 @@ import type { ListingAdKind } from "@/lib/ads/listing-ad-producer"
 import type { ProviderPerformanceRow } from "@/lib/ads/connectors/types"
 import type { ChatgptDispatchResult } from "@/lib/providers/openai-ads"
 
-interface SessionActor {
-  userId: string
-  brokerageId: string
-}
-
-/** Resolve the signed-in user's brokerage; refuse when unauthenticated.
- *  Copied from app/actions/ctv-ads.ts requireActor() per instruction — not
- *  imported, so this file's session gate stands on its own. */
-async function requireActor(): Promise<{ actor?: SessionActor; error?: string }> {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { error: "Not authenticated" }
-
-  const { data: profile, error } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (error) return { error: error.message }
-  if (!profile?.brokerage_id) return { error: "No brokerage on this account" }
-  return { actor: { userId: user.id, brokerageId: profile.brokerage_id } }
-}
+// TOMBSTONE: local requireActor merged onto lib/auth/require-caller.ts
+// requireAdsActor (imported above as `requireActor`) — §1/§6 SAME BODY census
+// round 3, 2026-09-09.
 
 export async function stageChatgptCampaignAction(input: {
   listingId: string

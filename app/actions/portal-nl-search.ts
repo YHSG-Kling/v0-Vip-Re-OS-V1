@@ -27,7 +27,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { requireContactAccess } from "@/lib/portal/require-contact-access"
+import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"
 
 export interface PortalSearchResult {
   address: string | null
@@ -47,36 +47,9 @@ type PortalSearchOutcome =
   | { ok: true; results: PortalSearchResult[] }
   | { ok: false; error: string }
 
-/** DERIVED from the gate rather than restated, so the vocabulary cannot drift:
- *  if requireContactAccess ever grows a fifth refusal, this is the type that
- *  changes underneath the mapper below. */
-type PortalAccessRefusal = Extract<Awaited<ReturnType<typeof requireContactAccess>>, { ok: false }>["error"]
-
-/**
- * THE GATE'S REFUSAL, SAID TO A BUYER. Same mapper the four siblings use, and
- * the same rule: `requireContactAccess` answers in internal vocabulary and a
- * buyer told "Forbidden" learns nothing they can act on, so every branch names
- * the next move. Kept as a LOCAL non-exported function because it is neither
- * async nor exportable from a "use server" module — the shared thing between
- * the five actions is the gate itself, not this sentence table.
- *
- * The four answers are deliberately DISTINCT. "Access check failed" is a
- * REFUSED READ (an outage) and "Forbidden" is a DECISION; telling a legitimate
- * buyer they are signed in with the wrong account because a lookup was denied
- * sends them to change something that was never wrong.
- */
-function accessRefusal(error: PortalAccessRefusal): string {
-  switch (error) {
-    case "Unauthorized":
-      return "Please sign in to your portal and try again."
-    case "Forbidden":
-      return "You're signed in with a different account than this page belongs to — sign in with the email your agent invited you at, or reply to their last message."
-    case "Contact not found":
-      return "We couldn't find your client record — reply to your agent's last message and they'll get this to the right place."
-    default:
-      return "We couldn't verify your account just now — please try again in a moment."
-  }
-}
+// TOMBSTONE: local PortalAccessRefusal type + accessRefusal merged onto
+// lib/portal/require-contact-access.ts's PortalAccessRefusal / accessRefusal
+// (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 export async function portalNaturalSearchAction(input: {
   contactId: string

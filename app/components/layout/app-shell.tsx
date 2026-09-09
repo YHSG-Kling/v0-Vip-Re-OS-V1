@@ -14,6 +14,7 @@ import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { ImpersonationBanner } from './impersonation-banner'
+import { TosReacceptanceBanner } from './tos-reacceptance-banner'
 import { FloatingVoiceFAB } from './floating-voice-fab'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
@@ -174,6 +175,9 @@ export function AppShell({ children }: AppShellProps) {
 
           {/* Staff "act as tenant" banner — visible only during an active impersonation. */}
           <ImpersonationBanner />
+          {/* ToS re-acceptance gate — visible only when the signed-in user's
+              acceptance is behind the current platform_settings.tos_version. */}
+          <TosReacceptanceBanner />
 
           <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
             <div className="h-full">{children}</div>

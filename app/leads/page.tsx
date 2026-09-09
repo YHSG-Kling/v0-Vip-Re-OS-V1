@@ -1832,6 +1832,13 @@ export default function LeadsPage() {
                 <LeadIntelligencePanel
                   leadId={selectedLeadId}
                   initialData={selectedLeadData}
+                  // LEAD-DESK ONLY (CLAUDE.md §5) — isAdminOrBroker is resolved
+                  // from lib/auth/lead-visibility.ts's own module (imported
+                  // above), the same LEAD_DESK_USER_TYPES answer
+                  // getLeadPredictions gates on server-side. This UI-side pass
+                  // just keeps the tab from rendering for a caller who could
+                  // never pass that gate; the gate itself lives in the action.
+                  canViewPredictions={isAdminOrBroker}
                 />
               </div>
             )}

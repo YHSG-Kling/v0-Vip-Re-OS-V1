@@ -27,6 +27,7 @@ import { Button } from "@/app/components/ui/button"
 import {
   Calendar, Clock, MapPin, Route, Home, CheckCircle2,
 } from "lucide-react"
+import { formatTime24To12 as formatTime } from "@/lib/format/dates"
 
 interface TourStop {
   id: string
@@ -257,11 +258,6 @@ export function BuyerTourCard({ tour }: Props) {
   )
 }
 
-function formatTime(t: string): string {
-  // Accepts 'HH:MM' or 'HH:MM:SS' — render as 'h:MM AM/PM'
-  const [hh, mm] = t.split(":").map(Number)
-  if (hh == null || mm == null) return t
-  const period = hh >= 12 ? "PM" : "AM"
-  const h12 = hh % 12 || 12
-  return `${h12}:${String(mm).padStart(2, "0")} ${period}`
-}
+// TOMBSTONE: local formatTime merged onto lib/format/dates.ts
+// formatTime24To12 (imported above as `formatTime`) — §1/§6 SAME BODY census
+// round 3, 2026-09-09.

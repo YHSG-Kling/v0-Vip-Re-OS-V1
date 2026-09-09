@@ -193,6 +193,25 @@ export interface ListFormsResponse {
 }
 
 /**
+ * Map a provider's free-text form-category string to {@link ProviderForm}'s
+ * coarse `category` union — a keyword sniff on the lowercased string, "other"
+ * when nothing matches. Survivor for THREE byte-identical private copies
+ * (SAME BODY census round 3, 2026-09-09), one per e-sign provider:
+ *   lib/integrations/providers/authentisign-provider.ts:250 mapAuthentisignCategory
+ *   lib/integrations/providers/formsimplicity-provider.ts:211 mapCategory
+ *   lib/integrations/providers/skyslope-provider.ts:260 mapSkyslopeCategory
+ */
+export function mapProviderFormCategory(c: string | undefined): ProviderForm["category"] {
+  const s = (c ?? "").toString().toLowerCase()
+  if (s.includes("listing"))    return "listing"
+  if (s.includes("purchase") || s.includes("offer")) return "offer"
+  if (s.includes("addendum"))   return "addendum"
+  if (s.includes("disclosure")) return "disclosure"
+  if (s.includes("agency"))     return "agency"
+  return "other"
+}
+
+/**
  * Transaction Provider Interface
  *
  * All providers must implement these 8 methods

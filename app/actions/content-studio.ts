@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 // Most actions in this file used to trust caller-supplied userId/userRole.
 // Now: every action derives identity from the session via getAgentContext.
@@ -18,16 +19,9 @@ async function requireCaller(): Promise<
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? "agent" }
 }
 
-function parseAIJsonResponse(text: string) {
-  // Strip markdown code blocks if present
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content

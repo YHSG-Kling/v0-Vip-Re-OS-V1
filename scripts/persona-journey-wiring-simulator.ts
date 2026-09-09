@@ -662,13 +662,45 @@ const CHECKS: Check[] = [
     name: "predictLeadConversion stays UNWIRED (it would be the third lead scorer; RLS excludes agents)",
     run: () =>
       importersOf("predictLeadConversion", F.aiPredictions).length === 0 &&
-      importersOf("getPredictiveLeadScore", F.aiPredictions).length === 0 &&
       importersOf("batchPredictLeadConversions", F.aiPredictions).length === 0,
     breaks: {
       file: F.coordinatorPage,
       find: `import { predictDeadlineRisks, getCoordinatorDashboard } from "@/app/actions/multi-persona"`,
       replace: `import { predictDeadlineRisks, getCoordinatorDashboard } from "@/app/actions/multi-persona"
 import { predictLeadConversion } from "@/app/actions/ai-predictions"`,
+    },
+  },
+  // getPredictiveLeadScore is no longer "unwired" — DELETED (orphan doctrine
+  // §1.3, this lane): its only writer is predictLeadConversion above, which
+  // stays deliberately unwired forever, so predictive_lead_scores holds and
+  // will keep holding zero rows — the RULE this checks is the deletion itself,
+  // not an importer count of a name that no longer exists (importersOf on a
+  // gone symbol is vacuously 0 forever and proves nothing going forward — the
+  // §2 trap this repo has already paid for once). Survivors named in the
+  // tombstone at its former line: contacts.ai_conversion_probability /
+  // .ai_predicted_close_date (aiPredictConversion), lead_scores.score
+  // (getLeadScore/calculateLeadScore), scoreLeadWithAI's persona/timeline/risk,
+  // contacts.preferred_channel/.preferred_contact_time.
+  {
+    id: "pred-score-reader-deleted-not-merely-unwired",
+    name: "getPredictiveLeadScore is GONE from ai-predictions.ts, with a tombstone naming its survivors",
+    run: () => {
+      const gone = functionBody(src1(F.aiPredictions), "getPredictiveLeadScore") === ""
+      const tombstoneNamesSurvivors =
+        /getPredictiveLeadScore/.test(src(F.aiPredictions)) === false && // gone from CODE (stripped)
+        /ai_conversion_probability/.test(raw(F.aiPredictions)) &&
+        /preferred_channel/.test(raw(F.aiPredictions))
+      return gone && tombstoneNamesSurvivors
+    },
+    breaks: {
+      file: F.aiPredictions,
+      find: `// ============================================
+// (REMOVED) GET PREDICTIVE LEAD SCORE
+// ============================================`,
+      replace: `export async function getPredictiveLeadScore(leadId: string) { return null }
+// ============================================
+// (REMOVED) GET PREDICTIVE LEAD SCORE
+// ============================================`,
     },
   },
   {

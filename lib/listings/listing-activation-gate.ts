@@ -91,6 +91,7 @@ import {
 // the owner ruled these are the SAME gate, so they answer in the same words.
 import {
   findUnexecutedDocuments,
+  buildGateRefusal,
   type GateRefusal,
   type GateRequirement,
   type UnexecutedDocument,
@@ -167,16 +168,14 @@ export async function listingAgreementComplianceState(
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// TOMBSTONE: local refuse merged onto
+// lib/transactions/transaction-creation-gate.ts buildGateRefusal (imported
+// above) — §1/§6 SAME BODY census round 3, 2026-09-09.
 function refuse(
   refusals: GateRefusal[],
   detail: ListingActivationGateResult["detail"],
 ): ListingActivationGateResult {
-  return {
-    allowed: false,
-    refusals,
-    reason: refusals.map((r) => r.message).join(" "),
-    detail,
-  }
+  return buildGateRefusal(refusals, detail)
 }
 
 /**

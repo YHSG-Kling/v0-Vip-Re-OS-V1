@@ -8,6 +8,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
 import { ingestOpenHouseAttendeeSignalAction } from "@/app/actions/lead-signal-ingest"
 import { interestLevelToSignalScale } from "@/lib/lead-intelligence/interest-level"
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -15,36 +16,9 @@ function isValidUUID(v: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 }
 
-/**
- * Resolve identity from the authenticated session. Every CRM-facing action in
- * this file must call this — the previous version trusted brokerageId / agentId
- * / userId as caller-supplied params, which let any signed-in user forge writes
- * for any brokerage.
- *
- * Returns the caller's brokerage_id, user_id, and (when present) the
- * canonical agents.id for that user. agentId is null for non-agent staff
- * (admins, brokers) — callers should fall back to userId in that case.
- */
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const { data: a } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
+// requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 /** Verify a listing belongs to the caller's brokerage. */
 async function verifyListingOwnership(

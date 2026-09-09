@@ -48,6 +48,7 @@ import { createListingWithSellerContact, resolveListingIdByMlsAction } from "@/a
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
+import { resolveOfferPropertyPrefillAction } from "@/app/actions/buyer-offer/prefill-offer"
 import Link from "next/link"
 import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
@@ -1105,6 +1106,35 @@ function Step3Fill({ state, providerInfo, update }: { state: WizardState; provid
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedForms])
 
+  // KNOWN-PROPERTY PREVIEW for the "my forms" entries that are NOT a fillable PDF (a link/other file
+  // type) — prefillStorageFormAction above only runs on `.pdf` refs, so those never got any property
+  // prefill at all; the agent had to re-type the address by hand even when the wizard already knows
+  // it. Grounded only (resolveOfferPropertyPrefillAction — listing → transaction → offer's own
+  // address, never an AI guess); read-only, resolved once for the whole selection.
+  const [knownFacts, setKnownFacts] = useState<{ loading: boolean; address?: string | null; propertyCity?: string | null; propertyState?: string | null; propertyZip?: string | null }>({ loading: false })
+  const nonPdfForms = myFormsList.filter(f => !f.formRef.toLowerCase().endsWith(".pdf"))
+  useEffect(() => {
+    if (nonPdfForms.length === 0 || knownFacts.loading || knownFacts.address !== undefined) return
+    let cancelled = false
+    setKnownFacts(prev => ({ ...prev, loading: true }))
+    resolveOfferPropertyPrefillAction({
+      listingId: state.listingId || null,
+      offerId: state.offerId || null,
+      propertyAddress: state.propertyAddress || null,
+    }).then(res => {
+      if (cancelled) return
+      setKnownFacts({
+        loading: false,
+        address: res.facts?.address ?? state.propertyAddress ?? null,
+        propertyCity: res.facts?.propertyCity ?? state.propertyCity ?? null,
+        propertyState: res.facts?.propertyState ?? state.propertyState ?? null,
+        propertyZip: res.facts?.propertyZip ?? state.propertyZip ?? null,
+      })
+    }).catch(() => { if (!cancelled) setKnownFacts({ loading: false, address: null }) })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonPdfForms.length, state.listingId, state.offerId])
+
   // Sync the in-app filled storage forms (filled path + preview) up to wizard state so Step 5 can
   // build the e-sign anchor plan from them.
   useEffect(() => {
@@ -1143,10 +1173,17 @@ function Step3Fill({ state, providerInfo, update }: { state: WizardState; provid
                     )}
                   </>
                 ) : (
-                  <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
-                    <ExternalLink className="h-3 w-3" />
-                    {fs?.error ? "Open form to review (prefill unavailable)" : "Open form to review"}
-                  </a>
+                  <div className="space-y-1">
+                    <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
+                      <ExternalLink className="h-3 w-3" />
+                      {fs?.error ? "Open form to review (prefill unavailable)" : "Open form to review"}
+                    </a>
+                    {knownFacts.address && (
+                      <p className="text-xs text-muted-foreground">
+                        Known property info to copy in: {[knownFacts.address, knownFacts.propertyCity, knownFacts.propertyState, knownFacts.propertyZip].filter(Boolean).join(", ")}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             </div>

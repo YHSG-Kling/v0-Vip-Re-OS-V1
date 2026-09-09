@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActorNamesEitherClass } from "@/lib/kernel/actor-attribution"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { recordSelfHeal } from "@/lib/kernel/self-heal-ledger"
 import { hashSharePassword, verifySharePassword } from "@/lib/security/share-password"
 import { revalidatePath } from "next/cache"
 import {
@@ -852,18 +853,21 @@ export async function accessSharedDocument(
   }
 
   // Access log — the viewer is a known team member now, so record WHO, not
-  // "external" with the invitee's email. Ledgered, so a lost audit row surfaces.
-  await sentinelWrite(
-    svc,
-    svc.from("document_access_log").insert({
-      document_id: link.document_id,
-      accessed_by_type: "agent",
-      accessed_by_id: ctx.userId,
-      accessed_by_email: link.shared_with_email,
-      access_type: link.access_level ?? "view",
-    }),
-    { table: "document_access_log", flow: "shared_document_opened", brokerageId: ctx.brokerageId },
-  )
+  // "external" with the invitee's email. Routed through the ONE
+  // document_access_log writer (logDocumentAccess, below — §6) rather than a
+  // second hand-rolled insert; it re-verifies the document's own tenant and
+  // ledgers a refusal the same way this call used to.
+  await logDocumentAccess({
+    documentId: link.document_id,
+    accessedByType: "agent",
+    accessedById: ctx.userId ?? undefined,
+    accessedByEmail: link.shared_with_email ?? undefined,
+    accessType: (["view", "download", "edit", "share", "delete", "upload", "sign"] as const).includes(
+      (link.access_level ?? "view") as any,
+    )
+      ? (link.access_level as "view" | "download" | "edit" | "share" | "delete" | "upload" | "sign") ?? "view"
+      : "view",
+  }).catch((e) => console.error("[dotloop] logDocumentAccess (shared document opened) failed:", e))
 
   const remaining =
     link.max_access_count != null
@@ -1172,13 +1176,23 @@ export async function getDocumentFolders(filters?: {
  * the provider) with no other logger, so it is now the caller, accessType
  * "upload" / accessedByType "external". getDocumentAccessLog below is the
  * reader for both writers' rows.
+ *
+ * WIRED (wave 46 lane EC) — the ONLY caller used to be the dotloop sync-upload
+ * path above, so this exported "use server" action (a public HTTP endpoint,
+ * CLAUDE.md §4) had zero callers OUTSIDE its own file. accessSharedDocument
+ * below is a real second external-read path — a team member opening a
+ * document through a share link is exactly a VIEW/DOWNLOAD access — and it
+ * used to hand-roll its own `document_access_log` insert (a second spelling of
+ * this exact write, §6). It now calls this function instead, so the two
+ * callers cannot drift on which columns an access-log row carries.
  */
 export async function logDocumentAccess(data: {
   documentId: string
   accessedByType: "agent" | "client" | "admin" | "external"
   accessedById?: string
   accessedByEmail?: string
-  accessType: "view" | "download" | "edit" | "share" | "delete" | "upload"
+  /** "sign" covers a share link opened at access_level 'sign' (document_sharing_links). */
+  accessType: "view" | "download" | "edit" | "share" | "delete" | "upload" | "sign"
   ipAddress?: string
   userAgent?: string
 }): Promise<{ success: boolean; error?: string }> {
@@ -1199,8 +1213,12 @@ export async function logDocumentAccess(data: {
   }
 
   const supabase = await createClient()
-  // CHECKED. An unchecked insert on an AUDIT table is the worst possible place
-  // to lose a row silently — the whole point is that it is complete.
+  // CHECKED, AND LEDGERED. An unchecked insert on an AUDIT table is the worst
+  // possible place to lose a row silently — the whole point is that it is
+  // complete — so a refusal here is both returned to the caller AND ledgered
+  // via sentinelWrite (self_heal_events) the same way this file's other three
+  // document_audit_trail writers already are, rather than only the caller's
+  // own best-effort `.catch` seeing it.
   const { error } = await supabase.from("document_access_log").insert({
     document_id: data.documentId,
     accessed_by_type: data.accessedByType,
@@ -1211,7 +1229,17 @@ export async function logDocumentAccess(data: {
     user_agent: data.userAgent,
   })
 
-  if (error) return { success: false, error: error.message }
+  if (error) {
+    await recordSelfHeal(svc, {
+      brokerageId: ctx.brokerageId,
+      domain: "data_flow",
+      subject: `document_access_logged:document_access_log`,
+      action: "best_effort_write",
+      outcome: "failed",
+      detail: { flow: "document_access_logged", table: "document_access_log", message: error.message.slice(0, 300), code: (error as any).code ?? null },
+    }).catch(() => null)
+    return { success: false, error: error.message }
+  }
   return { success: true }
 }
 

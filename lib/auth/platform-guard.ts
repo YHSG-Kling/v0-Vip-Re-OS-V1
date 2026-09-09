@@ -12,7 +12,12 @@
 // TENANT they act on, never whether they are staff).
 
 import { createClient } from "@/lib/supabase/server"
-import { isPlatformSuperadminIdentity, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
+import {
+  isPlatformSuperadminIdentity,
+  resolvePlatformRoleIdentity,
+  platformStaffCan,
+  type PlatformCapability,
+} from "@/lib/platform/platform-staff-roster"
 
 export type PlatformGuardResult =
   | { ok: true; userId: string; email: string; role: string }
@@ -95,4 +100,46 @@ export async function requireSuperadmin(): Promise<PlatformGuardResult> {
     return { ok: false, error: "Forbidden — superadmin only" }
   }
   return { ok: true, userId: c.userId, email: c.email, role: "superadmin" }
+}
+
+/**
+ * Session → platform staff role → `platformStaffCan(role, capability)`. ONE
+ * gate for "may this caller use platform capability X", parameterised on the
+ * capability instead of restated per-capability.
+ *
+ * Survivor for THREE byte-identical private `requireProviders` copies (SAME
+ * BODY census round 3, 2026-09-09) — each hardcoding `"providers"`:
+ *   app/actions/superadmin/a2p-verify.ts:18, app/actions/superadmin/platform-reception.ts:17,
+ *   app/dashboard/superadmin/a2p/actions.ts:19
+ * Each is now `requirePlatformCapability("providers")` at the call site (via
+ * the `requireProviders` convenience export below), so a fourth "providers"
+ * gate has one function to import instead of a fourth body to paste.
+ */
+export async function requirePlatformCapability(
+  capability: PlatformCapability,
+): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthenticated" }
+  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
+  if (!platformStaffCan(role, capability)) {
+    return { ok: false, error: `Forbidden — platform ${capability} access required` }
+  }
+  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
+}
+
+/** `requirePlatformCapability("providers")` — the exact shape all three former copies were. */
+export async function requireProviders() {
+  return requirePlatformCapability("providers")
+}
+
+/**
+ * `requirePlatformCapability("marketing")`. Survivor for two byte-identical
+ * private `requireMarketing` copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/superadmin/platform-brand.ts:19 and
+ * app/actions/superadmin/platform-content.ts:17.
+ */
+export async function requireMarketing() {
+  return requirePlatformCapability("marketing")
 }

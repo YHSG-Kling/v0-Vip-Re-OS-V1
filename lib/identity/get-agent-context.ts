@@ -223,3 +223,37 @@ export async function getAgentContext(): Promise<AgentContext> {
     return UNAUTHENTICATED_CONTEXT
   }
 }
+
+export type SessionAgentIdResult =
+  | { ok: true; agentId: string; brokerageId: string }
+  | { ok: false; error: string }
+
+/**
+ * Resolves the session-derived `agents.id` + `brokerageId` for a write that
+ * attributes to an agents-class column. NEVER trusts caller-supplied
+ * agent_id. Survivor for two byte-identical private `getSessionAgentId`
+ * copies (SAME BODY census round 3, 2026-09-09):
+ * app/actions/content-approval-workflow.ts:33 and
+ * app/actions/content-compliance.ts:23.
+ *
+ * NOT `?? ctx.userId` (m360): this is the single point where agentId is
+ * manufactured for every write in both former callers, and all of them
+ * attribute to an agents-class column. Substituting the users id put a value
+ * there that the foreign key rejects — so the compliance/approval log, the
+ * record of what the OS decided and why, silently lost exactly the rows
+ * belonging to users who had not finished setup.
+ */
+export async function requireSessionAgentId(): Promise<SessionAgentIdResult> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+  if (!ctx.agentId) {
+    return { ok: false, error: "No agent profile for this user yet — finish account setup." }
+  }
+  return {
+    ok: true,
+    agentId: ctx.agentId,
+    brokerageId: ctx.brokerageId,
+  }
+}

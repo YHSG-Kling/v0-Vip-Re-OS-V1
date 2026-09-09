@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 702 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 701 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-09
  * source: public.live_schema_json()
- * body-sha256: 9cd0d162bd9c8effd1d04cf81f0cac0f575163e4c4cdf3133ae8a6e5ba635316
+ * body-sha256: 074148d674f0d4fbbae6f35dc033c8921353355ac7a64a46e0b567d1178b0bcf
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -108,7 +108,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ai_suggestions: ["accepted_at", "agent_id", "brokerage_id", "confidence_score", "created_at", "id", "session_id", "suggestion_content", "suggestion_type", "was_accepted"],
   ai_tool_favorites: ["created_at", "id", "tool_name", "user_id"],
   ai_tool_usage: ["agent_id", "brokerage_id", "context_json", "cost_cents", "created_at", "execution_time_ms", "feature", "id", "input_text", "manager", "model_used", "output_text", "success", "team_id", "tokens_used", "tool_name", "user_id"],
-  ai_usage_log: ["action_type", "agent_id", "brokerage_id", "cost_cents", "created_at", "id", "input_data", "metadata", "model", "output_data", "tokens_used"],
   ai_video_projects: ["agent_id", "approval_status", "approved_at", "approved_by", "audience_type", "b_roll_urls", "background_type", "background_url", "brand_voice_context", "brokerage_id", "captions_enabled", "completed_at", "compliance_evaluated_at", "compliance_status", "compliance_violations", "contact_id", "created_at", "duration_seconds", "error_message", "format", "has_verbal_disclosure", "has_visual_brand_overlay", "id", "intro_video_url", "is_ai_generated", "is_published", "learning_module_id", "listing_id", "locale", "marketing_campaign_id", "outro_video_url", "provider_avatar_id", "provider_job_id", "provider_metadata", "provider_status", "provider_template_id", "provider_voice_id", "public_slug", "published_at", "rejected_at", "rejected_by", "rejection_reason", "retry_count", "script_content", "source_script_id", "status", "studio_session_id", "thumbnail_url", "title", "updated_at", "usage_intent", "video_metadata", "video_provider", "video_type", "video_url", "view_count"],
   api_response_logs: ["brokerage_id", "endpoint", "error_type", "id", "is_error", "method", "recorded_at", "response_time_ms", "service_key", "status_code"],
   approval_items: ["agent_id", "brokerage_id", "id", "item_id", "item_type", "review_notes", "reviewed_at", "reviewed_by", "status", "submitted_at"],
@@ -394,7 +393,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   listing_stage_history: ["brokerage_id", "completed_by", "duration_days", "entered_at", "exited_at", "from_stage", "id", "is_override", "listing_id", "notes", "override_reason", "readiness_failed", "readiness_passed", "stage_name"],
   listing_syndication_tracking: ["brokerage_id", "created_at", "id", "last_synced_at", "listing_url", "platform_category", "platform_name", "syndication_status", "transaction_id", "updated_at"],
   listing_task_templates: ["brokerage_id", "created_at", "description", "due_offset_days", "id", "is_active", "is_required", "owner_role", "priority", "stage", "title", "updated_at"],
-  listings: ["address", "agent_id", "appointment_at", "appointment_event_id", "appointment_notes", "bathrooms", "bedrooms", "brokerage_id", "city", "commission_rate", "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "estimated_close_date", "expiration_date", "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar", "hoa_dues", "id", "last_price_change_at", "lifecycle_stage", "list_price", "listing_agent_email", "listing_agent_name", "listing_date", "location_id", "lot_size", "marketing_budget", "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date", "open_house_marketing_date", "photos", "primary_photo_url", "property_type", "public_remarks", "seller_contact_id", "seller_walkaway_price", "showing_count", "showing_instructions", "slug", "sold_date", "sold_price", "sqft", "stage_entered_at", "stage_updated_at", "state", "status", "sub_category", "team_id", "transaction_provider_ref", "updated_at", "year_built", "zip"],
+  listings: ["address", "agent_id", "appointment_at", "appointment_event_id", "appointment_notes", "bathrooms", "bedrooms", "brokerage_id", "city", "commission_rate", "contact_id", "created_at", "created_via", "deleted_at", "dotloop_loop_id", "estimated_close_date", "expiration_date", "external_provider_source", "external_provider_transaction_id", "flood_zone", "go_live_confirmed_at", "go_live_date", "has_pool", "has_septic", "has_solar", "hoa_dues", "id", "last_price_change_at", "last_provider_sync_at", "lifecycle_stage", "list_price", "listing_agent_email", "listing_agent_name", "listing_date", "location_id", "lot_size", "marketing_budget", "marketing_tier_id", "metadata", "mls_link", "mls_number", "open_house_event_date", "open_house_marketing_date", "photos", "primary_photo_url", "property_type", "public_remarks", "seller_contact_id", "seller_walkaway_price", "showing_count", "showing_instructions", "slug", "sold_date", "sold_price", "sqft", "stage_entered_at", "stage_updated_at", "state", "status", "sub_category", "team_id", "transaction_provider_ref", "updated_at", "year_built", "zip"],
   local_news_sources: ["brokerage_id", "category", "created_at", "enabled", "id", "is_active", "market_name", "market_zip_codes", "name", "refresh_frequency", "updated_at", "url"],
   locations: ["address", "brokerage_id", "city", "created_at", "id", "name", "state"],
   mail_response_tracking: ["brokerage_id", "campaign_id", "contact_id", "created_at", "id", "lead_id", "response_metadata", "response_type"],
@@ -657,7 +656,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   transaction_coordinators: ["brokerage_id", "created_at", "display_name", "id", "is_active", "max_active_deals", "user_id"],
   transaction_cost_breakdown: ["brokerage_id", "buyer_costs", "created_at", "id", "net_proceeds", "seller_costs", "transaction_id", "updated_at"],
   transaction_deadlines: ["brokerage_id", "completed_at", "completed_by", "created_at", "deadline_date", "deadline_type", "extension_date", "extension_reason", "id", "notes", "source_document_id", "source_field_key", "status", "transaction_id", "updated_at"],
-  transaction_documents: ["brokerage_id", "classification_confidence", "created_at", "doc_label", "doc_type", "external_document_id", "extracted_data", "id", "metadata", "notes", "provider_source", "rejection_reason", "status", "storage_url", "transaction_id", "updated_at", "uploaded_at", "uploaded_by", "uploaded_by_type"],
+  transaction_documents: ["brokerage_id", "classification_confidence", "contact_id", "created_at", "doc_label", "doc_type", "external_document_id", "extracted_data", "id", "listing_id", "metadata", "notes", "provider_source", "rejection_reason", "signature_status", "status", "storage_url", "transaction_id", "updated_at", "uploaded_at", "uploaded_by", "uploaded_by_type"],
   transaction_health_factors: ["ai_narrative", "brokerage_id", "factor_score", "factor_type", "id", "recommendations", "red_flags", "scored_at", "transaction_id", "warning_signs"],
   transaction_inspections: ["brokerage_id", "completed_date", "cost", "created_at", "id", "inspection_type", "inspector_company", "inspector_email", "inspector_name", "inspector_phone", "issues_found", "notes", "quote_activity_id", "quote_approved", "report_url", "scheduled_date", "status", "transaction_id", "updated_at"],
   transaction_lenders: ["appraisal_completed_date", "appraisal_ordered_date", "appraisal_value", "brokerage_id", "clear_to_close_date", "created_at", "id", "interest_rate", "lender_name", "loan_amount", "loan_officer_email", "loan_officer_name", "loan_officer_phone", "loan_term_years", "loan_type", "notes", "pre_approval_amount", "pre_approval_date", "rate_lock_date", "rate_lock_expiration_date", "rate_lock_extended_at", "transaction_id", "underwriting_status", "updated_at"],

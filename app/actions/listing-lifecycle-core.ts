@@ -27,7 +27,7 @@ import {
   getStageTimingMetrics,
 } from "@/lib/listing-lifecycle"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { handleSellerToLifetimeTransition } from "@/lib/application/listing-lifecycle"
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CALLER CONTEXT — auth + tenant, resolved once
@@ -687,156 +687,18 @@ export async function executeListingTransition(params: {
 // ============================================
 // INTERNAL: SELLER → LIFETIME CUSTOMER
 // ============================================
-
-async function handleSellerToLifetimeTransition(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  listingId: string,
-  agentId: string,
-  brokerageId: string,
-) {
-  // agentId here is an agents.id (listings.agent_id → agents(id)), and both
-  // client_portal_messages.agent_id and agents.id below are the SAME id space —
-  // verified via pg_constraint (cpm_agent_id_fkey → agents(id)). "" means the
-  // listing has no agent record; it must become NULL, not an empty uuid string
-  // that fails the FK.
-  const agentRecordId: string | null = agentId?.trim() ? agentId : null
-
-  // Fetch listing with seller contact and address
-  const { data: listingWithContact, error: listingError } = await supabase
-    .from("listings")
-    .select("seller_contact_id, address, city, state")
-    .eq("id", listingId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-
-  if (listingError) {
-    console.error("[handleSellerToLifetimeTransition] listing read failed — seller NOT converted:", listingError.message)
-    return
-  }
-  if (!listingWithContact?.seller_contact_id) return
-
-  const { seller_contact_id: contactId, address, city, state } = listingWithContact
-  const propertyAddress = [address, city, state].filter(Boolean).join(", ")
-  const now = new Date().toISOString()
-  const closedDate = new Date().toLocaleDateString()
-
-  // 1. Convert contact to lifetime customer.
-  //    THIS IS THE WHOLE POINT OF CLOSING A LISTING and it was fire-and-forget.
-  //    supabase-js resolves a refused update, so a contact that failed the
-  //    contacts_lifetime_consistent CHECK — or was simply out of RLS scope — stayed
-  //    an ordinary contact while the UI showed the celebration card claiming they
-  //    had been converted. Tenant-anchored and checked.
-  //    contact_persona IS NO LONGER WRITTEN HERE. It used to be set to
-  //    "past_seller" — a sixth spelling of a CONTACT TYPE living in the PERSONA
-  //    column, which is the defect m531/m531a exist to end. The owner's ruling
-  //    (2026-08-23): "lifetime and active seller are contact type not persona.
-  //    persona is more the situation that the contact or lead is in." The line
-  //    directly above ALREADY records the type — contact_type =
-  //    LIFETIME_CUSTOMER_TYPE — so "past_seller" was saying a second time, in the
-  //    wrong column and in a spelling no vocabulary knew, what contact_type had
-  //    just said correctly (CLAUDE.md §6).
-  //
-  //    IT WAS ALSO ABOUT TO BREAK THIS WHOLE UPDATE. m531 pinned
-  //    contacts.contact_persona to the canonical Persona vocabulary, which does
-  //    not contain "past_seller", so this statement would have been refused with
-  //    23514 — and PostgREST refuses the update ENTIRELY, not field by field, so
-  //    contact_type, status and notes would all have failed with it and the
-  //    seller would never have become a lifetime customer at all.
-  //
-  //    The persona is LEFT ALONE rather than nulled: a situation the contact is
-  //    genuinely in (relocating, downsizing, divorce) does not stop being true
-  //    because a sale closed, and erasing it here would be deleting data to tidy
-  //    a column (§1).
-  const { error: convertError } = await supabase
-    .from("contacts")
-    .update({
-      contact_type: LIFETIME_CUSTOMER_TYPE,
-      // WAS `status: LIFETIME_CUSTOMER_TYPE`. `status` is the coarse active/inactive
-      // axis (live rows: 'active', default 'new'); the lifecycle word lives in
-      // `lifecycle_state`. It was written to `status` only to satisfy
-      // contacts_lifetime_consistent, a cross-column CHECK anchored on the wrong
-      // column, which m539 dropped along with the `lifetime` spelling it policed.
-      // All three promotion writers now say the same thing in the same two columns.
-      lifecycle_state: LIFETIME_CUSTOMER_TYPE,
-      notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
-      updated_at: now,
-    })
-    .eq("id", contactId)
-    .eq("brokerage_id", brokerageId)
-
-  if (convertError) {
-    console.error(
-      "[handleSellerToLifetimeTransition] seller was NOT converted to a lifetime customer:",
-      convertError.message,
-    )
-  }
-
-  // 2. (CONSOLIDATED) The old fixed-calendar post-close sequence (3-day/30-day/6-month 'scheduled' rows)
-  //    is retired. Nothing delivered those rows — they sat orphaned (the 6-month never fired). Lifetime
-  //    nurture is now the canonical SITUATIONAL model: the newsletter (auto_lifetime) baseline + the
-  //    situational reel rail (stale-contact re-engagement → Asset Manager reel → Campaign Orchestrator →
-  //    portal CTA, on a LONG-HORIZON cadence) + the equity/anniversary/life-event triggers. The
-  //    lifetime-touchpoint reaper remains a safety net for any legacy 'scheduled' rows.
-
-  // 3. Send portal message — brand-voiced via the AI gateway (them-first, Fair-Housing redrafted),
-  //    with the canned line as the deterministic FALLBACK floor (the app's rule: client-facing copy is
-  //    AI-generated in the agent's voice, never a hardcoded script; the floor only ships if the gateway
-  //    is down). generateSellerHandlerCopy resolves the seller's first name from contactId.
-  const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
-  const { createServiceClient } = await import("@/lib/supabase/service")
-  const closingCopy = await generateSellerHandlerCopy({
-    brokerageId,
-    contactId,
-    purpose:
-      "Warmly congratulate the seller on their successful closing, let them know their portal now reflects their new status, and that you remain their lifetime real estate resource. Short, genuine, no pressure.",
-    facts: propertyAddress ? [{ label: "Property just sold", value: propertyAddress }] : undefined,
-    fallback: {
-      subject: "Congratulations on your closing!",
-      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
-    },
-  }, createServiceClient())
-  const { error: portalError } = await supabase
-    .from("client_portal_messages")
-    .insert({
-      contact_id: contactId,
-      brokerage_id: brokerageId,
-      // agents.id — same id space as the FK. NOT a users.id.
-      agent_id: agentRecordId,
-      body: closingCopy.body,
-      direction: "agent_to_client",
-    })
-
-  if (portalError) {
-    console.error(
-      "[handleSellerToLifetimeTransition] closing message never reached the seller's portal:",
-      portalError.message,
-    )
-  }
-
-  // 4. Award the agent their points for the transition.
-  //    agentRecordId is an agents.id — the correct key for this table.
-  //
-  //    THIS WROTE THE TOTAL AND NO LEDGER ROW. It read gamification_points, added
-  //    50, and wrote it back: a lost update against every other award path, and
-  //    fifty points that appeared on the agent's tier with nothing in
-  //    agent_points_log to explain where they came from — so the leaderboard, which
-  //    is built from the ledger, never saw them at all. It goes through the one
-  //    atomic award path now (m484: public.award_agent_points), which does the
-  //    increment and the ledger row in a single transaction.
-  if (agentRecordId) {
-    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
-    const awarded = await awardAgentPoints(supabase, {
-      agentId: agentRecordId,
-      points: POINT_VALUES.SELLER_LIFETIME_TRANSITION,
-      reason: "SELLER_LIFETIME_TRANSITION",
-      referenceType: "contact",
-      referenceId: contactId,
-    })
-    if (!awarded.ok) {
-      console.error("[handleSellerToLifetimeTransition] points not awarded:", awarded.error)
-    }
-  }
-}
+//
+// TOMBSTONE — the body that used to live here was MOVED (not duplicated) to
+// lib/application/listing-lifecycle.ts:handleSellerToLifetimeTransition, and this
+// file now imports that export (see the top of the file). SURVIVOR REASON: this
+// module (executeListingTransition) is the orphaned kernel path — nothing calls
+// it (scripts/listings-kernel-wiring-simulator.ts only names the symbols) — while
+// lib/application/listing-lifecycle.ts:advanceListingStageService is the writer
+// the UI actually reaches (stage-pipeline.tsx → app/actions/listing-lifecycle.ts
+// :advanceListingStage). Keeping the function's only body on the orphan path meant
+// the seller→lifetime handoff never ran for a listing closed the only way a user
+// actually can. advanceListingStageService now calls this same export on CLOSED,
+// so there is exactly one seller→lifetime writer for both callers (§6).
 
 // ============================================
 // LIFECYCLE QUERY ACTIONS

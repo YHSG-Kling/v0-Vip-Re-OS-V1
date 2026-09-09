@@ -10,6 +10,7 @@ import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { getAgentAssistantToolCallSummary, getAgentAssistantToolCallReplay } from "@/app/actions/admin/agent-assistant-tool-calls"
 
 export const dynamic = "force-dynamic"
 
@@ -69,7 +70,7 @@ export default async function AIUsagePage() {
   // not. Superadmin keeps its platform-wide dollar view.
   const isFinanceAdmin = isSuperadmin || isBrokerageFinanceAdmin({ user_type: profile?.user_type })
 
-  const [usage, agentRankingResult, quota, overage, overageHistory] = await Promise.all([
+  const [usage, agentRankingResult, quota, overage, overageHistory, toolCallSummary, toolCallReplay] = await Promise.all([
     getCurrentMonthUsage({ brokerageId: brokerageId ?? undefined }),
     getAgentAICostRanking(),
     brokerageId ? getBrokerageAIQuotaStatus(brokerageId) : Promise.resolve(null),
@@ -77,6 +78,17 @@ export default async function AIUsagePage() {
     // The BILLED ledger for periods already closed. Only fetched for the people
     // allowed to see money — the projection card above draws the same line.
     brokerageId && isFinanceAdmin ? getAIOverageBillingHistory(brokerageId) : Promise.resolve(null),
+    // READER (orphan doctrine §1.2) for agent_assistant_tool_calls — the
+    // voice-assistant audit row that had no reader anywhere before this lane.
+    // Tenant-scoped rollup for everyone on this page (brokerage error rate /
+    // p95 latency / top tool).
+    getAgentAssistantToolCallSummary().catch((e) => { console.error("[ai-usage] tool-call summary failed:", e); return null }),
+    // Full session replay is PLATFORM-ONLY — gated a second time inside the
+    // action itself (§4), so only fetched here for the superadmin branch to
+    // avoid a wasted round-trip for every broker who will never see it.
+    isSuperadmin
+      ? getAgentAssistantToolCallReplay(25).catch((e) => { console.error("[ai-usage] tool-call replay failed:", e); return [] })
+      : Promise.resolve([]),
   ])
 
   if (!usage) {
@@ -533,6 +545,119 @@ export default async function AIUsagePage() {
                   {belowBreakEven.map(r => r.agent_name).join(", ")}. AI spend exceeds GCI generated.
                 </p>
               </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Voice Assistant Tool Calls — reader for agent_assistant_tool_calls
+          (orphan doctrine §1.2). Tenant-scoped maintenance summary: error
+          rate, p95 latency, top tool. */}
+      {toolCallSummary && toolCallSummary.totalCalls > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Gauge className="h-4 w-4 text-primary" />
+              Voice Assistant Tool Calls (30d)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Total calls</p>
+                <p className="text-xl font-bold">{toolCallSummary.totalCalls.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Error rate</p>
+                <p className={`text-xl font-bold ${toolCallSummary.errorRate > 0.05 ? "text-red-600" : ""}`}>
+                  {(toolCallSummary.errorRate * 100).toFixed(1)}%
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">p95 latency</p>
+                <p className="text-xl font-bold">
+                  {toolCallSummary.p95LatencyMs != null ? `${toolCallSummary.p95LatencyMs.toLocaleString()}ms` : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Top tool</p>
+                <p className="text-xl font-bold truncate">{toolCallSummary.topTools[0]?.toolName ?? "—"}</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground border-b">
+                    <th className="py-2 pr-3 font-medium">Tool</th>
+                    <th className="py-2 pr-3 font-medium text-right">Calls</th>
+                    <th className="py-2 font-medium text-right">Errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {toolCallSummary.topTools.map((t) => (
+                    <tr key={t.toolName} className="border-b last:border-0">
+                      <td className="py-2 pr-3">{t.toolName.replace(/_/g, " ")}</td>
+                      <td className="py-2 pr-3 text-right">{t.count.toLocaleString()}</td>
+                      <td className="py-2 text-right">
+                        {t.errorCount > 0
+                          ? <Badge className="bg-red-100 text-red-800">{t.errorCount}</Badge>
+                          : <span className="text-muted-foreground">0</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Session replay — PLATFORM-ONLY debugging surface (gated inside
+          getAgentAssistantToolCallReplay to platform_role, not just here). */}
+      {isSuperadmin && toolCallReplay.length > 0 && (
+        <Card className="border-purple-200 bg-purple-50/20">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Brain className="h-4 w-4 text-purple-600" />
+              Voice Assistant Session Replay (superadmin, all tenants)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b">
+                    <th className="py-2 pr-3 font-medium">When</th>
+                    <th className="py-2 pr-3 font-medium">Tool</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium">Latency</th>
+                    <th className="py-2 pr-3 font-medium">Input</th>
+                    <th className="py-2 font-medium">Output</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {toolCallReplay.map((r) => (
+                    <tr key={r.id} className="border-b last:border-0 align-top">
+                      <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">
+                        {new Date(r.ts).toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-3 font-medium">{r.toolName}</td>
+                      <td className="py-2 pr-3">
+                        {r.success
+                          ? <Badge className="bg-emerald-100 text-emerald-800">ok</Badge>
+                          : <Badge className="bg-red-100 text-red-800" title={r.errorMessage ?? undefined}>error</Badge>}
+                      </td>
+                      <td className="py-2 pr-3">{r.latencyMs != null ? `${r.latencyMs}ms` : "—"}</td>
+                      <td className="py-2 pr-3 font-mono max-w-[220px] truncate" title={JSON.stringify(r.toolInput)}>
+                        {JSON.stringify(r.toolInput)}
+                      </td>
+                      <td className="py-2 font-mono max-w-[220px] truncate" title={JSON.stringify(r.toolOutput)}>
+                        {JSON.stringify(r.toolOutput)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </CardContent>
         </Card>

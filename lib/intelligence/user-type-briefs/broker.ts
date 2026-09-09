@@ -20,6 +20,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import type { UserTypeBrief, BriefPriority, BriefMetric } from "./types"
+import { parseMarketPulseMetrics } from "./types"
 
 /**
  * Generate broker brief — surfaces critical brokerage-wide items.
@@ -312,10 +313,6 @@ export async function generateBrokerBrief(params: {
   }
 }
 
-function parseMarketPulseMetrics(market_pulse: string): BriefMetric[] {
-  try {
-    const parsed = JSON.parse(market_pulse)
-    if (Array.isArray(parsed)) return parsed
-  } catch {}
-  return []
-}
+// TOMBSTONE: local parseMarketPulseMetrics merged onto
+// lib/intelligence/user-type-briefs/types.ts parseMarketPulseMetrics
+// (imported above) — §1/§6 SAME BODY census round 3, 2026-09-09.

@@ -30,7 +30,11 @@
 //  - loadFormDraft                   → returns null if no draft; never 404-errors
 //  - launchEsignEnvelope             → delegates to provider.sendForSignature, logs event
 //  - getEsignStatus                  → returns percentComplete 0–100, signed/total counts
-//  - syncEsignDocuments              → delegates to provider.syncDocuments, returns doc list
+//  - syncEsignDocuments              → REMOVED (m614, this lane). Fetch-only duplicate of
+//                                       lib/transactions/sync-from-provider.ts's two persisting
+//                                       cores (syncTransactionDocumentsFromProvider,
+//                                       syncListingDocumentsFromProvider) — see the tombstone
+//                                       at its former home below COMMAND 7.
 //  - recordBuyerPropertyAction       → upserts property_interests row for contact
 //  - loadBuyerSavedProperties        → returns paginated saved/favorited interests
 
@@ -764,52 +768,24 @@ export async function getEsignStatus(input: {
   }
 }
 
-// ─── COMMAND 8: syncEsignDocuments ──────────────────────────────────────────
+// ─── (REMOVED) COMMAND 8: syncEsignDocuments ────────────────────────────────
 //
-// Pulls documents from the provider and returns them for display.
-// Does NOT write to DB directly — caller persists if needed.
-// Provider call is TRANSPORT ONLY.
-
-export async function syncEsignDocuments(input: {
-  brokerage_id: string
-  external_transaction_id: string
-  contact_id: string
-  transaction_id?: string
-  listing_id?: string
-}): Promise<KernelFormsResult<{ documents: ProviderDocument[]; synced_count: number }>> {
-  try {
-    const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    const providerName   = providerResult.data?.provider_name ?? "dotloop"
-    const provider       = getTransactionProviderByName(providerName)
-
-    const result = await provider.syncDocuments({
-      externalTransactionId: input.external_transaction_id,
-      contactId:             input.contact_id,
-      transactionId:         input.transaction_id,
-      listingId:             input.listing_id,
-    })
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? "Document sync failed" }
-    }
-
-    const documents: ProviderDocument[] = (result.documents ?? []).map((d) => ({
-      externalDocumentId: d.externalDocumentId,
-      documentName:       d.documentName,
-      folderName:         d.folderName,
-      isSigned:           d.isSigned,
-      url:                d.url,
-      uploadedAt:         d.uploadedAt,
-    }))
-
-    return {
-      success: true,
-      data: { documents, synced_count: documents.length },
-    }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// DELETED as a duplicate that could only ever go stale (orphan doctrine §1.1,
+// this lane — m614). This function FETCHED the provider's document list and
+// explicitly did NOT write to DB, leaving persistence to whatever called it;
+// its one caller, app/actions/forms-kernel.ts:syncEsignDocsAction, now
+// delegates directly to the two functions that actually own this capability
+// end to end (fetch AND idempotent upsert, in one round-trip):
+//   lib/transactions/sync-from-provider.ts:syncTransactionDocumentsFromProvider
+//   lib/transactions/sync-from-provider.ts:syncListingDocumentsFromProvider
+// Both call the SAME provider.syncDocuments this function called — nothing
+// this function did was unique, it was strictly a subset (fetch, no persist)
+// of what its survivors already do. m614 is what made the listing half of that
+// survivor pair possible (transaction_documents.listing_id + the provider-
+// tracking columns on `listings`); before it existed, this fetch-only function
+// was the only path that could reach a listing packet at all, which is why it
+// survived as long as it did. KernelFormsResult / ProviderDocument stay
+// exported — getEsignStatus above and launchEsignEnvelope still use them.
 
 // ─── COMMAND 9: recordBuyerPropertyAction ───────────────────────────────────
 //

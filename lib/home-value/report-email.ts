@@ -31,6 +31,7 @@
 // given, so a full <html> document would push all three outside the document.
 
 import { LISTING_APPOINTMENT_MIN_LEAD_DAYS } from "./listing-appointment"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 /** The stored figures, exactly as `home_value_estimates` holds them. */
 export interface HomeValueReportEmailInput {
@@ -74,13 +75,9 @@ const money = (n: number): string =>
     maximumFractionDigits: 0,
   }).format(n)
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 /**
  * How the number was produced, said plainly. The seller is told which of the two it

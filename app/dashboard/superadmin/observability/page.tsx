@@ -1,4 +1,4 @@
-import { fetchAutomationErrors, fetchCalendarSyncLogs, fetchObservabilityDashboard } from "@/app/actions/observability/observability-actions"
+import { fetchAutomationErrors, fetchCalendarSyncLogs, fetchObservabilityDashboard, fetchEventProcessingHealth } from "@/app/actions/observability/observability-actions"
 import { createClient } from "@/lib/supabase/server"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import type { AutomationErrorRow, CalendarSyncLogRow } from "@/lib/kernel"
@@ -29,11 +29,18 @@ export default async function ObservabilityPage(
   let dashboard
   let automationErrors
   let syncLogs
+  let orchestratorHealth: Awaited<ReturnType<typeof fetchEventProcessingHealth>> | null = null
 
   try {
     dashboard = await fetchObservabilityDashboard(selectedBrokerageId)
     automationErrors = await fetchAutomationErrors({ brokerageId: selectedBrokerageId, limit: 100 })
     syncLogs = await fetchCalendarSyncLogs({ brokerageId: selectedBrokerageId, limit: 50 })
+    // READER (orphan doctrine §1.2) for event_processing_log — best-effort:
+    // a refused health read must not take down the rest of this dashboard.
+    orchestratorHealth = await fetchEventProcessingHealth(selectedBrokerageId, 24).catch((e) => {
+      console.error("[observability] orchestrator health fetch failed:", e)
+      return null
+    })
   } catch (err) {
     // REPORT THE REASON. This catch used to discard it, which is how the
     // unsatisfiable `user_type === 'superadmin'` gate underneath stayed
@@ -179,6 +186,86 @@ export default async function ObservabilityPage(
           </div>
         ) : (
           <p className="text-gray-500">No sync logs</p>
+        )}
+      </div>
+
+      {/* Orchestrator Health — reader for event_processing_log (orphan
+          doctrine §1.2). Repeated per-handler failures also publish a
+          manager signal (cron_manager → data_steward), wired in
+          lib/orchestrator/internal.ts::logProcessingResults. */}
+      <div className="bg-white rounded-lg shadow p-4">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Orchestrator Event Health (24h)</h2>
+        {orchestratorHealth ? (
+          <>
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div>
+                <p className="text-sm text-gray-600">Events processed</p>
+                <p className="text-2xl font-bold text-gray-900">{orchestratorHealth.totalEvents.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">Failure rate</p>
+                <p className={`text-2xl font-bold ${orchestratorHealth.failureRate > 0.05 ? "text-red-600" : "text-gray-900"}`}>
+                  {(orchestratorHealth.failureRate * 100).toFixed(1)}%
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-600">p95 processing time</p>
+                <p className="text-2xl font-bold text-gray-900">
+                  {orchestratorHealth.p95ProcessingTimeMs != null ? `${orchestratorHealth.p95ProcessingTimeMs}ms` : "—"}
+                </p>
+              </div>
+            </div>
+            {orchestratorHealth.byHandler.length > 0 && (
+              <div className="overflow-x-auto mb-4">
+                <table className="min-w-full text-sm">
+                  <thead className="border-b border-gray-200">
+                    <tr>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">Handler</th>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">Total</th>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">Failures</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orchestratorHealth.byHandler.slice(0, 15).map((h) => (
+                      <tr key={h.handler} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-2 px-4 font-medium text-gray-900">{h.handler}</td>
+                        <td className="py-2 px-4 text-gray-600">{h.total}</td>
+                        <td className="py-2 px-4">
+                          <span className={h.failures > 0 ? "text-red-600 font-semibold" : "text-gray-600"}>{h.failures}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {orchestratorHealth.recentFailures.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="border-b border-gray-200">
+                    <tr>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">When</th>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">Handler</th>
+                      <th className="text-left py-2 px-4 font-medium text-gray-700">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orchestratorHealth.recentFailures.map((f, i) => (
+                      <tr key={`${f.eventId}-${i}`} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-2 px-4 text-gray-600 whitespace-nowrap">{new Date(f.createdAt).toLocaleString()}</td>
+                        <td className="py-2 px-4 font-medium text-gray-900">{f.handler}</td>
+                        <td className="py-2 px-4 text-gray-600 truncate max-w-md">{f.errorMessage ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-gray-500">No failures in the last 24h</p>
+            )}
+          </>
+        ) : (
+          <p className="text-gray-500">Orchestrator health could not be loaded</p>
         )}
       </div>
     </div>

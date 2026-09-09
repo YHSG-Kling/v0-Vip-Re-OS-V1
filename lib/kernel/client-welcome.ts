@@ -226,6 +226,7 @@ import { PORTAL_EXCLUDED_CONTACT_TYPES } from "@/lib/contact-promotion/portal-ac
 import { isLifetimeCustomerType } from "@/lib/contact-types"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import type { ContactReelPersona } from "@/lib/ai-isa/contact-reel-situation"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -428,13 +429,9 @@ function composeWelcomeEmailHtml(input: WelcomeEmailInput): string {
   return [paragraphs, videoBlock, portalBlock].filter(Boolean).join("\n")
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 // ─── The live ensure ─────────────────────────────────────────────────────────
 

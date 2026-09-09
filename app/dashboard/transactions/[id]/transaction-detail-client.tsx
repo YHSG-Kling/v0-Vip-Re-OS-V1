@@ -376,6 +376,19 @@ interface TransactionDetailClientProps {
     status: string
     paid_date: string | null
   }>
+  // READER (orphan doctrine §1.2) for cost_breakdown_tracking — the AI-generated
+  // closing-cost line items generateCostBreakdown() writes
+  // (lib/application/transactions.ts) and no surface ever showed. Uses the
+  // live columns (schema-snapshot.ts:260).
+  closingCosts?: Array<{
+    id: string
+    item_name: string
+    cost_category: string
+    party: string
+    estimated_amount: number | null
+    actual_amount: number | null
+    status: string
+  }>
   stages: TransactionStage[]
   currentStageIndex: number
   // Contact details for e-sign
@@ -495,6 +508,7 @@ export function TransactionDetailClient({
   lenderInfo,
   complianceLogs,
   commissions,
+  closingCosts = [],
   stages,
   currentStageIndex,
   contactEmail,
@@ -4626,6 +4640,53 @@ export function TransactionDetailClient({
                   )}
                 </CardContent>
               </Card>
+
+              {/* READER (orphan doctrine §1.2) for cost_breakdown_tracking —
+                  generateCostBreakdown()'s AI-estimated closing-cost line
+                  items had no reader anywhere before this lane. */}
+              {closingCosts.length > 0 && (
+                <Card className="mt-4">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <DollarSign className="h-4 w-4" />
+                      Closing Cost Estimate
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(["buyer", "seller"] as const).map((party) => {
+                      const rows = closingCosts.filter((c) => c.party === party)
+                      if (rows.length === 0) return null
+                      const total = rows.reduce((s, c) => s + (c.actual_amount ?? c.estimated_amount ?? 0), 0)
+                      return (
+                        <div key={party} className="mb-4 last:mb-0">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                            {party} — {rows[0]?.cost_category?.replace(/_/g, " ") ?? "closing costs"}
+                          </p>
+                          <div className="space-y-1.5">
+                            {rows.map((c) => (
+                              <div key={c.id} className="flex items-center justify-between text-sm py-1 border-b last:border-0">
+                                <span className="capitalize">{c.item_name.replace(/_/g, " ")}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">
+                                    ${(c.actual_amount ?? c.estimated_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                  </span>
+                                  <Badge variant={c.status === "paid" || c.status === "actual" ? "default" : "secondary"} className="text-[10px] px-1 h-4">
+                                    {c.status}
+                                  </Badge>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between text-sm font-semibold pt-2 mt-1 border-t">
+                            <span>Total</span>
+                            <span>${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </CardContent>
+                </Card>
+              )}
             </TabsContent>
 
           {/* Partners Tab */}

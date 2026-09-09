@@ -1737,6 +1737,13 @@ Return JSON with detailed breakdown.`
     for (const [costType, costData] of Object.entries(costs.data.costs || {})) {
       const cost: any = costData
       await supabase.from("cost_breakdown_tracking").insert({
+        // TENANT ANCHOR (§4) — brokerage_id is a live column
+        // (schema-snapshot.ts:260) this insert never stamped, so every row
+        // written here was untenanted until the new reader
+        // (transaction-detail-client.tsx "Closing Cost Estimate") had to
+        // work around it by scoping on transaction_id alone. `transaction`
+        // is already in scope from the fetch above — no extra read.
+        brokerage_id: transaction.brokerage_id ?? null,
         transaction_id: transactionId,
         cost_category: isSeller ? "seller_closing" : "buyer_closing",
         item_name: costType,

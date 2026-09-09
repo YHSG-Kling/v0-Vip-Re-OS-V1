@@ -45,3 +45,33 @@ export function daysBetween(
   const round = opts?.round ?? "floor"
   return round === "ceil" ? Math.ceil(diff) : round === "round" ? Math.round(diff) : Math.floor(diff)
 }
+
+/**
+ * `daysBetween(iso, now, {round:"floor"})`, clamped to >=0, or `null` for a
+ * missing/unparseable `iso` — the POLICY wrapper `daysBetween`'s own header
+ * says stays at the call site. Survivor for two byte-identical private
+ * `daysSince` copies (SAME BODY census round 3, 2026-09-09):
+ * lib/education/skill-freshness-radar.ts:20 and
+ * lib/recruiting/retention-radar.ts:14.
+ */
+export function daysSince(iso: string | null | undefined, now: Date): number | null {
+  if (!iso) return null
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return null
+  return Math.max(0, daysBetween(t, now, { round: "floor" }))
+}
+
+/**
+ * `'HH:MM'` (or `'HH:MM:SS'`, seconds ignored) 24-hour time → `'h:MM AM/PM'`.
+ * Returns `t` unchanged when it doesn't parse. Survivor for two
+ * byte-identical private copies (SAME BODY census round 3, 2026-09-09):
+ * app/portal/[contactId]/showings/components/buyer-tour-card.tsx:260
+ * `formatTime` and lib/showings/dispatchers.ts:386 `formatTimeShort`.
+ */
+export function formatTime24To12(t: string): string {
+  const [hh, mm] = t.split(":").map(Number)
+  if (hh == null || mm == null) return t
+  const period = hh >= 12 ? "PM" : "AM"
+  const h12 = hh % 12 || 12
+  return `${h12}:${String(mm).padStart(2, "0")} ${period}`
+}

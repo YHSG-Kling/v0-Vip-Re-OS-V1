@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { ValidationError } from "@/lib/errors"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 /**
  * A PostgREST embed arrives as an OBJECT for a many-to-one relation and an
@@ -183,17 +184,24 @@ export async function sendVendorBookingConfirmation(params: {
 /**
  * Send service completion reminder to vendor
  */
-export async function sendVendorServiceReminder(params: {
-  vendorId: string
-  serviceId: string
-  daysUntilDue: number
-}): Promise<{ success: boolean; error?: string }> {
+export async function sendVendorServiceReminder(
+  params: {
+    vendorId: string
+    serviceId: string
+    daysUntilDue: number
+  },
+  client?: SupabaseClient
+): Promise<{ success: boolean; error?: string }> {
   try {
     if (!isValidUUID(params.vendorId)) {
       throw new ValidationError("Invalid vendor ID")
     }
 
-    const supabase = await createClient()
+    // Accept a caller-supplied client so the asset_manager follow-up cadence
+    // cron (lib/communications/vendor-follow-up-cadence.ts) can pass a
+    // service-role client — it has no session cookie to build the default
+    // client from. UI callers (sendServiceReminderToVendor) keep the default.
+    const supabase = client ?? (await createClient())
 
     // Live FK: listing_marketing_services.vendor_id → vendors(id) — the old
     // vendor_directory embed had no FK to resolve, so PostgREST errored this

@@ -38,6 +38,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   // Staggered half an hour after the listing prep tick (documented in route).
   { path: "/api/cron/buyer-consultation-prep",        schedule: "30 17 * * *" },
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
+  { path: "/api/cron/notification-delivery-escalation", schedule: "*/30 * * * *" }, // notification_log reconciliation (readerless-write-census)
+  { path: "/api/cron/vendor-follow-up-cadence",        schedule: "0 14 * * *" },    // vendor_communications.sent_at cadence (readerless-write-census)
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },
   { path: "/api/cron/brokerage-intelligence-mine",    schedule: "12 4 * * *" }, // (staggered r43)
@@ -62,6 +64,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   // construction, and a refused remove is rarely transient enough to be worth
   // hammering hourly.
   { path: "/api/cron/storage-orphan-sweep",           schedule: "48 4 * * *" },
+  // Esign document sync — the autonomous half of app/actions/forms-kernel.ts:
+  // syncEsignDocsAction (m614, deal_coordinator). Every 4 hours, offset from
+  // the storage sweep above.
+  { path: "/api/cron/esign-doc-sync",                 schedule: "17 */4 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
   { path: "/api/cron/idle-hands",                     schedule: "5 * * * *" }, // (staggered r43)
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.

@@ -31,6 +31,7 @@ export default async function SuperadminAuditPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link href="/dashboard/superadmin/audit-trail" className="rounded-md border px-3 py-1 text-sm">Event audit trail</Link>
+          <Link href="/dashboard/superadmin/tenant-transitions" className="rounded-md border px-3 py-1 text-sm">Tenant transitions</Link>
           <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
         </div>
       </div>

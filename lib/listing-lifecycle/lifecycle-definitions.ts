@@ -82,6 +82,19 @@ export interface StageDefinition {
   
   // Is this a milestone stage? (for reporting)
   isMilestone: boolean
+
+  /**
+   * Does ENTERING this stage convert the listing's seller contact to a
+   * lifetime customer? DERIVED FROM THE TABLE, never a hand-written stage
+   * literal in the writer — the same rule requireListingStageAdvance already
+   * follows for readiness/role/allowedFrom (see lib/application/listing-
+   * lifecycle.ts:advanceListingStageService). scripts/lifecycle-lib-defects-
+   * simulator.ts (d1.service-holds-no-hand-written-stage-list) asserts the
+   * writer contains NO copied stage name outside this table for exactly this
+   * reason — a bare `toStage === "CLOSED"` in the service is the same drift
+   * risk as a hand-copied allowedFrom list.
+   */
+  triggersLifetimeTransition?: boolean
 }
 
 /**
@@ -427,6 +440,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     readinessChecks: ["closing_docs_ready"],
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
+    triggersLifetimeTransition: true,
   },
   {
     stage: "LIFETIME_CUSTOMER",

@@ -1,15 +1,11 @@
 "use server"
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlFull
+// (imported below as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 import { createClient } from "@/lib/supabase/server"
+import { escapeHtmlFull as escapeHtml } from "@/lib/format/html"
 import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"

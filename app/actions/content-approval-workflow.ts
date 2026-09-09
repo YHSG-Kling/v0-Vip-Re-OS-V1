@@ -19,40 +19,16 @@ import {
   type ApproverRole,
 } from "@/lib/approval-workflow"
 import { isValidUUID } from "@/lib/validations"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireSessionAgentId as getSessionAgentId } from "@/lib/identity/get-agent-context"
 
 // ============================================
 // SYSTEM 4.3 – CONTENT APPROVAL WORKFLOW
 // Server Actions (Public API)
 // ============================================
 
-/**
- * Resolves session-derived agent identifier for approval logging.
- * NEVER trusts caller-supplied agent_id.
- */
-async function getSessionAgentId(): Promise<
-  | { ok: true; agentId: string; brokerageId: string }
-  | { ok: false; error: string }
-> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { ok: false, error: "Unauthorized" }
-  }
-  // NOT `?? ctx.userId` (m360). This helper is the single point where agentId
-  // is manufactured for every write in this file, and all of them attribute to
-  // an agents-class column. Substituting the users id put a value there that
-  // the foreign key rejects — so the compliance/approval log, the record of
-  // what the OS decided and why, silently lost exactly the rows belonging to
-  // users who had not finished setup.
-  if (!ctx.agentId) {
-    return { ok: false, error: "No agent profile for this user yet — finish account setup." }
-  }
-  return {
-    ok: true,
-    agentId: ctx.agentId,
-    brokerageId: ctx.brokerageId,
-  }
-}
+// TOMBSTONE: local getSessionAgentId merged onto
+// lib/identity/get-agent-context.ts requireSessionAgentId (imported above as
+// `getSessionAgentId`) — §1/§6 SAME BODY census round 3, 2026-09-09.
 
 /**
  * Evaluate approval decision for content

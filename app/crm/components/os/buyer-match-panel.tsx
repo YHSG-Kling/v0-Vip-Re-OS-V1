@@ -31,15 +31,11 @@ import { draftSmartEmail } from "@/app/actions/ai-insights"
 import { sendEmail } from "@/app/actions/communications"
 import { PropertyAlertsPanel } from "./property-alerts-panel"
 import { BUYER_STAGES, BUYER_STAGE_LABELS, isBuyerStage } from "@/lib/contacts/buyer-stage"
+import { escapeHtmlFull as escapeHtml } from "@/lib/format/html"
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlFull
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 // TOMBSTONE (§6) — a local seven-value stage list (new / nurturing / active /
 // qualified / under_contract / closed / lost) stood here and fed the Select

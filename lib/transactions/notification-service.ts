@@ -273,6 +273,34 @@ export class NotificationService {
     })()
   }
 
+  /**
+   * READER — the transaction workspace's delivery-status panel
+   * (notification-delivery-section.tsx). `notification_log` has no
+   * `transaction_id` column, so the filter runs against the jsonb `response`
+   * this class already stamps with `transaction_id` on every write above.
+   * TENANT-SCOPED FROM THE CALLER'S ALREADY-RESOLVED brokerageId (§4) — never
+   * a request body — and explicit column selects only (no `select("*")`).
+   */
+  async getDeliveryLogForTransaction(
+    transactionId: string,
+    brokerageId: string,
+    limit = 50
+  ): Promise<Array<{ id: string; delivery_channel: string; status: string; response: Record<string, any> | null; created_at: string }>> {
+    const { data, error } = await this.supabase
+      .from("notification_log")
+      .select("id, delivery_channel, status, response, created_at")
+      .eq("brokerage_id", brokerageId)
+      .eq("response->>transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(limit)
+
+    if (error) {
+      console.error("[NotificationService] getDeliveryLogForTransaction refused:", error.message)
+      return []
+    }
+    return data ?? []
+  }
+
   private formatEmailBody(message: string, metadata?: Record<string, any>): string {
     let body = message
 
@@ -372,4 +400,89 @@ export class NotificationService {
       }
     })
   }
+}
+
+/**
+ * READER — delivery outcome reconciliation for the deal_coordinator's
+ * autonomous loop (app/api/cron/notification-delivery-escalation/route.ts).
+ *
+ * `notification_log.status` / `.response` were written by `logNotification`
+ * above on every send attempt and never read by anything (readerless-write-
+ * census). A single failed send is normal (a bounced number, a transient SMTP
+ * refusal) and the next event will just try again — RETRYING blind here would
+ * need a recipient to retarget, and `notification_log` carries none (only
+ * `response.transaction_id` / `event_type`, no user id), so a synthetic retry
+ * would either resend to nobody or to every past recipient. What the data DOES
+ * support, honestly: noticing a CHANNEL that keeps failing for the SAME deal
+ * and putting a human in the loop — which is what "or escalate" means here.
+ *
+ * Scoped to a bounded recent window (not the whole table) so this stays a
+ * cheap periodic scan, not a full-table read every run.
+ */
+export async function escalateFailedNotificationDeliveries(
+  windowHours = 2,
+  failureThreshold = 2
+): Promise<{ scanned: number; escalated: number }> {
+  const supabase = createServiceClient()
+  const since = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString()
+
+  const { data: failed, error } = await supabase
+    .from("notification_log")
+    .select("id, brokerage_id, delivery_channel, status, response, created_at")
+    .eq("status", "failed")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true })
+
+  if (error) {
+    console.error("[NotificationService] escalation scan refused:", error.message)
+    return { scanned: 0, escalated: 0 }
+  }
+  if (!failed || failed.length === 0) return { scanned: 0, escalated: 0 }
+
+  // Group repeat failures by (brokerage, transaction, channel) — response is
+  // the same jsonb payload logNotification stamped with transaction_id.
+  type Group = { brokerageId: string; transactionId: string; channel: string; count: number; lastError: string | null }
+  const groups = new Map<string, Group>()
+  for (const row of failed) {
+    const txnId = (row.response as Record<string, any> | null)?.transaction_id
+    if (!txnId || !row.brokerage_id) continue // only transaction-scoped sends escalate here
+    const key = `${row.brokerage_id}::${txnId}::${row.delivery_channel}`
+    const g = groups.get(key) ?? { brokerageId: row.brokerage_id, transactionId: txnId, channel: row.delivery_channel, count: 0, lastError: null }
+    g.count++
+    g.lastError = (row.response as Record<string, any> | null)?.error_message ?? g.lastError
+    groups.set(key, g)
+  }
+
+  const service = new NotificationService()
+  let escalated = 0
+  for (const g of groups.values()) {
+    if (g.count < failureThreshold) continue
+
+    // Tenant-scoped lookup of who to alert — explicit columns, brokerage
+    // filter matches the failing rows' own brokerage_id (§4).
+    const { data: txn } = await supabase
+      .from("transactions")
+      .select("id, agent_id, coordinator_id, property_address, brokerage_id")
+      .eq("id", g.transactionId)
+      .eq("brokerage_id", g.brokerageId)
+      .maybeSingle()
+    if (!txn?.agent_id) continue
+
+    const recipients = [txn.agent_id]
+    if (txn.coordinator_id) recipients.push(txn.coordinator_id)
+
+    await service.sendMultiChannelNotification({
+      transactionId: g.transactionId,
+      brokerageId: g.brokerageId,
+      recipientIds: recipients,
+      eventType: "transaction.notification.delivery_failed",
+      title: "Client notification delivery failing",
+      message: `${g.count} ${g.channel} notifications for ${txn.property_address ?? "this transaction"} failed to deliver. Contact the client directly.`,
+      priority: "high",
+      metadata: { failed_channel: g.channel, failure_count: g.count, last_error: g.lastError },
+    })
+    escalated++
+  }
+
+  return { scanned: failed.length, escalated }
 }

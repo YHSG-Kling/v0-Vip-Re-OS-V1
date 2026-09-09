@@ -19,6 +19,7 @@ import {
   revokeTenantApiToken,
   type WebhookSubscriptionView,
   type WebhookDeliveryView,
+  type InboundWorkflowEventView,
   type DeveloperTokenState,
   type DevelopersDocsData,
 } from "@/app/actions/tenant-webhooks"
@@ -27,6 +28,11 @@ interface Props {
   initialSubscriptions: WebhookSubscriptionView[]
   initialDeliveries: WebhookDeliveryView[]
   deliveriesError: string | null
+  // READER (orphan doctrine §1.2) for workflow_webhook_events — the inbound
+  // trigger log app/api/workflow/trigger/route.ts writes and no surface ever
+  // showed. The inbound half of this same developer rail.
+  initialInboundEvents: InboundWorkflowEventView[]
+  inboundEventsError: string | null
   tokenState: DeveloperTokenState | null
   tokenStateError: string | null
   docs: DevelopersDocsData
@@ -309,6 +315,53 @@ export function DevelopersClient(props: Props) {
                     <td className="px-3 py-2 text-gray-500 text-xs">
                       {d.status === "delivered" ? fmt(d.deliveredAt) : d.status === "dead" ? "—" : fmt(d.nextAttemptAt)}
                       {d.errorDetail && <span className="block text-red-600 max-w-xs truncate" title={d.errorDetail}>{d.errorDetail}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Inbound events (workflow_webhook_events reader, orphan doctrine §1.2) ── */}
+      <section className="bg-white border border-gray-200 rounded-lg">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Inbound events</h2>
+          <p className="text-sm text-gray-500">
+            The last 50 trigger POSTs your automation secret received (GHL, IDX, Zapier, QR scans,
+            email provider webhooks) — the audit half of the workflow trigger endpoint
+          </p>
+        </div>
+        {props.inboundEventsError && <p className="px-6 py-3 text-sm text-red-600">{props.inboundEventsError}</p>}
+        {props.initialInboundEvents.length === 0 ? (
+          <p className="px-6 py-8 text-sm text-gray-500 text-center">
+            No inbound events yet. They appear here the moment an external system POSTs to your
+            workflow trigger endpoint.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th className="px-6 py-2 font-medium">Event</th>
+                  <th className="px-3 py-2 font-medium">Source</th>
+                  <th className="px-3 py-2 font-medium">Contact</th>
+                  <th className="px-3 py-2 font-medium">Received</th>
+                  <th className="px-3 py-2 font-medium">Payload</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {props.initialInboundEvents.map((e) => (
+                  <tr key={e.id} className="align-top">
+                    <td className="px-6 py-2 font-mono text-xs text-gray-900">{e.eventType}</td>
+                    <td className="px-3 py-2 text-gray-700">{e.source}</td>
+                    <td className="px-3 py-2 text-gray-500 text-xs font-mono">
+                      {e.contactId ? `${e.contactId.slice(0, 8)}…` : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-gray-500 text-xs">{fmt(e.receivedAt)}</td>
+                    <td className="px-3 py-2 text-gray-500 text-xs max-w-xs truncate font-mono" title={JSON.stringify(e.payload)}>
+                      {JSON.stringify(e.payload)}
                     </td>
                   </tr>
                 ))}

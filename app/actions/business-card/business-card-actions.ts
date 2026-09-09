@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
@@ -8,32 +7,16 @@ import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { VENDOR_CATEGORY_OTHER } from "@/lib/kernel/vendor-categories"
+import { requireCallerWithAgent as requireCaller } from "@/lib/auth/require-caller"
 
 // Was trusting caller-supplied agentId + brokerageId. Caller could
 // upload business cards attributed to any agent in any brokerage
 // (creating fraudulent contacts + burning Claude Vision API budget).
 // Now: identity resolved from session, agent_id verified to belong to
 // caller's brokerage.
-async function requireCaller(): Promise<
-  | { ok: true; userId: string; brokerageId: string; agentId: string | null }
-  | { ok: false; error: string }
-> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthorized" }
-  const { data: u } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const { data: a } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, agentId: a?.id ?? null }
-}
+// TOMBSTONE: local requireCaller merged onto lib/auth/require-caller.ts:185
+// requireCallerWithAgent (imported above as `requireCaller`) — §1/§6 SAME BODY
+// census round 3, 2026-09-09.
 
 export async function uploadBusinessCard(params: {
   imageBase64: string

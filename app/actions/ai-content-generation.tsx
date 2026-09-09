@@ -34,20 +34,15 @@ import {
   CONTENT_CALENDAR_STATUSES,
   SEO_VISIBILITY_SCOPES,
 } from "./ai-content-generation.utils"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 /** The two roster-derived unions used by the `satisfies` checks below. */
 type ContentCalendarStatus = (typeof CONTENT_CALENDAR_STATUSES)[number]
 type SeoVisibilityScope = (typeof SEO_VISIBILITY_SCOPES)[number]
 
-function parseAIJsonResponse(text: string) {
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 /**
  * Session-derived actor. Every write in this file that used to take an

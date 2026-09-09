@@ -48,6 +48,15 @@ const F = {
   FORMS:    "app/components/dashboard/listings/lifecycle/listing-forms-panel.tsx",
   INTEL:    "app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx",
   DEFS:     "lib/listing-lifecycle/lifecycle-definitions.ts",
+  // APP — lib/application/listing-lifecycle.ts:advanceListingStageService. Added
+  // when the TWO-WRITER hazard on listings.lifecycle_stage was closed: the
+  // three orphaned kernel actions below (updateListingStageAction,
+  // closeListingAction, loadListingWorkspaceAction) were DELETED rather than
+  // wired, because everything they did that the survivor lacked — the
+  // LISTING_STAGE_CHANGED kernel-event emit and the seller-to-lifetime
+  // transition on CLOSED — was merged onto this file instead. See ASSERTIONS
+  // A16-A18 below.
+  APP:      "lib/application/listing-lifecycle.ts",
 } as const
 
 type FileKey = keyof typeof F
@@ -201,20 +210,26 @@ const WIRED: Array<{ action: string; module: string }> = [
   { action: "getListingLifecycleHistory",       module: "listing-lifecycle-core" },
 ]
 
-/** Actions deliberately left unwired — they must still EXIST (never deleted).
- *
- * attachMediaAction and createTransactionFromOfferAction are NOT in this list
- * any more: both were deleted under the owner's merge-then-delete ruling, each
- * with a named, wired, strictly-more-complete survivor —
- * app/actions/listing-media.ts:uploadListingMedia and
- * lib/transactions/offer-bridge.ts:createTransactionFromOffer respectively
- * (see the tombstone notes in listings-kernel.ts). That is a collapse into a
- * duplicate, not a capability loss. */
-const PRESERVED = [
+/**
+ * REMOVED (merge-then-delete), not preserved. `closeListingAction`,
+ * `updateListingStageAction` and `loadListingWorkspaceAction` used to sit here
+ * as "still exported, never deleted" — the TWO-WRITER hazard this file's header
+ * comment names. Investigation found each one was a genuine duplicate once the
+ * survivor caught up (CLOSED was already an ordinary stage-pipeline target;
+ * the lifecycle page already loads the workspace bundle more completely), so
+ * per orphan doctrine §1 they were deleted with tombstones naming the survivor
+ * — same disposition as attachMediaAction and createTransactionFromOfferAction
+ * before them. See ASSERTIONS A16-A18. */
+const REMOVED_ORPHANS = [
   "closeListingAction",
   "updateListingStageAction",
   "loadListingWorkspaceAction",
 ]
+
+/** An export this suite KNOWS is still live in listings-kernel.ts — the positive
+ *  control for A18's absence check (CLAUDE.md §2: an absence assertion with no
+ *  positive control cannot tell a real removal from a broken regex). */
+const KNOWN_LIVE_KERNEL_EXPORT = "prefillListingFormAction"
 
 /** The columns saveListingDraftAction is allowed to write. */
 function editableFields(kernelSrc: string): string[] {
@@ -369,7 +384,6 @@ const ASSERTIONS: Assertion[] = [
         "saveListingDraftAction",
         "generateListingDescriptionAction",
         "prefillListingFormAction",
-        "loadListingWorkspaceAction",
       ]
       return fns.every((fn) => {
         const body = functionBody(S.KERNEL, fn)
@@ -381,7 +395,6 @@ const ASSERTIONS: Assertion[] = [
         "saveListingDraftAction",
         "generateListingDescriptionAction",
         "prefillListingFormAction",
-        "loadListingWorkspaceAction",
       ].filter((fn) => {
         const body = functionBody(S.KERNEL, fn)
         return !body || !/\.eq\(\s*["']brokerage_id["']/.test(body)
@@ -497,6 +510,84 @@ const ASSERTIONS: Assertion[] = [
     },
     detail: () => "a failed getEnabledGates read collapses to an empty (i.e. all-closed) gate list",
   },
+  // ── THE TWO-WRITER HAZARD, CLOSED (2026-09-09) ────────────────────────────
+  // A16-A17 assert the RULE the orphaned kernel path used to be the only
+  // implementer of: THE UI-REACHABLE STAGE WRITER — advanceListingStageService,
+  // the only function stage-pipeline.tsx (and the AI-chat tool) ever reach —
+  // now emits the kernel event and fires the seller-to-lifetime transition
+  // itself. Not pinned to a byte window or a wave number: both read the
+  // function's own construct (a call inside its body), so they hold across any
+  // future refactor that keeps the behavior.
+  {
+    id: "A16",
+    name: "advanceListingStageService emits LISTING_STAGE_CHANGED with from_stage/to_stage metadata",
+    run: (S) => {
+      const body = functionBody(S.APP, "advanceListingStageService")
+      if (!body) return false
+      const emits = /emitKernelEvent\s*\(\s*\{[\s\S]{0,120}?KernelEvent\.LISTING_STAGE_CHANGED/.test(body)
+      const carriesMetadata = /metadata:\s*\{[^}]*from_stage[^}]*to_stage/.test(body)
+      return emits && carriesMetadata
+    },
+    detail: (S) => {
+      const body = functionBody(S.APP, "advanceListingStageService")
+      if (!body) return "advanceListingStageService not defined"
+      if (!/KernelEvent\.LISTING_STAGE_CHANGED/.test(body)) return "no LISTING_STAGE_CHANGED emit"
+      return "LISTING_STAGE_CHANGED emit found, but not with from_stage/to_stage metadata"
+    },
+  },
+  {
+    id: "A17",
+    name: "advanceListingStageService fires the seller-to-lifetime transition, gated on the STAGE TABLE (not a hand-written stage literal)",
+    run: (S) => {
+      const body = functionBody(S.APP, "advanceListingStageService")
+      if (!body) return false
+      // Construct: gated on getStageDefinition(...).triggersLifetimeTransition
+      // — DERIVED from the table — not a bare `toStage === "CLOSED"`, which
+      // scripts/lifecycle-lib-defects-simulator.ts (d1.service-holds-no-hand-
+      // written-stage-list) independently forbids in this same file.
+      const derivedGate = /getStageDefinition\s*\([^)]*\)\s*\?\.\s*triggersLifetimeTransition\s*\)\s*\{[\s\S]{0,300}?handleSellerToLifetimeTransition\s*\(/.test(body)
+      const noHandWrittenLiteral = !/toStage\s*===\s*["']CLOSED["']/.test(body)
+      return derivedGate && noHandWrittenLiteral
+    },
+    detail: (S) => {
+      const body = functionBody(S.APP, "advanceListingStageService")
+      if (!body) return "advanceListingStageService not defined"
+      if (!/handleSellerToLifetimeTransition\s*\(/.test(body)) return "handleSellerToLifetimeTransition is never called"
+      if (/toStage\s*===\s*["']CLOSED["']/.test(body)) return "gated on a hand-written \"CLOSED\" literal, not the stage table"
+      return "handleSellerToLifetimeTransition is called, but not gated on getStageDefinition(...).triggersLifetimeTransition"
+    },
+  },
+  {
+    id: "A18",
+    name: "the orphaned two-writer actions are GONE, not left both exported and uncalled",
+    run: (S) => {
+      // POSITIVE CONTROL (CLAUDE.md §2): the same export-detection regex must
+      // find a export this suite KNOWS is still live, or a broken regex would
+      // report every name "removed" and this would be a clean-looking no-op.
+      const controlFound = new RegExp(`export\\s+async\\s+function\\s+${KNOWN_LIVE_KERNEL_EXPORT}\\s*\\(`).test(S.KERNEL)
+      if (!controlFound) return false
+      const stillExported = REMOVED_ORPHANS.filter((fn) =>
+        new RegExp(`export\\s+async\\s+function\\s+${fn}\\s*\\(`).test(S.KERNEL),
+      )
+      if (stillExported.length > 0) return false
+      // Each removal must name its survivor — a bare deletion is forbidden
+      // (CLAUDE.md §1: "deleting to move a number is forbidden"). This lives in
+      // the TOMBSTONE COMMENT, so it is read from the RAW file, not the
+      // comment-stripped S.KERNEL — CLAUDE.md §2 bans a tombstone satisfying a
+      // CODE-token check, not a check that a tombstone comment exists at all.
+      return /advanceListingStageService/.test(readRaw("KERNEL"))
+    },
+    detail: (S) => {
+      if (!new RegExp(`export\\s+async\\s+function\\s+${KNOWN_LIVE_KERNEL_EXPORT}\\s*\\(`).test(S.KERNEL)) {
+        return `positive control failed — ${KNOWN_LIVE_KERNEL_EXPORT} not found either, the detector itself is broken`
+      }
+      const stillExported = REMOVED_ORPHANS.filter((fn) =>
+        new RegExp(`export\\s+async\\s+function\\s+${fn}\\s*\\(`).test(S.KERNEL),
+      )
+      if (stillExported.length) return `still exported: ${stillExported.join(", ")}`
+      return "removed, but no tombstone names advanceListingStageService as the survivor"
+    },
+  },
 ]
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -530,6 +621,9 @@ const MUTATIONS: Mutation[] = [
   { assertionId: "A13", file: "COMPOSER", find: `        if (!res.success) {`, replace: `        if (res === undefined) {` },
   { assertionId: "A14", file: "PIPELINE", find: `          const isValidNext = effectiveNextStages.includes(stage.stage)`, replace: `          const isValidNext = validNextStages.includes(stage.stage)` },
   { assertionId: "A15", file: "GATES", find: `          setEnabled(null)`, replace: `          setEnabled([])` },
+  { assertionId: "A16", file: "APP", find: `event: KernelEvent.LISTING_STAGE_CHANGED,`, replace: `event: "not_a_real_kernel_event",` },
+  { assertionId: "A17", file: "APP", find: `getStageDefinition(toStage as ListingStage)?.triggersLifetimeTransition`, replace: `getStageDefinition(toStage as ListingStage)?.isMilestone` },
+  { assertionId: "A18", file: "KERNEL", find: `// closeListingAction was REMOVED`, replace: `export async function closeListingAction(listingId: string) { return { success: false } }\n// closeListingAction was REMOVED` },
 ]
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -577,13 +671,12 @@ function runLayer1() {
     check(`${a.id} ${a.name}`, ok, ok ? undefined : a.detail?.(S))
   }
 
-  console.log("\n[Layer 1b · unwired capabilities are PRESERVED, not deleted]")
-  const both = S.KERNEL
-  for (const fn of PRESERVED) {
+  console.log("\n[Layer 1b · the orphaned two-writer actions are gone, each with a named survivor]")
+  for (const fn of REMOVED_ORPHANS) {
     check(
-      `${fn} still exported (an unwired capability is work to finish, never to remove)`,
-      new RegExp(`export\\s+async\\s+function\\s+${fn}\\s*\\(`).test(both),
-      "capability missing from listings-kernel.ts",
+      `${fn} no longer exported from listings-kernel.ts`,
+      !new RegExp(`export\\s+async\\s+function\\s+${fn}\\s*\\(`).test(S.KERNEL),
+      "still exported — the two-writer hazard is still live",
     )
   }
 }

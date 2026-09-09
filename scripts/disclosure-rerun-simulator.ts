@@ -68,15 +68,25 @@ const F = {
   vocab: "lib/transactions/task-vocabulary.ts",
   coordinator: "app/actions/ai-transaction-coordinator.ts",
   migration: "supabase/migrations/m370-drop-redundant-compliance-checklist-unique.sql",
+  runner: "lib/compliance/disclosure-check-runner.ts",
 } as const
 
 /** Every module that writes compliance_checklists. They must not disagree. */
-// THE ROSTER SHRANK BY OWNER RULING (2026-08-28, lane E2, deletion approved in
-// the wave-14 ledger review): workflows.ts:triggerComplianceChecklist — the
-// empty-shell third writer of the same ensure-exists upsert row — was deleted
-// with checkTransactionDisclosures named as survivor. Two writers remain, and
-// every assertion below now holds those two to the shared arbiter.
-const WRITERS = [F.txnDocs, F.docIntel] as const
+// THE ROSTER SHRANK TWICE. First (2026-08-28, lane E2): workflows.ts:
+// triggerComplianceChecklist — the empty-shell third writer of the same
+// ensure-exists upsert row — was deleted with checkTransactionDisclosures
+// named as survivor. Second (wave 46 lane EC, §6 one-vocabulary-per-function):
+// app/actions/ai-document-intelligence.ts:aiCheckDisclosures — the OTHER
+// duplicate writer, previously kept deliberately unwired — was itself deleted
+// onto checkTransactionDisclosures after its two extra capabilities
+// (stateSpecificRequirements, the AI reasoning field) were merged on. THE
+// ACTUAL UPSERT then moved a second time, out of checkTransactionDisclosures
+// and into lib/compliance/disclosure-check-runner.ts, so the SAME write could
+// run from both the manual action and the autonomous kernel reactor without
+// becoming two spellings of the check (see event-reactor.ts). So there is now
+// exactly ONE writer, and S3 below also checks that ai-document-intelligence.ts
+// stays silent on this table (a revenant writer would mean re-duplication).
+const WRITERS = [F.runner] as const
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMMENT STRIPPER
@@ -283,9 +293,9 @@ const assert = (a: Assertion) => ASSERTIONS.push(a)
 // ── S1 · the disclosure write NAMES a conflict arbiter ───────────────────────
 assert({
   id: "S1",
-  what: "checkTransactionDisclosures upserts compliance_checklists and NAMES its conflict arbiter",
+  what: "the disclosure-check runner upserts compliance_checklists and NAMES its conflict arbiter",
   run() {
-    const src = code(F.txnDocs)
+    const src = code(F.runner)
     const w = writeCall(src, TABLE)
     if (!w) return { ok: false, detail: `no write of ${TABLE} found` }
     if (w.verb !== "upsert") {
@@ -304,18 +314,18 @@ assert({
   breaks: [
     // The whole point of the fix: drop the arbiter and the upsert is no better
     // than the insert it replaced.
-    { file: F.txnDocs, find: `      { onConflict: "transaction_id,checklist_type" },\n`, replace: "" },
+    { file: F.runner, find: `    { onConflict: "transaction_id,checklist_type" },\n`, replace: "" },
     // Revert to the original verb.
     {
-      file: F.txnDocs,
-      find: `await supabase.from("compliance_checklists").upsert(`,
-      replace: `await supabase.from("compliance_checklists").insert(`,
+      file: F.runner,
+      find: `await svc.from("compliance_checklists").upsert(`,
+      replace: `await svc.from("compliance_checklists").insert(`,
     },
     // Name an arbiter that is not backed by a unique index.
     {
-      file: F.txnDocs,
-      find: `      { onConflict: "transaction_id,checklist_type" },`,
-      replace: `      { onConflict: "transaction_id" },`,
+      file: F.runner,
+      find: `    { onConflict: "transaction_id,checklist_type" },`,
+      replace: `    { onConflict: "transaction_id" },`,
     },
   ],
 })
@@ -325,7 +335,7 @@ assert({
   id: "S2",
   what: "the disclosure write destructures error and returns a real failure when the write does not land",
   run() {
-    const src = code(F.txnDocs)
+    const src = code(F.runner)
     const w = writeCall(src, TABLE)
     if (!w) return { ok: false, detail: `no write of ${TABLE} found` }
     return errorIsHandled(src, w.at)
@@ -333,65 +343,57 @@ assert({
   breaks: [
     // The exact original defect: a bare await, result discarded.
     {
-      file: F.txnDocs,
-      find: `const { error: checklistError } = await supabase.from("compliance_checklists").upsert(`,
-      replace: `await supabase.from("compliance_checklists").upsert(`,
+      file: F.runner,
+      find: `const { error: checklistError } = await svc.from("compliance_checklists").upsert(`,
+      replace: `await svc.from("compliance_checklists").upsert(`,
     },
     // Bound but never read — the subtler version of the same bug.
     {
-      file: F.txnDocs,
-      find: `    if (checklistError) {\n      return { success: false, error: \`Disclosure check could not be recorded: \${checklistError.message}\` }\n    }\n`,
+      file: F.runner,
+      find: `  if (checklistError) {\n    return { success: false, error: \`Disclosure check could not be recorded: \${checklistError.message}\` }\n  }\n`,
       replace: "",
     },
     // Branched on, but the branch does not fail the action.
     {
-      file: F.txnDocs,
-      find: `      return { success: false, error: \`Disclosure check could not be recorded: \${checklistError.message}\` }`,
-      replace: `      console.warn(checklistError.message)`,
+      file: F.runner,
+      find: `    return { success: false, error: \`Disclosure check could not be recorded: \${checklistError.message}\` }`,
+      replace: `    console.warn(checklistError.message)`,
     },
   ],
 })
 
-// ── S3 · EVERY writer of the table agrees on the arbiter ─────────────────────
+// ── S3 · exactly ONE writer of the table, and it names the right arbiter ─────
+// Was "every writer agrees" back when two duplicate writers existed
+// (app/actions/ai-transaction-documents.ts and
+// app/actions/ai-document-intelligence.ts::aiCheckDisclosures). §6 (one
+// vocabulary per function) says two spellings of the same write are a defect,
+// not a style choice — so the fix was not "keep both in sync forever", it was
+// merge-then-delete (wave 46 lane EC). This still checks two things a future
+// regression could reintroduce: (a) the deleted duplicate's file has NOT
+// grown a new write of this table (a revenant second implementation), and
+// (b) the sole surviving writer's arbiter is exactly the live unique index.
 assert({
   id: "S3",
-  what: "every writer of compliance_checklists upserts on the SAME named arbiter — none can disagree about what a re-run means",
+  what: "exactly one writer of compliance_checklists survives (ai-document-intelligence.ts writes nothing to it), and its arbiter matches the live unique index",
   run() {
-    const seen: string[] = []
-    const problems: string[] = []
-    for (const f of WRITERS) {
-      const src = code(f)
-      const writes = allWriteCalls(src, TABLE)
-      if (writes.length === 0) {
-        problems.push(`${f}: writes ${TABLE} nowhere`)
-        continue
-      }
-      for (const w of writes) {
-        if (w.verb !== "upsert") {
-          problems.push(`${f}: uses .${w.verb}() — the second run for a deal is refused`)
-          continue
-        }
-        const a = arbiterOf(w.args)
-        if (!a) problems.push(`${f}: upsert names no onConflict`)
-        else seen.push(a)
+    const revenant = allWriteCalls(code(F.docIntel), TABLE)
+    if (revenant.length > 0) {
+      return {
+        ok: false,
+        detail: `${F.docIntel} writes ${TABLE} again (${revenant.length} write(s)) — a second disclosure-check implementation has grown back, in violation of §6`,
       }
     }
-    if (problems.length) return { ok: false, detail: problems.join("; ") }
-    const distinct = [...new Set(seen)]
-    if (distinct.length !== 1) return { ok: false, detail: `writers disagree: ${distinct.join(" vs ")}` }
-    if (distinct[0] !== ARBITER) return { ok: false, detail: `agreed arbiter is "${distinct[0]}", not "${ARBITER}"` }
-    return { ok: true, detail: `${seen.length} writes across ${WRITERS.length} files, all on "${ARBITER}"` }
+    const writes = allWriteCalls(code(F.runner), TABLE)
+    if (writes.length === 0) return { ok: false, detail: `${F.runner}: writes ${TABLE} nowhere` }
+    const arbiters = [...new Set(writes.map((w) => arbiterOf(w.args)).filter((a): a is string => !!a))]
+    if (arbiters.length === 0) return { ok: false, detail: `${F.runner}: upsert names no onConflict` }
+    if (arbiters.length !== 1 || arbiters[0] !== ARBITER) {
+      return { ok: false, detail: `runner arbiter is "${arbiters.join(" vs ")}", not "${ARBITER}"` }
+    }
+    return { ok: true, detail: `single writer (${F.runner}) on "${ARBITER}"; ${F.docIntel} writes nothing to ${TABLE}` }
   },
   breaks: [
-    // Make the sibling disagree.
-    {
-      file: F.docIntel,
-      find: `}, { onConflict: "transaction_id,checklist_type" })`,
-      replace: `}, { onConflict: "transaction_id" })`,
-    },
-    // (The third writer's regression mutation left with the writer itself —
-    // lane E2's approved deletion; a mutation on a file outside the roster
-    // proves nothing.)
+    { file: F.runner, find: `{ onConflict: "transaction_id,checklist_type" },`, replace: `{ onConflict: "transaction_id" },` },
   ],
 })
 
@@ -412,7 +414,7 @@ assert({
     return { ok: true, detail: `updated_at set by all ${WRITERS.length} writers` }
   },
   breaks: [
-    { file: F.txnDocs, find: `        updated_at: new Date().toISOString(),\n      },\n      { onConflict:`, replace: `      },\n      { onConflict:` },
+    { file: F.runner, find: `      updated_at: new Date().toISOString(),\n    },\n    { onConflict:`, replace: `    },\n    { onConflict:` },
   ],
 })
 
@@ -431,22 +433,24 @@ assert({
     return { ok: true, detail: "brokerage_id stamped by all writers" }
   },
   breaks: [
-    // Anchored to the compliance_checklists payload specifically: the bare
-    // `brokerage_id: …` line also appears in this file's transaction_tasks
-    // payload, and mutating THAT would leave the code under test untouched
-    // while still changing the file.
+    // Anchored to the compliance_checklists payload specifically.
     //
-    // The stamped VALUE changed on 2026-08-26 (`params.brokerageId` →
-    // `wc.brokerageId`) when every export in that file moved onto the act-as
-    // write seam and the caller's brokerageId became a verified claim rather
-    // than an input — see the header of app/actions/ai-transaction-documents.ts.
-    // S5's RULE is untouched: every write still has to stamp a tenant. Only this
-    // mutation ANCHOR follows the source, and it must, or the negative layer
-    // stops firing and this assertion silently becomes unprovable.
+    // The stamped VALUE changed twice: first (2026-08-26) `params.brokerageId`
+    // → `wc.brokerageId` when app/actions/ai-transaction-documents.ts moved
+    // onto the act-as write seam; then (wave 46 lane EC) the write itself
+    // moved into lib/compliance/disclosure-check-runner.ts, whose caller-
+    // supplied `params.brokerageId` is ALREADY the act-as-verified value —
+    // the runner does no gating of its own, by design (its header says so),
+    // so it stamps exactly what its one caller (the tenancy-gated action) or
+    // the reactor (which resolves brokerageId from the emitted event) hands
+    // it. S5's RULE is untouched: every write still has to stamp a tenant.
+    // Only this mutation ANCHOR follows the source, and it must, or the
+    // negative layer stops firing and this assertion silently becomes
+    // unprovable.
     {
-      file: F.txnDocs,
-      find: `        brokerage_id: wc.brokerageId,\n        checklist_type: "disclosures",`,
-      replace: `        checklist_type: "disclosures",`,
+      file: F.runner,
+      find: `      brokerage_id: params.brokerageId,\n      checklist_type: "disclosures",`,
+      replace: `      checklist_type: "disclosures",`,
     },
   ],
 })
@@ -479,18 +483,12 @@ assert({
     return { ok: true, detail: `${WRITERS.length} writers carry no false claim about this table` }
   },
   breaks: [
-    // Put the original lie back, verbatim.
+    // Put a version of the original lie back, verbatim, in the ONE surviving
+    // writer's own comments.
     {
-      file: F.txnDocs,
-      find: `    // ── THE DISCLOSURE CHECK MUST BE RE-RUNNABLE ─────────────────────────────`,
-      replace: `    // Insert a fresh compliance_checklists snapshot (point-in-time — no unique constraint on txn+type)`,
-    },
-    // A DIFFERENT false claim on the OTHER surviving writer, to prove S6 is
-    // not just string-matching one sentence in one file.
-    {
-      file: F.docIntel,
-      find: `}, { onConflict: "transaction_id,checklist_type" })`,
-      replace: `}, { onConflict: "transaction_id,checklist_type" }) // append-only history table`,
+      file: F.runner,
+      find: `// upserted with onConflict naming that arbiter so a re-run UPDATES it instead\n// of re-raising the duplicate-key (23505) a bare insert would hit on run two.`,
+      replace: `// append-only history table; each run appends a fresh point-in-time snapshot.`,
     },
   ],
 })
@@ -576,11 +574,13 @@ assert({
     // MUST be scoped to the function under test. `indexOf` over the whole file
     // finds the FIRST transaction_documents query in the module — a different
     // function entirely — so an unscoped version of this assertion would grade
-    // code that is not the code being fixed.
-    const body = fnBody(code(F.txnDocs), "checkTransactionDisclosures")
-    if (!body) return { ok: false, detail: "checkTransactionDisclosures not found" }
+    // code that is not the code being fixed. The read moved from
+    // checkTransactionDisclosures into runDisclosureComplianceCheck (wave 46
+    // lane EC) along with the rest of the check.
+    const body = fnBody(code(F.runner), "runDisclosureComplianceCheck")
+    if (!body) return { ok: false, detail: "runDisclosureComplianceCheck not found" }
     const idx = body.indexOf(`"transaction_documents"`)
-    if (idx < 0) return { ok: false, detail: "no transaction_documents read in checkTransactionDisclosures" }
+    if (idx < 0) return { ok: false, detail: "no transaction_documents read in runDisclosureComplianceCheck" }
     const head = body.lastIndexOf("const {", idx)
     if (head < 0) return { ok: false, detail: "read result is not destructured" }
     const binding = body.slice(head, body.indexOf("}", head) + 1)
@@ -601,9 +601,9 @@ assert({
   },
   breaks: [
     {
-      file: F.txnDocs,
-      find: `    const { data: docs, error: docsError } = await supabase`,
-      replace: `    const { data: docs } = await supabase`,
+      file: F.runner,
+      find: `  const { data: docs, error: docsError } = await svc`,
+      replace: `  const { data: docs } = await svc`,
     },
   ],
 })
@@ -828,12 +828,12 @@ async function main() {
   // The stripper must actually strip, or every assertion below reads prose and
   // proves nothing.
   {
-    const sample = raw(F.txnDocs)
+    const sample = raw(F.runner)
     const stripped = stripComments(sample)
     const shorter = stripped.replace(/\s/g, "").length < sample.replace(/\s/g, "").length
-    const proseGone = !/THE DISCLOSURE CHECK MUST BE RE-RUNNABLE/.test(stripped)
-    const codeKept = /export async function checkTransactionDisclosures/.test(stripped)
-    const commentsFound = commentsOf(F.txnDocs).length > 200
+    const proseGone = !/THE ONE DISCLOSURE-CHECK IMPLEMENTATION/.test(stripped)
+    const codeKept = /export async function runDisclosureComplianceCheck/.test(stripped)
+    const commentsFound = commentsOf(F.runner).length > 200
     if (!shorter || !proseGone || !codeKept || !commentsFound) {
       console.log("\n✘ FATAL — the comment stripper is not working; every assertion below would be meaningless.")
       console.log(`   shorter=${shorter} proseGone=${proseGone} codeKept=${codeKept} commentsFound=${commentsFound}`)

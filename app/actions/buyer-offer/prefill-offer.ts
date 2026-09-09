@@ -157,4 +157,68 @@ Based on the above context, provide your best estimate of the property details. 
 // the OFFER FORM IS FILLED BY THE AGENT; the system only pre-fills KNOWN property identification
 // (see lib/intelligence/offer-property-prefill.ts). Auto-asserting a term the agent never entered is
 // a fabrication the compliance gate flags. The function had ZERO callers, so it was removed rather
-// than left as a foot-gun. Property-only prefill lives in resolveOfferPropertyPrefillAction.
+// than left as a foot-gun. Property-only prefill lives in resolveOfferPropertyPrefillAction, below.
+
+// ─── PROPERTY-ONLY PREFILL, GROUNDED (no AI) ───────────────────────────────────
+//
+// This comment used to promise "resolveOfferPropertyPrefillAction" and no such export existed
+// anywhere in the tree (a stale claim — CLAUDE.md §2: prose that describes a fix it never shipped).
+// It is built here now, wired onto the real combinator (orphan doctrine §1.2 — the capability was
+// wanted, and no duplicate existed; lib/intelligence/offer-property-prefill-runner.ts::
+// prefillOfferFormProperty's own header already explains why NONE of its three other live callers —
+// lib/kernel/forms.ts's offer context, prefill-storage-form.ts, prefill-property-into-pdf.ts — could
+// simply call it as-is: each needs a step BETWEEN resolve and map that this file's other export,
+// fillPropertyDataWithAI, does not have covered either. fillPropertyDataWithAI's own step 1 (an
+// explicit listingId) is grounded, but it stops there and falls through to an AI GUESS the moment no
+// listingId is passed — even when the transaction or the offer's own stored property_address already
+// answers it, with zero risk of fabrication. This is that grounded answer, callable on its own with
+// no PDF, no storage write, and no field vocabulary beyond the same canonical property-identification
+// names buildPropertyPrefill (lib/intelligence/offer-property-prefill.ts) already recognizes — the
+// exact preview shape app/actions/buyer-offer/esign-anchor-plan.ts::buildEsignAnchorPlanAction uses
+// for its own preview-only step. Read-only; never asserts an offer TERM.
+import { prefillOfferFormProperty } from "@/lib/intelligence/offer-property-prefill-runner"
+import { KNOWN_PROPERTY_FIELD_LABELS, type PropertyPrefillResult } from "@/lib/intelligence/offer-property-prefill"
+
+export interface ResolveOfferPropertyPrefillInput {
+  listingId?: string | null
+  transactionId?: string | null
+  offerId?: string | null
+  /** a raw property address the agent already typed (used only if no record carries it). */
+  propertyAddress?: string | null
+  /** the target form's own field names, when known (e.g. a parsed PDF). Defaults to the canonical
+   *  labels above so a caller with no field list still gets a useful known/unknown preview. */
+  formFields?: string[]
+}
+
+/**
+ * Resolve KNOWN property facts (grounded — listing → transaction → offer's own address, never an AI
+ * guess) and report which of the target form's property-identification fields they would fill. Pure
+ * preview: writes nothing, fills no PDF, asserts no offer term.
+ */
+export async function resolveOfferPropertyPrefillAction(
+  input: ResolveOfferPropertyPrefillInput,
+): Promise<{ success: boolean } & PropertyPrefillResult & { facts?: Record<string, string | null> }> {
+  try {
+    const fields = input.formFields?.length ? input.formFields : [...KNOWN_PROPERTY_FIELD_LABELS]
+    const result = await prefillOfferFormProperty(fields, {
+      listingId: input.listingId ?? null,
+      transactionId: input.transactionId ?? null,
+      offerId: input.offerId ?? null,
+      propertyAddress: input.propertyAddress ?? null,
+    })
+    return {
+      success: true,
+      filled: result.filled,
+      unresolved: result.unresolved,
+      facts: {
+        address: result.facts.address ?? null,
+        propertyCity: result.facts.propertyCity ?? null,
+        propertyState: result.facts.propertyState ?? null,
+        propertyZip: result.facts.propertyZip ?? null,
+      },
+    }
+  } catch (err) {
+    console.error("[buyer-offer] resolveOfferPropertyPrefillAction error:", err)
+    return { success: false, filled: [], unresolved: [] }
+  }
+}

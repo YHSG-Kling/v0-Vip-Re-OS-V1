@@ -65,6 +65,9 @@ export type { GlobalSettingsRow } from "./global-settings"
 // Stage transitions delegate to app/actions/listing-lifecycle-core.ts.
 // AI ISA is NEVER triggered from listing commands.
 
+// updateListingStage / closeListingLifecycle REMOVED — orphaned two-writer-hazard
+// path, tombstoned at lib/kernel/listings.ts (search "REMOVED as the orphaned
+// half"). SURVIVOR: lib/application/listing-lifecycle.ts:advanceListingStageService.
 export {
   createListingRecord,
   createOrAttachSellerContact,
@@ -72,9 +75,7 @@ export {
   saveListingDraft,
   validateListingLaunchReadiness,
   launchListing,
-  updateListingStage,
   generateListingDescription,
-  closeListingLifecycle,
   prefillListingFormFromRecord,
 } from "./listings"
 export type {
@@ -765,7 +766,8 @@ export {
   loadFormDraft,
   launchEsignEnvelope,
   getEsignStatus,
-  syncEsignDocuments,
+  // syncEsignDocuments REMOVED (m614) — tombstone at lib/kernel/forms.ts,
+  // survivor lib/transactions/sync-from-provider.ts (both persisting cores).
   recordBuyerPropertyAction,
   loadBuyerSavedProperties,
 } from "./forms"

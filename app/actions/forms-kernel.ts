@@ -15,12 +15,15 @@ import {
   saveFormDraft,
   loadFormDraft,
   launchEsignEnvelope,
-  syncEsignDocuments,
   recordBuyerPropertyAction,
   loadBuyerSavedProperties,
   type FormContextType,
   type BuyerPropertyInterestLevel,
 } from "@/lib/kernel/forms"
+import {
+  syncTransactionDocumentsFromProvider,
+  syncListingDocumentsFromProvider,
+} from "@/lib/transactions/sync-from-provider"
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
@@ -159,36 +162,67 @@ export async function launchEsignAction(input: {
 
 // ─── ACTION: syncEsignDocs ───────────────────────────────────────────────────
 //
-// DELIBERATELY LEFT UNWIRED. lib/kernel/forms.ts:syncEsignDocuments FETCHES the
-// provider's document list and explicitly "does NOT write to DB". The wired,
-// strictly more complete writer is
-//   lib/transactions/sync-from-provider.ts:syncTransactionDocumentsFromProvider
-// (+ syncAllForContact), reached from app/portal/[contactId]/documents/page.tsx:
-// same provider.syncDocuments call, plus idempotent upsert into
-// transaction_documents on (transaction_id, provider_source,
-// external_document_id), a staleness throttle, and a last_provider_sync_at stamp.
-// This wrapper is NOT deleted: it carries one capability the survivor lacks —
-// listing_id scoping, for pre-contract listing packets that have no transaction
-// row — and moving that capability onto the survivor means editing
-// lib/transactions/sync-from-provider.ts, which is outside this pass's file set.
-// An unproven port is not a port, so it stays, hardened and unwired.
+// WIRED (orphan doctrine §1.2, this lane — m614). This wrapper used to delegate
+// to lib/kernel/forms.ts:syncEsignDocuments, which FETCHES the provider's
+// document list and explicitly does NOT write to DB — so calling this action
+// could show documents once and never persist them, and the identical capability
+// already lived, WRITING, in lib/transactions/sync-from-provider.ts. That
+// duplication is why the prior pass left this wrapper unwired rather than
+// pointing it at a dead end: the one thing it had that the writer did not was
+// listing_id scoping for a pre-contract packet (a listing agreement or seller
+// disclosure sent before any `transactions` row exists), and porting that
+// required a schema this table did not have (transaction_id NOT NULL, no
+// listing_id, no provider-tracking columns on `listings`) — recorded as
+// "needs schema change" and left for m614 to supply.
+//
+// Now that m614 exists (written, not applied — CLAUDE.md §3) and
+// lib/transactions/sync-from-provider.ts carries the listing twin
+// (syncListingDocumentsFromProvider), this action is a THIN CALLER of whichever
+// persisting core matches its input — never the fetch-only kernel function,
+// which is now gone (tombstone at its former home, lib/kernel/forms.ts,
+// naming this file as one of its two survivors). transaction_id wins when both
+// are supplied, matching the two-lane split m614's CHECK constraint enforces
+// (a document row names ONE parent). The same two cores are what
+// /api/cron/esign-doc-sync (CRON_REGISTRY, deal_coordinator) calls on a
+// schedule, so a click here and an autonomous sweep run the identical path —
+// one vocabulary (§6), not two.
+//
+// external_transaction_id is no longer read: both cores resolve the provider's
+// envelope id from the DATABASE ROW (transactions.external_provider_transaction_id
+// / listings.external_provider_transaction_id, with the transaction lane's
+// offers-linked fallback), never from caller input — the same posture as every
+// tenant boundary in this file (brokerage_id from ctx, never from `input`). The
+// parameter stays on the input type so an existing caller does not fail to
+// compile; passing it is a no-op.
 
 export async function syncEsignDocsAction(input: {
-  external_transaction_id: string
-  contact_id:              string
-  transaction_id?:         string
-  listing_id?:             string
+  external_transaction_id?: string
+  contact_id:               string
+  transaction_id?:          string
+  listing_id?:              string
 }) {
   const ctx = await resolveActorContext()
   if (!ctx) return { success: false, error: "Unauthorized" }
 
-  return syncEsignDocuments({
-    brokerage_id:            ctx.brokerage_id,
-    external_transaction_id: input.external_transaction_id,
-    contact_id:              input.contact_id,
-    transaction_id:          input.transaction_id,
-    listing_id:              input.listing_id,
-  })
+  if (input.transaction_id) {
+    const result = await syncTransactionDocumentsFromProvider({
+      brokerageId:   ctx.brokerage_id,
+      transactionId: input.transaction_id,
+      contactId:     input.contact_id,
+    })
+    return { success: result.ok, synced: result.synced, skipped: result.skipped, error: result.error }
+  }
+
+  if (input.listing_id) {
+    const result = await syncListingDocumentsFromProvider({
+      brokerageId: ctx.brokerage_id,
+      listingId:   input.listing_id,
+      contactId:   input.contact_id,
+    })
+    return { success: result.ok, synced: result.synced, skipped: result.skipped, error: result.error }
+  }
+
+  return { success: false, error: "syncEsignDocsAction requires either transaction_id or listing_id" }
 }
 
 // ─── ACTION: recordPropertyAction (buyer portal server action) ───────────────

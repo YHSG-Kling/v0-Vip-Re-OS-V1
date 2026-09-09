@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { CheckCheck, RotateCcw, XCircle, Mail, Phone, Clock, Send, MessageSquarePlus, Loader2, CheckCircle2 } from "lucide-react"
+import { CheckCheck, RotateCcw, XCircle, Mail, Phone, Clock, Send, MessageSquarePlus, Loader2, CheckCircle2, History, ChevronDown, ChevronUp } from "lucide-react"
 import {
   markShowingCompleted,
   showingTimeConfirm,
@@ -24,7 +24,7 @@ import {
 // ruling assigned the `cancelled` verb to it, but no surface ever offered it;
 // ShowingTime mode declines through the vendor instead).
 import { cancelShowing } from "@/app/actions/showings"
-import { aiSendShowingConfirmation, aiCollectShowingFeedback } from "@/app/actions/ai-showing-management"
+import { aiSendShowingConfirmation, aiCollectShowingFeedback, getShowingCommunicationsAction } from "@/app/actions/ai-showing-management"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -58,6 +58,10 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
   const [collectingFeedbackId, setCollectingFeedbackId] = useState<string | null>(null)
   const [confirmSent, setConfirmSent] = useState<Set<string>>(new Set())
   const [feedbackRequested, setFeedbackRequested] = useState<Set<string>>(new Set())
+  // Communications timeline (showing_communications reader) — expanded per showing on demand.
+  const [openCommsId, setOpenCommsId] = useState<string | null>(null)
+  const [commsLoading, setCommsLoading] = useState(false)
+  const [comms, setComms] = useState<Record<string, any[]>>({})
 
   function open(id: string, d: "complete" | "reschedule" | "decline" | "cancel") {
     setActiveId(id)
@@ -81,6 +85,25 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
       console.error("Send confirmation failed:", err)
     } finally {
       setSendingConfirmId(null)
+    }
+  }
+
+  async function toggleComms(showingId: string) {
+    if (openCommsId === showingId) {
+      setOpenCommsId(null)
+      return
+    }
+    setOpenCommsId(showingId)
+    if (!comms[showingId]) {
+      setCommsLoading(true)
+      try {
+        const res = await getShowingCommunicationsAction(showingId)
+        if (res.success) {
+          setComms(prev => ({ ...prev, [showingId]: (res as any).communications }))
+        }
+      } finally {
+        setCommsLoading(false)
+      }
     }
   }
 
@@ -312,7 +335,40 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
                     )}
                   </>
                 )}
+
+                <Button size="sm" variant="ghost" className="gap-1.5" onClick={() => toggleComms(s.id)}>
+                  <History className="h-3.5 w-3.5" />
+                  Communications
+                  {openCommsId === s.id ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </Button>
               </div>
+
+              {/* Communications timeline — showing_communications reader (readerless-write-census). */}
+              {openCommsId === s.id && (
+                <div className="rounded border bg-muted/20 px-3 py-2 text-xs">
+                  {commsLoading && !comms[s.id] ? (
+                    <span className="text-muted-foreground">Loading…</span>
+                  ) : (comms[s.id]?.length ?? 0) === 0 ? (
+                    <span className="text-muted-foreground">No communications sent for this showing yet.</span>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {comms[s.id].map((c: any) => (
+                        <li key={c.id} className="flex items-center gap-2">
+                          <Badge variant={c.status === "sent" ? "outline" : "destructive"} className="shrink-0">
+                            {c.communication_type}
+                          </Badge>
+                          <span className="text-muted-foreground">
+                            {c.email_content ? "email" : ""}{c.email_content && c.sms_content ? " + " : ""}{c.sms_content ? "sms" : ""}
+                          </span>
+                          <span className="ml-auto text-muted-foreground shrink-0">
+                            {c.sent_at ? new Date(c.sent_at).toLocaleString() : "—"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </li>
           )
         })}
