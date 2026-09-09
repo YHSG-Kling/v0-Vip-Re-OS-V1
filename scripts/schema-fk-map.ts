@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1770 of 1829 pairs) — storing them would be
+ * overwhelming majority (1772 of 1831 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1905 edges across 709 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1829 unordered
+ * MEASURED AT GENERATION: 1907 edges across 709 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1831 unordered
  * table pairs carry at least one FK; 59
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-09
  * source: public.live_foreign_keys_json()
- * body-sha256: e675da174de48fa606282e0d2e89d5d76bf0203aabd8a178cf1d7e7d730b40c7
+ * body-sha256: dbf910c3ba1ab7cc13c40d9a900ccb91a9a5e1f293a97ae8ed5f2db092cd6402
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -732,7 +732,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "transaction_coordinators": { "brokerage_id": "brokerages", "user_id": "users" },
   "transaction_cost_breakdown": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_deadlines": { "brokerage_id": "brokerages", "completed_by": "users", "source_document_id": "documents", "transaction_id": "transactions" },
-  "transaction_documents": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
+  "transaction_documents": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
   "transaction_health_factors": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_inspections": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_lenders": { "brokerage_id": "brokerages", "transaction_id": "transactions" },

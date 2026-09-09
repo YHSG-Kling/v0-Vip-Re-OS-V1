@@ -47,7 +47,9 @@ function main() {
   check("mail: back_on_market EVENT_DEFAULTS present", /back_on_market:\s*{[\s\S]*?statusBadge:/.test(mail))
 
   console.log("\n[the core dispatches the multi-channel promo, not just the manager signal]")
-  const core = src("app/actions/listing-lifecycle-core.ts")
+  // 2026-09-09 (wave 46): executeListingTransition was merged onto the reachable stage writer
+  // and retired; the demand-side handoff and both supply-side dispatches live on the survivor.
+  const core = src("lib/application/listing-lifecycle.ts")
   check("core still hands off to the Shopping Agent (demand side)", core.includes("listing_back_on_market"))
   check("core NOW also dispatches the listing promo video (supply side)", /isBackOnMarket[\s\S]*?dispatchListingPromoVideo[\s\S]*?back_on_market/.test(core))
   check("core NOW also dispatches the lifecycle mail (supply side)", /isBackOnMarket[\s\S]*?dispatchLifecycleMail[\s\S]*?back_on_market/.test(core))

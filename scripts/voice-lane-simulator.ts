@@ -317,8 +317,13 @@ console.log("\n── SOURCE: wiring ──")
     && src("lib/voice/platform-reception.ts").includes('"phone:reception"'))
   check("PLATFORM scope: nothing about the product hardcoded — brand from platform_settings, pricing from subscription_tiers",
     src("lib/voice/platform-reception.ts").includes("loadProductBrand") && src("lib/voice/platform-reception.ts").includes('from("subscription_tiers")'))
+  // 2026-09-09: the three local requireProviders copies merged onto lib/auth/platform-guard.ts
+  // (§1/§6). "providers-gated" now means: the file calls the gate, and the gate is the capability check.
+  const PLATFORM_GUARD_SRC = src("lib/auth/platform-guard.ts")
+  const providersGated = (a: string) => a.includes('platformStaffCan(role, "providers")')
+    || (a.includes("requireProviders()") && PLATFORM_GUARD_SRC.includes('requirePlatformCapability("providers")') && PLATFORM_GUARD_SRC.includes("platformStaffCan(role, capability)"))
   check("PLATFORM bind action: providers-gated + audited, master account, VoiceUrl → the shared inbound webhook",
-    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
+    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return providersGated(a) && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
   check("registry burn domain platform_reception (data_steward)",
     "platform_reception" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.platform_reception.manager === "data_steward")
 
@@ -402,7 +407,7 @@ console.log("\n── SOURCE: wiring ──")
     ciRoute.includes("timingSafeEqual") && ciRoute.includes('"not found"')
     && ciRoute.includes("!(call as any).summary") && ciRoute.includes("intent_signals"))
   check("A2P MOCK VERIFY: providers-gated one-click action (Mock=true chain) + audited + card on the connectors page",
-    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
+    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return providersGated(a) && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
     && src("app/dashboard/superadmin/connectors/page.tsx").includes("A2pVerifyCard"))
   check("VOICE INTEGRITY: CNAM + SHAKEN/STIR appended to the SAME step machine state (twilio_a2p jsonb, no new tables) — gated on campaign approval, Twilio-published policy SIDs, statuses POLLED never assumed",
     a2pLib.includes("RNf3db3cd1fe25fcfd3c3ded065c8fea53") && a2pLib.includes("RN7a97559effdf62d00f4298208492a5ea")
@@ -411,7 +416,7 @@ console.log("\n── SOURCE: wiring ──")
   check("VOICE INTEGRITY: mock leaves bundles in Twilio's real 'draft' status (never a fabricated approval) + errors kept SEPARATE from last_error so the stall detector stays honest",
     a2pLib.includes('{ sid: tpSid, status: "draft" }') && a2pLib.includes("voice_integrity_error") && !a2pLib.includes('cnam_status = "twilio-approved"'))
   check("VOICE INTEGRITY: providers-gated + audited register button on the A2P board (per-tenant cell, board idiom)",
-    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
+    (() => { const a = src("app/dashboard/superadmin/a2p/actions.ts"); return providersGated(a) && a.includes("superadmin_audit_log") && a.includes("runVoiceIntegrityRegistration") })()
     && src("app/dashboard/superadmin/a2p/page.tsx").includes("VoiceIntegrityCell"))
   check("PORTAL CHAT gains the SAME live-inventory facts (additive: buyers only, share-freely exception stated, read failure never breaks the chat)",
     (() => { const p = src("app/api/portal/ai-chat/route.ts"); return p.includes("loadInventoryContext") && p.includes("portalView !== 'seller'") && p.includes("share freely") })())

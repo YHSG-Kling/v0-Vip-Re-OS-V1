@@ -96,9 +96,11 @@ function sourceLayer() {
   // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
   const pcRoster = stripComments(src("lib/platform/platform-staff-roster.ts"))
   check("get/set actions are superadmin-gated (BOTH identity columns, via the one definition)",
-    /requireSuperadmin/.test(act) &&
-    /isPlatformSuperadminIdentity\(/.test(act) &&
-    /platform-staff-roster/.test(act) &&
+    // 2026-09-09: the local requireSuperadmin merged onto lib/auth/platform-guard.ts (§1/§6) —
+    // the action CALLS the gate; the identity definition is asserted on the survivor.
+    /requireSuperadmin\(\)/.test(act) &&
+    /isPlatformSuperadminIdentity\(/.test(src("lib/auth/platform-guard.ts")) &&
+    /platform-staff-roster/.test(src("lib/auth/platform-guard.ts")) &&
     /export function isPlatformSuperadminIdentity\(/.test(pcRoster) &&
     /userType === "superadmin" \|\| platformRole === "superadmin"/.test(pcRoster))
   check("every flip is audited to superadmin_audit_log with IP/UA", /superadmin_audit_log"\)\.insert\([\s\S]*?action:\s*"platform_controls_update"[\s\S]*?ip_address/.test(act))

@@ -20,14 +20,11 @@ import {
   getNextAllowedStages,
   canSkipStages,
   evaluateReadinessChecks,
-  logStageTransition,
-  logFailedTransition,
-  logSystemGateEnabled,
   getLifecycleStatistics,
   getStageTimingMetrics,
 } from "@/lib/listing-lifecycle"
-import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
-import { handleSellerToLifetimeTransition } from "@/lib/application/listing-lifecycle"
+// (resolveAgentRecordToUserId, handleSellerToLifetimeTransition and the three lifecycle loggers left
+// with executeListingTransition — see the tombstone below; the survivor imports them itself.)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CALLER CONTEXT — auth + tenant, resolved once

@@ -336,8 +336,11 @@ A.push({
 
     const called = /error:\s*([A-Za-z_$][\w$]*)\s*\(/.exec(guard)
     if (!called) return { ok: false, detail: "the refusal's error is not produced by a mapping function" }
-    const mapper = functionBody(src, called[1])
-    if (!mapper) return { ok: false, detail: `${called[1]} is not a function declared in this file` }
+    // 2026-09-09: the mapper MERGED onto the gate module (lib/portal/require-contact-access.ts::
+    // accessRefusal, §1/§6) — it is imported here now, so read its body from the survivor when it
+    // is not declared locally. The rule is unchanged: every gate token maps to a distinct sentence.
+    const mapper = functionBody(src, called[1]) ?? functionBody(code(F.gate), called[1])
+    if (!mapper) return { ok: false, detail: `${called[1]} is not a function declared in this file or in the gate module` }
 
     const tokens = gateRefusalTokens()
     if (tokens.length === 0) return { ok: false, detail: "the gate module's refusal union could not be read" }
@@ -363,7 +366,7 @@ A.push({
   breaks: [
     {
       // Launder the DECISION into the OUTAGE sentence: both now read the same.
-      file: F.action,
+      file: F.gate,
       find: `    case "Forbidden":
       return "You're signed in with a different account than this page belongs to — sign in with the email your agent invited you at, or reply to their last message."`,
       replace: `    case "Forbidden":
@@ -372,7 +375,7 @@ A.push({
     {
       // Drop the arm that covers "Access check failed": the token becomes
       // untranslated, which is how internal vocabulary reaches a buyer.
-      file: F.action,
+      file: F.gate,
       find: `    default:
       return "We couldn't verify your account just now — please try again in a moment."
 `,
@@ -633,8 +636,8 @@ A.push({
   breaks: [
     {
       file: F.action,
-      find: `function accessRefusal(error: PortalAccessRefusal): string {`,
-      replace: `export const PORTAL_NL_SEARCH_REFUSALS = 4\nfunction accessRefusal(error: PortalAccessRefusal): string {`,
+      find: `export async function portalNaturalSearchAction(input: {`,
+      replace: `export const PORTAL_NL_SEARCH_REFUSALS = 4\nexport async function portalNaturalSearchAction(input: {`,
     },
     {
       file: F.action,
@@ -665,13 +668,13 @@ A.push({
   breaks: [
     {
       file: F.action,
-      find: `function accessRefusal(error: PortalAccessRefusal): string {`,
-      replace: `async function requireContactAccess(_id: string) {\n  return { ok: true as const, userId: "", brokerageId: "", isContactSelf: true, userType: null }\n}\nfunction accessRefusal(error: PortalAccessRefusal): string {`,
+      find: `export async function portalNaturalSearchAction(input: {`,
+      replace: `async function requireContactAccess(_id: string) {\n  return { ok: true as const, userId: "", brokerageId: "", isContactSelf: true, userType: null }\n}\nexport async function portalNaturalSearchAction(input: {`,
     },
     {
       file: F.action,
-      find: `import { requireContactAccess } from "@/lib/portal/require-contact-access"`,
-      replace: `import { requireContactAccess } from "@/lib/portal/require-contact-access-that-is-not-there"`,
+      find: `import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"`,
+      replace: `import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access-that-is-not-there"`,
     },
   ],
 })

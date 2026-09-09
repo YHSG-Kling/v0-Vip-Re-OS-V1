@@ -431,7 +431,11 @@ console.log("\n═══ 8. The compliance + approval log kept the wrong rows �
   for (const f of ["app/actions/content-compliance.ts", "app/actions/content-approval-workflow.ts"]) {
     const c = code(read(f))
     ok(`${f.replace("app/actions/", "")} refuses at the ONE place agentId is\n    manufactured, rather than patching each of its four writes`,
-      !/ctx\.agentId \?\? ctx\.userId/.test(c) && /if \(!ctx\.agentId\)/.test(c) && /agentId: ctx\.agentId,/.test(c))
+      // 2026-09-09: the ONE place moved — both files' getSessionAgentId merged onto
+      // lib/identity/get-agent-context.ts::requireSessionAgentId (§1/§6). The rule: the file
+      // takes agentId from that gate and never substitutes a users id; the gate refuses.
+      !/agentId \?\? (ctx|auth)\.userId/.test(c) && /(getSessionAgentId|requireSessionAgentId)\(\)/.test(c)
+      && /if \(!ctx\.agentId\)/.test(code(read("lib/identity/get-agent-context.ts"))) && /agentId: ctx\.agentId,/.test(code(read("lib/identity/get-agent-context.ts"))))
   }
   const hub = code(read("app/actions/ai-communication-hub.ts"))
   ok("ai-communication-hub takes auth.agentId — brand_voice_profile and messages\n    are both agents-class, so the substitution read an empty voice profile and\n    an empty message history and presented both as the agent's real state",

@@ -8,7 +8,6 @@
     "app/actions/email-campaigns.ts": 1,
     "app/actions/journey-tasks.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
-    "app/actions/listing-lifecycle-core.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
     "app/actions/vendor-payments.ts": 1,
@@ -71,6 +70,7 @@
     "lib/analytics/prediction-accuracy.ts": 14,
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
+    "lib/application/listing-lifecycle.ts": 1,
     "lib/auth/role-grants.ts": 1,
     "lib/billing/ai-overage.ts": 1,
     "lib/billing/billing-access.ts": 1,
@@ -431,7 +431,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9381,
+  "census": 9382,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -737,7 +737,7 @@
     "app/actions/listing-documents.ts": 1,
     "app/actions/listing-health-actions.ts": 2,
     "app/actions/listing-landing.ts": 9,
-    "app/actions/listing-lifecycle-core.ts": 10,
+    "app/actions/listing-lifecycle-core.ts": 9,
     "app/actions/listing-lifecycle.ts": 15,
     "app/actions/listing-media.ts": 16,
     "app/actions/listing-promo-manual-trigger.ts": 1,
@@ -960,6 +960,7 @@
     "app/actions/transaction-stage-machine.ts": 3,
     "app/actions/transaction-tasks.ts": 1,
     "app/actions/transaction-transparency.ts": 3,
+    "app/actions/transactions/closing-cost-actual.ts": 1,
     "app/actions/transactions.ts": 60,
     "app/actions/twin-studio-upload.ts": 3,
     "app/actions/twin-studio.ts": 11,
@@ -2326,6 +2327,7 @@
     "app/dashboard/transactions/[id]/buyer-move-section.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-template-fields-card.tsx": 1,
     "app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx": 1,
+    "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": 1,
     "app/dashboard/transactions/[id]/closing-war-room-section.tsx": 1,
     "app/dashboard/transactions/[id]/closing-watchtower-section.tsx": 1,
     "app/dashboard/transactions/[id]/components/transaction-form-esign-flow.tsx": 1,
@@ -6225,7 +6227,6 @@
     ],
     "app/actions/listing-lifecycle-core.ts": [
       "validateListingTransition",
-      "executeListingTransition",
       "getLifecycleStages",
       "getListingLifecycleHistory",
       "getListingCurrentStage",
@@ -7682,6 +7683,9 @@
       "logTransactionDelay",
       "getTransactionDelays",
       "markDelaysCommunicated"
+    ],
+    "app/actions/transactions/closing-cost-actual.ts": [
+      "recordClosingCostActualAction"
     ],
     "app/actions/transactions.ts": [
       "getTransactions",
@@ -12126,6 +12130,9 @@
     ],
     "app/dashboard/transactions/[id]/cda/cda-workflow-client.tsx": [
       "CDAWorkflowClient"
+    ],
+    "app/dashboard/transactions/[id]/closing-cost-actual-input.tsx": [
+      "ClosingCostActualInput"
     ],
     "app/dashboard/transactions/[id]/closing-war-room-section.tsx": [
       "ClosingWarRoomSection"
@@ -21277,5 +21284,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }

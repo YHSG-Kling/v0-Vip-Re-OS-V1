@@ -3,6 +3,7 @@
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { ClosingCostActualInput } from "./closing-cost-actual-input"
 import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
 import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
 import { analyzeTransactionHealth } from "@/app/actions/ai-transaction-coordinator"
@@ -4670,6 +4671,7 @@ export function TransactionDetailClient({
                                   <span className="font-medium">
                                     ${(c.actual_amount ?? c.estimated_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
                                   </span>
+                                  <ClosingCostActualInput itemId={c.id} actual={c.actual_amount ?? null} />
                                   <Badge variant={c.status === "paid" || c.status === "actual" ? "default" : "secondary"} className="text-[10px] px-1 h-4">
                                     {c.status}
                                   </Badge>

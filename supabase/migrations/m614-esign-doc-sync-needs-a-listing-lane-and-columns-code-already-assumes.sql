@@ -1,7 +1,7 @@
 -- m614 — transaction_documents gets the columns its own writer already assumes,
 --        plus a LISTING lane for pre-contract packets.
 --
--- WRITTEN, NOT APPLIED (CLAUDE.md §3 — a migration file is not a migration run).
+-- APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-09 by the integrator (measured first; see the wave-46 commit).
 -- Lanes write migrations; only the integrator applies them.
 --
 -- ── DEFECT 1, MEASURED LIVE (hrvaqgvukzxfskkcrwbt, 2026-09-09) ────────────────

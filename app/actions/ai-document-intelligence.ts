@@ -291,8 +291,8 @@ Provide a comprehensive analysis including:
 // survivor lacked — the `stateSpecificRequirements` disclosure list and the
 // model's stated reasoning (survivor's prompt asked for `stateNotes` but never
 // returned it) — were merged onto checkTransactionDisclosures. A stripped-source
-// census found zero callers outside the app/actions/index.ts barrel, which
-// itself has zero importers. Nothing else merged.
+// census found zero callers outside the since-deleted actions barrel, which
+// itself had zero importers. Nothing else merged.
 
 /**
  * AI-powered signature verification

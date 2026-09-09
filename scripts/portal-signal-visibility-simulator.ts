@@ -63,7 +63,10 @@ function check(name: string, cond: boolean, detail?: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 const STUB_SOURCES: Record<string, string> = {
   "@/lib/supabase/service": "export const createServiceClient = (...a) => globalThis.__PSV.createServiceClient(...a)",
-  "@/lib/portal/require-contact-access": "export const requireContactAccess = (...a) => globalThis.__PSV.requireContactAccess(...a)",
+  // accessRefusal (2026-09-09): buyer-offer-tools' local copy merged onto the gate module (§1/§6),
+  // so the stub must carry it too — dispatched to the REAL mapper (installed in behaviourLayer),
+  // because V-checks below assert the buyer sees a sentence, never a bare "Forbidden".
+  "@/lib/portal/require-contact-access": "export const requireContactAccess = (...a) => globalThis.__PSV.requireContactAccess(...a); export const accessRefusal = (...a) => globalThis.__PSV_accessRefusal(...a)",
   "@/lib/property/address-lookup": "export const lookupPropertyByAddress = (...a) => globalThis.__PSV.lookupPropertyByAddress(...a)",
   "@/lib/property/rentcast": "export const getRentcastAVM = (...a) => globalThis.__PSV.getRentcastAVM(...a)",
   "@/lib/avm/provider-chain": "export const getCurrentAvm = (...a) => globalThis.__PSV.getCurrentAvm(...a)",
@@ -232,6 +235,9 @@ const activityWrites = (log: any[]) => log.filter(q => q.table === "client_porta
 const notifyWrites = (log: any[]) => log.filter(q => q.table === "notifications" && q.op === "insert")
 
 async function behaviourLayer() {
+  // The real refusal mapper, loaded by RELATIVE path so the alias hook does not intercept it.
+  const realGate = await import("../lib/portal/require-contact-access")
+  ;(globalThis as any).__PSV_accessRefusal = realGate.accessRefusal
   const tools = await import("../app/actions/buyer-offer-tools")
 
   // ── V1 · the rows the buyer's clicks actually produce are inside a staff lane ──

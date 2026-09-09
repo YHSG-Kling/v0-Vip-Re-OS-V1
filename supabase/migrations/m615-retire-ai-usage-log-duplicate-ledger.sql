@@ -1,6 +1,6 @@
 -- m615 — RETIRE ai_usage_log, A DUPLICATE OF THE CANONICAL ai_tool_usage LEDGER
 --
--- WRITTEN, NOT APPLIED (CLAUDE.md §3 — lanes write migrations, only the
+-- APPLIED to hrvaqgvukzxfskkcrwbt on 2026-09-09 by the integrator (measured first; see the wave-46 commit).
 -- integrator applies them).
 --
 -- readerless-write-census.ts flagged four columns of ai_usage_log as written
