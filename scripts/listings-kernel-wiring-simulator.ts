@@ -304,11 +304,14 @@ const ASSERTIONS: Assertion[] = [
     },
   },
   {
+    // A05/A07 read APP (lib/application/listing-lifecycle.ts) since 2026-09-09: the
+    // STAGE_TO_EVENT map and the agents.id→users.id resolution MOVED there when
+    // executeListingTransition was merged onto advanceListingStageService and retired.
     id: "A05",
     name: "STAGE_TO_EVENT keys are all real ListingStage values (dead vocab gone)",
     run: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.CORE, "STAGE_TO_EVENT")
+      const block = balancedBlock(S.APP, "STAGE_TO_EVENT")
       if (!block || union.size === 0) return false
       const keys = [...block.matchAll(/^\s*([A-Z_]+)\s*:/gm)].map((m) => m[1])
       if (keys.length === 0) return false
@@ -317,7 +320,7 @@ const ASSERTIONS: Assertion[] = [
     },
     detail: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.CORE, "STAGE_TO_EVENT") ?? ""
+      const block = balancedBlock(S.APP, "STAGE_TO_EVENT") ?? ""
       const keys = [...block.matchAll(/^\s*([A-Z_]+)\s*:/gm)].map((m) => m[1])
       const bad = keys.filter((k) => !union.has(k))
       return bad.length ? `phantom stage keys: ${bad.join(", ")}` : `keys = ${keys.join(", ")}`
@@ -328,14 +331,14 @@ const ASSERTIONS: Assertion[] = [
     name: "LAUNCH_STAGES contains only real ListingStage values",
     run: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.CORE, "LAUNCH_STAGES", "[", "]")
+      const block = balancedBlock(S.APP, "LAUNCH_STAGES", "[", "]")
       if (!block || union.size === 0) return false
       const vals = stringLiterals(block)
       return vals.length > 0 && vals.every((v) => union.has(v))
     },
     detail: (S) => {
       const union = listingStageUnion(S.DEFS)
-      const block = balancedBlock(S.CORE, "LAUNCH_STAGES", "[", "]") ?? ""
+      const block = balancedBlock(S.APP, "LAUNCH_STAGES", "[", "]") ?? ""
       const bad = stringLiterals(block).filter((v) => !union.has(v))
       return bad.length ? `phantom stages: ${bad.join(", ")}` : `values = ${stringLiterals(block).join(", ")}`
     },
@@ -346,12 +349,12 @@ const ASSERTIONS: Assertion[] = [
     run: (S) => {
       // Construct: the identity helper is actually CALLED (an import alone proves
       // nothing), and no agentUserId is assigned straight off a .agent_id field.
-      const called = countCalls(S.CORE, "resolveAgentRecordToUserId") >= 1
-      const substituted = /agentUserId\s*=\s*[^\n]*\.agent_id/.test(S.CORE)
+      const called = countCalls(S.APP, "resolveAgentRecordToUserId") >= 1
+      const substituted = /agentUserId\s*=\s*[^\n]*\.agent_id/.test(S.APP)
       return called && !substituted
     },
     detail: (S) =>
-      countCalls(S.CORE, "resolveAgentRecordToUserId") < 1
+      countCalls(S.APP, "resolveAgentRecordToUserId") < 1
         ? "resolveAgentRecordToUserId is never called"
         : "an agentUserId is assigned directly from .agent_id",
   },
@@ -610,9 +613,9 @@ const MUTATIONS: Mutation[] = [
   { assertionId: "A02", file: "CORE", find: `await resolveCurrentStage(`, replace: `await __noResolver(` },
   { assertionId: "A03", file: "CORE", find: "", replace: "", append: "\nasync function __deadProbe(s: unknown, l: string) { return getCurrentLifecycleStage(s as never, l) }\n" },
   { assertionId: "A04", file: "CORE", find: `  broker_owner: "broker",`, replace: `` },
-  { assertionId: "A05", file: "CORE", find: `      MLS_ACTIVE:         KernelEvent.LISTING_PUBLISHED,`, replace: `      ACTIVE:             KernelEvent.LISTING_PUBLISHED,` },
+  { assertionId: "A05", file: "APP", find: `      MLS_ACTIVE:         KernelEvent.LISTING_PUBLISHED,`, replace: `      ACTIVE:             KernelEvent.LISTING_PUBLISHED,` },
   { assertionId: "A06", file: "CORE", find: `["MLS_ACTIVE", "COMING_SOON_ACTIVE"]`, replace: `["MLS_ACTIVE", "COMING_SOON_ACTIVE", "PUBLISHED"]` },
-  { assertionId: "A07", file: "CORE", find: `await resolveAgentRecordToUserId(listingAgentRecordId)`, replace: `listingAgentRecordId` },
+  { assertionId: "A07", file: "APP", find: `await resolveAgentRecordToUserId(gate.listingAgentRecordId)`, replace: `gate.listingAgentRecordId` },
   { assertionId: "A08", file: "KERNEL", find: `const { data: owned, error: ownedError } = await supabase`, replace: `const { data: owned } = await supabase` },
   { assertionId: "A09", file: "KERNEL", find: `    .eq("brokerage_id", ctx.brokerageId)\n    .maybeSingle()`, replace: `    .maybeSingle()` },
   { assertionId: "A10", file: "KERNEL", find: `  "public_remarks", "showing_instructions",`, replace: `  "public_remarks", "showing_instructions", "mls_number",` },
