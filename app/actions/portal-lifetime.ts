@@ -1,6 +1,9 @@
 "use server"
 
-import { bestEffort } from "@/lib/db/best-effort"
+// bestEffort → sentinelWrite (2026-09-09): once the local requireContactAccess merged away
+// this file holds ONLY the service-role client, and the write-sentinel ruling is that a client
+// which can reach the self-heal ledger must ledger its losses rather than console.warn them.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -374,11 +377,11 @@ export async function setLifetimeSegment(params: {
         },
       })
       const meta = ((c as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>
-      await bestEffort(
+      await sentinelWrite(svc,
         svc.from("contacts").update({
           metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
         }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId),
-        "caches a generated relocation welcome draft on contact metadata; the card renders its own fallback copy when the draft is absent, so a lost cache costs a regeneration and never blocks the segment change (the enclosing catch already said this — it just could not see a RESOLVED refusal)",
+        { table: "contacts", flow: "portal_lifetime_relocated_welcome_cache", brokerageId: access.brokerageId, reason: "caches a generated relocation welcome draft on contact metadata; the card renders its own fallback copy when the draft is absent, so a lost cache costs a regeneration and never blocks the segment change (the enclosing catch already said this — it just could not see a RESOLVED refusal)", }
       )
     } catch { /* floor lives in the card — never block the segment change */ }
   }
