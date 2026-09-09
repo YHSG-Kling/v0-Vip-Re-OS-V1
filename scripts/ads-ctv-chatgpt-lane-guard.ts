@@ -189,7 +189,15 @@ check("mark-launched counts the UPDATE and records external_campaign_id", /exter
 check("the CSV import lands in ad_performance via the one mapper + the history series",
   /toAdPerformanceRow\(input\.brokerageId, input\.campaignId, row\)/.test(GPT) && /recordAdPerformanceSnapshot\(\{ brokerageId: input\.brokerageId, adCampaignId: input\.campaignId/.test(GPT))
 check("…skipping an export's Total row and refusing an unrecognisable file", /\^total\/i/.test(GPT) && /if \(iImp < 0 && iClk < 0 && iSpend < 0\) return null/.test(GPT))
-check("three session-gated actions", /export async function stageChatgptCampaignAction/.test(GPT_ACT) && /export async function markChatgptCampaignLaunchedAction/.test(GPT_ACT) && /export async function importChatgptPerformanceAction/.test(GPT_ACT) && /supabase\.auth\.getUser\(\)/.test(GPT_ACT))
+// 2026-09-09: the session gate MOVED out of the action file — the SAME-BODY census merged the
+// local requireActor onto lib/auth/require-caller.ts::requireAdsActor (§1/§6), so pinning
+// `supabase.auth.getUser()` INSIDE chatgpt-ads.ts was a waypoint (§2). The rule: each of the
+// three actions calls the gate, and the gate they import is the one that reads the session.
+const GATE_IMPORT = GPT_ACT.match(/import \{ requireAdsActor as (\w+) \} from "@\/lib\/auth\/require-caller"/)?.[1] ?? "requireAdsActor"
+const REQUIRE_CALLER = src("lib/auth/require-caller.ts")
+check("three session-gated actions", /export async function stageChatgptCampaignAction/.test(GPT_ACT) && /export async function markChatgptCampaignLaunchedAction/.test(GPT_ACT) && /export async function importChatgptPerformanceAction/.test(GPT_ACT)
+  && (GPT_ACT.match(new RegExp(`await ${GATE_IMPORT}\\(\\)`, "g")) ?? []).length >= 3
+  && /export async function requireAdsActor[\s\S]{0,400}supabase\.auth\.getUser\(\)/.test(REQUIRE_CALLER))
 check("…each with a UI caller in the lane, rendered in the ads workspace",
   /stageChatgptCampaignAction\(/.test(GPT_UI) && /markChatgptCampaignLaunchedAction\(/.test(GPT_UI) && /importChatgptPerformanceAction\(/.test(GPT_UI) && /<ChatgptLane/.test(ADS_PAGE))
 
