@@ -1269,12 +1269,21 @@ Create a comprehensive plan including:
     // Two consequences the old code got wrong, both silently:
     //  · brokerage_id was never stamped, so WITH CHECK was FALSE for every row
     //    and RLS refused all of them (live count: 0).
-    //  · agent_id is compared to auth.uid() by that policy, so this column is
-    //    the USERS class — not agents.id. The old code wrote the caller-supplied
-    //    params.agentId, which for an agent-class id would make the row
-    //    invisible to its own owner on the agent_id leg.
+    //  · agent_id: the LIVE FOREIGN KEY (scripts/agent-fk-columns.ts, regenerated
+    //    from the database 2026-09-09) says scheduled_touchpoints.agent_id →
+    //    agents(id). agents.id and users.id are DISJOINT (CLAUDE.md §3), so the
+    //    users id this wrote until then was refused by the FK on every insert —
+    //    the "USERS class" reading below was taken from the policy's auth.uid()
+    //    leg, which the FK overrules; the brokerage leg of the policy still shows
+    //    the row to its tenant. Written from the session's resolved agents.id.
     // The write is also checked now; a refused touchpoint is reported, not lost.
     const contactId = transaction.contact_id as string | null
+    if (!scope.agentId) {
+      return {
+        success: false,
+        error: "No agent profile for this user yet — finish account setup before scheduling touchpoints.",
+      }
+    }
 
     if (!contactId) {
       return {
@@ -1289,7 +1298,7 @@ Create a comprehensive plan including:
     for (const followUp of postClosingPlan.immediateFollowUp) {
       const { error: touchError } = await supabase.from("scheduled_touchpoints").insert({
         contact_id: contactId,
-        agent_id: scope.userId,
+        agent_id: scope.agentId,
         brokerage_id: scope.brokerageId,
         touchpoint_type: followUp.channel,
         // `scheduled_date` is a DATE column — send an ISO timestamp and Postgres
