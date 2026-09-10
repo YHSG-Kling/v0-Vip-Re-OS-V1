@@ -224,6 +224,10 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   agent_escalated_to_human:       { consumers: [], disposition: "feed_only", kind: "escalation", what: "an AI concierge session escalated to a human — the cross-manager visibility trail beside multi-agent-router.ts's own smart_assistant_suggestions row (lib/intelligence/multi-agent-router.ts)" },
   neighborhood_report_generated:  { consumers: [], disposition: "feed_only", kind: "update", what: "an AI neighborhood report finished generating for a listing — Listing Concierge sees it (app/actions/neighborhood-reports.ts)" },
 
+  // Wave 48 (lane GD): the provider-agnostic e-sign core REFUSES an envelope id that resolves
+  // to rows in two different brokerages instead of guessing a tenant (§4 fail closed).
+  esign_envelope_id_ambiguous:  { consumers: [], disposition: "feed_only", kind: "update", what: "a provider envelope id matched rows in more than one brokerage — the e-sign execution loop refused to act on it; Compliance Officer must see which tenant's packet it really belongs to (lib/forms/esign-execution-loop.ts resolveEnvelopeBrokerageId)" },
+
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */
