@@ -357,6 +357,95 @@ function captionsSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// §language — default en, ONE resolver, wired into the welcome avatar video
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// WAVE 51 — the gap wave 50's research named: the first-touch WELCOME avatar
+// video had no multilingual variant because contacts carried no
+// preferred_language and no transcript existed yet at first touch. Owner
+// ruling: "the default language is english wherever a language is resolved
+// and none is known." This section proves the resolver exists exactly once,
+// defaults correctly, and actually reaches the script/TTS/copy surfaces —
+// not just that a function with the right name exists somewhere.
+
+function languageSection() {
+  console.log("\n── §language — DEFAULT_LANGUAGE + resolveContactLanguage wired end-to-end ──")
+  const multilingual = readStripped("lib/video/multilingual-reel.ts")
+  const welcomeVideo = readStripped("lib/contact-promotion/welcome-avatar-video.ts")
+  const reactor = readStripped("lib/video/intro-video-reactor.ts")
+  const dispatch = readStripped("lib/providers/dispatch.ts")
+  const aiCopy = readStripped("lib/kernel/ai-copy.ts")
+
+  check("DEFAULT_LANGUAGE is exported exactly ONCE from lib/video/multilingual-reel.ts (the file this lane owns — JA does not also export it here)",
+    (multilingual.match(/export const DEFAULT_LANGUAGE/g) ?? []).length === 1)
+  check("DEFAULT_LANGUAGE is the ruled default: \"en\"",
+    /export const DEFAULT_LANGUAGE\s*=\s*["']en["']/.test(multilingual))
+
+  check("resolveContactLanguage is the ONE pure resolver (no second function computing this)",
+    (multilingual.match(/export function resolveContactLanguage/g) ?? []).length === 1)
+  check("the resolver's tier order is tier1 → tier2 → tier3 → DEFAULT_LANGUAGE, in that array order",
+    /const tiers[^;]*=\s*\[\s*ctx\.contactPreferredLanguage,\s*ctx\.latestCallTranscriptionLanguage,\s*ctx\.intakeCapturedLanguage,?\s*\]/.test(multilingual) &&
+    /return DEFAULT_LANGUAGE/.test(multilingual))
+  check("every tier value is mapped through localeToElevenLabsLanguage — a raw BCP-47 locale never bypasses the ONE locale map (§6)",
+    /localeToElevenLabsLanguage\(raw\)/.test(multilingual))
+
+  check("resolveContactLanguageFromDb tolerates m620's absence — it checks the LIVE schema cache before ever selecting preferred_language",
+    /schemaHasColumn\(["']contacts["'],\s*["']preferred_language["']\)/.test(multilingual))
+  check("schemaHasColumn reads the GENERATED cache (scripts/schema-snapshot.ts), never a hand-typed column list (§3)",
+    /from ["']@\/scripts\/schema-snapshot["']/.test(multilingual))
+  check("tier 3 (intake capture) is read from contacts.metadata, not a column that doesn't exist yet",
+    /captured_language/.test(multilingual))
+  check("tier 2 reads call_transcriptions via voice_calls.contact_id (call_transcriptions itself carries no contact_id — schema-verified)",
+    /from\(["']voice_calls["']\)/.test(multilingual) && /from\(["']call_transcriptions["']\)/.test(multilingual))
+
+  // CONTROL: a resolver-shaped snippet that selects preferred_language
+  // unconditionally — the exact shape that would 42703 against the live
+  // database before m620 is applied — is correctly flagged as NOT tolerant.
+  const unguardedSelectSnippet = `
+    async function resolveLang(supabase, contactId) {
+      const { data } = await supabase.from("contacts").select("preferred_language").eq("id", contactId).maybeSingle()
+      return data?.preferred_language ?? "en"
+    }
+  `
+  check("CONTROL: an unconditional preferred_language SELECT is correctly recognised as NOT schema-tolerant",
+    !/schemaHasColumn/.test(unguardedSelectSnippet))
+
+  console.log("\n── §language — reaches the welcome avatar video (not just the resolver) ──")
+  check("welcome-avatar-video.ts resolves language ONCE, here, before delegating to the reactor",
+    /resolveContactLanguageFromDb/.test(welcomeVideo))
+  check("the resolved language is actually PASSED to dispatchAssignmentIntroVideo (not resolved and dropped)",
+    /dispatchAssignmentIntroVideo\(\{[\s\S]{0,300}language,/.test(welcomeVideo))
+
+  check("intro-video-reactor.ts's draft prompt gets a language directive that is EMPTY for English (byte-identical prior prompt)",
+    /languageLine\s*=\s*args\.language\s*&&\s*args\.language\s*!==\s*["']en["']/.test(reactor))
+  check("the language directive actually reaches the model call (concatenated into the prompt, not computed and discarded)",
+    /basePrompt\s*\+\s*languageLine\s*\+\s*violationLine/.test(reactor))
+  check("ai_video_projects.locale is stamped with the resolved language (mirrors commissionMultilingualReel's own column, §6)",
+    /locale:\s*language/.test(reactor))
+
+  console.log("\n── §language — reaches TTS/voice selection (the measured orphan this closes) ──")
+  check("DispatchVideoParams carries ttsLanguageCode — the reader the multilingual_reels manager-registry entry said did not exist",
+    /ttsLanguageCode\?:/.test(dispatch))
+  check("the D-ID/ElevenLabs TTS call body actually reads params.ttsLanguageCode as language_code (English unaffected — omitted for \"en\")",
+    /language_code:\s*params\.ttsLanguageCode/.test(dispatch))
+
+  // CONTROL: the historical defect this closes — a TTS call that hardcodes
+  // model_id but never forwards a language_code — is correctly flagged as
+  // having no language reader.
+  const noLanguageReaderSnippet = `
+    body: { text: renderedScript, model_id: "eleven_multilingual_v2" }
+  `
+  check("CONTROL: a TTS body with model_id but no language_code forwarding is correctly flagged as the orphan",
+    !/language_code/.test(noLanguageReaderSnippet))
+
+  console.log("\n── §language — reaches copy generation (generatePersonaCopy) ──")
+  check("CopyRequest.language is additive — English/absent reproduces the prior system prompt (no 6th rule line)",
+    /req\.language\s*&&\s*req\.language\s*!==\s*["']en["']/.test(aiCopy))
+  check("a non-English language pulls its NAME from the ONE map (lib/video/multilingual-reel.ts languageName), never a second name list",
+    /languageNameForCopy/.test(aiCopy) && /from ["']@\/lib\/video\/multilingual-reel["']/.test(aiCopy))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
@@ -369,6 +458,7 @@ async function main() {
   failureSection()
   costSection()
   captionsSection()
+  languageSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -376,6 +466,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All seven avatar-pipeline hardening properties hold, each with a positive control.")
+  console.log(" ✅ All eight avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

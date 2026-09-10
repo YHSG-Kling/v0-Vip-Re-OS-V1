@@ -218,7 +218,6 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
                                 <VideoGenerationButtons
                                   script={post.content}
                                   title={`Social Post - ${post.platform}`}
-                                  userId={userId}
                                   size="sm"
                                   className="mt-2"
                                 />

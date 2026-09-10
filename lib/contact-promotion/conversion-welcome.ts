@@ -119,6 +119,9 @@ import { COMPOSITE_WAIT_MS } from "@/lib/video/avatar-render-orchestrator"
 import { resolveWelcomeManagers, welcomeJourneyFor } from "@/lib/kernel/client-welcome"
 import { grantPortalAccessForPromotedContact } from "./portal-access"
 import { ensureWelcomeAvatarVideo, type WelcomeAvatarVideoReason } from "./welcome-avatar-video"
+import type { WelcomeOrigin } from "./welcome-situation"
+
+export type { WelcomeOrigin } from "./welcome-situation"
 
 /**
  * How long the ONE welcome email may wait for a personal video before going
@@ -312,6 +315,13 @@ export interface ConversionWelcomeParams {
   contactType?: string | null
   firstName?: string | null
   lastName?: string | null
+  /**
+   * Set when this contact came from an open house rather than an ordinary lead
+   * conversion (owner ruling 2026-09-10, wave 51: "contact came from open house —
+   * same welcome email but mentions the open house with welcome video/portal
+   * invite"). One context field on THIS path — never a second implementation.
+   */
+  origin?: WelcomeOrigin | null
 }
 
 export interface ConversionWelcomeResult {
@@ -388,6 +398,7 @@ export async function deliverConversionWelcome(
     contactId: params.contactId,
     agentId: params.agentId,
     brokerageId: params.brokerageId,
+    origin: params.origin ?? null,
   })
   warnings.push(...video.warnings)
 
@@ -439,7 +450,7 @@ export async function deliverConversionWelcome(
       contactType: params.contactType ?? null,
       firstName: params.firstName ?? null,
       lastName: params.lastName ?? null,
-    })
+    }, { origin: params.origin ?? null })
     out.emailState = welcome.state
     warnings.push(...welcome.situationWarnings)
     if (welcome.state !== "sent" && welcome.state !== "skipped") {

@@ -469,6 +469,10 @@ export function OfferWorkspace({
               documentUrl={offer.offer_document_url}
               documentName={offer.offer_document_name}
               aiExtractionStatus={offer.ai_extraction_status}
+              esignStatus={offer.esign_status}
+              esignSentAt={offer.esign_sent_at}
+              esignCompletedAt={offer.esign_completed_at}
+              esignProvider={offer.esign_provider}
             />
           </div>
         )}

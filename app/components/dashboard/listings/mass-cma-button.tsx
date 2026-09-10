@@ -7,12 +7,13 @@ import { Loader2, Sparkles, CheckCircle2 } from "lucide-react"
 import { massGenerateCMAs } from "@/app/actions/ai-predictions"
 import { toast } from "sonner"
 
-interface MassCMAButtonProps {
-  // agentId is no longer used — massGenerateCMAs resolves identity server-side
-  agentId?: string
-}
-
-export function MassCMAButton({ agentId: _agentId }: MassCMAButtonProps) {
+// TOMBSTONE (hidden-wire census category c, 2026-09-10): `agentId?: string` stood on
+// MassCMAButtonProps — declared, never passed by the one caller (app/dashboard/listings/
+// page.tsx). SURVIVOR: app/actions/ai-predictions.ts:1979 `massGenerateCMAs`, which resolves
+// the acting agent server-side from the session (CLAUDE.md §4 "tenant/identity from the
+// session, never a parameter") — a client-supplied agentId would have been an unused, and
+// potentially spoofable, prop. No Props interface needed now that this button takes none.
+export function MassCMAButton() {
   const [isPending, startTransition] = useTransition()
   const [result, setResult] = useState<{ totalCMAsGenerated: number; significantOpportunities: number; message?: string } | null>(null)
   const [open, setOpen] = useState(false)

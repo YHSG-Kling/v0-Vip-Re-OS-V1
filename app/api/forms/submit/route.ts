@@ -26,6 +26,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
     const userAgent = req.headers.get('user-agent') ?? null
 
+    // ── Tier 3 of resolveContactLanguage: intake-time locale ──────────────────
+    // Prefer a form field naming the locale explicitly (a form CAN carry a
+    // `language`/`locale` field in its submission_data — nothing forces one to
+    // exist), else fall back to the browser's Accept-Language header. Mapped
+    // through the ONE locale table (localeToElevenLabsLanguage — §6, never a
+    // second parser of "es-MX" → "es") so a garbage/unmapped value never reaches
+    // storage as a fabricated language.
+    const { localeToElevenLabsLanguage } = await import('@/lib/video/multilingual-reel')
+    const formLocale = (data['language'] ?? data['locale'] ?? '') as string
+    const acceptLanguage = req.headers.get('accept-language')?.split(',')[0]?.trim() ?? ''
+    const capturedLanguage =
+      localeToElevenLabsLanguage(formLocale) ?? localeToElevenLabsLanguage(acceptLanguage) ?? null
+
     const supabase = createServiceClient()
 
     // ── Step 1: Fetch form definition ─────────────────────────────────────────
@@ -69,6 +82,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const email = (data['email'] ?? '') as string
     const phone = (data['phone'] ?? '') as string
 
+    // ── Step 4b: form-declared persona (BUILD, wave 51) ───────────────────────
+    // `lead_capture_forms` carries no dedicated persona column, and this route's
+    // fields are entirely admin-defined free text — there is no field this door
+    // can safely READ as "buyer" or "seller" without guessing (CLAUDE.md §1: write
+    // "unresolved" rather than invent). What CAN be built without a migration is
+    // letting the admin who BUILT the form declare its persona up front, in the
+    // `settings` jsonb column this table already has. Only a value already in the
+    // live `contacts_contact_type_check` vocabulary is forwarded — an unrecognised
+    // string is worse than none, because captureContact would carry it straight
+    // into an INSERT the CHECK constraint refuses (PGRST/23514) and the whole
+    // submission would fail closed on a typo. When absent (every form that
+    // predates this wave), contact_type stays null and resolveWelcomeManagers
+    // legitimately returns no manager for it — see the FORM_SUBMISSION_RECEIVED
+    // reader in lib/kernel/event-reactor.ts for what that means for the welcome.
+    const FORM_DECLARABLE_CONTACT_TYPES = new Set(['buyer', 'seller', 'both'])
+    const declaredContactType = (() => {
+      const raw = (form as { settings?: { default_contact_type?: string | null } | null }).settings
+        ?.default_contact_type
+      const v = (raw ?? '').toString().trim().toLowerCase()
+      return FORM_DECLARABLE_CONTACT_TYPES.has(v) ? v : null
+    })()
+
     // ── Step 5: captureContact ────────────────────────────────────────────────
     const consentNow = new Date().toISOString()
     const { contactId, action } = await captureContact({
@@ -84,7 +119,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       preferred_channel: consentGiven ? 'phone' : 'email',
       tcpa_consent: consentGiven,
       tcpa_consent_date: consentGiven ? consentNow : null,
+      contact_type: declaredContactType,
       rawPayload: data,
+      ...(capturedLanguage ? { language: capturedLanguage } : {}),
     })
 
     // ── Persist consent audit event ────────────────────────────────────────

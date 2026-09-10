@@ -38,6 +38,7 @@
 
 import type { CharacterAlignment } from "@/lib/video/caption-plan"
 import { computeNarrationKey } from "@/lib/remotion/composition-cache"
+import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 
 export interface ReelVoiceover {
   url: string
@@ -75,13 +76,30 @@ function narrationDurationSeconds(
 const MAX_SCRIPT_CHARS = 2400
 
 export async function prepareReelVoiceover(
-  p: { brokerageId: string; narration: string | null | undefined; voiceId: string | null | undefined; renderKey: string },
+  p: {
+    brokerageId: string; narration: string | null | undefined; voiceId: string | null | undefined; renderKey: string
+    /**
+     * THE MISSING READER (measured gap, lib/kernel/manager-registry.ts
+     * `multilingual_reels` entry: "video_metadata.tts_model / tts_language_code
+     * keys it stamps are read by nothing (lib/video/reel-voiceover.ts
+     * synthesizes with no modelId/languageCode)"). The ElevenLabs-mapped
+     * language code from lib/video/multilingual-reel.ts resolveContactLanguage
+     * / localeToElevenLabsLanguage. ADDITIVE — omitted or DEFAULT_LANGUAGE
+     * ("en") reproduces the prior call byte-for-byte (auto-detect from text).
+     */
+    languageCode?: string | null
+  },
 ): Promise<ReelVoiceover | null> {
   const text = (p.narration ?? "").trim()
   if (!text || !p.voiceId) return null
 
   const script = text.slice(0, MAX_SCRIPT_CHARS)
-  const scriptHash = computeNarrationKey(p.voiceId, script)
+  // A non-default language namespaces the cache key so a Spanish and an
+  // English clip of otherwise-identical text (short scripts, transliterated
+  // names) can never collide on the same narration_cache row — English's key
+  // is UNCHANGED (script hashed alone), so every existing cache entry still hits.
+  const scriptForHash = p.languageCode && p.languageCode !== DEFAULT_LANGUAGE ? `${p.languageCode}::${script}` : script
+  const scriptHash = computeNarrationKey(p.voiceId, scriptForHash)
 
   // ── Reuse before spend ────────────────────────────────────────────────────
   const cached = await loadCachedNarration(p.brokerageId, p.voiceId, scriptHash)
@@ -98,12 +116,16 @@ export async function prepareReelVoiceover(
     // tenants ship silent video instead of an unbounded TTS bill).
     let audio: Buffer | null = null
     let alignment: CharacterAlignment | null = null
-    const stamped = await synthesizeSpeechWithTimestamps({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId })
+    // languageCode omitted for "en"/unset — synthesizeSpeechWithTimestamps
+    // already treats an absent languageCode as "auto-detect", so this is a
+    // no-op for every existing (English) caller.
+    const languageCode = p.languageCode && p.languageCode !== "en" ? p.languageCode : undefined
+    const stamped = await synthesizeSpeechWithTimestamps({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode })
     if (stamped.success && stamped.audioBuffer) {
       audio = stamped.audioBuffer
       alignment = (stamped.alignment as CharacterAlignment | null) ?? null
     } else {
-      const tts = await synthesizeSpeech({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId })
+      const tts = await synthesizeSpeech({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode })
       if (!tts.success || !tts.audioBuffer || tts.audioBuffer.length === 0) return null
       audio = tts.audioBuffer
     }

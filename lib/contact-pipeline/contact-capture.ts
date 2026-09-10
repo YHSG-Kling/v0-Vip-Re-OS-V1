@@ -116,6 +116,24 @@ export interface CaptureContactParams {
   /** Merged into contacts.enrichment_profile (read-merge-write on dedup so existing
    *  enrichment is never clobbered) — e.g. the Article-16 representation_disclosure. */
   enrichmentProfile?: Record<string, unknown> | null
+  /**
+   * TIER 3 OF lib/video/multilingual-reel.ts::resolveContactLanguage — the
+   * intake-time locale, captured at first touch before any preferred_language
+   * setting or transcribed call can exist. An ElevenLabs-mapped language code
+   * (localeToElevenLabsLanguage output) the caller already resolved from the
+   * form's own locale field or the request's Accept-Language header — this
+   * function does not parse either itself (§6, no second resolver).
+   *
+   * Stored at contacts.metadata->>'captured_language' — NOT a typed column.
+   * UNTIL m620 IS APPLIED (supabase/migrations/m620-contacts-preferred-
+   * language.sql, WRITTEN NOT APPLIED per CLAUDE.md §3) this IS the only place
+   * an intake-time language lands; once preferred_language exists, a
+   * follow-up lane backfills it from here — the same "typed column pending,
+   * jsonb key live" pattern m617's business_card_scans columns already used.
+   * fill-if-empty on merge (an existing captured_language is never overwritten
+   * by a lower-confidence retry).
+   */
+  language?: string | null
 }
 
 export interface CaptureContactResult {
@@ -208,6 +226,7 @@ export async function captureContact(
         dnc_status: false,
         notes: [params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : null, params.notes ?? null]
           .filter(Boolean).join('\n') || undefined,
+        ...(params.language ? { metadata: { captured_language: params.language } } : {}),
       })
       .select('id')
       .single()
@@ -301,6 +320,15 @@ export async function captureContact(
       ? { ...((existing?.enrichment_profile as Record<string, unknown> | null) ?? {}), ...params.enrichmentProfile }
       : null
 
+    // Same read-merge-write shape for the intake-language capture: FILL-IF-EMPTY
+    // only — a contact who already told us a language (or gave us one on an
+    // earlier capture) keeps it; a retry never demotes a real answer to a guess.
+    const existingMetadata = (existing?.metadata as Record<string, unknown> | null) ?? null
+    const mergedMetadata =
+      params.language && !existingMetadata?.captured_language
+        ? { ...(existingMetadata ?? {}), captured_language: params.language }
+        : null
+
     // Data Steward lossless merge over the canonical identity/address fields:
     // existing (the surviving row) keeps its non-empty values, empties are filled
     // from the incoming capture, and a REAL conflict (both present, different) is
@@ -371,6 +399,7 @@ export async function captureContact(
         ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
         ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
         ...(mergedEnrichmentProfile ? { enrichment_profile: mergedEnrichmentProfile } : {}),
+        ...(mergedMetadata ? { metadata: mergedMetadata } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq('id', bestId)
@@ -463,6 +492,7 @@ export async function captureContact(
       ...(params.tcpa_consent && params.tcpa_consent_source ? { tcpa_consent_source: params.tcpa_consent_source } : {}),
       ...(params.tcpa_consent && params.tcpa_consent_text ? { tcpa_consent_text: params.tcpa_consent_text } : {}),
       ...(params.enrichmentProfile ? { enrichment_profile: params.enrichmentProfile } : {}),
+      ...(params.language ? { metadata: { captured_language: params.language } } : {}),
       isa_reengage_allowed: true,
       dnc_status: false,
     })

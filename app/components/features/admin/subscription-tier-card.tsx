@@ -4,6 +4,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -25,6 +26,10 @@ interface SubscriptionTierCardProps {
   brokerageId: string
   tierName: string
   status: SubscriptionCardStatus
+  /** optional by design: a caller-supplied override. When omitted, the card runs its OWN
+   *  refresh via router.refresh() below — needed because this card's one caller
+   *  (app/dashboard/admin/billing/page.tsx) is a server component, and a server component
+   *  cannot pass a function prop across the RSC boundary to a client component. */
   onUpdate?: () => void
 }
 
@@ -34,6 +39,7 @@ export function SubscriptionTierCard({
   status,
   onUpdate,
 }: SubscriptionTierCardProps) {
+  const router = useRouter()
   const [isUpdating, setIsUpdating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -59,7 +65,8 @@ export function SubscriptionTierCard({
         throw new Error(data.error || "Failed to update subscription")
       }
 
-      onUpdate?.()
+      if (onUpdate) onUpdate()
+      else router.refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error")
     } finally {

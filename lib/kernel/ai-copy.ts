@@ -13,6 +13,11 @@
 // persona's tone. NOT server-only (simulator-driven).
 
 import { createServiceClient } from "@/lib/supabase/service"
+// languageName is a PURE function (no server-only I/O at module scope in
+// multilingual-reel.ts — only commissionMultilingualReel does I/O, and it
+// dynamic-imports its own server-only deps internally), so a static import
+// here is safe and is the ONE name→language-label map (§6).
+import { languageName as languageNameForCopy } from "@/lib/video/multilingual-reel"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -47,6 +52,18 @@ export interface CopyRequest {
    * simulator asserts exactly that), so no existing caller's copy changes.
    */
   directives?: string[]
+  /**
+   * ISO 639-1 language code (the LOCALE_TO_ELEVENLABS_LANGUAGE-mapped code from
+   * lib/video/multilingual-reel.ts — never a second spelling, §6) the copy
+   * should be WRITTEN in. ADDITIVE and OPTIONAL: omitted or "en" reproduces the
+   * prior system prompt byte-for-byte (English was always the implicit
+   * language, so DEFAULT_LANGUAGE needs no extra instruction). Only a non-
+   * English resolved language adds a directive line — set by callers that
+   * resolved a contact's language via resolveContactLanguage /
+   * resolveContactLanguageFromDb (welcome avatar video, persona reels), never
+   * guessed here.
+   */
+  language?: string | null
 }
 
 export interface CopyDraft { subject?: string; body: string }
@@ -73,6 +90,13 @@ export const realCopyGenerator: CopyGenerator = async (req) => {
     `4. Keep it ~${req.words ?? 60} words, warm, no pressure.`,
     ...(req.directives?.length
       ? ["5. Additional non-negotiable constraints for THIS piece:", ...req.directives.map((d) => `   - ${d}`)]
+      : []),
+    // ADDITIVE — a resolved non-English language adds ONE line; "en" or absent
+    // changes nothing (the language was always implicitly English). Never a
+    // second language-name spelling: the name comes from the ONE map,
+    // lib/video/multilingual-reel.ts::languageName (§6).
+    ...(req.language && req.language !== "en"
+      ? [`6. Write the ENTIRE piece in ${languageNameForCopy(req.language)} — subject and body both, no English mixed in.`]
       : []),
     SCRIPT_QUALITY_CHARTER,
     `Return STRICT JSON: {"subject": "<short subject or empty>", "body": "<the copy>"}.`,

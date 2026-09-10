@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 232 agents(id) columns across 223 tables, 38 agent-ish users(id) columns across 36 tables, 168 contact_id tables.
+ * MEASURED AT GENERATION: 233 agents(id) columns across 224 tables, 38 agent-ish users(id) columns across 36 tables, 169 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-09
+ * generated: 2026-09-10
  * source: public.live_foreign_keys_json()
- * body-sha256: f97922f6c8c28548371aede063e714e575198d17a0c0e914961ff99de81056a4
+ * body-sha256: 2b44ea1ced1f58d19c0fe09a1be0c43ee68ae77bdcc5d27d02da0ccf4d1b4375
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -195,6 +195,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   newsletter_video_renders: ["agent_id"],
   objection_scenario_agents: ["agent_id"],
   offer_comparison: ["agent_id"],
+  offer_intents: ["agent_id"],
   offers: ["agent_id", "presented_to_seller_by_agent_id"],
   onboarding_ai_chats: ["agent_id"],
   open_house_events: ["agent_id"],
@@ -416,6 +417,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "newsletter_sends",
   "newsletter_subscribers",
   "notifications",
+  "offer_intents",
   "offers",
   "open_house_attendees",
   "open_house_feedback",

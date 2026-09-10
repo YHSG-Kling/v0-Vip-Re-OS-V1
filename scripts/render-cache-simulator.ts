@@ -376,8 +376,16 @@ console.log("\n═══ 11. The narration clock is gone ═══")
   ok("the cache is consulted BEFORE synthesis",
     vo.indexOf("loadCachedNarration") < vo.indexOf("synthesizeSpeechWithTimestamps"))
   ok("a reuse is reported to the caller, not hidden", vo.includes("reused: true"))
+  // Wave 51: the hash input became `scriptForHash` (a non-default language namespaces the
+  // key; English hashes the bare capped script so every existing row still hits) — the cap
+  // must still run BEFORE that derivation, which must run before the key.
+  const capAt = vo.indexOf("MAX_SCRIPT_CHARS)")
+  const namespaceAt = vo.indexOf("const scriptForHash =")
+  const keyAt = vo.indexOf("computeNarrationKey(p.voiceId, scriptForHash)")
   ok("the script is capped BEFORE hashing so two scripts differing past the cap share a clip",
-    vo.indexOf("MAX_SCRIPT_CHARS)") < vo.indexOf("computeNarrationKey(p.voiceId, script)"))
+    capAt !== -1 && namespaceAt !== -1 && keyAt !== -1 && capAt < namespaceAt && namespaceAt < keyAt)
+  ok("a non-default language namespaces the narration key; the default-language key is the bare script (existing rows still hit)",
+    vo.includes("p.languageCode !== DEFAULT_LANGUAGE ? `${p.languageCode}::${script}` : script"))
   ok("the cache row upserts on the unique key (two producers can race)",
     vo.includes('onConflict: "brokerage_id,voice_id,script_hash"'))
   ok("alignment is cached too, so a reused clip still gets word-accurate captions",

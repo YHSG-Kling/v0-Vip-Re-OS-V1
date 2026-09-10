@@ -21,9 +21,13 @@
  *      the row is never left at 'queued' pretending to be in flight.
  *   3. Emits KernelEvent.VIDEO_GENERATION_REQUESTED on lifecycle_events AFTER a
  *      successful submission (was previously the dotted "video.queued" string —
- *      caught by the kernel-event-vocab drift audit on PR #44). It is an AUDIT
- *      RECORD ONLY: that event has five emitters and zero consumers repo-wide.
- *      Nothing reads it, so nothing is dispatched by emitting it.
+ *      caught by the kernel-event-vocab drift audit on PR #44). UPDATED (wave 51):
+ *      no longer audit-only — lib/kernel/event-reactor.ts D-terdecies #17 reads
+ *      it and, via lib/kernel/signal-routing.ts routeVideoGenerationRequested,
+ *      hands a manager_signals row to whichever manager owns this render's
+ *      context (a presentation chapter carries no listing_id/contact_id today,
+ *      so it stays on this project's own agent's surface — no cross-manager
+ *      signal — until a chapter is linked to a listing).
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -324,11 +328,11 @@ export async function generatePropertyChapterVideos(
       videoIds.push(project.id)
       succeededTitles.push(chapter.title)
 
-      // Canonical KernelEvent, emitted only once the provider has the job.
-      // AUDIT RECORD ONLY — VIDEO_GENERATION_REQUESTED has five emitters and
-      // zero consumers repo-wide; no dispatcher, cron or switch case reads it.
-      // The render moves because dispatchVideo submitted it and the stamp above
-      // made it visible to poll-did-videos, not because this row exists.
+      // Canonical KernelEvent, emitted only once the provider has the job. The
+      // RENDER moves because dispatchVideo submitted it and the stamp above made
+      // it visible to poll-did-videos, not because of this event — but the event
+      // is no longer audit-only (wave 51): event-reactor.ts D-terdecies #17 reads
+      // it and routes a manager_signals row per routeVideoGenerationRequested.
       // (Previously this emitted the dotted "video.queued" which the
       // underscore-form KernelEvent reactor never matched either.)
       const { emitKernelEvent } = await import("@/lib/kernel/emit")

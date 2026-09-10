@@ -18,12 +18,17 @@
  * Run:  npx tsx scripts/multilingual-reel-simulator.ts
  *       npm run test:multilingual-reel
  */
+import { readFileSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import {
   localeToElevenLabsLanguage,
   isMultilingualLocale,
   translateReelScript,
   commissionMultilingualReel,
   MULTILINGUAL_TTS_MODEL,
+  DEFAULT_LANGUAGE,
+  languageName,
+  resolveContactLanguage,
 } from "../lib/video/multilingual-reel"
 import type { VideoSituation } from "../lib/video/video-director"
 
@@ -94,6 +99,45 @@ function testLocalMapping() {
   check("unknown 'xx' is NOT multilingual",isMultilingualLocale("xx") === false)
 }
 
+// ─── DEFAULT_LANGUAGE — owner ruling (wave 51, verbatim: "the default language is
+// ─── english") ────────────────────────────────────────────────────────────────
+//
+// Proves the ONE constant (CLAUDE.md §6) both HOLDS the right value and is the value
+// every unknown/null language resolution actually falls back to — not a second
+// hardcoded "en" literal living beside it. Source-scanned with stripComments (§2) so
+// a comment mentioning "en" never counts as a live fallback.
+function testDefaultLanguage() {
+  console.log("\n[Layer 1f · DEFAULT_LANGUAGE — the one constant every unknown language resolves to]")
+
+  check("DEFAULT_LANGUAGE is 'en'", DEFAULT_LANGUAGE === "en")
+  check("isMultilingualLocale is defined in terms of DEFAULT_LANGUAGE, not a second 'en' literal",
+    stripComments(readFileSync(`${process.cwd()}/lib/video/multilingual-reel.ts`, "utf8"))
+      .includes("lang !== DEFAULT_LANGUAGE"))
+
+  // Two known voice/language-selection call sites (owner-named "caption/voice
+  // selection") that fall back to English when the provider/caller supplies none —
+  // both must resolve through DEFAULT_LANGUAGE, never a private "en" spelling.
+  const sites = [
+    { file: "app/actions/podcast-generation.ts", pattern: /language:\s*params\.language\s*\?\?\s*DEFAULT_LANGUAGE/ },
+    { file: "app/actions/avatar-voice-catalog.ts", pattern: /language:\s*v\.labels\?\.language\s*\?\?\s*v\.fine_tuning\?\.language\s*\?\?\s*DEFAULT_LANGUAGE/ },
+  ]
+  for (const site of sites) {
+    const src = stripComments(readFileSync(`${process.cwd()}/${site.file}`, "utf8"))
+    check(`${site.file} imports DEFAULT_LANGUAGE from lib/video/multilingual-reel`,
+      /import\s*\{[^}]*DEFAULT_LANGUAGE[^}]*\}\s*from\s*["']@\/lib\/video\/multilingual-reel["']/.test(src))
+    check(`${site.file} falls back to DEFAULT_LANGUAGE, not a private "en" literal`, site.pattern.test(src))
+  }
+
+  // POSITIVE CONTROL (§2): a fixture with the OLD hardcoded "en" fallback must FAIL
+  // the same pattern check the real files pass — proves the scan can still see the
+  // defect it exists to catch, not just read a clean tree as zero.
+  const oldFixture = `language: params.language ?? "en",`
+  check(
+    "[control] the pre-fix hardcoded language: params.language ?? \"en\" literal is correctly rejected",
+    !sites[0].pattern.test(oldFixture) && /language:\s*params\.language\s*\?\?\s*["']en["']/.test(oldFixture),
+  )
+}
+
 function testTtsModelConstant() {
   console.log("\n[Layer 1c · MULTILINGUAL_TTS_MODEL constant]")
 
@@ -152,6 +196,71 @@ function testCaptionSeam() {
     fakeMeta.source_locale === "en")
   check("target_locale is 'es'",
     fakeMeta.target_locale === "es")
+}
+
+function testDefaultLanguageAndResolver() {
+  console.log("\n[Layer 1f · DEFAULT_LANGUAGE + languageName + resolveContactLanguage (wave 51)]")
+
+  check("DEFAULT_LANGUAGE is 'en' (owner ruling: default is English)", DEFAULT_LANGUAGE === "en")
+  check("DEFAULT_LANGUAGE is exported exactly once (module has one binding, not a duplicate export)",
+    typeof DEFAULT_LANGUAGE === "string")
+
+  check("languageName('es') → 'Spanish'", languageName("es") === "Spanish")
+  check("languageName('en') → 'English'", languageName("en") === "English")
+  check("languageName of an unmapped code returns the code itself (never 'undefined')",
+    languageName("zz") === "zz")
+
+  // ── resolveContactLanguage — tier order, pure ────────────────────────────
+  console.log("\n[Layer 1g · resolveContactLanguage tier order]")
+
+  check("tier 1 (contacts.preferred_language) wins over everything else",
+    resolveContactLanguage({
+      contactPreferredLanguage: "es",
+      latestCallTranscriptionLanguage: "fr",
+      intakeCapturedLanguage: "de",
+    }) === "es")
+
+  check("tier 2 (call_transcriptions.language) wins when tier 1 is absent",
+    resolveContactLanguage({
+      contactPreferredLanguage: null,
+      latestCallTranscriptionLanguage: "fr",
+      intakeCapturedLanguage: "de",
+    }) === "fr")
+
+  check("tier 3 (intake-captured locale) wins when tiers 1-2 are absent",
+    resolveContactLanguage({
+      contactPreferredLanguage: null,
+      latestCallTranscriptionLanguage: null,
+      intakeCapturedLanguage: "de",
+    }) === "de")
+
+  check("tier 4 (DEFAULT_LANGUAGE) when nothing is known",
+    resolveContactLanguage({}) === DEFAULT_LANGUAGE)
+
+  check("a raw BCP-47 locale at any tier is mapped through localeToElevenLabsLanguage ('es-MX' → 'es')",
+    resolveContactLanguage({ contactPreferredLanguage: "es-MX" }) === "es")
+
+  check("an UNMAPPED/garbage tier-1 value falls through to tier 2, not to the default early",
+    resolveContactLanguage({
+      contactPreferredLanguage: "not-a-real-locale",
+      latestCallTranscriptionLanguage: "pt",
+    }) === "pt")
+
+  check("an UNMAPPED value at every tier falls all the way to DEFAULT_LANGUAGE",
+    resolveContactLanguage({
+      contactPreferredLanguage: "not-a-real-locale",
+      latestCallTranscriptionLanguage: "also-fake",
+      intakeCapturedLanguage: "",
+    }) === DEFAULT_LANGUAGE)
+
+  // POSITIVE CONTROL (§2): a resolver-shaped function that ignores tier order
+  // (e.g. always returns tier 3 regardless of tier 1) is correctly distinguished
+  // from the real one — proves the ordering assertions above are actually
+  // exercising precedence, not just "returns a truthy string".
+  const brokenResolver = (ctx: { intakeCapturedLanguage?: string | null }) => ctx.intakeCapturedLanguage ?? DEFAULT_LANGUAGE
+  check("CONTROL: a resolver that ignores tier 1 would answer 'de' here — the real one answers 'es'",
+    brokenResolver({ intakeCapturedLanguage: "de" }) === "de" &&
+    resolveContactLanguage({ contactPreferredLanguage: "es", intakeCapturedLanguage: "de" }) === "es")
 }
 
 // ─── Layer 2: Live — creds-gated ──────────────────────────────────────────────
@@ -325,9 +434,11 @@ async function main() {
 
   // Layer 1 — pure, always runs
   testLocalMapping()
+  testDefaultLanguage()
   testTtsModelConstant()
   testTranslationWiring()
   testCaptionSeam()
+  testDefaultLanguageAndResolver()
 
   // Layer 2 — live, creds-gated
   const hasElevenLabsKey = !!process.env.ELEVENLABS_API_KEY

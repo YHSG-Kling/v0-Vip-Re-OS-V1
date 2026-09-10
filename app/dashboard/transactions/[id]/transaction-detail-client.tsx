@@ -4102,6 +4102,7 @@ export function TransactionDetailClient({
                                       ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
                                       : []
                                   }
+                                  onSent={() => router.refresh()}
                                 />
                               </div>
                             )}

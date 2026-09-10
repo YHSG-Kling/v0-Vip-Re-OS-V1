@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 435 tables, 769 columns.
+ * MEASURED AT GENERATION: 436 tables, 771 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-10
  * source: public.live_check_constraints_json()
- * body-sha256: 9b326501e95e543809dab2d0dae9542bd2fca2f705562c0934374d8db5a1a590
+ * body-sha256: 6176e9a9a6010d98f9ed7094f034db85ce54c9e62727a87fddda70a51606c686
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -542,6 +542,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
     lifetime_segment: ["local_owner", "relocated"],
     phone_status: ["invalid", "reassigned", "unknown", "valid"],
+    preferred_language: ["ar", "da", "de", "en", "es", "fi", "fr", "hi", "id", "it", "ja", "ko", "nl", "no", "pl", "pt", "ru", "sv", "tl", "tr", "uk", "vi", "zh"],
     referral_potential: ["high", "low", "medium"],
     status: ["active", "archived", "contacted", "deleted", "inactive", "new", "nurture", "qualified"],
     timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
@@ -1040,6 +1041,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   objection_training_turns: {
     speaker: ["agent", "prospect"],
+  },
+  offer_intents: {
+    status: ["acknowledged", "converted", "dismissed", "requested"],
   },
   offer_strategy_templates: {
     market_condition: ["balanced", "buyers_market", "cooling", "hot", "sellers_market"],

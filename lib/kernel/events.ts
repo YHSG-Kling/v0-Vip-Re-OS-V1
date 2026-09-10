@@ -201,6 +201,11 @@ export enum KernelEvent {
   BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
   OFFER_STRATEGY_RECOMMENDED     = 'offer_strategy_recommended',
   BUYER_OFFER_DRAFT_STARTED      = 'buyer_offer_draft_started',
+  // Buyer-initiated (portal "Help me make an offer") -- distinct from
+  // BUYER_OFFER_DRAFT_STARTED (staff opening the agent-side wizard). Records
+  // INTENT only; see lib/kernel/event-reactor.ts and
+  // app/actions/buyer-offer-tools.ts:requestOfferHelp.
+  BUYER_OFFER_SUBMIT_REQUESTED   = 'buyer_offer_submit_requested',
   BUYER_OFFER_SUBMITTED          = 'buyer_offer_submitted',
   BUYER_UNDER_CONTRACT           = 'buyer_under_contract',
   BUYER_OFFER_ELIGIBLE           = 'buyer_offer_eligible',

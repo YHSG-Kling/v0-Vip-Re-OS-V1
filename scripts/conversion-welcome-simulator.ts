@@ -84,6 +84,7 @@ import {
   buildWelcomeSituation,
   describeDroppedFacts,
   WELCOME_FAIR_HOUSING_DIRECTIVES,
+  type WelcomeOrigin,
 } from "../lib/contact-promotion/welcome-situation"
 import { generatePersonaCopy, type CopyRequest } from "../lib/kernel/ai-copy"
 import { COMPOSITE_WAIT_MS } from "../lib/video/avatar-render-orchestrator"
@@ -456,8 +457,15 @@ function layer4_situation() {
     && !situational.facts.some((f) => /\b(30|60|90)\b/.test(f)))
   check("a named market forces its own steering ban INTO the writing prompt",
     situational.complianceDirectives.some((d) => /Austin, TX/.test(d) && /say nothing about its people/i.test(d)))
+  // + 1 (wave 51): every situation now also carries the "write in {language}"
+  // directive (owner ruling: default to DEFAULT_LANGUAGE when none is known) —
+  // see Layer 9. The count MOVED because the language directive is real, not
+  // because the fair-housing floor grew or shrank (asserted by content below).
   check("the fair-housing floor is present even before any market is named",
-    buildWelcomeSituation({ contact_type: "buyer" }).complianceDirectives.length === WELCOME_FAIR_HOUSING_DIRECTIVES.length)
+    buildWelcomeSituation({ contact_type: "buyer" }).complianceDirectives.length === WELCOME_FAIR_HOUSING_DIRECTIVES.length + 1)
+  check("...and it is the SAME floor array, unchanged, not a shrunk substitute",
+    WELCOME_FAIR_HOUSING_DIRECTIVES.every((d) =>
+      buildWelcomeSituation({ contact_type: "buyer" }).complianceDirectives.includes(d)))
 
   // THE HARD FLAG. A HIGH-severity phrase in the CRM's own free text is DROPPED
   // before the writer sees it — laundering it through "the CRM said so" is still
@@ -860,6 +868,134 @@ function layer8_fourthConverter() {
     !/function resolveWelcomeManagers/.test(buyerIntent))
 }
 
+// ─── LAYER 9 — FORMS REACH THE ONE WELCOME PATH EXACTLY ONCE, NEVER A GENERIC
+//     DRAFT; OPEN-HOUSE ORIGIN REACHES BOTH THE COPY AND THE VIDEO SCRIPT; THE
+//     DEFAULT LANGUAGE IS "en" WHEREVER NONE IS KNOWN (STRIPPED source + pure) ──
+//
+// Owner rulings, 2026-09-10 wave 51, verbatim:
+//   "if a form was submitted, then the welcome message with login to their
+//   portal/welcome video should be going out"
+//   "contact came from open house — same welcome email but mentions the open
+//   house with welcome video/portal invite"
+//   "the default language is english"
+function layer9_formsAndOpenHouse() {
+  console.log("\nLayer 9 — forms reach the ONE welcome path exactly once; open-house origin reaches copy + video; default language (STRIPPED source + pure)")
+
+  const reactor = src("lib/kernel/event-reactor.ts")
+  const signals = src("lib/kernel/manager-signals.ts")
+  const registry = src("lib/kernel/signal-registry.ts")
+
+  // ── FORMS: THE GENERIC FIRST-TOUCH DRAFT IS GONE ──────────────────────────
+  check("manager-signals.ts no longer has the generic ai_isa:form_submission_received\n    first-touch draft",
+    !/["']ai_isa:form_submission_received["']/.test(signals))
+  check("...its hardcoded 'Thanks for reaching out' string is gone with it",
+    !/Thanks for reaching out/.test(signals))
+  check("CONTROL: both matchers still fire on the retired shapes",
+    /["']ai_isa:form_submission_received["']/.test('"ai_isa:form_submission_received": async () => null,')
+    && /Thanks for reaching out/.test('`Thanks for reaching out, ${firstName}!`'))
+
+  // ── FORMS: THE READER CALLS THE ONE WELCOME PATH, EXACTLY ONCE, NEVER A DRAFT ──
+  const formStart = reactor.indexOf("if (params.event === KernelEvent.FORM_SUBMISSION_RECEIVED)")
+  check("CONTROL: the FORM_SUBMISSION_RECEIVED handler is findable in stripped source", formStart > -1)
+  const formNextIf = reactor.indexOf("if (params.event === KernelEvent.", formStart + 40)
+  const formBlock = reactor.slice(formStart, formNextIf > -1 ? formNextIf : formStart + 4000)
+  check("the FORM_SUBMISSION_RECEIVED handler calls deliverConversionWelcome",
+    /deliverConversionWelcome\(/.test(formBlock))
+  check("...exactly once",
+    (formBlock.match(/deliverConversionWelcome\(/g) ?? []).length === 1)
+  check("...routed by resolveWelcomeManagers (contact type decides listing_concierge\n    vs shopping_agent), never a hardcoded manager",
+    /resolveWelcomeManagers\(/.test(formBlock))
+  check("...and it does NOT stage a generic first-touch message — the ruling forbids\n    a generic draft, and captureContact's own inline welcome already covers the\n    'send something' half",
+    !/proposeClientMessage\(/.test(formBlock))
+  check("CONTROL: a sibling handler this wave did not touch (AUTHORITY_BLOCKED) has\n    neither call — the matchers aren't just matching everywhere in the file",
+    (() => {
+      const s = reactor.indexOf("if (params.event === KernelEvent.AUTHORITY_BLOCKED)")
+      const block = reactor.slice(s, s + 1200)
+      return s > -1 && !/deliverConversionWelcome\(/.test(block) && !/resolveWelcomeManagers\(/.test(block)
+    })())
+
+  // ── FORMS: THE REGISTRY AGREES WITH THE CODE ──────────────────────────────
+  check("signal-registry.ts routes form_submission_received to the real welcome\n    managers (listing_concierge / shopping_agent), not ai_isa",
+    /form_submission_received:\s*\{\s*consumers:\s*\["listing_concierge",\s*"shopping_agent"\]/.test(registry))
+  check("CONTROL: the matcher would still catch the OLD ai_isa-only routing",
+    /form_submission_received:\s*\{\s*consumers:\s*\["ai_isa"\]/.test(
+      'form_submission_received:   { consumers: ["ai_isa"], disposition: "handled", kind: "update", what: "x" },',
+    ))
+
+  // ── FORMS: AN ADMIN CAN DECLARE A FORM'S PERSONA (BUILD, §1.2 — no invented
+  //    classifier for a generic admin-built form with no persona field) ──────
+  const formsRoute = src("app/api/forms/submit/route.ts")
+  check("app/api/forms/submit/route.ts reads an admin-declared default_contact_type\n    from lead_capture_forms.settings and forwards it to captureContact, instead\n    of guessing one",
+    /default_contact_type/.test(formsRoute) && /contact_type:\s*declaredContactType/.test(formsRoute))
+
+  // ── OPEN HOUSE: ALL THREE READERS/CALLERS REACH THE ONE WELCOME PATH ──────
+  const attendedStart = reactor.indexOf("if (params.event === KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED)")
+  const resolvedStart = reactor.indexOf("if (params.event === KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED)")
+  check("CONTROL: both open-house event-reactor handlers are findable", attendedStart > -1 && resolvedStart > -1)
+  const attendedBlock = reactor.slice(attendedStart, attendedStart + 2600)
+  const resolvedBlock = reactor.slice(resolvedStart, resolvedStart + 2600)
+  check("OPEN_HOUSE_ATTENDEE_CAPTURED hands the contact to deliverConversionWelcome\n    with an origin resolved via resolveOpenHouseWelcomeOrigin",
+    /deliverConversionWelcome\(/.test(attendedBlock) && /resolveOpenHouseWelcomeOrigin\(/.test(attendedBlock))
+  check("OPEN_HOUSE_CONTACT_RESOLVED does too — the attendee's becomes-a-contact moment",
+    /deliverConversionWelcome\(/.test(resolvedBlock) && /resolveOpenHouseWelcomeOrigin\(/.test(resolvedBlock))
+  const sellerOpenHouse = src("app/actions/seller-open-house.ts")
+  check("seller-open-house.ts's convertAttendeeToContact (the agent-driven post-event\n    conversion lane) calls deliverConversionWelcome too — a third entry point,\n    the same ONE path",
+    /deliverConversionWelcome\(/.test(sellerOpenHouse) && /resolveOpenHouseWelcomeOrigin\(/.test(sellerOpenHouse))
+  check("CONTROL: dedupe is by CONTACT ID, not by which of the three reached it first\n    — ensureClientWelcome's own per-contact ledger tag check is unchanged by this\n    wave (still reads agent_client_messages before writing)",
+    /ilike\("rationale", `\$\{WELCOME_RATIONALE_TAG\}%`\)/.test(src("lib/kernel/client-welcome.ts")))
+
+  // ── OPEN HOUSE: A NEW ATTENDEE IS CLASSIFIED SO THE WELCOME CAN ROUTE ─────
+  const attendRoute = src("app/api/open-house/attend/route.ts")
+  check("app/api/open-house/attend/route.ts classifies a new open-house contact as\n    'buyer' — the codebase's OWN existing convention (resolveOrCreateOpenHouseContact\n    and convertAttendeeToContact already did this before this wave), not a new guess",
+    /contact_type:\s*["']buyer["']/.test(attendRoute))
+  check("CONTROL: the two pre-existing open-house contact-creation paths already used\n    this exact classification — proving it is precedent, not invention",
+    /contact_type:\s*["']buyer["']/.test(src("lib/kernel/open-house.ts"))
+    && /contact_type:\s*["']buyer["']/.test(sellerOpenHouse))
+
+  // ── ORIGIN REACHES THE COPY (PURE) — NEVER A LITERAL HARDCODED STRING ─────
+  const origin: WelcomeOrigin = { kind: "open_house", listingAddress: "123 Main St", openHouseDate: "2026-09-14" }
+  const situationWithOrigin = buildWelcomeSituation(null, { origin })
+  check("buildWelcomeSituation turns an open-house origin into a THEM-FIRST FACT\n    (the journey map supplies the facts; the writer supplies the wording)\n    mentioning the address and date",
+    situationWithOrigin.facts.some((f) => f.includes("123 Main St") && f.includes("2026-09-14")))
+  check("...and marks the situation as situational even with no contact row at all\n    — meeting someone in person IS a situational fact on its own",
+    situationWithOrigin.isSituational === true)
+  const situationWithoutOrigin = buildWelcomeSituation(null)
+  check("CONTROL: with no origin, no open-house fact is invented",
+    !situationWithoutOrigin.facts.some((f) => f.toLowerCase().includes("open house")))
+
+  const fallbackWithOrigin = composeClientWelcome({ journey: "buyer", addressAs: "Jordan", agentName: "Sam", origin })
+  check("the deterministic FALLBACK (the floor used when the AI gateway is down, not\n    only the generated copy) mentions the open-house visit too",
+    fallbackWithOrigin.body.includes("123 Main St") && fallbackWithOrigin.body.includes("2026-09-14"))
+  const fallbackWithoutOrigin = composeClientWelcome({ journey: "buyer", addressAs: "Jordan", agentName: "Sam" })
+  check("CONTROL: without an origin the fallback carries no phantom open-house mention",
+    !fallbackWithoutOrigin.body.includes("123 Main St"))
+
+  // ── ORIGIN REACHES THE AVATAR SCRIPT TOO — SAME SITUATION BUILDER, NOT A
+  //    SECOND COPY OF THE OPEN-HOUSE SENTENCE (§6) ──────────────────────────
+  const avatarVideoSrc = src("lib/contact-promotion/welcome-avatar-video.ts")
+  check("welcome-avatar-video.ts threads its `origin` param into the SAME\n    buildWelcomeSituation call the welcome email uses",
+    /buildWelcomeSituation\(contact,\s*\{\s*origin:\s*params\.origin/.test(avatarVideoSrc))
+
+  // ── deliverConversionWelcome CARRIES origin TO BOTH THE VIDEO AND THE EMAIL ──
+  const conversionWelcomeSrc = src("lib/contact-promotion/conversion-welcome.ts")
+  check("deliverConversionWelcome forwards `origin` to ensureWelcomeAvatarVideo\n    (the video 'may mention the visit', per the ruling)",
+    /ensureWelcomeAvatarVideo\(supabase,\s*\{[\s\S]{0,200}?origin:\s*params\.origin/.test(conversionWelcomeSrc))
+  check("...and to ensureClientWelcome (the email)",
+    /ensureClientWelcome\(supabase,\s*\{[\s\S]{0,300}?\},\s*\{\s*origin:\s*params\.origin/.test(conversionWelcomeSrc))
+
+  // ── DEFAULT LANGUAGE: "en", from the ONE shared constant (§6 — never a second
+  //    copy), wherever the welcome resolves a language and none is known ──────
+  const situationSrc = src("lib/contact-promotion/welcome-situation.ts")
+  check("welcome-situation.ts imports DEFAULT_LANGUAGE from its canonical home\n    (lib/video/multilingual-reel.ts — lane JA's shared constant) rather than\n    inventing a second one",
+    /import\s*\{\s*DEFAULT_LANGUAGE\s*\}\s*from\s*["']@\/lib\/video\/multilingual-reel["']/.test(situationSrc))
+  check("...and every welcome situation carries an explicit 'write in {language}'\n    directive, so both the email copy AND the avatar script (same builder) honor\n    the same default",
+    /Write this in \$\{language\}/.test(situationSrc))
+  check("CONTROL: no second DEFAULT_LANGUAGE-shaped constant was declared alongside it",
+    !/const DEFAULT_LANGUAGE\s*=/.test(situationSrc))
+  check("language resolves to DEFAULT_LANGUAGE when the caller passes none — proven\n    live, not just by import (contacts carries no language column today, so this\n    is the ONLY path)",
+    buildWelcomeSituation(null).language === buildWelcomeSituation(null, { language: "" }).language)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════════════")
   console.log(" Conversion welcome simulator (one email, portal + video)")
@@ -872,6 +1008,7 @@ async function main() {
   layer6_wiring()
   layer7_loopCloses()
   layer8_fourthConverter()
+  layer9_formsAndOpenHouse()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

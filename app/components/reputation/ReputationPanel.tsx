@@ -75,7 +75,13 @@ import { sendReviewRequest } from "@/app/actions/listing-lifecycle"
 
 interface ReputationPanelProps {
   agentId:        string
-  brokerageId?:   string
+  // TOMBSTONE (hidden-wire census category c, 2026-09-10): `brokerageId?: string` stood here
+  // — declared, never passed by the one caller (app/lifetime-customers/page.tsx), and never
+  // read anywhere in this component's body. SURVIVOR: every action imported above
+  // (sendThankYouNoteAction, assignGiftAction, etc., app/actions/reputation-kernel.ts)
+  // resolves the tenant from the SESSION itself (CLAUDE.md §4 "tenant from the session, never
+  // a parameter") — a client-threaded brokerageId prop would have been both unused and the
+  // exact body-supplied-tenant shape §4 warns against.
   clients?:       any[]
   reviews?:       any[]
   recentClosings?: any[]

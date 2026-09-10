@@ -24,6 +24,11 @@ interface NeighborhoodData {
 
 interface NeighborhoodWidgetProps {
   data?: NeighborhoodData | null
+  /** optional by design: a client-side lazy-load fallback for when `data` isn't already
+   *  server-fetched. The one caller (app/listing/[slug]/page.tsx) always resolves
+   *  `neighborhoodData` server-side and passes it as `data`, inside a Suspense boundary —
+   *  so this fallback path is exercised only by a future caller that renders the widget
+   *  without a server-side fetch. */
   listingId?: string
 }
 

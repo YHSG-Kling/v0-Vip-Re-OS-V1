@@ -924,16 +924,18 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 7/8 — video performance thresholds (app/api/video/engagement/route.ts). Wave 50
     // owner ruling ("video snippet should be asset manager from"): every video/asset-lane
-    // moment is published FROM Asset Manager, the asset owner — not Campaign Orchestrator,
-    // who never ran the video pipeline. Asset Manager decides whether to repurpose a high
-    // performer or retire a low one, so it is also the TO (a self-addressed feed entry,
-    // same shape as the rest of the video lane below).
+    // moment is published FROM Asset Manager, the asset owner. FIXED (wave 51,
+    // validSignalRoute forbids from===to — lib/kernel/manager-signals.ts:58 — so the old
+    // asset_manager -> asset_manager self-address never actually published a row;
+    // publishManagerSignal refused it silently and the catch swallowed the refusal): TO
+    // Campaign Orchestrator, the manager that acts next on a distribution decision
+    // (propose more reach for a high performer, pull back promotion for a low one).
     if (params.event === KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "video_high_performer_detected",
           message:     "A video cleared the high-performer thresholds — consider repurposing it.",
           entityType:  params.entityType,
@@ -947,7 +949,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "video_low_performer_detected",
           message:     "A video fell below the low-performer thresholds — consider retiring or re-cutting it.",
           entityType:  params.entityType,
@@ -977,13 +979,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // 10 — subscription cancelled (app/actions/billing.ts). Finance Manager owns the
     // brokerage's books and subscription state — the billing action happens IN Finance's
     // own domain, so it is the FROM (wave 50: never a default data_steward stamp when a
-    // domain-owning manager's own action caused the moment), self-addressed for its feed.
+    // domain-owning manager's own action caused the moment). FIXED (wave 51, from===to is
+    // an invalid route — see lib/kernel/manager-signals.ts:58 validSignalRoute; the prior
+    // self-address never published, silently refused): TO Data Steward, who stewards the
+    // brokerage's own identity/status record and should see the tenant record change.
     if (params.event === KernelEvent.SUBSCRIPTION_CANCELLED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "finance_manager",
-          toManager:   "finance_manager",
+          toManager:   "data_steward",
           signalType:  "subscription_cancelled",
           message:     "The brokerage's subscription was cancelled.",
           entityType:  params.entityType,
@@ -1055,15 +1060,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 14 — listing stage transition refused (lib/listing-lifecycle/lifecycle-logger.ts).
     // Listing Concierge owns the seller side and the state machine that refused the move —
-    // a listing-domain moment (wave 50), not a data-quality/ledger one, so it is the FROM,
-    // self-addressed so it needs to know a machine-gated move was blocked, not just that
-    // nothing happened.
+    // a listing-domain moment (wave 50), not a data-quality/ledger one, so it is the FROM.
+    // FIXED (wave 51, from===to is invalid — manager-signals.ts:58 validSignalRoute; the
+    // prior self-address never published): TO Compliance Officer, whose gates are the
+    // usual reason a stage transition gets refused (missing disclosure/consent/approval).
     if (params.event === KernelEvent.LISTING_STAGE_TRANSITION_FAILED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "compliance_officer",
           signalType:  "listing_stage_transition_failed",
           message:     "A listing stage transition was refused by the state machine.",
           entityType:  params.entityType,
@@ -1354,17 +1360,20 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 21 — a commission was recorded (lib/kernel/financial.ts createCommissionRecord —
-    // canonical table agent_commissions). HANDLED — Finance Manager flags the earnings
-    // ledger to the producing agent (resolved through agent_commissions.agent_id in the
-    // handler) so the new commission is visible beyond the financials page. Money moment
-    // (wave 50) — Finance Manager's own books recorded it, so it is the FROM too, not a
-    // data_steward stamp.
+    // canonical table agent_commissions). HANDLED — flags the earnings ledger to the
+    // producing agent (resolved through agent_commissions.agent_id in the handler) so the
+    // new commission is visible beyond the financials page. Money moment (wave 50) —
+    // Finance Manager's own books recorded it, so it is the FROM, not a data_steward
+    // stamp. FIXED (wave 51, from===to is invalid — manager-signals.ts:58
+    // validSignalRoute; the prior self-address never published): TO Deal Coordinator, who
+    // owns the transaction the commission closes out (SIGNAL_HANDLERS key moved to
+    // "deal_coordinator:commission_paid" to match).
     if (params.event === KernelEvent.COMMISSION_PAID) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "finance_manager",
-          toManager:   "finance_manager",
+          toManager:   "deal_coordinator",
           signalType:  "commission_paid",
           message:     "A commission was recorded.",
           entityType:  params.entityType,
@@ -1425,7 +1434,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "deal_coordinator",
-          toManager:   "deal_coordinator",
+          toManager:   "finance_manager",
           signalType:  "task_completed",
           message:     `"${meta.title ?? "A task"}" was completed.`,
           entityType:  params.entityType,
@@ -1443,7 +1452,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "data_steward",
           signalType:  "listing_archived",
           message:     "A listing was archived.",
           entityType:  params.entityType,
@@ -1456,7 +1465,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "data_steward",
           signalType:  "listing_unarchived",
           message:     "A listing was restored from the archive.",
           entityType:  params.entityType,
@@ -1576,7 +1585,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "finance_manager",
-          toManager:   "finance_manager",
+          toManager:   "data_steward",
           signalType:  "subscription_created",
           message:     "A new brokerage subscription was created.",
           entityType:  params.entityType,
@@ -1598,7 +1607,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "deal_coordinator",
-          toManager:   "deal_coordinator",
+          toManager:   "compliance_officer",
           signalType:  "negotiation_strategy_drafted",
           message:     `An AI negotiation strategy is ready to review${meta.side ? ` (${meta.side} side)` : ""}.`,
           entityType:  params.entityType,
@@ -1737,7 +1746,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // A deal-domain moment (wave 50) — Deal Coordinator's own offer bridge caused it.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "deal_coordinator",
+          fromManager: "shopping_agent",
           toManager:   "deal_coordinator",
           signalType:  "buyer_under_contract",
           message:     "A buyer went under contract.",
@@ -1757,7 +1766,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "finance_manager",
-          toManager:   "finance_manager",
+          toManager:   "deal_coordinator",
           signalType:  "earnest_money_milestone_completed",
           message:     "An earnest money milestone was completed.",
           entityType:  params.entityType,
@@ -1794,7 +1803,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "campaign_orchestrator",
           signalType:  "cma_generated",
           message:     "A CMA finished generating for a listing.",
           entityType:  params.entityType,
@@ -1860,7 +1869,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // A deal-domain action (wave 50) — Deal Coordinator's own transaction assigned it.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "deal_coordinator",
+          fromManager: "data_steward",
           toManager:   "deal_coordinator",
           signalType:  "vendor_assigned_to_transaction",
           message:     "A vendor was assigned to a transaction.",
@@ -1926,7 +1935,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "deal_coordinator",
-          toManager:   "deal_coordinator",
+          toManager:   "finance_manager",
           signalType:  "inspection_completed",
           message:     "A transaction inspection was completed.",
           entityType:  params.entityType,
@@ -1982,7 +1991,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "campaign_orchestrator",
           signalType:  "price_alert_triggered",
           message:     "A predictive-pricing alert fired for a listing.",
           entityType:  params.entityType,
@@ -2000,7 +2009,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "compliance_officer",
           signalType:  "listing_agreement_initiated",
           message:     "A listing agreement was initiated.",
           entityType:  params.entityType,
@@ -2017,7 +2026,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "ai_isa",
           signalType:  "showing_requested",
           message:     "A showing was requested from a listing page.",
           entityType:  params.entityType,
@@ -2036,7 +2045,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "compliance_officer",
-          toManager:   "compliance_officer",
+          toManager:   "deal_coordinator",
           signalType:  "esign_envelope_requested",
           message:     "An e-sign envelope was requested.",
           entityType:  params.entityType,
@@ -2091,10 +2100,15 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // wiring, has no reason to own this). Same branch shape as ISA_APPOINTMENT_SCHEDULED
     // above (#16) — contacts.contact_type read once, one dynamic toManager. Unknown/unset
     // type: AI ISA keeps the handoff and asks, rather than guess — it does NOT fall through
-    // to either agent-side manager.
+    // to either agent-side manager. FIXED (wave 51 audit): the unresolved case used to leave
+    // toManager "ai_isa" and publish anyway — fromManager===toManager===ai_isa is an invalid
+    // route (manager-signals.ts:58 validSignalRoute), so publishManagerSignal silently
+    // refused it and the "holding the routing and asking" message never actually reached
+    // anyone. TO Data Steward for the unresolved case instead — the contact-type field gap
+    // is exactly Data Steward's stewardship domain, and it is never ai_isa's own FROM value.
     if (params.event === KernelEvent.AI_ISA_HANDOFF_TO_AGENT) {
       try {
-        let toManager: "listing_concierge" | "shopping_agent" | "ai_isa" = "ai_isa"
+        let toManager: "listing_concierge" | "shopping_agent" | "data_steward" = "data_steward"
         if (params.contactId) {
           const { data: c } = await svc
             .from("contacts").select("contact_type")
@@ -2102,14 +2116,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
           if (contactType === "seller") toManager = "listing_concierge"
           else if (contactType === "buyer") toManager = "shopping_agent"
-          // any other value (null / unset / unrecognised) leaves toManager "ai_isa"
+          // any other value (null / unset / unrecognised) leaves toManager "data_steward"
         }
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "ai_isa",
           toManager,
           signalType:  "ai_isa_handoff_to_agent",
-          message:     toManager === "ai_isa"
+          message:     toManager === "data_steward"
             ? "AI ISA handed a qualified contact to an agent, but the contact's buyer/seller type is unset — AI ISA is holding the routing and asking."
             : "AI ISA handed a qualified contact off to an agent.",
           entityType:  params.entityType,
@@ -2152,7 +2166,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "listing_concierge",
-          toManager:   "listing_concierge",
+          toManager:   "campaign_orchestrator",
           signalType:  "neighborhood_report_generated",
           message:     "A neighborhood report finished generating.",
           entityType:  params.entityType,
@@ -2190,7 +2204,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "script_generated",
           message:     "An AI video script finished generating.",
           entityType:  params.entityType,
@@ -2209,7 +2223,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "voice_clone_ready",
           message:     "A cloned voice passed quality and is ready to use.",
           entityType:  params.entityType,
@@ -2315,7 +2329,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "podcast_episode_failed",
           message:     "A podcast episode failed.",
           entityType:  params.entityType,
@@ -2336,7 +2350,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "recruiting_manager",
-          toManager:   "recruiting_manager",
+          toManager:   "compliance_officer",
           signalType:  "training_course_completed",
           message:     "An agent completed all required onboarding training.",
           entityType:  params.entityType,
@@ -2357,7 +2371,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "script_variation_created",
           message:     "A script variation was created.",
           entityType:  params.entityType,
@@ -2374,7 +2388,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "voice_clone_profile_created",
           message:     "A voice clone profile was created.",
           entityType:  params.entityType,
@@ -2391,7 +2405,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "voice_clone_training_started",
           message:     "Voice clone training started.",
           entityType:  params.entityType,
@@ -2408,7 +2422,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "voice_clone_default_set",
           message:     "An agent set a default voice clone.",
           entityType:  params.entityType,
@@ -2444,7 +2458,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "repurpose_batch_completed",
           message:     "A repurpose batch finished.",
           entityType:  params.entityType,
@@ -2464,7 +2478,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "asset_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "video_performance_updated",
           message:     "A video's performance metrics were refreshed.",
           entityType:  params.entityType,
@@ -2493,10 +2507,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 17 — a newsletter campaign was scheduled to send (app/actions/ai-newsletter.ts,
     // entityType "newsletter_campaign" — newsletter_sent (D-decies) already covers the
-    // completed-send moment; this is the scheduling moment ahead of it). Campaign/
-    // newsletter moment (wave 50) — FROM Campaign Orchestrator, its own scheduling action;
-    // marketing_agent retired — organic newsletter routes to Campaign Orchestrator too
-    // (no spend here, never Ads Manager), self-addressed.
+    // completed-send moment; this is the scheduling moment ahead of it). Campaign
+    // Orchestrator owns the scheduling action, so — same shape as SOCIAL_POST_FAILED /
+    // NEWSLETTER_SENT (from===to is invalid, manager-signals.ts:58 validSignalRoute) —
+    // Cron Manager (the scheduling infra) reports it TO Campaign Orchestrator, who owns
+    // the channel; marketing_agent retired, organic newsletter stays Campaign
+    // Orchestrator's, never Ads Manager (no spend here).
     if (params.event === KernelEvent.NEWSLETTER_SCHEDULED) {
       try {
         await publishManagerSignal({
@@ -2535,11 +2551,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // call; this is Recruiting Manager's cross-manager visibility into the gap).
     if (params.event === KernelEvent.SETUP_ASSISTANT_ESCALATED) {
       try {
-        // Onboarding moment (wave 50) — Recruiting Manager owns onboarding, FROM too.
+        // Onboarding moment (wave 50) — Recruiting Manager owns onboarding, FROM. FIXED
+        // (wave 51, from===to is invalid — manager-signals.ts:58 validSignalRoute; the
+        // prior self-address never published): TO Data Steward — an unanswered onboarding
+        // question is a knowledge-base gap, which is Data Steward's stewardship domain.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "recruiting_manager",
-          toManager:   "recruiting_manager",
+          toManager:   "data_steward",
           signalType:  "setup_assistant_escalated",
           message:     "The onboarding AI assistant escalated a question it could not answer.",
           entityType:  params.entityType,
@@ -2617,7 +2636,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // source attribution (lib/kernel/open-house.ts attachOpenHouseSourceAttribution,
     // entityType "contact", metadata.agent_id is the working agent's AGENTS id — same
     // convention as D-undecies' agent_escalated_to_human). HANDLED — Listing Concierge hands
-    // the attribution to AI ISA, which notifies the working agent for follow-up.
+    // the attribution to AI ISA, which notifies the working agent for follow-up. ALSO (owner
+    // ruling 2026-09-10, wave 51): "contact came from open house — same welcome email but
+    // mentions the open house with welcome video/portal invite" — this is the attendee's
+    // BECOMES-A-CONTACT moment, so it hands deliverConversionWelcome (THE ONE welcome path)
+    // its shot, with `origin` resolved from metadata.open_house_id. Deduped by contact id:
+    // ensureClientWelcome's per-contact ledger tag makes the email exactly once regardless of
+    // which of this reader / the OPEN_HOUSE_ATTENDEE_CAPTURED reader below / a direct caller
+    // (app/actions/seller-open-house.ts convertAttendeeToContact) reaches the contact first.
     if (params.event === KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED) {
       try {
         await publishManagerSignal({
@@ -2631,6 +2657,30 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           contactId:   params.contactId ?? params.entityId,
           payload:     params.metadata ?? {},
         }, svc)
+
+        const contactId = params.contactId ?? (params.entityType === "contact" ? params.entityId : null)
+        if (contactId) {
+          const { data: c } = await svc
+            .from("contacts")
+            .select("agent_id, contact_type, first_name, last_name")
+            .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const row = c as {
+            agent_id?: string | null; contact_type?: string | null
+            first_name?: string | null; last_name?: string | null
+          } | null
+          if (row?.agent_id) {
+            const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+            const openHouseId = (params.metadata as { open_house_id?: string | null } | null)?.open_house_id ?? null
+            const origin = await resolveOpenHouseWelcomeOrigin(svc, openHouseId)
+            const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+            await deliverConversionWelcome(svc, {
+              contactId, agentId: row.agent_id, brokerageId: params.brokerageId,
+              contactType: row.contact_type ?? null,
+              firstName: row.first_name ?? null, lastName: row.last_name ?? null,
+              origin,
+            })
+          }
+        }
       } catch { /* best-effort */ }
     }
 
@@ -2706,23 +2756,76 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 6 — TRACK B lead capture: a public form was submitted and captureContact() created a
-    // consented contact directly (app/api/forms/submit/route.ts, entityType "contact"; "No
-    // lead created" per the file's own header comment). HANDLED — Campaign Orchestrator (owns
-    // the lead-capture form as a marketing asset) hands the new, consented contact to AI ISA,
-    // which stages ONE gated first-touch message through the same proposeClientMessage rail
-    // D-undecies' handoff first-touch uses — a human approves before it sends.
+    // consented CONTACT directly (app/api/forms/submit/route.ts, entityType "contact"; "No
+    // lead created" per the file's own header comment — there is no lead-side branch for this
+    // event, unlike D-terdecies once read it). OWNER RULING (2026-09-10, wave 51): "if a form
+    // was submitted, then the welcome message with login to their portal/welcome video should
+    // be going out" — and separately, "never a generic draft" for a converted contact. The
+    // handler this replaced staged a hardcoded "Thanks for reaching out!" through ai_isa —
+    // exactly the generic draft the ruling forbids, and NOT the welcome (captureContact's own
+    // inline `ensureClientWelcome` call already either sent the real welcome or, for a contact
+    // with no declared type, correctly sent nothing — this handler was ADDING a wrong message
+    // beside that, never fixing its absence).
+    //
+    // HANDLED — resolve the contact's OWN type and hand deliverConversionWelcome (THE ONE
+    // welcome path, lib/contact-promotion/conversion-welcome.ts) its shot: Campaign
+    // Orchestrator (owns the form as a marketing asset) hands the new, consented contact to
+    // whichever manager resolveWelcomeManagers names for it — listing_concierge (seller),
+    // shopping_agent (buyer), or both (both). deliverConversionWelcome is safe to call a
+    // second time here even though captureContact's own inline `ensureClientWelcome` may
+    // already have run: `ensureClientWelcome`'s per-contact ledger tag makes the EMAIL exactly
+    // once regardless of caller, `grantPortalAccessForPromotedContact` reuses the existing
+    // portal_contact_invites row, and `ensureWelcomeAvatarVideo`'s idempotency ledger dedupes
+    // the render before any spend — so this call is what ADDS video commissioning (captureContact's
+    // inline path never commissions one; lib/kernel/welcome-personal-video.ts only reads an
+    // already-finished clip) rather than risking a duplicate of anything.
+    //
+    // A contact with NO declared type (the common case for a generic admin-built "contact us"
+    // form with no persona field) legitimately gets NO agent-signed welcome —
+    // resolveWelcomeManagers returns [] for that exactly as it does for a lifetime customer —
+    // and this handler does nothing rather than invent one. UNRESOLVED for that case: nothing
+    // upstream of app/api/forms/submit/route.ts's `settings.default_contact_type` (added this
+    // wave) lets an admin declare a legacy form's persona; a guessed contact_type here would be
+    // exactly the invention CLAUDE.md §1 forbids. Signal disposition is FEED_ONLY (Command
+    // Center visibility trail) — the actual send already happened via deliverConversionWelcome,
+    // so there is nothing left for a manager-signal handler to act on.
     if (params.event === KernelEvent.FORM_SUBMISSION_RECEIVED) {
       try {
-        await publishManagerSignal({
-          brokerageId: params.brokerageId,
-          fromManager: "campaign_orchestrator",
-          toManager:   "ai_isa",
-          signalType:  "form_submission_received",
-          message:     "A public form submission captured a new consented contact.",
-          entityType:  params.entityType,
-          entityId:    params.entityId,
-          contactId:   params.contactId ?? params.entityId,
-        }, svc)
+        const contactId = params.contactId ?? (params.entityType === "contact" ? params.entityId : null)
+        if (contactId) {
+          const { data: c } = await svc
+            .from("contacts")
+            .select("agent_id, contact_type, first_name, last_name")
+            .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const row = c as {
+            agent_id?: string | null; contact_type?: string | null
+            first_name?: string | null; last_name?: string | null
+          } | null
+          const { resolveWelcomeManagers } = await import("@/lib/kernel/client-welcome")
+          const managers = resolveWelcomeManagers(row?.contact_type ?? null)
+          if (managers.length > 0 && row?.agent_id) {
+            const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+            await deliverConversionWelcome(svc, {
+              contactId,
+              agentId: row.agent_id,
+              brokerageId: params.brokerageId,
+              contactType: row.contact_type ?? null,
+              firstName: row.first_name ?? null,
+              lastName: row.last_name ?? null,
+            })
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "campaign_orchestrator",
+              toManager:   managers[0],
+              signalType:  "form_submission_received",
+              message:     "A public form submission captured a new consented contact — the welcome went out.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+              contactId,
+              payload: { welcomeManagers: managers },
+            }, svc)
+          }
+        }
       } catch { /* best-effort */ }
     }
 
@@ -2745,6 +2848,62 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             contactId:   params.contactId ?? params.entityId,
             payload:     { listing_id: params.listingId },
           }, svc)
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // 7b — a BUYER hit "submit an offer" in their portal (app/actions/buyer-offer-tools.ts
+    // requestOfferHelp, entityType "buyer_lifecycle", entityId the buyer contact's id;
+    // metadata.offer_intent_id names the offer_intents row; listingId forwarded when the
+    // property is one of OUR OWN listings). OWNER RULING (2026-09-10): the buyer does NOT get
+    // the forms — their AGENT is notified to start the offer. Distinct from
+    // BUYER_OFFER_DRAFT_STARTED above (that one fires when STAFF open the agent-side wizard
+    // and correctly tells the LISTING's agent an offer is coming; this one is the buyer's own
+    // moment and must ALSO reach the buyer's OWN assigned agent, which the sibling reader never
+    // did). TWO EXPLICIT CASES, per CLAUDE.md wave 51 ("a reader with several use cases routes
+    // each case explicitly"):
+    //   · ALWAYS: Deal Coordinator (moment detector, matching the sibling event's FROM) hands it
+    //     to Shopping Agent (the buyer-side manager) — notifies the buyer's OWN assigned agent +
+    //     opens a "Prepare offer" task carrying the agent-side wizard link.
+    //   · ONLY when the property is IN-HOUSE (listings.brokerage_id matches this tenant): a
+    //     SECOND signal to Listing Concierge — the listing's agent is told an offer is coming,
+    //     same as BUYER_OFFER_DRAFT_STARTED already does for the staff-initiated case.
+    // entityId is the offer_intents row id (not the contact) so two intents from the same buyer
+    // on two different homes never dedupe against each other (publishManagerSignal dedupes per
+    // (toManager, signalType, entityId)).
+    if (params.event === KernelEvent.BUYER_OFFER_SUBMIT_REQUESTED) {
+      try {
+        const intentId = (params.metadata as Record<string, unknown> | undefined)?.offer_intent_id as string | undefined
+        const signalEntityId = intentId ?? params.entityId
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "deal_coordinator",
+          toManager:   "shopping_agent",
+          signalType:  "buyer_offer_submit_requested",
+          message:     "A buyer asked to submit an offer — their own agent needs to prepare it.",
+          entityType:  "buyer_lifecycle",
+          entityId:    signalEntityId,
+          contactId:   params.contactId ?? params.entityId,
+          payload:     { listing_id: params.listingId ?? null, offer_intent_id: intentId ?? null },
+        }, svc)
+
+        if (params.listingId) {
+          const { data: listing } = await svc
+            .from("listings").select("brokerage_id").eq("id", params.listingId).maybeSingle()
+          const listingBrokerageId = (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+          if (listingBrokerageId === params.brokerageId) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "deal_coordinator",
+              toManager:   "listing_concierge",
+              signalType:  "buyer_offer_submit_requested",
+              message:     "A buyer asked to submit an offer on your listing.",
+              entityType:  "listing",
+              entityId:    params.listingId,
+              contactId:   params.contactId ?? params.entityId,
+              payload:     { listing_id: params.listingId, offer_intent_id: intentId ?? null },
+            }, svc)
+          }
         }
       } catch { /* best-effort */ }
     }
@@ -2778,7 +2937,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // 9 — an open-house attendee was captured and walked in (app/api/open-house/attend/
     // route.ts, entityType "listing_stage_machine" — the instant 90-second greeting already
     // fires directly in the same call; this is Listing Concierge's cross-manager visibility
-    // trail into AI ISA beside that direct greeting, not a second one).
+    // trail into AI ISA beside that direct greeting, not a second one). ALSO (owner ruling
+    // 2026-09-10, wave 51): when this capture created or resolved a CONTACT — carried in
+    // metadata.contactId, since the entity itself is the listing — hand it to
+    // deliverConversionWelcome with `origin` resolved from metadata.eventId (the
+    // open_house_events row this reader has no other reference to). Deduped by contact id:
+    // a returning attendee who already has a welcome gets SKIPPED by ensureClientWelcome's
+    // ledger tag, exactly like the OPEN_HOUSE_CONTACT_RESOLVED reader above.
     if (params.event === KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED) {
       try {
         await publishManagerSignal({
@@ -2790,6 +2955,30 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           entityType:  params.entityType,
           entityId:    params.entityId,
         }, svc)
+
+        const meta = (params.metadata as { contactId?: string | null; eventId?: string | null } | null) ?? null
+        const contactId = params.contactId ?? meta?.contactId ?? null
+        if (contactId) {
+          const { data: c } = await svc
+            .from("contacts")
+            .select("agent_id, contact_type, first_name, last_name")
+            .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const row = c as {
+            agent_id?: string | null; contact_type?: string | null
+            first_name?: string | null; last_name?: string | null
+          } | null
+          if (row?.agent_id) {
+            const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+            const origin = await resolveOpenHouseWelcomeOrigin(svc, meta?.eventId ?? null)
+            const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+            await deliverConversionWelcome(svc, {
+              contactId, agentId: row.agent_id, brokerageId: params.brokerageId,
+              contactType: row.contact_type ?? null,
+              firstName: row.first_name ?? null, lastName: row.last_name ?? null,
+              origin,
+            })
+          }
+        }
       } catch { /* best-effort */ }
     }
 
@@ -2935,38 +3124,73 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 17 — a D-ID video generation was requested (app/api/did/generate-video/route.ts,
-    // entityType "video_project" — the poll-did-videos cron owns following up, not a second
-    // manager).
+    // 17 — a video generation was requested. FIVE emitters (app/actions/video/create-
+    // video-project.ts, app/api/did/generate-video/route.ts, app/api/internal/remotion/
+    // render-just-listed/route.ts, lib/video/intro-video-reactor.ts, lib/video/chapter-
+    // video-generator.ts) — entityId is always the ai_video_projects.id regardless of the
+    // "video_project"/"ai_video_project" entityType spelling a given emitter uses. Owner
+    // ruling (wave 51, verbatim): "the 17 kernel event a video generation was requested
+    // shouldn't signal data steward, research then reassign." Reassigned via
+    // routeForEvent → routeVideoGenerationRequested (lib/kernel/signal-routing.ts): FROM Asset Manager
+    // always, TO branches on what the render is FOR — read straight off the
+    // ai_video_projects row (never trust an emitter's own metadata shape; two of the five
+    // emitters call processKernelEvent directly with none at all) via resolveVideoKind,
+    // the SAME kind classifier the completed-side coordinator uses (lib/kernel/video-
+    // coordination.ts) — never a second, hand-rolled one (§6). `to: null` (an agent's own
+    // generic project) publishes nothing — that is the correct outcome, not a skipped case.
     if (params.event === KernelEvent.VIDEO_GENERATION_REQUESTED) {
       try {
-        await publishManagerSignal({
-          brokerageId: params.brokerageId,
-          fromManager: "asset_manager",
-          toManager:   "data_steward",
-          signalType:  "video_generation_requested",
-          message:     "A video generation was requested.",
-          entityType:  params.entityType,
-          entityId:    params.entityId,
-        }, svc)
+        const { data: project } = await svc
+          .from("ai_video_projects")
+          .select("listing_id, contact_id, video_type, video_metadata")
+          .eq("id", params.entityId)
+          .maybeSingle()
+        const row = project as { listing_id?: string | null; contact_id?: string | null; video_type?: string | null; video_metadata?: Record<string, unknown> | null } | null
+        const { resolveVideoKind } = await import("@/lib/kernel/video-coordination")
+        // routeForEvent is THE dispatcher (registry-derived FROM/TO — owner ruling wave 51:
+        // "all kernel signals need to understand the signal and determine which managers
+        // from the registry"); it delegates to routeVideoGenerationRequested for this event.
+        const { routeForEvent } = await import("@/lib/kernel/signal-routing")
+        const route = routeForEvent("video_generation_requested", {
+          listingId: row?.listing_id ?? null,
+          contactId: row?.contact_id ?? null,
+          kind: row ? resolveVideoKind(row) : null,
+        })
+        if (route?.to) {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: route.from,
+            toManager:   route.to,
+            signalType:  "video_generation_requested",
+            message:     "A video generation was requested.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     { kind: row ? resolveVideoKind(row) : null, listing_id: row?.listing_id ?? null, contact_id: row?.contact_id ?? null, route_reason: route.reason },
+          }, svc)
+        }
       } catch { /* best-effort */ }
     }
 
-    // 18 — a D-ID video finished generating (app/api/cron/poll-did-videos, entityType
-    // "video_project" — the owning agent already gets a direct "video ready" notification in
-    // the same call; this is Asset Manager's cross-manager visibility trail into Campaign
-    // Orchestrator beside that direct notice, not a second one).
+    // 18 — a video finished generating (three emitters: app/api/cron/poll-did-videos,
+    // app/api/cron/listing-promo-hybrid-composite, lib/events/event-helpers.ts
+    // logVideoGenerated). Owner ruling (wave 51): same reassignment as #17 — FROM Asset
+    // Manager, never data_steward. UNLIKE #17, the completed-side routing decision is NOT a
+    // flat pair: it is kind-aware and sometimes multi-target (organic distribution always,
+    // paid promotion for promotable kinds, or a gated 1:1 lead/contact outreach email, or a
+    // compliance-failure escalation) — that branching is ALREADY BUILT in
+    // publishVideoCoordinationSignals (lib/kernel/video-coordination.ts), which poll-did-
+    // videos already calls directly for its own completions. Re-publishing a flattened
+    // "asset_manager -> campaign_orchestrator" stand-in here would be a second, cruder
+    // spelling of the same decision (§6) — orphan doctrine §1.3, the functionality already
+    // lives elsewhere — so this reader DELEGATES to the same publisher instead. That also
+    // makes it the ONLY coordination call for listing-promo-hybrid-composite and
+    // logVideoGenerated, neither of which calls the coordinator directly; for poll-did-
+    // videos it is a harmless idempotent re-invocation (publishManagerSignal's own
+    // (toManager, signalType, entityId) dedupe, reused inside the coordinator).
     if (params.event === KernelEvent.VIDEO_GENERATION_COMPLETED) {
       try {
-        await publishManagerSignal({
-          brokerageId: params.brokerageId,
-          fromManager: "asset_manager",
-          toManager:   "campaign_orchestrator",
-          signalType:  "video_generation_completed",
-          message:     "A video finished generating.",
-          entityType:  params.entityType,
-          entityId:    params.entityId,
-        }, svc)
+        const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+        await publishVideoCoordinationSignals(params.entityId, svc)
       } catch { /* best-effort */ }
     }
 
@@ -3001,6 +3225,395 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           entityType:  params.entityType,
           entityId:    params.entityId,
           payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-quaterdecies) CROSS-MANAGER SIGNALS — kernel-event census round 8 (2026-09-10, tranche
+  // 6, scripts/kernel-event-census-z1.ts). TWENTY more KernelEvent members classified "emitted
+  // only" in the content/campaign/onboarding lanes: a real emitter fires each (verified against
+  // its call site below), lifecycle_events records it, but nothing downstream ever reacted. Same
+  // ruling as D-octies through D-terdecies (CLAUDE.md §1.2 + the owner's "every capability
+  // should run autonomously"): each publishes a manager_signals row addressed to the manager
+  // whose domain should act on it. Routed per the wave-50/51 rulings: FROM is the manager that
+  // OWNS the moment (never a default data_steward stamp) — campaign_orchestrator for the
+  // social/blog/email/direct-mail/listing-tier content lane, ads_manager for competitor ad
+  // monitoring, asset_manager for the video/repurpose lane, listing_concierge for the listing-
+  // tier moment, recruiting_manager for onboarding (brand setup + training + tech-stack
+  // integration connect — both connect call sites redirect through the onboarding wizard),
+  // compliance_officer for the final-compliance defer branch. NEVER marketing_agent — retired onto
+  // campaign_orchestrator/ads_manager this wave (lane IA). ELEVEN are HANDLED — a real
+  // SIGNAL_HANDLERS consumer (lib/kernel/manager-signals.ts) proposes a gated notification to
+  // the responsible human/seat through the same primitives the rest of this file uses — never an
+  // outbound send, never spend. newsletter_send_deferred branches EXPLICITLY on its own `reason`
+  // field (video-pending / final-compliance-blocked / other, left open) per the wave-50 "branch
+  // where an event has multiple use cases" ruling. The rest are feed_only, same shape as most of
+  // D-octies through D-terdecies. Every block is best-effort and independently caught.
+  if (params.brokerageId) {
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 1 — an agent shared an EXISTING social post (app/actions/social-share.ts, entityType
+    // "agent_social_share", entityId agent_social_shares.id). HANDLED — Campaign Orchestrator
+    // hands it to Listing Concierge, whose handler resolves whether the shared post promotes an
+    // in-house listing (agent_social_shares → social_posts → listings, since this emitter
+    // forwards no metadata) and notifies that listing's own agent; no-op otherwise.
+    if (params.event === KernelEvent.SOCIAL_POST_SHARED_BY_AGENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "listing_concierge",
+          signalType:  "social_post_shared_by_agent",
+          message:     "An agent shared a social post.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 2 — the competitor/ad monitor flagged a HIGH-severity competitor content trend
+    // (lib/ads/ad-monitor.ts, entityType "ad_insight", entityId trend_alerts.id). HANDLED — Ads
+    // Manager (owns competitor ad monitoring) hands it to Campaign Orchestrator, which notifies
+    // broker/admin before the next campaign is planned.
+    if (params.event === KernelEvent.COMPETITOR_CONTENT_ALERTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ads_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "competitor_content_alerted",
+          message:     "A high-severity competitor content trend was detected.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3 — an AI blog post finished generating (app/actions/blog.ts generateBlogPost, entityType
+    // "blog_post"). HANDLED — Campaign Orchestrator hands it to Compliance Officer for a
+    // fair-housing/compliance pass before it publishes (CLAUDE.md §5 compliance-first content).
+    if (params.event === KernelEvent.BLOG_POST_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "compliance_officer",
+          signalType:  "blog_post_generated",
+          message:     "An AI blog post finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 4 — a newsletter send was DEFERRED (app/api/cron/publish-newsletters deferCampaign,
+    // entityType "newsletter_campaign", metadata.reason forwarded by this emitter). Branches
+    // EXPLICITLY on the reason prefix: a video-pending defer is owned by Asset Manager (the
+    // video render), a final-compliance defer by Compliance Officer (the gate) — both HANDED to
+    // Campaign Orchestrator (the campaign owner), whose handler notifies the campaign's agent.
+    // Any other reason (broadcast_cap / sections_missing / seo_score_low) is content mechanics
+    // Campaign Orchestrator already owns and the cron itself retries — left open rather than
+    // guessing a second manager (CLAUDE.md §1 "unresolved beats a guess").
+    if (params.event === KernelEvent.NEWSLETTER_SEND_DEFERRED) {
+      try {
+        const reason = (params.metadata?.reason as string | undefined) ?? ""
+        if (reason.startsWith("video_")) {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "asset_manager",
+            toManager:   "campaign_orchestrator",
+            signalType:  "newsletter_deferred_video_pending",
+            message:     "A newsletter send was deferred waiting on a video render.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     params.metadata ?? {},
+          }, svc)
+        } else if (reason.startsWith("final_compliance")) {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "compliance_officer",
+            toManager:   "campaign_orchestrator",
+            signalType:  "newsletter_deferred_compliance_blocked",
+            message:     "A newsletter send was deferred by the final compliance gate.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     params.metadata ?? {},
+          }, svc)
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — a new email campaign was created, pending brand-compliance approval
+    // (app/actions/email-campaigns.ts / lib/kernel/marketing.ts, approval_status='pending',
+    // brand_compliance_passed=false). HANDLED — Campaign Orchestrator hands the pending review
+    // to Compliance Officer.
+    if (params.event === KernelEvent.EMAIL_CAMPAIGN_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "compliance_officer",
+          signalType:  "email_campaign_created",
+          message:     "A new email campaign awaits brand-compliance approval.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — a direct-mail campaign actually SENT (app/actions/direct-mail.ts, entityType
+    // "direct_mail_campaign" — real per-piece spend incurred). HANDLED — Campaign Orchestrator
+    // hands the spend to Finance Manager (BROKERAGE_FINANCE_ADMIN_USER_TYPES seats) to record.
+    if (params.event === KernelEvent.DIRECT_MAIL_SENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "finance_manager",
+          signalType:  "direct_mail_sent",
+          message:     "A direct-mail campaign was sent.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7 — a listing was assigned a marketing TIER + budget (lib/listings/tier-assigner.ts,
+    // entityType "listing"). HANDLED — Listing Concierge hands it to Campaign Orchestrator,
+    // which notifies the listing's own agent to plan the campaign to that budget.
+    if (params.event === KernelEvent.LISTING_TIER_ASSIGNED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "campaign_orchestrator",
+          signalType:  "listing_tier_assigned",
+          message:     "A listing's marketing tier and budget were assigned.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 8 — an agent completed brand voice/identity SETUP during onboarding
+    // (app/actions/onboarding/brand.ts, entityType "brokerage_brand_settings", entityId is the
+    // brokerage — not a specific agent). HANDLED — Recruiting Manager (owns onboarding) hands it
+    // to Campaign Orchestrator, which notifies broker/admin the agent is ready for personalized
+    // campaign content.
+    if (params.event === KernelEvent.BRAND_SETUP_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "brand_setup_completed",
+          message:     "An agent completed brand setup.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 9 — a new external INTEGRATION was connected (app/api/integrations/oauth/[provider]/
+    // route.ts — its own callback redirects back to /dashboard/onboarding/tech-stack, so BOTH
+    // call sites are the onboarding tech-stack step, not a generic settings action — + app/
+    // actions/onboarding/tech-stack.ts, entityId the brokerage). HANDLED — Recruiting Manager
+    // (owns onboarding) hands it to Compliance Officer to review for data-sharing implications.
+    if (params.event === KernelEvent.INTEGRATION_CONNECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "integration_connected",
+          message:     "A new external integration was connected.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — an agent watched their FIRST required onboarding TRAINING video (course enrollment,
+    // app/actions/onboarding/training.ts markVideoStarted, entityType "agent", entityId
+    // agents.id — distinct from the wave-49 HANDLED course-COMPLETED moment). HANDLED —
+    // Recruiting Manager (owns onboarding) hands the audit-trail entry to Compliance Officer.
+    if (params.event === KernelEvent.TRAINING_COURSE_ENROLLED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "training_course_enrolled",
+          message:     "An agent enrolled in required onboarding training.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies through D-terdecies. No automated consumer by design (see each `what` in
+    // signal-registry.ts).
+
+    // 11 — a social post was SCHEDULED (app/actions/social-media-automation.ts, entityType
+    // "social_post").
+    if (params.event === KernelEvent.SOCIAL_POST_SCHEDULED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "social_post_scheduled",
+          message:     "A social post was scheduled.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 12 — a scheduled social post actually PUBLISHED (app/api/cron/publish-social-posts,
+    // app/actions/ai-content-generation.tsx, entityType "social_post").
+    if (params.event === KernelEvent.SOCIAL_POST_PUBLISHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "social_post_published",
+          message:     "A social post published.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13 — the AI content-performance predictor scored a piece of content pre-publish
+    // (lib/content/performance-predictor.ts, entityType "content_performance_predictions").
+    if (params.event === KernelEvent.CONTENT_PERFORMANCE_PREDICTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "content_performance_predicted",
+          message:     "Content performance was predicted.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 14 — a blog post PUBLISHED (app/actions/blog.ts updateBlogPost, entityType "blog_post").
+    if (params.event === KernelEvent.BLOG_POST_PUBLISHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "blog_post_published",
+          message:     "A blog post published.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 15 — an email campaign was SENT (app/actions/ai-content-generation.tsx,
+    // lib/marketing/email-campaign-sender.ts).
+    if (params.event === KernelEvent.EMAIL_CAMPAIGN_SENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "email_campaign_sent",
+          message:     "An email campaign was sent.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 16 — a direct-mail campaign was CREATED/submitted (app/actions/direct-mail.ts,
+    // lib/kernel/marketing.ts, entityType "direct_mail_campaign" — the design/creative stage,
+    // distinct from the HANDLED direct_mail_sent spend moment above).
+    if (params.event === KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "asset_manager",
+          signalType:  "direct_mail_campaign_created",
+          message:     "A direct-mail campaign was created.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 17 — an Omni-Presence repurpose pipeline run STARTED (lib/repurpose/actions.ts, entityType
+    // "repurpose_pipeline" — paired with the wave-49 HANDLED omnipresence_pipeline_completed).
+    if (params.event === KernelEvent.OMNIPRESENCE_PIPELINE_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "omnipresence_pipeline_started",
+          message:     "An Omni-Presence repurpose pipeline started.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — a QR code was linked to a marketing asset (lib/marketing/qr-asset-linker.ts,
+    // entityType "marketing_asset").
+    if (params.event === KernelEvent.QR_ATTACHED_TO_ASSET) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "qr_attached_to_asset",
+          message:     "A QR code was linked to a marketing asset.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — an agent STARTED a required-onboarding training video (app/actions/onboarding/
+    // training.ts, entityType "training_video" — video-level, distinct from the HANDLED
+    // course-level training_course_enrolled above).
+    if (params.event === KernelEvent.TRAINING_VIDEO_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "training_video_started",
+          message:     "An agent started a required onboarding training video.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — an agent COMPLETED a single required-onboarding training video (app/api/onboarding/
+    // training/progress/route.ts, entityType "training_video" — video-level, distinct from the
+    // wave-49 HANDLED course-level training_course_completed).
+    if (params.event === KernelEvent.TRAINING_VIDEO_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "training_video_completed",
+          message:     "An agent completed a required onboarding training video.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
         }, svc)
       } catch { /* best-effort */ }
     }

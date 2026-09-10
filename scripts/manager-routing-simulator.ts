@@ -16,6 +16,26 @@
  *      (seller) / shopping_agent (buyer) — not a single static "agent handoff" route.
  *   4. agent_escalated_to_human routes to recruiting_manager.
  *
+ * WAVE 51 (2026-09-10) ADDS — owner rulings, verbatim: "the 17 kernel event a video
+ * generation was requested shouldn't signal data steward, research then reassign"; "all
+ * kernel signals need to understand the signal and determine which managers from the
+ * registry"; a signal never routes from a manager to itself. Sections 11-14 below:
+ *   · [11] every literal (fromManager, toManager) pair in event-reactor.ts satisfies
+ *     validSignalRoute (lib/kernel/manager-signals.ts:58, from!==to, both real
+ *     MANAGERS keys) — a FULL sweep, not a curated subset. A wave-51 AUDIT found 31
+ *     self-routed publishes (fromManager===toManager) that publishManagerSignal's own
+ *     guard had been silently refusing — every one fixed this wave; this section is the
+ *     regression ratchet that keeps the count at ZERO.
+ *   · [12] every STATIC_ROUTES entry (lib/kernel/signal-routing.ts) agrees with the
+ *     literal pair actually published in event-reactor.ts for that signal_type — the
+ *     table is the source of truth a reader can call routeForEvent() against instead of
+ *     hardcoding, and this proof is what keeps the table from drifting off the live code.
+ *   · [13] every BRANCHING_EVENTS candidate is a real MANAGERS key and never equals the
+ *     branch's own FROM.
+ *   · [14] the video family (video_generation_requested / video_generation_completed) is
+ *     reassigned FROM asset_manager (never data_steward) and branches per use case —
+ *     routeVideoGenerationRequested proven directly, not just read from source text.
+ *
  * PURE + SOURCE (CLAUDE.md §2): every rule is a pure function of SOURCE TEXT (read via
  * readFileSync, comments stripped via scripts/strip-comments.ts — no DB, no mocks) and
  * is POSITIVE-CONTROLLED — proven against a deliberately WRONG fixture snippet that
@@ -29,6 +49,9 @@ import { readFileSync } from "node:fs"
 import { stripComments } from "./strip-comments"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { SIGNAL_HANDLERS } from "../lib/kernel/manager-signals"
+import { validSignalRoute } from "../lib/kernel/manager-signals"
+import { MANAGERS, type ManagerKey } from "../lib/kernel/manager-registry"
+import { STATIC_ROUTES, BRANCHING_EVENTS, routeVideoGenerationRequested, routeForEvent } from "../lib/kernel/signal-routing"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -142,6 +165,20 @@ function allFromSignalPairs(src: string): Array<{ from: string; signalType: stri
   return out
 }
 
+// ── Wave 51 — EVERY literal (fromManager, toManager) pair, whole file ───────────────────
+// Unlike findStaticFromManager/findStaticToManager (which resolve ONE signalType's static
+// pair), this walks every publishManagerSignal({...}) call and captures BOTH ends when
+// both are string literals — a bare `toManager,`/`toManager: someVar` (a BRANCHING_EVENTS
+// dynamic route) is intentionally skipped here; rule 13 below validates those separately.
+// Also captures the signalType alongside each pair for readable failure detail.
+function allStaticFromToPairs(src: string): Array<{ from: string; to: string; signalType: string | null }> {
+  const re = /fromManager:\s*"([a-z_][a-z0-9_]*)",\s*\n\s*toManager:\s*"([a-z_][a-z0-9_]*)",(?:\s*\n\s*signalType:\s*"([a-z_][a-z0-9_]*)",)?/g
+  const out: Array<{ from: string; to: string; signalType: string | null }> = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src)) !== null) out.push({ from: m[1], to: m[2], signalType: m[3] ?? null })
+  return out
+}
+
 // ── Wave 50 — FROM_OWNER_BY_SIGNAL: the manager that OWNS each event-family moment ──
 // Each entry names the manager whose own emitter (read from event-reactor.ts's own
 // call-site comment) caused the moment — never a convenience data_steward default.
@@ -173,10 +210,19 @@ const FROM_OWNER_BY_SIGNAL: Record<string, string> = {
   newsletter_sent: "cron_manager",
   newsletter_scheduled: "cron_manager",
   sequence_paused_on_reply: "campaign_orchestrator",
-  // deal/transaction — FROM Deal Coordinator.
+  // deal/transaction — FROM Deal Coordinator, EXCEPT the two wave-51 self-route fixes
+  // below: buyer_under_contract and vendor_assigned_to_transaction both used to read
+  // fromManager===toManager===deal_coordinator (an invalid route — manager-signals.ts:58
+  // validSignalRoute — that never actually published; publishManagerSignal refused it and
+  // the catch swallowed the refusal). Fixed by moving FROM to the manager whose PRIOR-stage
+  // domain actually caused the moment, keeping deal_coordinator as TO.
   task_completed: "deal_coordinator",
-  buyer_under_contract: "deal_coordinator",
-  vendor_assigned_to_transaction: "deal_coordinator",
+  // buyer_under_contract: FROM Shopping Agent (owned the buyer's search before conversion),
+  // not Deal Coordinator — see FROM_OWNER_BY_SIGNAL usage below.
+  buyer_under_contract: "shopping_agent",
+  // vendor_assigned_to_transaction: FROM Data Steward (an assignment-record moment, same
+  // family as lead_assigned/lead_ready_for_assignment), not Deal Coordinator.
+  vendor_assigned_to_transaction: "data_steward",
   inspection_completed: "deal_coordinator",
   negotiation_strategy_drafted: "deal_coordinator",
   // listing — FROM Listing Concierge.
@@ -229,6 +275,10 @@ const ALLOWED_DATA_STEWARD_SIGNALS = new Set<string>([
   // D-terdecies (wave 50, lane IE): enrichment-pipeline and pre-classification card-intake
   // moments are data-quality/intake ledger moments — data_steward owns them.
   "contact_enrichment_failed", "contact_enrichment_queued", "business_card_uploaded",
+  // wave 51 self-route fix: vendor_assigned_to_transaction moved FROM deal_coordinator (an
+  // invalid from===to self-route that never published) to data_steward — an assignment-
+  // record moment, the same family as lead_assigned/lead_ready_for_assignment just above.
+  "vendor_assigned_to_transaction",
 ])
 
 const RULES: Array<{ name: string; run: () => boolean; control: () => boolean }> = [
@@ -342,6 +392,135 @@ function main() {
       mutatedPairs[0].from === "data_steward" &&
       !ALLOWED_DATA_STEWARD_SIGNALS.has(mutatedPairs[0].signalType),
   )
+
+  // ── Wave 51 · [11] — validSignalRoute: NO literal pair in the whole file is from===to ──
+  console.log("\n[11 · every literal (fromManager, toManager) pair satisfies validSignalRoute (from!==to, both real managers)]")
+  const allPairs11 = allStaticFromToPairs(reactorSrc)
+  const invalidPairs = allPairs11.filter((p) => !validSignalRoute(p.from, p.to))
+  check(
+    `every literal pair (${allPairs11.length} found) is a valid route`,
+    allPairs11.length > 0 && invalidPairs.length === 0,
+    invalidPairs.map((p) => `${p.signalType ?? "?"}: ${p.from} -> ${p.to}`).join(", ") || "none outstanding",
+  )
+  // Positive control: a deliberately self-routed fixture (the exact shape the wave-51 audit
+  // found 31 of) must fail this same check — proves the scanner still recognises the defect
+  // class it exists to catch, not just a clean tree reading as zero.
+  const selfRouteFixture = `fromManager: "asset_manager",\n          toManager:   "asset_manager",\n          signalType:  "video_high_performer_detected",`
+  const selfRoutePairs = allStaticFromToPairs(selfRouteFixture)
+  check(
+    "[control] a self-routed (from===to) fixture is correctly flagged invalid",
+    selfRoutePairs.length === 1 && !validSignalRoute(selfRoutePairs[0].from, selfRoutePairs[0].to),
+  )
+
+  // ── Wave 51 · [12] — STATIC_ROUTES agrees with the live code for every signal it covers ──
+  console.log("\n[12 · lib/kernel/signal-routing.ts STATIC_ROUTES agrees with the live event-reactor.ts pair]")
+  const staticMismatches: string[] = []
+  for (const [signalType, route] of Object.entries(STATIC_ROUTES)) {
+    const liveFrom = findStaticFromManager(reactorSrc, signalType)
+    const liveTo = findStaticToManager(reactorSrc, signalType)
+    if (liveFrom === null && liveTo === null) { staticMismatches.push(`${signalType}: not found in event-reactor.ts`); continue }
+    if (liveFrom !== route.from || liveTo !== route.to) {
+      staticMismatches.push(`${signalType}: table says ${route.from}->${route.to}, live code says ${liveFrom}->${liveTo}`)
+    }
+  }
+  check(
+    `every STATIC_ROUTES entry (${Object.keys(STATIC_ROUTES).length}) matches the live event-reactor.ts pair`,
+    staticMismatches.length === 0,
+    staticMismatches.join("; "),
+  )
+  // Positive control: run the SAME comparison this section runs, but against a table entry
+  // deliberately mismatched from the live code (commission_paid is really finance_manager
+  // -> deal_coordinator) — proves the comparison itself, not just a clean tree, catches drift.
+  const wrongTable: Record<string, { from: string; to: string }> = { commission_paid: { from: "data_steward", to: "deal_coordinator" } }
+  const controlMismatches = Object.entries(wrongTable).filter(([signalType, route]) => {
+    const liveFrom = findStaticFromManager(reactorSrc, signalType)
+    const liveTo = findStaticToManager(reactorSrc, signalType)
+    return liveFrom !== route.from || liveTo !== route.to
+  })
+  check("[control] a deliberately mismatched STATIC_ROUTES entry is correctly flagged as drift", controlMismatches.length === 1)
+  // Every STATIC_ROUTES entry is itself a valid route (from!==to, both real managers) — the
+  // table cannot encode the defect it exists to prevent.
+  const badStaticEntries = Object.entries(STATIC_ROUTES).filter(([, r]) => !validSignalRoute(r.from, r.to))
+  check("every STATIC_ROUTES entry itself satisfies validSignalRoute", badStaticEntries.length === 0, badStaticEntries.map(([s]) => s).join(", "))
+
+  // ── Wave 51 · [13] — BRANCHING_EVENTS candidates are real managers, never the branch's FROM ──
+  console.log("\n[13 · every BRANCHING_EVENTS candidate is a real MANAGERS key and never equals its own FROM]")
+  const branchIssues: string[] = []
+  for (const [event, spec] of Object.entries(BRANCHING_EVENTS)) {
+    if (!(spec.from in MANAGERS)) branchIssues.push(`${event}: FROM "${spec.from}" is not a registered manager`)
+    for (const c of spec.candidates) {
+      if (!(c in MANAGERS)) branchIssues.push(`${event}: candidate "${c}" is not a registered manager`)
+      if (c === spec.from) branchIssues.push(`${event}: candidate "${c}" equals its own FROM (from===to)`)
+    }
+  }
+  check("every BRANCHING_EVENTS entry is well-formed", branchIssues.length === 0, branchIssues.join("; "))
+  // Positive control: a branch whose candidate list includes its own FROM must be flagged.
+  const badBranch: Record<string, { from: ManagerKey; candidates: ManagerKey[]; reason: string }> = {
+    bad_event: { from: "asset_manager", candidates: ["asset_manager"], reason: "fixture" },
+  }
+  const controlIssues = Object.entries(badBranch).flatMap(([event, spec]) =>
+    spec.candidates.filter((c) => c === spec.from).map((c) => `${event}: candidate "${c}" equals its own FROM (from===to)`))
+  check("[control] a self-candidate BRANCHING_EVENTS fixture is correctly flagged", controlIssues.length === 1)
+
+  // ── Wave 51 · [14] — the video family: FROM asset_manager (never data_steward), branched ──
+  console.log("\n[14 · video_generation_requested/completed are FROM asset_manager and branch per use case]")
+  // The live reader no longer stamps a literal FROM: it calls routeForEvent (THE dispatcher)
+  // and publishes `fromManager: route.from`. So the assertion is two-part — (a) the reader
+  // dispatches through routeForEvent for this event, and (b) the dispatcher answers
+  // asset_manager for every video kind — rather than a literal-pair grep that a registry-
+  // derived route would, correctly, no longer satisfy.
+  const requestedVia = (src: string): "asset_manager" | "literal" | "none" => {
+    const m = src.match(/VIDEO_GENERATION_REQUESTED\)[\s\S]{0,1600}?publishManagerSignal\(\{[\s\S]{0,300}?fromManager:\s*([^,\n]+),/)
+    if (!m) return "none"
+    if (m[1].trim() === "route.from" && /routeForEvent\("video_generation_requested"/.test(src)) return "asset_manager"
+    return "literal"
+  }
+  const videoKinds: Array<{ listingId: string | null; contactId: string | null; kind: string | null }> = [
+    { listingId: "L1", contactId: null, kind: "listing_promo" },
+    { listingId: null, contactId: "C1", kind: "memory_video" },
+    { listingId: null, contactId: null, kind: "recruiting_pitch" },
+    { listingId: null, contactId: null, kind: "product_promo" },
+    { listingId: null, contactId: null, kind: null },
+  ]
+  check(
+    "video_generation_requested is FROM asset_manager in the live code, never data_steward (the wave-51 defect)",
+    requestedVia(reactorSrc) === "asset_manager" &&
+      videoKinds.every((ctx) => routeForEvent("video_generation_requested", ctx)?.from === "asset_manager"),
+  )
+  // Positive control: the pre-wave-51 wiring (a literal FROM data_steward) must correctly fail.
+  check(
+    "[control] the pre-wave-51 data_steward stamp on video_generation_requested is correctly rejected",
+    requestedVia(
+      `KernelEvent.VIDEO_GENERATION_REQUESTED) {\n publishManagerSignal({\n fromManager: "data_steward",\n          toManager:   "data_steward",\n          signalType:  "video_generation_requested",`,
+    ) !== "asset_manager",
+  )
+  check(
+    "video_generation_completed delegates to publishVideoCoordinationSignals (no flat signalType publish remains)",
+    /VIDEO_GENERATION_COMPLETED\)[\s\S]{0,400}publishVideoCoordinationSignals\(params\.entityId, svc\)/.test(reactorSrc) &&
+      !/signalType:\s*"video_generation_completed"/.test(reactorSrc),
+  )
+  // routeVideoGenerationRequested proven DIRECTLY (not just read from source text) — the
+  // exact branch table the owner's wave-51 examples describe.
+  check("listing-tied render routes to listing_concierge",
+    routeVideoGenerationRequested({ listingId: "L1", contactId: null, kind: "listing_promo" }).to === "listing_concierge")
+  check("contact-tied render routes to campaign_orchestrator",
+    routeVideoGenerationRequested({ listingId: null, contactId: "C1", kind: "memory_video" }).to === "campaign_orchestrator")
+  check("recruiting-kind render (no listing/contact) routes to recruiting_manager",
+    routeVideoGenerationRequested({ listingId: null, contactId: null, kind: "recruiting_pitch" }).to === "recruiting_manager")
+  check("brand/product render (no listing/contact) routes to campaign_orchestrator",
+    routeVideoGenerationRequested({ listingId: null, contactId: null, kind: "product_promo" }).to === "campaign_orchestrator")
+  check("an agent's own generic project (no listing/contact/recruiting/brand) publishes NOTHING (to===null)",
+    routeVideoGenerationRequested({ listingId: null, contactId: null, kind: "avatar_explainer" }).to === null)
+  check("every non-null routeVideoGenerationRequested branch satisfies validSignalRoute",
+    [
+      routeVideoGenerationRequested({ listingId: "L1", contactId: null, kind: null }),
+      routeVideoGenerationRequested({ listingId: null, contactId: "C1", kind: null }),
+      routeVideoGenerationRequested({ listingId: null, contactId: null, kind: "recruiting" }),
+      routeVideoGenerationRequested({ listingId: null, contactId: null, kind: "brand" }),
+    ].every((r) => r.to === null || validSignalRoute(r.from, r.to)))
+  // Positive control: a deliberately wrong expectation must fail.
+  check("[control] a listing-tied render does NOT route to campaign_orchestrator",
+    routeVideoGenerationRequested({ listingId: "L1", contactId: null, kind: null }).to !== "campaign_orchestrator")
 
   report()
 }

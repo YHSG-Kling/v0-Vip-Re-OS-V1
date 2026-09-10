@@ -94,6 +94,7 @@ import {
   type NarrationBudget,
 } from "@/lib/video/script-structure"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import { DEFAULT_LANGUAGE, languageName } from "@/lib/video/multilingual-reel"
 import {
   anniversaryGreeting,
   buildAnniversarySituation,
@@ -137,6 +138,23 @@ interface BaseInput {
   agentId:      string
   /** 'email' (default), 'portal', or 'both' */
   delivery?:    "email" | "portal" | "both"
+  /**
+   * THE ELEVENLABS-MAPPED LANGUAGE CODE (lib/video/multilingual-reel.ts
+   * resolveContactLanguage / localeToElevenLabsLanguage output — never a
+   * second spelling, §6). Resolved by the CALLER (welcome-avatar-video.ts —
+   * the ONE resolver runs once, here it is consumed) so this file stays the
+   * spender, not a second place a language gets decided.
+   *
+   * OPTIONAL: omitted defaults to DEFAULT_LANGUAGE ("en") — owner ruling
+   * "the default language is english wherever a language is resolved and none
+   * is known" — which reproduces every prior script/render byte-for-byte,
+   * since "en" adds no writing directive and no D-ID language_code hint.
+   *
+   * Closes the gap wave 50's hardening pass found: the first-touch WELCOME
+   * avatar video had no multilingual variant because nothing upstream of this
+   * reactor ever resolved or passed a language.
+   */
+  language?:    string | null
 }
 
 /**
@@ -279,6 +297,7 @@ export async function dispatchAnniversaryVideo(
     // single hardcoded sentence about protected characteristics instead.
     situation:   buildAnniversarySituation(input.equity?.facts ?? []),
     hasLoanData: input.equity?.hasLoanData ?? false,
+    language:    input.language,
   })
 }
 
@@ -355,6 +374,12 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // lane actually does. 'portal' is a live value of the delivery_channel CHECK.
   const delivery = input.delivery
     ?? (input.trigger === "home_anniversary" ? "portal" : "email")
+
+  // THE ONE RESOLVED LANGUAGE. Resolved once by the caller (welcome-avatar-
+  // video.ts's resolveContactLanguageFromDb, or a future anniversary caller);
+  // this reactor only falls to the ruled default when nothing was passed —
+  // never re-resolves (§6, one resolver).
+  const language = input.language || DEFAULT_LANGUAGE
 
   // 1. Contact opt-out + persona resolution. Pull the full KernelContact
   //    shape since the compliance gate needs it. Cast the long column list
@@ -537,6 +562,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       agentUserId,
       agentRecordId,
       isNewsletterSubscriber,
+      language,
       violations,
     }),
     gate: async (s) => {
@@ -701,11 +727,20 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       duration_seconds: 45,
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
+      // locale + video_metadata.tts_language_code mirror the same two keys
+      // commissionMultilingualReel stamps (lib/video/multilingual-reel.ts) —
+      // one vocabulary for "what language is this render" across both the
+      // reel lane and the avatar lane (§6). "en" still stamps locale="en"
+      // (matching multilingual-reel's own English rows) but tts_language_code
+      // stays undefined so dispatchVideo's D-ID/ElevenLabs call auto-detects
+      // exactly as it always has for English.
+      locale: language,
       video_metadata: {
         trigger:        input.trigger,
         trigger_year:   input.triggerYear,
         intro_video_id: introVideoId,
         years_ago:      input.yearsAgo ?? null,
+        ...(language !== DEFAULT_LANGUAGE ? { tts_language_code: language } : {}),
       },
     })
     .select("id")
@@ -800,6 +835,11 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       trigger:    input.trigger,
       years_ago:  String(input.yearsAgo ?? 0),
     },
+    // THE MISSING READER (lib/providers/dispatch.ts DispatchVideoParams) —
+    // the resolved language actually reaches the ElevenLabs TTS call now.
+    // Omitted for "en" so an English render's request body is byte-identical
+    // to before this field existed.
+    ...(language !== DEFAULT_LANGUAGE ? { ttsLanguageCode: language } : {}),
     systemSource:   `intro_video.${input.trigger}`,
     metadata: {
       ai_video_project_id: project.id,
@@ -935,6 +975,13 @@ async function draftScript(args: {
    *  assignment time, the script mentions the weekly cadence so they
    *  recognize the next Tuesday send. Ignored for anniversary trigger. */
   isNewsletterSubscriber?: boolean
+  /**
+   * THE RESOLVED LANGUAGE (resolveContactLanguage's output, or
+   * DEFAULT_LANGUAGE). "en" adds NO instruction to the prompt — the writing
+   * rules below were English-implicit before this field existed, and stay
+   * byte-for-byte identical for every English draft.
+   */
+  language?:  string
   /** When non-empty, this is a redraft. The model is fed the specific
    *  evaluateOutbound violations from the prior attempt and asked to fix
    *  them — much cheaper than a wasted D-ID render. */
@@ -958,6 +1005,14 @@ async function draftScript(args: {
   // Wave 22 — newsletter cadence reference (assignment trigger only).
   const newsletterLine = args.trigger === "contact_agent_assigned" && args.isNewsletterSubscriber
     ? "They're also signed up for the weekly newsletter — mention they'll get the first issue next Tuesday so they recognize it in their inbox. Keep it to one short line."
+    : ""
+  // THE LANGUAGE DIRECTIVE. ADDITIVE — "en"/unset renders "" (no line added),
+  // so an English draft's prompt is byte-for-byte what it always was. A
+  // resolved non-English language gets ONE explicit instruction, ahead of the
+  // length rules for the same reason situationBlock/complianceBlock sit above
+  // them: the model reads WHAT LANGUAGE before it reads HOW LONG.
+  const languageLine = args.language && args.language !== "en"
+    ? `\n\nWrite the ENTIRE script in ${languageName(args.language)} — every sentence, no English mixed in. The recipient's preferred language is ${languageName(args.language)}.`
     : ""
   const violationLine = args.violations.length > 0
     ? `\n\nYour previous draft failed the brokerage's compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite the script so EVERY one of these violations is resolved. Same length + same intent, just compliance-clean.`
@@ -1035,7 +1090,7 @@ Avoid any reference to protected characteristics. Return ONLY the script text th
 
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
-    prompt:      basePrompt + violationLine,
+    prompt:      basePrompt + languageLine + violationLine,
     // BOTH lanes pay for the words the composition can actually speak — the
     // ONE token budget sized from the ONE word budget. The assignment lane's
     // prior flat 300 bought ~3× the text the 14s reel can carry, and the

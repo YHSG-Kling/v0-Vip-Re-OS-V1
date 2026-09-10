@@ -221,7 +221,9 @@ import {
   buildWelcomeSituation,
   describeDroppedFacts,
   type WelcomeSituationContact,
+  type WelcomeOrigin,
 } from "@/lib/contact-promotion/welcome-situation"
+export type { WelcomeOrigin } from "@/lib/contact-promotion/welcome-situation"
 import { PORTAL_EXCLUDED_CONTACT_TYPES } from "@/lib/contact-promotion/portal-access"
 import { isLifetimeCustomerType } from "@/lib/contact-types"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
@@ -363,13 +365,20 @@ export function composeClientWelcome(input: {
   journey: WelcomeJourney
   addressAs: string
   agentName: string | null
+  /** Owner ruling 2026-09-10 (wave 51): the open-house welcome mentions the visit
+   *  even in the deterministic FLOOR, not only in the AI-generated copy. */
+  origin?: WelcomeOrigin | null
 }): { subject: string; body: string } {
   const steps = JOURNEY_STEPS[input.journey] ?? BUYER_JOURNEY
   const who = input.agentName ? `I'm ${input.agentName}, and my` : `My`
   // The `journey === "lifetime"` opening ("…stays yours long after the closing…")
   // is DELETED with the rest of the lifetime arm (owner ruling 2026-08-26). Every
   // remaining journey is a live transaction, so there is one opening again.
-  const opening = `${input.addressAs}, welcome. ${who} whole team is now working for you — here's the map so you always know where we are:`
+  const openHouseLine =
+    input.origin?.kind === "open_house"
+      ? ` It was great meeting you at your visit to ${input.origin.listingAddress} on ${input.origin.openHouseDate}.`
+      : ""
+  const opening = `${input.addressAs}, welcome.${openHouseLine} ${who} whole team is now working for you — here's the map so you always know where we are:`
   return {
     subject: JOURNEY_SUBJECT[input.journey] ?? JOURNEY_SUBJECT.buyer,
     body: [
@@ -612,6 +621,15 @@ export interface WelcomeVideoOverride {
 
 export interface EnsureClientWelcomeOptions {
   videoOverride?: WelcomeVideoOverride | null
+  /**
+   * Set when this contact was captured/resolved at an open house (owner ruling
+   * 2026-09-10, wave 51: "same welcome email but mentions the open house").
+   * Threaded into `buildWelcomeSituation` — the ONE situation builder this
+   * function and `welcome-avatar-video.ts` both call — so the copy AND the
+   * avatar script can each mention the visit in their own voice, never a second,
+   * hardcoded "thanks for visiting" string.
+   */
+  origin?: WelcomeOrigin | null
 }
 
 /**
@@ -693,7 +711,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     preferredName: contact.preferredName ?? c.preferred_name ?? null,
     namePronunciation: null, salutationStyle: null,
   })
-  const fallback = composeClientWelcome({ journey, addressAs: addressing.addressAs, agentName })
+  const fallback = composeClientWelcome({ journey, addressAs: addressing.addressAs, agentName, origin: opts.origin ?? null })
 
   // PERSONA-GENERATED body (never hardcoded); the deterministic journey map is
   // the fact set AND the guaranteed fallback — the generator personalizes,
@@ -708,7 +726,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   // own free text is DROPPED before the writer can see it (§5). The directives
   // ride in `directives`, NOT in `facts`: a constraint the model mistakes for a
   // fact is a constraint it can repeat back to the reader.
-  const situation = buildWelcomeSituation(c as WelcomeSituationContact)
+  const situation = buildWelcomeSituation(c as WelcomeSituationContact, { origin: opts.origin ?? null })
   const situationWarnings = [...situation.warnings, ...describeDroppedFacts(situation.droppedFacts)]
 
   // ── THE WORDING IS CHOSEN BY THEIR SITUATION OR PERSONA, NOT BY THEIR TYPE ──

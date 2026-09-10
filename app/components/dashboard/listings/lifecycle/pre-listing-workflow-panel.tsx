@@ -34,8 +34,14 @@ interface PreListingWorkflowPanelProps {
    */
   recordedEvents?: string[]
   goLiveDate?: string | null
-  /** Show "Go Live on MLS" CTA when all steps complete */
-  onGoLiveMls?: () => void
+  // TOMBSTONE (hidden-wire census category c, 2026-09-10): `onGoLiveMls?: () => void` stood
+  // here — declared, never passed by the one caller (app/dashboard/listings/[id]/lifecycle/
+  // page.tsx), and not even destructured in this component's own params, so the "All Steps
+  // Complete — Go Live on MLS" CTA below just linked back to this same lifecycle page (a dead
+  // self-link). The real go-live action already lives at LaunchActionsPanel's "Launch Listing
+  // Campaign" button (app/dashboard/listings/[id]/components/launch/launch-actions-panel.tsx:102,
+  // `/dashboard/listings/${listingId}/marketing-tier`) — SURVIVOR. This CTA now links there
+  // instead of duplicating a second go-live mechanism.
 }
 
 const PRE_LISTING_STAGES = new Set([
@@ -205,7 +211,7 @@ export function PreListingWorkflowPanel({
         {allComplete && (
           <div className="mt-3 pt-3 border-t">
             <Button asChild className="w-full gap-2">
-              <Link href={`/dashboard/listings/${listingId}/lifecycle`}>
+              <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
                 <CheckCircle2 className="h-4 w-4" />
                 All Steps Complete — Go Live on MLS
               </Link>

@@ -13,6 +13,7 @@ import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syndicateEpisode, type SyndicateEpisodeResult } from "@/lib/podcast/transistor-client"
 import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
@@ -1272,7 +1273,7 @@ export async function savePodcastShowSettings(params: {
         host_name: params.hostName ?? null,
         description: params.description ?? null,
         category: params.category ?? "Real Estate",
-        language: params.language ?? "en",
+        language: params.language ?? DEFAULT_LANGUAGE,
         cover_art_url: params.coverArtUrl ?? null,
         website_url: params.websiteUrl ?? null,
         updated_at: new Date().toISOString(),

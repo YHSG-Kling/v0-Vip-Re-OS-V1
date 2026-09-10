@@ -18,6 +18,7 @@
  * a rename and nothing else.
  */
 import { createClient } from "@/lib/supabase/server"
+import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 
 export interface AvatarOption {
   avatar_id: string
@@ -112,7 +113,7 @@ export async function listElevenLabsVoices(): Promise<{ success: boolean; voices
     .map((v: any) => ({
       voice_id: v.voice_id,
       name: v.name ?? v.voice_id,
-      language: v.labels?.language ?? v.fine_tuning?.language ?? "en",
+      language: v.labels?.language ?? v.fine_tuning?.language ?? DEFAULT_LANGUAGE,
       gender: v.labels?.gender ?? null,
       category: "premade",
       description: typeof v.description === "string" && v.description.trim()

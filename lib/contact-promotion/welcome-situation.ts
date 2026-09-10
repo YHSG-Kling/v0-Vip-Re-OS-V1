@@ -72,6 +72,13 @@
 
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
 import { isLifetimeCustomerType } from "@/lib/contact-types"
+// DEFAULT_LANGUAGE is lane JA's shared constant (owner ruling 2026-09-10, wave 51:
+// "the default language is english" — every language resolution in the platform
+// defaults to "en" when none is known). Imported from its canonical home per this
+// wave's coordination note rather than a second copy (§6) — if lane JA's patch has
+// not landed in this tree yet, this import is a placeholder the integrator resolves
+// by merging both lanes; see this lane's report.
+import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
 
 /**
  * The live `contacts_timeline_check` / `leads_timeline_check` vocabulary mapped
@@ -88,6 +95,27 @@ export const TIMELINE_BUCKET_PHRASE: Readonly<Record<string, string>> = Object.f
   "12+_months":  "you are planning a year or more out",
   researching:   "you are still gathering information, with no date set",
 })
+
+/**
+ * WHERE THIS WELCOME CAME FROM, beyond an ordinary lead-to-contact conversion.
+ *
+ * OWNER RULING (2026-09-10, wave 51): "contact came from open house — same welcome
+ * email but mentions the open house with welcome video/portal invite." ONE context
+ * field on the existing welcome path — never a second implementation (§6). `kind`
+ * is a discriminant so a future origin (e.g. a scanned card resolved to a contact)
+ * can be added without another parameter threading through every caller.
+ *
+ * Deliberately NOT a `facts`-only shape: `buildWelcomeSituation` is what turns it
+ * into a them-first fact line, so the open-house address/date reach the copy AND
+ * the avatar script through the ONE situation builder both already call.
+ */
+export interface WelcomeOrigin {
+  kind: "open_house"
+  /** The listing the open house was held at (open_house_events.property_address). */
+  listingAddress: string
+  /** open_house_events.event_date, already formatted for display. */
+  openHouseDate: string
+}
 
 /** What the caller must hand over. A CONTACT row — never a lead row (§5). */
 export interface WelcomeSituationContact {
@@ -154,6 +182,16 @@ export interface WelcomeSituationResult {
    * `CopyPersona.situation` and falls back to a journey phrase only when it is null.
    */
   personaLabel: string | null
+  /**
+   * THE LANGUAGE THE COPY/SCRIPT IS WRITTEN IN. OWNER RULING (2026-09-10, wave
+   * 51): "the default language is english" wherever a language is resolved and
+   * none is known. `contacts` carries no language column today, so this is
+   * ALWAYS `DEFAULT_LANGUAGE` until that column exists — stated explicitly (as a
+   * directive on `complianceDirectives`, not silently assumed) so both the email
+   * copy generator and the avatar-video script generator honor the same answer
+   * from the same place (§6).
+   */
+  language: string
 }
 
 /**
@@ -278,15 +316,42 @@ function screenFreeText(
  */
 export function buildWelcomeSituation(
   contact: WelcomeSituationContact | null | undefined,
+  opts?: {
+    /** Set when the contact was captured/resolved at an open house (§ owner ruling above). */
+    origin?: WelcomeOrigin | null
+    /** Caller-resolved language preference. Falls back to DEFAULT_LANGUAGE when absent. */
+    language?: string | null
+  },
 ): WelcomeSituationResult {
+  const language = (opts?.language ?? "").trim() || DEFAULT_LANGUAGE
   const out: WelcomeSituationResult = {
     facts: [],
-    complianceDirectives: [...WELCOME_FAIR_HOUSING_DIRECTIVES],
+    complianceDirectives: [
+      ...WELCOME_FAIR_HOUSING_DIRECTIVES,
+      `Write this in ${language}.`,
+    ],
     droppedFacts: [],
     warnings: [],
     isSituational: false,
     personaLabel: null,
+    language,
   }
+
+  // ── ORIGIN. Never a literal hardcoded welcome string — a THEM-FIRST FACT the
+  // writer may draw on, exactly like every other fact here, so the email copy and
+  // the avatar script each phrase it in their own voice rather than repeating a
+  // canned sentence. `listingAddress` is a listing's own public marketing address,
+  // not a protected-class-adjacent detail, so it needs no fair-housing screen —
+  // unlike contact_persona/property_type/city below, which are operator free text.
+  if (opts?.origin?.kind === "open_house") {
+    out.facts.push(
+      `You met them in person — they visited your open house at ${opts.origin.listingAddress} on ` +
+        `${opts.origin.openHouseDate}. Reference that visit warmly; this is a follow-up to someone you ` +
+        `already met, not a cold introduction.`,
+    )
+    out.isSituational = true
+  }
+
   if (!contact) return out
 
   // ── SIDE. The one fact that changes the whole shape of the script. ─────────

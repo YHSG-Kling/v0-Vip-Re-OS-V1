@@ -47,6 +47,11 @@ interface AIReplyCoachPanelProps {
   agentUserId:      string
   conversationId:   string | null
   contactId:        string | null
+  /** optional by design: extra listing context for the coach's draft, when the active
+   *  conversation happens to be about one. The one caller (InboxClient.tsx) tracks no
+   *  conversation→listing link today — the inbox's `contact` carries no listing tie — so
+   *  this stays unset until that link exists; a future inbox feature that resolves "which
+   *  listing is this thread about" should pass it here rather than adding a second path. */
   listingId?:       string
   /** Latest inbound message — triggers auto-draft offer */
   lastInboundId?:   string

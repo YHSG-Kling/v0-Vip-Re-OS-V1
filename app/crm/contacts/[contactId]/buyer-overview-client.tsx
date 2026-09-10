@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback }             from "react"
+import { useRouter }                          from "next/navigation"
 import Link                                   from "next/link"
 import { cn }                                 from "@/lib/utils"
 import { BuyerStageProgress }                 from "./components/buyer-stage-progress"
@@ -131,6 +132,7 @@ export function BuyerOverviewClient({
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
   dualAgencyListings, enabledGates = [], offerAllowed = false,
 }: BuyerOverviewClientProps) {
+  const router = useRouter()
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
   const [verified, setVerified]     = useState(profile?.verified === true)
@@ -670,6 +672,10 @@ export function BuyerOverviewClient({
               blockers={blockers}
               contactId={buyerId}
               agentId={agentUserId}
+              onAdvanced={() => {
+                setRefreshKey((k) => k + 1)
+                router.refresh()
+              }}
             />
           </aside>
 

@@ -826,6 +826,30 @@ export async function convertAttendeeToContact(params: {
       entityId:    contactId,
       contactId,
     })
+
+    // THE WELCOME (owner ruling 2026-09-10, wave 51): "contact came from open house
+    // — same welcome email but mentions the open house with welcome video/portal
+    // invite." This is the attendee's becomes-a-contact moment — hand it to
+    // deliverConversionWelcome (THE ONE welcome path) directly rather than waiting
+    // on kernel-event plumbing, since this function already has everything the
+    // welcome needs (contact_type is 'buyer' above, auth.agentId is agents.id).
+    // Best-effort: a welcome must never unwind a conversion that already landed.
+    // auth.agentId (CallerWithAgentResult) is `string | null` — no agent record for
+    // the caller means nobody for the welcome to be FROM, same gate
+    // ensureClientWelcome itself applies (state 'no_assigned_agent').
+    if (auth.agentId) {
+      try {
+        const { resolveOpenHouseWelcomeOrigin } = await import("@/lib/kernel/open-house")
+        const origin = await resolveOpenHouseWelcomeOrigin(serviceClient, attendee.event_id)
+        const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+        await deliverConversionWelcome(serviceClient, {
+          contactId, agentId: auth.agentId, brokerageId: auth.brokerageId,
+          contactType: "buyer", firstName, lastName, origin,
+        })
+      } catch (e) {
+        console.error(`[seller-open-house] welcome delivery failed for contact ${contactId}:`, e)
+      }
+    }
   }
 
   await supabase

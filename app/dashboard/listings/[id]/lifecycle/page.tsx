@@ -35,6 +35,7 @@ import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycl
 import { AiOptimizationPanel, type AiListingOptimizationRow } from "../components/ai-optimization-panel"
 import { MlsCheckPanel } from "../components/mls-check-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
+import { resolveTransactionFormsProvider } from "@/lib/kernel/forms"
 import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -173,6 +174,16 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   if (listingAgreementError) {
     console.error("[listing lifecycle] listing_agreements read failed:", listingAgreementError.message)
   }
+
+  // The brokerage's CONFIGURED e-sign/forms provider (never assume dotloop — wave-47 ruling,
+  // lib/kernel/forms.ts resolveTransactionFormsProvider, platform_credentials source of truth).
+  // ListingFormsPanel's "open <provider> directly" link needs the real one; undefined when the
+  // brokerage hasn't connected a provider yet (the panel already hides that link on undefined).
+  const formsProviderResult = await resolveTransactionFormsProvider({ brokerage_id: userRow.brokerage_id })
+  const configuredFormsProvider =
+    formsProviderResult.success && formsProviderResult.data?.is_configured
+      ? formsProviderResult.data.provider_name
+      : undefined
 
   // Coming soon state — media approved gate + transaction ID for email campaigns
   const [mediaApprovedResult, recordedEventsResult, transactionResult] = await Promise.all([
@@ -789,6 +800,7 @@ const { data: listingVendorBookings } = await supabase
               ? `${sellerContact.first_name ?? ""} ${sellerContact.last_name ?? ""}`.trim()
               : undefined}
             sellerEmail={(sellerContact as any)?.email ?? undefined}
+            providerName={configuredFormsProvider}
           />
         </div>
 

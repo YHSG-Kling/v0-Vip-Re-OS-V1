@@ -18,6 +18,14 @@
  * D-ID + ElevenLabs ONLY. No HeyGen. No Gemini vision.
  *
  * Exports:
+ *   · DEFAULT_LANGUAGE             — owner ruling (wave 51, 2026-09-10, verbatim: "the
+ *                                    default language is english"): THE one constant
+ *                                    every language resolution in the codebase falls
+ *                                    back to when a locale is unknown/null — never a
+ *                                    second hardcoded "en" literal (CLAUDE.md §6, one
+ *                                    vocabulary per function). Canonical home for it:
+ *                                    this is the file that already owns the BCP-47 →
+ *                                    ElevenLabs language_code vocabulary.
  *   · localeToElevenLabsLanguage   — PURE locale→ElevenLabs language_code mapper.
  *   · MULTILINGUAL_TTS_MODEL       — the ElevenLabs model constant (no identifier
  *                                    in comments beyond what the API name is — the
@@ -32,6 +40,18 @@
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { GatewayChatMessage } from "@/lib/ai/gateway-chat"
 import type { VideoSituation, CommissionOpts } from "@/lib/video/video-director"
+import { SCHEMA_SNAPSHOT } from "@/scripts/schema-snapshot"
+
+// ─── Default language (owner ruling, wave 51, verbatim: "the default language is
+// ─── english") ────────────────────────────────────────────────────────────────
+
+/**
+ * THE default language — every language/locale resolution in the codebase that hits
+ * an unknown/null value falls back to this ONE constant, never a second "en"/"eng"/
+ * "english" literal (CLAUDE.md §6). Also the ElevenLabs language_code for English
+ * (matches LOCALE_TO_ELEVENLABS_LANGUAGE["en"] below — kept as one value, not two).
+ */
+export const DEFAULT_LANGUAGE = "en"
 
 // ─── ElevenLabs multilingual model constant ──────────────────────────────────
 
@@ -149,7 +169,162 @@ export function localeToElevenLabsLanguage(locale: string): string | null {
  */
 export function isMultilingualLocale(locale: string): boolean {
   const lang = localeToElevenLabsLanguage(locale)
-  return lang !== null && lang !== "en"
+  return lang !== null && lang !== DEFAULT_LANGUAGE
+}
+
+/**
+ * Human-readable language names for the same 23 codes
+ * LOCALE_TO_ELEVENLABS_LANGUAGE resolves to — used in translation prompts
+ * (translateReelScript's `targetLanguageName`) and in any writing-prompt
+ * directive that tells a model "write this in ${language}" (generatePersonaCopy,
+ * the intro-video-reactor draft prompt). ONE map for "what do we call this
+ * language" — a second copy of this list anywhere else would be the exact §6
+ * defect (two spellings of the same idea, timeline/video-status/vendor-category
+ * already paid for).
+ */
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English", es: "Spanish", pt: "Portuguese", fr: "French", de: "German",
+  it: "Italian", zh: "Chinese", ja: "Japanese", ko: "Korean", ar: "Arabic",
+  hi: "Hindi", pl: "Polish", nl: "Dutch", ru: "Russian", tr: "Turkish",
+  uk: "Ukrainian", sv: "Swedish", no: "Norwegian", da: "Danish", fi: "Finnish",
+  id: "Indonesian", tl: "Tagalog", vi: "Vietnamese",
+}
+
+/** languageName — PURE. Human-readable name for a resolved language code (the
+ *  ElevenLabs-mapped code, not a raw BCP-47 locale). Unmapped codes return the
+ *  code itself so a prompt never renders "undefined". */
+export function languageName(code: string): string {
+  return LANGUAGE_NAMES[code] ?? code
+}
+
+// ─── resolveContactLanguage — THE ONE LANGUAGE RESOLVER (§6) ─────────────────
+
+/**
+ * The inputs resolveContactLanguage needs, ALREADY READ by the caller. This
+ * function does NO I/O itself — every caller (a `server-only` reactor, a pure
+ * simulator, a future non-DB caller) can drive it, and the tier order is
+ * provable without a database. `resolveContactLanguageFromDb` below is the
+ * convenience wrapper that does the actual reads for the two real callers.
+ */
+export interface ContactLanguageInputs {
+  /** contacts.preferred_language — tier 1. Null when the contact/agent never
+   *  set one, OR when the column does not exist yet (m620 not applied). */
+  contactPreferredLanguage?: string | null
+  /** The most recent call_transcriptions.language for a voice_calls row linked
+   *  to this contact — tier 2. Null when no transcribed call exists. */
+  latestCallTranscriptionLanguage?: string | null
+  /** The intake-time locale capture (form locale field / Accept-Language
+   *  header), stored at contacts.metadata->>'captured_language' until m620
+   *  lands and a typed column replaces it — tier 3. */
+  intakeCapturedLanguage?: string | null
+}
+
+/**
+ * resolveContactLanguage — PURE. THE ONE RESOLVER every avatar-video, persona-
+ * reel, caption, and copy-generation caller uses to answer "what language does
+ * this contact get". Tier order is the owner's ruling, in force:
+ *
+ *   1. contacts.preferred_language   — the contact/agent said so explicitly.
+ *   2. call_transcriptions.language  — they've spoken to us before; a real
+ *      detected language beats a guess.
+ *   3. intake-time locale            — the form/Accept-Language capture at
+ *      first touch, before any of the above could exist.
+ *   4. DEFAULT_LANGUAGE ("en")       — owner ruling: default is English.
+ *
+ * Every tier value is passed through `localeToElevenLabsLanguage` so a raw
+ * BCP-47 locale ("es-MX", "pt-BR") or an already-mapped code both resolve the
+ * same way, and an unmapped/garbage value never survives to the next stage
+ * silently wrong — it falls through to the next tier exactly like a null would.
+ */
+export function resolveContactLanguage(ctx: ContactLanguageInputs): string {
+  const tiers: Array<string | null | undefined> = [
+    ctx.contactPreferredLanguage,
+    ctx.latestCallTranscriptionLanguage,
+    ctx.intakeCapturedLanguage,
+  ]
+  for (const raw of tiers) {
+    if (!raw) continue
+    const mapped = localeToElevenLabsLanguage(raw)
+    if (mapped) return mapped
+  }
+  return DEFAULT_LANGUAGE
+}
+
+/**
+ * schemaHasColumn — PURE. Reads the generated schema cache
+ * (scripts/schema-snapshot.ts, regenerated from the live database — CLAUDE.md
+ * §3) rather than assuming a column exists. This is what lets
+ * resolveContactLanguageFromDb ship AHEAD of m620 being applied: the SELECT
+ * below never names `preferred_language` until the cache says the live table
+ * actually has it, so a query against the unmigrated database never 42703s.
+ */
+function schemaHasColumn(table: string, column: string): boolean {
+  return (SCHEMA_SNAPSHOT[table] ?? []).includes(column)
+}
+
+/**
+ * resolveContactLanguageFromDb — the real callers' entry point. Does the tiered
+ * reads (tolerating m620's absence per the header above) and delegates the
+ * decision to the pure resolver.
+ *
+ * NEVER THROWS — a read failure at any tier is treated as "this tier has no
+ * answer" (falls through), consistent with CLAUDE.md §4 fail-closed: a language
+ * we cannot determine renders as the ruled default, never as a broken page.
+ */
+export async function resolveContactLanguageFromDb(
+  supabase: AnyClient,
+  contactId: string,
+): Promise<string> {
+  let contactPreferredLanguage: string | null = null
+  let intakeCapturedLanguage: string | null = null
+  try {
+    const cols = schemaHasColumn("contacts", "preferred_language")
+      ? "preferred_language, metadata"
+      : "metadata"
+    const { data } = await supabase
+      .from("contacts")
+      .select(cols)
+      .eq("id", contactId)
+      .maybeSingle()
+    const row = data as { preferred_language?: string | null; metadata?: Record<string, unknown> | null } | null
+    contactPreferredLanguage = row?.preferred_language ?? null
+    const meta = row?.metadata
+    intakeCapturedLanguage =
+      meta && typeof meta === "object" && typeof (meta as any).captured_language === "string"
+        ? (meta as any).captured_language
+        : null
+  } catch {
+    // Tolerate a refused/failed read — falls through to the next tier.
+  }
+
+  let latestCallTranscriptionLanguage: string | null = null
+  try {
+    const { data: calls } = await supabase
+      .from("voice_calls")
+      .select("id")
+      .eq("contact_id", contactId)
+      .order("started_at", { ascending: false })
+      .limit(10)
+    const callIds = (calls ?? []).map((c: any) => c.id).filter(Boolean)
+    if (callIds.length > 0) {
+      const { data: transcription } = await supabase
+        .from("call_transcriptions")
+        .select("language")
+        .in("voice_call_id", callIds)
+        .order("transcribed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      latestCallTranscriptionLanguage = (transcription as any)?.language ?? null
+    }
+  } catch {
+    // Tolerate a refused/failed read — falls through to the next tier.
+  }
+
+  return resolveContactLanguage({
+    contactPreferredLanguage,
+    latestCallTranscriptionLanguage,
+    intakeCapturedLanguage,
+  })
 }
 
 // ─── Translation via AI gateway ──────────────────────────────────────────────
@@ -433,7 +608,7 @@ export async function commissionMultilingualReel(
             tts_model:         MULTILINGUAL_TTS_MODEL,
             tts_language_code: ttsLanguageCode,
             translated_captions: translation.translatedCaptions ?? [],
-            source_locale:     "en",
+            source_locale:     DEFAULT_LANGUAGE,
             target_locale:     locale,
           },
           updated_at: now,

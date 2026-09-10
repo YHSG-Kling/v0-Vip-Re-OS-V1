@@ -103,6 +103,7 @@ import {
   buildWelcomeSituation,
   describeDroppedFacts,
   type WelcomeSituationResult,
+  type WelcomeOrigin,
 } from "./welcome-situation"
 
 /** Machine-readable outcome for the caller's log. */
@@ -130,6 +131,10 @@ export interface WelcomeAvatarVideoResult {
   videoProjectId: string | null
   /** True when the script was built from real situational facts, not a generic hello. */
   situational: boolean
+  /** The resolved ElevenLabs-mapped language code (resolveContactLanguageFromDb
+   *  output) this render was commissioned in — DEFAULT_LANGUAGE ("en") when
+   *  resolution fell through every tier, null when no render was commissioned. */
+  language: string | null
   /** Everything the operator needs to know. NEVER a reason to unwind. */
   warnings: string[]
 }
@@ -141,6 +146,11 @@ export interface WelcomeAvatarVideoParams {
   agentId: string
   /** The tenant. Resolved by the caller from the lead/contact it already read. */
   brokerageId: string
+  /** Owner ruling 2026-09-10 (wave 51): an open-house-sourced contact's welcome
+   *  video "may mention the visit" — threaded into the same situation builder the
+   *  welcome email uses, so the script gains one more them-first fact, not a
+   *  second commissioning path. */
+  origin?: WelcomeOrigin | null
 }
 
 /**
@@ -170,6 +180,7 @@ export async function ensureWelcomeAvatarVideo(
     reason: "unavailable",
     videoProjectId: null,
     situational: false,
+    language: null,
     warnings: [],
   }
 
@@ -194,6 +205,17 @@ export async function ensureWelcomeAvatarVideo(
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
+
+  // THE ONE LANGUAGE RESOLVER (§6), resolved ONCE, here, for the moment wave
+  // 50's hardening pass found had none: the first-touch WELCOME avatar video.
+  // Best-effort — a resolution failure falls to DEFAULT_LANGUAGE inside the
+  // resolver itself, never blocks the commission.
+  let language: string | undefined
+  try {
+    const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+    language = await resolveContactLanguageFromDb(supabase, params.contactId)
+  } catch { /* falls to the reactor's own DEFAULT_LANGUAGE fallback */ }
+  out.language = language ?? null
 
   // supabase-js RESOLVES refusals. An unread error here reads exactly like "no
   // such contact", and the difference matters: one is a tenant mismatch worth
@@ -232,7 +254,7 @@ export async function ensureWelcomeAvatarVideo(
   }
 
   // ── THE SITUATION. Compliance-screened BEFORE it can reach a prompt. ──────
-  const situation: WelcomeSituationResult = buildWelcomeSituation(contact)
+  const situation: WelcomeSituationResult = buildWelcomeSituation(contact, { origin: params.origin ?? null })
   out.situational = situation.isSituational
   out.warnings.push(...situation.warnings)
   out.warnings.push(...describeDroppedFacts(situation.droppedFacts))
@@ -260,6 +282,7 @@ export async function ensureWelcomeAvatarVideo(
       // BOTH: the clip belongs in the welcome email AND on the portal card —
       // that is the ruling's "in the emila and in the portal".
       delivery: "both",
+      language,
       situation: {
         facts: situation.facts,
         complianceDirectives: situation.complianceDirectives,

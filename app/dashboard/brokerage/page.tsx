@@ -254,6 +254,65 @@ export default async function BrokerageDashboard({
     return new Date(d.created_at) >= thisMonthStart
   }).reduce((sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0), 0)
 
+  // BrokerageRevenueChart's `data` (hidden-wire census category c, 2026-09-10) — 6 months of
+  // real GCI + deal count, same agent_commissions table getBrokerageStats reads above for
+  // monthlyGCI/lastMonthGCI. `growthPercent` reuses brokerageStats.gciChange rather than a
+  // second MoM computation.
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1)
+  const { data: monthlyCommissionRows, error: monthlyRevenueError } = await supabase
+    .from("agent_commissions")
+    .select("gross_commission, close_date")
+    .eq("brokerage_id", brokerageId)
+    .gte("close_date", sixMonthsAgo.toISOString().split("T")[0])
+  if (monthlyRevenueError) {
+    console.error("[brokerage dashboard] monthly revenue read failed:", monthlyRevenueError.message)
+  }
+  const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  const monthlyRevenueBuckets = new Map<string, { month: string; revenue: number; deals: number }>()
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    monthlyRevenueBuckets.set(key, { month: MONTH_LABELS[d.getMonth()], revenue: 0, deals: 0 })
+  }
+  for (const row of (monthlyCommissionRows ?? []) as { gross_commission: number | null; close_date: string | null }[]) {
+    if (!row.close_date) continue
+    const d = new Date(row.close_date)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    const bucket = monthlyRevenueBuckets.get(key)
+    if (bucket) {
+      bucket.revenue += Number(row.gross_commission ?? 0)
+      bucket.deals += 1
+    }
+  }
+  const monthlyRevenueData = [...monthlyRevenueBuckets.keys()].sort().map((k) => monthlyRevenueBuckets.get(k)!)
+
+  // BrokerageComplianceOverview's `stats` (hidden-wire census category c, 2026-09-10) — real
+  // compliance_flags counts (same table + 'flagged' status getBrokerageStats.openComplianceFlags
+  // reads above) plus the license-expiration count already computed via trackLicenseExpirations.
+  const { data: complianceFlagRows, error: complianceFlagsError } = await supabase
+    .from("compliance_flags")
+    .select("agent_id, status")
+    .eq("brokerage_id", brokerageId)
+    .in("status", ["flagged", "reviewed"])
+  if (complianceFlagsError) {
+    console.error("[brokerage dashboard] compliance_flags read failed:", complianceFlagsError.message)
+  }
+  const flaggedAgentIds = new Set(
+    ((complianceFlagRows ?? []) as { agent_id: string | null; status: string }[])
+      .filter((r) => r.status === "flagged" && r.agent_id)
+      .map((r) => r.agent_id as string),
+  )
+  const complianceStats = {
+    totalAgents: agents.length,
+    compliantAgents: Math.max(agents.length - flaggedAgentIds.size, 0),
+    pendingReview: (complianceFlagRows ?? []).filter((r: { status: string }) => r.status === "reviewed").length,
+    violations: brokerageStats.openComplianceFlags,
+    // `expirations` (trackLicenseExpirations, resolved above in the same Promise.all as
+    // `dashboard`) rather than the `licenseStatus` alias — that alias is declared further
+    // down this function, after this block runs.
+    licenseExpiringCount: ((expirations as any)?.expiringLicenses ?? []).length,
+  }
+
   // Process fatigue data
   const fatigueBuyers = (fatigueResult.success ? (fatigueResult as any).buyers : []) || []
   const fatigueAlerts = (fatigueAlertsResult.success ? (fatigueAlertsResult as any).alerts : []) || []
@@ -906,11 +965,11 @@ export default async function BrokerageDashboard({
         </TabsContent>
 
         <TabsContent value="revenue">
-          <BrokerageRevenueChart totalRevenue={totalGCI || 0} />
+          <BrokerageRevenueChart totalRevenue={totalGCI || 0} data={monthlyRevenueData} growthPercent={brokerageStats.gciChange} />
         </TabsContent>
 
         <TabsContent value="compliance">
-          <BrokerageComplianceOverview />
+          <BrokerageComplianceOverview stats={complianceStats} />
         </TabsContent>
       </Tabs>
     </div>

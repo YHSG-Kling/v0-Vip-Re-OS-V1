@@ -99,6 +99,15 @@ export async function POST(req: NextRequest) {
           email,
           phone: phone ?? null,
           source: "open_house",
+          // OWNER PRECEDENT (app/actions/seller-open-house.ts convertAttendeeToContact,
+          // lib/kernel/open-house.ts resolveOrCreateOpenHouseContact both already do
+          // this): an open-house attendee is touring a specific FOR-SALE listing, so
+          // they are a buyer-side lead by the nature of the visit — not a guess, the
+          // same classification every other open-house contact-creation path in this
+          // codebase already makes. This is what lets resolveWelcomeManagers route the
+          // welcome (owner ruling 2026-09-10, wave 51) to shopping_agent instead of
+          // silently matching no manager, the way an unclassified web-form contact does.
+          contact_type: "buyer",
           status: "new",
           tcpa_consent: true,
           tcpa_consent_at: now,
@@ -240,11 +249,18 @@ export async function POST(req: NextRequest) {
     })
 
     // 6. processKernelEvent
+    // contactId + metadata.eventId are carried so lib/kernel/event-reactor.ts's
+    // OPEN_HOUSE_ATTENDEE_CAPTURED handler can hand this contact to
+    // deliverConversionWelcome (owner ruling 2026-09-10, wave 51) — previously
+    // omitted, so that reader had no way to reach the contact this same request
+    // just created or resolved.
     await processKernelEvent({
       event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
       brokerageId: event.brokerage_id,
       entityType: "listing_stage_machine",
       entityId: event.listing_id,
+      contactId,
+      metadata: { contactId, eventId, attendeeId: attendee.id },
     }).catch(() => {})
 
     // 7. Open House Concierge Mobile — fire personalized 90-second auto-text

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1771 of 1831 pairs) — storing them would be
+ * overwhelming majority (1776 of 1836 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1908 edges across 709 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1831 unordered
+ * MEASURED AT GENERATION: 1913 edges across 710 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1836 unordered
  * table pairs carry at least one FK; 60
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-10
  * source: public.live_foreign_keys_json()
- * body-sha256: 0dad99a5d6ad30cf06d3661539d214b75beceb3837592232974c38493472f198
+ * body-sha256: ec8dd0b47fbe5cfc429d3ed8002381c8fe7ae4ba3732e43403fd0e215fe87244
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -533,6 +533,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "objection_training_sessions": { "agent_user_id": "users", "brokerage_id": "brokerages" },
   "objection_training_turns": { "session_id": "objection_training_sessions" },
   "offer_comparison": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "listing_id": "listings", "recommended_offer_id": "offers" },
+  "offer_intents": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "offer_id": "offers" },
   "offer_strategy_templates": { "brokerage_id": "brokerages" },
   "offers": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "parent_offer_id": "offers", "presented_to_seller_by_agent_id": "agents", "strategy_recommendation_id": "strategy_recommendations", "transaction_id": "transactions", "uploaded_by": "users" },
   "onboarding_ai_chats": { "agent_id": "agents", "agent_onboarding_id": "agent_onboarding", "brokerage_id": "brokerages" },

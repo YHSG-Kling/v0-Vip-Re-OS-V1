@@ -31,6 +31,37 @@ import { generateTextRouted } from "@/lib/ai/models"
 // the inconsistency. The queue call is best-effort and already awaited/voided,
 // so deferring the import costs nothing.
 import { KernelEvent } from "./events"
+import type { WelcomeOrigin } from "@/lib/contact-promotion/welcome-situation"
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE WELCOME `origin` — shared by every reader that hands an open-house-sourced
+// contact to deliverConversionWelcome (owner ruling 2026-09-10, wave 51: "contact
+// came from open house — same welcome email but mentions the open house").
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolve the them-first open-house facts (listing address + date) for
+ * `WelcomeOrigin`, given the open_house_events.id.
+ *
+ * NEVER a guess: `open_house_events` carries `property_address` and `event_date`
+ * directly — no join to `listings` needed. Returns null (no origin) when either
+ * is missing rather than inventing a placeholder date/address — the welcome still
+ * sends, it simply says nothing about the visit.
+ */
+export async function resolveOpenHouseWelcomeOrigin(
+  supabase: ReturnType<typeof createServiceClient>,
+  openHouseId: string | null | undefined,
+): Promise<WelcomeOrigin | null> {
+  if (!openHouseId) return null
+  const { data } = await supabase
+    .from("open_house_events")
+    .select("property_address, event_date")
+    .eq("id", openHouseId)
+    .maybeSingle()
+  const row = data as { property_address?: string | null; event_date?: string | null } | null
+  if (!row?.property_address || !row.event_date) return null
+  return { kind: "open_house", listingAddress: row.property_address, openHouseDate: row.event_date }
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -465,6 +496,10 @@ export async function attachOpenHouseSourceAttribution(input: {
       agentId: agent_id,
       metadata: {
         attendee_id,
+        // open_house_id rides in metadata so the reactor can resolve the welcome's
+        // `origin` (listing address + date, owner ruling 2026-09-10 wave 51) without
+        // a second lookup through the attendee row — see resolveOpenHouseWelcomeOrigin.
+        open_house_id,
         agent_id,
         resolved_at: new Date().toISOString(),
       },

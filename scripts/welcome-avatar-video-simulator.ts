@@ -243,8 +243,14 @@ async function main() {
   console.log("\n[1b · compliance-first — the rules are an INPUT, and the finder works both ways]")
 
   check(
+    // + 1 (wave 51): every situation also carries the "write in {language}"
+    // directive (owner ruling: default to DEFAULT_LANGUAGE when none is known).
+    // Asserted by CONTENT (every floor line is still present, unchanged) rather
+    // than only by count, so a future addition that also moves this number is
+    // still provably the SAME floor underneath — see scripts/conversion-welcome-simulator.ts Layer 9.
     "1.7 the fair-housing floor is present on EVERY situation, even an empty one",
-    buildWelcomeSituation({}).complianceDirectives.length === WELCOME_FAIR_HOUSING_DIRECTIVES.length &&
+    buildWelcomeSituation({}).complianceDirectives.length === WELCOME_FAIR_HOUSING_DIRECTIVES.length + 1 &&
+      WELCOME_FAIR_HOUSING_DIRECTIVES.every((d) => buildWelcomeSituation({}).complianceDirectives.includes(d)) &&
       WELCOME_FAIR_HOUSING_DIRECTIVES.length >= 4,
   )
   check(

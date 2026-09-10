@@ -226,7 +226,7 @@
     "lib/kernel/lookalike-audience.ts": 1,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
-    "lib/kernel/manager-signals.ts": 2,
+    "lib/kernel/manager-signals.ts": 1,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
     "lib/kernel/morning-standup.ts": 2,
     "lib/kernel/neighbor-farm.ts": 1,
@@ -251,6 +251,7 @@
     "lib/kernel/service-recovery.ts": 1,
     "lib/kernel/showing-lifecycle.ts": 2,
     "lib/kernel/signal-registry.ts": 1,
+    "lib/kernel/signal-routing.ts": 2,
     "lib/kernel/signature-chase.ts": 3,
     "lib/kernel/site-traffic-insights.ts": 1,
     "lib/kernel/standup-action.ts": 1,
@@ -266,7 +267,7 @@
     "lib/kernel/vendor-rating-governance.ts": 4,
     "lib/kernel/vendor-subscription.ts": 1,
     "lib/kernel/vendor-verification.ts": 1,
-    "lib/kernel/video-coordination.ts": 3,
+    "lib/kernel/video-coordination.ts": 2,
     "lib/kernel/voice-delegation.ts": 7,
     "lib/kernel/warm-handoff.ts": 1,
     "lib/kernel/week-in-review.ts": 2,
@@ -433,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9413,
+  "census": 9420,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3439,7 +3440,7 @@
     "lib/kernel/onboarding-journey.ts": 5,
     "lib/kernel/onboarding-reminders.ts": 1,
     "lib/kernel/onboarding.ts": 4,
-    "lib/kernel/open-house.ts": 5,
+    "lib/kernel/open-house.ts": 6,
     "lib/kernel/org-recipients.ts": 1,
     "lib/kernel/os-self-audit.ts": 4,
     "lib/kernel/outcome-learning.ts": 5,
@@ -3485,6 +3486,7 @@
     "lib/kernel/signal-reaper-policy.ts": 2,
     "lib/kernel/signal-reaper.ts": 1,
     "lib/kernel/signal-registry.ts": 2,
+    "lib/kernel/signal-routing.ts": 3,
     "lib/kernel/signature-chase.ts": 4,
     "lib/kernel/site-traffic-insights.ts": 2,
     "lib/kernel/social-proof.ts": 2,
@@ -4124,7 +4126,7 @@
     "lib/video/memory-video-gate.ts": 4,
     "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
-    "lib/video/multilingual-reel.ts": 4,
+    "lib/video/multilingual-reel.ts": 7,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
     "lib/video/playable-video.ts": 1,
@@ -17304,6 +17306,7 @@
       "determineFirstLoginDestination"
     ],
     "lib/kernel/open-house.ts": [
+      "resolveOpenHouseWelcomeOrigin",
       "resolveOrCreateOpenHouseContact",
       "createOpenHouseAttendeeFromContact",
       "attachOpenHouseSourceAttribution",
@@ -17561,6 +17564,11 @@
     "lib/kernel/signal-registry.ts": [
       "signalSpec",
       "registeredSignalTypes"
+    ],
+    "lib/kernel/signal-routing.ts": [
+      "routeVideoGenerationRequested",
+      "routeVideoGenerationCompleted",
+      "routeForEvent"
     ],
     "lib/kernel/signature-chase.ts": [
       "classifySignatureStall",
@@ -20726,6 +20734,9 @@
     "lib/video/multilingual-reel.ts": [
       "localeToElevenLabsLanguage",
       "isMultilingualLocale",
+      "languageName",
+      "resolveContactLanguage",
+      "resolveContactLanguageFromDb",
       "translateReelScript",
       "commissionMultilingualReel"
     ],

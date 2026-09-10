@@ -1122,6 +1122,19 @@ export interface DispatchVideoParams extends DispatchActorContext {
   recipientName?: string
   scriptVars?: Record<string, string>
   metadata?: Record<string, unknown>
+  /**
+   * The ElevenLabs-mapped language code (lib/video/multilingual-reel.ts
+   * localeToElevenLabsLanguage output — DEFAULT_LANGUAGE "en" or unset means
+   * "let ElevenLabs auto-detect from the text", the prior behavior BYTE-FOR-
+   * BYTE). ADDITIVE: omitting this changes nothing for any existing caller.
+   *
+   * BUILT to close a measured gap (lib/kernel/manager-registry.ts
+   * multilingual_reels entry, "NOT DELIVERED, STATED PLAINLY", wave 26):
+   * commissionMultilingualReel stamped ai_video_projects.video_metadata with
+   * tts_model / tts_language_code and NOTHING downstream ever read them — this
+   * TTS call is that reader.
+   */
+  ttsLanguageCode?: string | null
 }
 
 export async function dispatchVideo(params: DispatchVideoParams): Promise<DispatchResult> {
@@ -1251,7 +1264,16 @@ async function dispatchVideoViaDID({
     auth: { style: "header", name: "xi-api-key", value: elApiKey },
     headers: { Accept: "audio/mpeg" },
     responseType: "arraybuffer",
-    body: { text: renderedScript, model_id: "eleven_multilingual_v2" },
+    body: {
+      text: renderedScript,
+      model_id: "eleven_multilingual_v2",
+      // THE MISSING READER (see the DispatchVideoParams doc above). Omitted
+      // when unset or "en" — ElevenLabs auto-detects from the (English) text,
+      // identical to every render before this field existed.
+      ...(params.ttsLanguageCode && params.ttsLanguageCode !== "en"
+        ? { language_code: params.ttsLanguageCode }
+        : {}),
+    },
   })
 
   if (!ttsRes.ok || !ttsRes.data) {

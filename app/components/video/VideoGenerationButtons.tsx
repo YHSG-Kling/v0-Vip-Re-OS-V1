@@ -18,9 +18,19 @@ interface VideoGenerationButtonsProps {
    * a second copy of the same script into the library on every render.
    */
   scriptId?: string
-  userId?: string
+  // TOMBSTONE (hidden-wire census category c, 2026-09-10): `userId?: string` stood here —
+  // declared, never passed by any of the 3 callers, and dead on BOTH ends it was threaded to:
+  // app/actions/agent-settings.ts:11 getAgentSettings(_userId?) and app/actions/video-
+  // generation.ts:1451 generateVideoFromScript({ userId? // ignored — derived from session })
+  // both already resolve the acting user from the SESSION (CLAUDE.md §4 "tenant/identity from
+  // the session, never a parameter") — a client-threaded userId prop was always a no-op.
+  /** optional by design: a "video queued for generation" toast already confirms success to
+   *  the user — this is an extra hook for a caller (e.g. a video library list) that wants to
+   *  react further, such as an immediate refresh; none of the 3 current callers need it. */
   onSuccess?: () => void
   size?: "sm" | "md" | "lg"
+  /** optional by design: a pure layout override — every current caller is happy with the
+   *  component's own default spacing. */
   className?: string
 }
 
@@ -28,7 +38,6 @@ export function VideoGenerationButtons({
   script,
   title,
   scriptId,
-  userId,
   onSuccess,
   size = "md",
   className = "",
@@ -81,7 +90,7 @@ export function VideoGenerationButtons({
 
     try {
       // Get agent settings
-      const settings = await getAgentSettings(userId || "")
+      const settings = await getAgentSettings()
 
       if (!settings?.avatarId || !settings?.voiceId) {
         toast.error("Avatar or voice not set up — visit Settings → Voice & Avatar (D-ID + ElevenLabs)")
@@ -98,7 +107,6 @@ export function VideoGenerationButtons({
         type,
         avatarId: settings.avatarId,
         voiceId: settings.voiceId,
-        userId,
       })
 
       if (result.success) {

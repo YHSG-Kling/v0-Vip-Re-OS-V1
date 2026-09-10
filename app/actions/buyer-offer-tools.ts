@@ -14,6 +14,11 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireContactAccess, accessRefusal } from "@/lib/portal/require-contact-access"
 import { buildOfferHelpAcknowledgement, type OfferHelpOutcome } from "@/lib/agents/offer-strategy-producer"
+// OWNER RULING (2026-09-10): the buyer's "submit an offer" click records INTENT and routes a
+// kernel event to the buyer's own agent (+ the listing's agent when in-house) — it never opens
+// the forms. See recordOfferIntent below and lib/kernel/event-reactor.ts case 7b.
+import { emitKernelEvent } from "@/lib/kernel/emit"
+import { KernelEvent } from "@/lib/kernel/events"
 
 /** A non-exported const is fine in a "use server" file — only EXPORTS must be async functions. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -132,6 +137,49 @@ async function notifyAgent(
     return { ok: false, reason: "write_failed" }
   }
   return { ok: true }
+}
+
+/**
+ * recordOfferIntent — THE PORTAL'S "SUBMIT AN OFFER" CONTROL, ON THE RECORD (owner ruling,
+ * 2026-09-10). Writes an `offer_intents` row (m619) — never a priced `offers` row: no
+ * offer_price, no financing_type, no contingencies, so it cannot masquerade as a real offer or
+ * trip checkPendingOfferLimit / checkDuplicateOffer, which scan `offers` assuming every row IS
+ * one. `listingId` is populated ONLY when the property is one of THIS brokerage's own listings
+ * (resolved from `saved_properties.listing_id`, itself only ever set for an in-house match) —
+ * that is the fact the kernel event's in-house routing case reads back.
+ *
+ * Idempotent the same way its caller already is: requestOfferHelp only reaches this once per
+ * (contact, property) — produceOfferStrategyBrief's own dedupe (`ack.duplicate`) returns before
+ * this runs on a repeat click, so no second intent row and no second kernel event are ever an
+ * application-level race here. A DB-level unique partial index (contact_id, listing_id) backs
+ * the in-house case regardless; a 23505 from that index is treated as "already recorded", not a
+ * failure — the intent is on the record either way.
+ */
+async function recordOfferIntent(
+  supabase: any,
+  args: { brokerageId: string; contactId: string; agentId: string | null; listingId: string | null; propertyAddress: string },
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("offer_intents")
+    .insert({
+      brokerage_id: args.brokerageId,
+      contact_id: args.contactId,
+      agent_id: args.agentId,
+      listing_id: args.listingId,
+      property_address: args.propertyAddress,
+      source: "buyer_portal",
+    })
+    .select("id")
+    .single()
+  if (error) {
+    // 23505 = the unique-open-intent-per-listing index already holds one — the buyer's intent
+    // is already on the record; nothing was lost.
+    if (error.code !== "23505") {
+      console.error("[buyer-offer-tools] offer_intents insert NOT recorded:", error.message)
+    }
+    return null
+  }
+  return (data as { id: string } | null)?.id ?? null
 }
 
 /**
@@ -316,6 +364,37 @@ export async function requestOfferHelp(input: {
       return notified.reason === "no_agent"
         ? { success: false, error: "No agent is assigned to your account yet — we've recorded your request and the office will follow up." }
         : { success: false, error: "Your request was recorded but we couldn't alert your agent — message them from your portal to be sure." }
+    }
+
+    // 3b) THE OWNER'S RULING (2026-09-10): record the INTENT (never a priced offer, never the
+    // forms) and route a kernel event so the buyer's OWN assigned agent gets a real task — not
+    // only the direct notification above, which is best-effort. `listingId` is resolved from
+    // `saved_properties.listing_id` — populated ONLY for one of THIS brokerage's own listings —
+    // so the reactor's in-house case (a SECOND signal to the listing's agent) has something real
+    // to check. Best-effort: a failure here never blocks the buyer's acknowledgement, which has
+    // already been earned by the direct notifyAgent call above.
+    try {
+      let listingId: string | null = null
+      if (UUID_RE.test(input.propertyId)) {
+        const { data: savedProp } = await svc
+          .from("saved_properties").select("listing_id")
+          .eq("id", input.propertyId).eq("contact_id", input.contactId).maybeSingle()
+        listingId = (savedProp as { listing_id?: string | null } | null)?.listing_id ?? null
+      }
+      const intentId = await recordOfferIntent(svc, {
+        brokerageId: contact.brokerage_id as string, contactId: input.contactId,
+        agentId: contact.agent_id, listingId, propertyAddress: input.propertyAddress,
+      })
+      if (intentId && contact.brokerage_id) {
+        await emitKernelEvent({
+          brokerageId: contact.brokerage_id, entityType: "buyer_lifecycle", entityId: input.contactId,
+          event: KernelEvent.BUYER_OFFER_SUBMIT_REQUESTED, contactId: input.contactId,
+          listingId: listingId ?? undefined,
+          metadata: { offer_intent_id: intentId, property_address: input.propertyAddress, source: "buyer_portal" },
+        })
+      }
+    } catch (e) {
+      console.error("[requestOfferHelp] offer intent / kernel event failed:", e)
     }
 
     // 4) The durable message — a toast does not survive a refresh.

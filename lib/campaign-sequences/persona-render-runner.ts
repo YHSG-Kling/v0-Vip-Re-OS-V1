@@ -42,8 +42,18 @@ export interface GenerateEntityStepCopyInput {
  */
 export async function generateEntityStepCopy(input: GenerateEntityStepCopyInput): Promise<CopyDraft> {
   const ctx = await loadEntityPersonaContext(input.svc, input.entity, input.id, input.now ?? new Date())
+  // THE ONE RESOLVER (§6) — "contact" only, matching lib/campaign-sequences/
+  // render-step.ts: resolveContactLanguageFromDb reads the `contacts` table by
+  // id, and a lead's id is not a contacts.id. Best-effort; falls to English.
+  let language: string | undefined
+  if (input.entity === "contact") {
+    try {
+      const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+      language = await resolveContactLanguageFromDb(input.svc, input.id)
+    } catch { /* falls through to English */ }
+  }
   return generatePersonaCopy(
-    { goal: input.intent, facts: ctx.facts, channel: input.channel, persona: ctx.persona, words: input.words },
+    { goal: input.intent, facts: ctx.facts, channel: input.channel, persona: ctx.persona, words: input.words, language },
     input.fallback,
     { generator: input.generator },
   )

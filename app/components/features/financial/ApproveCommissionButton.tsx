@@ -10,6 +10,9 @@ import { markCommissionApprovedAction } from "@/app/actions/financial-kernel"
 interface ApproveCommissionButtonProps {
   commissionId: string
   brokerageId: string
+  /** optional by design: router.refresh() below is the real UI-update mechanism
+   *  for every current caller; this is an extra hook for a future caller that
+   *  needs to react to the approval beyond a route refresh. */
   onApproved?: () => void
 }
 

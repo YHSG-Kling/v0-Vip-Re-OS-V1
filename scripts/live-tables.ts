@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 755 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 756 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-09
+ * generated: 2026-09-10
  * source: public.live_schema_json()
- * body-sha256: 99a8654cfd605649009a296eb3b0ff3fce9dee0e5373774f89e177657eb80fc8
+ * body-sha256: 4f008ccd0b5c7f50efd074010a39f967156c915111d16df4560d5275afa9cdf8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -491,6 +491,7 @@ export const LIVE_TABLES: readonly string[] = [
   "objection_training_sessions",
   "objection_training_turns",
   "offer_comparison",
+  "offer_intents",
   "offer_strategy_templates",
   "offers",
   "onboarding_ai_chats",

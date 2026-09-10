@@ -10,7 +10,13 @@ import { markCommissionPaidAction } from "@/app/actions/financial-kernel"
 interface PayoutButtonProps {
   commissionId: string
   brokerageId: string
+  /** optional by design: no current caller needs a non-ACH payout method — the
+   *  component's own "ach" default is what markCommissionPaidAction records; a
+   *  future wire/check payout surface can override it without a component change. */
   method?: string
+  /** optional by design: router.refresh() below is the real UI-update mechanism
+   *  for every current caller; this is an extra hook for a future caller that
+   *  needs to react to the payout beyond a route refresh. */
   onPaid?: () => void
 }
 
