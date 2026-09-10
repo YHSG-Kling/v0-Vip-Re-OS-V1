@@ -27,6 +27,7 @@
  * Run: npx tsx scripts/asset-production-simulator.ts   (npm run test:asset-production)
  */
 import { readFileSync, existsSync } from "fs"
+import { MANAGERS } from "../lib/kernel/manager-registry"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
 import sharp from "sharp"
