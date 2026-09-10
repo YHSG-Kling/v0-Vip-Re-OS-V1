@@ -39,6 +39,12 @@ interface CommissionSummary {
 interface CommissionIntelligencePanelProps {
   commissions: CommissionRecord[]
   summary?: CommissionSummary
+  /** optional by design: defaults to "/dashboard/transactions/", which IS the
+   *  live route (app/dashboard/transactions/[id]/page.tsx) — this panel's one
+   *  caller (app/dashboard/financials/commissions/page.tsx) builds
+   *  transactionId from the same `transactions.id` the default already points
+   *  at, so overriding it would only be needed for a future caller linking
+   *  somewhere else. */
   transactionLinkPrefix?: string // e.g., "/dashboard/transactions/"
 }
 

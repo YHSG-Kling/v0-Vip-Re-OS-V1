@@ -10,8 +10,8 @@
  * where they bounce, which source converts — and ONE concrete adjustment
  * suggestion per week, delivered as a GATED principal notification
  * (idempotent per ISO-week; nothing auto-mutates a public page). Rides the
- * existing proactive-intelligence cron. marketing_agent owns the tenant's
- * web presence. NOT server-only (simulator-driven).
+ * existing proactive-intelligence cron. campaign_orchestrator owns the tenant's
+ * web presence (m618: survivor of the retired marketing_agent seat). NOT server-only (simulator-driven).
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"

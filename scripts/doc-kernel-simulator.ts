@@ -360,11 +360,13 @@ async function main() {
     && review2.includes("GRANT_ROLES")
     && src("app/dashboard/admin/command-center/page.tsx").includes("EarnedAutonomyPanel"))
 
-  console.log("\n[12 · wiring — the 14th manager + the remaining marketing lanes + the pitch trust story]")
+  console.log("\n[12 · wiring — the operations manager + the remaining marketing lanes + the pitch trust story]")
   {
     const { MANAGERS } = await import("../lib/kernel/manager-registry")
-    check("the roster is 14 — the Cron Manager (operations) owns the heartbeat that keeps every other manager running",
-      Object.keys(MANAGERS).length === 14 && "cron_manager" in MANAGERS
+    // m618 tombstone: marketing_agent retired (survivor campaign_orchestrator) — roster
+    // is asserted by rule (cron_manager present + its heartbeat domain), not a pinned count.
+    check("cron_manager (operations) owns the heartbeat that keeps every other manager running, and marketing_agent is retired",
+      "cron_manager" in MANAGERS && !("marketing_agent" in MANAGERS)
       && (MANAGERS as any).cron_manager.domain.toLowerCase().includes("heartbeat"))
     const reg = src("lib/kernel/manager-registry.ts")
     check("the ops portfolio moved to the Cron Manager: cron dispatch, SLO, bus self-heal, AI-ops console, OS sentinel + the ops crons",

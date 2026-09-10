@@ -431,13 +431,21 @@ const loadComplianceOfficerFacts: FactLoader = async (svc, ctx) => {
 }
 
 /** Organic side: what the brand's own posts actually did in the last 30 days. */
-const loadMarketingAgentFacts: FactLoader = async (svc, ctx) => {
+// TOMBSTONE (m618) — was the standalone "marketing_agent" seat's loader
+// (loadMarketingAgentFacts). marketing_agent is a retired ManagerKey; MANAGER_FACT_LOADERS
+// can hold only one entry per key, so this body is now MERGED into
+// loadOrganicContentFactsInto below, called from loadCampaignOrchestratorFacts (its
+// survivor) alongside that function's own sequence/touchpoint facts — nothing lost, one seat.
+/** The organic-content half of Campaign Orchestrator's seat (social_posts) — merged
+ *  in-place rather than left as a second loader for the same key. */
+async function loadOrganicContentFactsInto(
+  svc: Svc, ctx: ReferralContext, facts: string[], citations: string[],
+): Promise<void> {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data } = await svc.from("social_posts")
     .select("id, platform, post_type, status, approval_status, published_at, engagement_data")
     .eq("brokerage_id", ctx.brokerageId).gte("created_at", since).limit(300)
   const rows = (data ?? []) as any[]
-  const facts: string[] = [], citations: string[] = []
   const published = rows.filter((r) => r.status === "published" || r.published_at)
   if (published.length > 0) {
     const byPlatform = new Map<string, number>()
@@ -453,7 +461,6 @@ const loadMarketingAgentFacts: FactLoader = async (svc, ctx) => {
     facts.push(`${pending} post${pending === 1 ? "" : "s"} waiting in the approval queue`)
     citations.push(`social_posts.pending_count=${pending} (social_posts.brokerage_id=${ctx.brokerageId})`)
   }
-  return { facts, citations }
 }
 
 /** Paid side: live campaign spend / leads / CPL — the ad-outcome-loop's own shape. */
@@ -692,6 +699,9 @@ const loadCampaignOrchestratorFacts: FactLoader = async (svc, ctx) => {
     facts.push(`${touchRows.length} campaign touch${touchRows.length === 1 ? "" : "es"} on the shared ledger in 30d${contactScoped ? " for this contact" : ""} (${[...byChannel.entries()].map(([c, n]) => `${n} ${c}`).join(", ")})`)
     citations.push(`marketing_campaign_touchpoints.count_30d=${touchRows.length}${contactScoped ? ` (marketing_campaign_touchpoints.contact_id=${ctx.entityId})` : ` (marketing_campaign_touchpoints.brokerage_id=${ctx.brokerageId})`}`)
   }
+  // m618: the retired marketing_agent seat's organic-content facts (social_posts),
+  // MERGED onto this survivor loader — brokerage-wide only, same as the seat it replaces.
+  if (!contactScoped) await loadOrganicContentFactsInto(svc, ctx, facts, citations)
   return { facts, citations }
 }
 
@@ -704,7 +714,9 @@ export const MANAGER_FACT_LOADERS: Partial<Record<ManagerKey, FactLoader>> = {
   deal_coordinator: loadDealCoordinatorFacts,
   finance_manager: loadFinanceManagerFacts,
   compliance_officer: loadComplianceOfficerFacts,
-  marketing_agent: loadMarketingAgentFacts,
+  // TOMBSTONE (m618) — "marketing_agent: loadMarketingAgentFacts" removed (retired
+  // ManagerKey); its facts are merged into campaign_orchestrator's loader below via
+  // loadOrganicContentFactsInto.
   ads_manager: loadAdsManagerFacts,
   cron_manager: loadCronManagerFacts,
   // Round 36 — the new deliberative seats, each grounded in ITS OWN stewarded tables.

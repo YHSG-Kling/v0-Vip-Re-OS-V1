@@ -65,10 +65,11 @@ export const CAPABILITY_MANAGER: Record<AppCapability, ManagerKey> = {
   direct_mail_send:          "campaign_orchestrator",
   video_distribute:          "campaign_orchestrator",
 
-  // ── Brand & promotion — the Marketing Manager ──
-  blog_publish:              "marketing_agent",
-  social_post_publish:       "marketing_agent",
-  podcast_publish:           "marketing_agent",
+  // ── Brand & promotion — Campaign Orchestrator (m618: survivor of the retired
+  //    marketing_agent/"Marketing Manager" seat) ──
+  blog_publish:              "campaign_orchestrator",
+  social_post_publish:       "campaign_orchestrator",
+  podcast_publish:           "campaign_orchestrator",
 
   // ── Media & brand library — the Asset Manager ──
   content_repurpose:         "asset_manager",

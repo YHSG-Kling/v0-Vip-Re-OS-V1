@@ -28,6 +28,7 @@ import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { EqualHousingMark } from "./components/EqualHousingMark"
 import { evenShotSlots } from "../lib/video/assembly-timeline"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
@@ -108,7 +109,7 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
         />
       </Sequence>
 
-      {props.brand.showEhoMark && <EhoBadge />}
+      {props.brand.showEhoMark && <EqualHousingMark variant="badge" />}
 
       <CaptionLayer
         cues={props.captionsCues}
@@ -257,18 +258,6 @@ const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
   )
 }
 
-const EhoBadge: React.FC = () => (
-  <div style={{
-    position: "absolute",
-    bottom: 24,
-    left: 24,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    color: "#000",
-    padding: "6px 12px",
-    borderRadius: 6,
-    fontSize: 14,
-    fontWeight: 600,
-  }}>
-    Equal Housing Opportunity
-  </div>
-)
+// EhoBadge MERGED onto the survivor remotion/components/EqualHousingMark.tsx:58
+// (variant="badge" reproduces this exact positioning/style). Tombstone — do not
+// reintroduce a third local copy of the Equal Housing Opportunity mark (§6).

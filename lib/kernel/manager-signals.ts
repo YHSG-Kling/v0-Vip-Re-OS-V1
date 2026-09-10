@@ -339,6 +339,23 @@ async function proposeAgentHandoffFirstTouch(
   return res.ok ? `proposed the agent-side first touch to the newly-handed-off contact (gate message ${res.id})` : null
 }
 
+/** Shared body for listing_concierge:isa_outreach_paused / shopping_agent:isa_outreach_paused
+ *  (wave 50, D-terdecies) — AI ISA's nurture paused because the contact is now under contract;
+ *  the side-appropriate agent (resolved by contacts.agent_id) picks up direct communication. */
+async function proposeOutreachPausedNotice(signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }): Promise<string | null> {
+  const contactId = signal.contactId ?? signal.entityId
+  if (!contactId) return null
+  const userId = await resolveLoanAgentUser(ctx.supabase, contactId)
+  if (!userId) return "ISA outreach paused but the contact's agent could not be resolved"
+  const { error } = await ctx.supabase.from("notifications").insert({
+    user_id: userId, brokerage_id: ctx.brokerageId, type: "isa_outreach_paused",
+    title: "AI ISA nurture paused",
+    body: "Your contact is now under contract, so AI ISA nurture paused — pick up direct communication from here.",
+    entity_type: "contact", entity_id: contactId, priority: "medium", is_read: false,
+  })
+  return error ? null : "notified the assigned agent that ISA nurture paused (under contract)"
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
@@ -2917,11 +2934,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     return error ? null : "notified the pipeline's owner the run finished"
   },
 
-  // Asset Manager → Marketing Agent: a podcast episode finished generating — propose a
-  // GATED social snippet post teasing it (app/actions/podcast-generation.ts,
-  // lib/kernel/marketing.ts). Mirrors campaign_orchestrator:onboarding_completed's gated
-  // social_posts draft shape; deduped per episode via the post_brief prefix.
-  "marketing_agent:podcast_episode_generated": async (signal, ctx) => {
+  // Asset Manager → Campaign Orchestrator (m618: TOMBSTONE — was "marketing_agent:
+  // podcast_episode_generated"; marketing_agent RETIRED, survivor campaign_orchestrator):
+  // a podcast episode finished generating — propose a GATED social snippet post teasing
+  // it (app/actions/podcast-generation.ts, lib/kernel/marketing.ts). Mirrors
+  // campaign_orchestrator:onboarding_completed's gated social_posts draft shape; deduped
+  // per episode via the post_brief prefix.
+  "campaign_orchestrator:podcast_episode_generated": async (signal, ctx) => {
     const episodeId = signal.entityId
     if (!episodeId) return null
     const { data: episode } = await ctx.supabase.from("podcast_episodes")
@@ -2983,6 +3002,133 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       entity_type: "agent", entity_id: agentRecordId, priority: "medium", is_read: false,
     })
     return error ? null : "sent the agent a next-step nudge after finishing required training"
+  },
+
+  // ── Wave 50 (2026-09-10, lane HD) — D-terdecies. EIGHT HANDLED consumers for the kernel-
+  // event census round 7 readers (lib/kernel/event-reactor.ts). Every consumer proposes a
+  // GATED `notifications` insert or a gated `agent_client_messages` draft (proposeClientMessage
+  // — a human approves before it sends) to the responsible human — never an outbound send,
+  // never spend, mirroring the shape every earlier D-block's HANDLED consumer uses.
+
+  "campaign_orchestrator:open_house_marketing_started": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { data: listing } = await ctx.supabase.from("listings")
+      .select("agent_id, address").eq("id", listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const l = listing as { agent_id?: string | null; address?: string | null } | null
+    if (!l?.agent_id) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, l.agent_id)
+    if (!userId) return "open house marketing started but the listing's agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "open_house_marketing_started",
+      title: "Open house marketing is live",
+      body: `Marketing is approved for ${l.address ?? "your listing"} — time to promote it.`,
+      entity_type: "listing", entity_id: listingId, priority: "medium", is_read: false,
+    })
+    return error ? null : "notified the listing's agent that open house marketing is live"
+  },
+
+  "ai_isa:open_house_contact_resolved": async (signal, ctx) => {
+    const agentRecordId = (signal.payload as { agent_id?: string | null } | null)?.agent_id ?? null
+    if (!agentRecordId) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, agentRecordId)
+    if (!userId) return "open house contact resolved but the working agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "open_house_contact_resolved",
+      title: "New open house contact",
+      body: "An open-house attendee was attributed to a contact for your follow-up.",
+      entity_type: "contact", entity_id: signal.entityId, priority: "medium", is_read: false,
+    })
+    return error ? null : "notified the working agent of the resolved open-house contact"
+  },
+
+  "campaign_orchestrator:authority_blocked": async (signal, ctx) => {
+    const contactId = signal.contactId ?? signal.entityId
+    if (!contactId) return null
+    const userId = await resolveLoanAgentUser(ctx.supabase, contactId)
+    if (!userId) return "an authority gate blocked outreach but the contact's agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "authority_blocked",
+      title: "Automated outreach was blocked",
+      body: "A compliance/consent gate blocked an automated touch to one of your contacts — reach out directly if appropriate.",
+      entity_type: "contact", entity_id: contactId, priority: "medium", is_read: false,
+    })
+    return error ? null : "notified the contact's agent that automated outreach was blocked"
+  },
+
+  "ai_isa:contact_enrichment_failed": async (signal, ctx) => {
+    const contactId = signal.contactId ?? signal.entityId
+    if (!contactId) return null
+    const userId = await resolveLoanAgentUser(ctx.supabase, contactId)
+    if (!userId) return "enrichment failed but the contact's agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "contact_enrichment_failed",
+      title: "Auto-enrichment came up short",
+      body: "We couldn't automatically fill in a contact's missing details — you may want to add them yourself.",
+      entity_type: "contact", entity_id: contactId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the contact's agent that auto-enrichment failed"
+  },
+
+  "listing_concierge:isa_outreach_paused": (signal, ctx) => proposeOutreachPausedNotice(signal, ctx),
+  "shopping_agent:isa_outreach_paused": (signal, ctx) => proposeOutreachPausedNotice(signal, ctx),
+
+  "ai_isa:form_submission_received": async (signal, ctx) => {
+    const contactId = signal.contactId ?? signal.entityId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const firstName = (contact as { first_name?: string | null } | null)?.first_name || "there"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "ai_isa", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience: "lead",
+      subject: `Thanks for reaching out, ${firstName}!`,
+      body: `Hi ${firstName} — thanks for getting in touch! I'll follow up shortly with anything you need. In the meantime, feel free to reply here with questions.`,
+      rationale: "A public lead-capture form submitted a new consented contact — the first-touch beside it.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed the first-touch welcome message (gate message ${res.id})` : null
+  },
+
+  "listing_concierge:buyer_offer_draft_started": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { data: listing } = await ctx.supabase.from("listings")
+      .select("agent_id, address").eq("id", listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const l = listing as { agent_id?: string | null; address?: string | null } | null
+    if (!l?.agent_id) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, l.agent_id)
+    if (!userId) return "a buyer started an offer draft but the listing's agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "buyer_offer_draft_started",
+      title: "A buyer is drafting an offer",
+      body: `A buyer started drafting an offer on ${l.address ?? "your listing"}.`,
+      entity_type: "listing", entity_id: listingId, priority: "medium", is_read: false,
+    })
+    return error ? null : "notified the listing's agent that a buyer started an offer draft"
+  },
+
+  "sphere_of_influence:business_card_uploaded": async (signal, ctx) => {
+    const scanId = signal.entityId
+    if (!scanId) return null
+    const { data: scan } = await ctx.supabase.from("business_card_scans")
+      .select("agent_id").eq("id", scanId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const agentRecordId = (scan as { agent_id?: string | null } | null)?.agent_id ?? null
+    if (!agentRecordId) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, agentRecordId)
+    if (!userId) return "a business card was scanned but the scanning agent could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "business_card_uploaded",
+      title: "Your scanned card is ready for review",
+      body: "Your scanned business card finished OCR extraction — review it to classify who it belongs to.",
+      entity_type: "business_card", entity_id: scanId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the scanning agent their card is ready for review"
   },
 }
 

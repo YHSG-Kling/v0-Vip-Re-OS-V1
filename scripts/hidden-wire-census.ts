@@ -81,6 +81,18 @@
  *     EXCLUDED from both (c) halves — `optionalByDesignProps` reads the RAW
  *     (un-masked) source for that literal phrase, since masked source has all
  *     comments blanked by design; a positive control below proves it too.
+ *     A JSX call site's component is now (wave 50, owner report 2026-09-10)
+ *     resolved through the CALLING FILE's actual `import` specifier — local
+ *     declaration, relative/`@/` path via `resolveModule`, or one hop through a
+ *     barrel `export { X } from "./y"` — rather than attributed to "whichever
+ *     file happens to export a same-named component first". Findings group by
+ *     `${file}::${component}`, mirroring (b)'s existing "same name declared in
+ *     >1 file — ambiguous attribution" skip: a call site whose import cannot be
+ *     resolved (external package, out-of-scope target) is SKIPPED, never
+ *     attributed, and a `<Name>Props` declaration not co-located with its own
+ *     component signature falls back to a corpus-wide search only when the
+ *     component name is unique — otherwise it too is skipped. Both skip counts
+ *     are published on the (c) report line. See resolveComponentFile() above.
  *   · (d): a dynamically-built `.rpc(variable)` name is invisible. A function
  *     created outside supabase/migrations/*.sql (dashboard-authored, or by an
  *     extension) false-positives as "missing a migration". Trigger and
@@ -564,7 +576,7 @@ function propNamesFromTypeBody(body: string): string[] {
   return [...new Set(out)]
 }
 
-interface PropsType { component: string; declaredProps: string[] }
+interface PropsType { component: string; declaredProps: string[]; file: string }
 const propsTypes: PropsType[] = []
 for (const file of TSX_FILES) {
   const m2 = masked.get(file)!
@@ -576,8 +588,91 @@ for (const file of TSX_FILES) {
     if (closeIdx === -1) continue
     const body = m2.slice(openBraceIdx + 1, closeIdx)
     const component = m[1].replace(/Props$/, "")
-    propsTypes.push({ component, declaredProps: propNamesFromTypeBody(body) })
+    propsTypes.push({ component, declaredProps: propNamesFromTypeBody(body), file })
   }
+}
+
+/**
+ * IMPORT-RESOLUTION ATTRIBUTION (wave 50, owner report 2026-09-10) ─────────────
+ * Category (b) already skips a name declared in >1 file as "ambiguous
+ * attribution" (see `ambiguousExportNames` above). (c) had NO such guard: it
+ * grouped every JSX call site and every `<Name>Props` declaration by BARE NAME
+ * alone, so two files exporting a same-named component (verbatim case: two
+ * files each export `CommunicationHealthPanel` with entirely different Props
+ * shapes) had their call sites and declarations pooled together — a caller
+ * that imports the SECOND file had its passed props checked against the
+ * FIRST file's declared Props (whichever sorted first in TSX_FILES), so real
+ * props read as "declared-never-passed" against the wrong component and a
+ * real prop as "passed-never-read" against a body that never had the chance
+ * to read it.
+ *
+ * FIX: every JSX call site is now resolved through the CALLING FILE's actual
+ * `import` — relative path or `@/` alias via `resolveModule` (already used by
+ * (b)/(e)), local declaration in the same file, or ONE HOP through a barrel
+ * re-export (`export { X } from "./y"`, `as`-renames followed to the ORIGINAL
+ * local name at the target). Findings are grouped by `${file}::${component}`,
+ * never by component name alone. A `<Name>Props` declaration is attributed to
+ * its OWN file first (the co-located convention that covers the reported
+ * case directly — CommunicationHealthPanel's Props and component sit in the
+ * same file on both sides); only when a name is unique across the whole
+ * corpus does it fall back to a corpus-wide signature search, since no
+ * ambiguity is possible there. Where resolution fails (external package,
+ * unresolvable specifier) or a Props declaration is not co-located AND its
+ * component name is not unique, the call site / declaration is SKIPPED and
+ * counted on the (c) report line — the same posture (b) already uses.
+ */
+function localComponentDecl(file: string, name: string): boolean {
+  const m2 = masked.get(file)
+  if (m2 === undefined) return false
+  return new RegExp(`function\\s+${name}\\b|const\\s+${name}\\s*(?::|=)`).test(m2)
+}
+interface ReExportEntry { modulePath: string; originalName: string }
+const EXPORT_NAMED_FROM_RE = /export\s+(?:type\s+)?\{([^}]*)\}\s*from\s*(['"])([^'"]*)\2/g
+const reExportCache = new Map<string, Map<string, ReExportEntry>>()
+function reExportsOf(file: string): Map<string, ReExportEntry> {
+  const hit = reExportCache.get(file)
+  if (hit) return hit
+  const out = new Map<string, ReExportEntry>()
+  const m2 = masked.get(file)
+  if (m2 !== undefined) {
+    EXPORT_NAMED_FROM_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = EXPORT_NAMED_FROM_RE.exec(m2))) {
+      const modulePath = m[3]
+      for (const piece of m[1].split(",")) {
+        let spec = piece.trim()
+        if (!spec) continue
+        if (/^type\s+/.test(spec)) spec = spec.replace(/^type\s+/, "").trim()
+        const asMatch = spec.match(new RegExp(`^(${IDENT})\\s+as\\s+(${IDENT})$`))
+        const exportedName = asMatch ? asMatch[2] : spec
+        const originalName = asMatch ? asMatch[1] : spec
+        if (isIdent(exportedName) && isIdent(originalName)) out.set(exportedName, { modulePath, originalName })
+      }
+    }
+  }
+  reExportCache.set(file, out)
+  return out
+}
+interface ResolvedComponent { file: string; localName: string }
+function resolveComponentFile(callerFile: string, name: string): ResolvedComponent | null {
+  if (localComponentDecl(callerFile, name)) return { file: callerFile, localName: name }
+  const imp = parseImports(callerFile).find((i) => i.specs.some((s) => s.name === name))
+  if (!imp) return null // not imported and not local — unattributable, skip
+  const target = resolveModule(callerFile, imp.modulePath)
+  if (!target || !masked.has(target)) return null // external package or out of the scanned roots
+  if (localComponentDecl(target, name)) return { file: target, localName: name }
+  const reExp = reExportsOf(target).get(name) // ONE HOP through a barrel re-export
+  if (!reExp) return null
+  const hop2 = resolveModule(target, reExp.modulePath)
+  if (!hop2 || !masked.has(hop2)) return null
+  if (localComponentDecl(hop2, reExp.originalName)) return { file: hop2, localName: reExp.originalName }
+  return null
+}
+const componentPropsFiles = new Map<string, Set<string>>()
+for (const pt of propsTypes) {
+  const s = componentPropsFiles.get(pt.component) ?? new Set<string>()
+  s.add(pt.file)
+  componentPropsFiles.set(pt.component, s)
 }
 
 function findFunctionSignature(m2: string, component: string): { paramStart: number; paramEnd: number } | null {
@@ -602,16 +697,22 @@ const categoryCDeclared: CDeclaredNeverPassed[] = []
 const categoryCUnread: CPassedNeverRead[] = []
 const EXEMPT_UNREAD = new Set(["children", "className"])
 
-// Pre-scan all JSX call sites once: component name -> attribute names (unioned) and hasSpread
-const callSiteAttrs = new Map<string, Set<string>>()
-const callSiteHasSpread = new Map<string, boolean>()
-const callSiteCount = new Map<string, number>()
+// Pre-scan all JSX call sites once, resolving EACH ONE through the calling file's
+// actual import (see IMPORT-RESOLUTION ATTRIBUTION above) so a same-named
+// component declared in more than one file never pools its callers' props
+// across files. Aggregated by `${resolvedFile}::${localName}`, never by bare
+// component name alone.
+interface CallSiteAgg { attrs: Set<string>; hasSpread: boolean; count: number }
+const callSiteAgg = new Map<string, CallSiteAgg>()
+let totalJsxCallSites = 0
+let skippedUnresolvedCallSites = 0
 for (const file of TSX_FILES) {
   const m2 = masked.get(file)!
   const tagRe = /<([A-Z][A-Za-z0-9_$]*)[\s/>]/g
   let tm: RegExpExecArray | null
   while ((tm = tagRe.exec(m2))) {
     const name = tm[1]
+    totalJsxCallSites++
     const tagStart = tm.index
     // find the end of the opening tag: first '>' at brace-depth 0 from tagStart
     let depth = 0, end = -1
@@ -622,14 +723,17 @@ for (const file of TSX_FILES) {
       else if (ch === ">" && depth === 0) { end = i; break }
     }
     if (end === -1) continue
+    const resolved = resolveComponentFile(file, name)
+    if (!resolved) { skippedUnresolvedCallSites++; continue } // unresolvable/external — never attributed to any file
     const attrText = m2.slice(tagStart + tm[0].length, end)
-    callSiteCount.set(name, (callSiteCount.get(name) ?? 0) + 1)
-    if (/\.\.\./.test(attrText)) callSiteHasSpread.set(name, true)
+    const key = `${resolved.file}::${resolved.localName}`
+    const agg = callSiteAgg.get(key) ?? { attrs: new Set<string>(), hasSpread: false, count: 0 }
+    agg.count++
+    if (/\.\.\./.test(attrText)) agg.hasSpread = true
     const attrRe = /([A-Za-z_][A-Za-z0-9_-]*)\s*=/g
     let am: RegExpExecArray | null
-    const set = callSiteAttrs.get(name) ?? new Set<string>()
-    while ((am = attrRe.exec(attrText))) set.add(am[1])
-    callSiteAttrs.set(name, set)
+    while ((am = attrRe.exec(attrText))) agg.attrs.add(am[1])
+    callSiteAgg.set(key, agg)
   }
 }
 
@@ -637,11 +741,21 @@ let componentsWithSignature = 0
 let componentsWithSpread = 0
 let localDestructureRescues = 0
 let optionalByDesignExcluded = 0
+let ambiguousPropsAttribution = 0
 for (const pt of propsTypes) {
-  const declFile = TSX_FILES.find((f) => {
-    const m2 = masked.get(f)!
-    return new RegExp(`function\\s+${pt.component}\\b|const\\s+${pt.component}\\s*(?::|=)`).test(m2)
-  })
+  // Attribute the Props type to its OWN file first — the co-located convention
+  // that covers the reported CommunicationHealthPanel case directly (each file
+  // declares both the Props type and the component together). Only fall back to
+  // a corpus-wide signature search when the component NAME is unique across the
+  // whole corpus, since no ambiguity is possible there; otherwise skip and count.
+  let declFile: string | undefined
+  if (localComponentDecl(pt.file, pt.component)) {
+    declFile = pt.file
+  } else if ((componentPropsFiles.get(pt.component)?.size ?? 0) <= 1) {
+    declFile = TSX_FILES.find((f) => localComponentDecl(f, pt.component))
+  } else {
+    ambiguousPropsAttribution++
+  }
   if (!declFile) continue
   const m2 = masked.get(declFile)!
   const sig = findFunctionSignature(m2, pt.component)
@@ -678,9 +792,10 @@ for (const pt of propsTypes) {
   // has every comment blanked, by design — see optionalByDesignProps header).
   const optionalByDesign = optionalByDesignProps(raw.get(declFile) ?? "")
 
-  const called = callSiteCount.get(pt.component) ?? 0
-  const passed = callSiteAttrs.get(pt.component) ?? new Set<string>()
-  const spreadAtCallSite = callSiteHasSpread.get(pt.component) ?? false
+  const agg = callSiteAgg.get(`${declFile}::${pt.component}`)
+  const called = agg?.count ?? 0
+  const passed = agg?.attrs ?? new Set<string>()
+  const spreadAtCallSite = agg?.hasSpread ?? false
   if (hasSpread) componentsWithSpread++
 
   if (called > 0 && !spreadAtCallSite) {
@@ -908,6 +1023,46 @@ function runControls(): string[] {
     ok("(c) optional-by-design control: the UNDOCUMENTED sibling prop is not swept in", !found.has("required"))
   }
 
+  // (c) IMPORT-RESOLUTION ATTRIBUTION control (wave 50, owner report 2026-09-10) —
+  // the verbatim CommunicationHealthPanel defect this correction exists for: two
+  // files each export a same-named component; a caller's props must resolve to
+  // the file its import specifier actually reaches, never to "whichever file
+  // happens to declare the name first". Exercised against the real maps
+  // (synthetic files inserted and removed), same technique as the (b) rescue
+  // control above, since resolveComponentFile/localComponentDecl/reExportsOf
+  // read module-level `raw`/`masked` state, not a passed-in corpus.
+  {
+    const fileA = "__control__/panel-a.tsx"
+    const fileB = "__control__/panel-b.tsx"
+    const callerFile = "__control__/caller.tsx"
+    const srcA = "export interface PanelProps { conversations: string[] }\nexport function Panel({ conversations }: PanelProps) { return conversations.length }\n"
+    const srcB = "export interface PanelProps { overallHealth: number }\nexport function Panel({ overallHealth }: PanelProps) { return overallHealth }\n"
+    const srcCallerB = 'import { Panel } from "./panel-b"\nexport function Caller() { return <Panel overallHealth={1} /> }\n'
+    raw.set(fileA, srcA); masked.set(fileA, blankStrings(srcA))
+    raw.set(fileB, srcB); masked.set(fileB, blankStrings(srcB))
+    raw.set(callerFile, srcCallerB); masked.set(callerFile, blankStrings(srcCallerB))
+    importCache.delete(callerFile); bodyForRefsCache.delete(callerFile)
+
+    const resolved = resolveComponentFile(callerFile, "Panel")
+    ok("(c) attribution control (1): the caller's import resolves to the FILE IT ACTUALLY IMPORTS (panel-b), not whichever file declares the name first",
+      !!resolved && resolved.file === fileB)
+    ok("(c) attribution control (2): the un-imported same-named file (panel-a) is NOT the resolution target — a caller importing panel-b gets NO findings attributed to panel-a",
+      !!resolved && resolved.file !== fileA)
+
+    // (3) an unresolvable import (external package) must be SKIPPED, not attributed to either file
+    const srcCallerExternal = 'import { Panel } from "some-external-ui-lib"\nexport function Caller2() { return <Panel overallHealth={1} /> }\n'
+    raw.set(callerFile, srcCallerExternal); masked.set(callerFile, blankStrings(srcCallerExternal))
+    importCache.delete(callerFile); bodyForRefsCache.delete(callerFile)
+    const resolvedExternal = resolveComponentFile(callerFile, "Panel")
+    ok("(c) attribution control (3): an unresolvable (external package) import resolves to NOTHING — skipped, not attributed to fileA or fileB",
+      resolvedExternal === null)
+
+    raw.delete(fileA); masked.delete(fileA)
+    raw.delete(fileB); masked.delete(fileB)
+    raw.delete(callerFile); masked.delete(callerFile)
+    importCache.delete(callerFile); bodyForRefsCache.delete(callerFile)
+  }
+
   // (d) rpc: comment-embedded fake definition/call must not count
   {
     const synthetic = '// create or replace function fakeDefinedInComment() returns void as $$ $$;\nawait supabase.rpc("fakeCalledInCode")\n'
@@ -941,13 +1096,14 @@ console.log(`Corpus: ${FILES.length} files under app/, lib/, hooks/ (excludes .d
 console.log("")
 console.log(`(a) IMPORTED-BUT-UNUSED: ${categoryA.length} / ${totalImportBindings} import bindings scanned`)
 console.log(`(b) IMPORTED-BUT-ONLY-FORWARDED: ${categoryB.length} findings (${categoryBRaw.length} raw, ${rescuedByOneHop} rescued by a real one-hop-downstream call) ; ${candidateFunctionExports} candidate function-shaped exports checked, ${ambiguousExportNames} skipped (same name declared in >1 file — ambiguous attribution)`)
-console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed, ${categoryCUnread.length} passed-never-read ; ${propsTypes.length} <Name>Props types found, ${componentsWithSignature} matched to a component signature, ${componentsWithSpread} excluded from the unread half (rest/spread destructure), ${localDestructureRescues} prop-reads rescued by the LOCAL two-step destructure recognizer (wave 49), ${optionalByDesignExcluded} prop findings excluded via a documented '/** optional by design: ... */' JSDoc (wave 49)`)
+console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed, ${categoryCUnread.length} passed-never-read ; ${propsTypes.length} <Name>Props types found, ${componentsWithSignature} matched to a component signature, ${componentsWithSpread} excluded from the unread half (rest/spread destructure), ${localDestructureRescues} prop-reads rescued by the LOCAL two-step destructure recognizer (wave 49), ${optionalByDesignExcluded} prop findings excluded via a documented '/** optional by design: ... */' JSDoc (wave 49) ; ${totalJsxCallSites} JSX call sites scanned, ${skippedUnresolvedCallSites} skipped (component import unresolved/external — not attributed to any file), ${ambiguousPropsAttribution} Props declarations skipped (same component name declared in >1 file, not co-located with its signature — ambiguous attribution, wave 50)`)
 console.log(`(d) RPC WIRING: ${categoryDMissing.length} called-with-no-migration ; ${categoryDUnused.length} migration-defined-never-called (of ${definedFns.size} functions across ${migrationFiles().length} migration files; ${rpcCalls.size} distinct .rpc() names called)`)
 console.log(`(e) DEAD SERVER-ACTION IMPORT (subset of a): ${categoryE.length}`)
 console.log("")
 console.log("BLIND SPOTS (see file header for the full statement):")
 console.log("  scope = app/ + lib/ + hooks/ only; dynamic/string-keyed dispatch is invisible to (a)/(b)/(e);")
 console.log("  (c) only <Name>Props-named types, one balanced brace level, spread components excluded from 'unread';")
+console.log("  (c) call sites resolve one import hop (local decl / relative / @/ / one barrel re-export) — unresolved or out-of-scope imports are skipped, never attributed;")
 console.log("  (d) dynamic .rpc(variable) names invisible; dashboard-authored functions false-positive as missing.")
 
 // ── RATCHET BASELINE ─────────────────────────────────────────────────────────

@@ -21,8 +21,11 @@ import { createClient } from "@/lib/supabase/client"
 
 interface SlaMonitorPanelProps {
   brokerageId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stats?: any
+  /** optional by design: this panel already runs its own dedicated SLA query
+   *  (overdueTasks/stuckRequests/pendingApprovals/avgResponseTime/
+   *  complianceRate below) — more specific and more current than the
+   *  dashboard-wide getAdminDashboardStats snapshot the caller passes here. */
+  stats?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 interface SlaMetrics {

@@ -305,8 +305,9 @@ export function buildVoicePlan(utterance: string, inputs: PlanInputs): VoicePlan
 /** Manager keys are machine names; a voice admin says a person-shaped title. */
 const MANAGER_SPOKEN: Record<string, string> = {
   ai_isa: "your ISA",
+  // m618: "marketing_agent" ("your marketing manager") retired — campaign_orchestrator
+  // ("your campaign manager") is its survivor and now covers brand/promotion too.
   campaign_orchestrator: "your campaign manager",
-  marketing_agent: "your marketing manager",
   asset_manager: "your asset manager",
   ads_manager: "your ads manager",
   listing_concierge: "your listing concierge",

@@ -502,7 +502,7 @@ export const REFERRAL_EMITTERS: Record<string, ReferralEmitterInfo> = {
   organic_winner_budget_hook: {
     key: "organic_winner_budget_hook",
     collabDomain: "organic_paid_content",
-    from: "marketing_agent",
+    from: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
     kind: "hook",
     what: "A strong organic week — double down organic vs fund the paid push, argued",
     sourceFile: "app/api/cron/marketing-agent-weekly-measure/route.ts",

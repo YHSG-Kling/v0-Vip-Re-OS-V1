@@ -10,7 +10,8 @@ import { runWeeklyProductAutopilot } from "@/lib/platform/product-content-autopi
  * post calendar plus ONE ProductPromoReel video draft with its render queued
  * through the one registry — as GATED drafts a superadmin approves and posts
  * (app/dashboard/superadmin/growth). Registered in lib/kernel/cron-dispatch.ts;
- * owned by marketing_agent (lib/kernel/manager-registry.ts CRON_MANAGER).
+ * owned by campaign_orchestrator (lib/kernel/manager-registry.ts CRON_MANAGER —
+ * m618: survivor of the retired marketing_agent seat).
  * Auth: CRON_SECRET.
  */
 export const dynamic = "force-dynamic"

@@ -77,12 +77,17 @@ export async function reapStuckCampaigns(
           result.reaped++
           // Announce the autonomous recovery on the manager bus — the AI team caught + relaunched
           // it, visible in the Command Center's "managers talking" feed (feed_only).
+          // TOMBSTONE (m618) — was campaign_orchestrator -> marketing_agent (retired, and now a
+          // same-manager route since campaign_orchestrator is the emitter too). Routed to
+          // cron_manager instead: this IS a REAPER recovery (lib/intelligence/reaper-net.ts's
+          // stuck_marketing_campaigns domain), and cron_manager owns loop-health/self-heal
+          // visibility for exactly this class of autonomous catch.
           try {
             const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
             await publishManagerSignal({
               brokerageId,
               fromManager: "campaign_orchestrator",
-              toManager: "marketing_agent",
+              toManager: "cron_manager",
               signalType: "campaign_recovered",
               message: `Auto-relaunched a stalled campaign${c.campaign_name ? ` "${c.campaign_name}"` : ""} — reached ${r.audienceSize ?? 0} contacts (${r.complianceStatus ?? "ok"})`,
               entityType: "marketing_campaign",

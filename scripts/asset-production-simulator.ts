@@ -582,8 +582,9 @@ async function main() {
       recruitedGciDollars: 412000, recruitedAgentCount: 6,
       contactLine: "Reach us directly: (555) 010-2000",
     }
-    check("the AI-team section enumerates the LIVE registry (14 managers) — the pitch can never advertise what the product doesn't ship",
-      aiTeamBullets().length === 14 && aiTeamBullets().some((b) => b.startsWith("AI ISA"))
+    // DERIVED, not pinned (§2): "14" went red the day marketing_agent was retired (wave 50, m618).
+    check(`the AI-team section enumerates the LIVE registry (${Object.keys(MANAGERS).length} managers) — the pitch can never advertise what the product doesn't ship`,
+      aiTeamBullets().length === Object.keys(MANAGERS).length && aiTeamBullets().some((b) => b.startsWith("AI ISA"))
       && aiTeamBullets().some((b) => b.includes("Compliance Officer")))
     check("settings-hash is stable + change-sensitive (the refresh key)",
       pitchSettingsHash(facts) === pitchSettingsHash({ ...facts })

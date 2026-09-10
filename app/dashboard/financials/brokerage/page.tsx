@@ -721,41 +721,62 @@ export default async function BrokeragePLPage() {
 
       {/* ─── SECTION 7: MARGIN BREAKDOWN & ACTION STACK ────────────────────────── */}
       <div className="grid gap-6 lg:grid-cols-2">
-        <MarginBreakdownPanel
-          grossIncome={mtdEarnings?.gross_commission_income || 0}
-          breakdown={[
-            {
-              label: "Agent Splits",
-              value: latestPL?.agent_splits_paid || 0,
-              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
-                ? ((latestPL?.agent_splits_paid || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
-                : 0,
-            },
-            {
-              label: "Operating Expenses",
-              value: latestPL?.operating_expenses || 0,
-              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
-                ? ((latestPL?.operating_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
-                : 0,
-            },
-            {
-              label: "Technology",
-              value: latestPL?.tech_expenses || 0,
-              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
-                ? ((latestPL?.tech_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
-                : 0,
-            },
-            {
-              label: "Marketing",
-              value: latestPL?.marketing_expenses || 0,
-              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
-                ? ((latestPL?.marketing_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
-                : 0,
-            },
-          ]}
-          netMargin={latestPL?.profit_margin_pct || 0}
-        />
-        
+        <Suspense fallback={<Skeleton className="h-80 w-full" />}>
+          <MarginBreakdownSection
+            brokerageId={profile.brokerage_id}
+            grossIncome={mtdEarnings?.gross_commission_income || 0}
+            breakdown={[
+              {
+                label: "Agent Splits",
+                value: latestPL?.agent_splits_paid || 0,
+                percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                  ? ((latestPL?.agent_splits_paid || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                  : 0,
+              },
+              {
+                label: "Operating Expenses",
+                value: latestPL?.operating_expenses || 0,
+                percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                  ? ((latestPL?.operating_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                  : 0,
+              },
+              {
+                label: "Technology",
+                value: latestPL?.tech_expenses || 0,
+                percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                  ? ((latestPL?.tech_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                  : 0,
+              },
+              {
+                label: "Marketing",
+                value: latestPL?.marketing_expenses || 0,
+                percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                  ? ((latestPL?.marketing_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                  : 0,
+              },
+            ]}
+            netMargin={latestPL?.profit_margin_pct || 0}
+            // Trend = this month's margin vs last month's, both derived from the
+            // same 12-month series PLTrendChart already renders above — no new
+            // query. Needs two points; a brand-new brokerage with <2 months of
+            // brokerage_earnings rows gets `undefined` (badge hidden), not a
+            // fabricated zero. Hidden-wire census category (c), wave 50.
+            netMarginTrend={(() => {
+              const withMargin = last12MonthsEarnings
+                .map((m: any) => ({
+                  gci: Number(m.gross_commission_income ?? 0),
+                  net: Number(m.brokerage_net ?? 0),
+                }))
+                .filter((m) => m.gci > 0)
+                .map((m) => (m.net / m.gci) * 100)
+              if (withMargin.length < 2) return undefined
+              const current = withMargin[withMargin.length - 1]
+              const prior = withMargin[withMargin.length - 2]
+              return current - prior
+            })()}
+          />
+        </Suspense>
+
         <FinancialActionStack actions={brokerActions} />
       </div>
 
@@ -833,6 +854,45 @@ export default async function BrokeragePLPage() {
 
       <AgentPLTruthSection brokerageId={profile.brokerage_id} />
     </div>
+  )
+}
+
+/**
+ * Streams MarginBreakdownPanel's `bySource` (revenue + margin per office) from
+ * generateBrokeragePnl — the same source RecruitingAndReferralEconomics below
+ * already calls, kept as its own Suspense boundary rather than folded into the
+ * main parallel fetch so this section can stream in without holding up the rest
+ * of the page (this P&L computation is the heaviest query on this route).
+ * A single-office brokerage gets an empty byOffice array; MarginBreakdownPanel
+ * already renders nothing for an empty/absent bySource.
+ */
+async function MarginBreakdownSection({
+  brokerageId,
+  grossIncome,
+  breakdown,
+  netMargin,
+  netMarginTrend,
+}: {
+  brokerageId: string
+  grossIncome: number
+  breakdown: { label: string; value: number; percentOfGross: number }[]
+  netMargin: number
+  netMarginTrend?: number
+}) {
+  const pnl = await generateBrokeragePnl({ brokerageId })
+  const bySource = pnl.byOffice.map((o) => ({
+    source: o.name,
+    revenue: o.gci,
+    margin: o.gci > 0 ? (o.brokerageNet / o.gci) * 100 : 0,
+  }))
+  return (
+    <MarginBreakdownPanel
+      grossIncome={grossIncome}
+      breakdown={breakdown}
+      netMargin={netMargin}
+      netMarginTrend={netMarginTrend}
+      bySource={bySource}
+    />
   )
 }
 

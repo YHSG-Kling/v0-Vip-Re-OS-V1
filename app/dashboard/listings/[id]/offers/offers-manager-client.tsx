@@ -47,6 +47,7 @@ import { negotiationCoPilot } from "@/app/actions/negotiation-copilot"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
+import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -108,6 +109,7 @@ interface Props {
     status: string | null
     brokerage_id: string | null
     agent_id: string | null
+    go_live_date?: string | null
   }
   initialOffers: Offer[]
   currentUserId: string
@@ -129,11 +131,23 @@ interface Props {
    * so this is deliberately narrower than `canApprove`.
    */
   canOverrideDecisionGate: boolean
+  /** net_sheet_calculations.mortgage_payoff_amount, latest row for this listing
+   *  — the seller's actual saved payoff, when an agent has entered one. */
+  mortgagePayoff?: number
+  /** The same agreed commission rate (as a percent) the page's top-level net
+   *  sheet summary already shows, from resolveAgreedCommission. */
+  commissionRatePercent?: number
 }
 
-export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole, canOverrideDecisionGate }: Props) {
+export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole, canOverrideDecisionGate, mortgagePayoff, commissionRatePercent }: Props) {
   const [offers, setOffers] = useState<Offer[]>(initialOffers)
   const [refreshError, setRefreshError] = useState<string | null>(null)
+
+  // Canonical DOM per lib/listings/compute-dom.ts (go_live_date, never
+  // listing_date). Feeds NegotiationRecommendationCard's stale-market branch
+  // below, which otherwise fell back to a fabricated 30-day guess (hidden-wire
+  // census category c, 2026-09-10 wave 50).
+  const daysOnMarket = computeDaysOnMarket(listing.go_live_date) ?? undefined
 
   // RE-READ FROM TRUTH after a state transition. Accept / reject / counter each
   // used to patch local React state only — splicing the row out, or flipping
@@ -810,6 +824,8 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     }}
                     agentId={listing.agent_id ?? currentUserId}
                     county={listing.city ?? undefined}
+                    mortgagePayoff={mortgagePayoff}
+                    commissionRate={commissionRatePercent}
                   />
                   {(offer.status === "countered" || offer.counter_amount != null) && (
                     <div className="flex items-center gap-2 px-1">
@@ -1250,6 +1266,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                   <SellerMeaningCard
                     offer={selectedOffer}
                     listPrice={listing.list_price ?? 0}
+                    mortgagePayoff={mortgagePayoff}
                   />
 
                   {/* Negotiation Recommendation */}
@@ -1257,6 +1274,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     offer={selectedOffer}
                     listPrice={listing.list_price ?? 0}
                     totalOffers={activeOffers.length}
+                    daysOnMarket={daysOnMarket}
                   />
 
                   {/* Timeline Risk */}
@@ -1270,6 +1288,8 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     offer={selectedOffer}
                     listing={listing}
                     agentId={listing.agent_id ?? currentUserId}
+                    mortgagePayoff={mortgagePayoff}
+                    commissionRate={commissionRatePercent}
                   />
 
                   {/* Counter-Offer Negotiation Advisor */}

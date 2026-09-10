@@ -37,7 +37,7 @@ async function main() {
     { channel: "email", metadata: { manager: "ai_isa", ai_intent: "a warm re-engagement" } },
     { channel: "sms", metadata: { manager: "ai_isa", ai_intent: "a quick text nudge" } },
     { channel: "email", metadata: { manager: "ai_isa", ai_intent: "a warm re-engagement" } }, // dup intent
-    { channel: "direct_mail", metadata: { manager: "marketing_agent", ai_intent: "a just-listed postcard" } },
+    { channel: "direct_mail", metadata: { manager: "campaign_orchestrator", ai_intent: "a just-listed postcard" } }, // m618: was "marketing_agent" (retired seat)
     { channel: "phone", metadata: { manager: null, ai_intent: null } }, // unattributed
   ]
   const agg = aggregateTouchProvenance(rows)

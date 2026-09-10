@@ -922,14 +922,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 7/8 — video performance thresholds (app/api/video/engagement/route.ts). Campaign
-    // Orchestrator tracks content performance; Asset Manager owns the media library and
-    // decides whether to repurpose a high performer or retire a low one.
+    // 7/8 — video performance thresholds (app/api/video/engagement/route.ts). Wave 50
+    // owner ruling ("video snippet should be asset manager from"): every video/asset-lane
+    // moment is published FROM Asset Manager, the asset owner — not Campaign Orchestrator,
+    // who never ran the video pipeline. Asset Manager decides whether to repurpose a high
+    // performer or retire a low one, so it is also the TO (a self-addressed feed entry,
+    // same shape as the rest of the video lane below).
     if (params.event === KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "campaign_orchestrator",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "video_high_performer_detected",
           message:     "A video cleared the high-performer thresholds — consider repurposing it.",
@@ -943,7 +946,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "campaign_orchestrator",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "video_low_performer_detected",
           message:     "A video fell below the low-performer thresholds — consider retiring or re-cutting it.",
@@ -972,12 +975,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 10 — subscription cancelled (app/actions/billing.ts). Finance Manager owns the
-    // brokerage's books and subscription state.
+    // brokerage's books and subscription state — the billing action happens IN Finance's
+    // own domain, so it is the FROM (wave 50: never a default data_steward stamp when a
+    // domain-owning manager's own action caused the moment), self-addressed for its feed.
     if (params.event === KernelEvent.SUBSCRIPTION_CANCELLED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "finance_manager",
           toManager:   "finance_manager",
           signalType:  "subscription_cancelled",
           message:     "The brokerage's subscription was cancelled.",
@@ -989,14 +994,18 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 11 — social post publish failure (app/api/cron/publish-social-posts/route.ts).
-    // Campaign Orchestrator owns the schedule; Marketing Manager owns the brand/promotion
-    // channel that needs a human or a retry.
+    // TOMBSTONE (m618) — was campaign_orchestrator (schedule owner) -> marketing_agent
+    // (retired "brand/promotion channel" seat). Survivor campaign_orchestrator now owns
+    // BOTH ends, so a same-manager route is invalid (validSignalRoute requires from !==
+    // to); cron_manager (the scheduled-send infra that detected the failure — same shape
+    // as CRON_FAILED and PODCAST_EPISODE_FAILED's infra-manager -> content-owner pattern)
+    // reports it to campaign_orchestrator, who owns the channel and must retry or flag it.
     if (params.event === KernelEvent.SOCIAL_POST_FAILED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "campaign_orchestrator",
-          toManager:   "marketing_agent",
+          fromManager: "cron_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "social_post_failed",
           message:     "A scheduled social post failed to publish.",
           entityType:  params.entityType,
@@ -1045,13 +1054,15 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 14 — listing stage transition refused (lib/listing-lifecycle/lifecycle-logger.ts).
-    // Listing Concierge owns the seller side and needs to know a machine-gated move was
-    // blocked, not just that nothing happened.
+    // Listing Concierge owns the seller side and the state machine that refused the move —
+    // a listing-domain moment (wave 50), not a data-quality/ledger one, so it is the FROM,
+    // self-addressed so it needs to know a machine-gated move was blocked, not just that
+    // nothing happened.
     if (params.event === KernelEvent.LISTING_STAGE_TRANSITION_FAILED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "listing_stage_transition_failed",
           message:     "A listing stage transition was refused by the state machine.",
@@ -1345,12 +1356,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // 21 — a commission was recorded (lib/kernel/financial.ts createCommissionRecord —
     // canonical table agent_commissions). HANDLED — Finance Manager flags the earnings
     // ledger to the producing agent (resolved through agent_commissions.agent_id in the
-    // handler) so the new commission is visible beyond the financials page.
+    // handler) so the new commission is visible beyond the financials page. Money moment
+    // (wave 50) — Finance Manager's own books recorded it, so it is the FROM too, not a
+    // data_steward stamp.
     if (params.event === KernelEvent.COMMISSION_PAID) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "finance_manager",
           toManager:   "finance_manager",
           signalType:  "commission_paid",
           message:     "A commission was recorded.",
@@ -1404,13 +1417,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // ── feed_only from here — visibility for the owning manager, same shape as most of
     // D-octies. No automated consumer by design (see each `what` in signal-registry.ts).
 
-    // 24 — a transaction task was completed (app/actions/tasks.ts completeTask).
+    // 24 — a transaction task was completed (app/actions/tasks.ts completeTask). A deal-
+    // domain action, not a sweep (wave 50) — Deal Coordinator's own task board is the FROM.
     if (params.event === KernelEvent.TASK_COMPLETED) {
       try {
         const meta = (params.metadata as { title?: string | null } | null | undefined) ?? {}
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "deal_coordinator",
           toManager:   "deal_coordinator",
           signalType:  "task_completed",
           message:     `"${meta.title ?? "A task"}" was completed.`,
@@ -1423,11 +1437,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 25/26 — a listing was archived / restored from the archive (app/actions/listings.ts).
+    // Listing-domain actions (wave 50), not a data sweep — Listing Concierge is the FROM.
     if (params.event === KernelEvent.LISTING_ARCHIVED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "listing_archived",
           message:     "A listing was archived.",
@@ -1440,7 +1455,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "listing_unarchived",
           message:     "A listing was restored from the archive.",
@@ -1534,12 +1549,18 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 32 — a newsletter campaign send completed (app/api/cron/publish-newsletters).
+    // TOMBSTONE (m618) — was campaign_orchestrator -> marketing_agent (retired). Survivor
+    // campaign_orchestrator owns both ends now, so this follows the same shape as the other
+    // "infra observed a content-lane outcome" signals: cron_manager (the publish-newsletters
+    // cron that performed the send — the same infra→owner shape as SOCIAL_POST_FAILED) reports
+    // completion to campaign_orchestrator (the content owner). Not data_steward: wave-50 ruling,
+    // the FROM manager owns the moment and data_steward is reserved for data-quality moments.
     if (params.event === KernelEvent.NEWSLETTER_SENT) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "campaign_orchestrator",
-          toManager:   "marketing_agent",
+          fromManager: "cron_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "newsletter_sent",
           message:     "A newsletter campaign finished sending.",
           entityType:  params.entityType,
@@ -1548,12 +1569,13 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 33 — a brokerage subscribed (app/actions/auth/signup-brokerage.ts).
+    // 33 — a brokerage subscribed (app/actions/auth/signup-brokerage.ts). A money moment
+    // (wave 50) landing in Finance Manager's own books — Finance Manager is the FROM.
     if (params.event === KernelEvent.SUBSCRIPTION_CREATED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "finance_manager",
           toManager:   "finance_manager",
           signalType:  "subscription_created",
           message:     "A new brokerage subscription was created.",
@@ -1572,9 +1594,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     if (params.event === KernelEvent.NEGOTIATION_STRATEGY_READY) {
       try {
         const meta = (params.metadata as { side?: string | null; recommended_action?: string | null } | null | undefined) ?? {}
+        // A deal-domain artifact (wave 50) — Deal Coordinator's own negotiation drafted it.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "deal_coordinator",
           toManager:   "deal_coordinator",
           signalType:  "negotiation_strategy_drafted",
           message:     `An AI negotiation strategy is ready to review${meta.side ? ` (${meta.side} side)` : ""}.`,
@@ -1711,9 +1734,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // gated closing-prep task for the deal's agent (earnest money + inspection deadlines).
     if (params.event === KernelEvent.BUYER_UNDER_CONTRACT) {
       try {
+        // A deal-domain moment (wave 50) — Deal Coordinator's own offer bridge caused it.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "deal_coordinator",
           toManager:   "deal_coordinator",
           signalType:  "buyer_under_contract",
           message:     "A buyer went under contract.",
@@ -1729,9 +1753,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // money was received and processed") — a real money moment the buyer should hear about.
     if (params.event === KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED) {
       try {
+        // A money moment (wave 50) — earnest money is Finance Manager's own ledger.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "finance_manager",
           toManager:   "finance_manager",
           signalType:  "earnest_money_milestone_completed",
           message:     "An earnest money milestone was completed.",
@@ -1765,9 +1790,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // Concierge proposes a gated seller message sharing the fresh comps-grounded valuation.
     if (params.event === KernelEvent.CMA_GENERATED) {
       try {
+        // A listing-domain valuation tool (wave 50) — Listing Concierge is the FROM.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "cma_generated",
           message:     "A CMA finished generating for a listing.",
@@ -1831,9 +1857,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // HANDLED — Deal Coordinator opens a gated confirm-scope task for the deal's agent.
     if (params.event === KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION) {
       try {
+        // A deal-domain action (wave 50) — Deal Coordinator's own transaction assigned it.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "deal_coordinator",
           toManager:   "deal_coordinator",
           signalType:  "vendor_assigned_to_transaction",
           message:     "A vendor was assigned to a transaction.",
@@ -1895,9 +1922,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // inspections.ts:261, kept separate from the generic MILESTONE_COMPLETED alias).
     if (params.event === KernelEvent.INSPECTION_COMPLETED) {
       try {
+        // A deal-domain action (wave 50) — Deal Coordinator's own transaction inspection.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "deal_coordinator",
           toManager:   "deal_coordinator",
           signalType:  "inspection_completed",
           message:     "A transaction inspection was completed.",
@@ -1950,9 +1978,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // price-strategy signal (mirrors listing_stall_predicted's early-warning shape).
     if (params.event === KernelEvent.PRICE_ALERT_TRIGGERED) {
       try {
+        // A listing-domain pricing-strategy tool (wave 50) — Listing Concierge is the FROM.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "price_alert_triggered",
           message:     "A predictive-pricing alert fired for a listing.",
@@ -1967,9 +1996,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // listing/execution-engine.ts:515).
     if (params.event === KernelEvent.LISTING_AGREEMENT_INITIATED) {
       try {
+        // A listing-domain action (wave 50) — Listing Concierge's own paperwork stage.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "listing_agreement_initiated",
           message:     "A listing agreement was initiated.",
@@ -1983,9 +2013,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // listing-landing.ts:840).
     if (params.event === KernelEvent.SHOWING_REQUESTED) {
       try {
+        // A listing-domain moment (wave 50) — a showing request against THIS listing.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "showing_requested",
           message:     "A showing was requested from a listing page.",
@@ -2001,9 +2032,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // forms.ts:715, provider-resolved per wave-47's "never assume dotloop" ruling).
     if (params.event === KernelEvent.ESIGN_ENVELOPE_REQUESTED) {
       try {
+        // A compliance moment (wave 50) — the e-sign envelope is Compliance's own record.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "compliance_officer",
           toManager:   "compliance_officer",
           signalType:  "esign_envelope_requested",
           message:     "An e-sign envelope was requested.",
@@ -2015,14 +2047,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:477). Owner ruling
-    // (wave 49, 2026-09-10): routes to Campaign Orchestrator — the campaign manager — NOT
+    // (wave 49, 2026-09-10): routes TO Campaign Orchestrator — the campaign manager — NOT
     // Finance Manager, who has nothing to do with a campaign ending (fixed from the
-    // original wiring, which sent it there).
+    // original wiring, which sent it there). Wave 50 FROM fix: the entity that ended is an
+    // AI-ISA nurture campaign (app/actions/ai-isa.ts owns it), a lead/ISA moment — AI ISA
+    // is the FROM (the mover), Campaign Orchestrator the cross-manager TO, not a default
+    // data_steward stamp.
     if (params.event === KernelEvent.MARKETING_CAMPAIGN_ENDED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "ai_isa",
           toManager:   "campaign_orchestrator",
           signalType:  "marketing_campaign_ended",
           message:     "A marketing campaign ended.",
@@ -2113,9 +2148,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // neighborhood-reports.ts:497).
     if (params.event === KernelEvent.NEIGHBORHOOD_REPORT_GENERATED) {
       try {
+        // A listing-domain report tool (wave 50) — Listing Concierge is the FROM.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "listing_concierge",
           toManager:   "listing_concierge",
           signalType:  "neighborhood_report_generated",
           message:     "A neighborhood report finished generating.",
@@ -2145,12 +2181,15 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 1 — an AI video script finished generating (app/api/video-scripts/route.ts /
     // app/actions/video-generation.ts, entityType "video_script"). HANDLED — Asset Manager
-    // notifies the script's author it's ready for review before it becomes a video.
+    // notifies the script's author it's ready for review before it becomes a video. Wave 50
+    // owner ruling ("video snippet should be asset manager from"): every video/asset-lane
+    // moment publishes FROM Asset Manager, the asset owner, never a default data_steward
+    // stamp.
     if (params.event === KernelEvent.SCRIPT_GENERATED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "script_generated",
           message:     "An AI video script finished generating.",
@@ -2166,9 +2205,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // Manager notifies the owning agent their voice clone is ready for video generation.
     if (params.event === KernelEvent.VOICE_CLONE_READY) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager, the asset owner.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "voice_clone_ready",
           message:     "A cloned voice passed quality and is ready to use.",
@@ -2182,12 +2222,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // 3 — a platform video snippet was cut (app/actions/video-repurposing.ts createSnippet,
     // entityType "video_snippet", approval_status "pending_review" at insert). HANDLED —
     // Campaign Orchestrator (the distribution-channel owner) notifies the creator it's
-    // waiting for review before it can be scheduled.
+    // waiting for review before it can be scheduled. Video/asset lane (wave 50) — the
+    // snippet was CUT by Asset Manager's own pipeline, so Asset Manager is the FROM;
+    // Campaign Orchestrator (who acts next, scheduling it) stays the TO.
     if (params.event === KernelEvent.SNIPPET_CREATED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "campaign_orchestrator",
           signalType:  "snippet_created",
           message:     "A video snippet was cut and is pending review.",
@@ -2205,9 +2247,11 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // Orchestrator notifies the creator the new asset is ready for review.
     if (params.event === KernelEvent.CONTENT_REPURPOSED) {
       try {
+        // Video/asset lane (wave 50) — Asset Manager's own pipeline repurposed it; FROM
+        // Asset Manager, TO Campaign Orchestrator (who acts next).
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "campaign_orchestrator",
           signalType:  "content_repurposed",
           message:     "Content finished being repurposed into a new format.",
@@ -2224,9 +2268,11 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // Orchestrator notifies the pipeline's owner the run is done.
     if (params.event === KernelEvent.OMNIPRESENCE_PIPELINE_COMPLETED) {
       try {
+        // Video/asset lane (wave 50) — Asset Manager's own repurpose pipeline ran it; FROM
+        // Asset Manager, TO Campaign Orchestrator (who acts next).
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "campaign_orchestrator",
           signalType:  "omnipresence_pipeline_completed",
           message:     "An omni-presence repurpose pipeline finished running.",
@@ -2239,15 +2285,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 6 — a podcast episode finished generating (app/actions/podcast-generation.ts /
     // lib/kernel/marketing.ts, entityType "podcast_episode"). HANDLED — Asset Manager
-    // (the podcast/video creator) hands it to Marketing Agent, which proposes a GATED
-    // social snippet post teasing the new episode — a rendered asset should not sit
-    // undistributed just because nobody remembered to cross-post it.
+    // (the podcast/video creator) hands it to Campaign Orchestrator (m618: survivor of
+    // the retired marketing_agent seat), which proposes a GATED social snippet post
+    // teasing the new episode — a rendered asset should not sit undistributed just
+    // because nobody remembered to cross-post it.
     if (params.event === KernelEvent.PODCAST_EPISODE_GENERATED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "marketing_agent",
+          toManager:   "campaign_orchestrator",
           signalType:  "podcast_episode_generated",
           message:     "A podcast episode finished generating.",
           entityType:  params.entityType,
@@ -2264,9 +2311,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // never silently left in "failed" with nobody told.
     if (params.event === KernelEvent.PODCAST_EPISODE_FAILED) {
       try {
+        // Video/asset lane (wave 50) — Asset Manager's own podcast pipeline failed.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "podcast_episode_failed",
           message:     "A podcast episode failed.",
@@ -2284,9 +2332,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // to notice on their own the training tab went green.
     if (params.event === KernelEvent.TRAINING_COURSE_COMPLETED) {
       try {
+        // Onboarding/training moment (wave 50) — Recruiting Manager owns onboarding.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "recruiting_manager",
           toManager:   "recruiting_manager",
           signalType:  "training_course_completed",
           message:     "An agent completed all required onboarding training.",
@@ -2302,12 +2351,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // signal-registry.ts).
 
     // 9 — an AI-generated script variation was created (app/actions/video-generation.ts,
-    // entityType "video_script").
+    // entityType "video_script"). Video/asset lane (wave 50) — FROM Asset Manager.
     if (params.event === KernelEvent.SCRIPT_VARIATION_CREATED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "script_variation_created",
           message:     "A script variation was created.",
@@ -2321,9 +2370,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // entityType "voice_profile", before training starts).
     if (params.event === KernelEvent.VOICE_CLONE_PROFILE_CREATED) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "voice_clone_profile_created",
           message:     "A voice clone profile was created.",
@@ -2337,9 +2387,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // entityType "voice_training").
     if (params.event === KernelEvent.VOICE_CLONE_TRAINING_STARTED) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "voice_clone_training_started",
           message:     "Voice clone training started.",
@@ -2353,9 +2404,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // "voice_profile").
     if (params.event === KernelEvent.VOICE_CLONE_DEFAULT_SET) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "voice_clone_default_set",
           message:     "An agent set a default voice clone.",
@@ -2370,9 +2422,11 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // creation-review notice above).
     if (params.event === KernelEvent.SNIPPET_SCHEDULED) {
       try {
+        // Video/asset lane (wave 50) — Asset Manager is the FROM; Campaign Orchestrator
+        // (the distribution-channel owner) stays the TO.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "campaign_orchestrator",
           signalType:  "snippet_scheduled",
           message:     "A video snippet was scheduled for publish.",
@@ -2386,9 +2440,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // (app/actions/video-repurposing.ts, entityType-varies per caller).
     if (params.event === KernelEvent.REPURPOSE_BATCH_COMPLETED) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "repurpose_batch_completed",
           message:     "A repurpose batch finished.",
@@ -2405,9 +2460,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // beside them, visibility only so Asset Manager sees every tick, not just the outliers).
     if (params.event === KernelEvent.VIDEO_PERFORMANCE_UPDATED) {
       try {
+        // Video/asset lane (wave 50) — FROM Asset Manager.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "asset_manager",
           toManager:   "asset_manager",
           signalType:  "video_performance_updated",
           message:     "A video's performance metrics were refreshed.",
@@ -2419,13 +2475,14 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 16 — a podcast episode finished distributing to its publish channels (app/api/cron/
     // distribute-podcast-episodes, entityType "podcast_episode" — the success mirror of
-    // the HANDLED podcast_episode_failed above).
+    // the HANDLED podcast_episode_failed above). Wave 50: marketing_agent retired — organic
+    // distribution routes to Campaign Orchestrator.
     if (params.event === KernelEvent.PODCAST_EPISODE_DISTRIBUTED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "asset_manager",
-          toManager:   "marketing_agent",
+          toManager:   "campaign_orchestrator",
           signalType:  "podcast_episode_distributed",
           message:     "A podcast episode finished distributing.",
           entityType:  params.entityType,
@@ -2436,13 +2493,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 17 — a newsletter campaign was scheduled to send (app/actions/ai-newsletter.ts,
     // entityType "newsletter_campaign" — newsletter_sent (D-decies) already covers the
-    // completed-send moment; this is the scheduling moment ahead of it).
+    // completed-send moment; this is the scheduling moment ahead of it). Campaign/
+    // newsletter moment (wave 50) — FROM Campaign Orchestrator, its own scheduling action;
+    // marketing_agent retired — organic newsletter routes to Campaign Orchestrator too
+    // (no spend here, never Ads Manager), self-addressed.
     if (params.event === KernelEvent.NEWSLETTER_SCHEDULED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
-          toManager:   "marketing_agent",
+          fromManager: "cron_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "newsletter_scheduled",
           message:     "A newsletter campaign was scheduled to send.",
           entityType:  params.entityType,
@@ -2475,9 +2535,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // call; this is Recruiting Manager's cross-manager visibility into the gap).
     if (params.event === KernelEvent.SETUP_ASSISTANT_ESCALATED) {
       try {
+        // Onboarding moment (wave 50) — Recruiting Manager owns onboarding, FROM too.
         await publishManagerSignal({
           brokerageId: params.brokerageId,
-          fromManager: "data_steward",
+          fromManager: "recruiting_manager",
           toManager:   "recruiting_manager",
           signalType:  "setup_assistant_escalated",
           message:     "The onboarding AI assistant escalated a question it could not answer.",
@@ -2502,6 +2563,444 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           message:     "An agent's onboarding has stalled.",
           entityType:  params.entityType,
           entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-terdecies) CROSS-MANAGER SIGNALS — kernel-event census round 7 (2026-09-10, wave 50,
+  // lane HD). scripts/kernel-event-census-z1.ts classified these TWENTY KernelEvent members
+  // "emitted only" in the open-house/ISA/lead-capture/deal/video/campaign lanes: a real
+  // emitter fires each (verified against its call site below), lifecycle_events records it,
+  // but nothing downstream ever reacted. Same ruling as D-octies through D-duodecies
+  // (CLAUDE.md §1.2 + the owner's "every capability should run autonomously"): each publishes
+  // a manager_signals row addressed to the manager whose domain should act on it. Routed per
+  // the wave-50 rulings: FROM is the manager that OWNS the moment (never a default
+  // data_steward stamp) — listing_concierge for the open-house lane, ai_isa for the ISA/lead
+  // lane, deal_coordinator for the buyer-offer lane, asset_manager for the video lane,
+  // campaign_orchestrator for the campaign/form-capture lane, compliance_officer for the
+  // authority gate, data_steward ONLY for the two genuine data-quality moments (contact
+  // enrichment, the business-card OCR extraction). NEVER marketing_agent — it is being
+  // retired onto campaign_orchestrator/ads_manager this wave (lane IA) and no new signal
+  // routes through it. EIGHT are HANDLED — a real SIGNAL_HANDLERS consumer (lib/kernel/
+  // manager-signals.ts) proposes a gated deliverable (a notification to the responsible
+  // agent) through the SAME existing gated primitives the rest of this file uses — never an
+  // outbound send, never spend. Two (isa_outreach_paused, isa_qualified_lead) branch
+  // EXPLICITLY on the contact's/lead's buyer-vs-seller side per the wave-50 "branch where an
+  // event has multiple use cases" ruling, mirroring D-undecies' ai_isa_handoff_to_agent. The
+  // rest are feed_only, same shape as most of D-octies through D-duodecies. Every block is
+  // best-effort and independently caught; publishManagerSignal's own (toManager, signalType,
+  // entityId) dedupe makes a retried/re-emitted event never double an inbox.
+  if (params.brokerageId) {
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 1 — open house marketing was approved and the listing entered the OPEN_HOUSE_MARKETING
+    // stage (app/actions/seller-listing/execution-engine.ts approveOpenHouseMarketing,
+    // entityType "listing_stage_machine", entityId the listings.id). HANDLED — Listing
+    // Concierge (owns the listing lifecycle) hands it to Campaign Orchestrator, which
+    // notifies the listing's agent that open-house marketing is live.
+    if (params.event === KernelEvent.OPEN_HOUSE_MARKETING_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "campaign_orchestrator",
+          signalType:  "open_house_marketing_started",
+          message:     "Open house marketing was approved for a listing.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 2 — a resolved open-house attendee's contact record was linked to the open house for
+    // source attribution (lib/kernel/open-house.ts attachOpenHouseSourceAttribution,
+    // entityType "contact", metadata.agent_id is the working agent's AGENTS id — same
+    // convention as D-undecies' agent_escalated_to_human). HANDLED — Listing Concierge hands
+    // the attribution to AI ISA, which notifies the working agent for follow-up.
+    if (params.event === KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "ai_isa",
+          signalType:  "open_house_contact_resolved",
+          message:     "An open-house attendee was attributed to a contact.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3 — a compliance/TCPA authority gate BLOCKED an outreach step in a nurture sequence
+    // (lib/campaign-sequences/step-executor.ts, entityType "contact" — only fires when a
+    // contactId is present). HANDLED — Compliance Officer (the gate's owner) hands it to
+    // Campaign Orchestrator, which notifies the contact's assigned agent that automated
+    // outreach did not go out.
+    if (params.event === KernelEvent.AUTHORITY_BLOCKED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "compliance_officer",
+          toManager:   "campaign_orchestrator",
+          signalType:  "authority_blocked",
+          message:     "An authority gate blocked an automated outreach step.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 4 — a direct-call contact enrichment attempt FAILED (app/api/cron/contact-enrichment,
+    // the direct-call lane distinct from the frozen lead-pipeline queue orchestrator,
+    // entityType "contact"). Data-quality moment — HANDLED, data_steward hands it to AI ISA,
+    // which notifies the contact's assigned agent that auto-enrichment came up short.
+    if (params.event === KernelEvent.CONTACT_ENRICHMENT_FAILED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "contact_enrichment_failed",
+          message:     "A contact's automatic enrichment attempt failed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — AI ISA nurture PAUSED because the contact/lead has a transaction UNDER_CONTRACT
+    // (lib/ai-isa/isa-outreach-logger.ts isaTouchGovernor). Branches explicitly per wave-50:
+    // only a real CONTACT (a lead has no contact_type yet) routes by contacts.contact_type —
+    // seller to Listing Concierge, buyer to Shopping Agent — so the side-appropriate agent
+    // picks up direct communication; an unresolved/lead-side case publishes nothing (mirrors
+    // D-undecies' ai_isa_handoff_to_agent "hold and ask" shape). HANDLED on both resolved
+    // sides — a real notification, never a send.
+    if (params.event === KernelEvent.ISA_OUTREACH_PAUSED) {
+      try {
+        if (params.entityType === "contact" && params.entityId) {
+          const { data: c } = await svc
+            .from("contacts").select("contact_type")
+            .eq("id", params.entityId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
+          const toManager: "listing_concierge" | "shopping_agent" | null =
+            contactType === "seller" ? "listing_concierge" : contactType === "buyer" ? "shopping_agent" : null
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "ai_isa",
+              toManager,
+              signalType:  "isa_outreach_paused",
+              message:     "AI ISA nurture paused — the contact is now under contract.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+              contactId:   params.entityId,
+            }, svc)
+          }
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — TRACK B lead capture: a public form was submitted and captureContact() created a
+    // consented contact directly (app/api/forms/submit/route.ts, entityType "contact"; "No
+    // lead created" per the file's own header comment). HANDLED — Campaign Orchestrator (owns
+    // the lead-capture form as a marketing asset) hands the new, consented contact to AI ISA,
+    // which stages ONE gated first-touch message through the same proposeClientMessage rail
+    // D-undecies' handoff first-touch uses — a human approves before it sends.
+    if (params.event === KernelEvent.FORM_SUBMISSION_RECEIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "ai_isa",
+          signalType:  "form_submission_received",
+          message:     "A public form submission captured a new consented contact.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7 — a buyer started drafting an offer (app/actions/buyer-offers.ts startOfferDraft,
+    // entityType "buyer_lifecycle", entityId the buyer contact's id; listingId forwarded when
+    // the draft is tied to an in-house listing). HANDLED — Deal Coordinator hands it to
+    // Listing Concierge, which notifies the LISTING's agent a buyer is drafting an offer;
+    // no-op (left open) when the draft has no listingId to resolve an agent from.
+    if (params.event === KernelEvent.BUYER_OFFER_DRAFT_STARTED) {
+      try {
+        if (params.listingId) {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager:   "listing_concierge",
+            signalType:  "buyer_offer_draft_started",
+            message:     "A buyer started drafting an offer on a listing.",
+            entityType:  "listing",
+            entityId:    params.listingId,
+            contactId:   params.contactId ?? params.entityId,
+            payload:     { listing_id: params.listingId },
+          }, svc)
+        }
+      } catch { /* best-effort */ }
+    }
+
+    // 8 — a business card was scanned and OCR-extracted (app/actions/business-card/business-
+    // card-actions.ts, entityType "business_card", entityId business_card_scans.id). The raw
+    // OCR extraction (confidence score, viability gate) IS a data-quality moment — HANDLED,
+    // data_steward hands it to Sphere of Influence (the eventual default owner once
+    // classified — business_card_approved, wave 47), which notifies the scanning agent their
+    // card is ready for review/classification. Classification itself stays on
+    // business_card_approved/business_card_*_candidate (D-decies/D-undecies) — this is only
+    // the pre-classification "it's ready to look at" moment.
+    if (params.event === KernelEvent.BUSINESS_CARD_UPLOADED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "business_card_uploaded",
+          message:     "A business card was scanned and is ready for review.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies through D-duodecies. No automated consumer by design (see each `what` in
+    // signal-registry.ts).
+
+    // 9 — an open-house attendee was captured and walked in (app/api/open-house/attend/
+    // route.ts, entityType "listing_stage_machine" — the instant 90-second greeting already
+    // fires directly in the same call; this is Listing Concierge's cross-manager visibility
+    // trail into AI ISA beside that direct greeting, not a second one).
+    if (params.event === KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "ai_isa",
+          signalType:  "open_house_attendee_captured",
+          message:     "An open-house attendee was captured.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — a contact's enrichment was queued (lib/enrichment/contact-enrichment-core.ts,
+    // entityType "contact"). Data-quality moment — data_steward's queue-side visibility trail
+    // beside the HANDLED contact_enrichment_failed outcome above.
+    if (params.event === KernelEvent.CONTACT_ENRICHMENT_QUEUED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "contact_enrichment_queued",
+          message:     "A contact's enrichment was queued.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 11 — AI ISA began qualifying a lead (lib/kernel/lead-acquisition-handlers.ts, entityType
+    // 'lead').
+    if (params.event === KernelEvent.ISA_QUALIFICATION_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "isa_qualification_started",
+          message:     "AI ISA began qualifying a lead.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 12 — AI ISA sent an outreach touch through a nurture sequence step (lib/campaign-
+    // sequences/step-executor.ts, entityType "contact" — the SEND already happened via the
+    // provider dispatch in the same call; this is visibility only, never a second send).
+    if (params.event === KernelEvent.ISA_OUTREACH_SENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "isa_outreach_sent",
+          message:     "AI ISA sent a nurture outreach touch.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13 — an inbound reply was routed to AI ISA (app/api/providers/inbound/route.ts,
+    // entityType "lead" | "contact" — the SAME call already runs AI ISA's own inbound-intent
+    // classification synchronously right after this; this is cross-manager visibility beside
+    // that real-time handling, not a second reaction).
+    if (params.event === KernelEvent.ISA_REPLY_RECEIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "isa_reply_received",
+          message:     "An inbound reply was routed to AI ISA.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 14 — AI ISA qualified a lead (lib/ai-isa/qualification-evaluator.ts, entityType 'lead'
+    // — fires regardless of whether auto-assignment succeeds afterward). Branches explicitly
+    // per wave-50: leads.motivation_type/lead_type run through the SAME canonical
+    // motivationToContactType classifier lib/contact-promotion/contact-creator.ts already
+    // uses for the real lead→contact conversion (never a second, hand-rolled classifier) —
+    // seller-leaning routes to Listing Concierge, buyer-leaning to Shopping Agent; unresolved
+    // is left as visibility to data_steward rather than guessing. Feed-only: the qualification
+    // loop itself already runs synchronously off this same event (mirrors D-decies'
+    // lead_scored precedent) — this is the side-appropriate manager's early look, not a second
+    // trigger.
+    if (params.event === KernelEvent.ISA_QUALIFIED_LEAD) {
+      try {
+        let toManager: "listing_concierge" | "shopping_agent" | "data_steward" = "data_steward"
+        if (params.entityId) {
+          const { data: l } = await svc
+            .from("leads").select("motivation_type, lead_type")
+            .eq("id", params.entityId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const lead = l as { motivation_type?: string | null; lead_type?: string | null } | null
+          if (lead) {
+            const { motivationToContactType } = await import("@/lib/contact-promotion/contact-creator")
+            const contactType = motivationToContactType(lead.motivation_type) ?? motivationToContactType(lead.lead_type)
+            if (contactType === "seller") toManager = "listing_concierge"
+            else if (contactType === "buyer") toManager = "shopping_agent"
+          }
+        }
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager,
+          signalType:  "isa_qualified_lead",
+          message:     "AI ISA qualified a lead.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 15 — AI ISA's nurture sequence exhausted its touches with no engagement (lib/campaign-
+    // sequences/step-executor.ts, entityType "contact" — GHOST_LEAD_DETECTED already covers
+    // the ghost-detection verdict itself; this is the raw exhaustion moment beside it).
+    if (params.event === KernelEvent.ISA_MAX_TOUCHES_REACHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "isa_max_touches_reached",
+          message:     "AI ISA's nurture sequence exhausted its touches.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 16 — a QR code was scanned (app/api/qr/scan/route.ts, entityType 'qr_scan' — the scan is
+    // still anonymous, no contact yet; fanOutKernelEvent already runs the staff alert +
+    // campaign_sequences auto-enroll in the same call).
+    if (params.event === KernelEvent.QR_SCAN_RECEIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "data_steward",
+          signalType:  "qr_scan_received",
+          message:     "A QR code was scanned.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 17 — a D-ID video generation was requested (app/api/did/generate-video/route.ts,
+    // entityType "video_project" — the poll-did-videos cron owns following up, not a second
+    // manager).
+    if (params.event === KernelEvent.VIDEO_GENERATION_REQUESTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "data_steward",
+          signalType:  "video_generation_requested",
+          message:     "A video generation was requested.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — a D-ID video finished generating (app/api/cron/poll-did-videos, entityType
+    // "video_project" — the owning agent already gets a direct "video ready" notification in
+    // the same call; this is Asset Manager's cross-manager visibility trail into Campaign
+    // Orchestrator beside that direct notice, not a second one).
+    if (params.event === KernelEvent.VIDEO_GENERATION_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "campaign_orchestrator",
+          signalType:  "video_generation_completed",
+          message:     "A video finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — a marketing campaign was created in draft (app/actions/marketing-studio.ts,
+    // entityType "marketing_campaign" — nothing to act on until it launches).
+    if (params.event === KernelEvent.MARKETING_CAMPAIGN_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "data_steward",
+          signalType:  "marketing_campaign_created",
+          message:     "A marketing campaign was created.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — a marketing campaign LAUNCHED (lib/marketing/campaign-publisher.ts, entityType
+    // "marketing_campaign" — an organic channel campaign: newsletter/email/sms/direct_mail/
+    // social/blog/podcast/video; paid ad spend is the separate AD_CAMPAIGN_LAUNCHED event, not
+    // this one).
+    if (params.event === KernelEvent.MARKETING_CAMPAIGN_LAUNCHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager:   "data_steward",
+          signalType:  "marketing_campaign_launched",
+          message:     "A marketing campaign launched.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
         }, svc)
       } catch { /* best-effort */ }
     }

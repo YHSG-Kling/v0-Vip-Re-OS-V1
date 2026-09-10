@@ -190,8 +190,11 @@ async function main() {
   console.log("\n[Layer 1b · refusals for non-collaboration pairs still hold]")
   check("recruiting_manager → ads_manager shares NO collaboration domain → canRefer false",
     !canRefer("recruiting_manager", "ads_manager"))
-  const badEdge = validateReferral({ fromManager: "marketing_agent", toManager: "deal_coordinator", collabDomain: "organic_paid_content" })
-  check("a deliberative domain still refuses an undeclared edge (marketing → deal_coordinator on organic_paid_content)",
+  // m618: "marketing_agent" retired as a ManagerKey (organic_paid_content's declared pair is
+  // now [campaign_orchestrator, ads_manager]) — sphere_of_influence is a real ManagerKey
+  // that is still NOT a member of this domain, so the refusal this asserts still holds.
+  const badEdge = validateReferral({ fromManager: "sphere_of_influence", toManager: "deal_coordinator", collabDomain: "organic_paid_content" })
+  check("a deliberative domain still refuses an undeclared edge (sphere_of_influence → deal_coordinator on organic_paid_content)",
     !badEdge.ok && (badEdge as { reason: string }).reason.includes("MANAGER_COLLABORATIONS"))
   const goodEdge = validateReferral({ fromManager: "listing_concierge", toManager: "shopping_agent", collabDomain: "listing_demand_bridge" })
   check("the declared edge on the deliberative domain still validates", goodEdge.ok)
@@ -373,7 +376,7 @@ async function main() {
         registrySrc.includes(`· ${mk} — no conflicting evidence`))
     }
   }
-  check("nobody is off the team — every one of the 14 managers sits on at least one declared collaboration edge (deliberative or handoff)",
+  check("nobody is off the team — every manager on the live roster sits on at least one declared collaboration edge (deliberative or handoff)",
     (Object.keys(MANAGERS) as ManagerKey[]).every((mk) => collaborationsFor(mk).length > 0))
   check("rejected CANDIDATES are documented too, not silently dropped (the gift-budget candidate names its honest why)",
     registrySrc.includes("REJECTED") && registrySrc.includes("gift/QBR budget"))

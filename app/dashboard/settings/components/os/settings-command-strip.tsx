@@ -16,6 +16,12 @@ import {
 } from "lucide-react"
 
 interface SettingsCommandStripProps {
+  /** optional by design: this strip's one caller (Settings Control Center)
+   *  IS the hub every section link points OUT of — it renders every
+   *  section's panel inline rather than living inside one of them, so no
+   *  single key is ever "current" there. Only a page reached BY following
+   *  one of these links (e.g. a future /settings/branding page rendering
+   *  this same strip) would have a real value to pass. */
   currentSection?: string
 }
 

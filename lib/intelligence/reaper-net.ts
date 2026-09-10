@@ -145,7 +145,7 @@ export const REAPER_NET: ReaperEntry[] = [
   },
   {
     domain: "stuck_social_posts",
-    manager: "marketing_agent",
+    manager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
     lane: "proactive",
     protects: "scheduled posts that hung publishing or missed their slot",
     run: async (b, svc) => {

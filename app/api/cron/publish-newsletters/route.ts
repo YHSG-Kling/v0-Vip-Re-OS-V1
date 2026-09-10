@@ -291,10 +291,17 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // getSEOScore — schedule-newsletter.ts:192) is NOT gated: scoring is
   // opt-in, and blocking every unscored send would refuse campaigns that
   // never asked to be measured. A LOW score defers exactly like the other
-  // composition-gate checks above AND nudges marketing_agent over the
+  // composition-gate checks above AND nudges campaign_orchestrator over the
   // manager bus — a signal, never an outbound send (§ "Paid spend and
   // outbound sends stay gated" / LANE_RULES). The threshold matches the
   // editor's own amber/red boundary (newsletters-client.tsx:1533).
+  // TOMBSTONE (m618) — the signal used to route campaign_orchestrator ->
+  // marketing_agent (retired). campaign_orchestrator now owns both the send
+  // schedule and the content/SEO lane, so a same-manager route is invalid
+  // (validSignalRoute requires from !== to); data_steward (the SEO-scoring
+  // pipeline that detected the low score, same shape as the other
+  // data_steward -> campaign_orchestrator content-pipeline signals in
+  // lib/kernel/event-reactor.ts) reports it instead.
   const SEO_SCORE_GATE_THRESHOLD = 70
   try {
     const { data: ledgerRow } = await svc
@@ -317,8 +324,8 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
         const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
         await publishManagerSignal({
           brokerageId: c.brokerage_id,
-          fromManager: "campaign_orchestrator",
-          toManager: "marketing_agent",
+          fromManager: "data_steward",
+          toManager: "campaign_orchestrator",
           signalType: "newsletter_seo_score_low",
           message: `"${c.campaign_name ?? c.subject_line ?? c.id}" scored ${seoRow.overall_seo_score}/100 — below the ${SEO_SCORE_GATE_THRESHOLD} send threshold. Held, not sent.`,
           entityType: "newsletter_campaign",

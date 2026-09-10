@@ -8,6 +8,7 @@ import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-co
 import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
 import { buildSellerDecisionRoom, type DecisionOffer } from "@/lib/kernel/seller-decision-room"
 import { resolveBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { loadNetSheetPageData } from "@/app/actions/seller-cma"
 
 export default async function OffersPage({
   params,
@@ -23,7 +24,9 @@ export default async function OffersPage({
   const [{ data: listing }, { data: agentRow }] = await Promise.all([
     supabase
       .from("listings")
-      .select("id, address, city, state, list_price, status, brokerage_id, agent_id, hoa_dues, commission_rate")
+      // go_live_date feeds computeDaysOnMarket below — the canonical DOM
+      // source per lib/listings/compute-dom.ts (never listing_date).
+      .select("id, address, city, state, list_price, status, brokerage_id, agent_id, hoa_dues, commission_rate, go_live_date")
       .eq("id", listingId)
       .single(),
     supabase
@@ -160,6 +163,14 @@ export default async function OffersPage({
   )
   if (closingCostSection) netSheetCosts.otherProratedFees = closingCostSection.midpoint
 
+  // The seller's actual mortgage payoff, when an agent has already entered one
+  // for this listing — net_sheet_calculations is the one place that number is
+  // ever saved (saveNetSheet in app/actions/seller-cma.ts). Feeds
+  // SellerMeaningCard/SellerNetSheetCard below instead of their own $0
+  // defaults (hidden-wire census category c, 2026-09-10 wave 50).
+  const { latestNetSheet } = await loadNetSheetPageData(listingId)
+  const savedMortgagePayoff = latestNetSheet?.mortgage_payoff_amount ?? undefined
+
   // Deterministic seller recommendation, computed from the SAME cost lines the net
   // sheet uses (including the state-derived closing-cost midpoint above). This is the
   // auditable counterpart to the matrix's LLM-written summary: "which offer should I
@@ -236,6 +247,8 @@ export default async function OffersPage({
         // them through the first term.
         userRole={agentRow?.user_type ?? "agent"}
         canOverrideDecisionGate={canOverrideDecisionGate}
+        mortgagePayoff={savedMortgagePayoff}
+        commissionRatePercent={agreed.rate * 100}
       />
     </>
   )

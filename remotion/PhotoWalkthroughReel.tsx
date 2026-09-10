@@ -39,6 +39,7 @@ import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame, useVideoC
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { EqualHousingMark } from "./components/EqualHousingMark"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import type { CaptionCue } from "../lib/video/caption-plan"
@@ -140,7 +141,7 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
         />
       </Sequence>
 
-      {props.brand.showEhoMark && <EhoBadge />}
+      {props.brand.showEhoMark && <EqualHousingMark variant="badge" fontFamily={FONT} />}
 
       <CaptionLayer
         cues={props.captionsCues}
@@ -399,21 +400,6 @@ const FallbackCard: React.FC<PhotoWalkthroughReelProps> = ({ address, cityState,
   )
 }
 
-const EhoBadge: React.FC = () => (
-  <div
-    style={{
-      position: "absolute",
-      bottom: 24,
-      left: 24,
-      backgroundColor: "rgba(255,255,255,0.9)",
-      color: "#000",
-      padding: "6px 12px",
-      borderRadius: 6,
-      fontSize: 14,
-      fontWeight: 600,
-      fontFamily: FONT,
-    }}
-  >
-    Equal Housing Opportunity
-  </div>
-)
+// EhoBadge MERGED onto the survivor remotion/components/EqualHousingMark.tsx:58
+// (variant="badge" fontFamily={FONT} reproduces this exact positioning/style).
+// Tombstone — do not reintroduce a third local copy of the mark (§6).

@@ -133,7 +133,11 @@ check("every one of the 14 managers RUNS at least one schedule (no idle manager 
 
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
-check("all 14 managers present (11 lead-working agent_kinds + Compliance Officer & Finance Manager oversight + the Cron Manager operations seat)", keys.length === 14)
+// m618: "marketing_agent" retired as a ManagerKey (owner: "we don't have a marketing
+// agent manager") — the roster went 14 -> 13 (10 lead-working agent_kinds + Compliance
+// Officer & Finance Manager oversight + the Cron Manager operations seat).
+check("all 13 managers present (10 lead-working agent_kinds + Compliance Officer & Finance Manager oversight + the Cron Manager operations seat)", keys.length === 13)
+check("the retired marketing_agent seat is gone from the roster", !(keys as string[]).includes("marketing_agent"))
 // The two back-office oversight managers own their cross-cutting functions explicitly (no longer
 // diffused into Data Steward / Deal Coordinator) — a re-map here is a product decision, not a refactor.
 check("COMPLIANCE: Fair Housing logs → Compliance Officer",

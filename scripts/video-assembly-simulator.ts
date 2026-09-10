@@ -635,6 +635,24 @@ const EHO_EXEMPT = new Set(["ProductPromoReel", "PartnersMeetingReel"])
 // inheritance below, not as a direct-render miss.
 const EHO_INHERITED = new Set(["ListingSectionReel"])
 
+/**
+ * A composition renders the mark two ways: the literal "Equal Housing
+ * Opportunity" string inline (most compositions), or an IMPORT of the shared
+ * remotion/components/EqualHousingMark.tsx survivor plus a JSX use of it
+ * (JustListedReel, PhotoWalkthroughReel — merged onto that survivor wave 50,
+ * §1). Reading only the literal string would make the merge read as the mark
+ * going MISSING; a source that imports the component without ever rendering
+ * it (a dead import) does NOT satisfy this — both halves are required, same
+ * as the CONTROL below proves for the inline shape.
+ */
+function rendersEhoMark(source: string): boolean {
+  if (/Equal Housing Opportunity/.test(source)) return true
+  return (
+    /from\s+["'][^"']*EqualHousingMark["']/.test(source) &&
+    /<EqualHousingMark\b/.test(source)
+  )
+}
+
 function brandingSection() {
   console.log("\n── §branding — brand kit + fair-housing mark, intro and outro ──")
 
@@ -643,7 +661,7 @@ function brandingSection() {
     const source = readStripped(file)
     check(`${id}: brand interface declares showEhoMark`, /showEhoMark\??:\s*boolean/.test(source))
     if (!EHO_INHERITED.has(id)) {
-      check(`${id}: renders the Equal Housing Opportunity mark`, /Equal Housing Opportunity/.test(source))
+      check(`${id}: renders the Equal Housing Opportunity mark`, rendersEhoMark(source))
     }
     // The "who" identity in the outro is either the brokerage or (on the
     // agent-only vertical/square listing reels — JustListedReel and its
@@ -669,14 +687,38 @@ function brandingSection() {
     const OutroCta = () => <div>{brand.brokerageName}</div>
   `
   check("CONTROL: a composition that declares showEhoMark but never renders the mark is correctly flagged",
-    /showEhoMark\??:\s*boolean/.test(missingEhoSnippet) && !/Equal Housing Opportunity/.test(missingEhoSnippet))
+    /showEhoMark\??:\s*boolean/.test(missingEhoSnippet) && !rendersEhoMark(missingEhoSnippet))
+
+  // CONTROLS for the imported-shared-mark shape (JustListedReel,
+  // PhotoWalkthroughReel merged onto EqualHousingMark.tsx wave 50): an import
+  // WITH a JSX render passes; an import with no render (a dead import — the
+  // string is genuinely absent, same defect class as missingEhoSnippet above)
+  // is still correctly flagged, proving rendersEhoMark did not just become
+  // "imports the module".
+  const importedAndRendered = `import { EqualHousingMark } from "./components/EqualHousingMark"\n{props.brand.showEhoMark && <EqualHousingMark variant="badge" />}`
+  check("CONTROL: a composition that imports AND renders <EqualHousingMark> is correctly recognised",
+    rendersEhoMark(importedAndRendered))
+  const importedNotRendered = `import { EqualHousingMark } from "./components/EqualHousingMark"\nconst unused = EqualHousingMark`
+  check("CONTROL: a composition that imports but never renders <EqualHousingMark> is correctly flagged",
+    !rendersEhoMark(importedNotRendered))
 
   // NewsletterDigestVideo specifically — the finding this wave fixed. Named
   // explicitly so a future regression on THIS composition is unambiguous in
   // the failure output, not lost in the fleet loop above.
   const newsletter = readStripped("remotion/NewsletterDigestVideo.tsx")
   check("NewsletterDigestVideo (median price / inventory / DOM — market-facing) declares + renders the EHO mark",
-    /showEhoMark\??:\s*boolean/.test(newsletter) && /Equal Housing Opportunity/.test(newsletter))
+    /showEhoMark\??:\s*boolean/.test(newsletter) && rendersEhoMark(newsletter))
+
+  // JustListedReel + PhotoWalkthroughReel specifically — named explicitly so a
+  // regression on the MERGE (wave 50, §1: local EhoBadge → shared
+  // EqualHousingMark) is unambiguous rather than lost in the fleet loop above.
+  for (const mergedId of ["JustListedReel", "PhotoWalkthroughReel"] as const) {
+    const source = readStripped(VIDEO_COMPOSITION_FILES[mergedId])
+    check(`${mergedId}: EHO mark now rides the shared EqualHousingMark import, not a local EhoBadge`,
+      /from\s+["'][^"']*EqualHousingMark["']/.test(source) &&
+      /<EqualHousingMark\b/.test(source) &&
+      !/const\s+EhoBadge/.test(source))
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

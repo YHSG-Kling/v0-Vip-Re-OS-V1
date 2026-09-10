@@ -19,20 +19,17 @@
  *                              sentence beside the brokerage name)
  *   - NewsletterDigestThumb.tsx → variant="inline" (new — the finding above)
  *
- * NOT YET merged onto this survivor (tracked, not silently dropped): the
- * near-identical `EhoBadge` locals in remotion/JustListedReel.tsx:260 and
- * remotion/PhotoWalkthroughReel.tsx:402 render a `variant="badge"`-shaped
- * absolutely-positioned pill — the same idea, a different anchor. They are
- * left as-is here because scripts/video-assembly-simulator.ts's §branding
- * section regex-scans EACH COMPOSITION's OWN stripped source for the literal
- * "Equal Housing Opportunity" string (brandingSection(), VIDEO_COMPOSITION_FILES
- * includes both reels); moving the string behind an import in those two files
- * would read as the mark going MISSING to that guard without a corresponding
- * guard update, which is out of this change's scope. `variant="badge"` below
- * already matches their exact positioning/style so a future lane can point
- * both files at this component and update that guard's read-path in the same
- * change (§1 — the duplicate to merge onto this survivor, named here so it is
- * not silently reintroduced as a THIRD copy).
+ * MERGED (wave 50): the near-identical `EhoBadge` locals formerly in
+ * remotion/JustListedReel.tsx and remotion/PhotoWalkthroughReel.tsx — the same
+ * `variant="badge"`-shaped absolutely-positioned pill, a different anchor from
+ * the "inline" variant above — now render THIS component (tombstones at each
+ * file's former EhoBadge definition name this survivor). Because
+ * scripts/video-assembly-simulator.ts's §branding section regex-scanned EACH
+ * COMPOSITION's OWN stripped source for the literal "Equal Housing Opportunity"
+ * string, moving the string behind this import would have read as the mark
+ * going MISSING; brandingSection()'s check now also accepts a composition that
+ * imports EqualHousingMark and renders `<EqualHousingMark` (rendersEhoMark()),
+ * so an imported shared mark counts exactly like an inline literal.
  */
 import React from "react"
 
@@ -44,8 +41,8 @@ export interface EqualHousingMarkProps {
   /** "inline" — plain text meant to sit inside an existing text line (a
    *  footer sentence, a byline) — used by VideoCoverThumb and
    *  NewsletterDigestThumb. "badge" — a self-positioned pill anchored
-   *  bottom-left over a full-bleed frame, matching JustListedReel's and
-   *  PhotoWalkthroughReel's own (not-yet-merged, see file header) EhoBadge. */
+   *  bottom-left over a full-bleed frame — used by JustListedReel and
+   *  PhotoWalkthroughReel, merged onto this survivor (see file header). */
   variant?: "inline" | "badge"
   fontSize?: number
   color?: string

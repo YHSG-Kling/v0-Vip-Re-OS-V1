@@ -10,8 +10,9 @@
  *     is VALID_AGENT_TYPES below.
  *  2. Managed-agent runtime plane (lib/agents/*): the autonomous per-entity
  *     "manager" agents (deal_coordinator, shopping_agent, listing_concierge,
- *     sphere_of_influence, campaign_orchestrator, marketing_agent, asset_manager)
- *     persisted in managed_agents / managed_agent_sessions. SEPARATE vocabulary.
+ *     sphere_of_influence, campaign_orchestrator, asset_manager — m618: marketing_agent
+ *     retired, survivor campaign_orchestrator) persisted in managed_agents /
+ *     managed_agent_sessions. SEPARATE vocabulary.
  *
  * The two planes are intentionally separate and never join. The canonical
  * conversation-routing vocabulary is unified across all three tables by

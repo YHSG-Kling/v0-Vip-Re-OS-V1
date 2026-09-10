@@ -96,8 +96,9 @@ export async function runIdleHands(
     return true
   }
 
-  // ── Marketing Manager: stale listings get a social draft (existing approval gate). ──
-  if (mayAct("marketing_agent")) {
+  // ── Campaign Orchestrator (m618: survivor of the retired marketing_agent/"Marketing
+  //    Manager" seat): stale listings get a social draft (existing approval gate). ──
+  if (mayAct("campaign_orchestrator")) { // m618: survivor of the retired marketing_agent seat
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString()
     const { data: stale } = await supabase.from("listings")
       .select("id, address, city, agent_id").eq("brokerage_id", brokerageId)
@@ -111,7 +112,7 @@ export async function runIdleHands(
         platform: "all", post_type: "new_listing",
         content: `Still available and worth a look: ${l.address ?? "this home"}${l.city ? ` in ${l.city}` : ""}. Reach out for a private tour.`,
         status: "draft", approval_status: "pending", ai_generated: true,
-        post_brief: "IDLE HANDS — Marketing Manager: listing active 7+ days with no social touch this week; keep it in front of buyers.",
+        post_brief: "IDLE HANDS — Campaign Orchestrator: listing active 7+ days with no social touch this week; keep it in front of buyers.",
       })
       if (!error) result.socialDrafts += 1
     }

@@ -18,8 +18,8 @@ export const maxDuration = 300
 // + stored tenant credentials the publisher posted with. The
 // bundle-attribution rollup reads this table for SOCIAL_POST scans — before
 // this cron existed, that lane could only ever see the dead fake-success
-// stub's zeros. Registered in CRON_REGISTRY; marketing_agent-owned (same
-// lane as publish-social-posts).
+// stub's zeros. Registered in CRON_REGISTRY; campaign_orchestrator-owned (m618:
+// survivor of the retired marketing_agent seat; same lane as publish-social-posts).
 export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth

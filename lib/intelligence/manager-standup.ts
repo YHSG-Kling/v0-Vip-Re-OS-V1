@@ -73,7 +73,9 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       // Ads Manager — paid-campaign actions awaiting a human's spend approval.
       supabase.from('ad_manager_actions').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
-      // Marketing Manager — brand/content actions awaiting approval.
+      // Campaign Orchestrator's brand/content actions awaiting approval (m618: table name
+      // marketing_agent_actions is unchanged; only the owning manager moved from the
+      // retired marketing_agent seat).
       supabase.from('marketing_agent_actions').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
       // Sphere Manager — repeat/referral touches proposed (attributed by agent_kind).
@@ -98,11 +100,19 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       headline: `${n(handoffs)} qualified handoff${n(handoffs) === 1 ? '' : 's'} in 24h · working ${n(hotIsa)} hot conversation${n(hotIsa) === 1 ? '' : 's'}`,
     },
     {
+      // m618: MERGED — this card used to be two lines (campaign_orchestrator's client
+      // messages + the retired marketing_agent seat's brand/content actions). One manager,
+      // one card; the two counts stay separately-sourced (agent_client_messages vs
+      // marketing_agent_actions — table name unchanged, only its owning manager moved) but
+      // roll up together so the standup doesn't show a second row for a retired seat.
       manager: 'campaign_orchestrator', label: MANAGERS.campaign_orchestrator.label,
-      activity_24h: n(proposedMsgs), needs_human: n(proposedMsgs),
-      headline: n(proposedMsgs) > 0
-        ? `${n(proposedMsgs)} client message${n(proposedMsgs) === 1 ? '' : 's'} proposed — awaiting your approval`
-        : 'No client messages awaiting approval',
+      activity_24h: n(proposedMsgs) + n(mktProposed), needs_human: n(proposedMsgs) + n(mktProposed),
+      headline: (n(proposedMsgs) + n(mktProposed)) > 0
+        ? [
+            n(proposedMsgs) > 0 ? `${n(proposedMsgs)} client message${n(proposedMsgs) === 1 ? '' : 's'}` : null,
+            n(mktProposed) > 0 ? `${n(mktProposed)} marketing action${n(mktProposed) === 1 ? '' : 's'}` : null,
+          ].filter(Boolean).join(' + ') + ' proposed — awaiting your approval'
+        : 'No client messages or marketing actions awaiting approval',
     },
     {
       manager: 'data_steward', label: MANAGERS.data_steward.label,
@@ -137,13 +147,6 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       headline: n(adsProposed) > 0
         ? `${n(adsProposed)} ad action${n(adsProposed) === 1 ? '' : 's'} proposed — awaiting your spend approval`
         : 'No ad spend awaiting approval',
-    },
-    {
-      manager: 'marketing_agent', label: MANAGERS.marketing_agent.label,
-      activity_24h: n(mktProposed), needs_human: n(mktProposed),
-      headline: n(mktProposed) > 0
-        ? `${n(mktProposed)} marketing action${n(mktProposed) === 1 ? '' : 's'} proposed — awaiting your approval`
-        : 'No marketing actions awaiting approval',
     },
     {
       manager: 'sphere_of_influence', label: MANAGERS.sphere_of_influence.label,
@@ -182,8 +185,9 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
   // provenance columns, so the line shows RECEIPTS ("3 touches on email, sms — a warm
   // re-engagement") and not only counts. Key is metadata.manager, stamped by
   // lib/campaign-sequences/touchpoint-bridge.ts:99 via touchpointManagerForChannel — whose
-  // whole value set (ai_isa, marketing_agent, asset_manager, campaign_orchestrator, and the
-  // campaign_orchestrator default) is a SUBSET of ManagerKey, so this map cannot silently
+  // whole value set (ai_isa, asset_manager, campaign_orchestrator — m618: the retired
+  // marketing_agent seat's channels now resolve to campaign_orchestrator too, same as
+  // the default) is a SUBSET of ManagerKey, so this map cannot silently
   // miss (§6). Touches with no manager aggregate to 'unattributed', which matches no
   // ManagerKey and is therefore dropped rather than mis-credited to a manager.
   const [reaperActivity, touchSummaries] = await Promise.all([

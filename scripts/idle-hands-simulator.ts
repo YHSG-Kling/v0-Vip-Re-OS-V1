@@ -38,9 +38,10 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · the idle rule]")
-  check("no open proposals → idle (initiative allowed)", isManagerIdle({}, "marketing_agent"))
-  check("open proposals → BUSY (no initiative onto a backlog)", !isManagerIdle({ marketing_agent: 2 }, "marketing_agent"))
-  check("another manager's backlog doesn't block this one", isManagerIdle({ sphere_of_influence: 5 }, "marketing_agent"))
+  // m618: "marketing_agent" retired as a ManagerKey — survivor campaign_orchestrator.
+  check("no open proposals → idle (initiative allowed)", isManagerIdle({}, "campaign_orchestrator"))
+  check("open proposals → BUSY (no initiative onto a backlog)", !isManagerIdle({ campaign_orchestrator: 2 }, "campaign_orchestrator"))
+  check("another manager's backlog doesn't block this one", isManagerIdle({ sphere_of_influence: 5 }, "campaign_orchestrator"))
   check("seasonal plays: every month maps to a season, named by year",
     seasonalPlayFor(3, 2026).name === "Spring Sellers 2026" && seasonalPlayFor(6, 2026).name === "Summer Movers 2026"
     && seasonalPlayFor(8, 2026).name === "Fall Market Reset 2026" && seasonalPlayFor(11, 2026).name === "Year-End Gratitude 2026"

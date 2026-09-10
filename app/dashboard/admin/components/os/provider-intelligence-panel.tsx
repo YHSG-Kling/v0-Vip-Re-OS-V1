@@ -18,8 +18,11 @@ import { createClient } from "@/lib/supabase/client"
 
 interface ProviderIntelligencePanelProps {
   brokerageId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  stats?: any
+  /** optional by design: getAdminDashboardStats (the caller's data source)
+   *  carries agent/transaction/listing/lead counts — nothing provider-shaped.
+   *  This panel already fetches provider_overrides itself; there is no
+   *  provider-relevant field in `stats` to read. */
+  stats?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
 interface ProviderStatus {

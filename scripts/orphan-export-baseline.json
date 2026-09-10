@@ -433,7 +433,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9419,
+  "census": 9413,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2052,12 +2052,6 @@
     "app/dashboard/isa/campaigns/components/QualificationOutcomes.tsx": 1,
     "app/dashboard/isa/components/isa-engagement-status-sheet.tsx": 1,
     "app/dashboard/isa/components/isa-lead-queue-panel.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/conversation-intelligence-panel.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/ghost-recovery-panel.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/hard-stops-panel.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/positive-responders-panel.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/qualification-radar.tsx": 1,
-    "app/dashboard/isa/components/qualification-os/retraining-signals-panel.tsx": 1,
     "app/dashboard/isa/components/qualification-os.tsx": 6,
     "app/dashboard/isa/components/speed-to-lead-panel.tsx": 1,
     "app/dashboard/jobs/jobs-client.tsx": 1,
@@ -11273,24 +11267,6 @@
     ],
     "app/dashboard/isa/components/isa-lead-queue-panel.tsx": [
       "ISALeadQueuePanel"
-    ],
-    "app/dashboard/isa/components/qualification-os/conversation-intelligence-panel.tsx": [
-      "ConversationIntelligencePanel"
-    ],
-    "app/dashboard/isa/components/qualification-os/ghost-recovery-panel.tsx": [
-      "GhostRecoveryPanel"
-    ],
-    "app/dashboard/isa/components/qualification-os/hard-stops-panel.tsx": [
-      "HardStopsPanel"
-    ],
-    "app/dashboard/isa/components/qualification-os/positive-responders-panel.tsx": [
-      "PositiveRespondersPanel"
-    ],
-    "app/dashboard/isa/components/qualification-os/qualification-radar.tsx": [
-      "QualificationRadar"
-    ],
-    "app/dashboard/isa/components/qualification-os/retraining-signals-panel.tsx": [
-      "RetrainingSignalsPanel"
     ],
     "app/dashboard/isa/components/qualification-os.tsx": [
       "QualificationRadar",

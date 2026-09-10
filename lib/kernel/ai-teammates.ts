@@ -169,7 +169,9 @@ export function grantLedgerForManager(
   if (baseManagerKey === "deal_coordinator") {
     return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
   }
-  if (baseManagerKey === "campaign_orchestrator" || baseManagerKey === "marketing_agent") {
+  // m618: was also true for "marketing_agent" — that ManagerKey is retired
+  // (survivor campaign_orchestrator, already the sole branch below).
+  if (baseManagerKey === "campaign_orchestrator") {
     return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
   }
   return null
@@ -248,7 +250,7 @@ export function composeTeammateContext(t: TeammateForContext): string {
 export const TEAM_COMMAND_MANAGER: Record<string, ManagerKey> = {
   voice_followup:   "sphere_of_influence",
   start_marketing:  "campaign_orchestrator",
-  cut_promo:        "marketing_agent",
+  cut_promo:        "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
   find_properties:  "shopping_agent",
   kernel_proposals: "deal_coordinator",
   kernel_resolve:   "deal_coordinator",

@@ -14,8 +14,9 @@
  *
  * Proved: (1) the emitter judges a post against the brokerage's OWN 28-day
  * baseline through the one baseline reader, with an impressions floor and a
- * baseline-size floor, and publishes marketing_agent → ads_manager idempotently
- * per post; (2) it rides the daily analytics sync AFTER fresh numbers land;
+ * baseline-size floor, and publishes campaign_orchestrator → ads_manager
+ * idempotently per post (m618: survivor of the retired marketing_agent seat);
+ * (2) it rides the daily analytics sync AFTER fresh numbers land;
  * (3) the executor stages a paid campaign from the post on approval, compliance
  * first (a hard flag refuses before any row), creative in the one approval queue
  * as a DRAFT, destination through the one resolver, idempotent per post, and
@@ -53,8 +54,8 @@ console.log("══════════════════════�
 console.log("\n── 1 · the emitter exists and judges on the brokerage's own floor ──")
 check("the registry declares the signal for ads_manager", /content_winner:\s*\{ consumers: \["ads_manager"\]/.test(REG))
 check("the handler consumes it into a launch proposal", /"ads_manager:content_winner"[\s\S]{0,400}action_type: "launch_ad_campaign"/.test(SIGNALS))
-check("the emitter publishes marketing_agent → ads_manager with the post as the entity",
-  /fromManager: "marketing_agent"[\s\S]{0,60}toManager: "ads_manager"[\s\S]{0,60}signalType: "content_winner"/.test(EMIT) && /entityType: "social_post",\s*entityId: p\.id/.test(EMIT))
+check("the emitter publishes campaign_orchestrator → ads_manager with the post as the entity (m618: survivor of the retired marketing_agent seat)",
+  /fromManager: "campaign_orchestrator"[\s\S]{0,60}toManager: "ads_manager"[\s\S]{0,60}signalType: "content_winner"/.test(EMIT) && /entityType: "social_post",\s*entityId: p\.id/.test(EMIT))
 check("…through the ONE baseline reader (no second baseline query)", /listSocialBaselines\(brokerageId\)/.test(EMIT) && !/social_post_baselines_28d/.test(EMIT))
 check("…with an impressions floor and a baseline-size floor", /WINNER_MIN_IMPRESSIONS = 200/.test(VERDICT) && /WINNER_MIN_BASELINE_POSTS = 3/.test(VERDICT) && /WINNER_LIFT = 2\b/.test(VERDICT) && /judgeContentWinner\(/.test(EMIT))
 check("…and every read's error is READ (§3), never reported as 'no posts'", /social_posts read refused/.test(EMIT) && /social_media_analytics read refused/.test(EMIT) && /brokerage sweep read refused/.test(EMIT))

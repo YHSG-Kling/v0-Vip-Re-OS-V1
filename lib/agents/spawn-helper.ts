@@ -24,6 +24,14 @@ export type AgentKind =
   | "listing_concierge"
   | "sphere_of_influence"
   | "campaign_orchestrator"
+  // "marketing_agent" is NOT a ManagerKey (m618: that governance/accountability seat is
+  // retired — see lib/kernel/manager-registry.ts — survivor campaign_orchestrator). It
+  // stays here as a distinct managed_agents.agent_kind / session-identity value for
+  // lib/agents/marketing-agent.ts's weekly broadcast job, kept SEPARATE from
+  // "campaign_orchestrator"'s own kind deliberately: app/api/webhooks/anthropic-agent/
+  // route.ts dispatches the resolutions[] parse by agent_kind, and the two jobs' output
+  // shapes differ (marketing_agent_actions vs campaign_orchestrator's tool-driven drafts)
+  // — collapsing the kind would make that dispatch unable to tell the two sessions apart.
   | "marketing_agent"
   | "asset_manager"
   | "ads_manager"
@@ -44,7 +52,7 @@ const KIND_LABEL: Record<AgentKind, string> = {
   listing_concierge:     "Listing Concierge",
   sphere_of_influence:   "Sphere of Influence",
   campaign_orchestrator: "Campaign Orchestrator",
-  marketing_agent:       "Marketing Agent",
+  marketing_agent:       "Marketing Agent", // execution-identity only — see AgentKind comment above
   asset_manager:         "Asset Manager",
   ads_manager:           "Ads Manager",
   ai_isa:                "AI ISA",

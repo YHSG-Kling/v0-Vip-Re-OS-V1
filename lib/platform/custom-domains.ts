@@ -344,7 +344,7 @@ export async function reportCustomDomainOutcome(params: {
       await publishManagerSignal({
         brokerageId: params.brokerageId,
         fromManager: "data_steward",
-        toManager: "marketing_agent",
+        toManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
         signalType: params.outcome === "verified" ? "custom_domain_verified" : "custom_domain_error",
         message: params.outcome === "verified"
           ? `Custom domain ${params.domain} is verified and LIVE — the white-label site now serves on it.`

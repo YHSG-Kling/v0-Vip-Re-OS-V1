@@ -17,10 +17,11 @@
  * social_post_baselines_28d through lib/marketing/social-baselines.ts, the one
  * baseline reader — with enough impressions to mean something and a baseline
  * built from enough posts to be a floor. The signal rides the manager bus
- * (marketing_agent → ads_manager), idempotent per open (post) signal.
+ * (campaign_orchestrator → ads_manager — m618: survivor of the retired
+ * marketing_agent seat), idempotent per open (post) signal.
  *
  * Runs after the daily analytics sync (app/api/cron/social-analytics-sync),
- * so it judges fresh numbers. Cross-cooperated: marketing_agent emits,
+ * so it judges fresh numbers. Cross-cooperated: campaign_orchestrator emits,
  * ads_manager proposes paid promotion (gated spend), compliance_officer's
  * scan runs again when the paid creative is staged (lib/ads/promote-post.ts).
  */
@@ -87,7 +88,7 @@ async function detectContentWinners(brokerageId: string, client?: Svc, now: Date
     const excerpt = (p.content ?? "").replace(/\s+/g, " ").trim().slice(0, 140)
     const r = await publishManagerSignal({
       brokerageId,
-      fromManager: "marketing_agent",
+      fromManager: "campaign_orchestrator", // m618: survivor of the retired marketing_agent seat
       toManager: "ads_manager",
       signalType: "content_winner",
       message: `Organic ${p.platform} ${verdict.postType} post is running at ${(verdict.engagementRate * 100).toFixed(1)}% engagement — ${verdict.lift.toFixed(1)}× the brokerage's 28-day baseline (${(verdict.baselineRate * 100).toFixed(1)}%) on ${verdict.impressions} impressions: "${excerpt}"`,

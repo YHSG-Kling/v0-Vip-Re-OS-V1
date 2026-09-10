@@ -36,11 +36,18 @@ export default async function AgentProfilePage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  const [agentSettings, socialAccounts, myProfile, identityRes] = await Promise.all([
+  const [agentSettings, socialAccounts, myProfile, identityRes, brandSettingsRes] = await Promise.all([
     getAgentSettings(user.id),
     getSocialAccounts(user.id, profile.user_type ?? profile.role ?? "agent"),
     getMyProfile(),
     getMyAgentIdentity(),
+    // The brokerage-level fallback AgentSignaturePanel inherits from when the
+    // agent has never set their own (hidden-wire census category c, wave 50).
+    service
+      .from("brokerage_brand_settings")
+      .select("email_signature_html")
+      .eq("brokerage_id", profile.brokerage_id)
+      .maybeSingle(),
   ])
 
   const resolvedRole = (profile.user_type ?? profile.role ?? "") as string
@@ -83,7 +90,10 @@ export default async function AgentProfilePage() {
       <PersonalWebsiteCard initialUrl={myProfile.profile?.personal_website_url ?? null} />
 
       {/* Personal email signature */}
-      <AgentSignaturePanel currentSignature={profile.email_signature ?? null} />
+      <AgentSignaturePanel
+        currentSignature={profile.email_signature ?? null}
+        brokerageSignature={brandSettingsRes.data?.email_signature_html ?? null}
+      />
 
       {/* D-ID avatar + ElevenLabs voice IDs */}
       <VideoSettingsCard

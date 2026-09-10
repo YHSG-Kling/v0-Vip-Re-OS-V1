@@ -70,6 +70,9 @@ interface PressureItem {
   sentiment?: string
   contactId: string
   conversationId: string
+  /** contacts.lead_temperature, joined server-side — feeds AiReplyCoachPanel's
+   *  cold-lead nudge below (hidden-wire census category c, wave 50). */
+  leadTemperature?: "hot" | "warm" | "cold"
 }
 
 interface SentimentItem {
@@ -395,6 +398,7 @@ export function CommunicationsOSClient({
               incomingMessage={replyCoachMessage || selectedConversation.preview}
               channel={getSendableChannel(selectedConversation.channel) as any}
               contactName={selectedConversation.contactName}
+              leadTemperature={selectedConversation.leadTemperature}
               onApplyResponse={handleApplyResponse}
               onSendResponse={async (response) => {
                 await handleSendMessage({
@@ -423,6 +427,24 @@ export function CommunicationsOSClient({
             suggestedNextOutreach={healthAnalysis.suggestedNextOutreach}
             onViewFullAnalysis={() => {
               router.push(`/dashboard/communications/intelligence?contact=${healthAnalysis.contactId}`)
+            }}
+            // Loads the recommendation straight into the AI Reply Coach for
+            // this contact's open thread — reusing the same selection/draft
+            // state the pressure-queue rows already drive, rather than a
+            // second compose surface. No open thread for this contact →
+            // there is nothing to act ON yet, so it goes to their inbox
+            // thread instead. Hidden-wire census category (c), wave 50: this
+            // prop was declared and rendered as a button that did nothing
+            // when clicked (onActOnRecommendation was never passed).
+            onActOnRecommendation={(recommendation) => {
+              const item = pressureItems.find((p) => p.contactId === healthAnalysis.contactId)
+              if (item) {
+                setSelectedConversation(item)
+                setReplyCoachMessage(recommendation)
+              } else {
+                toast.info("Open this contact's thread in the inbox to act on this recommendation")
+                router.push(`/dashboard/communications/inbox?contact=${healthAnalysis.contactId}`)
+              }
             }}
           />
         )}

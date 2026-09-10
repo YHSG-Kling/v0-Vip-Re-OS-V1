@@ -35,9 +35,11 @@ export function touchpointChannelForStep(stepChannel: string): string | null {
 }
 
 // PROVENANCE — which manager produced this touch. The send itself is the Campaign Orchestrator's
-// job, but the channel's owning manager is the meaningful attribution for "why did my client get
-// this?": voice is the AI ISA's, social/direct-mail are the Marketing Agent's, video is assembled
-// by the Asset Manager (Video Director). Pure + defaulting (campaign_orchestrator) so it never throws.
+// job, and so is the channel's owning manager for "why did my client get this?" on social/direct-mail
+// /blog/podcast (m618: survivor of the retired marketing_agent seat — kept as EXPLICIT map entries
+// rather than deleted-to-fall-through-to-the-default, so the channel-to-manager reasoning stays
+// documented even though the value now matches the default): voice is the AI ISA's, video is
+// assembled by the Asset Manager (Video Director). Pure + defaulting (campaign_orchestrator) so it never throws.
 // The map covers BOTH channel vocabularies that reach it (§6 — one function, one
 // home): the sequence engine's step channels (ai_call, voice_drop, social_post …)
 // and the campaign recorder's channel names (social, blog, podcast …), which are
@@ -53,11 +55,11 @@ export function touchpointChannelForStep(stepChannel: string): string | null {
 const CHANNEL_TO_MANAGER: Record<string, string> = {
   ai_call:     "ai_isa",
   voice_drop:  "ai_isa",
-  social_post: "marketing_agent",
-  social:      "marketing_agent",
-  direct_mail: "marketing_agent",
-  blog:        "marketing_agent",
-  podcast:     "marketing_agent",
+  social_post: "campaign_orchestrator",
+  social:      "campaign_orchestrator",
+  direct_mail: "campaign_orchestrator",
+  blog:        "campaign_orchestrator",
+  podcast:     "campaign_orchestrator",
   video:       "asset_manager",
   newsletter:  "campaign_orchestrator",
   email:       "campaign_orchestrator",

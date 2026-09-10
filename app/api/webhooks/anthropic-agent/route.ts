@@ -252,6 +252,15 @@ export async function POST(request: NextRequest) {
         // against the known action types, and persist proposed rows in
         // the m143 ledger. Approval / execution happens via a separate
         // server action call from the admin UI.
+        // m618: "marketing_agent" is retired as a ManagerKey (owner: "we don't have a
+        // marketing agent manager" — survivor campaign_orchestrator, lib/kernel/
+        // manager-registry.ts) but DELIBERATELY KEPT as this agentKind check's value —
+        // it is a managed_agents.agent_kind execution-identity, not a ManagerKey, and
+        // collapsing it here would make this dispatch unable to tell
+        // lib/agents/marketing-agent.ts's session (resolutions[] output) apart from
+        // lib/agents/campaign-orchestrator.ts's own "campaign_orchestrator"-kind session
+        // (tool-driven drafts, no resolutions[]). See lib/agents/spawn-helper.ts's
+        // AgentKind comment.
         const agentEmbed = (sessionRow as unknown as { agent?: { agent_kind?: string } | Array<{ agent_kind?: string }> | null }).agent
         const agentKind = Array.isArray(agentEmbed) ? agentEmbed[0]?.agent_kind : agentEmbed?.agent_kind
         if (agentKind === "marketing_agent") {

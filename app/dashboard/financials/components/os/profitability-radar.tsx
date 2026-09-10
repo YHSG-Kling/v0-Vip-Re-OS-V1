@@ -24,7 +24,16 @@ interface ProfitabilityRadarProps {
     targetProgress?: number // % to goal
   }
   period: "mtd" | "ytd" | "custom"
+  /** optional by design: getPeriodTitle() already derives a correct label from
+   *  `period` ("Month to Date" / "Year to Date"), which every current caller
+   *  passes. Only needed to override for a genuinely custom range. */
   periodLabel?: string
+  /** optional by design: only rendered next to `metrics.revenueGrowth`, which
+   *  no caller computes today (no prior-period comparison source exists yet in
+   *  the agent/brokerage financial-kernel loaders — hidden-wire census category
+   *  c, 2026-09-10 wave 50). Wiring a real YoY/MoM figure needs a genuine
+   *  prior-period query, not a placeholder; tracked for a follow-up rather than
+   *  fabricated here. */
   comparisonLabel?: string
 }
 

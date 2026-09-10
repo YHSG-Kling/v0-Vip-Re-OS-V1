@@ -1,19 +1,30 @@
 /**
  * lib/agents/marketing-agent.ts
  *
- * Marketing Agent — the 6th Managed Agent kind. Per-brokerage, weekly.
+ * Campaign Orchestrator's 1:many BRAND/BROADCAST weekly job. Per-brokerage, weekly.
  *
- * The user explicitly distinguished two marketing lanes:
- *   • Marketing TO contacts (1:1 / 1:few)   — sphere outreach, intros,
- *                                              anniversary, drip campaigns.
- *                                              Owned by the existing
- *                                              campaign_orchestrator (Wave 3).
- *   • Marketing the BRAND / LISTINGS (1:many) — Just Listed reels, market
- *                                              reports, brand social, blog
- *                                              cadence, listing-launch
- *                                              sequences. Owned by THIS agent.
+ * TOMBSTONE (m618, 2026-09-10) — this was "Marketing Agent, the 6th Managed Agent kind",
+ * a SEPARATE ManagerKey from campaign_orchestrator. Owner ruling: "we don't have a
+ * marketing agent manager." The MANAGER-ACCOUNTABILITY split is gone — both marketing
+ * lanes are campaign_orchestrator's now (lib/kernel/manager-registry.ts ManagerKey no
+ * longer has "marketing_agent"; every signal/domain/proof that used to name it now names
+ * campaign_orchestrator):
+ *   • Marketing TO contacts (1:1 / 1:few)   — sphere outreach, intros, anniversary, drip
+ *                                              campaigns. lib/agents/campaign-orchestrator.ts's
+ *                                              own weekly job (Wave 3).
+ *   • Marketing the BRAND / LISTINGS (1:many) — Just Listed reels, market reports, brand
+ *                                              social, blog cadence, listing-launch sequences.
+ *                                              THIS file's weekly job.
+ * The EXECUTION-IDENTITY split survives on purpose: TEMPLATE.kind below is still
+ * "marketing_agent", a managed_agents.agent_kind value distinct from
+ * campaign-orchestrator.ts's "campaign_orchestrator" — NOT a ManagerKey, so retiring the
+ * ManagerKey does not require collapsing it. app/api/webhooks/anthropic-agent/route.ts
+ * dispatches its resolutions[]-ledger parse by agent_kind, and the two jobs' outputs are
+ * shaped differently (this file's resolutions[] -> marketing_agent_actions vs
+ * campaign-orchestrator.ts's tool-driven drafts) — collapsing the kind would leave that
+ * webhook unable to tell the two sessions apart. See spawn-helper.ts's AgentKind comment.
  *
- * The marketing_agent oversees every brand/promotion asset coming out of
+ * This job oversees every brand/promotion asset coming out of
  * the platform — composing with existing kernel pieces rather than
  * duplicating any of them:
  *
@@ -75,9 +86,11 @@ YOU COMPOSE WITH EXISTING KERNEL PIECES (do not duplicate):
    - De-Conflict broadcast cap (lib/kernel/deconflict): newsletter
      1/segment/7d, social_post 3/day, blog 2/7d, ad 5/7d. Pre-attest
      against this in your plan so the gate doesn't surprise the agent.
-   - Campaign Orchestrator (the 5th agent) owns 1:1 contact campaigns.
-     If your plan would overlap their per-contact outreach, defer to
-     them and ship only broadcast assets.
+   - Your own OTHER weekly job (lib/agents/campaign-orchestrator.ts) runs the 1:1
+     contact-campaign lane. If your plan would overlap its per-contact outreach,
+     stay in your lane and ship only broadcast assets — the two jobs are the SAME
+     manager now (m618), so this is a scope boundary between two crons, not a
+     hand-off between two accountable managers.
 
 NEVER:
    - Auto-publish; the agent reviews + approves every asset.
@@ -89,6 +102,10 @@ NEVER:
    - Use protected-class language ("perfect for families" etc.).`
 
 const TEMPLATE: AgentTemplate = {
+  // "marketing_agent" is an AgentKind/session-identity value only — NOT a ManagerKey
+  // (m618: that governance seat is retired, survivor campaign_orchestrator; see the
+  // file header above and lib/agents/spawn-helper.ts's AgentKind comment for why this
+  // stays a separate managed_agents.agent_kind from campaign-orchestrator.ts's own).
   kind:    "marketing_agent",
   model:   "claude-sonnet-4-6",
   system:  MARKETING_AGENT_SYSTEM,
@@ -1277,7 +1294,7 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "Produce the weekly plan in the JSON format the rubric specifies. Output JSON only.",
   ].filter(Boolean).join("\n")
 
-  const rubric = buildOutcomeFor("marketing_agent", {
+  const rubric = buildOutcomeFor("campaign_orchestrator_broadcast", {
     brokerageName:        brokerage.brokerageName,
     subjectName:          brokerage.brokerageName,
     pendingListingPromos: snap.pendingListingPromos,

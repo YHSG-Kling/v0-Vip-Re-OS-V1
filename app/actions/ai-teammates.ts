@@ -141,6 +141,12 @@ export async function listAiTeammatesAction(): Promise<
   ])
   const autonomousUnlocked: string[] = []
   if (dealGrants.size > 0) autonomousUnlocked.push("deal_coordinator")
+  // "marketing_agent" kept alongside its survivor "campaign_orchestrator" (m618: retired
+  // ManagerKey) so a tenant's PRE-EXISTING custom teammate row still stored with
+  // base_manager_key='marketing_agent' (tenant_ai_teammates has no live CHECK on that
+  // column — free text, unbackfilled by the migration) still shows its correct unlocked
+  // badge; new teammates can no longer be CREATED with that key (ManagerKey no longer
+  // admits it — see the panel's EMPTY_FORM default).
   if (mktGrants.size > 0) autonomousUnlocked.push("campaign_orchestrator", "marketing_agent")
 
   return {

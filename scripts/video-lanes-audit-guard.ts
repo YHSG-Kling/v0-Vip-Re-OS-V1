@@ -119,7 +119,7 @@ check("the autopilot queues ProductPromoReel via recordRenderQueued with entity_
   /recordRenderQueued\(\{[\s\S]{0,300}entityType: PLATFORM_SOCIAL_DRAFT_ENTITY/.test(AUTO) && /PLATFORM_SOCIAL_DRAFT_ENTITY = "platform_social_draft"/.test(AUTO) && /render already queued/.test(AUTO))
 check("…under the platform's house tenant (renders need a brokerage row; DEMO_CONFIG.BROKERAGE_ID is the seeded one)", /PLATFORM_HOUSE_BROKERAGE_ID = DEMO_CONFIG\.BROKERAGE_ID/.test(AUTO))
 check("the post-render hook attaches video_url to the draft and COUNTS the update (§3)", /entity_type === "platform_social_draft"[\s\S]{0,600}\.select\("id"\)[\s\S]{0,400}matched no row/.test(RENDER))
-check("the Monday cron is registered and owned", /"\/api\/cron\/platform-product-autopilot"\s*,\s*schedule: "0 13 \* \* 1"/.test(CRON) && /"\/api\/cron\/platform-product-autopilot": "marketing_agent"/.test(MREG))
+check("the Monday cron is registered and owned", /"\/api\/cron\/platform-product-autopilot"\s*,\s*schedule: "0 13 \* \* 1"/.test(CRON) && /"\/api\/cron\/platform-product-autopilot": "campaign_orchestrator"/.test(MREG)) // m618: survivor of the retired marketing_agent seat
 check("…drafts stay gated: nothing here posts (status draft only, no permalink written)", /status: "draft"/.test(AUTO) && !/status: "posted"|permalink/.test(AUTO))
 check("…the reel is the registered composition (remotion-best-practices: one renderer)", /ProductPromoReel/.test(ROOT) && /compositionId: spec\.compositionId/.test(AUTO))
 

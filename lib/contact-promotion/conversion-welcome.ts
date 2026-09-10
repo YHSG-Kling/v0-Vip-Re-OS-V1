@@ -9,8 +9,10 @@
  * converted lead to contact, FINISHES AND THEN EMBEDS into the email."
  *
  * Read together they settle a question a previous lane left explicitly open (see
- * the `welcome_avatar_video` entry in lib/kernel/manager-registry.ts, which ends
- * "UNRESOLVED AND A PRODUCT CALL, NOT A LANE CALL"):
+ * the `welcome_avatar_video` entry in lib/kernel/manager-registry.ts — that entry
+ * now itself ends "RESOLVED 2026-08-25 BY OWNER RULING" and names this file as
+ * the shared entry point both conversion lanes call; the open question it
+ * records resolving is the one this file exists to answer):
  *
  *   ONE welcome email. It is the FIRST thing a converted contact receives. It
  *   carries the portal information AND the embedded personal avatar video. The

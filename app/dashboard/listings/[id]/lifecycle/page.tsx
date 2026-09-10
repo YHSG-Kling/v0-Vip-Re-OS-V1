@@ -347,8 +347,13 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const videos = videosResult.data ?? []
   const photoCount = media.filter((m: any) => m.media_type === "photo").length
   const videoCount = videos.length
-  // Spec: minimum 5 photos to launch
-  const mediaReady = photoCount >= 5
+  // Spec: minimum 5 photos to launch. Single spelling of the threshold
+  // (CLAUDE.md §6) — passed to LaunchReadinessChecklist as minPhotosRequired
+  // below instead of leaving that prop unwired to fall back on the component's
+  // own default (also 5 today, but a SEPARATE number free to drift). Hidden-wire
+  // census category (c), 2026-09-10 wave 50.
+  const MIN_LAUNCH_PHOTOS = 5
+  const mediaReady = photoCount >= MIN_LAUNCH_PHOTOS
 
   const currentTier = tierResult.data
   // Gate: check if this user's plan includes listing_marketing_tiers.
@@ -546,7 +551,7 @@ const { data: listingVendorBookings } = await supabase
 
   // Blockers
   const blockers: string[] = []
-  if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
+  if (!mediaReady) blockers.push(`Need at least ${MIN_LAUNCH_PHOTOS} photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
   if (!hasMlsNumber) blockers.push("No MLS number entered")
   blockers.push(...complianceBlockers)
@@ -739,6 +744,7 @@ const { data: listingVendorBookings } = await supabase
             currentStage={currentStage}
             photoCount={photoCount}
             videoCount={videoCount}
+            minPhotosRequired={MIN_LAUNCH_PHOTOS}
             hasBranded={media.some((m: any) => m.is_branded)}
             hasUnbranded={media.some((m: any) => !m.is_branded)}
             requiredFields={requiredFields}

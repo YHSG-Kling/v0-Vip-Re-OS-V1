@@ -16,7 +16,8 @@
  * new table, so it can never fork the queue's or the standup's source of truth:
  *
  *   1. manager_signals (status='consumed')  — a manager acted on another's signal
- *   2. marketing_agent_actions (resolved)   — Marketing Manager executed/skipped
+ *   2. marketing_agent_actions (resolved)   — Campaign Orchestrator executed/skipped
+ *      (m618: table name unchanged; owning manager moved from the retired marketing_agent seat)
  *   3. asset_manager_actions   (resolved)   — Asset Manager executed/skipped
  *   4. ad_manager_actions      (resolved)   — Ads Manager executed/skipped
  *   5. agent_client_messages   (released)   — a manager's client message went out
@@ -170,7 +171,7 @@ export async function loadManagerActivity(
       })
     }
   }
-  pushActions((marketingRes.data ?? []) as any[], "marketing_agent", "marketing")
+  pushActions((marketingRes.data ?? []) as any[], "campaign_orchestrator", "marketing") // m618: survivor of the retired marketing_agent seat
   pushActions((assetRes.data ?? []) as any[], "asset_manager", "asset")
   pushActions((adsRes.data ?? []) as any[], "ads_manager", "ads")
 

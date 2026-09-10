@@ -160,17 +160,18 @@ export async function runTeamQuery(
     c.push({ manager: "sphere_of_influence", line: `this relationship is WITHDRAWN — every channel revoked; the team recommends no outreach unless they come to us.` })
   }
 
-  // Marketing Manager — campaign touches + active sequences (the FULL bench answers).
+  // Campaign Orchestrator (m618: survivor of the retired marketing_agent seat) —
+  // campaign touches + active sequences (the FULL bench answers).
   const touchRows = (touches.data ?? []) as any[]
   if (touchRows.length > 0) {
-    c.push({ manager: "marketing_agent", line: `marketing has touched them ${touchRows.length} time${touchRows.length === 1 ? "" : "s"} recently, last via ${touchRows[0].channel ?? "a campaign"}.` })
+    c.push({ manager: "campaign_orchestrator", line: `marketing has touched them ${touchRows.length} time${touchRows.length === 1 ? "" : "s"} recently, last via ${touchRows[0].channel ?? "a campaign"}.` })
   }
   const enrRows = (enrollments.data ?? []) as any[]
   if (enrRows.length > 0) {
     const seqName = (enrRows[0].campaign_sequences as { name?: string | null } | null)?.name ?? "a campaign sequence"
-    c.push({ manager: "marketing_agent", line: `they're running in "${seqName}" at step ${enrRows[0].current_step ?? 0}.` })
+    c.push({ manager: "campaign_orchestrator", line: `they're running in "${seqName}" at step ${enrRows[0].current_step ?? 0}.` })
   } else if ((contact as any).nurture_status !== "withdrawn") {
-    c.push({ manager: "marketing_agent", line: `no campaign is running for them — say "start marketing" and I'll enroll them.` })
+    c.push({ manager: "campaign_orchestrator", line: `no campaign is running for them — say "start marketing" and I'll enroll them.` })
   }
 
   // Data Steward — hygiene: what we're MISSING (so the team can fix it, not guess).

@@ -572,9 +572,9 @@ export function NewslettersClient({
   // The PERSISTED score (newsletter_seo_scores, orphan doctrine §1.2 reader) —
   // distinct from `seoBreakdown` above, which is the live draft-time recompute.
   // Set once handleRegisterScheduledSend lands a row; this is what the
-  // campaign_orchestrator/marketing_agent gate on publish-newsletters actually
-  // reasons over, so showing it here is "what the cron sees," not a duplicate
-  // of the live estimate.
+  // campaign_orchestrator gate on publish-newsletters actually reasons over
+  // (m618: was campaign_orchestrator/marketing_agent — retired seat), so showing
+  // it here is "what the cron sees," not a duplicate of the live estimate.
   const [storedSeoScore, setStoredSeoScore] = useState<StoredSEOScore | null>(null)
 
   // DnD sensors

@@ -216,6 +216,11 @@ export default async function CommunicationsOSPage() {
     sentiment: msg.analysis?.sentiment,
     contactId: msg.contact_id,
     conversationId: msg.conversation_id,
+    // contacts.lead_temperature — already on the row via prioritizeInbox's
+    // `contacts(*)` join. Feeds AiReplyCoachPanel's cold-lead compliance nudge
+    // (hidden-wire census category c, 2026-09-10 wave 50: the panel already read
+    // leadTemperature, no caller ever passed it).
+    leadTemperature: msg.contacts?.lead_temperature as "hot" | "warm" | "cold" | undefined,
   }))
 
   // Build sentiment items
