@@ -433,7 +433,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9420,
+  "census": 9419,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2687,7 +2687,7 @@
     "lib/ai-isa/buyer-intent-router.ts": 1,
     "lib/ai-isa/cold-contact-escalation.ts": 1,
     "lib/ai-isa/contact-channel-policy.ts": 2,
-    "lib/ai-isa/contact-reel-situation.ts": 10,
+    "lib/ai-isa/contact-reel-situation.ts": 9,
     "lib/ai-isa/conversation-handler.ts": 3,
     "lib/ai-isa/convert-buyer-lead-on-intent.ts": 1,
     "lib/ai-isa/convert-seller-lead-on-intent.ts": 1,
@@ -13429,7 +13429,6 @@
       "contactReelPersona",
       "situationKindForContact",
       "buildContactReelSituation",
-      "buildContactWelcomeSituation",
       "buildSellerConversionSituation",
       "buildOfferConfidenceSituation",
       "buildSavedHomeNudgeSituation",
