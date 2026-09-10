@@ -111,9 +111,42 @@ export function anniversaryGreeting(args: {
  */
 const ANNIVERSARY_GREETING_SHAPE = /\bhappy\b[^.!?]{0,60}\banniversar(?:y|ies)\b/i
 
-function opensWithAnniversaryGreeting(script: string | null | undefined): boolean {
+/** PURE. Strips case/punctuation so a greeting and a script sentence compare
+ *  on WORDS, not on exact formatting a model might reflow. `\p{L}`/`\p{N}`
+ *  (Unicode letter/number classes) so this normalizes non-Latin scripts
+ *  (Arabic, Chinese, Cyrillic, …) the same way it normalizes English. */
+function normalizeForGreetingMatch(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()
+}
+
+/**
+ * DOES THE SCRIPT OPEN BY WISHING THEM A HAPPY ANNIVERSARY?
+ *
+ * Two independent tests, either one sufficient:
+ *   1. ANNIVERSARY_GREETING_SHAPE — the English "happy ... anniversary" shape.
+ *      Always run, so every existing (English) caller is UNCHANGED.
+ *   2. `greeting`, when the caller passes one — a NORMALIZED SUBSTRING match
+ *      against the exact greeting text intro-video-reactor.ts's prompt asked
+ *      the writer to open with "word for word" (in whatever language that
+ *      greeting was localized to). ADDITIVE: omitting `greeting` reproduces
+ *      the prior English-only behavior exactly.
+ *
+ *      WHY THIS MATTERS: test 1 is an ENGLISH regex. A Spanish/French/Arabic
+ *      draft that DID greet correctly (per the writer's own instruction) never
+ *      matches "happy", so without test 2 `enforceAnniversaryGreeting` would
+ *      have prepended a SECOND, English-language greeting in front of an
+ *      already-correctly-greeted non-English script — a bilingual mashup
+ *      opener, not a missing greeting. See lib/video/intro-video-reactor.ts's
+ *      draftScript for where `greeting` is resolved per contact and threaded
+ *      through here.
+ */
+function opensWithAnniversaryGreeting(script: string | null | undefined, greeting?: string): boolean {
   const first = spokenSentences(script)[0] ?? ""
-  return ANNIVERSARY_GREETING_SHAPE.test(first)
+  if (ANNIVERSARY_GREETING_SHAPE.test(first)) return true
+  if (!greeting) return false
+  const normFirst = normalizeForGreetingMatch(first)
+  const normGreeting = normalizeForGreetingMatch(greeting)
+  return normGreeting.length > 0 && normFirst.includes(normGreeting)
 }
 
 /**
@@ -139,7 +172,7 @@ export function enforceAnniversaryGreeting(
 ): string {
   const body = (script ?? "").trim()
   if (!body) return greeting
-  if (opensWithAnniversaryGreeting(body)) return body
+  if (opensWithAnniversaryGreeting(body, greeting)) return body
   return `${greeting} ${body}`
 }
 

@@ -37,7 +37,7 @@
 //   ───────────   ──────────────────────────────  ────────────────────────────
 //   remove (11)   DESTROYED the row               retains it, untouched
 //   cascade (16)  DESTROYED it via ON DELETE      retains it — CASCADE never fires
-//   detach (15)   kept the row, NULLED its        retains it AND its listing_id;
+//   detach (16)   kept the row, NULLED its        retains it AND its listing_id;
 //                 listing pointer                 SET NULL never fires
 //   block  (19)   REFUSED the whole operation     nothing to refuse — see below
 //
@@ -233,13 +233,16 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "social_posts", column: "listing_id", disposition: "block", why: "published content on a social account" },
   { table: "ai_message_drafts", column: "listing_id", disposition: "block", why: "belongs to a conversation / message thread" },
 
-  // ── detach (15): a hard delete kept the row and NULLED its pointer. ───────
+  // ── detach (16): a hard delete kept the row and NULLED its pointer. ───────
   // Archive keeps the row AND the pointer. This is the sharpest single argument
   // for archive over delete: `transactions.listing_id` is how a closed deal
   // finds the property it closed on, and a delete cleared it.
   { table: "transactions", column: "listing_id", disposition: "detach", why: "a closed deal keeps its listing pointer — commission and transaction history read it" },
   { table: "documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / contact / transaction; disclosures are retention records" },
   { table: "generated_documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / transaction" },
+  // m619 (wave 51): the buyer's portal "submit an offer" INTENT — owned by the contact, the
+  // listing pointer is a snapshot of which of OUR listings they asked about (SET NULL live).
+  { table: "offer_intents", column: "listing_id", disposition: "detach", why: "owned by the buyer contact; the listing pointer is only which in-house listing the ask was about" },
   // m608 (2026-09-07) gave these three columns the FK the schema never had, so
   // they entered SCHEMA_FK_MAP and this ledger's denominator. Each is a record
   // that outlives the listing: the activity feed is the agent's own history,

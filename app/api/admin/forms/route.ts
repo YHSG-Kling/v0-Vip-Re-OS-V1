@@ -26,6 +26,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     tcpa_disclosure_text: string
     redirect_url?: string
     thank_you_message?: string
+    settings?: { default_contact_type?: string | null } | null
   }
 
   const { data: form, error } = await supabase
@@ -38,10 +39,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       tcpa_disclosure_text: body.tcpa_disclosure_text,
       redirect_url: body.redirect_url || null,
       thank_you_message: body.thank_you_message || null,
+      // Who this form is for (settings.default_contact_type) — read by
+      // app/api/forms/submit/route.ts Step 4b. See FormsManagerClient.tsx.
+      settings: body.settings ?? null,
       is_active: true,
       submission_count: 0,
     })
-    .select('id, name, slug, is_active, submission_count, created_at, fields, tcpa_disclosure_text, redirect_url, thank_you_message')
+    .select('id, name, slug, is_active, submission_count, created_at, fields, tcpa_disclosure_text, redirect_url, thank_you_message, settings')
     .single()
 
   if (error || !form) {

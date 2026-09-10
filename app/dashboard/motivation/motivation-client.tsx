@@ -84,13 +84,19 @@ import Link from "next/link"
 
 interface MotivationClientProps {
   agentId: string
-  brokerageId: string
-  userId: string
   /** Seeded from the URL so a filtered board is shareable. Validated server-side first. */
   initialScope?: LeaderboardScope | null
   initialMetric?: LeaderboardMetric | null
   initialPeriod?: string | null
 }
+// TOMBSTONE: `brokerageId` and `userId` removed (wave 52, hidden-wire-census
+// category c passed-never-read). Every server action this component calls —
+// getLeaderboard, getAgentPointsAndTier, getAgentBadges, getAgentPointsHistory,
+// getChallenges — resolves tenant/session identity itself (getAgentContext() /
+// supabase.auth.getUser(), CLAUDE.md §4: tenant from the SESSION, never a
+// prop). The survivor is each action's own session resolution; a client-passed
+// brokerageId/userId here would have been unused AND, had anything started
+// reading it, the wrong thing to trust.
 
 const TIER_BENEFITS: Record<PointsTier, string[]> = {
   unranked: ["Core features", "Standard support"],

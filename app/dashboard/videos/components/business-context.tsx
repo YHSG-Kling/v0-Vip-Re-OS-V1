@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -447,6 +448,20 @@ interface RepurposeDestinationsCardProps {
   selectedDestinations: RepurposeDestination[]
   onToggleDestination: (dest: RepurposeDestination) => void
   connectedPlatforms?: string[]
+  // BUILD (wave 52, hidden-wire-census category c passed-never-read): every
+  // caller passed these and nothing read them. "Client Portal" is the one
+  // destination in REPURPOSE_DESTINATIONS that names a SPECIFIC person's
+  // portal — it cannot be "connected" the way a social platform is, it needs
+  // to know WHOSE portal, so it is gated on contactId below the same way a
+  // disconnected social platform is gated on connectedPlatforms. listingId
+  // surfaces a quick jump to the listing this video is about, when there is
+  // one — this card otherwise has no way back to the context it was opened
+  // from. (The duplicate implementation this card's props were copied from,
+  // app/dashboard/videos/components/business-context/repurpose-destinations-card.tsx,
+  // is UNREACHABLE — nothing imports the `business-context/` directory path;
+  // `"../components/business-context"` resolves to THIS file, not that
+  // directory's index.ts, so its listing/contact gating never ran for anyone.
+  // Merged onto this survivor; the duplicate directory is deleted.)
   listingId?: string
   contactId?: string
 }
@@ -456,10 +471,12 @@ export function RepurposeDestinationsCard({
   selectedDestinations,
   onToggleDestination,
   connectedPlatforms = [],
+  listingId,
+  contactId,
 }: RepurposeDestinationsCardProps) {
   // Build a set of destinations that have an active social account
   const connectedDestinations = new Set<RepurposeDestination>([
-    ...ALWAYS_CONNECTED,
+    ...ALWAYS_CONNECTED.filter((d) => d !== "portal" || !!contactId),
     ...connectedPlatforms
       .map((p) => PLATFORM_TO_DESTINATION[p])
       .filter((d): d is RepurposeDestination => !!d),
@@ -467,22 +484,45 @@ export function RepurposeDestinationsCard({
 
   return (
     <div className="space-y-3">
-      <div>
-        <Label className="text-base">Where will you share this video?</Label>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Select all channels — we will format the output accordingly
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Label className="text-base">Where will you share this video?</Label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Select all channels — we will format the output accordingly
+          </p>
+        </div>
+        {(listingId || contactId) && (
+          <div className="flex flex-col items-end gap-0.5 text-xs shrink-0">
+            {listingId && (
+              <Link href={`/dashboard/listings/${listingId}`} target="_blank" className="text-primary hover:underline">
+                View listing
+              </Link>
+            )}
+            {contactId && (
+              <Link href={`/crm/contacts/${contactId}`} target="_blank" className="text-primary hover:underline">
+                View contact
+              </Link>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         {REPURPOSE_DESTINATIONS.map((dest) => {
           const selected = selectedDestinations.includes(dest.id)
           const isConnected = connectedDestinations.has(dest.id)
+          const needsContact = dest.id === "portal" && !contactId
           return (
             <button
               key={dest.id}
               type="button"
               onClick={() => onToggleDestination(dest.id)}
-              title={!isConnected ? `Connect ${dest.label} in Profile Settings to publish here` : undefined}
+              title={
+                needsContact
+                  ? "Open this from a contact's video request to publish to their portal"
+                  : !isConnected
+                    ? `Connect ${dest.label} in Profile Settings to publish here`
+                    : undefined
+              }
               className={cn(
                 "flex flex-col items-start px-3 py-1.5 rounded-full border text-sm transition-all",
                 selected
@@ -497,7 +537,9 @@ export function RepurposeDestinationsCard({
                 {dest.label}
               </span>
               {!isConnected && (
-                <span className="text-[10px] leading-none mt-0.5 opacity-70">Not connected</span>
+                <span className="text-[10px] leading-none mt-0.5 opacity-70">
+                  {needsContact ? "No contact selected" : "Not connected"}
+                </span>
               )}
             </button>
           )

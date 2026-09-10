@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     // ── Verify caller has access to this contactId ─────────────────────────────
     const { data: contact } = await supabase
       .from('contacts')
-      .select('id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage, email')
+      .select('id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage, contact_persona, email')
       .eq('id', contactId)
       .maybeSingle()
 
@@ -329,6 +329,10 @@ export async function POST(request: Request) {
       `Tone: ${aiIdentity.tone}. Formality: ${aiIdentity.formality_level}.`,
       `You are helping ${contactName} with their ${portalView} journey.`,
       agentName ? `You work FOR ${contactName}'s agent, ${agentName} — you are the assistant, ${agentName} is their agent. Speak as the team.` : '',
+      // Persona signal (contacts.contact_persona — DB-sourced, never the client's
+      // own claim, same discipline `portalView` above already applies). Additive
+      // tone guidance only; never a fact invented about this specific client.
+      contact.contact_persona ? `Client persona: ${String(contact.contact_persona).replace(/_/g, ' ')}. Let this inform tone and the kinds of examples you reach for, without assuming facts about them you have not been given.` : '',
       contextSpine ? `\nWHAT THE TEAM ALREADY KNOWS (shared memory across calls, videos, and chat — reference naturally, NEVER contradict, never invent beyond it):\n${contextSpine}\n` : '',
       '',
       'YOUR RULES:',

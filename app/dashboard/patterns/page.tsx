@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getActivePatterns, getPatternAccuracyStats } from "@/app/actions/pattern-actions"
 import { PatternsDashboardClient } from "./patterns-dashboard-client"
 
@@ -32,8 +31,6 @@ export default async function PatternsPage({
     redirect("/login")
   }
 
-  const { brokerageId } = await getAgentContext()
-
   const { filter: rawFilter } = await searchParams
   const filter: PatternFilter = SUPPORTED_FILTERS.includes(rawFilter as PatternFilter)
     ? (rawFilter as PatternFilter)
@@ -49,7 +46,6 @@ export default async function PatternsPage({
     <PatternsDashboardClient
       initialPatterns={patterns}
       initialAccuracyStats={accuracyStats}
-      brokerageId={brokerageId ?? ""}
     />
   )
 }

@@ -3171,22 +3171,31 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 18 — a video finished generating (three emitters: app/api/cron/poll-did-videos,
-    // app/api/cron/listing-promo-hybrid-composite, lib/events/event-helpers.ts
-    // logVideoGenerated). Owner ruling (wave 51): same reassignment as #17 — FROM Asset
-    // Manager, never data_steward. UNLIKE #17, the completed-side routing decision is NOT a
-    // flat pair: it is kind-aware and sometimes multi-target (organic distribution always,
-    // paid promotion for promotable kinds, or a gated 1:1 lead/contact outreach email, or a
-    // compliance-failure escalation) — that branching is ALREADY BUILT in
-    // publishVideoCoordinationSignals (lib/kernel/video-coordination.ts), which poll-did-
-    // videos already calls directly for its own completions. Re-publishing a flattened
-    // "asset_manager -> campaign_orchestrator" stand-in here would be a second, cruder
-    // spelling of the same decision (§6) — orphan doctrine §1.3, the functionality already
-    // lives elsewhere — so this reader DELEGATES to the same publisher instead. That also
-    // makes it the ONLY coordination call for listing-promo-hybrid-composite and
-    // logVideoGenerated, neither of which calls the coordinator directly; for poll-did-
-    // videos it is a harmless idempotent re-invocation (publishManagerSignal's own
-    // (toManager, signalType, entityId) dedupe, reused inside the coordinator).
+    // 18 — a video finished generating (two emitters: app/api/cron/poll-did-videos,
+    // app/api/cron/listing-promo-hybrid-composite). Owner ruling (wave 51): same
+    // reassignment as #17 — FROM Asset Manager, never data_steward. UNLIKE #17, the
+    // completed-side routing decision is NOT a flat pair: it is kind-aware and sometimes
+    // multi-target (organic distribution always, paid promotion for promotable kinds, or a
+    // gated 1:1 lead/contact outreach email, or a compliance-failure escalation) — that
+    // branching is ALREADY BUILT in publishVideoCoordinationSignals
+    // (lib/kernel/video-coordination.ts), which poll-did-videos already calls directly for
+    // its own completions. Re-publishing a flattened "asset_manager -> campaign_orchestrator"
+    // stand-in here would be a second, cruder spelling of the same decision (§6) — orphan
+    // doctrine §1.3, the functionality already lives elsewhere — so this reader DELEGATES to
+    // the same publisher instead. That also makes it the ONLY coordination call for
+    // listing-promo-hybrid-composite; for poll-did-videos it is a harmless idempotent
+    // re-invocation (publishManagerSignal's own (toManager, signalType, entityId) dedupe,
+    // reused inside the coordinator).
+    //
+    // TOMBSTONE (D-quindecies, kernel-event census tranche 7, 2026-09-10): lib/events/
+    // event-helpers.ts's logVideoGenerated used to be this event's THIRD emitter, firing
+    // VIDEO_GENERATION_COMPLETED for a plain SCRIPT insert into video_scripts_library — an
+    // id this coordinator's `.from("ai_video_projects").eq("id", …)` lookup never matched,
+    // so it silently no-opped every time. RENAMED to logScriptGenerated, which now emits
+    // KernelEvent.SCRIPT_GENERATED instead (its own D-terdecies reader below, already
+    // HANDLED by SIGNAL_HANDLERS["campaign_orchestrator:script_generated"]) — SURVIVOR:
+    // that existing SCRIPT_GENERATED pipeline, not a second VIDEO_GENERATION_COMPLETED
+    // emitter. See lib/events/event-helpers.ts logScriptGenerated for the full account.
     if (params.event === KernelEvent.VIDEO_GENERATION_COMPLETED) {
       try {
         const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
@@ -3615,6 +3624,397 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           entityType:  params.entityType,
           entityId:    params.entityId,
         }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-quindecies) CROSS-MANAGER SIGNALS — kernel-event census round 9 (2026-09-10, tranche
+  // 7, scripts/kernel-event-census-z1.ts). TWENTY more KernelEvent members classified
+  // "emitted only" in the offer/wire-fraud/ISA-cadence/onboarding-intelligence/multi-agent/
+  // market lanes. ONE is HANDLED with a real SIGNAL_HANDLERS consumer (a gated seller
+  // message); the rest are feed_only visibility, same shape as most of D-octies through
+  // D-quaterdecies. Routed per the wave-50/51/52 rulings: FROM is the manager that OWNS the
+  // moment (never a default data_steward stamp — data_steward appears below ONLY for
+  // genuine data-quality/ledger moments: an AI-extraction pipeline, a record-type
+  // transition, a raw data refresh, an automated pattern-detection scan), NEVER
+  // marketing_agent. Every literal pair matches its lib/kernel/signal-routing.ts
+  // STATIC_ROUTES entry exactly (scripts/manager-routing-simulator.ts §12); the one
+  // multi-use-case reader (behavioral_pattern_detected) branches explicitly on the
+  // detector's own entity_type field, declared on BRANCHING_EVENTS. Every block is
+  // best-effort and independently caught; publishManagerSignal's own (toManager,
+  // signalType, entityId) dedupe makes a retried/re-emitted event never double an inbox.
+  if (params.brokerageId) {
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 1 — an AI net-sheet comparison finished ranking multiple offers on an in-house listing
+    // (lib/offers/offer-analyzer.ts analyzeAndCompareOffers, entityType
+    // "listing_stage_machine", entityId the listings.id — same convention D-terdecies #1
+    // uses). Distinct from the extraction-triggered offers_compare_handoff (published
+    // directly by lib/offers/offer-extractor.ts): this is the finished COMPARISON itself.
+    // HANDLED — Listing Concierge (owns the seller-side listing decision) hands it to
+    // Campaign Orchestrator, which proposes a gated seller message sharing the ranked
+    // comparison, mirroring cma_generated's shape exactly.
+    if (params.event === KernelEvent.OFFER_COMPARISON_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "campaign_orchestrator",
+          signalType:  "offer_comparison_generated",
+          message:     "An AI offer comparison finished ranking multiple offers.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies through D-quaterdecies. No automated consumer by design (see each `what` in
+    // signal-registry.ts).
+
+    // 2 — an offer document finished AI extraction (lib/offers/offer-extractor.ts
+    // extractOfferFromPdf, entityType "offer", entityId the offers.id). Data Steward (the
+    // AI-extraction/parse pipeline owner, same class as contact_enrichment_queued) hands the
+    // parse-complete moment to Listing Concierge — distinct from offers_compare_handoff
+    // (already published directly by the same function when a listing is tied), which is an
+    // ACTION proposal ("run the comparison"), not this raw completion notice.
+    if (params.event === KernelEvent.OFFER_AI_EXTRACTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "offer_ai_extracted",
+          message:     "An offer document finished AI extraction.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3 — the Wire-Fraud Sentinel flagged a real risk on a closing wire (app/api/cron/
+    // wire-fraud-sentinel, entityType "document"/"transaction_document", entityId the
+    // document id, contactId the endangered buyer). lib/wire-fraud/wire-fraud-runner.ts
+    // already fires a CRITICAL notification to the agent + its own deal_coordinator ->
+    // campaign_orchestrator "wire_fraud_risk" bus signal in the SAME call — this is a
+    // SECOND, distinct line: Deal Coordinator hands the regulatory exposure to Compliance
+    // Officer's audit trail, beside the immediate agent alert.
+    if (params.event === KernelEvent.WIRE_FRAUD_RISK_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "deal_coordinator",
+          toManager:   "compliance_officer",
+          signalType:  "wire_fraud_compliance_flag",
+          message:     "A wire-fraud risk was detected on a closing — verify by phone before any funds move.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 4 — a lead was converted to a contact on the AUTOMATIC lead-assignment lane
+    // (lib/kernel/lead-acquisition-handlers.ts handleLeadAssigned, entityType "lead",
+    // entityId the leadId). The SAME function already calls deliverConversionWelcome
+    // synchronously later in its own body (the ONE welcome path, CLAUDE.md wave-51 ruling)
+    // and LEAD_ASSIGNED (fired moments earlier in this same call) already notifies AI ISA to
+    // nurture the new contact — so this is a THIRD, distinct data point: Data Steward (a
+    // record-type-transition moment, same class as contact_dedup_merged) tells Sphere of
+    // Influence a lead became a contact, in case it becomes a future lifetime relationship.
+    // Deliberately a FRESH signal_type, not the TOMBSTONED "lead_converted_to_contact"
+    // (signal-registry.ts) — that one was retired because its handler duplicated the welcome
+    // that already runs synchronously; this is feed-only visibility with no handler, so it
+    // cannot repeat that defect.
+    if (params.event === KernelEvent.LEAD_CONVERTED_TO_CONTACT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "lead_conversion_recorded",
+          message:     "A lead was converted to a contact.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — the AI ISA's ghost-reengagement loop actually SENT a fresh outreach touch on a
+    // ghosted lead (lib/ai-isa/ghost-reengagement.ts, entityType "lead" — despite the name,
+    // this fires per SEND, not per detection). AI ISA's own cadence-loop visibility, beside
+    // the sequence-engine's isa_outreach_sent (a different track).
+    if (params.event === KernelEvent.GHOST_LEAD_DETECTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "ghost_lead_outreach_sent",
+          message:     "AI ISA sent a fresh ghost-reengagement outreach touch.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — a ghosted lead's cadence RESUMED to active after a seasonal downshift
+    // (lib/ai-isa/ghost-reengagement.ts, entityType "lead").
+    if (params.event === KernelEvent.REENGAGEMENT_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "lead_cadence_resumed",
+          message:     "A ghosted lead's reengagement cadence resumed to active.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7 — the ghost-reengagement loop STOPPED for a lead (opted out / replied / non-handoff
+    // exhaustion — lib/ai-isa/ghost-reengagement.ts, entityType "lead"). The year+
+    // handed-to-sphere case is a SEPARATE, already-HANDLED long_horizon_nurture_handoff
+    // published directly by the same branch; this covers every other stop reason.
+    if (params.event === KernelEvent.REENGAGEMENT_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "lead_cadence_stopped",
+          message:     "A lead's ghost-reengagement cadence stopped.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 8 — an agent asked the onboarding setup assistant a question (app/api/onboarding/
+    // assistant/route.ts, entityType "agent"). Recruiting Manager (owns onboarding) hands the
+    // raw query moment to Data Steward, beside the HANDLED setup_assistant_escalated case
+    // that covers only the questions the assistant could not answer.
+    if (params.event === KernelEvent.SETUP_ASSISTANT_QUERY_MADE) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "data_steward",
+          signalType:  "setup_assistant_query_made",
+          message:     "An agent asked the onboarding setup assistant a question.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 9 — an agent earned an onboarding certification (lib/onboarding/certification-engine.ts,
+    // entityType "agent_certification"). The SAME function already publishes the marketing
+    // handoff "certification_issued" (recruiting_manager -> campaign_orchestrator) in this
+    // same call; this is the DISTINCT compliance/training-audit-trail line, mirroring
+    // training_course_completed's own recruiting_manager -> compliance_officer shape.
+    if (params.event === KernelEvent.CERTIFICATION_AWARDED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "certification_awarded",
+          message:     "An agent earned an onboarding certification.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — a conversation message's intent was AI-classified (lib/intelligence/
+    // intent-classifier.ts, entityType "conversation"). AI ISA's own visibility; urgent
+    // intents (unsubscribe/ready_to_offer) already raise their own smart_assistant_
+    // suggestions in the same call.
+    if (params.event === KernelEvent.INTENT_CLASSIFIED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "intent_classified",
+          message:     "A conversation message's intent was classified.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 11 — a knowledge-base article finished embedding and is now searchable
+    // (lib/intelligence/kb-search.ts embedAndStore, entityType "kb_article"). Recruiting
+    // Manager (owns the onboarding KB content) hands the pipeline-complete moment to Data
+    // Steward, beside setup_assistant_escalated's own gap-finding line.
+    if (params.event === KernelEvent.KB_ARTICLE_EMBEDDED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "data_steward",
+          signalType:  "kb_article_embedded",
+          message:     "A knowledge-base article finished embedding.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 12 — a conversation's AI memory/context summary was recomputed (lib/intelligence/
+    // conversation-insights.ts, entityType "conversation"). AI ISA's own visibility trail.
+    if (params.event === KernelEvent.MEMORY_CONTEXT_UPDATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "data_steward",
+          signalType:  "memory_context_updated",
+          message:     "A conversation's AI memory context was recomputed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13-17 — the internal multi-agent dispatch router (lib/intelligence/multi-agent-router.ts,
+    // agent_state_machine) is an OPERATIONS mechanism that routes lead/contact/transaction/
+    // showing/task work to specialist AI capabilities — no single customer-facing manager owns
+    // it, so FROM Cron Manager (the operations seat), mirroring voice_command_dispatched's own
+    // "carried onto the bus by the Cron Manager" precedent. signal_types are renamed off
+    // "handoff"/"reengage"-matching words so classifyCoordination reads them as "update"
+    // (feed-only, no silent-drop risk under signal-integrity guard 6).
+    if (params.event === KernelEvent.AGENT_SESSION_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "agent_session_started",
+          message:     "An internal AI agent session started.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.AGENT_TASK_DISPATCHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "agent_task_dispatched",
+          message:     "An internal AI agent was dispatched a task.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.AGENT_HANDOFF_INITIATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "ai_agent_relay_started",
+          message:     "An internal AI agent relay started.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.AGENT_HANDOFF_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "ai_agent_relay_completed",
+          message:     "An internal AI agent relay completed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+    if (params.event === KernelEvent.AGENT_SESSION_ENDED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "agent_session_ended",
+          message:     "An internal AI agent session ended.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — an AI market insight (narrative headline/summary/buyer-seller indicators) finished
+    // generating for an area (lib/intelligence/market-insight-generator.ts generateMarketInsight,
+    // entityType "market_insights"). Listing Concierge (pricing-strategy owner) hands the
+    // marketing-content artifact to Campaign Orchestrator, mirroring neighborhood_report_generated.
+    if (params.event === KernelEvent.MARKET_INSIGHT_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "listing_concierge",
+          toManager:   "campaign_orchestrator",
+          signalType:  "market_insight_generated",
+          message:     "An AI market insight finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — raw market data was refreshed for an area (lib/intelligence/market-insight-
+    // generator.ts, entityType "market_data", entityId the market area). Data Steward (a
+    // data-ingestion moment, same class as system_sync_completed) hands the fresh feed to
+    // Listing Concierge, beside price_alert_triggered's own per-listing alert.
+    if (params.event === KernelEvent.MARKET_DATA_REFRESHED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "market_data_refreshed",
+          message:     "Fresh market data landed for an area.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — the AI behavioral-pattern detector flagged a buyer/seller/negotiation pattern
+    // (lib/intelligence/pattern-detector.ts, entityType "buyer" | "seller" | "negotiation" —
+    // the detector's OWN field, no DB lookup needed). BRANCHING_EVENTS
+    // (lib/kernel/signal-routing.ts): Data Steward (the pattern-detection scan owner, same
+    // class as deal_health_score_updated/listing_health_score_updated/buyer_fatigue_detected)
+    // hands each detection to the side-appropriate manager. The agent is already notified
+    // directly by emitKernelEvent's own reactor fan-out + a smart_assistant_suggestions row
+    // in the same call, so this is feed-only cross-manager visibility, never a second alert.
+    if (params.event === KernelEvent.BEHAVIORAL_PATTERN_DETECTED) {
+      try {
+        const toManager: ManagerKey | null =
+          params.entityType === "buyer" ? "shopping_agent" :
+          params.entityType === "seller" ? "listing_concierge" :
+          params.entityType === "negotiation" ? "deal_coordinator" : null
+        if (toManager) {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager,
+            signalType:  "behavioral_pattern_detected",
+            message:     "The AI behavioral-pattern detector flagged a pattern.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        }
       } catch { /* best-effort */ }
     }
   }

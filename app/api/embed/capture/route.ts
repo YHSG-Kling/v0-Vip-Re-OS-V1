@@ -19,7 +19,7 @@
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { captureContact, resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 import { bestEffort } from "@/lib/db/best-effort"
 
 export const runtime = "nodejs"
@@ -108,6 +108,8 @@ export async function POST(request: NextRequest) {
       preferred_channel: body.email ? "email" : "sms",
       tcpa_consent: true,
       tcpa_consent_date: new Date().toISOString(),
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, request.headers.get("accept-language")),
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message ?? "Capture failed" }, { status: 500 })

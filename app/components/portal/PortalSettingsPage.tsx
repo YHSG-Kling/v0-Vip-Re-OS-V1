@@ -11,7 +11,8 @@ import { Switch } from "@/components/ui/switch"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { User, Bell, Shield, Smartphone, Mail, Save, ArrowLeft, Camera, Check, AlertCircle, Globe } from "lucide-react"
 import Link from "next/link"
 import { uploadProfilePhoto, updateContactProfile, fileDataSubjectRequestFromPortal } from "@/app/actions/portal-settings"
 
@@ -29,6 +30,7 @@ interface Contact {
   avatar_url?: string
   contact_persona?: string
   preferred_contact_method?: string
+  preferred_language?: string
   notes?: string
   metadata?: Record<string, any>
 }
@@ -36,9 +38,12 @@ interface Contact {
 interface PortalSettingsPageProps {
   contact: Contact
   contactId: string
+  /** LOCALE_TO_ELEVENLABS_LANGUAGE's 23 codes, resolved server-side (§6 —
+   *  the ONE vocabulary, lib/video/multilingual-reel.ts LANGUAGE_OPTIONS). */
+  languageOptions: { code: string; name: string }[]
 }
 
-export default function PortalSettingsPage({ contact, contactId }: PortalSettingsPageProps) {
+export default function PortalSettingsPage({ contact, contactId, languageOptions }: PortalSettingsPageProps) {
   // Both privacy controls below used to render with no onClick at all. These
   // are CCPA/CPRA and GDPR obligations with a statutory clock, so a control
   // that silently does nothing is worse than no control — the client believes
@@ -106,6 +111,10 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
   const [state, setState] = useState(contact.state || "")
   const [zipCode, setZipCode] = useState(contact.zip_code || "")
   const [preferredContact, setPreferredContact] = useState(contact.preferred_contact_method || "email")
+  // Owner ruling (wave 51): default is English wherever a language is
+  // resolved and none is known — "en" here means "not yet set", matching
+  // lib/video/multilingual-reel.ts DEFAULT_LANGUAGE, never a second literal.
+  const [preferredLanguage, setPreferredLanguage] = useState(contact.preferred_language || "en")
 
   // Notification preferences — HYDRATED from the buyer's saved choices (contacts.metadata), so the
   // panel reflects reality. A missing key falls back to its sensible default (opt-in for service
@@ -152,6 +161,7 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
         state,
         zip_code: zipCode,
         preferred_contact_method: preferredContact,
+        preferred_language: preferredLanguage,
       })
 
       if (result.success) {
@@ -409,6 +419,30 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
                     Text
                   </Button>
                 </div>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                <Label htmlFor="preferredLanguage" className="flex items-center gap-2">
+                  <Globe className="h-4 w-4" />
+                  Preferred Language
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  The language your avatar videos, updates, and captions are delivered in
+                </p>
+                <Select value={preferredLanguage} onValueChange={setPreferredLanguage}>
+                  <SelectTrigger id="preferredLanguage" className="w-full sm:w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {languageOptions.map((opt) => (
+                      <SelectItem key={opt.code} value={opt.code}>
+                        {opt.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="flex justify-end pt-4">

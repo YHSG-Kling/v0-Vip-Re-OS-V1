@@ -427,7 +427,7 @@ export async function endOpenHouseEvent(params: {
   // <uuid>` is never true — so the two failure modes were indistinguishable here.
   const { data: attendees, error: attendeesError } = await supabase
     .from("open_house_attendees")
-    .select("id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
+    .select("id, contact_id, arrival_time, check_in_time, working_with_agent, interest_level, notes")
     .eq("event_id", params.eventId)
     .eq("brokerage_id", auth.brokerageId)
 
@@ -467,7 +467,24 @@ export async function endOpenHouseEvent(params: {
         .eq("brokerage_id", auth.brokerageId)
     }
 
-    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each scored attendee — session-derived identity
+    // Fire OPEN_HOUSE_ATTENDEE_CAPTURED for each scored attendee — session-derived identity.
+    // The insert below was the WHOLE emit — an audit row with no fan-out, so
+    // lib/kernel/event-reactor.ts's OPEN_HOUSE_ATTENDEE_CAPTURED handler never
+    // ran for an attendee scored at event-close (same defect shape this file
+    // already fixed once for CONTACT_CREATED in convertAttendeeToContact below:
+    // keep the raw insert as the audit trail, ADD processKernelEvent so the
+    // reactor sees it — the emitter shape the other two attendee-capture paths
+    // use, app/api/open-house/attend/route.ts step 6 and this same file's
+    // convertAttendeeToContact). contact_id now rides along when the attendee
+    // already resolved to a contact (e.g. checked in through
+    // /api/open-house/attend, which creates the contact at check-in) so the
+    // reactor CAN hand off to deliverConversionWelcome — the ONE welcome path,
+    // still called DIRECTLY from convertAttendeeToContact below for the
+    // kiosk-checkin-then-convert flow. Both routes into deliverConversionWelcome
+    // are safe together: ensureClientWelcome (lib/kernel/client-welcome.ts)
+    // dedupes per contact via the existing agent_client_messages row, so an
+    // attendee already welcomed at check-in is a no-op here, never a second
+    // send — proved in scripts/conversion-welcome-simulator.ts.
     for (const attendee of attendees) {
       await serviceClient.from("lifecycle_events").insert({
         brokerage_id: auth.brokerageId,
@@ -477,6 +494,15 @@ export async function endOpenHouseEvent(params: {
         actor_user_id: auth.userId,
         metadata: { attendee_id: attendee.id, scored_at_event_end: true },
       })
+
+      await processKernelEvent({
+        event:       KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED,
+        brokerageId: auth.brokerageId,
+        entityType:  "listing",
+        entityId:    params.listingId,
+        contactId:   attendee.contact_id ?? undefined,
+        metadata:    { attendee_id: attendee.id, contactId: attendee.contact_id ?? null, scored_at_event_end: true },
+      }).catch(() => {})
     }
   }
 

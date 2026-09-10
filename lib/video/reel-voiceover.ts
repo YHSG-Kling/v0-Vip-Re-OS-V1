@@ -86,6 +86,10 @@ export async function prepareReelVoiceover(
      * language code from lib/video/multilingual-reel.ts resolveContactLanguage
      * / localeToElevenLabsLanguage. ADDITIVE — omitted or DEFAULT_LANGUAGE
      * ("en") reproduces the prior call byte-for-byte (auto-detect from text).
+     * A non-default value also switches the TTS model to MULTILINGUAL_TTS_MODEL
+     * (see below) — the caller must pass an already-translated `narration`
+     * (lib/video/multilingual-reel.ts translateReelScript) for this to speak
+     * anything but English with a foreign accent.
      */
     languageCode?: string | null
   },
@@ -120,12 +124,23 @@ export async function prepareReelVoiceover(
     // already treats an absent languageCode as "auto-detect", so this is a
     // no-op for every existing (English) caller.
     const languageCode = p.languageCode && p.languageCode !== "en" ? p.languageCode : undefined
-    const stamped = await synthesizeSpeechWithTimestamps({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode })
+    // WAVE 52 FIX: a non-default language must also switch the MODEL, not just
+    // add a param. The default model (elevenlabs-tts.ts's "eleven_monolingual_v1")
+    // is English-only — it cannot speak a translated script at all. And per the
+    // research finding now in elevenlabs-tts.ts's header, `language_code` itself
+    // is silently dropped by that primitive for any model outside ElevenLabs'
+    // enforcement allowlist (never multilingual_v2) — so sending it here was
+    // never what made a non-English narration audible; the MODEL is. Without
+    // this, every non-English caller below (wired for the first time this wave)
+    // would have synthesized translated text through the English-only model.
+    const { MULTILINGUAL_TTS_MODEL } = await import("@/lib/video/multilingual-reel")
+    const modelId = languageCode ? MULTILINGUAL_TTS_MODEL : undefined
+    const stamped = await synthesizeSpeechWithTimestamps({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId })
     if (stamped.success && stamped.audioBuffer) {
       audio = stamped.audioBuffer
       alignment = (stamped.alignment as CharacterAlignment | null) ?? null
     } else {
-      const tts = await synthesizeSpeech({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode })
+      const tts = await synthesizeSpeech({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId })
       if (!tts.success || !tts.audioBuffer || tts.audioBuffer.length === 0) return null
       audio = tts.audioBuffer
     }

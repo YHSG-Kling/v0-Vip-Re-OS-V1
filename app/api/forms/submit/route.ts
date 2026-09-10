@@ -27,17 +27,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const userAgent = req.headers.get('user-agent') ?? null
 
     // ── Tier 3 of resolveContactLanguage: intake-time locale ──────────────────
-    // Prefer a form field naming the locale explicitly (a form CAN carry a
-    // `language`/`locale` field in its submission_data — nothing forces one to
-    // exist), else fall back to the browser's Accept-Language header. Mapped
-    // through the ONE locale table (localeToElevenLabsLanguage — §6, never a
-    // second parser of "es-MX" → "es") so a garbage/unmapped value never reaches
-    // storage as a fabricated language.
-    const { localeToElevenLabsLanguage } = await import('@/lib/video/multilingual-reel')
+    // THE ONE resolver (§6) — lib/contact-pipeline/contact-capture.ts
+    // resolveCapturedLanguage, now shared by every public intake door instead
+    // of each one re-deriving "form field vs. Accept-Language, which wins".
+    const { resolveCapturedLanguage } = await import('@/lib/contact-pipeline/contact-capture')
     const formLocale = (data['language'] ?? data['locale'] ?? '') as string
-    const acceptLanguage = req.headers.get('accept-language')?.split(',')[0]?.trim() ?? ''
-    const capturedLanguage =
-      localeToElevenLabsLanguage(formLocale) ?? localeToElevenLabsLanguage(acceptLanguage) ?? null
+    const capturedLanguage = resolveCapturedLanguage(formLocale, req.headers.get('accept-language'))
 
     const supabase = createServiceClient()
 

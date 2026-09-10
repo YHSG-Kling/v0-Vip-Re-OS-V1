@@ -463,6 +463,16 @@ export async function runAnniversaryEquity(
   // EXISTING D-ID + ElevenLabs render path (intro-video-reactor) — NEVER HeyGen.
   const dispatchVideo: AnniversaryVideoDispatcher = opts.videoDispatcher ?? (async (d) => {
     const { dispatchAnniversaryVideo } = await import("@/lib/video/intro-video-reactor")
+    // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52 — task item 3, "the
+    // anniversary greeting is English-hardcoded, resolve per contact"): the
+    // ONE resolver (§6). Best-effort — resolveContactLanguageFromDb never
+    // throws (its own contract), but a defensive fallback to undefined still
+    // degrades to DEFAULT_LANGUAGE inside the reactor, never a blocked video.
+    let language: string | undefined
+    try {
+      const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+      language = await resolveContactLanguageFromDb(supabase, d.contactId)
+    } catch { /* falls through to the reactor's own DEFAULT_LANGUAGE */ }
     const r = await dispatchAnniversaryVideo({
       brokerageId: d.brokerageId, contactId: d.contactId, agentId: d.agentId,
       yearsAgo: d.yearsAgo, delivery: "portal",
@@ -470,6 +480,7 @@ export async function runAnniversaryEquity(
       // half would leave the seam's callers looking wired while the video went
       // out as a bare greeting.
       ...(d.equity ? { equity: d.equity } : {}),
+      language,
     })
     return { ok: r.ok, status: r.status }
   })

@@ -54,7 +54,10 @@ export default async function MotivationPage({
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  // brokerageId is not needed here — MotivationClient's server actions resolve
+  // tenant from the session themselves (CLAUDE.md §4). See the tombstone in
+  // motivation-client.tsx.
+  const { agentId } = await getAgentContext()
 
   const scope: LeaderboardScope | null = isLeaderboardScope(params.scope) ? params.scope : null
   const metric: LeaderboardMetric | null = isLeaderboardMetric(params.metric) ? params.metric : null
@@ -63,8 +66,6 @@ export default async function MotivationPage({
   return (
     <MotivationClient
       agentId={agentId ?? ""}
-      brokerageId={brokerageId ?? ""}
-      userId={user.id}
       initialScope={scope}
       initialMetric={metric}
       initialPeriod={period}

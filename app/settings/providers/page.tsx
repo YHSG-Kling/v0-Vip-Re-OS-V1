@@ -290,15 +290,27 @@ type ChannelCardProps = {
 function ChannelCard({
   title,
   description,
+  channel,
   providerOptions,
   channelState,
   locked,
+  isSuperadmin,
   saved,
   pending,
   onChange,
   onSave,
 }: ChannelCardProps) {
   const isDisabled = locked || pending
+  // Both were declared and passed by every call site with nothing reading
+  // them (wave 52, hidden-wire-census category c passed-never-read). BUILD:
+  // `channel` looks up this card's platform fallback (SYSTEM_DEFAULTS) so a
+  // brokerage admin can see what "no override" resolves to, not just the
+  // currently-selected value. `isSuperadmin` disambiguates this card (a
+  // BROKERAGE-scoped override) from the platform-wide card rendered above it
+  // for the same viewer — without this, a superadmin editing "Email" here
+  // could reasonably believe they were setting the platform default, which is
+  // configured on a different door entirely (PlatformProvidersPanel).
+  const platformDefault = SYSTEM_DEFAULTS[channel]
 
   return (
     <div className={`rounded-xl border bg-white p-6 space-y-4 shadow-sm ${locked ? 'opacity-60' : ''}`}>
@@ -306,6 +318,11 @@ function ChannelCard({
         <div>
           <h2 className="text-base font-semibold text-gray-900">{title}</h2>
           <p className="mt-0.5 text-sm text-gray-500">{description}</p>
+          {isSuperadmin && (
+            <p className="mt-1 text-xs text-blue-600">
+              Sets your own brokerage&apos;s override — not the platform-wide default.
+            </p>
+          )}
         </div>
         {locked && (
           <span className="shrink-0 inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600">
@@ -330,6 +347,9 @@ function ChannelCard({
               <option key={opt} value={opt}>{opt}</option>
             ))}
           </select>
+          {platformDefault && platformDefault !== channelState.provider_key && (
+            <span className="text-[11px] text-gray-400">Platform default: {platformDefault}</span>
+          )}
         </div>
 
         {/* Enabled toggle */}

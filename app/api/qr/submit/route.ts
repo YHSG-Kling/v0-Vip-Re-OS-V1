@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { captureContact } from '@/lib/contact-pipeline/contact-capture'
+import { captureContact, resolveCapturedLanguage } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
 
 export const dynamic = 'force-dynamic'
@@ -101,6 +101,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       tcpa_consent: consentGiven,
       tcpa_consent_date: consentGiven ? now : null,
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
+      // TIER 3 OF resolveContactLanguage — THE ONE resolver (§6).
+      language: resolveCapturedLanguage(null, req.headers.get('accept-language')),
     })
 
     // ── Step 4: Increment lead_count only on new contact creation ─────────────

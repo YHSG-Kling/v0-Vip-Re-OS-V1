@@ -367,9 +367,14 @@ export async function queuePartnersMeetingReel(
   // own voice — the same script the reel shows as cards. Best-effort; silent
   // video when no voice is configured, never a blocked render.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  // INTERNAL/BOARD-FACING (owner ruling, wave 51): the Partners' Meeting is
+  // the AI team reporting TO the brokerage's own people, never a contact —
+  // DEFAULT_LANGUAGE explicitly, never a second "en" literal (§6).
+  const { DEFAULT_LANGUAGE } = await import("@/lib/video/multilingual-reel")
   const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: req.inputProps.narration,
     voiceId: identity.voiceId, renderKey: `partners-${p.brokerageId.slice(0, 8)}`,
+    languageCode: DEFAULT_LANGUAGE,
   })
   if (vo) props.voiceover_url = vo.url
   // THE COMPANION CARD. `seoHint` is REQUIRED by the content contract on

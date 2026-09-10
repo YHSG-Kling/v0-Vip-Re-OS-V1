@@ -952,6 +952,26 @@ function layer9_formsAndOpenHouse() {
     /contact_type:\s*["']buyer["']/.test(src("lib/kernel/open-house.ts"))
     && /contact_type:\s*["']buyer["']/.test(sellerOpenHouse))
 
+  // ── OPEN HOUSE: endOpenHouseEvent's ATTENDEE-SCORED emit REACHES THE REACTOR
+  //    TOO (wave 52) — was a raw lifecycle_events insert with no fan-out, so
+  //    the OPEN_HOUSE_ATTENDEE_CAPTURED handler above never ran for an
+  //    attendee scored at event-close. Isolated to the function so a
+  //    processKernelEvent call anywhere else in the file (e.g.
+  //    convertAttendeeToContact's CONTACT_CREATED emit) cannot false-positive
+  //    this check. ──────────────────────────────────────────────────────────
+  const endEventStart = sellerOpenHouse.indexOf("export async function endOpenHouseEvent")
+  const endEventNextExport = sellerOpenHouse.indexOf("export async function", endEventStart + 40)
+  check("CONTROL: endOpenHouseEvent is findable in the stripped source", endEventStart > -1 && endEventNextExport > endEventStart)
+  const endEventBlock = sellerOpenHouse.slice(endEventStart, endEventNextExport > -1 ? endEventNextExport : endEventStart + 6000)
+  check("endOpenHouseEvent still writes the lifecycle_events AUDIT row for\n    OPEN_HOUSE_ATTENDEE_CAPTURED (the fix adds the reactor call, it does not\n    remove the audit trail)",
+    /event_type:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/.test(endEventBlock))
+  check("...AND now calls processKernelEvent for the SAME event, so the reactor\n    (and therefore deliverConversionWelcome, when the attendee already\n    resolved to a contact) actually runs",
+    /processKernelEvent\(\{[^}]*event:\s*KernelEvent\.OPEN_HOUSE_ATTENDEE_CAPTURED/s.test(endEventBlock))
+  check("CONTROL: the matcher requires BOTH the emit call and the enum on the same\n    call — a bare `processKernelEvent(` elsewhere in the block (e.g. a\n    differently-typed event) would not satisfy it",
+    !/processKernelEvent\(\{[^}]*event:\s*KernelEvent\.LISTING_OPEN_HOUSE_COMPLETED/s.test(endEventBlock))
+  check("no double-delivery: welcome dedup is per-contact via ensureClientWelcome\n    (same ledger check as every other entry point), so a contact already\n    welcomed at check-in time (app/api/open-house/attend/route.ts) is a no-op\n    when endOpenHouseEvent's emit reaches the reactor a second time — never a\n    second send",
+    /ilike\("rationale", `\$\{WELCOME_RATIONALE_TAG\}%`\)/.test(src("lib/kernel/client-welcome.ts")))
+
   // ── ORIGIN REACHES THE COPY (PURE) — NEVER A LITERAL HARDCODED STRING ─────
   const origin: WelcomeOrigin = { kind: "open_house", listingAddress: "123 Main St", openHouseDate: "2026-09-14" }
   const situationWithOrigin = buildWelcomeSituation(null, { origin })

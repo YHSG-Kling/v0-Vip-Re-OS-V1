@@ -2,7 +2,15 @@ import { redirect } from 'next/navigation'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
+import { CHECK_VOCABULARIES } from '@/scripts/check-vocabularies'
 import FormsManagerClient from './FormsManagerClient'
+
+// The "who fills this form" selector's options come from the SAME live
+// vocabulary the submit route's reader (app/api/forms/submit/route.ts Step 4b)
+// checks a declared value against — never a hand-typed second list (CLAUDE.md
+// §6). scripts/check-vocabularies.ts is machine-generated from the live
+// `contacts_contact_type_check` constraint.
+const CONTACT_TYPE_VOCABULARY = CHECK_VOCABULARIES.contacts.contact_type
 
 export default async function AdminFormsPage() {
   // Kernel OS: getAgentContext — canonical identity
@@ -22,7 +30,7 @@ export default async function AdminFormsPage() {
 
   const { data: forms } = await supabase
     .from('lead_capture_forms')
-    .select('id, name, slug, is_active, submission_count, created_at, fields, tcpa_disclosure_text, redirect_url, thank_you_message')
+    .select('id, name, slug, is_active, submission_count, created_at, fields, tcpa_disclosure_text, redirect_url, thank_you_message, settings')
     .eq('brokerage_id', ctx.brokerageId)
     .order('created_at', { ascending: false })
 
@@ -33,6 +41,7 @@ export default async function AdminFormsPage() {
       forms={forms ?? []}
       brokerageId={ctx.brokerageId}
       baseUrl={baseUrl}
+      contactTypeVocabulary={CONTACT_TYPE_VOCABULARY}
     />
   )
 }

@@ -279,6 +279,13 @@ const ALLOWED_DATA_STEWARD_SIGNALS = new Set<string>([
   // invalid from===to self-route that never published) to data_steward — an assignment-
   // record moment, the same family as lead_assigned/lead_ready_for_assignment just above.
   "vendor_assigned_to_transaction",
+  // D-quindecies (wave 52, lane KA): an AI-extraction pipeline moment (offer_ai_extracted,
+  // same family as contact_enrichment_queued), a record-type-transition moment
+  // (lead_conversion_recorded, same family as contact_dedup_merged), a raw data-ingestion
+  // moment (market_data_refreshed, same family as system_sync_completed), and an automated
+  // pattern-detection SCAN (behavioral_pattern_detected, same family as
+  // deal_health_score_updated/listing_health_score_updated/buyer_fatigue_detected).
+  "offer_ai_extracted", "lead_conversion_recorded", "market_data_refreshed", "behavioral_pattern_detected",
 ])
 
 const RULES: Array<{ name: string; run: () => boolean; control: () => boolean }> = [

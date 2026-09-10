@@ -4,6 +4,7 @@ import { createClient }        from "@/lib/supabase/server"
 import { OffersClient }        from "./offers-client"
 import { checkBuyerOfferEligibility } from "@/app/actions/buyer-lifecycle-core"
 import { getBuyerOffers }       from "@/app/actions/buyer-offers"
+import { listOfferIntentsForContact } from "@/app/actions/offer-intents"
 import { resolveAgentId }       from "@/lib/kernel/agent-identity"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AlertTriangle } from "lucide-react"
@@ -78,6 +79,12 @@ export default async function BuyerOffersPage({ params }: PageProps) {
   const offersRes = await getBuyerOffers(buyerId)
   const offers = offersRes.success ? (offersRes.offers ?? []) : []
 
+  // Pending "submit an offer" clicks from this buyer's portal (m619) — the
+  // agent's own queue for THIS buyer. Never fatal to the page: a refused read
+  // just means the section renders empty, same posture as offersRes above.
+  const intentsRes = await listOfferIntentsForContact(buyerId)
+  const offerIntents = intentsRes.success ? intentsRes.intents : []
+
   const brokerageId  = contact.brokerage_id ?? agentProfile?.brokerage_id ?? ""
   const contactName  = `${contact.first_name} ${contact.last_name}`
   const contactEmail = contact.email ?? ""
@@ -104,6 +111,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
         contactName={contactName}
         contactEmail={contactEmail}
         initialOffers={offers ?? []}
+        initialOfferIntents={offerIntents}
         buyerStage={contact.buyer_stage ?? "BUYER_OFFER_ELIGIBLE"}
         disableOfferCreation={!offerGateResult.allowed}
       />

@@ -4,6 +4,9 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
 import { queueContactEnrichment } from "@/lib/enrichment/contact-enrichment-core"
+// THE ONE resolver (§6) — same one app/api/forms/submit/route.ts uses, now
+// shared rather than a second Accept-Language parser at this door.
+import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 
 export async function POST(req: NextRequest) {
   try {
@@ -43,6 +46,13 @@ export async function POST(req: NextRequest) {
     const ip        = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null
     const userAgent = req.headers.get("user-agent") ?? null
 
+    // TIER 3 OF resolveContactLanguage (lib/video/multilingual-reel.ts) — the
+    // intake-time locale, captured at first touch before any preferred_language
+    // setting or transcribed call can exist. This sign-in form has no locale
+    // field of its own, so Accept-Language is the only signal — same contract
+    // as every other captureContact()-routed door (CaptureContactParams.language).
+    const capturedLanguage = resolveCapturedLanguage(null, req.headers.get("accept-language"))
+
     const supabase = createServiceClient()
 
     // Load event to get listing + brokerage + agent context. Address pulled
@@ -61,7 +71,7 @@ export async function POST(req: NextRequest) {
     // 1. Upsert contact by email (Layer 2 dedup pattern)
     const { data: existingContact } = await supabase
       .from("contacts")
-      .select("id")
+      .select("id, metadata")
       .eq("email", email)
       .eq("brokerage_id", event.brokerage_id)
       .maybeSingle()
@@ -75,6 +85,7 @@ export async function POST(req: NextRequest) {
       // identity only and deliberately writes NO consent column (the CREATE
       // branch below is where tcpa_consent is stamped), so a refusal does not
       // move a consent flag — but it did return 200 while nothing changed.
+      const existingMetadata = (existingContact as { metadata?: Record<string, unknown> | null }).metadata ?? null
       const { error: attendeeUpdateError } = await supabase
         .from("contacts")
         .update({
@@ -82,6 +93,12 @@ export async function POST(req: NextRequest) {
           last_name: lastName,
           phone: phone ?? undefined,
           updated_at: new Date().toISOString(),
+          // FILL-IF-EMPTY (same contract as CaptureContactParams.language / m620's
+          // tier 3): a returning attendee's earlier-captured language is never
+          // overwritten by this visit's possibly-different browser locale.
+          ...(capturedLanguage && !(existingMetadata as any)?.captured_language
+            ? { metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } }
+            : {}),
         })
         .eq("id", contactId)
       if (attendeeUpdateError) {
@@ -116,6 +133,9 @@ export async function POST(req: NextRequest) {
           tcpa_consent_source: tcpaConsentSource ?? "/open-house/sign-in",
           tcpa_consent_ip: ip,
           isa_reengage_allowed: false,
+          // TIER 3 OF resolveContactLanguage — see the ONE resolver's own doc
+          // (CaptureContactParams.language, lib/contact-pipeline/contact-capture.ts).
+          ...(capturedLanguage ? { metadata: { captured_language: capturedLanguage } } : {}),
         })
         .select("id")
         .single()

@@ -127,6 +127,54 @@ function introNarrationBudget(): NarrationBudget {
   return narrationBudget(INTRO_VIDEO_COMPOSITION, geo ? compositionSeconds(geo) : 0)
 }
 
+/**
+ * localizedAnniversaryGreeting — THE per-contact anniversary greeting (wave
+ * 52 — task item 3, "the anniversary greeting is English-hardcoded, resolve
+ * per contact"). lib/video/anniversary-script.ts's `anniversaryGreeting` is
+ * deliberately PURE/English-only (its own header: "NO I/O, NO model" — a
+ * check that grades a named client's money needs to run with no database and
+ * no gateway); this file already does I/O for everything else on this trigger
+ * (generateTextRouted, evaluateOutbound), so the TRANSLATION belongs here,
+ * not there — same split already used for lib/kernel/deal-room-reel.ts and
+ * lib/video/listing-pitch-reel.ts's own deterministic narration.
+ *
+ * WHY THIS WAS A REAL BUG, not just a missing nicety: draftScript's anniversary
+ * prompt interpolates the English greeting into "Open with exactly this
+ * greeting, word for word: …" REGARDLESS of `languageLine`'s "write the ENTIRE
+ * script in <language>" instruction a few lines below it — two conflicting
+ * instructions in the same prompt. And `enforceAnniversaryGreeting`'s shape
+ * check is an English-only regex (/happy ... anniversary/i), so even when a
+ * model resolved the conflict by writing its own correctly-translated opener,
+ * the check never recognized it as "already greeted" and prepended a SECOND,
+ * English greeting in front of the (now bilingual) result. Localizing
+ * `greeting` BEFORE it is either interpolated into the prompt or handed to
+ * `enforceAnniversaryGreeting` removes both failure modes: the prompt asks
+ * for one greeting in the recipient's own language, and the shape check's
+ * NEW normalized-substring fallback (anniversary-script.ts) recognizes it.
+ *
+ * Never throws; a translation failure degrades to the English greeting
+ * (still correct, just not localized) rather than blocking the anniversary
+ * video — same graceful-degrade contract as every other translateReelScript
+ * caller in this wave.
+ */
+async function localizedAnniversaryGreeting(
+  englishGreeting: string,
+  language: string | null | undefined,
+): Promise<string> {
+  if (!language || language === DEFAULT_LANGUAGE) return englishGreeting
+  try {
+    const { translateReelScript } = await import("@/lib/video/multilingual-reel")
+    const { gatewayChat } = await import("@/lib/ai/gateway-chat")
+    const res = await translateReelScript(
+      { script: englishGreeting, targetLocale: language, targetLanguageName: languageName(language) },
+      gatewayChat,
+    )
+    return res.ok && res.translatedScript ? res.translatedScript : englishGreeting
+  } catch {
+    return englishGreeting
+  }
+}
+
 type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
 
 interface BaseInput {
@@ -630,9 +678,18 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         console.warn(
           `[intro-video-reactor] anniversary script degraded to greeting-only — ${verdict.reason}`,
         )
-        script = safeAnniversaryFallback(
+        // LOCALIZED (wave 52 — task item 3): safeAnniversaryFallback's template
+        // is PURE/English; this degrade path is the safety net that ships when
+        // the compliance gate could not clear the model's own draft, so it must
+        // not silently regress to English for a non-English contact. Translated
+        // as ONE unit (greeting + portal-handoff sentence together) rather than
+        // the greeting alone, so the whole fallback line reads as one language.
+        const englishFallback = safeAnniversaryFallback(
           anniversaryGreeting({ firstName: contact.first_name ?? "", yearsHeld: input.yearsAgo ?? null }),
         )
+        script = language === DEFAULT_LANGUAGE
+          ? englishFallback
+          : await localizedAnniversaryGreeting(englishFallback, language)
       }
     }
   } else {
@@ -1019,7 +1076,17 @@ async function draftScript(args: {
     : ""
   // THE ANNIVERSARY GREETING, composed before the prompt so the SAME string is
   // both what the writer is asked for and what the enforcement falls back to.
-  const greeting = anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null })
+  // LOCALIZED (wave 52 — task item 3): the English template is translated to
+  // args.language BEFORE it reaches the prompt below — see
+  // localizedAnniversaryGreeting's header for why this fixed a real bug (the
+  // prompt used to interpolate the ENGLISH greeting "word for word" into a
+  // script otherwise instructed to be written entirely in a different
+  // language, and the enforcement's English-only shape check then double-
+  // greeted an already-correctly-translated model draft).
+  const englishGreeting = anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null })
+  const greeting = args.trigger === "home_anniversary"
+    ? await localizedAnniversaryGreeting(englishGreeting, args.language)
+    : englishGreeting
   const budget = introNarrationBudget()
 
   // ── THE ASSIGNMENT ASK IS DERIVED FROM THE SAME COMPOSITION (§2/§6) ─────────
@@ -1117,10 +1184,12 @@ Avoid any reference to protected characteristics. Return ONLY the script text th
   // NEVER REWRITES: a draft that already opens with a happy anniversary keeps its
   // own words. See lib/video/anniversary-script.ts.
   if (args.trigger === "home_anniversary") {
-    return enforceAnniversaryGreeting(
-      text.trim(),
-      anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null }),
-    )
+    // REUSES `greeting` from above — the SAME (localized) string the prompt
+    // just asked the writer to open with, so the enforcement's normalized-
+    // substring fallback (anniversary-script.ts opensWithAnniversaryGreeting)
+    // is comparing against exactly what the model was told, not recomputing
+    // a second, possibly-differently-translated greeting.
+    return enforceAnniversaryGreeting(text.trim(), greeting)
   }
   return text.trim()
 }

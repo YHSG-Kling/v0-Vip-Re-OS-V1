@@ -31,6 +31,21 @@ const SUGGESTED_QUESTIONS: Record<'buyer' | 'seller' | 'lifetime', string[]> = {
   lifetime: ['What is my home worth now?', 'When should I sell?', 'How are my neighbors doing?'],
 }
 
+// PERSONA-SPECIFIC STARTERS (BUILD, wave 52) — `persona` (contacts.contact_persona,
+// the SAME vocabulary scripts/check-vocabularies.ts snapshots, never a second list)
+// was threaded down from app/portal/[contactId]/layout.tsx through
+// PortalChatLauncher and reached this component with no reader. Only personas
+// where a materially different opening question exists get an override; every
+// other value (including "other") falls through to the buyer/seller/lifetime
+// default — no invented specialization for a persona this wasn't written for.
+const PERSONA_QUESTION_OVERRIDES: Partial<Record<string, string[]>> = {
+  investor:   ['What is the estimated cap rate?', 'What are comparable rents nearby?', 'What repairs affect ROI?'],
+  first_time: ['What does earnest money mean?', 'What should I budget for closing costs?', 'What is a home inspection?'],
+  luxury:     ['What discretion/privacy protections are in place?', 'How is this property marketed to qualified buyers?', 'What concierge services are available?'],
+  senior:     ['What does downsizing timeline look like?', 'Are there age-restricted community options?', 'How does this affect my current home sale?'],
+  relocated:  ['What should I know about this area?', 'How do school districts compare nearby?', 'What is the commute like from here?'],
+}
+
 // SESSION_KEY prefix for sessionStorage persistence
 const SESSION_KEY_PREFIX = 'portal_ai_session_'
 const MESSAGES_KEY_PREFIX = 'portal_ai_messages_'
@@ -53,6 +68,7 @@ export default function PortalAIAssistant({
   contactId,
   isBuyer,
   isSeller,
+  persona,
 }: PortalAIAssistantProps) {
   const portalView: 'buyer' | 'seller' | 'lifetime' = isSeller
     ? 'seller'
@@ -60,7 +76,7 @@ export default function PortalAIAssistant({
     ? 'buyer'
     : 'lifetime'
 
-  const suggestedQuestions = SUGGESTED_QUESTIONS[portalView]
+  const suggestedQuestions = PERSONA_QUESTION_OVERRIDES[persona] ?? SUGGESTED_QUESTIONS[portalView]
 
   // ── Local state ────────────────────────────────────────────────────────────
   const [isOpen,      setIsOpen]      = useState(false)

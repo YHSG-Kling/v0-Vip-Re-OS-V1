@@ -413,7 +413,7 @@
     "lib/video/director-eval-harness.ts": 2,
     "lib/video/format-learning.ts": 2,
     "lib/video/listing-pitch-reel.ts": 1,
-    "lib/video/multilingual-reel.ts": 2,
+    "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
@@ -434,7 +434,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9420,
+  "census": 9425,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -780,6 +780,7 @@
     "app/actions/nps.ts": 2,
     "app/actions/objection-training.ts": 5,
     "app/actions/observability/observability-actions.ts": 4,
+    "app/actions/offer-intents.ts": 4,
     "app/actions/offer-kernel-actions.ts": 3,
     "app/actions/offers/present-to-seller.ts": 3,
     "app/actions/onboarding/agent-onboarding-actions.ts": 1,
@@ -1585,6 +1586,7 @@
     "app/components/neighborhood-report/PriceHistoryChart.tsx": 1,
     "app/components/newsletter/template-builder.tsx": 1,
     "app/components/notifications/notification-bell.tsx": 1,
+    "app/components/offer/buyer-offer-requests-list.tsx": 1,
     "app/components/offer/commission-disclosure-dialog.tsx": 1,
     "app/components/offer/multi-offer-status-banner.tsx": 1,
     "app/components/offer/offer-agent-actions.tsx": 2,
@@ -2360,7 +2362,6 @@
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
     "app/dashboard/videos/components/BrollPicker.tsx": 1,
     "app/dashboard/videos/components/business-context/listing-video-mode-card.tsx": 1,
-    "app/dashboard/videos/components/business-context/repurpose-destinations-card.tsx": 1,
     "app/dashboard/videos/components/business-context/seller-update-video-mode-card.tsx": 1,
     "app/dashboard/videos/components/business-context/video-business-purpose-picker.tsx": 1,
     "app/dashboard/videos/components/business-context/video-context-picker.tsx": 1,
@@ -2942,7 +2943,7 @@
     "lib/connections/zoom-transcripts.ts": 2,
     "lib/connections/zoom.ts": 22,
     "lib/constants/index.ts": 3,
-    "lib/contact-pipeline/contact-capture.ts": 2,
+    "lib/contact-pipeline/contact-capture.ts": 3,
     "lib/contact-promotion/contact-creator.ts": 3,
     "lib/contact-promotion/conversion-finality.ts": 5,
     "lib/contact-promotion/conversion-welcome.ts": 3,
@@ -4119,6 +4120,7 @@
     "lib/video/format-learning.ts": 7,
     "lib/video/intro-video-reactor.ts": 2,
     "lib/video/ken-burns-plan.ts": 1,
+    "lib/video/language-vocabulary.ts": 3,
     "lib/video/listing-pitch-reel.ts": 3,
     "lib/video/listing-promo-reactor.ts": 1,
     "lib/video/living-video-sweep.ts": 2,
@@ -4126,7 +4128,7 @@
     "lib/video/memory-video-gate.ts": 4,
     "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
-    "lib/video/multilingual-reel.ts": 7,
+    "lib/video/multilingual-reel.ts": 4,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
     "lib/video/playable-video.ts": 1,
@@ -6519,6 +6521,12 @@
       "fetchCalendarSyncLogs",
       "fetchEventProcessingHealth",
       "fetchObservabilityDashboard"
+    ],
+    "app/actions/offer-intents.ts": [
+      "listPendingOfferIntentsForAgent",
+      "listOfferIntentsForContact",
+      "acknowledgeOfferIntent",
+      "dismissOfferIntent"
     ],
     "app/actions/offer-kernel-actions.ts": [
       "acceptOfferAction",
@@ -9852,6 +9860,9 @@
     "app/components/notifications/notification-bell.tsx": [
       "NotificationBell"
     ],
+    "app/components/offer/buyer-offer-requests-list.tsx": [
+      "BuyerOfferRequestsList"
+    ],
     "app/components/offer/commission-disclosure-dialog.tsx": [
       "CommissionDisclosureDialog"
     ],
@@ -12243,9 +12254,6 @@
     ],
     "app/dashboard/videos/components/business-context/listing-video-mode-card.tsx": [
       "ListingVideoModeCard"
-    ],
-    "app/dashboard/videos/components/business-context/repurpose-destinations-card.tsx": [
-      "RepurposeDestinationsCard"
     ],
     "app/dashboard/videos/components/business-context/seller-update-video-mode-card.tsx": [
       "SellerUpdateVideoModeCard"
@@ -14850,6 +14858,7 @@
       "isListingStatus"
     ],
     "lib/contact-pipeline/contact-capture.ts": [
+      "resolveCapturedLanguage",
       "captureContact",
       "queueContactEnrichmentAndScore"
     ],
@@ -15446,7 +15455,7 @@
       "logEventAndTrigger",
       "logMilestoneOverdue",
       "logCreditStatusUpdated",
-      "logVideoGenerated",
+      "logScriptGenerated",
       "handleWebhookEvent"
     ],
     "lib/external/apify-actors.ts": [
@@ -20697,6 +20706,11 @@
     "lib/video/ken-burns-plan.ts": [
       "kenBurnsPlan"
     ],
+    "lib/video/language-vocabulary.ts": [
+      "localeToElevenLabsLanguage",
+      "isMultilingualLocale",
+      "languageName"
+    ],
     "lib/video/listing-pitch-reel.ts": [
       "buildListingPitchReelProps",
       "queueListingPitchReel",
@@ -20732,9 +20746,6 @@
       "resolveVideoVoiceId"
     ],
     "lib/video/multilingual-reel.ts": [
-      "localeToElevenLabsLanguage",
-      "isMultilingualLocale",
-      "languageName",
       "resolveContactLanguage",
       "resolveContactLanguageFromDb",
       "translateReelScript",

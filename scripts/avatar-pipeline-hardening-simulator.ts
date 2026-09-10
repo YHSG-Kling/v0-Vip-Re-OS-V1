@@ -376,10 +376,16 @@ function languageSection() {
   const dispatch = readStripped("lib/providers/dispatch.ts")
   const aiCopy = readStripped("lib/kernel/ai-copy.ts")
 
-  check("DEFAULT_LANGUAGE is exported exactly ONCE from lib/video/multilingual-reel.ts (the file this lane owns — JA does not also export it here)",
-    (multilingual.match(/export const DEFAULT_LANGUAGE/g) ?? []).length === 1)
+  // Wave 52: DEFAULT_LANGUAGE is DEFINED once in lib/video/language-vocabulary.ts (pure,
+  // zero imports — a "use client" selector may import it) and RE-EXPORTED by
+  // multilingual-reel.ts; the definition count is asserted across BOTH files.
+  const vocabulary = readStripped("lib/video/language-vocabulary.ts")
+  check("DEFAULT_LANGUAGE is defined exactly ONCE across the vocabulary module and multilingual-reel.ts",
+    (vocabulary.match(/export const DEFAULT_LANGUAGE/g) ?? []).length === 1 &&
+    (multilingual.match(/export const DEFAULT_LANGUAGE/g) ?? []).length === 0 &&
+    /export \{[^}]*DEFAULT_LANGUAGE[^}]*\} from ["']@\/lib\/video\/language-vocabulary["']/.test(multilingual))
   check("DEFAULT_LANGUAGE is the ruled default: \"en\"",
-    /export const DEFAULT_LANGUAGE\s*=\s*["']en["']/.test(multilingual))
+    /export const DEFAULT_LANGUAGE\s*=\s*["']en["']/.test(vocabulary))
 
   check("resolveContactLanguage is the ONE pure resolver (no second function computing this)",
     (multilingual.match(/export function resolveContactLanguage/g) ?? []).length === 1)
@@ -391,8 +397,8 @@ function languageSection() {
 
   check("resolveContactLanguageFromDb tolerates m620's absence — it checks the LIVE schema cache before ever selecting preferred_language",
     /schemaHasColumn\(["']contacts["'],\s*["']preferred_language["']\)/.test(multilingual))
-  check("schemaHasColumn reads the GENERATED cache (scripts/schema-snapshot.ts), never a hand-typed column list (§3)",
-    /from ["']@\/scripts\/schema-snapshot["']/.test(multilingual))
+  check("schemaHasColumn reads the GENERATED cache (scripts/schema-snapshot.ts), never a hand-typed column list (§3) — LAZY import (wave 52: kept out of module scope so client bundles importing this file's pure helpers never inline the ~180KB cache)",
+    /import\(["']@\/scripts\/schema-snapshot["']\)/.test(multilingual))
   check("tier 3 (intake capture) is read from contacts.metadata, not a column that doesn't exist yet",
     /captured_language/.test(multilingual))
   check("tier 2 reads call_transcriptions via voice_calls.contact_id (call_transcriptions itself carries no contact_id — schema-verified)",
@@ -426,8 +432,24 @@ function languageSection() {
   console.log("\n── §language — reaches TTS/voice selection (the measured orphan this closes) ──")
   check("DispatchVideoParams carries ttsLanguageCode — the reader the multilingual_reels manager-registry entry said did not exist",
     /ttsLanguageCode\?:/.test(dispatch))
-  check("the D-ID/ElevenLabs TTS call body actually reads params.ttsLanguageCode as language_code (English unaffected — omitted for \"en\")",
-    /language_code:\s*params\.ttsLanguageCode/.test(dispatch))
+  // WAVE 52 CORRECTED THIS ASSERTION (§2 — "a count that moves is the finding").
+  // It used to require `language_code: params.ttsLanguageCode` verbatim in the
+  // D-ID/ElevenLabs TTS body. Exa research against ElevenLabs' own API
+  // reference (recorded in lib/voice/elevenlabs-tts.ts's file header) found
+  // that was WRONG: ElevenLabs enforces `language_code` on Turbo v2.5/Flash
+  // v2.5 ONLY — the plain /convert endpoint this call hits 400s if you send it
+  // with `eleven_multilingual_v2` (the model this call hardcodes), so the
+  // former "wired" state was a LATENT BUG that would have broken every
+  // non-English avatar video the moment a contact actually had a resolved
+  // language. The fix removes the forward entirely and relies on the
+  // translated text's own auto-detection — so the assertion now proves the
+  // ABSENCE, with the same rationale recorded in the source as its positive
+  // control.
+  check("the D-ID/ElevenLabs TTS call body does NOT forward language_code to eleven_multilingual_v2 (ElevenLabs 400s on that combination — see the file's own header finding)",
+    !/language_code:\s*params\.ttsLanguageCode/.test(dispatch) &&
+    /DELIBERATELY NEVER sent here/.test(readRaw("lib/providers/dispatch.ts")))
+  check("ttsLanguageCode stays a documented field on DispatchVideoParams (informational / future use), not silently deleted",
+    /ttsLanguageCode\?:\s*string \| null/.test(dispatch))
 
   // CONTROL: the historical defect this closes — a TTS call that hardcodes
   // model_id but never forwards a language_code — is correctly flagged as
@@ -438,11 +460,172 @@ function languageSection() {
   check("CONTROL: a TTS body with model_id but no language_code forwarding is correctly flagged as the orphan",
     !/language_code/.test(noLanguageReaderSnippet))
 
+  // CONTROL, the other direction: a TTS body that DOES forward language_code
+  // to eleven_multilingual_v2 is correctly flagged as the wave-52 defect this
+  // section now refuses — proves the new absence-assertion isn't just always
+  // true, it recognises the exact pre-fix shape as broken.
+  const reintroducedDefectSnippet = `
+    body: { text: renderedScript, model_id: "eleven_multilingual_v2", language_code: params.ttsLanguageCode }
+  `
+  check("CONTROL: re-introducing language_code: params.ttsLanguageCode is correctly flagged as the regression",
+    /language_code:\s*params\.ttsLanguageCode/.test(reintroducedDefectSnippet))
+
   console.log("\n── §language — reaches copy generation (generatePersonaCopy) ──")
   check("CopyRequest.language is additive — English/absent reproduces the prior system prompt (no 6th rule line)",
     /req\.language\s*&&\s*req\.language\s*!==\s*["']en["']/.test(aiCopy))
   check("a non-English language pulls its NAME from the ONE map (lib/video/multilingual-reel.ts languageName), never a second name list",
     /languageNameForCopy/.test(aiCopy) && /from ["']@\/lib\/video\/multilingual-reel["']/.test(aiCopy))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §research — wave 52 Exa finding: language_code is model-gated, not universal
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Proves the shared primitive (lib/voice/elevenlabs-tts.ts) carries the
+// language-enforcement allowlist and actually applies it at all THREE call
+// sites (convert, convert-with-timestamps, stream) — not just documented in
+// the header while the code still sends the param unconditionally.
+
+function researchSection() {
+  console.log("\n── §research — ElevenLabs language_code is sent ONLY to enforcement-capable models ──")
+  const tts = readStripped("lib/voice/elevenlabs-tts.ts")
+
+  check("LANGUAGE_ENFORCEMENT_MODELS is defined as a Set (one place, §6)",
+    (tts.match(/const LANGUAGE_ENFORCEMENT_MODELS\s*=\s*new Set/g) ?? []).length === 1)
+  check("the allowlist names Turbo v2.5 / Flash v2.5 (ElevenLabs' documented enforcement models)",
+    /eleven_turbo_v2_5/.test(tts) && /eleven_flash_v2_5/.test(tts))
+  check("eleven_multilingual_v2 is NOT in the enforcement allowlist (the model this repo actually uses for avatar reels)",
+    !new RegExp(String.raw`LANGUAGE_ENFORCEMENT_MODELS\s*=\s*new Set\(\[[^\]]*eleven_multilingual_v2`).test(tts))
+
+  check("languageCodeField is the ONE gate (§6) — one definition + all three TTS call sites route through it, none re-implements the check",
+    (tts.match(/languageCodeField\(/g) ?? []).length === 4)
+  check("no call site spreads `language_code: input.languageCode` unconditionally anymore (the pre-fix shape)",
+    !/\.\.\.\(input\.languageCode\s*\?\s*\{\s*language_code:\s*input\.languageCode\s*\}/.test(tts))
+
+  // POSITIVE CONTROL (§2): a version of the guard that (wrongly) admits
+  // multilingual_v2 into the allowlist is correctly recognised as broken —
+  // proves the "is NOT in the allowlist" assertion above is actually reading
+  // the Set's contents, not just checking the constant exists.
+  const brokenAllowlistSnippet = `const LANGUAGE_ENFORCEMENT_MODELS = new Set(["eleven_turbo_v2_5", "eleven_flash_v2_5", "eleven_multilingual_v2"])`
+  check("CONTROL: an allowlist that (wrongly) includes eleven_multilingual_v2 is correctly flagged",
+    new RegExp(String.raw`LANGUAGE_ENFORCEMENT_MODELS\s*=\s*new Set\(\[[^\]]*eleven_multilingual_v2`).test(brokenAllowlistSnippet))
+
+  // CONTROL: a synthesis call that ignores the model and always forwards
+  // language_code is the exact historical shape that would 400 against
+  // ElevenLabs' /convert endpoint for multilingual_v2 — confirm the "no
+  // unconditional spread" check above would have caught it.
+  const unconditionalSpreadSnippet = `
+    body: { text: input.text, model_id: input.modelId ?? "eleven_monolingual_v1", ...(input.languageCode ? { language_code: input.languageCode } : {}) }
+  `
+  check("CONTROL: the pre-fix unconditional spread is correctly recognised as the defect",
+    /\.\.\.\(input\.languageCode\s*\?\s*\{\s*language_code:\s*input\.languageCode\s*\}/.test(unconditionalSpreadSnippet))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §reelProducers — the four prepareReelVoiceover callers now resolve/pass a
+// language (task item 2, wave 52) — the gap the wave-51 manager-registry
+// entry named "STILL UNRESOLVED"
+// ═══════════════════════════════════════════════════════════════════════════
+
+function reelProducersSection() {
+  console.log("\n── §reelProducers — listing-pitch/deal-room resolve per-contact; board-packet/partners-meeting use DEFAULT_LANGUAGE ──")
+  const reelVoiceover = readStripped("lib/video/reel-voiceover.ts")
+  const listingPitch = readStripped("lib/video/listing-pitch-reel.ts")
+  const dealRoom = readStripped("lib/kernel/deal-room-reel.ts")
+  const boardPacket = readStripped("lib/kernel/board-packet-reel.ts")
+  const partnersMeeting = readStripped("lib/intelligence/partners-meeting.ts")
+
+  // prepareReelVoiceover itself: the languageCode param now also selects the
+  // MODEL (not just a param the API would silently drop for the default
+  // model) — the wave-52 fix this whole section depends on.
+  check("prepareReelVoiceover switches to MULTILINGUAL_TTS_MODEL when a non-default languageCode is resolved (not just forwarding the code to the English-only default model)",
+    /const modelId = languageCode \? MULTILINGUAL_TTS_MODEL : undefined/.test(reelVoiceover))
+  check("both TTS calls (with-timestamps AND the plain fallback) receive modelId — a fallback that dropped it would silently revert to the English-only model",
+    (reelVoiceover.match(/,\s*languageCode,\s*modelId\s*\}\)/g) ?? []).length === 2)
+
+  const contactFacing: Array<[string, string]> = [
+    ["listing-pitch-reel.ts (seller-facing pitch video)", listingPitch],
+    ["deal-room-reel.ts (client's weekly deal update)", dealRoom],
+  ]
+  for (const [label, src] of contactFacing) {
+    check(`${label} resolves the contact's language via resolveContactLanguageFromDb`,
+      /resolveContactLanguageFromDb/.test(src))
+    check(`${label} passes languageCode into its prepareReelVoiceover call`,
+      /prepareReelVoiceover\(\{[\s\S]{0,400}languageCode/.test(src))
+    check(`${label} translates the narration BEFORE synthesis when non-default (translateReelScript, not just a language_code hint)`,
+      /translateReelScript/.test(src))
+  }
+
+  const internal: Array<[string, string]> = [
+    ["board-packet-reel.ts (broker/board report)", boardPacket],
+    ["partners-meeting.ts (the AI team's weekly show, to the brokerage's own people)", partnersMeeting],
+  ]
+  for (const [label, src] of internal) {
+    check(`${label} passes languageCode: DEFAULT_LANGUAGE explicitly (never a second "en" literal, §6)`,
+      /languageCode:\s*DEFAULT_LANGUAGE/.test(src))
+    check(`${label} imports DEFAULT_LANGUAGE from the ONE constant's home (static or dynamic import — both are one binding, never a redeclared "en")`,
+      /import\s*\{[^}]*DEFAULT_LANGUAGE[^}]*\}\s*from\s*["']@\/lib\/video\/multilingual-reel["']/.test(src) ||
+      /(?:await )?import\(["']@\/lib\/video\/multilingual-reel["']\)/.test(src))
+  }
+
+  // POSITIVE CONTROL (§2): the ORIGINAL wave-51 gap this section closes —
+  // a prepareReelVoiceover call with no languageCode at all — is correctly
+  // recognised as unwired, proving the pattern checks above aren't vacuously
+  // true on any prepareReelVoiceover call shape.
+  const unwiredCallSnippet = `
+    const vo = await prepareReelVoiceover({
+      brokerageId: p.brokerageId, narration: (props as any).narration,
+      voiceId: identity.voiceId, renderKey: "pitch-" + p.appointmentId.slice(0, 8),
+    })
+  `
+  check("CONTROL: a prepareReelVoiceover call with no languageCode is correctly recognised as the pre-fix (unwired) shape",
+    !/prepareReelVoiceover\(\{[\s\S]{0,400}languageCode/.test(unwiredCallSnippet))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §anniversary — the greeting is resolved per contact, not English-hardcoded
+// (task item 3, wave 52)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function anniversarySection() {
+  console.log("\n── §anniversary — the happy-anniversary greeting is localized per contact ──")
+  const script = readStripped("lib/video/anniversary-script.ts")
+  const reactor = readStripped("lib/video/intro-video-reactor.ts")
+  const equity = readStripped("lib/kernel/anniversary-equity.ts")
+  const touchpoints = readStripped("app/actions/lifetime-customer-touchpoints.ts")
+
+  check("anniversaryGreeting/safeAnniversaryFallback stay PURE (no I/O) — the file's own architecture contract is unbroken",
+    !/await\s|gatewayChat|createServiceClient/.test(script))
+  check("opensWithAnniversaryGreeting accepts an optional `greeting` for a language-agnostic fallback match (not English-regex-only)",
+    /function opensWithAnniversaryGreeting\(script: string \| null \| undefined, greeting\?: string\)/.test(script))
+  check("the fallback match normalizes with the Unicode letter/number classes (\\p{L}/\\p{N}) — works for non-Latin scripts too",
+    /\\p\{L\}/.test(script) && /\\p\{N\}/.test(script))
+
+  check("intro-video-reactor.ts localizes the greeting BEFORE it is interpolated into the \"open with exactly this greeting\" prompt line",
+    /const greeting = args\.trigger === ["']home_anniversary["']\s*\n?\s*\?\s*await localizedAnniversaryGreeting/.test(reactor))
+  check("the SAME localized `greeting` variable is reused at the final enforceAnniversaryGreeting call (not a second, re-computed English greeting)",
+    /enforceAnniversaryGreeting\(text\.trim\(\),\s*greeting\)/.test(reactor))
+  check("the compliance-degrade fallback path (safeAnniversaryFallback) is ALSO localized, not left English-only when the equity claim fails the gate",
+    /localizedAnniversaryGreeting\(englishFallback, language\)/.test(reactor))
+  check("localizedAnniversaryGreeting degrades to English on a translation failure (never throws, never blocks the video)",
+    /catch \{\s*\n?\s*return englishGreeting\s*\n?\s*\}/.test(reactor))
+
+  check("anniversary-equity.ts (the primary dispatcher) resolves the contact's language before calling dispatchAnniversaryVideo",
+    /resolveContactLanguageFromDb/.test(equity) && /dispatchAnniversaryVideo\(\{[\s\S]{0,300}language,/.test(equity))
+  check("lifetime-customer-touchpoints.ts's sendAnniversaryMessage ALSO resolves language (the second dispatcher wave 51/52 found unwired)",
+    /resolveContactLanguageFromDb/.test(touchpoints) && /dispatchAnniversaryVideo\(\{[\s\S]{0,300}language,/.test(touchpoints))
+
+  // POSITIVE CONTROL (§2): the ORIGINAL defect — the prompt's "word for word"
+  // instruction interpolating the UNLOCALIZED English greeting regardless of
+  // languageLine's own "write the ENTIRE script in <language>" instruction —
+  // is correctly recognised as the bilingual-mashup bug this section closes.
+  const preFixPromptSnippet = `
+    const greeting = anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null })
+    \`Open with exactly this greeting, word for word: "\${greeting}"\`
+  `
+  check("CONTROL: interpolating the raw (unlocalized) anniversaryGreeting() output directly is correctly recognised as the pre-fix shape",
+    /const greeting = anniversaryGreeting\(\{ firstName: args\.firstName, yearsHeld: args\.yearsAgo \?\? null \}\)/.test(preFixPromptSnippet) &&
+    !/await localizedAnniversaryGreeting/.test(preFixPromptSnippet))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -459,6 +642,9 @@ async function main() {
   costSection()
   captionsSection()
   languageSection()
+  researchSection()
+  reelProducersSection()
+  anniversarySection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -466,6 +652,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All eight avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51), each with a positive control.")
+  console.log(" ✅ All eleven avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary from wave 52), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

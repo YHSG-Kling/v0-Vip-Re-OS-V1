@@ -11,6 +11,10 @@ import {
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { ensureContactPortalUser } from "@/lib/portal/portal-invite-core"
+// THE ONE resolver (§6) — same one app/api/forms/submit/route.ts and
+// app/api/open-house/attend/route.ts use.
+import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
+import { headers } from "next/headers"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
@@ -60,7 +64,7 @@ export default async function PortalLayout({
   // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, contact_persona, email, metadata")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -188,6 +192,27 @@ export default async function PortalLayout({
         .from("portal_contact_invites")
         .update({ status: "accepted", accepted_at: new Date().toISOString() })
         .eq("id", invite.id)
+
+      // TIER 3 OF resolveContactLanguage (owner ruling, wave 51/52 — task item
+      // 4: "only forms capture Accept-Language"): portal invite ACCEPTANCE is
+      // the client's own browser hitting this page for the first time, so its
+      // Accept-Language header is a real signal — captured here exactly once,
+      // fill-if-empty (never overwrites a language the contact or an agent
+      // already set explicitly, and never overwrites an earlier capture).
+      // Best-effort: never blocks portal access.
+      try {
+        const existingMetadata = (contact as { metadata?: Record<string, unknown> | null }).metadata ?? null
+        if (!(existingMetadata as any)?.captured_language) {
+          const h = await headers()
+          const capturedLanguage = resolveCapturedLanguage(null, h.get("accept-language"))
+          if (capturedLanguage) {
+            await supabase
+              .from("contacts")
+              .update({ metadata: { ...(existingMetadata ?? {}), captured_language: capturedLanguage } })
+              .eq("id", contactId)
+          }
+        }
+      } catch { /* best-effort — never blocks portal access */ }
 
       // Notify assigned agent (non-blocking, fire-and-forget)
       if (contact.agent_id) {

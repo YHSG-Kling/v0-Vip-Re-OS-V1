@@ -48,8 +48,13 @@ interface ISACallsTableProps {
   calls: ISACall[]
   emptyMessage: string
   showRetry: boolean
-  brokerageId?: string
 }
+// TOMBSTONE: `brokerageId` removed (wave 52, hidden-wire-census category c
+// passed-never-read). retryFailedCalls (app/actions/ai-isa.ts, called below)
+// takes no params — it resolves the signed-in agent's brokerage from the
+// SESSION itself (CLAUDE.md §4), per this file's own "identity from the
+// session inside the action" note. The only caller that passed brokerageId
+// (app/dashboard/voice/isa/page.tsx, the "failed" tab) no longer does.
 
 function getOutcomeBadge(call: ISACall) {
   if (call.appointment_set) {

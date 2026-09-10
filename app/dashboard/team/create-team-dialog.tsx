@@ -20,13 +20,12 @@ interface AgentOption {
 }
 
 interface CreateTeamDialogProps {
-  /**
-   * ACCEPTED AND IGNORED. The tenant a team is written into is resolved from the
-   * SESSION inside `createTeam`, never sent up from the browser — an identity a
-   * client component can name is an identity a client component can change. The
-   * prop stays in the signature only so the existing call site keeps compiling;
-   * nothing here reads it.
-   */
+  /** optional by design: ACCEPTED AND IGNORED. The tenant a team is written into
+   *  is resolved from the SESSION inside `createTeam`, never sent up from the
+   *  browser — an identity a client component can name is an identity a client
+   *  component can change (CLAUDE.md §4). The prop stays in the signature only
+   *  so the existing call site (app/dashboard/team/page.tsx) keeps compiling;
+   *  nothing here reads it, and nothing should. */
   brokerageId?: string
   agents: AgentOption[]
   userRole: string

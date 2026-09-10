@@ -209,6 +209,11 @@ export interface OfferFormData {
   // In-app form selections (when form_source === "in_app")
   in_app_selected_form_ids?:   string[]
   in_app_form_field_values?:   Record<string, unknown>
+  // THE BRIDGE (m619, app/actions/offer-intents.ts): set when this offer is
+  // being created FROM a buyer's portal "submit an offer" intent, via the
+  // "Start Offer" action on the agent's Buyer offer requests queue. createOffer
+  // closes the loop on success — see the OFFER_INTENT BRIDGE block below.
+  offer_intent_id?:            string | null
 }
 
 // ─── LISTING SEARCH ───────────────────────────────────────────────────────────
@@ -800,6 +805,33 @@ export async function createOffer(
 
   if (offerError || !offer) {
     return { success: false, error: offerError?.message ?? "Failed to create offer" }
+  }
+
+  // ── OFFER_INTENT BRIDGE (m619) ──────────────────────────────────────────────
+  // "the buyer asked" and "the buyer has a binding offer" are two honestly
+  // different facts (m619's own header) — bridged here, the ONE place a real
+  // offer is minted from an intent (app/actions/offer-intents.ts's "Start
+  // Offer" action, which threads `offer_intent_id` through
+  // OfferInitiationFlow -> OfferFormWizard -> here). Scoped to THIS contact and
+  // brokerage so a forged/foreign intent id can never be converted onto
+  // someone else's offer. Never fatal: the offer row is the durable artifact,
+  // and a refused bridge write should not un-create it — but it is LOUD
+  // (CLAUDE.md §3: destructure {data,error}, and an UPDATE matching nothing
+  // resolves exactly like one that worked, so the row count is checked too).
+  if (form.offer_intent_id && isValidUUID(form.offer_intent_id)) {
+    const { data: bridged, error: bridgeError } = await supabase
+      .from("offer_intents")
+      .update({ offer_id: offer.id, status: "converted", updated_at: new Date().toISOString() })
+      .eq("id", form.offer_intent_id)
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .in("status", ["requested", "acknowledged"])
+      .select("id")
+    if (bridgeError) {
+      console.error(`[createOffer] offer ${offer.id} created but offer_intent ${form.offer_intent_id} bridge NOT applied:`, bridgeError.message)
+    } else if (!bridged || bridged.length === 0) {
+      console.error(`[createOffer] offer ${offer.id} created but offer_intent ${form.offer_intent_id} matched no open row (wrong tenant/contact, or already converted/dismissed) — bridge skipped`)
+    }
   }
 
   // ── THE OFFER LIFECYCLE LANE'S MISSING WRITER ──────────────────────────────

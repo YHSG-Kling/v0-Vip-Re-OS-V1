@@ -225,6 +225,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         await queueListingPitchReel(svc, {
           brokerageId: apptAny.brokerage_id, agentUserId,
           appointmentId: appt.id, address: subject.propertyAddress,
+          // The seller's contact id (already resolved above for
+          // buildListingPresentation) — resolves the seller's own language
+          // for the pitch narration (owner ruling, wave 51/52).
+          contactId,
         })
       } catch { /* pitch reel is additive */ }
     }

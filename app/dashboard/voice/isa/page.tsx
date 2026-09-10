@@ -378,7 +378,6 @@ export default async function VoiceISAPage() {
             })) || []) as any[]}
             emptyMessage="No failed calls"
             showRetry={true}
-            brokerageId={brokerageId}
           />
         </TabsContent>
       </Tabs>

@@ -11,7 +11,7 @@ import { createServerClient } from "@/lib/supabase/server"
 // `requireAgentId` (lib/kernel/agent-identity.ts:113), the throwing wrapper over
 // that same resolver, instead of re-implementing the throw inline (§6).
 import { toLibraryScriptType } from "@/app/types/video-generation"
-import { logVideoGenerated } from "@/lib/events"
+import { logScriptGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 // TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
@@ -23,12 +23,13 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { requireAgentId } from "@/lib/kernel/agent-identity"
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported and never called. This file's lifecycle emission goes through
-// `logVideoGenerated` (lib/events/event-helpers.ts:145 → logEventAndTrigger:29,
-// which inserts lifecycle_events and fires the registered orchestrator
-// dispatcher, lib/orchestrator/internal.ts:1109), and its notifications are
-// written directly by handleVideoGenerated / handleVideoPublished /
-// handleHighEngagement below. Both halves already exist; a second rail here
-// would have double-notified.
+// `logScriptGenerated` (lib/events/event-helpers.ts, renamed from
+// logVideoGenerated D-quindecies 2026-09-10 — this action inserts a SCRIPT into
+// video_scripts_library, not a rendered video, and the old name fired
+// KernelEvent.VIDEO_GENERATION_COMPLETED with a video_scripts_library id where
+// the completed-side coordinator expects an ai_video_projects id, silently
+// no-opping every time; it now emits KernelEvent.SCRIPT_GENERATED, the vocabulary
+// app/api/video-scripts/route.ts already uses for this same table).
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
@@ -129,10 +130,10 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
 
   if (error) throw error
 
-  await logVideoGenerated({
+  await logScriptGenerated({
     brokerage_id: profile.brokerage_id,
     user_id: user.id,
-    video_id: video.id,
+    script_id: video.id,
     video_type: params.video_type,
     listing_id: params.context_type === "listing" ? params.context_id : undefined,
   })

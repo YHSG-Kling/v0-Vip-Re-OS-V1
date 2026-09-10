@@ -105,12 +105,21 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   if (agentId) {
     try {
       const { dispatchAnniversaryVideo } = await import("@/lib/video/intro-video-reactor")
+      // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52 — task item 3): the
+      // ONE resolver (§6) — never throws, but a defensive catch still leaves
+      // `language` undefined so the reactor degrades to DEFAULT_LANGUAGE.
+      let language: string | undefined
+      try {
+        const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+        language = await resolveContactLanguageFromDb(supabase, contactId)
+      } catch { /* falls through to the reactor's own DEFAULT_LANGUAGE */ }
       void dispatchAnniversaryVideo({
         brokerageId,
         contactId,
         agentId,   // agents.id from resolveAgentId — the reactor resolves to users.id internally
         yearsAgo,
         delivery: "portal",
+        language,
       })
     } catch (err) {
       console.error("[anniversary] video dispatch failed:", err)

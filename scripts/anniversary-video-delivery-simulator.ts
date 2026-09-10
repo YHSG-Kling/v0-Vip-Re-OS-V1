@@ -803,8 +803,18 @@ function layer7_happyAnniversaryWithEquityReport() {
     reactor.indexOf("fitNarrationToBudget(") < reactor.indexOf("verifyEquityClaims("))
   check("...and both run AFTER the compliance gate, so neither can smuggle copy past it",
     reactor.indexOf("runWithComplianceRedraft(") < reactor.indexOf("fitNarrationToBudget("))
+  // WAVE 52 UPDATED THIS ASSERTION'S SHAPE (§2 — "a count that moves is the
+  // finding", never a waypoint pin): `script` used to be assigned DIRECTLY
+  // from `safeAnniversaryFallback(...)`. It is now built from the SAME call
+  // (renamed `englishFallback`) and then localized to the contact's language
+  // when non-default — task item 3, "the anniversary greeting is English-
+  // hardcoded, resolve per contact". The property this check guards — a
+  // refusal fails closed to the greeting-only form, never the unqualified
+  // figures — is unchanged; only the shape of how `script` gets there moved.
   check("...and a refusal FAILS CLOSED to the greeting-only form rather than speaking\n    the figures anyway (§4)",
-    /if \(!verdict\.ok\) \{[\s\S]{0,400}script = safeAnniversaryFallback\(/.test(reactor))
+    /if \(!verdict\.ok\) \{[\s\S]{0,400}const englishFallback = safeAnniversaryFallback\(/.test(reactor))
+  check("...and that greeting-only form is LOCALIZED to the contact's language, not left English-only on the degrade path (wave 52)",
+    /script = language === DEFAULT_LANGUAGE[\s\S]{0,100}: await localizedAnniversaryGreeting\(englishFallback, language\)/.test(reactor))
 
   // ── 7D · THE NARRATION FITS THE COMPOSITION THAT SPEAKS IT ────────────────
   console.log("\n  7D · the budget, derived from the geometry")

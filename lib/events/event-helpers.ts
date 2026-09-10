@@ -194,24 +194,43 @@ export async function logCreditStatusUpdated(params: {
   })
 }
 
-export async function logVideoGenerated(params: {
+// RENAMED from logVideoGenerated (D-quindecies, kernel-event census tranche 7,
+// 2026-09-10). The ONLY caller (app/actions/video-content.ts generateVideoScript)
+// inserts into video_scripts_library — an AI SCRIPT, not a rendered video — and the
+// old name emitted KernelEvent.VIDEO_GENERATION_COMPLETED with entityId a
+// video_scripts_library.id. That id space belongs to ai_video_projects
+// (lib/kernel/video-coordination.ts publishVideoCoordinationSignals, called by
+// event-reactor.ts D-block #18 as `publishVideoCoordinationSignals(params.entityId,
+// svc)`), so the coordinator's `.from("ai_video_projects").eq("id", scriptId)` lookup
+// matched nothing and silently no-opped every time — a real capability (script-ready
+// notification) that never fired, dressed as a working one. FIXED by emitting the
+// event this moment actually is: KernelEvent.SCRIPT_GENERATED, entityType
+// "video_script", entityId the video_scripts_library row — the EXACT vocabulary
+// app/api/video-scripts/route.ts already uses for the same table (§6), which
+// SIGNAL_HANDLERS["campaign_orchestrator:script_generated"] (lib/kernel/
+// manager-signals.ts) already reads by that id via video_scripts_library.created_by.
+// No new registry/handler work needed — the SCRIPT_GENERATED pipeline already exists
+// end to end; this caller was simply plugged into the wrong one.
+export async function logScriptGenerated(params: {
   brokerage_id: string
   user_id: string
-  video_id: string
+  script_id: string
   video_type: string
   listing_id?: string
 }): Promise<Event> {
   return logEventAndTrigger({
     brokerage_id: params.brokerage_id,
     user_id: params.user_id,
-    event_type: KernelEvent.VIDEO_GENERATION_COMPLETED,
+    event_type: KernelEvent.SCRIPT_GENERATED,
+    entity_type: "video_script",
+    entity_id: params.script_id,
     payload: {
-      video_id: params.video_id,
+      video_id: params.script_id,
       video_type: params.video_type,
       listing_id: params.listing_id,
     },
     source: "system",
-    dedupe_key: `video_generated_${params.video_id}`,
+    dedupe_key: `script_generated_${params.script_id}`,
   })
 }
 

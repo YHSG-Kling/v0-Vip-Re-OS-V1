@@ -10,7 +10,12 @@ import { toast } from "sonner"
 interface SocialCalendarAiPlannerProps {
   agentId: string
   brokerageId: string
-  userId: string
+  // TOMBSTONE: `userId` removed (wave 52, hidden-wire-census category c). The
+  // caller (app/dashboard/social/social-dashboard-client.tsx) passed the exact
+  // same session identity twice — `agentId={userId}` AND `userId={userId}` —
+  // and this component never read the second copy. `agentId` is the value this
+  // component and generateWeeklyContentPlan actually use; there is no second
+  // identity concept here to carry.
   posts: Array<{
     id: string
     content: string

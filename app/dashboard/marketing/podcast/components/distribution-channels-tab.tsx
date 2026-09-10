@@ -16,10 +16,14 @@ interface DistributionChannel {
 interface DistributionChannelsTabProps {
   channels: DistributionChannel[]
   loading: boolean
-  // Kept for call-site compatibility; this view is read-only (editing lives in Settings).
-  onUpdate?: () => void
-  isAdmin?: boolean
 }
+// TOMBSTONE: `onUpdate` and `isAdmin` removed (wave 52, hidden-wire-census
+// category c passed-never-read). Both were passed by every caller and never
+// read here — the functionality they would have gated (admin-only channel
+// editing + a change callback) already lives at the survivor,
+// /dashboard/settings/podcast-channels (SETTINGS_HREF below), per this file's
+// own read-only design note. app/dashboard/marketing/podcast/components/setup-tab.tsx
+// no longer forwards them to this component.
 
 const CHANNEL_ICONS: Record<string, React.ReactNode> = {
   spotify: <Music2 className="h-5 w-5" />,

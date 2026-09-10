@@ -1000,6 +1000,7 @@ export async function updateContactRecord(params: {
     notes: string
     preferred_channel: string
     tcpa_consent: boolean
+    preferred_language: string
   }>
 }): Promise<CRMContactResult> {
   const supabase = createServiceClient()
@@ -1015,6 +1016,20 @@ export async function updateContactRecord(params: {
   }
   if (params.updates.email) {
     updatePayload.email = normalizeEmail(params.updates.email)
+  }
+  // preferred_language: normalize through the ONE resolver's own mapper (never
+  // trust the caller already sent a canonical code) — FAIL CLOSED, same
+  // contract as the portal counterpart (app/actions/portal-settings.ts): an
+  // unrecognized value refuses the whole update rather than writing something
+  // the m620 CHECK would reject anyway (which would surface as a confusing
+  // PGRST error instead of "not a supported language").
+  if (params.updates.preferred_language !== undefined) {
+    const { localeToElevenLabsLanguage } = await import("@/lib/video/multilingual-reel")
+    const mapped = localeToElevenLabsLanguage(params.updates.preferred_language)
+    if (!mapped) {
+      return { success: false, error: `"${params.updates.preferred_language}" is not a supported language.` }
+    }
+    updatePayload.preferred_language = mapped
   }
 
   let query = supabase

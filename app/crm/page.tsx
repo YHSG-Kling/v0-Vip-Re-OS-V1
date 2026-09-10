@@ -7,6 +7,7 @@ import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type Contact
 // import is createServiceClient, and this is a "use client" file.
 import { isEligibleForOutbound, getSuppressionReasons } from "@/lib/kernel/compliance/outbound-predicates"
 import { useAuth } from "@/lib/auth/client"
+import { resolveUserTeam } from "@/lib/kernel/resolve-user-team"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"
 import {
@@ -248,6 +249,10 @@ export default function CRMPage() {
   // contacts.agent_id = agents.id — must resolve via agents.user_id = auth user.id
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
+  /** Resolved via lib/kernel/resolve-user-team.ts (THE ONE answer for "which
+   *  team is this agent on") — threaded to FormWizard.teamId below, which
+   *  scopes e-sign template/provider resolution to the agent's team. */
+  const [teamId, setTeamId] = useState<string | null>(null)
 
   // Contact OS data
   const [churnRisk, setChurnRisk] = useState<any>(null)
@@ -443,6 +448,9 @@ export default function CRMPage() {
         if (data) {
           setAgentId(data.id)
           setBrokerageId(data.brokerage_id)
+          resolveUserTeam(supabase, user.id, data.id)
+            .then((team) => setTeamId(team.teamId))
+            .catch(() => {})
         } else {
           // Fallback: resolve brokerage_id from users table for broker/admin roles
           supabase
@@ -3925,6 +3933,7 @@ export default function CRMPage() {
           contact={selectedContact as any}
           brokerageId={brokerageId}
           agentUserId={(selectedContact as any).agent_id ?? agentId ?? ""}
+          teamId={teamId}
           open={offerWizardOpen}
           onClose={() => setOfferWizardOpen(false)}
         />

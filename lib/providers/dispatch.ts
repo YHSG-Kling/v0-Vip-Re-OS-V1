@@ -1133,6 +1133,17 @@ export interface DispatchVideoParams extends DispatchActorContext {
    * commissionMultilingualReel stamped ai_video_projects.video_metadata with
    * tts_model / tts_language_code and NOTHING downstream ever read them — this
    * TTS call is that reader.
+   *
+   * NOT forwarded as ElevenLabs' `language_code` request param below (wave 52
+   * research finding — see dispatchVideoViaDID's TTS call): `eleven_multilingual_v2`,
+   * the model this call always uses, is not on ElevenLabs' language-enforcement
+   * allowlist (only Turbo v2.5 / Flash v2.5 are) — sending it there risks a 400.
+   * The field is kept on this type as the resolved-language record callers
+   * (welcome-avatar-video.ts, intro-video-reactor.ts) already build their
+   * scripts in — translateReelScript / the generatePersonaCopy `language`
+   * directive is what actually makes the *text* non-English; multilingual_v2
+   * then auto-detects the language correctly from that text with no param
+   * needed.
    */
   ttsLanguageCode?: string | null
 }
@@ -1267,12 +1278,14 @@ async function dispatchVideoViaDID({
     body: {
       text: renderedScript,
       model_id: "eleven_multilingual_v2",
-      // THE MISSING READER (see the DispatchVideoParams doc above). Omitted
-      // when unset or "en" — ElevenLabs auto-detects from the (English) text,
-      // identical to every render before this field existed.
-      ...(params.ttsLanguageCode && params.ttsLanguageCode !== "en"
-        ? { language_code: params.ttsLanguageCode }
-        : {}),
+      // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
+      // finding, DispatchVideoParams.ttsLanguageCode doc above): ElevenLabs
+      // only enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5;
+      // eleven_multilingual_v2 either 400s or silently ignores it depending on
+      // endpoint. renderedScript is already IN the target language (the caller
+      // translated it — translateReelScript / generatePersonaCopy's `language`
+      // directive), so eleven_multilingual_v2's own text auto-detection is what
+      // actually selects the language, with nothing extra to pass here.
     },
   })
 

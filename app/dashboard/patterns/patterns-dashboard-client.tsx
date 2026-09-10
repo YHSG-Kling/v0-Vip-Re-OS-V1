@@ -55,8 +55,12 @@ import { generatePageInsight } from "@/app/actions/generate-page-insight"
 interface PatternsDashboardClientProps {
   initialPatterns: PatternDetectionWithDetails[]
   initialAccuracyStats: PatternAccuracyStats
-  brokerageId: string
 }
+// TOMBSTONE: `brokerageId` removed (wave 52, hidden-wire-census category c
+// passed-never-read). getActivePatterns, updatePatternStatus, recordOutcome
+// and getPatternDetails (app/actions/pattern-actions.ts) all resolve tenant
+// from getAgentContext() themselves (CLAUDE.md §4) — a client-passed
+// brokerageId here was unread and would have been the wrong thing to trust.
 
 const PATTERN_ICONS: Record<string, typeof Lightbulb> = {
   offer_imminent: Lightbulb,

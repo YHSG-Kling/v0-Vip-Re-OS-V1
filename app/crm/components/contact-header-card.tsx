@@ -37,7 +37,7 @@ import {
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { logActivity } from "@/app/actions/activities"
-import { setContactDormancy } from "@/app/actions/contacts"
+import { setContactDormancy, updateContact } from "@/app/actions/contacts"
 import type { ContactStatus } from "@/lib/contact-promotion/qualification"
 import { personaLabel } from "@/constants/crm-standards"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
@@ -45,6 +45,15 @@ import { ReassignContactDialog } from "@/app/crm/components/reassign-contact-dia
 import { MergeContactsDialog } from "@/app/crm/components/merge-contacts-dialog"
 import { cn } from "@/lib/utils"
 import type { AIPilotLevel } from "@/app/actions/contact-intelligence"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+// PURE exports only (§6 — the ONE vocabulary; no SCHEMA_SNAPSHOT at module
+// scope, see the file's own header note) — safe to import into this client
+// component. The agent-side counterpart to the contact's own portal
+// preference (app/components/portal/PortalSettingsPage.tsx).
+// LANGUAGE_OPTIONS / DEFAULT_LANGUAGE: the ONE vocabulary (lib/video/language-vocabulary.ts,
+// re-exported by lib/video/multilingual-reel.ts) — imported from the PURE module because this
+// is a "use client" file and multilingual-reel.ts reaches server-only code via dynamic imports.
+import { LANGUAGE_OPTIONS, DEFAULT_LANGUAGE } from "@/lib/video/language-vocabulary"
 
 interface ContactBasic {
   id: string
@@ -67,6 +76,9 @@ interface ContactBasic {
   sms_opt_out?: boolean | null
   phone_opt_out?: boolean | null
   direct_mail_opt_out?: boolean | null
+  /** m620 — the ONE resolver's tier 1 (lib/video/multilingual-reel.ts
+   *  resolveContactLanguage). Null/unset means DEFAULT_LANGUAGE ("en"). */
+  preferred_language?: string | null
 }
 
 interface Props {
@@ -165,6 +177,30 @@ export function ContactHeaderCard({
       router.refresh()
     } finally {
       setDormancyPending(false)
+    }
+  }
+
+  // AGENT-SIDE COUNTERPART (owner ruling, wave 51/52) to the contact's own
+  // portal preference (app/components/portal/PortalSettingsPage.tsx) — an
+  // agent who learns a client's preferred language over the phone sets it
+  // here, and every avatar video / reel / persona-copy send for this contact
+  // picks it up through resolveContactLanguageFromDb. Same action as every
+  // other field on this card (updateContact), so tenancy/ownership are gated
+  // server-side, never trusted from this component.
+  const [languagePending, setLanguagePending] = useState(false)
+  async function handleLanguageChange(code: string) {
+    setLanguagePending(true)
+    try {
+      const res = await updateContact(contact.id, { preferred_language: code })
+      if (!res.success) {
+        toast.error(res.error ?? "Could not update preferred language")
+        return
+      }
+      toast.success("Preferred language updated")
+      onStatusChanged?.()
+      router.refresh()
+    } finally {
+      setLanguagePending(false)
     }
   }
 
@@ -383,6 +419,23 @@ export function ContactHeaderCard({
               >
                 <X className="h-3 w-3" />
               </button>
+            </div>
+            <div className="flex items-center justify-between gap-2 pb-1">
+              <span className="text-xs text-muted-foreground">Preferred language</span>
+              <Select
+                value={contact.preferred_language ?? DEFAULT_LANGUAGE}
+                onValueChange={handleLanguageChange}
+                disabled={languagePending}
+              >
+                <SelectTrigger className="h-7 w-40 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {LANGUAGE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.code} value={opt.code}>{opt.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <ChannelToggle

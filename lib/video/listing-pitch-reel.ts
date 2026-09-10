@@ -96,7 +96,18 @@ export function buildListingPitchReelProps(
  *  ledger). Fronted by the AGENT (contact-facing identity). Best-effort. */
 export async function queueListingPitchReel(
   svc: any,
-  p: { brokerageId: string; agentUserId: string | null; appointmentId: string; address: string },
+  p: {
+    brokerageId: string; agentUserId: string | null; appointmentId: string; address: string
+    /**
+     * The SELLER's contact id, when the listing appointment already has one
+     * (app/api/cron/listing-presentation-prep/route.ts's `contactId`, from
+     * appointment.metadata.contact_id — null for a home-value prospect who
+     * hasn't converted yet). Resolves the seller's language for the pitch's
+     * narration (owner ruling, wave 51/52) — null skips resolution and the
+     * reel narrates in DEFAULT_LANGUAGE, same as before this field existed.
+     */
+    contactId?: string | null
+  },
 ): Promise<boolean> {
   const { data: existing } = await svc.from("remotion_composition_renders").select("id")
     .eq("brokerage_id", p.brokerageId).eq("composition_id", LISTING_PITCH_COMPOSITION)
@@ -115,12 +126,34 @@ export async function queueListingPitchReel(
   const props = buildListingPitchReelProps({
     address: p.address, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl, brand, roi,
   }) as unknown as Record<string, unknown>
+  // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52): this plays on the
+  // SELLER's own kitchen table — resolve THEIR language (the ONE resolver,
+  // §6) when a contact id is already known, and translate the narration
+  // BEFORE synthesis (language_code alone does not translate; see
+  // lib/voice/elevenlabs-tts.ts header). A translation failure degrades to
+  // the English narration already built above, never a blocked pitch video.
+  const { resolveContactLanguageFromDb, translateReelScript, languageName, DEFAULT_LANGUAGE } =
+    await import("@/lib/video/multilingual-reel")
+  const sellerLanguage = p.contactId ? await resolveContactLanguageFromDb(svc, p.contactId) : DEFAULT_LANGUAGE
+  if (sellerLanguage !== DEFAULT_LANGUAGE) {
+    const { gatewayChat } = await import("@/lib/ai/gateway-chat")
+    const translation = await translateReelScript(
+      { script: (props as any).narration as string, targetLocale: sellerLanguage, targetLanguageName: languageName(sellerLanguage) },
+      gatewayChat,
+    )
+    if (translation.ok && translation.translatedScript) {
+      props.narration = translation.translatedScript
+    } else {
+      console.warn(`[listing-pitch-reel] appointment ${p.appointmentId} — translation to ${sellerLanguage} failed, narrating in English: ${translation.error ?? "unknown error"}`)
+    }
+  }
   // Voice on every video: the AGENT's cloned voice narrates their own pitch
   // (contact-facing rule — the licensed human speaks to clients). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
   const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `pitch-${p.appointmentId.slice(0, 8)}`,
+    languageCode: sellerLanguage,
   })
   if (vo) {
     props.voiceover_url = vo.url

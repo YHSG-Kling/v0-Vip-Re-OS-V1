@@ -342,6 +342,13 @@ export async function updateContact(contactId: string, updates: Partial<{
   notes: string
   preferred_channel: string
   tcpa_consent: boolean
+  /**
+   * ISO 639-1 code (lib/video/multilingual-reel.ts LOCALE_TO_ELEVENLABS_LANGUAGE
+   * output — the ONE vocabulary, §6) — the agent-side counterpart to the
+   * contact's own portal preference (app/actions/portal-settings.ts
+   * updateContactProfile). Normalized/validated in updateContactRecord below.
+   */
+  preferred_language: string
 }>) {
   try {
     // ACT-AS WRITE SEAM — see createContact.

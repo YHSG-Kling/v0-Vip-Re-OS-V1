@@ -3470,6 +3470,35 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const { error } = await ctx.supabase.from("notifications").insert(rows)
     return error ? null : `logged the required-training enrollment to ${ids.length} compliance officer(s)`
   },
+
+  // ── Wave 52 (2026-09-10, this lane) — D-quindecies. ONE HANDLED consumer for the
+  // kernel-event census round 9 readers (lib/kernel/event-reactor.ts, tranche 7 of
+  // scripts/kernel-event-census-z1.ts).
+
+  // Listing Concierge → Campaign Orchestrator: an AI net-sheet comparison finished ranking
+  // multiple offers on an in-house listing — propose a gated seller message sharing the
+  // ranked comparison, the SAME proposeClientMessage shape cma_generated's handler uses.
+  "campaign_orchestrator:offer_comparison_generated": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { data: listing } = await ctx.supabase.from("listings")
+      .select("seller_contact_id, address").eq("id", listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const row = listing as { seller_contact_id?: string | null; address?: string | null } | null
+    if (!row?.seller_contact_id) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name")
+      .eq("id", row.seller_contact_id).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const firstName = (contact as { first_name?: string | null } | null)?.first_name || "there"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "listing",
+      entityId: listingId, recipientContactId: row.seller_contact_id, audience: "seller",
+      subject: "Offer comparison ready",
+      body: `Hi ${firstName} — I ran a full comparison of the offers on your home${row.address ? ` at ${row.address}` : ""}, ranked by what you actually keep, not just the sticker price. Let's go over it together.`,
+      rationale: "An AI net-sheet comparison finished ranking multiple offers.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated offer-comparison message to the seller (gate message ${res.id})` : null
+  },
 }
 
 /**

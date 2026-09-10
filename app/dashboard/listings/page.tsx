@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
 import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
 import { ListingsNewButton } from "@/app/dashboard/listings/listings-new-button"
+import { resolveUserTeam } from "@/lib/kernel/resolve-user-team"
 import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
 import { MassCMAButton } from "@/app/components/dashboard/listings/mass-cma-button"
 import {
@@ -61,6 +62,10 @@ export default async function ListingsPage() {
     )
   }
   const brokerageId = userProfile?.brokerage_id ?? ""
+  // ONE ANSWER for "which team is this agent on" (lib/kernel/resolve-user-team.ts)
+  // — threaded to FormWizard.teamId (via ListingsNewButton), which scopes
+  // e-sign template/provider resolution to the agent's team.
+  const { teamId } = await resolveUserTeam(supabase, user.id, agentId)
 
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
@@ -117,7 +122,7 @@ export default async function ListingsPage() {
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} />
+        <ListingsNewButton brokerageId={brokerageId} agentUserId={user.id} teamId={teamId} />
         <Link href="/dashboard/listings/analytics">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />

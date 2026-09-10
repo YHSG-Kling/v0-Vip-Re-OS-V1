@@ -236,6 +236,59 @@ export const STATIC_ROUTES: Record<string, { from: ManagerKey; to: ManagerKey }>
   qr_scan_received:                  { from: "campaign_orchestrator", to: "data_steward" },
   marketing_campaign_created:        { from: "campaign_orchestrator", to: "data_steward" },
   marketing_campaign_launched:       { from: "campaign_orchestrator", to: "data_steward" },
+
+  // ── D-quindecies (wave 52, kernel-event census tranche 7, 2026-09-10) ──────────────
+  // offer/document extraction — FROM Data Steward (the AI-extraction/parse pipeline owner,
+  // same class as contact_enrichment_queued/lead_import_completed).
+  offer_ai_extracted:                { from: "data_steward",      to: "listing_concierge" },
+  // offer comparison — FROM Listing Concierge (owns the seller-side listing decision the
+  // comparison feeds), mirroring cma_generated's own FROM/TO shape exactly.
+  offer_comparison_generated:        { from: "listing_concierge",  to: "campaign_orchestrator" },
+  // wire-fraud — FROM Deal Coordinator (already owns wire_fraud_risk's own publish, see
+  // lib/wire-fraud/wire-fraud-runner.ts), a SECOND, distinct visibility line into Compliance
+  // Officer (the regulatory-exposure owner) beside the immediate agent alert + the existing
+  // deal_coordinator -> campaign_orchestrator wire_fraud_risk signal.
+  wire_fraud_compliance_flag:        { from: "deal_coordinator",   to: "compliance_officer" },
+  // lead→contact identity transition — FROM Data Steward (a record-type-transition moment,
+  // same class as contact_dedup_merged), a feed-only visibility line distinct from the
+  // TOMBSTONED "lead_converted_to_contact" signal (signal-registry.ts) whose real welcome
+  // action already runs synchronously via deliverConversionWelcome in the same call — this
+  // is a fresh name so it is never mistaken for reviving that retired publish.
+  lead_conversion_recorded:          { from: "data_steward",       to: "sphere_of_influence" },
+  // AI ISA's own ghost-reengagement cadence loop (lib/ai-isa/ghost-reengagement.ts) — FROM
+  // AI ISA (the lead-nurture owner, CLAUDE.md §5), feed-only visibility beside the outreach
+  // that already sent/transitioned in the same call. long_horizon_nurture_handoff (the
+  // year+ handoff-to-Sphere case) is a SEPARATE, already-HANDLED signal published directly
+  // by the same file — these three cover the other cadence moments.
+  ghost_lead_outreach_sent:          { from: "ai_isa",             to: "data_steward" },
+  lead_cadence_resumed:              { from: "ai_isa",             to: "data_steward" },
+  lead_cadence_stopped:              { from: "ai_isa",             to: "data_steward" },
+  // onboarding assistant / KB / certification — FROM Recruiting Manager (owns onboarding).
+  setup_assistant_query_made:        { from: "recruiting_manager", to: "data_steward" },
+  kb_article_embedded:               { from: "recruiting_manager", to: "data_steward" },
+  // certification_awarded is distinct from the existing certification_issued marketing
+  // handoff (also published by lib/onboarding/certification-engine.ts, in the SAME call) —
+  // this is the compliance/training-audit-trail line, mirroring training_course_completed.
+  certification_awarded:             { from: "recruiting_manager", to: "compliance_officer" },
+  // conversation intelligence — FROM AI ISA (the conversation/nurture owner).
+  intent_classified:                 { from: "ai_isa",             to: "data_steward" },
+  memory_context_updated:            { from: "ai_isa",             to: "data_steward" },
+  // the internal multi-agent dispatch router (lib/intelligence/multi-agent-router.ts) is an
+  // operations mechanism, not any one customer-facing manager's domain — FROM Cron Manager
+  // (the operations seat), mirroring voice_command_dispatched's own "carried onto the bus by
+  // the Cron Manager" precedent. Renamed off "handoff"/"reengage"-matching words so
+  // classifyCoordination reads these as "update" (feed-only, no silent-drop risk).
+  agent_session_started:             { from: "cron_manager",       to: "data_steward" },
+  agent_task_dispatched:             { from: "cron_manager",       to: "data_steward" },
+  ai_agent_relay_started:            { from: "cron_manager",       to: "data_steward" },
+  ai_agent_relay_completed:          { from: "cron_manager",       to: "data_steward" },
+  agent_session_ended:               { from: "cron_manager",       to: "data_steward" },
+  // market intelligence — FROM Listing Concierge (pricing-strategy owner) for the
+  // AI-authored narrative insight (marketing-content artifact, mirrors
+  // neighborhood_report_generated); FROM Data Steward for the raw stats refresh itself
+  // (a data-ingestion moment, same class as system_sync_completed).
+  market_insight_generated:          { from: "listing_concierge",  to: "campaign_orchestrator" },
+  market_data_refreshed:             { from: "data_steward",       to: "listing_concierge" },
 }
 
 /**
@@ -254,6 +307,12 @@ export const BRANCHING_EVENTS: Record<string, { from: ManagerKey; candidates: Ma
   isa_qualified_lead:        { from: "ai_isa", candidates: ["listing_concierge", "shopping_agent", "data_steward"], reason: "branches on motivationToContactType(leads.motivation_type ?? lead_type)" },
   business_card_approved:    { from: "data_steward", candidates: ["sphere_of_influence", "ai_isa", "recruiting_manager", "asset_manager"], reason: "branches on metadata.card_subject_type" },
   video_generation_requested:{ from: "asset_manager", candidates: ["listing_concierge", "campaign_orchestrator", "recruiting_manager"], reason: "branches on the ai_video_projects row — see routeVideoGenerationRequested" },
+  // D-quindecies (wave 52): the behavior-pattern detector's own entity_type field IS the
+  // discriminator (lib/intelligence/pattern-detector.ts BehavioralPattern.entity_type —
+  // "buyer" | "seller" | "negotiation", no DB lookup needed) — FROM Data Steward (the
+  // pattern-detection scan owner, same class as deal_health_score_updated/
+  // listing_health_score_updated/buyer_fatigue_detected) to the side-appropriate manager.
+  behavioral_pattern_detected: { from: "data_steward", candidates: ["shopping_agent", "listing_concierge", "deal_coordinator"], reason: "branches on the detection's entity_type: buyer -> Shopping Agent, seller -> Listing Concierge, negotiation -> Deal Coordinator" },
 }
 
 /**

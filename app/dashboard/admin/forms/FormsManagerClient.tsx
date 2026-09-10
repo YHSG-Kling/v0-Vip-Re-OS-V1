@@ -11,6 +11,14 @@ type FormField = {
   placeholder?: string
 }
 
+type FormSettings = {
+  /** Who this form is FOR — forwarded to captureContact's contact_type by
+   *  app/api/forms/submit/route.ts Step 4b, which is the ONLY reader (never a
+   *  second parse of this column). Left unset, the submit route documents that
+   *  the contact gets no agent-signed welcome (owner ruling: never guess). */
+  default_contact_type?: string | null
+}
+
 type FormRow = {
   id: string
   name: string
@@ -22,12 +30,16 @@ type FormRow = {
   tcpa_disclosure_text: string | null
   redirect_url: string | null
   thank_you_message: string | null
+  settings: FormSettings | null
 }
 
 interface Props {
   forms: FormRow[]
   brokerageId: string
   baseUrl: string
+  /** contacts.contact_type live CHECK vocabulary (scripts/check-vocabularies.ts),
+   *  passed down from the server component — the ONE source for this list. */
+  contactTypeVocabulary: string[]
 }
 
 const DEFAULT_TCPA =
@@ -41,6 +53,8 @@ type Draft = {
   redirect_url: string
   thank_you_message: string
   fields: FormField[]
+  /** '' = unset (no declared persona — the submit route sends no welcome). */
+  default_contact_type: string
 }
 
 const emptyForm = (): Draft => ({
@@ -55,7 +69,12 @@ const emptyForm = (): Draft => ({
     { key: 'email', label: 'Email', type: 'email', required: true },
     { key: 'phone', label: 'Phone', type: 'tel', required: false },
   ],
+  default_contact_type: '',
 })
+
+function formatContactTypeLabel(value: string): string {
+  return value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
 
 /** Robust copy that survives an insecure context / missing Clipboard API: try
  *  the async Clipboard API, fall back to the legacy execCommand, and finally to
@@ -104,7 +123,7 @@ type TransactionFormsState = {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export default function FormsManagerClient({ forms: initialForms, brokerageId, baseUrl }: Props) {
+export default function FormsManagerClient({ forms: initialForms, brokerageId, baseUrl, contactTypeVocabulary }: Props) {
   const [forms, setForms] = useState<FormRow[]>(initialForms)
   const [showModal, setShowModal] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -204,6 +223,7 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
       redirect_url: form.redirect_url ?? '',
       thank_you_message: form.thank_you_message ?? '',
       fields: Array.isArray(form.fields) && form.fields.length > 0 ? form.fields : emptyForm().fields,
+      default_contact_type: form.settings?.default_contact_type ?? '',
     })
     setError(null)
     setShowModal(true)
@@ -226,6 +246,11 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
       tcpa_disclosure_text: draft.tcpa_disclosure_text,
       redirect_url: draft.redirect_url || null,
       thank_you_message: draft.thank_you_message || null,
+      // Persisted for app/api/forms/submit/route.ts Step 4b to read as the
+      // declared persona. '' clears it back to "unset" rather than writing an
+      // empty string into the column a submit-time reader would then fail to
+      // recognise as any vocabulary value.
+      settings: draft.default_contact_type ? { default_contact_type: draft.default_contact_type } : null,
     }
     startTransition(async () => {
       try {
@@ -582,6 +607,30 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* Who fills this form — persisted as settings.default_contact_type,
+                  read by the submit route to decide who gets the agent-signed
+                  welcome (listing_concierge for seller, shopping_agent for
+                  buyer/both). Left unset, submitters get no welcome — that is
+                  the deliberate "never guess" fallback, not a bug. */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-foreground">Who fills this form?</label>
+                <select
+                  value={draft.default_contact_type}
+                  onChange={e => setDraft(p => ({ ...p, default_contact_type: e.target.value }))}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="">Unspecified — no automatic welcome</option>
+                  {contactTypeVocabulary.map(v => (
+                    <option key={v} value={v}>{formatContactTypeLabel(v)}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Determines who this form&apos;s submitters are (buyer, seller, etc.) so the
+                  right welcome sequence and manager pick them up. Leave unspecified for a
+                  generic form — it will capture the contact but send no automatic welcome.
+                </p>
               </div>
 
               {/* TCPA text */}

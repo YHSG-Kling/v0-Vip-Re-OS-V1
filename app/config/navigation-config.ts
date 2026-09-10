@@ -139,6 +139,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
       { id: 'divider1', divider: true },
       { id: 'offers', label: 'Offers Pipeline', href: '/offers', icon: 'FileText' },
+      // m619 offer_intents reader (this lane, wave 52): buyers' portal "submit
+      // an offer" clicks land here as a durable, actionable queue — the agent
+      // acknowledges/dismisses/starts the real offer. See
+      // app/actions/offer-intents.ts + app/dashboard/offers/page.tsx.
+      { id: 'buyer-offer-requests', label: 'Buyer Offer Requests', href: '/dashboard/offers', icon: 'Inbox' },
       {
         id: 'video-tools',
         label: 'Video Tools',

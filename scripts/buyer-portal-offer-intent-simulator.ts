@@ -177,6 +177,129 @@ function sourceRouting() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// READER — app/actions/offer-intents.ts (this lane, wave 52). The kernel
+// notification/task above was ALWAYS best-effort visibility; this is the
+// durable queue the agent actually works from: see it, acknowledge it, start
+// the real offer, or dismiss it. Structural (regex-on-stripped-source), same
+// discipline as sourceRouting() above — every "0 found" is positive-controlled.
+// ─────────────────────────────────────────────────────────────────────────────
+function sourceReaderHalf() {
+  console.log("\n[reader · app/actions/offer-intents.ts — the agent's durable offer_intents queue]")
+  const reader = stripped("app/actions/offer-intents.ts")
+  check("offer-intents.ts exists and is non-trivial", reader.length > 500)
+
+  for (const fn of ["listPendingOfferIntentsForAgent", "listOfferIntentsForContact", "acknowledgeOfferIntent", "dismissOfferIntent"]) {
+    check(`exports ${fn}`, new RegExp(`export async function ${fn}\\(`).test(reader))
+  }
+
+  check("the file marks itself \"use server\" (CLAUDE.md §4 — every export is a public endpoint)",
+    /^"use server"/.test(src("app/actions/offer-intents.ts").trimStart()))
+
+  // TENANCY (§4): the caller's brokerage/agent identity is resolved from the
+  // SESSION (auth.getUser()), never accepted as a parameter on any export.
+  check("resolves the caller from auth.getUser() (session, not a parameter)",
+    /authClient\.auth\.getUser\(\)/.test(reader))
+  const exportSignatures = [...reader.matchAll(/export async function \w+\(([^)]*)\)/g)].map((m) => m[1])
+  check("no export takes a brokerageId/agentId/contactId=self parameter to widen its own scope",
+    exportSignatures.every((sig) => !/brokerageId|agentId/i.test(sig)))
+
+  // The agent branch is scoped to the CALLER's own agents.id; the admin branch
+  // is scoped to the caller's own brokerage — the same two-tier shape m619's
+  // UPDATE policy encodes (never trust a wider scope than the DB would grant).
+  check("the agent branch filters by the caller's OWN resolved agent id (.eq(\"agent_id\", scope.agentId))",
+    /\.eq\("agent_id",\s*scope\.agentId\)/.test(reader))
+  check("every query is scoped to the caller's OWN brokerage (.eq(\"brokerage_id\", scope.brokerageId))",
+    (reader.match(/\.eq\("brokerage_id",\s*scope\.brokerageId\)/g) ?? []).length >= 3)
+
+  // §3 trap: an UPDATE matching nothing resolves exactly like one that worked —
+  // must .select() and count rows, never trust a null error alone.
+  check("transitionIntent .select()s the UPDATE and checks the row COUNT (CLAUDE.md §3 — a no-match UPDATE resolves clean)",
+    /\.select\("id"\)[\s\S]{0,200}if\s*\(!data \|\| data\.length === 0\)/.test(reader))
+  check("acknowledge/dismiss only move OPEN intents forward (fromStatuses gates the transition)",
+    /acknowledgeOfferIntent[\s\S]{0,120}\["requested"\]/.test(reader) &&
+    /dismissOfferIntent[\s\S]{0,150}\["requested",\s*"dismissed"|dismissOfferIntent[\s\S]{0,150}\["requested",\s*"acknowledged"\]/.test(reader))
+
+  // POSITIVE CONTROLS for the two structural regexes above.
+  const poisonNoSelect = stripComments(`
+    export async function transitionIntent(id: string) {
+      const { error } = await svc.from("offer_intents").update({ status: "x" }).eq("id", id)
+      return { success: !error }
+    }
+  `)
+  check("CONTROL — the §3 row-count scanner does NOT pass a bare update-with-no-select",
+    !/\.select\("id"\)[\s\S]{0,200}if\s*\(!data \|\| data\.length === 0\)/.test(poisonNoSelect))
+  const poisonWideScope = stripComments(`export async function listAll(brokerageId: string) { return brokerageId }`)
+  check("CONTROL — the no-parameter-widening scanner catches a planted brokerageId parameter",
+    !exportSignatures.concat([poisonWideScope.match(/export async function \w+\(([^)]*)\)/)?.[1] ?? "brokerageId"]).every((sig) => !/brokerageId|agentId/i.test(sig)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BRIDGE — createOffer converts the intent (offer_id + status='converted')
+// when the wizard was opened via "Start Offer". Structural, same discipline.
+// ─────────────────────────────────────────────────────────────────────────────
+function sourceBridge() {
+  console.log("\n[bridge · app/actions/buyer-offers.ts::createOffer converts the intent on success]")
+  const offers = stripped("app/actions/buyer-offers.ts")
+  const fnStart = offers.indexOf("export async function createOffer(")
+  const nextExportStart = fnStart > 0 ? offers.indexOf("\nexport async function", fnStart + 1) : -1
+  const fn = fnStart > 0 ? offers.slice(fnStart, nextExportStart > 0 ? nextExportStart : fnStart + 20000) : ""
+  check("createOffer exists", fn.length > 0)
+
+  check("OfferFormData carries offer_intent_id",
+    /offer_intent_id\??:\s*string \| null/.test(offers))
+  check("the bridge only runs AFTER the offer row is successfully created (guarded on offerError/!offer above it)",
+    fn.indexOf("if (offerError || !offer)") >= 0 &&
+    fn.indexOf("if (offerError || !offer)") < fn.indexOf("form.offer_intent_id"))
+  check("the bridge writes offer_id + status='converted' onto offer_intents",
+    /\.from\("offer_intents"\)[\s\S]{0,120}\.update\(\{\s*offer_id:\s*offer\.id,\s*status:\s*"converted"/.test(fn))
+  check("the bridge is scoped to THIS contact AND brokerage — a foreign/forged intent id cannot be converted",
+    /\.eq\("contact_id",\s*contactId\)/.test(fn) && /\.eq\("brokerage_id",\s*brokerageId\)/.test(fn.slice(fn.indexOf("offer_intents"))))
+  check("the bridge only converts an OPEN intent (requested/acknowledged), never re-converts a terminal one",
+    /\.in\("status",\s*\["requested",\s*"acknowledged"\]\)/.test(fn))
+  check("the bridge .select()s and checks the row count (§3 — an UPDATE matching nothing resolves clean)",
+    /\.select\("id"\)[\s\S]{0,200}!bridged \|\| bridged\.length === 0/.test(fn))
+  check("a refused/no-match bridge is LOUD (console.error) but never un-creates the offer (non-fatal)",
+    (fn.match(/console\.error\(`\[createOffer\] offer \$\{offer\.id\} created but offer_intent/g) ?? []).length >= 2)
+
+  console.log("\n[bridge · the wizard threads offer_intent_id end-to-end: URL -> page -> flow -> wizard -> createOffer]")
+  const newPage = stripped("app/crm/contacts/[contactId]/offers/new/page.tsx")
+  check("/offers/new reads ?intentId= from searchParams", /intentId/.test(newPage))
+  const clientPage = stripped("app/crm/contacts/[contactId]/offers/new/new-offer-page-client.tsx")
+  check("NewOfferPageClient forwards it as initialOfferIntentId to OfferInitiationFlow",
+    /initialOfferIntentId=\{prefillOfferIntentId/.test(clientPage))
+  const flow = stripped("app/crm/contacts/[contactId]/offers/components/offer-initiation-flow.tsx")
+  check("OfferInitiationFlow forwards it to OfferFormWizard as offerIntentId",
+    /offerIntentId=\{initialOfferIntentId\}/.test(flow))
+  const wizard = stripped("app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx")
+  check("OfferFormWizard puts it on the submitted form as offer_intent_id",
+    /offer_intent_id:\s*offerIntentId/.test(wizard))
+
+  console.log("\n[bridge · the agent's queue UI links Start Offer with ?intentId= and exposes acknowledge/dismiss]")
+  const list = stripped("app/components/offer/buyer-offer-requests-list.tsx")
+  check("Start Offer link carries intentId=", /intentId=\$\{encodeURIComponent\(intent\.id\)\}/.test(list))
+  check("acknowledge action is wired to acknowledgeOfferIntent", /acknowledgeOfferIntent\(intent\.id\)/.test(list))
+  check("dismiss action is wired to dismissOfferIntent", /dismissOfferIntent\(intent\.id\)/.test(list))
+  const dashboardPage = stripped("app/dashboard/offers/page.tsx")
+  check("app/dashboard/offers is the agent's aggregate queue across all their buyers",
+    /listPendingOfferIntentsForAgent/.test(dashboardPage))
+  const contactOffersPage = stripped("app/crm/contacts/[contactId]/offers/page.tsx")
+  check("the per-contact offers page also loads this buyer's intents",
+    /listOfferIntentsForContact/.test(contactOffersPage))
+  const navConfig = stripped("app/config/navigation-config.ts")
+  check("the new /dashboard/offers route is reachable from nav (orphan-route-sweep)",
+    /href:\s*'\/dashboard\/offers'/.test(navConfig))
+
+  // POSITIVE CONTROL — the bridge regex catches a planted defect (status left unconverted).
+  const poison = stripComments(`
+    if (form.offer_intent_id) {
+      await supabase.from("offer_intents").update({ offer_id: offer.id }).eq("id", form.offer_intent_id)
+    }
+  `)
+  check("CONTROL — the bridge-write scanner does NOT pass an update missing status='converted'",
+    !/\.from\("offer_intents"\)[\s\S]{0,120}\.update\(\{\s*offer_id:\s*offer\.id,\s*status:\s*"converted"/.test(poison))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BEHAVIOR — run the two real handlers against an in-memory Supabase stub
 // ─────────────────────────────────────────────────────────────────────────────
 type Row = Record<string, any>
@@ -343,6 +466,8 @@ async function main() {
   console.log("═".repeat(78))
   sourceNoFormsInPortal()
   sourceRouting()
+  sourceReaderHalf()
+  sourceBridge()
   await behaviorLayer()
 
   console.log("\n" + "─".repeat(78))

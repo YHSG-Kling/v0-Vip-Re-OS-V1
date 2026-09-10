@@ -120,9 +120,14 @@ export async function queueBoardPacketReel(
   // Voice on every video: the assistant narrates the month (its ElevenLabs
   // voice, the same one that answers the phone). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  // INTERNAL/BOARD-FACING (owner ruling, wave 51): this reports TO the broker,
+  // never a contact — there is no per-recipient language to resolve here, only
+  // DEFAULT_LANGUAGE, named explicitly (never a second "en" literal, §6).
+  const { DEFAULT_LANGUAGE } = await import("@/lib/video/multilingual-reel")
   const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `packet-${p.brokerageId.slice(0, 8)}`,
+    languageCode: DEFAULT_LANGUAGE,
   })
   if (vo) props.voiceover_url = vo.url
   // THE COMPANION CARD. `seoHint` is REQUIRED on VideoCoverThumb and this

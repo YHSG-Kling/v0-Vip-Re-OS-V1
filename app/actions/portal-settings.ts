@@ -13,6 +13,14 @@ interface ProfileUpdate {
   state?: string
   zip_code?: string
   preferred_contact_method?: string
+  /**
+   * ISO 639-1 code (lib/video/multilingual-reel.ts LOCALE_TO_ELEVENLABS_LANGUAGE
+   * output — the ONE vocabulary, §6) the contact wants their avatar videos,
+   * copy and captions rendered in. Tier 1 of resolveContactLanguage (m620's
+   * CHECK admits exactly these 23 codes). Normalized/validated below before it
+   * ever reaches the write — never trusted as already-canonical from the client.
+   */
+  preferred_language?: string
   metadata?: Record<string, any>
 }
 
@@ -21,14 +29,39 @@ export async function updateContactProfile(
   updates: ProfileUpdate,
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // GATE FIRST (CLAUDE.md §4): this is the contact's OWN self-service portal
+    // settings action — identity and tenant both come from the SESSION via
+    // requireContactAccess, never from the contactId argument alone. Staff
+    // editing a contact's profile on the client's behalf is a DIFFERENT surface
+    // (app/crm/contacts — the agent-side edit action), which is gated
+    // separately and never routes through this self-service action.
+    const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+    const access = await requireContactAccess(contactId)
+    if (!access.ok || !access.isContactSelf) {
+      return { success: false, error: "Only the account holder can update this profile." }
+    }
+
+    const payload: Record<string, unknown> = { ...updates, updated_at: new Date().toISOString() }
+
+    // preferred_language: normalize through the ONE resolver's own mapper
+    // (never trust the client sent an already-canonical code) and FAIL
+    // CLOSED — refuse the whole update rather than silently drop an
+    // unrecognized value, which would read to the contact as "saved" while
+    // writing nothing.
+    if (updates.preferred_language !== undefined) {
+      const { localeToElevenLabsLanguage } = await import("@/lib/video/multilingual-reel")
+      const mapped = localeToElevenLabsLanguage(updates.preferred_language)
+      if (!mapped) {
+        return { success: false, error: `"${updates.preferred_language}" is not a supported language.` }
+      }
+      payload.preferred_language = mapped
+    }
+
     const supabase = await createClient()
 
     const { error } = await supabase
       .from("contacts")
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
+      .update(payload)
       .eq("id", contactId)
 
     if (error) {

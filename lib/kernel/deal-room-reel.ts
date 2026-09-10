@@ -175,10 +175,35 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           r.refused += 1
           continue
         }
+        // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52): the Deal Room is
+        // the client's own weekly update — resolve THEIR language (contacts.
+        // preferred_language → call_transcriptions.language → intake-time
+        // capture → DEFAULT_LANGUAGE "en"), the ONE resolver (§6), and — when
+        // it resolves non-English — translate the narration BEFORE synthesis so
+        // the multilingual TTS model has real target-language text to speak
+        // (language_code alone does not translate; see lib/voice/elevenlabs-tts.ts
+        // header). A translation failure degrades to the English narration
+        // already built above rather than blocking the client's weekly video.
+        const { resolveContactLanguageFromDb, translateReelScript, languageName, DEFAULT_LANGUAGE } =
+          await import("@/lib/video/multilingual-reel")
+        const contactLanguage = await resolveContactLanguageFromDb(svc, contactId)
+        if (contactLanguage !== DEFAULT_LANGUAGE) {
+          const { gatewayChat } = await import("@/lib/ai/gateway-chat")
+          const translation = await translateReelScript(
+            { script: (props as any).narration as string, targetLocale: contactLanguage, targetLanguageName: languageName(contactLanguage) },
+            gatewayChat,
+          )
+          if (translation.ok && translation.translatedScript) {
+            props.narration = translation.translatedScript
+          } else {
+            console.warn(`[deal-room-reel] transaction ${t.id} — translation to ${contactLanguage} failed, narrating in English: ${translation.error ?? "unknown error"}`)
+          }
+        }
         const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
         const vo = await prepareReelVoiceover({
           brokerageId: b.id, narration: (props as any).narration, voiceId: identity.voiceId,
           renderKey: `dealroom-${String(t.id).slice(0, 8)}`,
+          languageCode: contactLanguage,
         })
         if (vo) {
           props.voiceover_url = vo.url

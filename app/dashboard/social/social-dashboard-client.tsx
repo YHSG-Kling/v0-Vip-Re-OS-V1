@@ -568,7 +568,6 @@ export function SocialDashboardClient({
           <SocialCalendarAiPlanner
             agentId={userId}
             brokerageId={brokerageId}
-            userId={userId}
             posts={posts}
             onRefresh={() => router.refresh()}
           />

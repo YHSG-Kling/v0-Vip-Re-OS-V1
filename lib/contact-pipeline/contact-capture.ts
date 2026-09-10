@@ -12,6 +12,9 @@ import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
 import { bestEffort } from '@/lib/db/best-effort'
+// PURE — no server-only, no SCHEMA_SNAPSHOT at module scope (see that file's
+// own header note) — safe as a static import into this shared pipeline file.
+import { localeToElevenLabsLanguage } from '@/lib/video/multilingual-reel'
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -51,6 +54,34 @@ const LEAD_CONVERSION_SOURCES = new Set([
   'lead_conversion',
   'crm_import',
 ])
+
+/**
+ * resolveCapturedLanguage — THE ONE intake-time locale resolver (§6), lifted
+ * out of app/api/forms/submit/route.ts (the one door that had it) so every
+ * OTHER public intake door computes `CaptureContactParams.language` the same
+ * way instead of re-deriving its own "which header/field wins" logic.
+ *
+ * Prefers an explicit locale/language FIELD the submission itself carried
+ * (a form, widget or QR payload CAN name one — nothing forces it to), else
+ * falls back to the request's `Accept-Language` header. Both are mapped
+ * through `localeToElevenLabsLanguage` (lib/video/multilingual-reel.ts) so a
+ * garbage/unmapped value never reaches `contacts.metadata->>'captured_language'`
+ * as a fabricated language — this is tier 3 of `resolveContactLanguage`, a
+ * guess, and only a MAPPED guess is worth storing.
+ *
+ * PURE — takes the two raw strings already read by the caller (never parses a
+ * Request itself, so it works identically for a NextRequest route handler and
+ * a "use server" action reading `headers()`).
+ */
+export function resolveCapturedLanguage(
+  explicitLocale: string | null | undefined,
+  acceptLanguageHeader: string | null | undefined,
+): string | null {
+  const fromField = localeToElevenLabsLanguage((explicitLocale ?? '').trim())
+  if (fromField) return fromField
+  const firstTag = (acceptLanguageHeader ?? '').split(',')[0]?.trim() ?? ''
+  return localeToElevenLabsLanguage(firstTag)
+}
 
 export interface CaptureContactParams {
   brokerageId: string
@@ -125,7 +156,7 @@ export interface CaptureContactParams {
    * function does not parse either itself (§6, no second resolver).
    *
    * Stored at contacts.metadata->>'captured_language' — NOT a typed column.
-   * UNTIL m620 IS APPLIED (supabase/migrations/m620-contacts-preferred-
+   * m620 APPLIED 2026-09-10 — tier 1 (contacts.preferred_language) is live; this stays tier 3 (supabase/migrations/m620-contacts-preferred-
    * language.sql, WRITTEN NOT APPLIED per CLAUDE.md §3) this IS the only place
    * an intake-time language lands; once preferred_language exists, a
    * follow-up lane backfills it from here — the same "typed column pending,

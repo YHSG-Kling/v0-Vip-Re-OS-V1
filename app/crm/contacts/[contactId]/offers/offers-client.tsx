@@ -4,6 +4,8 @@ import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { MultiOfferStatusBanner } from "@/app/components/offer/multi-offer-status-banner"
+import { BuyerOfferRequestsList } from "@/app/components/offer/buyer-offer-requests-list"
+import type { OfferIntentRow } from "@/app/actions/offer-intents"
 import { OfferInitiationFlow } from "./components/offer-initiation-flow"
 import { recordOfferOutcome, getConnectedEsignProvider } from "@/app/actions/buyer-offers"
 import { getMlsNumberByAddress } from "@/app/actions/seller-offers"
@@ -56,13 +58,16 @@ interface OffersClientProps {
   contactName:  string
   contactEmail: string
   initialOffers: Offer[]
+  /** Pending offer_intents (m619) for THIS buyer — "submit an offer" clicks
+   *  from their portal that have not yet been acknowledged/converted/dismissed. */
+  initialOfferIntents?: OfferIntentRow[]
   buyerStage:   string
   disableOfferCreation?: boolean
 }
 
 export function OffersClient({
   contactId, brokerageId, agentUserId, contactName, contactEmail,
-  initialOffers, buyerStage, disableOfferCreation = false,
+  initialOffers, initialOfferIntents = [], buyerStage, disableOfferCreation = false,
 }: OffersClientProps) {
   const [offers, setOffers]               = useState<Offer[]>(initialOffers)
   const [showFlow, setShowFlow]           = useState(false)
@@ -293,6 +298,15 @@ export function OffersClient({
             </Link>
           )}
         </div>
+
+        {initialOfferIntents.length > 0 && (
+          <div className="px-6 pt-4">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              Buyer offer requests
+            </h3>
+            <BuyerOfferRequestsList initialIntents={initialOfferIntents} />
+          </div>
+        )}
 
         {offers.length > 0 && (
           <div className="px-6 pt-4">
