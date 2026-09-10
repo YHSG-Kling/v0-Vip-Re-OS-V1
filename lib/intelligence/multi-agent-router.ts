@@ -373,7 +373,11 @@ export async function escalateToHuman(params: {
     },
   })
   
-  // Kernel event — audit row + reactor.
+  // Kernel event — audit row + reactor. `agentId` stamps lifecycle_events.agent_id (the
+  // audit column) but DispatchKernelEventParams carries no agentId field, so the
+  // event-reactor's D-undecies reader (#24, routes this to recruiting_manager for the
+  // escalating agent's team lead) cannot see it there — metadata.agent_id mirrors it,
+  // the same convention #17 MESSAGE_NEEDS_RESPONSE already uses.
   const { emitKernelEvent } = await import('@/lib/kernel/emit')
   await emitKernelEvent({
     event: KernelEvent.AGENT_ESCALATED_TO_HUMAN,
@@ -383,6 +387,7 @@ export async function escalateToHuman(params: {
     agentId: session.assigned_agent_id,
     metadata: {
       session_id: params.sessionId,
+      agent_id: session.assigned_agent_id,
       agent_type: session.agent_type,
       reason: params.reason,
       urgency: params.urgency,

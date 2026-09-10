@@ -263,8 +263,11 @@ export async function manualAssignLead(
  *
  * THIS IS NOT A CLAIM. The lead is ALREADY the caller's; nothing about ownership
  * changes here. It flips `assignment_log.claimed` false → true under an
- * optimistic lock and emits LEAD_CLAIMED so the acknowledgement fans out (staff
- * notification / sequence enrollment / portal update).
+ * optimistic lock. TOMBSTONE (owner ruling, wave 49, 2026-09-10): this used to
+ * also emit KernelEvent.LEAD_CLAIMED so the acknowledgement fanned out — retired
+ * along with the enum member (lib/kernel/events.ts) per "no kernel event for
+ * agent claiming a lead". The UPDATE above is the flag's own durable record; the
+ * three readers below consult it directly, not an event.
  *
  * WHY THE FLAG SURVIVED THE VERB. `assignment_log.claimed` is inserted false by
  * the assignment handler and READ by three live surfaces as "this handoff is
@@ -277,7 +280,7 @@ export async function manualAssignLead(
  * admin. `agents.id` and `users.id` are DISJOINT spaces, so the caller's agents
  * row is resolved through `agents.user_id` and compared to `leads.agent_id`.
  * The previous version gated on TENANCY ALONE — any signed-in user of the
- * tenant could close out any colleague's handoff and have the LEAD_CLAIMED event
+ * tenant could close out any colleague's handoff and have the acknowledgement
  * attributed to themselves.
  */
 export async function acknowledgeLeadHandoffAction(

@@ -1275,6 +1275,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // 'unknown'; treat that absence as the legacy always-a-contact shape so an old
         // event still reaches Sphere, never a wrong new manager.
         const subjectType = meta.card_subject_type ?? "contact"
+        // subject_user_type (owner ruling 2026-09-10: "should be a userid user
+        // type") rides through untouched below — business-card-actions.ts
+        // resolved it from the REAL matched users.user_type row, not a reader
+        // guess, and payload:params.metadata forwards it to the receiving
+        // manager (e.g. recruiting_manager sees the actual seat type, not just
+        // that a card LOOKED like an agent's).
         const ROUTE: Record<string, { toManager: ManagerKey; signalType: string; message: string }> = {
           sphere: {
             toManager: "sphere_of_influence", signalType: "business_card_approved",
@@ -1606,7 +1612,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   // (verified against its call site below), lifecycle_events records it, but nothing
   // downstream ever reacted. Same ruling as D-octies/D-decies (CLAUDE.md §1.2 + the owner's
   // "every capability should run autonomously"): each publishes a manager_signals row
-  // addressed to the manager whose domain should act on it. TEN are HANDLED — a real
+  // addressed to the manager whose domain should act on it. NINE are HANDLED — a real
   // SIGNAL_HANDLERS consumer proposes a gated deliverable (a client portal message, a
   // transaction task, a compliance-ledger/notification record) through the SAME existing
   // gated primitives the rest of this file uses — never an outbound send, never spend. The
@@ -1614,7 +1620,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   // and independently caught; publishManagerSignal's own (toManager, signalType, entityId)
   // dedupe makes a retried/re-emitted event never double an inbox.
   //
-  // Three events census flagged as emitted-only are DELIBERATELY NOT wired here because the
+  // Four events census flagged as emitted-only are DELIBERATELY NOT wired here because the
   // capability already exists under a different name (CLAUDE.md §1.3 — functionality already
   // lives elsewhere, no new signal minted to avoid a second spelling): OFFER_AI_EXTRACTED
   // (lib/offers/offer-extractor.ts) already publishes offers_compare_handoff synchronously
@@ -1627,6 +1633,27 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   // inbound-seller-intent-runner.ts), just reached through the authenticated portal tool
   // instead of the anonymous form — so it publishes the EXISTING signal type onto the
   // EXISTING listing_concierge:home_value_seller_intent handler rather than mint a twin.
+  // LEAD_CONVERTED_TO_CONTACT is the FOURTH such exception, added wave 49 (owner ruling
+  // 2026-09-10: the lead→contact welcome comes from listing_concierge or shopping_agent by
+  // CONTACT TYPE, with portal credentials + welcome video + a situational message — never a
+  // generic one). What stood here as case "3" — a generic, always-sphere_of_influence,
+  // hardcoded "Hi ${firstName} — welcome!" proposeClientMessage call — is DELETED. TOMBSTONE:
+  // survivor is lib/contact-promotion/conversion-welcome.ts:342 `deliverConversionWelcome`,
+  // which already runs the CORRECT sequence (portal grant → avatar-video commission →
+  // situational, generatePersonaCopy-authored send, owned by listing_concierge for a seller /
+  // shopping_agent for a buyer / both for `both`, per lib/kernel/client-welcome.ts
+  // `resolveWelcomeManagers`) and is called SYNCHRONOUSLY, in-process, by the ONLY code path
+  // that ever dispatches this KernelEvent — lib/kernel/lead-acquisition-handlers.ts's
+  // `handleLeadAssigned`, at line 680-698, moments before it calls `processKernelEvent` for
+  // this very event at line 598-603. So the deleted case ran the WRONG welcome a few
+  // milliseconds AFTER the RIGHT one had already gone out for the same contact — a second,
+  // generic, sphere-routed message the ruling forbids, on every single conversion. Verified
+  // there is no other emitter that reaches this reader without also reaching the survivor:
+  // `grep -rn "event:\s*KernelEvent\.LEAD_CONVERTED_TO_CONTACT" -- '*.ts'` has exactly the one
+  // call site named above. (lib/kernel/crm.ts's manual lead-desk `convertLeadToContact` writes
+  // `lifecycle_events` directly and never calls `processKernelEvent` for this event, so it was
+  // never reachable here either way — wave 49 wired it onto the SAME survivor separately; see
+  // the tombstone at lib/kernel/crm.ts's welcome call.)
   if (params.brokerageId) {
     // 1 — deal-health TIER TRANSITION (lib/deal-health/health-scorer.ts:967, `if
     // (tierChanged)`). CADENCE RESOLUTION (CLAUDE.md §6 — flagged overlap with
@@ -1675,24 +1702,9 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 3 — a lead converted to a real CONTACT (lib/kernel/lead-acquisition-handlers.ts:585,
-    // handleLeadAssigned — fires alongside LEAD_ASSIGNED from the same auto-assignment call).
-    // HANDLED — Sphere of Influence proposes the warm welcome message, the lifetime-
-    // relationship owner's first touch on every new client (mirrors deal_closed).
-    if (params.event === KernelEvent.LEAD_CONVERTED_TO_CONTACT) {
-      try {
-        await publishManagerSignal({
-          brokerageId: params.brokerageId,
-          fromManager: "ai_isa",
-          toManager:   "sphere_of_influence",
-          signalType:  "lead_converted_to_contact",
-          message:     "A lead converted to a contact.",
-          entityType:  params.entityType,
-          entityId:    params.entityId,
-          payload:     params.metadata ?? {},
-        }, svc)
-      } catch { /* best-effort */ }
-    }
+    // 3 — REMOVED (wave 49). TOMBSTONE: see the LEAD_CONVERTED_TO_CONTACT exception
+    // paragraph above this `if (params.brokerageId)` block — survivor is
+    // lib/contact-promotion/conversion-welcome.ts:342 `deliverConversionWelcome`.
 
     // 4 — the buyer-side "you're under contract" moment (lib/transactions/offer-
     // bridge.ts:614, only when we represent the buyer). HANDLED — Deal Coordinator opens a
@@ -1786,9 +1798,20 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 9 — a lead was auto-assigned to an agent (lib/kernel/lead-acquisition-
-    // handlers.ts:445-449, fires alongside LEAD_CONVERTED_TO_CONTACT from the same call).
-    // HANDLED — AI ISA notifies the resolved agent directly (the handler resolves leads.
-    // agent_id → agents.user_id) so the assignment reaches them beyond the queue view.
+    // handlers.ts:445-449, fires alongside LEAD_CONVERTED_TO_CONTACT from the same call,
+    // AFTER the lead has already been converted to a contact in that same call). HANDLED
+    // — owner ruling (wave 49, 2026-09-10, verbatim): "if a lead gets assigned it is the
+    // ai isa to nurture which is a system agent". This USED TO directly notify the
+    // resolved agent ("A new lead was assigned to you") — wrong on two counts: it named a
+    // LEAD to an agent (agents never see leads, only contacts — §5), and it duplicated the
+    // agent-facing heads-up that ALREADY exists on the acknowledge-handoff path
+    // (app/actions/lead-assignment/assign-lead.ts acknowledgeLeadHandoffAction +
+    // new-contact-handoff-panel.tsx). The handler now hands the newly-assigned contact to
+    // AI ISA, whose speed-to-lead cron (lib/ai-isa/speed-to-lead.ts) already owns first-
+    // touch nurture for every newly-assigned contact after the agent's grace window — this
+    // signal is that ownership becoming visible, not a second nurture trigger (§6: the
+    // grace-window decision is NOT re-implemented here, avoiding a second spelling of
+    // lib/ai-isa/speed-to-lead-policy.ts firstTouchDecision).
     if (params.event === KernelEvent.LEAD_ASSIGNED) {
       try {
         await publishManagerSignal({
@@ -1844,22 +1867,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // ── feed_only from here — visibility for the owning manager, same shape as most of
     // D-octies/D-decies. No automated consumer by design (see each `what` in signal-registry.ts).
 
-    // 12 — an agent manually claimed an unclaimed lead (lib/lead-assignment/assignment-
-    // engine.ts:256, distinct from the auto-assignment LEAD_ASSIGNED above).
-    if (params.event === KernelEvent.LEAD_CLAIMED) {
-      try {
-        await publishManagerSignal({
-          brokerageId: params.brokerageId,
-          fromManager: "data_steward",
-          toManager:   "ai_isa",
-          signalType:  "lead_claimed",
-          message:     "An agent claimed a lead.",
-          entityType:  params.entityType,
-          entityId:    params.entityId,
-          payload:     params.metadata ?? {},
-        }, svc)
-      } catch { /* best-effort */ }
-    }
+    // 12 — TOMBSTONE (owner ruling, wave 49, 2026-09-10): "no kernel event for
+    // agent claiming a lead" — KernelEvent.LEAD_CLAIMED is retired (see the
+    // tombstone at lib/kernel/events.ts). This reader used to publish
+    // "lead_claimed" here; the underlying acknowledgement still happens
+    // (lib/lead-assignment/assignment-engine.ts claimLead flips
+    // assignment_log.claimed directly, no event).
 
     // 13 — a lead cleared consent and is ready for the assignment engine (lib/kernel/
     // lead-acquisition-handlers.ts:346). Visibility only — the assignment engine already
@@ -2001,13 +2014,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:477).
+    // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:477). Owner ruling
+    // (wave 49, 2026-09-10): routes to Campaign Orchestrator — the campaign manager — NOT
+    // Finance Manager, who has nothing to do with a campaign ending (fixed from the
+    // original wiring, which sent it there).
     if (params.event === KernelEvent.MARKETING_CAMPAIGN_ENDED) {
       try {
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "data_steward",
-          toManager:   "finance_manager",
+          toManager:   "campaign_orchestrator",
           signalType:  "marketing_campaign_ended",
           message:     "A marketing campaign ended.",
           entityType:  params.entityType,
@@ -2034,15 +2050,33 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
 
     // 23 — a human agent claimed an AI-ISA qualified contact from the handoff queue
-    // (app/actions/ai-isa/claim-handoff.ts:75).
+    // (app/actions/ai-isa/claim-handoff.ts:75). Owner ruling (wave 49, 2026-09-10):
+    // routes by the CONTACT's type — Listing Concierge for a seller, Shopping Agent for a
+    // buyer, never a generic "agent handoff" manager (deal_coordinator, the original
+    // wiring, has no reason to own this). Same branch shape as ISA_APPOINTMENT_SCHEDULED
+    // above (#16) — contacts.contact_type read once, one dynamic toManager. Unknown/unset
+    // type: AI ISA keeps the handoff and asks, rather than guess — it does NOT fall through
+    // to either agent-side manager.
     if (params.event === KernelEvent.AI_ISA_HANDOFF_TO_AGENT) {
       try {
+        let toManager: "listing_concierge" | "shopping_agent" | "ai_isa" = "ai_isa"
+        if (params.contactId) {
+          const { data: c } = await svc
+            .from("contacts").select("contact_type")
+            .eq("id", params.contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+          const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
+          if (contactType === "seller") toManager = "listing_concierge"
+          else if (contactType === "buyer") toManager = "shopping_agent"
+          // any other value (null / unset / unrecognised) leaves toManager "ai_isa"
+        }
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "ai_isa",
-          toManager:   "deal_coordinator",
+          toManager,
           signalType:  "ai_isa_handoff_to_agent",
-          message:     "AI ISA handed a qualified contact off to an agent.",
+          message:     toManager === "ai_isa"
+            ? "AI ISA handed a qualified contact to an agent, but the contact's buyer/seller type is unset — AI ISA is holding the routing and asking."
+            : "AI ISA handed a qualified contact off to an agent.",
           entityType:  params.entityType,
           entityId:    params.entityId,
           contactId:   params.contactId ?? null,
@@ -2053,18 +2087,24 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
     // 24 — an AI concierge session escalated to a human (lib/intelligence/multi-agent-
     // router.ts:378-391, which already writes its own smart_assistant_suggestions row for
-    // the assigned agent — this is the cross-manager visibility trail beside it).
+    // the assigned agent — this is the cross-manager visibility trail beside it). Owner
+    // ruling (wave 49, 2026-09-10): routes to Recruiting Manager (not deal_coordinator, the
+    // original wiring) — an escalation to a human is a coaching/staffing moment Recruiting
+    // owns, HANDLED by notifying the escalating agent's team lead (metadata.agent_id is an
+    // AGENTS id, same convention as #17 MESSAGE_NEEDS_RESPONSE — the emitter now also mirrors
+    // it into metadata so this reader can resolve it).
     if (params.event === KernelEvent.AGENT_ESCALATED_TO_HUMAN) {
       try {
+        const meta = (params.metadata as { agent_id?: string | null; urgency?: string; reason?: string } | null | undefined) ?? {}
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "ai_isa",
-          toManager:   "deal_coordinator",
+          toManager:   "recruiting_manager",
           signalType:  "agent_escalated_to_human",
           message:     "An AI concierge session escalated to a human.",
           entityType:  params.entityType,
           entityId:    params.entityId,
-          payload:     params.metadata ?? {},
+          payload:     { agent_id: meta.agent_id ?? null, urgency: meta.urgency ?? null, reason: meta.reason ?? null },
         }, svc)
       } catch { /* best-effort */ }
     }
@@ -2082,6 +2122,386 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           entityType:  params.entityType,
           entityId:    params.entityId,
           payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-duodecies) CROSS-MANAGER SIGNALS — kernel-event census round 6 (2026-09-10, wave 49,
+  // lane HC). scripts/kernel-event-census-z1.ts classified these TWENTY KernelEvent members
+  // "emitted only" in the video/podcast/social/onboarding/intelligence lanes: a real emitter
+  // fires each (verified against its call site below), lifecycle_events records it, but nothing
+  // downstream ever reacted. Same ruling as D-octies through D-undecies (CLAUDE.md §1.2 + the
+  // owner's "every capability should run autonomously"): each publishes a manager_signals row
+  // addressed to the manager whose domain should act on it. EIGHT are HANDLED — a real
+  // SIGNAL_HANDLERS consumer (lib/kernel/manager-signals.ts) proposes a gated deliverable (a
+  // notification to the creator, a gated social-snippet post) through the SAME existing gated
+  // primitives the rest of this file uses — never an outbound send, never spend. The rest are
+  // feed_only, same shape as most of D-octies/D-decies/D-undecies. Every block is best-effort
+  // and independently caught; publishManagerSignal's own (toManager, signalType, entityId)
+  // dedupe makes a retried/re-emitted event never double an inbox.
+  if (params.brokerageId) {
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 1 — an AI video script finished generating (app/api/video-scripts/route.ts /
+    // app/actions/video-generation.ts, entityType "video_script"). HANDLED — Asset Manager
+    // notifies the script's author it's ready for review before it becomes a video.
+    if (params.event === KernelEvent.SCRIPT_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "script_generated",
+          message:     "An AI video script finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 2 — a cloned voice passed quality and is ready to use (app/actions/video-voice.ts,
+    // entityType "voice_profile", quality gated >=70 before this fires). HANDLED — Asset
+    // Manager notifies the owning agent their voice clone is ready for video generation.
+    if (params.event === KernelEvent.VOICE_CLONE_READY) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "voice_clone_ready",
+          message:     "A cloned voice passed quality and is ready to use.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3 — a platform video snippet was cut (app/actions/video-repurposing.ts createSnippet,
+    // entityType "video_snippet", approval_status "pending_review" at insert). HANDLED —
+    // Campaign Orchestrator (the distribution-channel owner) notifies the creator it's
+    // waiting for review before it can be scheduled.
+    if (params.event === KernelEvent.SNIPPET_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "campaign_orchestrator",
+          signalType:  "snippet_created",
+          message:     "A video snippet was cut and is pending review.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 4 — a piece of content finished being repurposed into a new format
+    // (app/actions/video-repurposing.ts logRepurposedContent, entityType
+    // "repurposed_content" — the manual repurposer, distinct from the Omni-Presence
+    // pipeline's own internal log, which carries no kernel event). HANDLED — Campaign
+    // Orchestrator notifies the creator the new asset is ready for review.
+    if (params.event === KernelEvent.CONTENT_REPURPOSED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "campaign_orchestrator",
+          signalType:  "content_repurposed",
+          message:     "Content finished being repurposed into a new format.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — an Omni-Presence repurpose pipeline finished a run (lib/repurpose/actions.ts,
+    // entityType "repurpose_pipeline" — distributable formats are already scheduled as
+    // social_posts inside the run itself; this is the run's completion). HANDLED — Campaign
+    // Orchestrator notifies the pipeline's owner the run is done.
+    if (params.event === KernelEvent.OMNIPRESENCE_PIPELINE_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "campaign_orchestrator",
+          signalType:  "omnipresence_pipeline_completed",
+          message:     "An omni-presence repurpose pipeline finished running.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — a podcast episode finished generating (app/actions/podcast-generation.ts /
+    // lib/kernel/marketing.ts, entityType "podcast_episode"). HANDLED — Asset Manager
+    // (the podcast/video creator) hands it to Marketing Agent, which proposes a GATED
+    // social snippet post teasing the new episode — a rendered asset should not sit
+    // undistributed just because nobody remembered to cross-post it.
+    if (params.event === KernelEvent.PODCAST_EPISODE_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "marketing_agent",
+          signalType:  "podcast_episode_generated",
+          message:     "A podcast episode finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7 — a podcast episode failed to generate or distribute (app/actions/podcast-
+    // generation.ts / app/api/cron/distribute-podcast-episodes, entityType
+    // "podcast_episode", status already flipped to "failed"/error_message set before this
+    // fires). HANDLED — Asset Manager notifies the owning agent so a failed episode is
+    // never silently left in "failed" with nobody told.
+    if (params.event === KernelEvent.PODCAST_EPISODE_FAILED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "podcast_episode_failed",
+          message:     "A podcast episode failed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 8 — an agent completed all required onboarding TRAINING videos (app/api/onboarding/
+    // training/progress/route.ts, entityType "agent", entityId is agents.id per
+    // getAgentContext). HANDLED — Recruiting Manager (owns onboarding) sends the
+    // next-step nudge (congrats + point at certification) rather than leaving the agent
+    // to notice on their own the training tab went green.
+    if (params.event === KernelEvent.TRAINING_COURSE_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "recruiting_manager",
+          signalType:  "training_course_completed",
+          message:     "An agent completed all required onboarding training.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies/D-decies/D-undecies. No automated consumer by design (see each `what` in
+    // signal-registry.ts).
+
+    // 9 — an AI-generated script variation was created (app/actions/video-generation.ts,
+    // entityType "video_script").
+    if (params.event === KernelEvent.SCRIPT_VARIATION_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "script_variation_created",
+          message:     "A script variation was created.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — a voice clone profile was created for an agent (app/actions/video-voice.ts,
+    // entityType "voice_profile", before training starts).
+    if (params.event === KernelEvent.VOICE_CLONE_PROFILE_CREATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "voice_clone_profile_created",
+          message:     "A voice clone profile was created.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 11 — voice clone training started with a provider (app/actions/video-voice.ts,
+    // entityType "voice_training").
+    if (params.event === KernelEvent.VOICE_CLONE_TRAINING_STARTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "voice_clone_training_started",
+          message:     "Voice clone training started.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 12 — an agent set their default voice clone (app/actions/video-voice.ts, entityType
+    // "voice_profile").
+    if (params.event === KernelEvent.VOICE_CLONE_DEFAULT_SET) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "voice_clone_default_set",
+          message:     "An agent set a default voice clone.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13 — a video snippet was scheduled for publish (app/actions/video-repurposing.ts,
+    // entityType "video_snippet" — the scheduling half beside snippet_created's HANDLED
+    // creation-review notice above).
+    if (params.event === KernelEvent.SNIPPET_SCHEDULED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "campaign_orchestrator",
+          signalType:  "snippet_scheduled",
+          message:     "A video snippet was scheduled for publish.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 14 — a repurpose batch (multiple snippets/formats from one source) finished
+    // (app/actions/video-repurposing.ts, entityType-varies per caller).
+    if (params.event === KernelEvent.REPURPOSE_BATCH_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "repurpose_batch_completed",
+          message:     "A repurpose batch finished.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 15 — a delivered video's performance metrics were refreshed (app/api/video/
+    // engagement/route.ts / app/actions/video-generation.ts, entityType "video_project" —
+    // the video_high_performer_detected / video_low_performer_detected alerts (D-octies)
+    // already fire off the SAME underlying scan; this is the raw metrics-refreshed moment
+    // beside them, visibility only so Asset Manager sees every tick, not just the outliers).
+    if (params.event === KernelEvent.VIDEO_PERFORMANCE_UPDATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "asset_manager",
+          signalType:  "video_performance_updated",
+          message:     "A video's performance metrics were refreshed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 16 — a podcast episode finished distributing to its publish channels (app/api/cron/
+    // distribute-podcast-episodes, entityType "podcast_episode" — the success mirror of
+    // the HANDLED podcast_episode_failed above).
+    if (params.event === KernelEvent.PODCAST_EPISODE_DISTRIBUTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "asset_manager",
+          toManager:   "marketing_agent",
+          signalType:  "podcast_episode_distributed",
+          message:     "A podcast episode finished distributing.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 17 — a newsletter campaign was scheduled to send (app/actions/ai-newsletter.ts,
+    // entityType "newsletter_campaign" — newsletter_sent (D-decies) already covers the
+    // completed-send moment; this is the scheduling moment ahead of it).
+    if (params.event === KernelEvent.NEWSLETTER_SCHEDULED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "marketing_agent",
+          signalType:  "newsletter_scheduled",
+          message:     "A newsletter campaign was scheduled to send.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — an agent's AI daily briefing was generated and delivered (lib/intelligence/
+    // daily-briefing-generator.ts, entityType "ai_daily_briefing" — the function already
+    // notifications-inserts straight to the agent in the SAME call; this is the
+    // cross-manager visibility trail beside that direct delivery, not a second notice).
+    if (params.event === KernelEvent.DAILY_BRIEFING_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "cron_manager",
+          toManager:   "data_steward",
+          signalType:  "daily_briefing_generated",
+          message:     "An agent's daily briefing was generated.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — the onboarding AI assistant escalated a question it couldn't answer
+    // (app/api/onboarding/assistant/route.ts, entityType "agent" — a
+    // smart_assistant_suggestions row already reaches the agent directly in the same
+    // call; this is Recruiting Manager's cross-manager visibility into the gap).
+    if (params.event === KernelEvent.SETUP_ASSISTANT_ESCALATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "recruiting_manager",
+          signalType:  "setup_assistant_escalated",
+          message:     "The onboarding AI assistant escalated a question it could not answer.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — the onboarding-health sweep found an agent's onboarding has stalled
+    // (app/api/cron/onboarding-health, entityType "agent_onboarding" — a
+    // smart_assistant_suggestions row already reaches the agent directly in the same
+    // sweep; this is Recruiting Manager's cross-manager visibility into who is stalling).
+    if (params.event === KernelEvent.ONBOARDING_STALLED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "recruiting_manager",
+          signalType:  "onboarding_stalled",
+          message:     "An agent's onboarding has stalled.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
         }, svc)
       } catch { /* best-effort */ }
     }

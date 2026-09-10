@@ -183,15 +183,24 @@ export async function uploadBusinessCard(params: {
   // otherwise-UNKNOWN card — never overrides a signal the reader or the
   // notes already gave.
   let subjectUserId: string | null = null
+  // The owner's own words: "should be a userid user type" — the card carries a
+  // USER ID *and* USER TYPE. A matched `users` row is resolved with its real
+  // user_type so the classification below is decided from that (vendor-typed
+  // user → vendor, contact-typed user → contact) instead of assuming every
+  // matched platform user is a fellow agent. Carried into the routing metadata
+  // (processKernelEvent/lifecycle_events below) for the receiving manager.
+  let subjectUserType: string | null = null
   let matchedContactId: string | null = null
   let matchedVendorId: string | null = null
   const cardEmail = (extracted.email ?? "").trim().toLowerCase()
   const cardPhone = (extracted.phone ?? "").trim()
   if (cardEmail || cardPhone) {
-    const userQuery = supabase.from("users").select("id").eq("brokerage_id", brokerageId)
+    const userQuery = supabase.from("users").select("id, user_type").eq("brokerage_id", brokerageId)
     const { data: matchedUser } = await (cardEmail ? userQuery.eq("email", cardEmail) : userQuery.eq("phone", cardPhone)).maybeSingle()
     if (matchedUser) {
-      subjectUserId = (matchedUser as { id: string }).id
+      const mu = matchedUser as { id: string; user_type: string | null }
+      subjectUserId = mu.id
+      subjectUserType = mu.user_type ?? null
     } else {
       const contactQuery = supabase.from("contacts").select("id").eq("brokerage_id", brokerageId)
       const { data: matchedContact } = await (cardEmail ? contactQuery.eq("email", cardEmail) : contactQuery.eq("phone", cardPhone)).maybeSingle()
@@ -208,7 +217,17 @@ export async function uploadBusinessCard(params: {
   let cardSubjectType: CardSubjectType = detected.subjectType
   let classifiedBy: "picker" | "reader" | "notes" | "match" | "default" = detected.source
   if (cardSubjectType === "unknown") {
-    if (subjectUserId) { cardSubjectType = "agent"; classifiedBy = "match" }
+    if (subjectUserId) {
+      // Decided from the REAL users.user_type (owner ruling 2026-09-10), not an
+      // assumption that any matched platform user is a fellow agent — a
+      // vendor-seated user (users.user_type='vendor', CLAUDE.md §4) or a
+      // contact-seated portal user routes as such; every other seat (agent,
+      // broker/broker_admin/broker_owner/team_lead/admin/compliance_officer,
+      // isa/tc/support/system/superadmin) is the platform-staff/professional
+      // bucket this tier has always meant by 'agent'.
+      cardSubjectType = subjectUserType === "vendor" ? "vendor" : subjectUserType === "contact" ? "contact" : "agent"
+      classifiedBy = "match"
+    }
     else if (matchedVendorId) { cardSubjectType = "vendor"; classifiedBy = "match" }
     else if (matchedContactId) { cardSubjectType = "contact"; classifiedBy = "match" }
     else if (legacyOverride) { cardSubjectType = legacyOverride; classifiedBy = "picker" }
@@ -238,9 +257,18 @@ export async function uploadBusinessCard(params: {
     }).select("id").single()
     if (vendorError || !vendor) throw new Error(`Vendor create failed: ${vendorError?.message ?? "no data"}`)
 
-    await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted, routed_to: "vendor", vendor_id: vendor.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_notes: params.notes ?? null, classified_by: classifiedBy },
+    // Classification rides the typed m617 columns (card_subject_type/
+    // subject_user_id/subject_notes/classified_by) now that the migration is
+    // APPLIED live — extracted_data keeps only the raw card fields plus the
+    // routed_to/vendor_id keys no typed column exists for yet.
+    const { error: scanUpdateVendorError } = await supabase.from("business_card_scans").update({
+      extracted_data: { ...extracted, routed_to: "vendor", vendor_id: vendor.id },
+      card_subject_type: cardSubjectType,
+      subject_user_id: subjectUserId,
+      subject_notes: params.notes ?? null,
+      classified_by: classifiedBy,
     }).eq("id", scan!.id)
+    if (scanUpdateVendorError) console.error("[businessCardUpload] scan classification update (vendor) failed:", scanUpdateVendorError)
 
     await supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
@@ -255,7 +283,10 @@ export async function uploadBusinessCard(params: {
       brokerageId,
       entityType: "vendor",
       entityId: vendor.id,
-      metadata: { scanId: scan!.id, routed_to: "vendor", category, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, classified_by: classifiedBy },
+      // subject_user_type rides the routing metadata (owner ruling 2026-09-10:
+      // "should be a userid user type") — event-reactor.ts's BUSINESS_CARD_APPROVED
+      // block forwards this whole object as the manager signal payload.
+      metadata: { scanId: scan!.id, routed_to: "vendor", category, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
     })
 
     return { scanId: scan!.id, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor", cardSubjectType, subjectUserId, viable: true }
@@ -284,9 +315,14 @@ export async function uploadBusinessCard(params: {
     }).select("id").single()
     if (recruitError || !recruit) throw new Error(`Recruit create failed: ${recruitError?.message ?? "no data"}`)
 
-    await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted, routed_to: "recruit", recruit_id: recruit.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_notes: params.notes ?? null, classified_by: classifiedBy },
+    const { error: scanUpdateAgentError } = await supabase.from("business_card_scans").update({
+      extracted_data: { ...extracted, routed_to: "recruit", recruit_id: recruit.id },
+      card_subject_type: cardSubjectType,
+      subject_user_id: subjectUserId,
+      subject_notes: params.notes ?? null,
+      classified_by: classifiedBy,
     }).eq("id", scan!.id)
+    if (scanUpdateAgentError) console.error("[businessCardUpload] scan classification update (agent) failed:", scanUpdateAgentError)
 
     await supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
@@ -301,7 +337,7 @@ export async function uploadBusinessCard(params: {
       brokerageId,
       entityType: "recruit",
       entityId: recruit.id,
-      metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, classified_by: classifiedBy },
+      metadata: { scanId: scan!.id, routed_to: "recruit", card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
     })
 
     return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: recruit.id, target: "recruit", cardSubjectType, subjectUserId, viable: true }
@@ -311,9 +347,14 @@ export async function uploadBusinessCard(params: {
     // NEVER auto-create a contact for sphere/unknown — the owner ruling's
     // whole point. The card stays a business_card_scans row; the warm-intro
     // (sphere) / classify-me (unknown) handler reads it directly off the scan.
-    await supabase.from("business_card_scans").update({
-      extracted_data: { ...extracted, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_notes: params.notes ?? null, classified_by: classifiedBy },
+    const { error: scanUpdateSphereError } = await supabase.from("business_card_scans").update({
+      extracted_data: { ...extracted },
+      card_subject_type: cardSubjectType,
+      subject_user_id: subjectUserId,
+      subject_notes: params.notes ?? null,
+      classified_by: classifiedBy,
     }).eq("id", scan!.id)
+    if (scanUpdateSphereError) console.error("[businessCardUpload] scan classification update (sphere/unknown) failed:", scanUpdateSphereError)
 
     await supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId,
@@ -328,7 +369,7 @@ export async function uploadBusinessCard(params: {
       brokerageId,
       entityType: "business_card",
       entityId: scan!.id,
-      metadata: { scanId: scan!.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, classified_by: classifiedBy },
+      metadata: { scanId: scan!.id, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
     })
 
     return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
@@ -364,13 +405,18 @@ export async function uploadBusinessCard(params: {
   })
 
   // 7) Link scan to contact
-  await supabase
+  const { error: scanUpdateContactError } = await supabase
     .from("business_card_scans")
     .update({
       contact_id: contactId,
-      extracted_data: { ...extracted, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_notes: params.notes ?? null, classified_by: classifiedBy },
+      extracted_data: { ...extracted },
+      card_subject_type: cardSubjectType,
+      subject_user_id: subjectUserId,
+      subject_notes: params.notes ?? null,
+      classified_by: classifiedBy,
     })
     .eq("id", scan!.id)
+  if (scanUpdateContactError) console.error("[businessCardUpload] scan classification update (contact) failed:", scanUpdateContactError)
 
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
@@ -385,7 +431,7 @@ export async function uploadBusinessCard(params: {
     brokerageId: brokerageId,
     entityType: "contact",
     entityId: contactId,
-    metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, classified_by: classifiedBy },
+    metadata: { scanId: scan!.id, autoApproved: true, card_subject_type: cardSubjectType, subject_user_id: subjectUserId, subject_user_type: subjectUserType, classified_by: classifiedBy },
   })
 
   return { scanId: scan!.id, contactId, vendorId: null, recruitId: null, target: "contact", cardSubjectType, subjectUserId, viable: true }
@@ -423,10 +469,16 @@ export async function getRecentScans(params: {
   reviewed_by: string | null
   /** When the viability gate ran (not a human review timestamp). */
   reviewed_at: string | null
-  /** Read off extracted_data.card_subject_type (m617 not yet applied — see
-   *  lib/contacts/card-classifier.ts). Null for scans made before wave 48. */
+  /** Read off the typed m617 column business_card_scans.card_subject_type
+   *  (lib/contacts/card-classifier.ts CardSubjectType — one vocabulary, §6,
+   *  asserted against scripts/check-vocabularies.ts's CHECK by
+   *  scripts/business-card-classification-simulator.ts). Null for scans made
+   *  before wave 48 / before the migration backfill. */
   cardSubjectType: CardSubjectType | null
   subjectUserId: string | null
+  /** business_card_scans.subject_notes — the scanning agent's free-text note,
+   *  rendered on the review surface beside class + classifiedBy. */
+  subjectNotes: string | null
   classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
 }[]> {
   const auth = await requireCaller()
@@ -437,7 +489,7 @@ export async function getRecentScans(params: {
   // Scope to caller's session — only their own scans within their brokerage
   let query = supabase
     .from("business_card_scans")
-    .select("id, created_at, extracted_data, confidence_score, review_status, contact_id, raw_image_url, reviewed_by, reviewed_at")
+    .select("id, created_at, extracted_data, confidence_score, review_status, contact_id, raw_image_url, reviewed_by, reviewed_at, card_subject_type, subject_user_id, subject_notes, classified_by")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(params.limit ?? 20)
@@ -465,9 +517,10 @@ export async function getRecentScans(params: {
       raw_image_url: s.raw_image_url as string,
       reviewed_by: (s.reviewed_by as string | null) ?? null,
       reviewed_at: (s.reviewed_at as string | null) ?? null,
-      cardSubjectType: (ed.card_subject_type as CardSubjectType | undefined) ?? null,
-      subjectUserId: (ed.subject_user_id as string | undefined) ?? null,
-      classifiedBy: (ed.classified_by as "picker" | "reader" | "notes" | "match" | "default" | undefined) ?? null,
+      cardSubjectType: (s.card_subject_type as CardSubjectType | null | undefined) ?? null,
+      subjectUserId: (s.subject_user_id as string | null | undefined) ?? null,
+      subjectNotes: (s.subject_notes as string | null | undefined) ?? null,
+      classifiedBy: (s.classified_by as "picker" | "reader" | "notes" | "match" | "default" | null | undefined) ?? null,
     }
   })
 }

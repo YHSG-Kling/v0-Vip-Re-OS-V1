@@ -381,7 +381,11 @@ export default async function VendorsPage({
       {/* OS Intelligence Panels - First Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <VendorPerformanceRadar brokerageId={profile.brokerage_id} />
-        <VendorSlaPanel brokerageId={profile.brokerage_id} />
+        {/* userRole BUILT (hidden-wire census category c, 2026-09-10 wave 49): the panel's
+            own doc comment says it gates per-vendor SLA detail to broker/team_lead/admin,
+            but with no role ever passed its `!userRole` fallback showed that detail to
+            EVERY caller regardless of actual role. */}
+        <VendorSlaPanel brokerageId={profile.brokerage_id} userRole={profile.user_type ?? undefined} />
         <AiVendorInsightsPanel brokerageId={profile.brokerage_id} />
       </div>
 

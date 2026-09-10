@@ -160,7 +160,20 @@ export enum KernelEvent {
   // ── Assignment ───────────────────────────────────────────────────────────
   LEAD_ASSIGNED                  = 'lead_assigned',
   LEAD_ASSIGNMENT_FAILED         = 'lead_assignment_failed',
-  LEAD_CLAIMED                   = 'lead_claimed',
+  // TOMBSTONE (owner ruling, wave 49, 2026-09-10, verbatim: "there should be no
+  // kernel event for agent claiming a lead — agents can't see leads until the
+  // lead gets converted to a contact and the agent is assigned that contact").
+  // LEAD_CLAIMED's only emitter (lib/lead-assignment/assignment-engine.ts
+  // claimLead, reached only from an agent UI action —
+  // app/actions/lead-assignment/assign-lead.ts acknowledgeLeadHandoffAction —
+  // via app/dashboard/agent/components/handoff/new-contact-handoff-panel.tsx) was
+  // exactly that: no system/AI-ISA emitter existed for it, so there was no
+  // legitimate emitter left to keep. Survivor for the underlying acknowledgement
+  // capability: `assignment_log.claimed` / `claimed_at`, still written directly by
+  // claimLead — the three readers of that flag were already reading the column,
+  // never this event. Its D-undecies reader (lib/kernel/event-reactor.ts), its
+  // SIGNAL_REGISTRY entry, and its HANDOFF_ANNOUNCEMENTS declaration
+  // (scripts/signal-integrity-simulator.ts) are retired alongside it.
 
   // ── Conversion ───────────────────────────────────────────────────────────
   LEAD_CONVERTED_TO_CONTACT      = 'lead_converted_to_contact',

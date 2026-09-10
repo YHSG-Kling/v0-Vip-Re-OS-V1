@@ -26,6 +26,7 @@ import { Audio } from "@remotion/media"
 import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { evenShotSlots } from "../lib/video/assembly-timeline"
 
 export interface NewsletterDigestVideoProps {
   subject:        string
@@ -132,9 +133,25 @@ const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand })
 
 const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVideoProps["brand"] }> = ({ titles, brand }) => {
   const frame = useCurrentFrame()
-  const slideFrames = 70 // ~2.3s per title
-  const idx = Math.min(titles.length - 1, Math.floor(frame / slideFrames))
-  const localFrame = frame - idx * slideFrames
+  // The SECTIONS window is divided across however many titles actually
+  // arrived — the same idiom remotion/JustListedReel.tsx's PropertyImages
+  // already uses (lib/video/assembly-timeline.ts evenShotSlots, §6, wave
+  // 48's finding replicated here). This used to be a fixed 70 frames
+  // (~2.3s/title), sized for exactly 3 titles (`sectionTitles.slice(0, 3)`
+  // above): with fewer than 3, `idx` clamped at `titles.length - 1` while
+  // `localFrame` kept climbing past `slideFrames`, so the interpolate's
+  // `extrapolateRight: "clamp"` held opacity at its LAST breakpoint value —
+  // 0 — for the remainder of the 210-frame window. A 1- or 2-title digest
+  // (the common case) faded the last title out by frame 70 and then showed
+  // BLANK for the rest of SectionHighlights while the voiceover kept
+  // narrating over it.
+  const windowFrames = FRAMES.SECTIONS_END - FRAMES.SECTIONS_START
+  const slots = evenShotSlots(windowFrames, Math.max(1, titles.length))
+  const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
+  const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)
+  const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
+  const slideFrames = activeSlot.durationInFrames
+  const localFrame = frame - activeSlot.from
   const opacity = interpolate(localFrame, [0, 10, slideFrames - 10, slideFrames], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const t = titles[idx] ?? ""
   return (

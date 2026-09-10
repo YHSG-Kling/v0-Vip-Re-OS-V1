@@ -23,6 +23,7 @@
 import React from "react"
 import { AbsoluteFill, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
+import { EqualHousingMark } from "./components/EqualHousingMark"
 
 export interface NewsletterDigestThumbProps {
   agentName:     string
@@ -38,12 +39,18 @@ export interface NewsletterDigestThumbProps {
     accentColor:   string
     logoUrl?:      string
     brokerageName: string
+    /** EHO mark under the agent line. Defaults true — matches
+     *  VideoCoverThumb's own default (remotion/VideoCoverThumb.tsx).
+     *  Wave 48/49 finding: this thumbnail rendered NO mark at all before this
+     *  fix, unlike every other thumbnail/video composition in the library. */
+    showEhoMark?:  boolean
   }
 }
 
 export const NewsletterDigestThumb: React.FC<NewsletterDigestThumbProps> = ({
   agentName, agentPhotoUrl, personaHook, subject, brand,
 }) => {
+  const showEho = brand.showEhoMark ?? true
   // The photo pane is a square the full height of the card. It used to be
   // `width: 630, height: 630` — the registered height typed out by hand, so a
   // re-registration would have overflowed or letterboxed it in silence
@@ -93,12 +100,19 @@ export const NewsletterDigestThumb: React.FC<NewsletterDigestThumbProps> = ({
               {subject}
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{
-              width: 14, height: 14, borderRadius: 7,
-              backgroundColor: brand.accentColor,
-            }} />
-            <div style={{ fontSize: 22, fontWeight: 600 }}>{agentName}</div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+              <div style={{
+                width: 14, height: 14, borderRadius: 7,
+                backgroundColor: brand.accentColor,
+              }} />
+              <div style={{ fontSize: 22, fontWeight: 600 }}>{agentName}</div>
+            </div>
+            {showEho && (
+              <div style={{ fontSize: 14, opacity: 0.55, marginTop: 10, marginLeft: 30 }}>
+                <EqualHousingMark show variant="inline" />
+              </div>
+            )}
           </div>
         </div>
       </div>

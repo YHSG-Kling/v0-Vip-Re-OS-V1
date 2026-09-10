@@ -9,8 +9,9 @@
 // added and contact welcome package sent."
 //
 // This is the ONLY caller of `acknowledgeLeadHandoffAction`, which flips
-// `assignment_log.claimed` false → true and emits LEAD_CLAIMED. Three live
-// surfaces read that flag as "still awaiting first touch"
+// `assignment_log.claimed` false → true (no kernel event — owner ruling, wave 49:
+// "no kernel event for agent claiming a lead"; see the tombstone on
+// KernelEvent.LEAD_CLAIMED). Three live surfaces read that flag as "still awaiting first touch"
 // (daily-briefing-generator, isa-overnight `handoffs_unclaimed`,
 // user-type-briefs/team-lead); until this panel existed the flag had no writer
 // and those counters could only go up.

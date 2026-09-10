@@ -308,6 +308,37 @@ async function proposeIsaAppointmentPrep(
   return res.ok ? `proposed appointment prep follow-up (gate message ${res.id})` : null
 }
 
+/**
+ * Shared body for listing_concierge:ai_isa_handoff_to_agent / shopping_agent:
+ * ai_isa_handoff_to_agent (wave 49) — AI ISA handed a qualified contact off to a human
+ * agent from the handoff queue (app/actions/ai-isa/claim-handoff.ts), routed by the
+ * contact's side (the event-reactor already resolved contact_type before publishing —
+ * this handler only proposes the deliverable, it does not re-decide the route). Owner
+ * ruling: the receiving manager proposes the FIRST agent-side touch through the SAME
+ * gated proposeClientMessage path every other agent-facing first-touch in this file uses
+ * (mirrors proposeIsaAppointmentPrep above).
+ */
+async function proposeAgentHandoffFirstTouch(
+  signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }, agentKind: "shopping_agent" | "listing_concierge",
+): Promise<string | null> {
+  const contactId = signal.contactId ?? (signal.entityType === "contact" ? signal.entityId : null)
+  if (!contactId) return null
+  const { data: contact } = await ctx.supabase.from("contacts").select("first_name")
+    .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+  const firstName = (contact as { first_name?: string | null } | null)?.first_name || "there"
+  const audience: "seller" | "buyer" = agentKind === "listing_concierge" ? "seller" : "buyer"
+  const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+  const res = await proposeClientMessage({
+    brokerageId: ctx.brokerageId, agentKind, entityType: "contact",
+    entityId: contactId, recipientContactId: contactId, audience,
+    subject: `Great to connect, ${firstName}!`,
+    body: `Hi ${firstName} — I'm taking it from here and looking forward to helping you with your next step. I'll be in touch shortly.`,
+    rationale: `AI ISA handed off a qualified ${audience} contact from the handoff queue — the agent-side first touch.`,
+    channel: "portal",
+  }, ctx.supabase)
+  return res.ok ? `proposed the agent-side first touch to the newly-handed-off contact (gate message ${res.id})` : null
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
@@ -992,35 +1023,16 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (r.ok) return `commissioned the client testimonial reel (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `testimonial reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
-  // Shopping Agent → Asset Manager: a buyer LEAD just became a CONTACT. The very first touch is a
-  // personal WELCOME avatar reel ("great to have you — here's how I'll help"), fronted by the
-  // ASSIGNED agent's avatar/voice. The Asset Manager (video director) commissions it; on
-  // completion the existing video-coordination routes contact_outreach_ready → the Campaign
-  // Orchestrator's gated 1:1 invite email embedding the reel + the portal CTA. So a newly
-  // converted buyer is NEVER dropped between conversion and first contact. Idempotent per contact.
-  "asset_manager:buyer_welcome_reel_handoff": async (signal, ctx) => {
-    const contactId = signal.entityId ?? signal.contactId
-    if (!contactId) return null
-    const { data: contact } = await ctx.supabase.from("contacts")
-      .select("id, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    if (!contact) return null
-    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
-    const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
-    if (!agentUserId) return "no assigned agent to front the welcome reel — deferred"
-    const { contactReelPersona, buildContactWelcomeSituation } = await import("@/lib/ai-isa/contact-reel-situation")
-    const { commissionVideo } = await import("@/lib/video/video-director")
-    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const persona = contactReelPersona((contact as { contact_type: string | null }).contact_type)
-    const situation = buildContactWelcomeSituation({ contactId, persona })
-    const r = await commissionVideo(
-      situation,
-      { brokerageId: ctx.brokerageId, agentUserId, contactId, persona: { audience: persona }, copyGenerator: realCopyGenerator },
-      ctx.supabase,
-    )
-    if (r.status === "already_staged") return `welcome reel already commissioned for this contact (${r.compositionId}, deduped)`
-    if (r.ok) return `commissioned the buyer WELCOME reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the new contact`
-    return r.status === "blocked" ? `welcome reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
-  },
+  // TOMBSTONE (wave 49 pt.2, 2026-09-10): "asset_manager:buyer_welcome_reel_handoff" removed. It
+  // was the buyer intent-conversion lane's OWN welcome — a second video-commissioning pipeline
+  // (Director "lead_intro" via commissionVideo/ai_video_projects) racing the ONE avatar spine
+  // (lib/video/intro-video-reactor.ts → agent_intro_videos) the other three lead→contact converters
+  // already share, feeding a GATED proposeClientMessage email that never granted real portal
+  // credentials and required a human approval the assigned agent structurally cannot give for their
+  // own welcome. Its only publisher, lib/ai-isa/convert-buyer-lead-on-intent.ts, now calls the
+  // survivor directly: lib/contact-promotion/conversion-welcome.ts:342 `deliverConversionWelcome`
+  // (portal grant first, then the shared avatar spine, then the persona-written email through the
+  // governed dispatchEmail). Registry entry retired alongside at lib/kernel/signal-registry.ts.
   // Listing Concierge → Asset Manager: an un-converted SELLER (a homeowner who asked "what's my home
   // worth?" / signaled selling and has a seller-mode portal, but hasn't booked a listing consult). The
   // SELLER MIRROR of the buyer welcome reel: commission a personal, value-forward avatar reel
@@ -2251,6 +2263,69 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   "shopping_agent:isa_appointment_scheduled": (signal, ctx) => proposeIsaAppointmentPrep(signal, ctx, "shopping_agent"),
   "listing_concierge:isa_appointment_scheduled": (signal, ctx) => proposeIsaAppointmentPrep(signal, ctx, "listing_concierge"),
 
+  // AI ISA → Listing Concierge / Shopping Agent: AI ISA handed a qualified contact off to a
+  // human agent from the handoff queue, routed by contact side (wave 49 owner ruling — see
+  // event-reactor.ts #23). Both consumers propose the same gated agent-side first touch.
+  "shopping_agent:ai_isa_handoff_to_agent": (signal, ctx) => proposeAgentHandoffFirstTouch(signal, ctx, "shopping_agent"),
+  "listing_concierge:ai_isa_handoff_to_agent": (signal, ctx) => proposeAgentHandoffFirstTouch(signal, ctx, "listing_concierge"),
+  // AI ISA → AI ISA: the contact's buyer/seller type could not be resolved at publish time
+  // (event-reactor.ts #23) — AI ISA keeps the handoff and asks rather than guess which
+  // agent-side manager should take the first touch (wave 49 owner ruling, verbatim: "unknown
+  // type → ai_isa keeps it and asks").
+  "ai_isa:ai_isa_handoff_to_agent": async (signal, ctx) => {
+    const contactId = signal.contactId ?? (signal.entityType === "contact" ? signal.entityId : null)
+    if (!contactId) return null
+    const { data: existing } = await ctx.supabase.from("notifications").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("type", "ai_isa_handoff_needs_classification")
+      .eq("entity_id", contactId).eq("is_read", false).limit(1).maybeSingle()
+    if (existing) return "AI ISA is already holding this handoff pending contact-type classification (deduped)"
+    const { data: isaSeats } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("user_type", "isa").limit(25)
+    const ids = ((isaSeats ?? []) as { id: string }[]).map((s) => s.id)
+    if (ids.length === 0) return "handoff has no resolvable buyer/seller type and no ISA seat to hold it"
+    const rows = ids.map((id) => ({
+      user_id: id, brokerage_id: ctx.brokerageId, type: "ai_isa_handoff_needs_classification",
+      title: "A handed-off contact needs a buyer/seller type",
+      body: "AI ISA handed a qualified contact to an agent, but the contact has no buyer/seller type set — set contact_type to route the agent-side first touch.",
+      entity_type: "contact", entity_id: contactId, priority: "medium", is_read: false,
+    }))
+    const { error } = await ctx.supabase.from("notifications").insert(rows)
+    return error ? null : `AI ISA held the handoff and asked ${ids.length} ISA seat(s) to classify the contact`
+  },
+
+  // AI ISA (the escalating manager) → Recruiting Manager: an AI concierge session escalated
+  // to a human (lib/intelligence/multi-agent-router.ts escalateToHuman). Owner ruling (wave
+  // 49): Recruiting Manager notifies the escalating agent's TEAM LEAD — teams.team_lead_id,
+  // resolved through resolveUserTeam (lib/kernel/resolve-user-team.ts, "THE ONE ANSWER to
+  // which team is this person on", per lib/auth roles). multi-agent-router.ts already wrote
+  // its own smart_assistant_suggestions row addressed to the escalating agent themselves;
+  // this is the separate team-lead-facing notification that row does not reach.
+  "recruiting_manager:agent_escalated_to_human": async (signal, ctx) => {
+    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    if (!agentId) return "an AI concierge session escalated, but no agent could be resolved to find a team lead"
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id")
+      .eq("id", agentId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return "the escalating agent's user account could not be resolved"
+    const { resolveUserTeam } = await import("@/lib/kernel/resolve-user-team")
+    const team = await resolveUserTeam(ctx.supabase, userId, agentId)
+    if (!team.teamId) return "the escalating agent has no resolvable team — no team lead to notify"
+    const { data: teamRow } = await ctx.supabase.from("teams").select("team_lead_id")
+      .eq("id", team.teamId).maybeSingle()
+    const leadUserId = (teamRow as { team_lead_id?: string | null } | null)?.team_lead_id ?? null
+    if (!leadUserId) return "the escalating agent's team has no team lead on record"
+    const urgency = (signal.payload?.urgency as string | undefined) ?? null
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: leadUserId, brokerage_id: ctx.brokerageId,
+      type: "agent_escalated_to_human",
+      title: "An AI concierge session escalated to a human",
+      body: `One of your agents' AI concierge sessions needed a human${urgency ? ` (${urgency} urgency)` : ""} — check in with them.`,
+      entity_type: signal.entityType ?? "session", entity_id: signal.entityId ?? null,
+      priority: urgency === "critical" || urgency === "high" ? "high" : "medium", is_read: false,
+    })
+    return error ? null : "notified the escalating agent's team lead"
+  },
+
   // Data Steward → AI ISA: a client portal message went unanswered past the reply SLA.
   // payload.agent_id is an AGENTS id (the message's own agent_id) resolved to the user
   // here so the notification lands on a real inbox, not a dead agents-table key.
@@ -2549,33 +2624,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     return error ? null : `logged TCPA consent capture to ${ids.length} compliance officer(s)`
   },
 
-  // AI ISA → Sphere of Influence: a lead converted to a real contact (handleLeadAssigned,
-  // same call as lead_assigned below) — propose the warm welcome message, the
-  // lifetime-relationship owner's first touch on every new client (mirrors deal_closed).
-  "sphere_of_influence:lead_converted_to_contact": async (signal, ctx) => {
-    const leadId = signal.entityId
-    if (!leadId) return null
-    const { data: lead } = await ctx.supabase.from("leads").select("contact_id")
-      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    const contactId = (lead as { contact_id?: string | null } | null)?.contact_id ?? null
-    if (!contactId) return null
-    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
-      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    if (!contact) return null
-    const c = contact as { first_name: string | null; contact_type: string | null }
-    const firstName = c.first_name || "there"
-    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
-    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
-    const res = await proposeClientMessage({
-      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
-      entityId: contactId, recipientContactId: contactId, audience,
-      subject: `Welcome, ${firstName}!`,
-      body: `Hi ${firstName} — welcome! I'm here to help with anything real-estate related, now or down the road.`,
-      rationale: "A lead just converted to a contact — the lifetime relationship's first welcome touch.",
-      channel: "portal",
-    }, ctx.supabase)
-    return res.ok ? `proposed a welcome message to the new contact (gate message ${res.id})` : null
-  },
+  // TOMBSTONE (wave 49, owner ruling 2026-09-10: "the welcome note for when lead becomes a
+  // contact should come from either the listing or shopping manager depending on the contact
+  // type and their portal credentials, video and welcome goes out, not generic message").
+  // "sphere_of_influence:lead_converted_to_contact" stood here — a generic, hardcoded, ALWAYS-
+  // sphere_of_influence "Hi ${firstName} — welcome!" proposeClientMessage, published by the
+  // event-reactor.ts D-undecies case 3 this handler paired with (both removed together). It ran
+  // a FEW MILLISECONDS AFTER the correct welcome had already gone out for the same contact,
+  // from the same call: lib/kernel/lead-acquisition-handlers.ts's handleLeadAssigned calls
+  // lib/contact-promotion/conversion-welcome.ts `deliverConversionWelcome` synchronously
+  // (line 680-698) before it ever dispatches KernelEvent.LEAD_CONVERTED_TO_CONTACT (line
+  // 598-603) — the event this handler's signal was published from. SURVIVOR:
+  // lib/contact-promotion/conversion-welcome.ts:342 `deliverConversionWelcome`, which routes by
+  // CONTACT TYPE through lib/kernel/client-welcome.ts `resolveWelcomeManagers` (seller →
+  // listing_concierge, buyer → shopping_agent, both → both — never sphere_of_influence, which
+  // the owner never named for this welcome), grants the portal invite FIRST, commissions the
+  // assigned agent's personal avatar video, and sends a SITUATIONAL, generatePersonaCopy-
+  // authored message through the governed, autonomy-gated `dispatchEmail` — not a hardcoded
+  // literal. See lib/kernel/event-reactor.ts's matching tombstone at case "3" for the full
+  // reachability proof (exactly one call site dispatches this event, and it already called the
+  // survivor).
 
   // Data Steward → Deal Coordinator: a represented buyer went under contract
   // (offer-bridge.ts) — open a gated closing-prep task for the deal's agent.
@@ -2702,24 +2770,27 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     return res.ok ? `proposed a welcome message to the referred contact (gate message ${res.id})` : null
   },
 
-  // Data Steward → AI ISA: a lead was auto-assigned to an agent (handleLeadAssigned) —
-  // notify the resolved agent directly so the assignment reaches them beyond the queue.
+  // Data Steward → AI ISA: a lead was auto-assigned (and, same call, converted) to a
+  // contact (handleLeadAssigned). Owner ruling (wave 49, 2026-09-10, verbatim): "if a lead
+  // gets assigned it is the ai isa to nurture which is a system agent". This USED TO insert
+  // a "A new lead was assigned to you" notification straight to the agent — wrong twice
+  // over: it told an agent about a LEAD (agents never see leads, only contacts — §5), and
+  // it duplicated the SEPARATE agent-facing heads-up that already exists
+  // (acknowledgeLeadHandoffAction / new-contact-handoff-panel.tsx, driven off
+  // assignment_log.claimed, which fires only once the agent is actually looking at the
+  // CONTACT the lead became). AI ISA's nurture ownership is the existing speed-to-lead
+  // cron (lib/ai-isa/speed-to-lead.ts) — its grace-window decision
+  // (lib/ai-isa/speed-to-lead-policy.ts firstTouchDecision) is NOT re-implemented here
+  // (§6, one vocabulary per function: a second "should ISA touch this contact now" would
+  // drift from the cron's). This handler is the visibility record of that ownership.
   "ai_isa:lead_assigned": async (signal, ctx) => {
     const leadId = signal.entityId
     if (!leadId) return null
-    const { data: lead } = await ctx.supabase.from("leads").select("agent_id")
+    const { data: lead } = await ctx.supabase.from("leads").select("contact_id")
       .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
-    const agentId = (lead as { agent_id?: string | null } | null)?.agent_id ?? null
-    if (!agentId) return null
-    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
-    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
-    if (!userId) return "lead assigned but the agent's user account could not be resolved"
-    const { error } = await ctx.supabase.from("notifications").insert({
-      user_id: userId, brokerage_id: ctx.brokerageId, type: "lead_assigned",
-      title: "A new lead was assigned to you", body: "Reach out soon — first response speed matters.",
-      entity_type: "lead", entity_id: leadId, priority: "medium", is_read: false,
-    })
-    return error ? null : "notified the assigned agent of the new lead"
+    const contactId = (lead as { contact_id?: string | null } | null)?.contact_id ?? null
+    if (!contactId) return "lead assigned but no contact could be resolved yet — the speed-to-lead cron sweep picks up first touch once one exists"
+    return `AI ISA now owns first-touch nurture for newly-assigned contact ${contactId} (speed-to-lead cron, after the agent's grace window) — the agent is told separately once they acknowledge the handoff`
   },
 
   // Data Steward → Deal Coordinator: a vendor was assigned to a transaction
@@ -2743,6 +2814,175 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       assignee_type: "agent", source: "vendor_assigned_to_transaction", status: "pending",
     })
     return error ? null : "opened a gated vendor confirm-scope task for the deal's agent"
+  },
+
+  // ── Wave 49 (2026-09-10, lane HC): readers for EIGHT of the TWENTY emitted-only kernel
+  // ── events built in lib/kernel/event-reactor.ts D-duodecies (video/podcast/social/
+  // ── onboarding lanes). Same shape as D-octies through D-undecies — a real consumer here,
+  // ── never an outbound send, never spend.
+
+  // Data Steward → Asset Manager: an AI video script finished generating — notify the
+  // author it's ready for review before it becomes a video (app/api/video-scripts/route.ts,
+  // app/actions/video-generation.ts).
+  "asset_manager:script_generated": async (signal, ctx) => {
+    const scriptId = signal.entityId
+    if (!scriptId) return null
+    const { data: script } = await ctx.supabase.from("video_scripts_library")
+      .select("created_by, title").eq("id", scriptId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const s = script as { created_by?: string | null; title?: string | null } | null
+    if (!s?.created_by) return null
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: s.created_by, brokerage_id: ctx.brokerageId, type: "script_generated",
+      title: "Your video script is ready for review",
+      body: `"${s.title ?? "Your script"}" finished generating — review it to generate the video.`,
+      entity_type: "video_script", entity_id: scriptId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the script's author it's ready for review"
+  },
+
+  // Data Steward → Asset Manager: a cloned voice passed quality and is ready — notify the
+  // owning agent (app/actions/video-voice.ts, entityType "voice_profile").
+  "asset_manager:voice_clone_ready": async (signal, ctx) => {
+    const profileId = signal.entityId
+    if (!profileId) return null
+    const { data: profile } = await ctx.supabase.from("agent_voice_profiles")
+      .select("agent_id, profile_name").eq("id", profileId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const p = profile as { agent_id?: string | null; profile_name?: string | null } | null
+    if (!p?.agent_id) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, p.agent_id)
+    if (!userId) return "voice clone ready but the owning agent's user account could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "voice_clone_ready",
+      title: "Your voice clone is ready",
+      body: `"${p.profile_name ?? "Your cloned voice"}" passed quality and is ready to use in video generation.`,
+      entity_type: "voice_profile", entity_id: profileId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the owning agent their voice clone is ready"
+  },
+
+  // Data Steward → Campaign Orchestrator: a video snippet was cut and is pending review —
+  // notify the creator (app/actions/video-repurposing.ts createSnippet).
+  "campaign_orchestrator:snippet_created": async (signal, ctx) => {
+    const snippetId = signal.entityId
+    if (!snippetId) return null
+    const { data: snippet } = await ctx.supabase.from("video_snippets")
+      .select("created_by, snippet_title, platform_target").eq("id", snippetId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const sn = snippet as { created_by?: string | null; snippet_title?: string | null; platform_target?: string | null } | null
+    if (!sn?.created_by) return null
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: sn.created_by, brokerage_id: ctx.brokerageId, type: "snippet_created",
+      title: "Your video snippet is pending review",
+      body: `"${sn.snippet_title ?? "Your snippet"}" is ready for review before it goes out on ${sn.platform_target ?? "its target platform"}.`,
+      entity_type: "video_snippet", entity_id: snippetId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the creator their snippet is pending review"
+  },
+
+  // Data Steward → Campaign Orchestrator: a piece of content finished being repurposed —
+  // notify the creator (app/actions/video-repurposing.ts logRepurposedContent; the manual
+  // repurposer, distinct from the Omni-Presence pipeline's own internal log).
+  "campaign_orchestrator:content_repurposed": async (signal, ctx) => {
+    const logId = signal.entityId
+    if (!logId) return null
+    const { data: log } = await ctx.supabase.from("repurposed_content_log")
+      .select("created_by, output_type, platform_target, approval_status").eq("id", logId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const l = log as { created_by?: string | null; output_type?: string | null; platform_target?: string | null; approval_status?: string | null } | null
+    if (!l?.created_by) return null
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: l.created_by, brokerage_id: ctx.brokerageId, type: "content_repurposed",
+      title: "Repurposed content is ready",
+      body: `Your content was repurposed into a ${l.output_type ?? "new format"}${l.platform_target ? ` for ${l.platform_target}` : ""} — ${l.approval_status === "pending_review" ? "it's waiting for your review." : "check it out."}`,
+      entity_type: "repurposed_content", entity_id: logId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the creator their repurposed content is ready"
+  },
+
+  // Data Steward → Campaign Orchestrator: an Omni-Presence repurpose pipeline finished a
+  // run — notify the pipeline's owner (lib/repurpose/actions.ts; distributable formats are
+  // already scheduled as social_posts inside the run itself).
+  "campaign_orchestrator:omnipresence_pipeline_completed": async (signal, ctx) => {
+    const pipelineId = signal.entityId
+    if (!pipelineId) return null
+    const { data: pipeline } = await ctx.supabase.from("repurpose_pipelines")
+      .select("created_by, pipeline_name").eq("id", pipelineId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const p = pipeline as { created_by?: string | null; pipeline_name?: string | null } | null
+    if (!p?.created_by) return null
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: p.created_by, brokerage_id: ctx.brokerageId, type: "omnipresence_pipeline_completed",
+      title: "Your repurpose pipeline finished running",
+      body: `"${p.pipeline_name ?? "Your pipeline"}" finished — review what went out and what's waiting on you.`,
+      entity_type: "repurpose_pipeline", entity_id: pipelineId, priority: "low", is_read: false,
+    })
+    return error ? null : "notified the pipeline's owner the run finished"
+  },
+
+  // Asset Manager → Marketing Agent: a podcast episode finished generating — propose a
+  // GATED social snippet post teasing it (app/actions/podcast-generation.ts,
+  // lib/kernel/marketing.ts). Mirrors campaign_orchestrator:onboarding_completed's gated
+  // social_posts draft shape; deduped per episode via the post_brief prefix.
+  "marketing_agent:podcast_episode_generated": async (signal, ctx) => {
+    const episodeId = signal.entityId
+    if (!episodeId) return null
+    const { data: episode } = await ctx.supabase.from("podcast_episodes")
+      .select("agent_id, title, description").eq("id", episodeId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const ep = episode as { agent_id?: string | null; title?: string | null; description?: string | null } | null
+    if (!ep?.agent_id) return null
+
+    const brief = `PODCAST SNIPPET — episode:${episodeId}`
+    const { data: prior } = await ctx.supabase.from("social_posts").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("agent_id", ep.agent_id).ilike("post_brief", `${brief}%`).limit(1).maybeSingle()
+    if (prior) return "podcast snippet already proposed"
+
+    const title = ep.title ?? "our latest podcast episode"
+    const teaser = ep.description ? ep.description.slice(0, 160) : "Give it a listen — link in bio."
+    const { error } = await ctx.supabase.from("social_posts").insert({
+      brokerage_id: ctx.brokerageId, agent_id: ep.agent_id, platform: "all", post_type: "custom",
+      content: `New episode is live: "${title}" 🎙️ ${teaser}`,
+      status: "draft", approval_status: "pending", ai_generated: true,
+      post_brief: `${brief} — gated snippet teasing the new episode; review before it posts.`,
+    })
+    return error ? null : "proposed a gated social snippet teasing the new podcast episode"
+  },
+
+  // Data Steward → Asset Manager: a podcast episode failed to generate or distribute —
+  // notify the owning agent (app/actions/podcast-generation.ts, app/api/cron/
+  // distribute-podcast-episodes; status/error_message already set before this fires).
+  "asset_manager:podcast_episode_failed": async (signal, ctx) => {
+    const episodeId = signal.entityId
+    if (!episodeId) return null
+    const { data: episode } = await ctx.supabase.from("podcast_episodes")
+      .select("agent_id, title, error_message").eq("id", episodeId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const ep = episode as { agent_id?: string | null; title?: string | null; error_message?: string | null } | null
+    if (!ep?.agent_id) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, ep.agent_id)
+    if (!userId) return "podcast episode failed but the owning agent's user account could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "podcast_episode_failed",
+      title: "A podcast episode failed",
+      body: `"${ep.title ?? "Your episode"}" failed${ep.error_message ? `: ${ep.error_message}` : "."}`,
+      entity_type: "podcast_episode", entity_id: episodeId, priority: "high", is_read: false,
+    })
+    return error ? null : "notified the owning agent their podcast episode failed"
+  },
+
+  // Data Steward → Recruiting Manager: an agent completed all required onboarding TRAINING
+  // videos — send the next-step nudge (app/api/onboarding/training/progress/route.ts;
+  // entityId is agents.id per getAgentContext).
+  "recruiting_manager:training_course_completed": async (signal, ctx) => {
+    const agentRecordId = signal.entityId
+    if (!agentRecordId) return null
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    const userId = await resolveUserIdForAgentRecord(ctx.supabase, agentRecordId)
+    if (!userId) return "training completed but the agent's user account could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "training_course_completed",
+      title: "You finished your required training!",
+      body: "Nice work — you've completed all required onboarding videos. Check your onboarding certifications for what's next.",
+      entity_type: "agent", entity_id: agentRecordId, priority: "medium", is_read: false,
+    })
+    return error ? null : "sent the agent a next-step nudge after finishing required training"
   },
 }
 

@@ -34,6 +34,10 @@ interface ComposeBarProps {
   emailTemplates?: EmailTemplate[]
   onSend: (body: string, subject?: string, channel?: string) => Promise<{ success: boolean; error?: string }>
   onDraft?: (content: string) => Promise<string>
+  /** optional by design: a caller-level force-disable (e.g. embedding this composer
+   *  read-only, or a bulk-action in progress elsewhere on the page). The dashboard
+   *  inbox (InboxClient.tsx) never needs it — TCPA/authority blocks are already
+   *  computed and enforced INSIDE this component — so it stays unpassed there. */
   disabled?: boolean
 }
 

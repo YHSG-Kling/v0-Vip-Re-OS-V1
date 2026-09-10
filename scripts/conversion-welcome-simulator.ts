@@ -648,6 +648,218 @@ function layer6_wiring() {
     && !/ensureClientWelcome\(/.test(auto))
 }
 
+// ─── LAYER 7 — THE LOOP CLOSES: THE GENERIC SPHERE WELCOME IS GONE, AND THE ────
+// ─── THIRD (LEAD-DESK) LANE NOW REACHES THE SAME SURVIVOR ──────────────────────
+//
+// Wave 49, owner ruling 2026-09-10, verbatim: "the welcome note for when lead
+// becomes a contact should come from either the listing or shopping manager
+// depending on the contact type and their portal credentials, video and welcome
+// goes out, not generic message."
+//
+// event-reactor.ts's D-undecies case 3 used to publish a signal_type
+// "lead_converted_to_contact" that manager-signals.ts's
+// "sphere_of_influence:lead_converted_to_contact" turned into a HARDCODED,
+// ALWAYS-sphere_of_influence proposeClientMessage ("Hi ${firstName} — welcome! I'm
+// here to help...") — a SECOND, WRONG welcome fired a few milliseconds AFTER the
+// correct one, because the only call site that ever dispatches this KernelEvent
+// (lib/kernel/lead-acquisition-handlers.ts handleLeadAssigned) already calls
+// deliverConversionWelcome synchronously moments earlier. Both are DELETED. This
+// layer proves the deletion is real and complete, and that it did not leave a
+// hole: lib/kernel/crm.ts's THIRD converter (the manual lead-desk lane, reached
+// from app/actions/lead-lifecycle.ts) had NO welcome of any kind before this wave
+// — not even the generic one, because it never reaches processKernelEvent for
+// this event at all — and now reaches the SAME shared entry point as the other
+// two, so all three converters route by contact type through ONE resolver.
+function layer7_loopCloses() {
+  console.log("\nLayer 7 — the generic sphere welcome is gone; the third lane is wired (STRIPPED source)")
+
+  const reactor = src("lib/kernel/event-reactor.ts")
+  const signals = src("lib/kernel/manager-signals.ts")
+  const registry = src("lib/kernel/signal-registry.ts")
+  const crm = src("lib/kernel/crm.ts")
+  const conversion = src("lib/contact-promotion/conversion-welcome.ts")
+
+  // NO GENERIC SPHERE WELCOME REMAINS.
+  check("event-reactor.ts no longer publishes signal_type lead_converted_to_contact",
+    !/signalType:\s*["']lead_converted_to_contact["']/.test(reactor))
+  check("manager-signals.ts no longer has a sphere_of_influence:lead_converted_to_contact handler",
+    !/["']sphere_of_influence:lead_converted_to_contact["']/.test(signals))
+  check("the hardcoded generic welcome body is gone from manager-signals.ts",
+    !/I'm here to help with anything real-estate related/.test(signals))
+  check("signal-registry.ts no longer catalogues lead_converted_to_contact as a published type",
+    !/^\s*lead_converted_to_contact:\s*\{/m.test(registry))
+
+  // POSITIVE CONTROLS (§2): every matcher above must still be ABLE to see the
+  // exact defect it was written for. Built from a FIXTURE string containing the
+  // retired shape — not from the live files (which no longer contain it) — so the
+  // control proves the REGEX still fires, not that the file still has the bug.
+  const retiredReactorFixture =
+    'if (params.event === KernelEvent.LEAD_CONVERTED_TO_CONTACT) {\n' +
+    '  await publishManagerSignal({ toManager: "sphere_of_influence", signalType:  "lead_converted_to_contact" })\n' +
+    '}'
+  const retiredHandlerFixture =
+    '"sphere_of_influence:lead_converted_to_contact": async (signal, ctx) => {\n' +
+    '  body: `Hi ${firstName} — welcome! I\'m here to help with anything real-estate related, now or down the road.`,\n' +
+    '}'
+  const retiredRegistryFixture =
+    '  lead_converted_to_contact:      { consumers: ["sphere_of_influence"], disposition: "handled", kind: "update", what: "x" },\n'
+  check("CONTROL: the signalType matcher still fires on the retired shape",
+    /signalType:\s*["']lead_converted_to_contact["']/.test(retiredReactorFixture))
+  check("CONTROL: the handler-key matcher still fires on the retired shape",
+    /["']sphere_of_influence:lead_converted_to_contact["']/.test(retiredHandlerFixture))
+  check("CONTROL: the generic-body matcher still fires on the retired shape",
+    /I'm here to help with anything real-estate related/.test(retiredHandlerFixture))
+  check("CONTROL: the registry-row matcher still fires on the retired shape",
+    /^\s*lead_converted_to_contact:\s*\{/m.test(retiredRegistryFixture))
+
+  // TOMBSTONES NAME THE SURVIVOR. A tombstone lives ONLY in a comment by
+  // definition, so — unlike every other matcher on this layer — this one reads
+  // RAW source (comments included) rather than stripped: stripping would erase
+  // the very thing being asserted exists.
+  check("event-reactor.ts's tombstone names the survivor at file:line",
+    /deliverConversionWelcome/.test(raw("lib/kernel/event-reactor.ts")) && /conversion-welcome\.ts:342/.test(raw("lib/kernel/event-reactor.ts")))
+  check("manager-signals.ts's tombstone names the survivor at file:line",
+    /deliverConversionWelcome/.test(raw("lib/kernel/manager-signals.ts")) && /conversion-welcome\.ts:342/.test(raw("lib/kernel/manager-signals.ts")))
+  check("signal-registry.ts's tombstone names the survivor at file:line",
+    /deliverConversionWelcome/.test(raw("lib/kernel/signal-registry.ts")) && /conversion-welcome\.ts:342/.test(raw("lib/kernel/signal-registry.ts")))
+  check("CONTROL: the tombstone check would fail without the survivor named —\n    a fixture carrying only the function name, no file:line, does not satisfy it",
+    /deliverConversionWelcome/.test("// deliverConversionWelcome handles this now")
+    && !/conversion-welcome\.ts:342/.test("// deliverConversionWelcome handles this now"))
+
+  // THE THIRD LANE IS WIRED.
+  check("lib/kernel/crm.ts (the manual lead-desk convertLeadToContact) now calls\n    deliverConversionWelcome — the gap this wave closed",
+    /deliverConversionWelcome\(/.test(crm))
+  check("CONTROL: the matcher can still see a missing call (it is absent from a\n    file that legitimately does not convert)",
+    !/deliverConversionWelcome\(/.test(src("lib/portal/portal-invite-core.ts")))
+  check("crm.ts does not hold its own copy of the portal grant or the video spine\n    — it reaches them only through the shared entry point (§6)",
+    !/createSystemPortalInvite\(/.test(crm)
+    && !/grantPortalAccessForPromotedContact\(/.test(crm)
+    && !/ensureWelcomeAvatarVideo\(/.test(crm)
+    && !/ensureClientWelcome\(/.test(crm))
+  check("the call is gated on !isDuplicate — a re-converted (already-linked) lead\n    does not re-trigger a welcome lookup, matching the audience-promote guard\n    beside it",
+    /if \(!result\.isDuplicate\) \{[\s\S]{0,800}?deliverConversionWelcome\(/.test(crm))
+
+  // ALL THREE CONVERTERS NOW SHARE ONE ROUTING RESOLVER — no converter re-derives
+  // "which manager owns this welcome" itself; every one of them delegates to
+  // deliverConversionWelcome, which is the only caller of resolveWelcomeManagers
+  // on the conversion path (client-welcome.ts defines it; the sweeper does not
+  // call it — the sweeper releases an ALREADY-ROUTED welcome).
+  const manual = src("lib/contact-promotion/promote-lead-to-contact.ts")
+  const auto = src("lib/kernel/lead-acquisition-handlers.ts")
+  for (const [name, source] of [["manual (direct-intake)", manual], ["automatic", auto], ["manual (lead-desk)", crm]] as const) {
+    check(`${name} lane does not re-derive the welcome manager itself\n    (no local resolveWelcomeManagers copy)`,
+      !new RegExp(`function resolveWelcomeManagers`).test(source))
+  }
+  check("CONTROL: resolveWelcomeManagers IS defined, exactly once, on the survivor's\n    own resolver file",
+    (src("lib/kernel/client-welcome.ts").match(/export function resolveWelcomeManagers/g) ?? []).length === 1)
+}
+
+// ─── LAYER 8 — THE FOURTH CONVERTER: THE AI ISA'S BUYER INTENT-CONVERSION LANE ──
+//
+// Wave 49 pt.2, owner ruling 2026-09-10, same words as Layer 7: "the welcome
+// note for when lead becomes a contact should come from either the listing or
+// shopping manager depending on the contact type... portal credentials, video
+// and welcome goes out, not generic message."
+//
+// lib/ai-isa/convert-buyer-lead-on-intent.ts::convertBuyerLeadOnIntent is the
+// FOURTH lead→contact converter (Layer 7 proved the first three share one
+// resolver). Unlike the third lane, this one did NOT have zero welcome — it had
+// its OWN, a direct "buyer_welcome_reel_handoff" publish to the Asset Manager:
+// a second video-commissioning pipeline (Director "lead_intro" via
+// commissionVideo) duplicating the ONE avatar spine the other three lanes
+// share, feeding a GATED email that never granted real portal credentials and
+// needed a human approval the assigned agent cannot give for their own welcome.
+// This layer proves that duplicate is GONE and the fourth lane now reaches the
+// SAME ONE welcome path, EXACTLY ONCE, gated the same way the other three are.
+function layer8_fourthConverter() {
+  console.log("\nLayer 8 — the AI ISA buyer intent-conversion lane reaches the ONE welcome path exactly once (STRIPPED source)")
+
+  const buyerIntent = src("lib/ai-isa/convert-buyer-lead-on-intent.ts")
+  const signals = src("lib/kernel/manager-signals.ts")
+  const registry = src("lib/kernel/signal-registry.ts")
+  const reelSituation = src("lib/ai-isa/contact-reel-situation.ts")
+
+  // ── THE FOURTH LANE NOW CALLS THE SURVIVOR, EXACTLY ONCE ─────────────────
+  check("convertBuyerLeadOnIntent calls deliverConversionWelcome",
+    /deliverConversionWelcome\(/.test(buyerIntent))
+  check("...exactly ONCE — never two welcomes for one conversion",
+    (buyerIntent.match(/deliverConversionWelcome\(/g) ?? []).length === 1)
+  check("CONTROL: the matcher can still see a missing call (absent from a sibling\n    file that legitimately does not convert a buyer)",
+    !/deliverConversionWelcome\(/.test(src("lib/ai-isa/convert-seller-lead-on-intent.ts")))
+
+  // ── THE DUPLICATE IS GONE ─────────────────────────────────────────────────
+  check("the lane no longer publishes its own buyer_welcome_reel_handoff signal",
+    !/signalType:\s*["']buyer_welcome_reel_handoff["']/.test(buyerIntent))
+  check("...and no longer holds its own copy of the portal grant or the video spine\n    — one entry point, no copy to drift (§6)",
+    !/grantPortalAccessForPromotedContact\(/.test(buyerIntent)
+    && !/ensureWelcomeAvatarVideo\(/.test(buyerIntent)
+    && !/commissionVideo\(/.test(buyerIntent))
+  check("CONTROL: the matcher still fires on the retired shape — a fixture built\n    from the exact literal this lane used to publish",
+    /signalType:\s*["']buyer_welcome_reel_handoff["']/.test(
+      'await publishManagerSignal({ toManager: "asset_manager", signalType: "buyer_welcome_reel_handoff" })',
+    ))
+
+  // ── GATED ON A FRESH CONVERSION — A RE-CONVERSION NEVER RE-WELCOMES ───────
+  // Sliced to the live function body so an unrelated `wasAlreadyConverted` text
+  // earlier in the file (the pre-read comment) cannot satisfy the ordering check.
+  const fnStart = buyerIntent.indexOf("export async function convertBuyerLeadOnIntent")
+  check("CONTROL: the function is findable in the stripped source", fnStart > -1)
+  const fnBody = buyerIntent.slice(fnStart)
+  const guardAt = fnBody.indexOf("if (!wasAlreadyConverted && agentId)")
+  const welcomeAt = fnBody.indexOf("deliverConversionWelcome(")
+  check("the welcome call sits INSIDE the `!wasAlreadyConverted` guard — a\n    re-conversion (the idempotent replay every reason can trigger) never\n    re-welcomes an already-converted contact",
+    guardAt > -1 && welcomeAt > guardAt)
+  check("CONTROL: that guard is the SAME one the agent notification (Step 2) already\n    used — this call was added to an existing gate, not a new, looser one",
+    /if \(!wasAlreadyConverted && agentId\) \{[\s\S]{0,600}?notifications["')]/.test(fnBody))
+
+  // ── THE OLD VIDEO SITUATION BUILDER IS GONE TOO — THE ORPHAN THE RETIREMENT
+  //    LEFT BEHIND (§1), NOT A SECOND CAPABILITY LEFT DANGLING ──────────────
+  check("the Director situation builder the retired handler used\n    (buildContactWelcomeSituation) no longer exists — its only caller is gone,\n    and the capability it built (a buyer welcome video) already lives at the\n    survivor's shared avatar spine",
+    !/export function buildContactWelcomeSituation/.test(reelSituation))
+  check("CONTROL: the sibling persona resolver in the SAME file is untouched — the\n    matcher distinguishes 'this one function' from 'the whole file'",
+    /export function contactReelPersona/.test(reelSituation))
+
+  // ── THE HANDLER AND THE REGISTRY ROW ARE BOTH GONE ────────────────────────
+  check("manager-signals.ts no longer has an asset_manager:buyer_welcome_reel_handoff handler",
+    !/["']asset_manager:buyer_welcome_reel_handoff["']/.test(signals))
+  check("signal-registry.ts no longer catalogues buyer_welcome_reel_handoff as a\n    published type",
+    !/^\s*buyer_welcome_reel_handoff:\s*\{/m.test(registry))
+  check("CONTROL: both matchers still fire on the retired shapes",
+    /["']asset_manager:buyer_welcome_reel_handoff["']/.test(
+      '"asset_manager:buyer_welcome_reel_handoff": async (signal, ctx) => { return null },',
+    )
+    && /^\s*buyer_welcome_reel_handoff:\s*\{/m.test(
+      '  buyer_welcome_reel_handoff:{ consumers: ["asset_manager"], disposition: "handled", kind: "handoff", what: "x" },\n',
+    ))
+
+  // ── AND (LAYER-1-STYLE CONTROL): SIGNAL-INTEGRITY MUST STILL SEE THE
+  //    HANDLED/CATALOGUED PAIR IT WAS BUILT TO CATCH — A NEIGHBOUR THAT
+  //    STAYED, PROVING THE STRIPPED SCAN ABOVE ISN'T JUST BLIND ─────────────
+  check("CONTROL: a NEIGHBOURING reel handoff this wave did NOT touch is still both\n    catalogued and handled — the retirement removed exactly one pair, not the\n    whole shape the scanner looks for",
+    /["']asset_manager:seller_conversion_reel_handoff["']/.test(signals)
+    && /^\s*seller_conversion_reel_handoff:\s*\{/m.test(registry))
+
+  // ── TOMBSTONES NAME THE SURVIVOR (raw source — a tombstone lives in a comment) ─
+  check("manager-signals.ts's tombstone names the survivor at file:line",
+    /deliverConversionWelcome/.test(raw("lib/kernel/manager-signals.ts")) && /conversion-welcome\.ts:342/.test(raw("lib/kernel/manager-signals.ts")))
+  check("signal-registry.ts's tombstone names the survivor at file:line",
+    /deliverConversionWelcome/.test(raw("lib/kernel/signal-registry.ts")) && /conversion-welcome\.ts:342/.test(raw("lib/kernel/signal-registry.ts")))
+  check("contact-reel-situation.ts's tombstone names where the capability now lives",
+    /ensureWelcomeAvatarVideo/.test(raw("lib/ai-isa/contact-reel-situation.ts"))
+    && /conversion-welcome\.ts:342/.test(raw("lib/ai-isa/contact-reel-situation.ts")))
+  check("convert-buyer-lead-on-intent.ts's own tombstone names the survivor too",
+    /deliverConversionWelcome/.test(raw("lib/ai-isa/convert-buyer-lead-on-intent.ts"))
+    && /conversion-welcome\.ts:342/.test(raw("lib/ai-isa/convert-buyer-lead-on-intent.ts")))
+  check("CONTROL: the tombstone check would fail without the survivor named — a\n    fixture carrying only the function name, no file:line, does not satisfy it",
+    /deliverConversionWelcome/.test("// deliverConversionWelcome handles this now")
+    && !/conversion-welcome\.ts:342/.test("// deliverConversionWelcome handles this now"))
+
+  // ── THE FOURTH LANE JOINS THE SAME "NO LOCAL RESOLVER COPY" PROOF AS THE
+  //    OTHER THREE (§6 — one resolver, four callers) ─────────────────────────
+  check("the buyer intent-conversion lane does not re-derive the welcome manager\n    itself (no local resolveWelcomeManagers copy) — same rule Layer 7 proved for\n    the other three converters",
+    !/function resolveWelcomeManagers/.test(buyerIntent))
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════════════")
   console.log(" Conversion welcome simulator (one email, portal + video)")
@@ -658,6 +870,8 @@ async function main() {
   layer4_situation()
   await layer5_directives()
   layer6_wiring()
+  layer7_loopCloses()
+  layer8_fourthConverter()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

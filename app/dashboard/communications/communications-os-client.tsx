@@ -239,6 +239,17 @@ export function CommunicationsOSClient({
     router.push(`/dashboard/campaigns/sequences/${sequenceId}`)
   }, [router])
 
+  // The selected conversation's OWN active/paused sequence enrollment (if any) — BUILT
+  // (hidden-wire census category c, 2026-09-10 wave 49): ConversationActionPanel already
+  // renders an in-sequence badge + pause/resume button when given these, but nothing
+  // here ever passed them, so that UI never appeared next to the message composer even
+  // though the SAME enrollment was already visible one panel over in SequenceExecutionPanel.
+  const selectedEnrollment = selectedConversation
+    ? sequenceEnrollments.find(
+        (e) => e.contactId === selectedConversation.contactId && (e.status === "active" || e.status === "paused"),
+      )
+    : undefined
+
   // Action Panel Handlers
   const handleSendMessage = useCallback(async (params: {
     channel: "email" | "sms" | "in_app"
@@ -369,6 +380,10 @@ export function CommunicationsOSClient({
               onScheduleFollowUp={handleScheduleFollowUp}
               onEscalate={handleEscalate}
               onMarkNeedsAttention={handleMarkNeedsAttention}
+              isInSequence={!!selectedEnrollment}
+              sequencePaused={selectedEnrollment?.status === "paused"}
+              onPauseSequence={selectedEnrollment ? () => handlePauseEnrollment(selectedEnrollment.id) : undefined}
+              onResumeSequence={selectedEnrollment ? () => handleResumeEnrollment(selectedEnrollment.id) : undefined}
             />
 
             {/* AI Reply Coach */}

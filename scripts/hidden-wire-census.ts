@@ -70,7 +70,17 @@
  *     (other, non-spread call sites still count). `children` and `className`
  *     are excluded from "passed but never read" — both are legitimately
  *     consumed by ancestor wrapper behaviour (layout components, forwardRef
- *     wrappers) this scan cannot see.
+ *     wrappers) this scan cannot see. A prop read ONLY via a LOCAL two-step
+ *     destructure (`function X(props: XProps) { const { a, b } = props }`,
+ *     as opposed to destructuring right in the signature) IS now recognised —
+ *     `localDestructuredReads` (wave 49 fix) scans the body for `const/let {
+ *     ... } = <paramName>` and folds those names into readProps the same way
+ *     signature-destructured and `props.foo`-accessed names already are; a
+ *     positive control below proves it. A prop declared with a `/** optional
+ *     by design: ... *\/` JSDoc immediately above it in the Props interface is
+ *     EXCLUDED from both (c) halves — `optionalByDesignProps` reads the RAW
+ *     (un-masked) source for that literal phrase, since masked source has all
+ *     comments blanked by design; a positive control below proves it too.
  *   · (d): a dynamically-built `.rpc(variable)` name is invisible. A function
  *     created outside supabase/migrations/*.sql (dashboard-authored, or by an
  *     extension) false-positives as "missing a migration". Trigger and
@@ -453,6 +463,64 @@ function destructuredPropNames(paramText: string): { names: string[]; hasSpread:
   flush(inner.length)
   return { names, hasSpread }
 }
+
+/**
+ * A prop read only through a LOCAL two-step destructure —
+ * `function X(props: XProps) { const { a, b } = props ... }` — was invisible to
+ * readProps: the signature-only `destructuredPropNames` never sees it (the
+ * signature just binds `props`), and the `props.foo` member-access scan never
+ * sees it either (there is no `.foo`, there is a destructuring ASSIGNMENT).
+ * LaunchReadinessChecklist destructures ALL 31 of its non-defaulted props this
+ * way and every one of them false-positived as "passed but never read"
+ * (2026-09-10, wave 49) — 34 of 75 total (c)-unread findings from one file.
+ * Scans `bodyText` for every `const {…} = name` / `let {…} = name` whose RHS
+ * identifier is `paramName`, reusing `destructuredPropNames` on the `{…}`
+ * substring it finds (same key-not-local-binding, spread-aware parsing).
+ */
+function localDestructuredReads(bodyText: string, paramName: string): string[] {
+  const out: string[] = []
+  const openerRe = /\b(?:const|let)\s*\{/g
+  let m: RegExpExecArray | null
+  while ((m = openerRe.exec(bodyText))) {
+    const braceStart = m.index + m[0].length - 1
+    const braceEnd = matchBalanced(bodyText, braceStart, "{", "}")
+    if (braceEnd === -1) continue
+    const rhs = /^\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\b/.exec(bodyText.slice(braceEnd + 1))
+    if (!rhs || rhs[1] !== paramName) continue
+    const { names } = destructuredPropNames(bodyText.slice(braceStart, braceEnd + 1))
+    out.push(...names)
+  }
+  return out
+}
+
+/**
+ * Props with a `/** optional by design: ... *\/` JSDoc immediately above their
+ * declaration in a `<Name>Props` interface/type — the component author's own
+ * documented reason a caller may legitimately never pass it, or the body may
+ * legitimately never read it. Excluded from BOTH (c) halves for that component.
+ * MUST read RAW (un-masked) source: `masked` (blankStrings) blanks every
+ * comment to spaces by design (CLAUDE.md §2 — comments are never code tokens),
+ * so this is the one place in this file that deliberately reads a comment's
+ * TEXT rather than scanning for a code token inside one.
+ */
+function optionalByDesignProps(rawSrc: string): Set<string> {
+  const names = new Set<string>()
+  // No comment-shaped regex here (test:comment-strip-discipline forbids one even in a
+  // deliberate raw read): the marker is found by plain string search, the doc block is
+  // closed by indexOf on the closing delimiter, and only the PROP NAME after it is matched.
+  const MARKER = "optional by design:"
+  const CLOSE = "*" + "/"
+  let at = rawSrc.indexOf(MARKER)
+  while (at >= 0) {
+    const close = rawSrc.indexOf(CLOSE, at)
+    if (close < 0) break
+    const m = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/.exec(rawSrc.slice(close + CLOSE.length, close + CLOSE.length + 200))
+    if (m) names.add(m[1])
+    at = rawSrc.indexOf(MARKER, close)
+  }
+  return names
+}
+
 /**
  * TOP-LEVEL PROPERTY NAMES ONLY — depth-0, not "any `key:` anywhere in the body".
  *
@@ -567,6 +635,8 @@ for (const file of TSX_FILES) {
 
 let componentsWithSignature = 0
 let componentsWithSpread = 0
+let localDestructureRescues = 0
+let optionalByDesignExcluded = 0
 for (const pt of propsTypes) {
   const declFile = TSX_FILES.find((f) => {
     const m2 = masked.get(f)!
@@ -595,7 +665,18 @@ for (const pt of propsTypes) {
     const accessRe = new RegExp(`${bareParamName}\\.([A-Za-z_$][A-Za-z0-9_$]*)`, "g")
     let acc: RegExpExecArray | null
     while ((acc = accessRe.exec(bodyText))) readProps.add(acc[1])
+    // LOCAL two-step destructure — `const { a, b } = props` inside the body,
+    // as opposed to right in the signature. See localDestructuredReads header.
+    for (const n of localDestructuredReads(bodyText, bareParamName)) {
+      if (!readProps.has(n)) localDestructureRescues++
+      readProps.add(n)
+    }
   }
+
+  // `/** optional by design: ... */` — the author's own documented reason;
+  // excluded from BOTH halves for this component. Reads RAW source (masked
+  // has every comment blanked, by design — see optionalByDesignProps header).
+  const optionalByDesign = optionalByDesignProps(raw.get(declFile) ?? "")
 
   const called = callSiteCount.get(pt.component) ?? 0
   const passed = callSiteAttrs.get(pt.component) ?? new Set<string>()
@@ -604,12 +685,14 @@ for (const pt of propsTypes) {
 
   if (called > 0 && !spreadAtCallSite) {
     for (const p of pt.declaredProps) {
+      if (optionalByDesign.has(p)) { optionalByDesignExcluded++; continue }
       if (!passed.has(p)) categoryCDeclared.push({ component: pt.component, prop: p, declaredIn: declFile })
     }
   }
   if (!hasSpread) {
     for (const p of passed) {
       if (EXEMPT_UNREAD.has(p)) continue
+      if (optionalByDesign.has(p)) { optionalByDesignExcluded++; continue }
       if (pt.declaredProps.includes(p) && !readProps.has(p)) {
         categoryCUnread.push({ component: pt.component, prop: p, declaredIn: declFile })
       }
@@ -799,6 +882,32 @@ function runControls(): string[] {
     ok("(c) destructure control: a rest spread is detected", spreadFound)
   }
 
+  // (c) LOCAL TWO-STEP DESTRUCTURE control (wave 49) — the LaunchReadinessChecklist
+  // shape this correction exists for: `function X(props: Props) { const { a, b } = props }`.
+  {
+    const body = "{\n  const { alpha, beta } = props\n  return alpha + beta\n}"
+    const names = localDestructuredReads(body, "props")
+    ok("(c) local-destructure control: both names read through the body-level destructure are found",
+      names.length === 2 && names.includes("alpha") && names.includes("beta"))
+    ok("(c) local-destructure control: a DIFFERENT rhs identifier is NOT matched",
+      localDestructuredReads("{ const { alpha } = somethingElse }", "props").length === 0)
+  }
+
+  // (c) OPTIONAL-BY-DESIGN control (wave 49) — a documented JSDoc reason excludes a
+  // prop from both (c) halves; an UNDOCUMENTED sibling prop must NOT be swept in too.
+  {
+    const src = [
+      "interface WidgetProps {",
+      "  /** optional by design: platform preview only, no production caller passes it */",
+      "  previewMode?: boolean",
+      "  required: string",
+      "}",
+    ].join("\n")
+    const found = optionalByDesignProps(src)
+    ok("(c) optional-by-design control: the documented prop is recognised", found.has("previewMode"))
+    ok("(c) optional-by-design control: the UNDOCUMENTED sibling prop is not swept in", !found.has("required"))
+  }
+
   // (d) rpc: comment-embedded fake definition/call must not count
   {
     const synthetic = '// create or replace function fakeDefinedInComment() returns void as $$ $$;\nawait supabase.rpc("fakeCalledInCode")\n'
@@ -832,7 +941,7 @@ console.log(`Corpus: ${FILES.length} files under app/, lib/, hooks/ (excludes .d
 console.log("")
 console.log(`(a) IMPORTED-BUT-UNUSED: ${categoryA.length} / ${totalImportBindings} import bindings scanned`)
 console.log(`(b) IMPORTED-BUT-ONLY-FORWARDED: ${categoryB.length} findings (${categoryBRaw.length} raw, ${rescuedByOneHop} rescued by a real one-hop-downstream call) ; ${candidateFunctionExports} candidate function-shaped exports checked, ${ambiguousExportNames} skipped (same name declared in >1 file — ambiguous attribution)`)
-console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed, ${categoryCUnread.length} passed-never-read ; ${propsTypes.length} <Name>Props types found, ${componentsWithSignature} matched to a component signature, ${componentsWithSpread} excluded from the unread half (rest/spread destructure)`)
+console.log(`(c) PROPS DRIFT: ${categoryCDeclared.length} declared-never-passed, ${categoryCUnread.length} passed-never-read ; ${propsTypes.length} <Name>Props types found, ${componentsWithSignature} matched to a component signature, ${componentsWithSpread} excluded from the unread half (rest/spread destructure), ${localDestructureRescues} prop-reads rescued by the LOCAL two-step destructure recognizer (wave 49), ${optionalByDesignExcluded} prop findings excluded via a documented '/** optional by design: ... */' JSDoc (wave 49)`)
 console.log(`(d) RPC WIRING: ${categoryDMissing.length} called-with-no-migration ; ${categoryDUnused.length} migration-defined-never-called (of ${definedFns.size} functions across ${migrationFiles().length} migration files; ${rpcCalls.size} distinct .rpc() names called)`)
 console.log(`(e) DEAD SERVER-ACTION IMPORT (subset of a): ${categoryE.length}`)
 console.log("")

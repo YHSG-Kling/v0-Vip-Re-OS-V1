@@ -30,7 +30,14 @@
  * consent → qualified → Engine-2 assignment → lossless contact, leads.ai_isa_owner
  * =false (ISA dormant), agent notified. Same path the seller side uses; the buyer
  * vs seller fork is purely the lead's motivation (contact-creator maps
- * 'buyer'/'both' → contact_type='buyer').
+ * 'buyer'/'both' → contact_type='buyer'). Step 2, on a FRESH conversion only
+ * (never a re-conversion — wasAlreadyConverted short-circuits both), also
+ * delivers the ONE welcome — lib/contact-promotion/conversion-welcome.ts
+ * `deliverConversionWelcome`, the SAME entry point the other three lead→contact
+ * converters use (§6): portal credentials first, then the shared avatar-video
+ * spine, then the persona-written email through the governed dispatchEmail. This
+ * lane used to commission its own reel + a human-gated email instead; see the
+ * tombstone at Step 2 below.
  *
  * Reuse, don't rebuild: the converter, the handoff, the BBA gate, the criteria
  * columns, the financial-profile table and the buyer-stage machine all already
@@ -157,15 +164,17 @@ export async function convertBuyerLeadOnIntent(
   }
   const contactId = handoff.contactId
 
-  // Resolve the contact's agent (for notification + BBA gate + milestone rows).
+  // Resolve the contact's agent (for notification + BBA gate + milestone rows) and its
+  // own identity for the welcome — NEVER the lead's (§5: conversion is FINAL, and the
+  // welcome must describe the CONTACT, not a row that is about to go inactive).
   const { data: contactRow } = await svc
     .from("contacts")
-    .select("agent_id, buyer_stage")
+    .select("agent_id, buyer_stage, contact_type, first_name, last_name")
     .eq("id", contactId)
     .maybeSingle()
   const agentId = (contactRow as any)?.agent_id ?? preLead.agent_id ?? null
 
-  // ── Step 2: NOTIFY the agent of a new buyer contact (fresh conversions only) ──
+  // ── Step 2: NOTIFY the agent + WELCOME the contact (fresh conversions only) ──
   let agentNotified = false
   if (!wasAlreadyConverted && agentId) {
     const { data: agentUser } = await svc
@@ -189,25 +198,56 @@ export async function convertBuyerLeadOnIntent(
       agentNotified = !notifyErr
     }
 
-    // ── WELCOME the new buyer the moment they convert — invite + a personal WELCOME avatar reel.
-    //    The Shopping Agent hands the welcome reel to the Asset Manager (video director); on
-    //    completion the Campaign Orchestrator sends the gated 1:1 invite email embedding it + the
-    //    portal CTA. A newly converted buyer is never dropped between conversion and first touch. ──
+    // ── THE WELCOME — THE ONE PATH, NOT A FOURTH COPY (§1 duplicate / §6) ──────
+    //
+    // TOMBSTONE (wave 49 pt.2, 2026-09-10): this arm used to publish its OWN
+    // "buyer_welcome_reel_handoff" signal straight to the Asset Manager — a
+    // SECOND video-commissioning pipeline (the Director `lead_intro` reel via
+    // commissionVideo/ai_video_projects) duplicating the ONE avatar spine
+    // (intro-video-reactor → agent_intro_videos) the other three converters
+    // already share, feeding a GATED proposeClientMessage email that (a) never
+    // granted real portal credentials — it only appended a portalCtaHtml link to
+    // a portal that might not exist yet — and (b) required a HUMAN approval the
+    // assigned agent structurally cannot give themselves for their own welcome
+    // (see lib/kernel/client-welcome.ts's header). This was the FOURTH
+    // lead→contact conversion path and the only one with no welcome sequence.
+    //
+    // The survivor, lib/contact-promotion/conversion-welcome.ts:342
+    // `deliverConversionWelcome`, already does everything that arm was trying to
+    // do, in the right order and exactly once: grants the portal invite FIRST
+    // (real `portal_contact_invites` row, not a bare CTA link), commissions the
+    // SAME avatar spine the reel path duplicated, and sends the persona-written
+    // welcome through the governed `dispatchEmail` (managerKey-gated autonomous
+    // send — not a human-approval queue the agent cannot clear). It routes by
+    // CONTACT TYPE through the ONE resolver (`resolveWelcomeManagers`), exactly
+    // like the other three converters. Owner ruling (2026-09-10): "the welcome
+    // note for when lead becomes a contact should come from either the listing
+    // or shopping manager depending on the contact type and their portal
+    // credentials, video and welcome goes out, not generic message."
+    //
+    // `asset_manager:buyer_welcome_reel_handoff` is retired with this call
+    // (tombstones at lib/kernel/manager-signals.ts and
+    // lib/kernel/signal-registry.ts naming this survivor) — grepped first: this
+    // call was its ONLY publisher anywhere in the tree.
     try {
-      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
-      await publishManagerSignal({
-        brokerageId: params.brokerageId,
-        fromManager: "shopping_agent",
-        toManager: "asset_manager",
-        signalType: "buyer_welcome_reel_handoff",
-        message: "A buyer just became a contact — commissioning their personal welcome avatar reel (invite + reel, fronted by the assigned agent).",
-        entityType: "contact",
-        entityId: contactId,
+      const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+      const welcome = await deliverConversionWelcome(svc, {
         contactId,
-        payload: { audience: "buyer", reason: params.reason },
-      }, svc)
+        agentId,
+        agentUserId,
+        brokerageId: params.brokerageId,
+        contactType: (contactRow as any)?.contact_type ?? "buyer",
+        firstName:   (contactRow as any)?.first_name ?? null,
+        lastName:    (contactRow as any)?.last_name ?? null,
+      })
+      for (const w of welcome.warnings) console.error(`[convert-buyer-lead-on-intent] welcome: ${w}`)
+      console.log(
+        `[convert-buyer-lead-on-intent] welcome for contact ${contactId}: portal=${welcome.portalGranted}, ` +
+          `video=${welcome.videoReason}, email=${welcome.timing}` +
+          `${welcome.emailState ? ` (${welcome.emailState})` : ""} — ${welcome.timingReason}`,
+      )
     } catch (e) {
-      console.error("[convert-buyer-lead] welcome reel handoff failed:", e)
+      console.error("[convert-buyer-lead-on-intent] welcome delivery failed:", e)
     }
   }
 

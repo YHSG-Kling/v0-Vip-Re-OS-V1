@@ -433,7 +433,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9419,
+  "census": 9420,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4269,6 +4269,7 @@
     "remotion/charts/PriceTrendLine.tsx": 1,
     "remotion/components/AvatarPIP.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
+    "remotion/components/EqualHousingMark.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
     "remotion/components/SafeImg.tsx": 1,
     "services/goHighLevelService.ts": 3,
@@ -21352,6 +21353,9 @@
     ],
     "remotion/components/CaptionLayer.tsx": [
       "CaptionLayer"
+    ],
+    "remotion/components/EqualHousingMark.tsx": [
+      "EqualHousingMark"
     ],
     "remotion/components/QrOutroBadge.tsx": [
       "shouldRenderQrBadge",

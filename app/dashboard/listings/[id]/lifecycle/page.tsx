@@ -765,10 +765,12 @@ const { data: listingVendorBookings } = await supabase
             mlsNumber={mlsNumber}
             mlsLink={mlsLink}
             listingAddress={`${listing.address}${listing.city ? `, ${listing.city}` : ""}`}
-            mediaReady={mediaReady}
-            publishReady={publishReady}
-            marketingReady={marketingReady}
             blockers={blockers}
+            // mediaReady/publishReady/marketingReady stopped being passed here —
+            // LaunchReadinessChecklist never read them (hidden-wire census category
+            // c, 2026-09-10 wave 49; tombstone on its Props interface). The consts
+            // stay defined above for `blockers` itself and the launch-dialog
+            // `canLaunch` gate further down this file.
           />
         </div>
 

@@ -104,10 +104,17 @@ interface LaunchReadinessChecklistProps {
   mlsNumber: string | null
   mlsLink: string | null
   listingAddress: string
-  // Aggregate flags from parent
-  mediaReady: boolean
-  publishReady: boolean
-  marketingReady: boolean
+  // TOMBSTONE (orphan doctrine §1.3, hidden-wire census category c, 2026-09-10 wave 49):
+  // mediaReady/publishReady/marketingReady (the parent's aggregate booleans) deleted —
+  // this component never read them. The survivor is `blockers` below (built by the
+  // SAME parent from the SAME three source facts at app/dashboard/listings/[id]/
+  // lifecycle/page.tsx:549-554) plus each row's own direct inputs (photoCount/
+  // requiredFields+complianceBlockers/currentTier), which this component already reads
+  // to compute every row's status itself — the aggregate booleans were a pre-
+  // consolidation leftover from when LaunchStateStrip (still a separate component,
+  // still fed the same three flags) was one of the three overlapping surfaces this
+  // checklist replaced. The caller's own local consts and its `canLaunch` computation
+  // are untouched — only the redundant pass-through to THIS component is gone.
   blockers: string[]
 }
 
@@ -160,6 +167,8 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
     mlsLink,
     listingAddress,
     blockers,
+    // mediaReady/publishReady/marketingReady deleted — see the tombstone on the
+    // Props interface above.
   } = props
 
   const [launchOpen, setLaunchOpen] = useState(false)

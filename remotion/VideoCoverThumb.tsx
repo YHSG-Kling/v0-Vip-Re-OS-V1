@@ -33,6 +33,7 @@
 import React from "react"
 import { AbsoluteFill } from "remotion"
 import { SafeImg } from "./components/SafeImg"
+import { EqualHousingMark } from "./components/EqualHousingMark"
 
 export type VideoThumbKind =
   | "listing"           // address / price / hero photo
@@ -258,7 +259,12 @@ export const VideoCoverThumb: React.FC<VideoCoverThumbProps> = ({
               fontSize: 11, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
             }}>
               {brand.brokerageName}
-              {showEho && " · Equal Housing Opportunity"}
+              {showEho && (
+                <>
+                  {" · "}
+                  <EqualHousingMark show variant="inline" />
+                </>
+              )}
             </div>
           </div>
         </div>

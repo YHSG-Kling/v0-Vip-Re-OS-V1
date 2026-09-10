@@ -41,6 +41,7 @@ import { classifyCardSubject, type CardSubjectType } from "../lib/contacts/card-
 import { blankComments } from "./strip-comments"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { SIGNAL_HANDLERS } from "../lib/kernel/manager-signals"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -59,6 +60,46 @@ function report() {
 
 const ROOT = process.cwd()
 const ALL_CLASSES: CardSubjectType[] = ["sphere", "agent", "potential_contact", "contact", "vendor", "unknown"]
+const ALL_CLASSIFIED_BY: Array<"picker" | "reader" | "notes" | "match" | "default"> = ["picker", "reader", "notes", "match", "default"]
+
+function sameSet(a: string[], b: string[]): boolean {
+  const sa = [...a].sort()
+  const sb = [...b].sort()
+  return sa.length === sb.length && sa.every((v, i) => v === sb[i])
+}
+
+// ── 0 · ONE VOCABULARY (§6) — CardSubjectType/classifiedBy literally EQUAL the
+// live CHECK constraint scripts/check-vocabularies.ts holds for m617's typed
+// columns (business_card_scans.card_subject_type / .classified_by), not just
+// "close enough". A drift here is exactly the defect CLAUDE.md §6 names: two
+// spellings of the same idea that a scorer can no longer match across.
+console.log("[0 · ONE VOCABULARY — CardSubjectType/classifiedBy === live CHECK vocab] (§6)")
+{
+  // POSITIVE CONTROL (CLAUDE.md §2): prove sameSet() itself actually catches a
+  // mismatch before trusting it on the real comparison below — a checker that
+  // silently returns true for anything would make every assertion beneath it
+  // a false "clean bill of health".
+  check("positive control — sameSet() rejects a genuinely different set",
+    !sameSet(["a", "b", "c"], ["a", "b"]))
+  check("positive control — sameSet() rejects a set with an extra/renamed member",
+    !sameSet(["a", "b", "c"], ["a", "b", "d"]))
+  check("positive control — sameSet() accepts an out-of-order but equal set",
+    sameSet(["a", "b", "c"], ["c", "a", "b"]))
+
+  const liveCardSubjectType = CHECK_VOCABULARIES.business_card_scans?.card_subject_type ?? []
+  check("CHECK_VOCABULARIES has a business_card_scans.card_subject_type entry (positive control — an empty vocab would falsely pass every comparison below)",
+    liveCardSubjectType.length > 0, `got ${liveCardSubjectType.length} values`)
+  check("CardSubjectType (lib/contacts/card-classifier.ts) === business_card_scans.card_subject_type CHECK (scripts/check-vocabularies.ts)",
+    sameSet(ALL_CLASSES, liveCardSubjectType),
+    `classifier=[${[...ALL_CLASSES].sort().join(",")}] check=[${[...liveCardSubjectType].sort().join(",")}]`)
+
+  const liveClassifiedBy = CHECK_VOCABULARIES.business_card_scans?.classified_by ?? []
+  check("CHECK_VOCABULARIES has a business_card_scans.classified_by entry (positive control)",
+    liveClassifiedBy.length > 0, `got ${liveClassifiedBy.length} values`)
+  check("classifyCardSubject's `source` union === business_card_scans.classified_by CHECK (scripts/check-vocabularies.ts)",
+    sameSet(ALL_CLASSIFIED_BY, liveClassifiedBy),
+    `source=[${[...ALL_CLASSIFIED_BY].sort().join(",")}] check=[${[...liveClassifiedBy].sort().join(",")}]`)
+}
 
 // ── 1 · pure classifier ─────────────────────────────────────────────────────
 console.log("══════════════════════════════════════════════════")

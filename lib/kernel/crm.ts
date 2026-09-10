@@ -769,6 +769,57 @@ export async function convertLeadToContact(params: {
     }
   }
 
+  // THE WELCOME — WIRED HERE FOR THE SAME REASON THE AUDIENCE PROMOTE ABOVE WAS
+  // (§1 case 2 / §6): this MANUAL LEAD-DESK LANE is a THIRD converter — the block's own
+  // header calls it out ("Three converters exist and they did not agree on what a
+  // conversion writes") — and it had ZERO welcome. It never called
+  // `deliverConversionWelcome`, and unlike the automatic lane it never even reaches
+  // `processKernelEvent` for LEAD_CONVERTED_TO_CONTACT (the lifecycle_events row above is
+  // a direct insert, not a dispatch — see the comment on that insert), so the retired
+  // event-reactor case could never have covered it either. A broker converting a
+  // qualified lead by hand through app/actions/lead-lifecycle.ts `convertLeadToContact`
+  // got NO portal invite, NO video, NO message — silence, not a generic one, but silence
+  // is exactly what the owner's "video and welcome goes out, not generic message" ruling
+  // forbids just as much.
+  //
+  // SAME FUNCTION AS THE OTHER TWO CALLERS; NO COPY HELD HERE (§6). Routes by contact
+  // type through lib/kernel/client-welcome.ts `resolveWelcomeManagers` exactly like
+  // promote-lead-to-contact.ts Step 8 and lead-acquisition-handlers.ts's tail: seller →
+  // listing_concierge, buyer → shopping_agent, both → both. Skipped on `isDuplicate`,
+  // matching the audience-promote and ai_isa-arm guards immediately above — an
+  // already-converted lead must not re-trigger a welcome for a contact that (if this is
+  // truly a retry) either already has one or is mid-flight for one; deliverConversionWelcome
+  // is independently idempotent per contact via the WELCOME_RATIONALE_TAG, but there is no
+  // reason to pay for the lookup twice.
+  //
+  // BEST EFFORT, like the other two callers: never throws, never unwinds a completed
+  // conversion. `contactType` is the same `"buyer" | "seller" | "both"` this function
+  // already derived above for `createOrUpdateContactFromDirectIntake`; `lead` still carries
+  // first_name / last_name from the read at the top of this function.
+  if (!result.isDuplicate) {
+    try {
+      const { deliverConversionWelcome } = await import("@/lib/contact-promotion/conversion-welcome")
+      const welcome = await deliverConversionWelcome(supabase, {
+        contactId:   result.contactId as string,
+        agentId:     params.agentId,
+        brokerageId: params.brokerageId,
+        contactType,
+        firstName:   lead.first_name ?? null,
+        lastName:    lead.last_name ?? null,
+      })
+      for (const w of welcome.warnings) {
+        console.error(`[crm] welcome: ${w}`)
+      }
+      console.log(
+        `[crm] welcome for contact ${result.contactId}: portal=${welcome.portalGranted}, ` +
+          `video=${welcome.videoReason}, email=${welcome.timing}` +
+          `${welcome.emailState ? ` (${welcome.emailState})` : ""} — ${welcome.timingReason}`,
+      )
+    } catch (e: any) {
+      console.error(`[crm] welcome NOT attempted for contact ${result.contactId}: ${e?.message ?? "conversion-welcome unavailable"}`)
+    }
+  }
+
   return result
 }
 

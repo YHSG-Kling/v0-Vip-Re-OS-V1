@@ -1,6 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -250,17 +249,21 @@ export async function claimLead(params: {
     return { success: false, reason: `Claim update failed: ${updateError.message}` }
   }
 
-  // Step 4: Emit LEAD_CLAIMED through the canonical emitter (insert + reactor fan-out).
-  // Bare lifecycle_events inserts silently skipped staff notifications / sequence enrollment /
-  // portal updates downstream of a claim — emit() restores all three channels.
-  await emitKernelEvent({
-    event:       KernelEvent.LEAD_CLAIMED,
-    brokerageId,
-    entityType:  "lead",
-    entityId:    leadId,
-    agentUserId,
-    metadata:    { claimed_by: agentUserId },
-  })
+  // TOMBSTONE (owner ruling, wave 49, 2026-09-10, verbatim: "there should be no
+  // kernel event for agent claiming a lead — agents can't see leads until the
+  // lead gets converted to a contact and the agent is assigned that contact").
+  // Step 4 used to emit KernelEvent.LEAD_CLAIMED here (retired from lib/kernel/
+  // events.ts — see the tombstone there). The three live readers of this flag
+  // (lib/intelligence/daily-briefing-generator.ts, isa-overnight.ts
+  // handoffs_unclaimed, user-type-briefs/team-lead.ts) all read
+  // `assignment_log.claimed` / `claimed_at` DIRECTLY, never the kernel event — the
+  // UPDATE two steps above already IS the durable, auditable record they consult.
+  // The event's only other live effects (checked against notification_rules,
+  // PORTAL_UPDATE_TEMPLATES and campaign_sequences on the production database) were
+  // NONE: no trigger_event row, no portal template and no sequence trigger was ever
+  // configured for lead_claimed, so nothing downstream loses a channel by this
+  // removing it. agentUserId stays on the function's signature: it is still who
+  // acknowledged, for any caller that wants it, even with no event to attribute it to.
 
   // Step 5: Return success
   return { success: true }

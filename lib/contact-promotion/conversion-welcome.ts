@@ -75,10 +75,20 @@
  * it ONE end-to-end bound covering the D-ID render AND the Remotion assembly,
  * which is what "the welcome email is the first thing they receive" needs.
  *
- * ── BOTH CONVERTERS CALL THIS, AND NEITHER HOLDS A COPY (§6) ───────────────
+ * ── ALL FOUR CONVERTERS CALL THIS, AND NONE HOLDS A COPY (§6) ───────────────
  *
- *   · lib/contact-promotion/promote-lead-to-contact.ts  (manual)
+ *   · lib/contact-promotion/promote-lead-to-contact.ts  (manual, direct-intake lane)
  *   · lib/kernel/lead-acquisition-handlers.ts::handleLeadAssigned (automatic)
+ *   · lib/kernel/crm.ts::convertLeadToContact (manual, lead-desk lane — wired wave 49;
+ *     this THIRD converter had no welcome of any kind until then, not even the retired
+ *     generic sphere one, because it never dispatches KernelEvent.LEAD_CONVERTED_TO_CONTACT)
+ *   · lib/ai-isa/convert-buyer-lead-on-intent.ts::convertBuyerLeadOnIntent (AI ISA,
+ *     buyer lead converted on positive intent — wired wave 49 pt.2; this FOURTH
+ *     converter had its OWN duplicate welcome — a direct "buyer_welcome_reel_handoff"
+ *     signal to the Asset Manager, a second video pipeline feeding a human-gated
+ *     email with no real portal grant. Retired with a tombstone at
+ *     lib/kernel/manager-signals.ts and lib/kernel/signal-registry.ts naming this
+ *     file:line as the survivor)
  *
  * That file records how they drifted before: the history carry was wired into the
  * manual lane only. Two things were still lane-shaped when this was written and

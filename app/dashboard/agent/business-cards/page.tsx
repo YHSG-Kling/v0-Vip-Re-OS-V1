@@ -21,6 +21,16 @@ const SUBJECT_TYPE_OPTIONS: Array<{ value: CardSubjectType | ""; label: string }
   { value: "vendor", label: "Vendor / service provider" },
 ]
 
+// Reader for business_card_scans.classified_by (m617 typed column) — which
+// determination tier decided the class (lib/contacts/card-classifier.ts).
+const CLASSIFIED_BY_LABEL: Record<"picker" | "reader" | "notes" | "match" | "default", string> = {
+  picker: "you picked it",
+  reader: "read off the card",
+  notes: "from your notes",
+  match: "matched an existing record",
+  default: "unclassified",
+}
+
 const SUBJECT_TYPE_LABEL: Record<CardSubjectType, string> = {
   sphere: "Sphere of influence",
   agent: "Fellow agent — recruiting prospect",
@@ -59,6 +69,7 @@ type ScanRow = {
   reviewed_at: string | null
   cardSubjectType: CardSubjectType | null
   subjectUserId: string | null
+  subjectNotes: string | null
   classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
 }
 
@@ -530,6 +541,17 @@ export default function BusinessCardsPage() {
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* business_card_scans.classified_by (m617 typed column) — which
+                            tier decided the class, so a picker override reads differently
+                            from an auto-detect. */}
+                        {s.review_status === "approved" && s.classifiedBy ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground">{CLASSIFIED_BY_LABEL[s.classifiedBy]}</p>
+                        ) : null}
+                        {/* business_card_scans.subject_notes — the free-text note typed on
+                            the review surface at scan time. */}
+                        {s.subjectNotes ? (
+                          <p className="mt-1 text-[11px] text-muted-foreground italic">&ldquo;{s.subjectNotes}&rdquo;</p>
+                        ) : null}
                         {/* The status above is the automatic viability gate's verdict.
                             No person reviews these scans today (reviewed_by is written
                             as null by its only writer), and this says so rather than
