@@ -61,6 +61,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
+import { avatarDurationOverrunSeconds } from "../lib/video/script-structure"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -629,6 +630,55 @@ function anniversarySection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// §durationOverrun — wave 53 avatar re-audit item 2: the MEASURED D-ID
+// duration is compared to the pre-synthesis (word-count-ESTIMATE) budget, so
+// a translated script that speaks slower/faster than WORDS_PER_MINUTE=150 in
+// its own language produces a WARNING + a ledger stamp instead of a silent
+// mid-sentence crop under AgentTalkingHeadReel's hard trimAfter={BODY}.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function durationOverrunSection() {
+  console.log("\n── §durationOverrun — the estimate vs. the D-ID measurement (wave 53) ──")
+  const structure = readStripped("lib/video/script-structure.ts")
+  const reactor = readStripped("lib/video/intro-video-reactor.ts")
+  const poller = readStripped("app/api/cron/poll-did-videos/route.ts")
+
+  check("the reactor stamps narration_budget_seconds onto ai_video_projects.video_metadata (the estimate, persisted for later comparison)",
+    /narration_budget_seconds:\s*introNarrationBudget\(\)\.budgetSeconds/.test(reactor))
+  check("script-structure.ts exports a PURE avatarDurationOverrunSeconds reader (one vocabulary, §6 — not a second arithmetic re-implemented at the call site)",
+    /export function avatarDurationOverrunSeconds\(/.test(structure))
+  check("avatarDurationOverrunSeconds is additive-safe: a non-finite/absent budget or actual returns 0 (not measurable ≠ overran)",
+    /if \(typeof actualSeconds !== "number" \|\| !Number\.isFinite\(actualSeconds\)\) return 0/.test(structure) &&
+    /if \(typeof budgetSeconds !== "number" \|\| !Number\.isFinite\(budgetSeconds\)\) return 0/.test(structure))
+
+  check("poll-did-videos SELECTs video_metadata (the budget is unreadable without it)",
+    /\.select\("id, agent_id, brokerage_id[\s\S]{0,300}video_metadata/.test(poller))
+  check("poll-did-videos imports avatarDurationOverrunSeconds and calls it with D-ID's own measured `duration`",
+    /avatarDurationOverrunSeconds\(duration, narrationBudgetSeconds\)/.test(poller))
+  check("an overrun is WARNED (console.warn), never silently swallowed",
+    /console\.warn\(\s*\n?\s*`\[poll-did-videos\] project \$\{video\.id\}: D-ID rendered/.test(poller))
+  check("an overrun is STAMPED onto video_metadata.avatar_duration_overrun_seconds — a count that moves is the finding (§2), not a log line nobody reads twice",
+    /avatar_duration_overrun_seconds:\s*avatarOverrunSeconds/.test(poller))
+  check("the stamp write's own refusal is READ (§3) rather than swallowed",
+    /if \(overrunErr\) \{\s*\n\s*console\.error\(`\[poll-did-videos\] could not stamp the overrun/.test(poller))
+  check("the whole check is gated on the field being present (typeof === \"number\") — every non-intro/anniversary video_metadata row (no such key) is untouched, byte-identical to before this existed",
+    /if \(typeof narrationBudgetSeconds === "number"\)/.test(poller))
+  check("the comparison sits BEFORE the avatar→Remotion handoff, not after — the measurement is never skipped by an early handoff failure/return",
+    poller.indexOf("avatarDurationOverrunSeconds(duration, narrationBudgetSeconds)") <
+    poller.indexOf("enqueueAvatarCompositionForProject(video.id, supabase)"))
+
+  // POSITIVE CONTROLS (§2)
+  check("CONTROL: a render that measured well within its budget reports 0 (no false positive)",
+    avatarDurationOverrunSeconds(9, 11.2) === 0)
+  check("CONTROL: a render that measured 4s over its budget (past the 1s tolerance) reports the real overrun, not a rounding artifact",
+    avatarDurationOverrunSeconds(15.4, 11.2) === 3.2)
+  check("CONTROL: no budget recorded (an ordinary, non-avatar video_metadata row) reports 0 rather than a spurious overrun",
+    avatarDurationOverrunSeconds(30, null) === 0)
+  check("CONTROL: no measured duration yet (still polling) reports 0 rather than a spurious overrun",
+    avatarDurationOverrunSeconds(null, 11.2) === 0)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
@@ -645,6 +695,7 @@ async function main() {
   researchSection()
   reelProducersSection()
   anniversarySection()
+  durationOverrunSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -652,6 +703,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All eleven avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary from wave 52), each with a positive control.")
+  console.log(" ✅ All twelve avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

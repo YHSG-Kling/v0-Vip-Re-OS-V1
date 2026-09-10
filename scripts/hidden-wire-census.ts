@@ -634,11 +634,28 @@ function reExportsOf(file: string): Map<string, ReExportEntry> {
   if (hit) return hit
   const out = new Map<string, ReExportEntry>()
   const m2 = masked.get(file)
+  const r = raw.get(file)
   if (m2 !== undefined) {
     EXPORT_NAMED_FROM_RE.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = EXPORT_NAMED_FROM_RE.exec(m2))) {
-      const modulePath = m[3]
+      // BUG FIX (wave 53, CLAUDE.md §2 measurement discipline): `m[3]` reads
+      // the module path from MASKED source, where blankStrings blanks every
+      // string literal's CONTENTS to spaces — so a barrel's own
+      // `export { X } from "./y"` always resolved to an all-spaces path here,
+      // resolveModule always failed on it, and every ONE-HOP barrel
+      // resolution (resolveComponentFile's whole reason to exist, per its own
+      // header) silently returned null. Every JSX call site that imported a
+      // component through a barrel (`@/app/components/x` → index.ts →
+      // `./component`) was then dropped from callSiteAgg entirely —
+      // `skippedUnresolvedCallSites`, not attributed to any file — so its
+      // real props never counted as "passed" and category (c) reported them
+      // as declared-never-passed. Recovered from RAW the same way
+      // parseImports already does for the identical reason (see its own
+      // comment: "recover from RAW (masked blanked the path content)").
+      const modulePath = r !== undefined
+        ? r.slice(m.index, m.index + m[0].length).match(/from\s*(['"])([^'"]*)\1/)?.[2] ?? m[3]
+        : m[3]
       for (const piece of m[1].split(",")) {
         let spec = piece.trim()
         if (!spec) continue

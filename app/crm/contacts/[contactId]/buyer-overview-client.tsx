@@ -690,6 +690,7 @@ export function BuyerOverviewClient({
                 savedCount={propertyInterests ? 1 : 0}
                 tourCount={tours.length}
                 buyerStage={contact.buyer_stage}
+                compact={true}
               />
 
               {/* Dual Agency Opportunity Alert */}

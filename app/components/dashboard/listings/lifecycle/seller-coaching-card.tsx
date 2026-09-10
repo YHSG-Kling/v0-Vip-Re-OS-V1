@@ -79,14 +79,25 @@ function CoachingCardSkeleton() {
 }
 
 // ── Main card inner ───────────────────────────────────────────────────────────
-interface CardProps {
+// NAME FIX (wave 53, CLAUDE.md §2 measurement discipline): this was `CardProps`.
+// hidden-wire-census.ts's category (c) strips the "Props" suffix to derive a
+// component name, and with no `SellerCoachingCard` function to match in THIS
+// file, fell back to a corpus-wide search for a function literally named
+// "Card" — which hit the generic app/components/ui/card.tsx primitive. That
+// misattributed listingId/listingStage/brokerageId/agentUserId as props
+// "declared on Card, never passed", when they were always fully wired at the
+// real call site (app/dashboard/listings/[id]/lifecycle/page.tsx:943-947,
+// tenant-scoped from the session: brokerageId=userRow.brokerage_id,
+// agentUserId=user.id). Renaming to match this file's actual component
+// removes the false attribution.
+interface SellerCoachingCardProps {
   listingId:    string
   listingStage: string
   brokerageId:  string
   agentUserId?: string
 }
 
-function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUserId }: CardProps) {
+function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUserId }: SellerCoachingCardProps) {
   const [coaching,    setCoaching]    = useState<SellerCoachingContent | null>(null)
   const [persona,     setPersona]     = useState<SellerPersona>(null)
   const [generatedAt, setGeneratedAt] = useState<string | undefined>()
@@ -302,7 +313,7 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
 }
 
 // ── Public export (wrapped in error boundary) ─────────────────────────────────
-export function SellerCoachingCard(props: CardProps) {
+export function SellerCoachingCard(props: SellerCoachingCardProps) {
   return (
     <CoachingErrorBoundary>
       <SellerCoachingCardInner {...props} />

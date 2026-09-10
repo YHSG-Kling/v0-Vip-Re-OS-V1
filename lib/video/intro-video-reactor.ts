@@ -798,6 +798,25 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         intro_video_id: introVideoId,
         years_ago:      input.yearsAgo ?? null,
         ...(language !== DEFAULT_LANGUAGE ? { tts_language_code: language } : {}),
+        // THE OVERRUN THIS MAKES VISIBLE (wave 53 — avatar re-audit item 2).
+        // fitNarrationToBudget trims `script` to this exact number of seconds
+        // BEFORE it ever reaches D-ID/ElevenLabs, but the trim is a
+        // WORDS_PER_MINUTE=150 ESTIMATE — one English speaking-rate constant
+        // applied to every language alike. A translated script (this reactor
+        // writes DIRECTLY in `language` — draftScript's languageLine) can read
+        // slower or faster than 150 wpm in its own tongue, so an estimate that
+        // cleared pre-flight can still be wrong once D-ID actually speaks it.
+        // AgentTalkingHeadReel's BODY window is a HARD
+        // `<Video trimBefore={0} trimAfter={BODY}>` crop — unlike the separate
+        // voiceover_url (snake) lane, which lib/remotion/voiceover-mixer.ts
+        // TPADS to the real measured duration, nothing extends this
+        // composition when the avatar track runs long. Persisting the budget
+        // HERE is what lets poll-did-videos compare it against D-ID's own
+        // reported `data.duration` once the render actually exists, and WARN
+        // — a count that moves is the finding (§2) — instead of a silent
+        // mid-sentence crop nobody is told about, most likely on exactly the
+        // non-English renders this wave built.
+        narration_budget_seconds: introNarrationBudget().budgetSeconds,
       },
     })
     .select("id")

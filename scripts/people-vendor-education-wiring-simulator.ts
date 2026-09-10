@@ -1103,7 +1103,9 @@ const CHECKS: Check[] = [
     },
     neg: {
       file: "vendorClient",
-      find: "              <VendorCategorySelect\n                id=\"edit-vendor-category\"\n                value={editCategory}\n                onChange={setEditCategory}\n              />",
+      // Wave 53: the picker also carries `disabled={isPending}` (hidden-wire props tranche) —
+      // the anchor names the live JSX so the mutation still lands.
+      find: "              <VendorCategorySelect\n                id=\"edit-vendor-category\"\n                value={editCategory}\n                onChange={setEditCategory}\n                disabled={isPending}\n              />",
       replace: "              <Input value={editCategory} onChange={(e) => setEditCategory(e.target.value as VendorCategory)} />",
     },
   },

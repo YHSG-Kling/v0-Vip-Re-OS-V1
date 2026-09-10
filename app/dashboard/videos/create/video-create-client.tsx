@@ -960,6 +960,18 @@ export default function VideoCreatePage() {
       if (selectedContextId && selectedContextType === "market") {
         description += ` covering the ${selectedContextId} market area`
       }
+      // listingVideoMode / sellerUpdateMode (business-context.tsx) were selected
+      // in step 0 (canProceed gates on them at line ~810) but never reached the
+      // description handed to the model — the chosen mode changed nothing about
+      // the script. BUILT wave 53 (orphan doctrine merge from the deleted
+      // business-context/ duplicate directory, whose SellerUpdateMode carried a
+      // "dataNeeded" hint per mode that made the gap obvious).
+      if (selectedPurpose === "listing_launch" && listingVideoMode) {
+        description += ` — style: ${listingVideoMode.replace(/_/g, " ")}`
+      }
+      if (selectedPurpose === "seller_update" && sellerUpdateMode) {
+        description += ` — focus: ${sellerUpdateMode.replace(/_/g, " ")}`
+      }
 
       const result = await generateVideoScript({
         brokerageId: brokerage.id,

@@ -38,6 +38,8 @@ interface DocumentSignaturePanelProps {
   // Signers to pre-populate (contact + agent)
   defaultSigners?: Signer[]
   onSent?: () => void
+  /** optional by design: style-override passthrough onto the root element; the
+   *  one caller (transaction-detail-client.tsx) needs no non-default look. */
   className?: string
 }
 

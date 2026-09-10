@@ -169,6 +169,7 @@ export function VendorBookingButton({
               value={serviceType}
               onChange={setServiceType}
               placeholder="Select service type"
+              disabled={isPending}
             />
           </div>
 

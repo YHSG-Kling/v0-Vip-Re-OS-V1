@@ -286,6 +286,25 @@ const ALLOWED_DATA_STEWARD_SIGNALS = new Set<string>([
   // pattern-detection SCAN (behavioral_pattern_detected, same family as
   // deal_health_score_updated/listing_health_score_updated/buyer_fatigue_detected).
   "offer_ai_extracted", "lead_conversion_recorded", "market_data_refreshed", "behavioral_pattern_detected",
+  // D-sedecies (wave 53, FINAL tranche, kernel-event census tranche 8): AI-prediction/
+  // feedback LEDGER writes (same family as offer_ai_extracted — an AI pipeline artifact, not
+  // a discrete manager action): prediction_created (the pattern-detector's companion
+  // artifact), prediction_outcome_recorded, ai_feedback_received. A wealth-signal SCAN (same
+  // class as deal_health_score_updated/buyer_fatigue_detected): equity_milestone,
+  // refinance_opportunity. Portal engagement/view-tracking writes (a data-logging moment, not
+  // a business decision): portal_accessed, portal_module_viewed, client_portal_message_sent,
+  // portal_education_viewed. Vendor-bench roster intake/assignment moments (same family as
+  // vendor_assigned_to_transaction/business_card_uploaded): vendor_record_created,
+  // vendor_record_updated, vendor_assigned_to_listing, vendor_deliverable_attached. A
+  // sync-run ledger entry (same family as system_sync_completed): system_sync_triggered. A
+  // vendor/lender portal-action log (same family as vendor_assigned_to_transaction):
+  // journey_stage_updated, message_created. A single-offer AI-analysis pipeline artifact
+  // (same family as offer_ai_extracted): offer_os_ai_analyzed.
+  "prediction_created", "prediction_outcome_recorded", "ai_feedback_received",
+  "equity_milestone", "refinance_opportunity",
+  "portal_accessed", "portal_module_viewed", "client_portal_message_sent", "portal_education_viewed",
+  "vendor_record_created", "vendor_record_updated", "vendor_assigned_to_listing", "vendor_deliverable_attached",
+  "system_sync_triggered", "journey_stage_updated", "message_created", "offer_os_ai_analyzed",
 ])
 
 const RULES: Array<{ name: string; run: () => boolean; control: () => boolean }> = [

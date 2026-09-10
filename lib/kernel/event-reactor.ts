@@ -4017,6 +4017,582 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         }
       } catch { /* best-effort */ }
     }
+
+    // (D-sedecies) CROSS-MANAGER SIGNALS — kernel-event census round 10 (2026-09-10, tranche 8,
+    // FINAL tranche, scripts/kernel-event-census-z1.ts). TWENTY-EIGHT more KernelEvent members
+    // classified "emitted only" in the AI-learning-loop/gamification/portal-engagement/wealth/
+    // vendor-bench/accounting/offer-negotiation lanes — the LAST remaining "emitted only" events
+    // whose emitter is not a frozen scraping file (CONTACT_ENRICHMENT_COMPLETED's only emitter is
+    // lib/lead-pipeline/enrichment-orchestrator.ts, inside the frozen scraping set — left
+    // untouched, "unresolved — frozen"). ONE is HANDLED with a real SIGNAL_HANDLERS consumer (a
+    // gated social-proof post); the rest are feed_only visibility, same shape as D-octies through
+    // D-quindecies. Routed per the wave-50/51/52 rulings: FROM is the manager that OWNS the moment
+    // (never a default data_steward stamp — data_steward appears below ONLY for genuine
+    // data-quality/ledger moments: an AI-prediction/feedback ledger write, a wealth-signal scan, a
+    // portal engagement/view-tracking write, a vendor bench/roster intake or assignment moment, a
+    // sync-run ledger entry), NEVER marketing_agent (retired this wave). Every literal pair matches
+    // its lib/kernel/signal-routing.ts STATIC_ROUTES entry exactly (scripts/manager-routing-
+    // simulator.ts §12); the five multi-use-case readers (prediction_created, portal_accessed,
+    // portal_module_viewed, client_portal_message_sent, portal_education_viewed) branch explicitly
+    // on the contact's contact_type (or, for portal_module_viewed, the emitter's own entityType —
+    // "contact" vs "vendor_job", no DB lookup needed) and are declared on BRANCHING_EVENTS. Every
+    // block is best-effort and independently caught; publishManagerSignal's own (toManager,
+    // signalType, entityId) dedupe makes a retried/re-emitted event never double an inbox.
+
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 1 — an agent earned a gamification badge (app/actions/gamification.ts:237). The agent is
+      // already notified directly in the SAME call (a `notifications` insert just above this
+      // emit) — this is the DISTINCT cross-manager line. HANDLED — Recruiting Manager (owns
+      // agent_badges/gamification, lib/kernel/manager-registry.ts:1767) hands the achievement to
+      // Campaign Orchestrator (content/social owner), which proposes a gated "congrats on your
+      // badge" social-proof post fronted by the agent — the exact shape certification_issued
+      // already established for the sibling onboarding-achievement moment.
+      if (params.event === KernelEvent.GAMIFICATION_BADGE_AWARDED) {
+        try {
+          const meta = (params.metadata as { agent_id?: string | null; badge_name?: string | null; badge_tier?: string | null } | null | undefined) ?? {}
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "recruiting_manager",
+            toManager:   "campaign_orchestrator",
+            signalType:  "gamification_badge_awarded",
+            message:     "An agent earned a gamification badge.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     { agent_id: meta.agent_id ?? null, badge_name: meta.badge_name ?? null, badge_tier: meta.badge_tier ?? null },
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // ── feed_only from here — visibility for the owning manager, same shape as most of
+      // D-octies through D-quindecies. No automated consumer by design (see each `what` in
+      // signal-registry.ts).
+
+      // 2 — the AI behavioral-pattern scan produced a companion PREDICTION artifact on the SAME
+      // call as its sibling BEHAVIORAL_PATTERN_DETECTED (lib/intelligence/pattern-detector.ts,
+      // entityType "contact" | "listing" — fetchEntitySignals' own discriminator, no DB lookup
+      // needed). Data Steward (the pattern-detection scan owner, same class as its sibling) hands
+      // it to AI ISA (contact — feeds lead/contact nurture) or Listing Concierge (listing).
+      if (params.event === KernelEvent.PREDICTION_CREATED) {
+        try {
+          const toManager: ManagerKey | null =
+            params.entityType === "contact" ? "ai_isa" :
+            params.entityType === "listing" ? "listing_concierge" : null
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "data_steward",
+              toManager,
+              signalType:  "prediction_created",
+              message:     "The AI pattern detector recorded a new prediction.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+            }, svc)
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // 3 — an agent confirmed whether a prior AI prediction was correct (app/actions/
+      // pattern-actions.ts:209, via lib/intelligence/pattern-detector.ts recordPredictionOutcome,
+      // entityType "prediction"). Data Steward (owns the prediction ledger, same family as #2)
+      // hands the closed-loop outcome to Cron Manager — the ops seat that runs the weekly
+      // ai-metrics/prompt-calibration crons this outcome ledger feeds.
+      if (params.event === KernelEvent.PREDICTION_OUTCOME_RECORDED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "cron_manager",
+            signalType:  "prediction_outcome_recorded",
+            message:     "An agent recorded the outcome of a prior AI prediction.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 4 — an agent rated an AI output thumbs up/down, across any AI source system (app/api/
+      // intelligence/feedback/route.ts:99, entityType "ai_feedback_log"). No single
+      // customer-facing manager owns this generic cross-system ledger write (daily_briefing /
+      // coaching_report / market_insight / behavioral_pattern / smart_suggestion / isa_response /
+      // content_generation / intent_classifier all funnel through this ONE endpoint) — Data
+      // Steward (the feedback-ledger writer) hands it to Cron Manager, the same ops seat #3 uses.
+      if (params.event === KernelEvent.AI_FEEDBACK_RECEIVED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "cron_manager",
+            signalType:  "ai_feedback_received",
+            message:     "An agent rated an AI output.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 5 — the weekly AI-improvement-metrics cron finished computing approval rates
+      // (lib/intelligence/feedback-aggregator.ts computeWeeklyMetrics, via app/api/cron/
+      // weekly-ai-metrics, entityType "brokerage"). Cron Manager (the schedule owner) reports the
+      // aggregate to Data Steward — mirrors daily_briefing_generated's own cron_manager ->
+      // data_steward shape exactly.
+      if (params.event === KernelEvent.AI_METRICS_COMPUTED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "cron_manager",
+            toManager:   "data_steward",
+            signalType:  "ai_metrics_computed",
+            message:     "The weekly AI-improvement metrics finished computing.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 6 — the weekly prompt-calibration cron finished recalibrating underperforming AI systems
+      // (lib/intelligence/prompt-calibrator.ts calibrateSystemPrompts, via app/api/cron/
+      // prompt-calibration, entityType "prompt_calibration"). Same cron-ops shape as #5.
+      if (params.event === KernelEvent.PROMPT_CALIBRATION_UPDATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "cron_manager",
+            toManager:   "data_steward",
+            signalType:  "prompt_calibration_updated",
+            message:     "The weekly prompt-calibration cron recalibrated an underperforming AI system.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 7 — a cron run completed successfully (lib/kernel/cron-logging.ts recordCronSuccess,
+      // entityType "cron"). Cron Manager reports the run to Data Steward — mirrors the existing
+      // cron_failed STATIC_ROUTES pair (cron_manager -> data_steward), the success counterpart.
+      if (params.event === KernelEvent.CRON_COMPLETED_SUCCESS) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "cron_manager",
+            toManager:   "data_steward",
+            signalType:  "cron_completed_success",
+            message:     "A scheduled cron run completed successfully.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 8-9 — the equity-trigger wealth scan found a cash-out-equity milestone or a
+      // rate-improvement refinance opportunity for a LIFETIME contact (lib/kernel/
+      // equity-trigger.ts runEquityTrigger, via app/api/cron/equity-trigger, entityType
+      // "contact"). Data Steward (the wealth-signal SCAN owner, same class as
+      // deal_health_score_updated/buyer_fatigue_detected) hands each to Sphere of Influence
+      // (owns lifetime/past-client relationships) — the agent-facing transparency_updates card +
+      // portal-stream wealth.* translation already fire synchronously in the same call; this is
+      // the cross-manager visibility line.
+      if (params.event === KernelEvent.EQUITY_MILESTONE) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "sphere_of_influence",
+            signalType:  "equity_milestone",
+            message:     "A lifetime contact crossed a cash-out equity milestone.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            contactId:   params.contactId ?? null,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.REFINANCE_OPPORTUNITY) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "sphere_of_influence",
+            signalType:  "refinance_opportunity",
+            message:     "A lifetime contact has a rate-improvement refinance opportunity.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            contactId:   params.contactId ?? null,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 10 — a contact accessed their client portal (lib/kernel/portal.ts logPortalAccess,
+      // entityType "contact", generic across every portal kind). Data Steward (the portal-access
+      // audit-log writer) hands it to the contact's own manager — Listing Concierge (seller) /
+      // Shopping Agent (buyer); an unresolved/unset contact_type publishes nothing rather than
+      // guessing (contacts.contact_type read once, one dynamic toManager, same shape as #23
+      // AI_ISA_HANDOFF_TO_AGENT above).
+      if (params.event === KernelEvent.PORTAL_ACCESSED) {
+        try {
+          let toManager: ManagerKey | null = null
+          const contactId = params.contactId ?? params.entityId
+          if (contactId) {
+            const { data: c } = await svc
+              .from("contacts").select("contact_type")
+              .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+            const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
+            if (contactType === "seller") toManager = "listing_concierge"
+            else if (contactType === "buyer") toManager = "shopping_agent"
+          }
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "data_steward",
+              toManager,
+              signalType:  "portal_accessed",
+              message:     "A contact accessed their client portal.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+              contactId:   contactId ?? null,
+            }, svc)
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // 11 — a portal module was viewed (app/actions/vendor-portal.ts addVendorJobNote,
+      // entityType "vendor_job", AND app/actions/portal-seller.ts, entityType "contact" — the
+      // ONLY two emitters). Data Steward (the portal-analytics writer, client_portal_activity /
+      // vendor job notes) hands "contact" (a seller-portal module view) to Listing Concierge and
+      // "vendor_job" (a vendor's own job-note module) to Deal Coordinator (owns the transaction
+      // the vendor_job's booking is tied to). No DB lookup — the emitter's own entityType IS the
+      // discriminator.
+      if (params.event === KernelEvent.PORTAL_MODULE_VIEWED) {
+        try {
+          const toManager: ManagerKey | null =
+            params.entityType === "contact" ? "listing_concierge" :
+            params.entityType === "vendor_job" ? "deal_coordinator" : null
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "data_steward",
+              toManager,
+              signalType:  "portal_module_viewed",
+              message:     "A portal module was viewed.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+            }, svc)
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // 12 — a portal message was sent, either direction (app/actions/portal-messages.ts:232,
+      // entityType "contact", metadata.direction). Data Steward (the portal-communication-log
+      // writer) hands it to the contact's own manager, same branch shape as #10 — the correct
+      // party is ALREADY notified directly (a `notifications` insert earlier in the same call);
+      // this is cross-manager visibility only.
+      if (params.event === KernelEvent.CLIENT_PORTAL_MESSAGE_SENT) {
+        try {
+          let toManager: ManagerKey | null = null
+          const contactId = params.contactId ?? params.entityId
+          if (contactId) {
+            const { data: c } = await svc
+              .from("contacts").select("contact_type")
+              .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+            const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
+            if (contactType === "seller") toManager = "listing_concierge"
+            else if (contactType === "buyer") toManager = "shopping_agent"
+          }
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "data_steward",
+              toManager,
+              signalType:  "client_portal_message_sent",
+              message:     "A portal message was sent between agent and client.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+              contactId:   contactId ?? null,
+              payload:     params.metadata ?? {},
+            }, svc)
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // 13 — a lender-portal action updated a transaction's journey (app/actions/
+      // lender-portal-actions.ts:356 flagLenderIssue, :411 updateLenderLoanStatus — the ONLY two
+      // emitters, entityType "transaction"). Data Steward (the vendor/lender portal-action log,
+      // same family as vendor_assigned_to_transaction) hands the update to Deal Coordinator, who
+      // owns the transaction the lender is acting on.
+      if (params.event === KernelEvent.JOURNEY_STAGE_UPDATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "deal_coordinator",
+            signalType:  "journey_stage_updated",
+            message:     "A lender-portal action updated a transaction's journey.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+            payload:     params.metadata ?? {},
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 14 — a contact viewed/completed a portal education lesson (app/actions/
+      // portal-education.ts:296, entityType "contact"). Same branch shape as #10/#12 — Data
+      // Steward (the portal-engagement writer) hands it to the contact's own manager.
+      if (params.event === KernelEvent.PORTAL_EDUCATION_VIEWED) {
+        try {
+          let toManager: ManagerKey | null = null
+          const contactId = params.contactId ?? params.entityId
+          if (contactId) {
+            const { data: c } = await svc
+              .from("contacts").select("contact_type")
+              .eq("id", contactId).eq("brokerage_id", params.brokerageId).maybeSingle()
+            const contactType = (c as { contact_type?: string | null } | null)?.contact_type ?? null
+            if (contactType === "seller") toManager = "listing_concierge"
+            else if (contactType === "buyer") toManager = "shopping_agent"
+          }
+          if (toManager) {
+            await publishManagerSignal({
+              brokerageId: params.brokerageId,
+              fromManager: "data_steward",
+              toManager,
+              signalType:  "portal_education_viewed",
+              message:     "A contact viewed a portal education lesson.",
+              entityType:  params.entityType,
+              entityId:    params.entityId,
+              contactId:   contactId ?? null,
+            }, svc)
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // 15 — an agent published a response to a client review (lib/kernel/reputation.ts:536,
+      // entityType "agent_review"). Sphere of Influence (owns reviews/reputation, the review_
+      // received precedent) hands the published response to Campaign Orchestrator — a
+      // response-to-a-review is content the marketing side can spotlight, the natural next step
+      // after review_received's own data_steward -> sphere_of_influence intake line.
+      if (params.event === KernelEvent.REVIEW_RESPONSE_PUBLISHED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "sphere_of_influence",
+            toManager:   "campaign_orchestrator",
+            signalType:  "review_response_published",
+            message:     "An agent published a response to a client review.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 16-19 — vendor-bench roster maintenance (lib/kernel/vendors.ts: createVendor:439,
+      // updateVendor:500, bookVendorForListing:573, attachVendorDeliverable:905, entityType
+      // "vendor" | "vendor_booking"). Data Steward (the vendor-roster intake/assignment moment,
+      // same family as vendor_assigned_to_transaction/business_card_uploaded) hands the bench
+      // moment to Listing Concierge — the manager who draws on the vendor bench when booking
+      // services for a listing.
+      if (params.event === KernelEvent.VENDOR_RECORD_CREATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "vendor_record_created",
+            message:     "A new vendor was added to the bench.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.VENDOR_RECORD_UPDATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "vendor_record_updated",
+            message:     "A vendor's bench record was updated.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.VENDOR_ASSIGNED_TO_LISTING) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "vendor_assigned_to_listing",
+            message:     "A vendor was booked for a listing.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.VENDOR_DELIVERABLE_ATTACHED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "vendor_deliverable_attached",
+            message:     "A vendor attached a deliverable to a booking.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 20 — a brokerage admin deactivated an accounting/CRM integration (app/actions/
+      // accounting-sync.ts:126, entityType "integration_credentials"). Finance Manager (owns
+      // back-office integrations) hands the credential change to Data Steward — mirrors
+      // subscription_cancelled's own finance_manager -> data_steward shape exactly.
+      if (params.event === KernelEvent.INTEGRATION_DEACTIVATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "finance_manager",
+            toManager:   "data_steward",
+            signalType:  "integration_deactivated",
+            message:     "An accounting integration was deactivated.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 21 — an accounting sync run started or a sync error was retried (app/api/accounting/
+      // sync/route.ts:76, app/actions/accounting-sync.ts:243, entityType "accounting_sync_log" |
+      // "sync_errors"). Data Steward (the sync-run ledger writer) hands the start to Finance
+      // Manager — the START counterpart of the existing system_sync_completed pair
+      // (data_steward -> finance_manager).
+      if (params.event === KernelEvent.SYSTEM_SYNC_TRIGGERED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "finance_manager",
+            signalType:  "system_sync_triggered",
+            message:     "An accounting sync run started.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 22 — a vendor sent a portal message routed to the deal's agent (app/actions/
+      // vendor-portal.ts:660, entityType "vendor_message", tied to a transaction). Data Steward
+      // (the vendor-portal message-log writer) hands it to Deal Coordinator, who owns the
+      // transaction the vendor is messaging about — same family as #13 JOURNEY_STAGE_UPDATED.
+      if (params.event === KernelEvent.MESSAGE_CREATED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "deal_coordinator",
+            signalType:  "message_created",
+            message:     "A vendor sent a portal message about a transaction.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 23 — a single offer finished AI analysis (lib/kernel/offers.ts recordOfferAiAnalysis,
+      // entityType "offer"). Data Steward (the AI-extraction/analysis pipeline owner, same family
+      // as offer_ai_extracted) hands the parse-complete moment to Listing Concierge — the
+      // single-offer counterpart of offer_ai_extracted's multi-document extraction pipeline.
+      if (params.event === KernelEvent.OFFER_OS_AI_ANALYZED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "data_steward",
+            toManager:   "listing_concierge",
+            signalType:  "offer_os_ai_analyzed",
+            message:     "A single offer finished AI analysis.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 24 — an AI net-sheet comparison finished ranking multiple pending offers on a listing
+      // (lib/kernel/offers.ts compareOffersForListing, entityType "offer" though entityId is the
+      // listings.id — a SEPARATE writer of the same offer_comparison table the already-HANDLED
+      // offer_comparison_generated / lib/offers/offer-analyzer.ts analyzeAndCompareOffers covers;
+      // this is that writer's own visibility line, same FROM/TO shape, feed_only rather than a
+      // second gated-message proposal so the two writers never double-propose). Listing
+      // Concierge hands the comparison to Campaign Orchestrator, mirroring cma_generated.
+      if (params.event === KernelEvent.OFFER_OS_AI_COMPARED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "listing_concierge",
+            toManager:   "campaign_orchestrator",
+            signalType:  "offer_os_ai_compared",
+            message:     "An AI offer comparison finished ranking multiple offers.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+
+      // 25-28 — the offer negotiation lifecycle: countered, the buyer responded to a counter,
+      // rejected, withdrawn (lib/kernel/offers.ts issueCounterOffer:432, respondToCounter:467,
+      // rejectOffer:583, withdrawOffer:621, entityType "offer"). Deal Coordinator (owns
+      // negotiation — negotiation_strategy_drafted's own domain) hands each negotiation move to
+      // Compliance Officer's audit trail, the SAME FROM/TO shape negotiation_strategy_drafted
+      // already uses for the AI-drafted strategy beside it.
+      if (params.event === KernelEvent.OFFER_OS_COUNTERED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager:   "compliance_officer",
+            signalType:  "offer_os_countered",
+            message:     "A counter-offer was issued.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.OFFER_OS_COUNTER_RESPONDED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager:   "compliance_officer",
+            signalType:  "offer_os_counter_responded",
+            message:     "A buyer responded to a seller's counter-offer.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.OFFER_OS_REJECTED) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager:   "compliance_officer",
+            signalType:  "offer_os_rejected",
+            message:     "An offer was rejected.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
+      if (params.event === KernelEvent.OFFER_OS_WITHDRAWN) {
+        try {
+          await publishManagerSignal({
+            brokerageId: params.brokerageId,
+            fromManager: "deal_coordinator",
+            toManager:   "compliance_officer",
+            signalType:  "offer_os_withdrawn",
+            message:     "An offer was withdrawn.",
+            entityType:  params.entityType,
+            entityId:    params.entityId,
+          }, svc)
+        } catch { /* best-effort */ }
+      }
   }
 
   // matched/enrolled/skipped/errors are legacy marketing-trigger counters — System B enrollment

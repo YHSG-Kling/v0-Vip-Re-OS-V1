@@ -1,5 +1,35 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1, wave 53): the sibling directory
+// app/dashboard/videos/components/business-context/ (index.ts,
+// video-business-purpose-picker.tsx, video-context-picker.tsx,
+// listing-video-mode-card.tsx, seller-update-video-mode-card.tsx) is DELETED.
+// It was UNREACHABLE — every `from "../components/business-context"` import
+// in the tree (app/dashboard/videos/create/video-create-client.tsx) resolves
+// to THIS file, not that directory's index.ts, by Node/webpack's
+// file-before-directory-index rule; its RepurposeDestinationsCard half was
+// already merged here in wave 52 (see that component's own header below).
+// This wave merges the rest:
+//   · VideoBusinessPurposePicker / VideoContextPicker / ListingVideoModeCard /
+//     SellerUpdateVideoModeCard below are the SURVIVORS — this file already
+//     had live, wired versions of all four (video-create-client.tsx imports
+//     them from "../components/business-context" and its purposeToVideoType
+//     map at video-create-client.tsx:944-953 matches this file's VIDEO_PURPOSES
+//     ids exactly; the duplicate directory's VideoPurpose vocabulary
+//     (buyer_education / referral_ask / social_cutdown / …) matched nothing
+//     downstream and was never wired).
+//   · The duplicate's VideoContextPicker had one real fix this file lacked:
+//     its homeowner search filtered contacts by the CANONICAL "past client"
+//     type (lib/contact-types.ts LIFETIME_CUSTOMER_TYPE = "lifetime_customer")
+//     instead of "seller". Merged onto handleSearch's homeowner branch below.
+//   · listingVideoMode / sellerUpdateMode were selected in the wizard but
+//     never reached the script description — merged into
+//     video-create-client.tsx handleGenerateScript so the chosen mode
+//     actually shapes the generated script.
+// Everything else in the duplicate directory (mode/purpose label sets) was a
+// second, never-live vocabulary with no downstream reader — nothing else to
+// carry over.
+
 import { useState } from "react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
@@ -8,6 +38,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import {
   Home,
   TrendingUp,
@@ -293,7 +324,14 @@ export function VideoContextPicker({
           .from("contacts")
           .select("id, first_name, last_name, email, phone, contact_type, address")
           .eq("brokerage_id", brokerageId)
-          .eq("contact_type", "seller")  // contacts.contact_type has no "homeowner"
+          // contacts.contact_type has no "homeowner" — the canonical spelling
+          // for "already closed, now owns the home" is LIFETIME_CUSTOMER_TYPE
+          // (lib/contact-types.ts). Fixed wave 53 (orphan doctrine §1 merge
+          // from the deleted business-context/video-context-picker.tsx
+          // duplicate, which had this filter right); "seller" was wrong — a
+          // seller is mid-transaction, not a past client to send a homeowner
+          // equity/market update to.
+          .eq("contact_type", LIFETIME_CUSTOMER_TYPE)
           .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,address.ilike.%${value}%`)
           .order("created_at", { ascending: false })
           .limit(8)

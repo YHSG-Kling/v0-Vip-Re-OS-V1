@@ -531,6 +531,7 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                     value={serviceType}
                     onChange={setServiceType}
                     placeholder="Any service"
+                    disabled={isPending}
                   />
                 </div>
               </div>

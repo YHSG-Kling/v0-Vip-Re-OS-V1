@@ -52,6 +52,9 @@ interface SmartSearchWidgetProps {
     inferred_must_have_features?: string[] | null
     inferred_deal_breakers?: string[] | null
   } | null
+  /** optional by design: style-override passthrough onto the root element; no
+   *  current caller (app/portal/[contactId]/search/page.tsx) needs a
+   *  non-default look. */
   className?: string
 }
 

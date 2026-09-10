@@ -116,7 +116,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url, intro_video_url, outro_video_url, b_roll_urls")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, video_metadata, status, retry_count, video_type, usage_intent, background_type, background_url, intro_video_url, outro_video_url, b_roll_urls")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -590,6 +590,46 @@ export async function GET(request: NextRequest) {
             }
           } catch (e) {
             console.error("[poll-did-videos] magnet attach failed:", (e as Error).message)
+          }
+
+          // ─── THE ESTIMATE VS. THE MEASUREMENT (wave 53 — avatar re-audit
+          //     item 2) ──────────────────────────────────────────────────────
+          // intro-video-reactor.ts stamps video_metadata.narration_budget_seconds
+          // at submission time — the WORDS_PER_MINUTE=150 ESTIMATE the script
+          // was trimmed against before D-ID ever saw it. `duration` above is
+          // what D-ID actually rendered. AgentTalkingHeadReel's BODY window
+          // hard-crops (trimAfter, no tpad), so an estimate that undershot —
+          // most likely on a non-English translated script speaking at a
+          // different cadence than the English constant assumes — is a silent
+          // mid-sentence crop unless it is measured HERE, the one place both
+          // numbers are in hand. Never blocks delivery: a warning plus a
+          // ledger stamp, the same best-effort discipline as every other step
+          // in this loop.
+          const narrationBudgetSeconds =
+            (video as any).video_metadata?.narration_budget_seconds as number | null | undefined
+          let avatarOverrunSeconds = 0
+          if (typeof narrationBudgetSeconds === "number") {
+            const { avatarDurationOverrunSeconds } = await import("@/lib/video/script-structure")
+            avatarOverrunSeconds = avatarDurationOverrunSeconds(duration, narrationBudgetSeconds)
+            if (avatarOverrunSeconds > 0) {
+              console.warn(
+                `[poll-did-videos] project ${video.id}: D-ID rendered ${duration}s of audio against a ` +
+                `${narrationBudgetSeconds}s narration budget — the avatar track ran ${avatarOverrunSeconds}s over ` +
+                `and AgentTalkingHeadReel's BODY window will hard-crop it. The estimate was wrong for this render.`,
+              )
+              const { error: overrunErr } = await supabase
+                .from("ai_video_projects")
+                .update({
+                  video_metadata: {
+                    ...((video as any).video_metadata ?? {}),
+                    avatar_duration_overrun_seconds: avatarOverrunSeconds,
+                  },
+                })
+                .eq("id", video.id)
+              if (overrunErr) {
+                console.error(`[poll-did-videos] could not stamp the overrun for ${video.id}: ${overrunErr.message}`)
+              }
+            }
           }
 
           // ─── Avatar → Remotion handoff ──────────────────────────────────

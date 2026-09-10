@@ -322,6 +322,42 @@ export function fitNarrationToBudget(
     + `trimmed to ${keptWords} words at a sentence boundary (${draftCount - keptWords} dropped).`)
 }
 
+/**
+ * How many seconds a MEASURED avatar-track duration ran past the
+ * pre-synthesis narration budget — the reader for
+ * `ai_video_projects.video_metadata.narration_budget_seconds`
+ * (lib/video/intro-video-reactor.ts).
+ *
+ * WHY THIS EXISTS. `fitNarrationToBudget` trims the SCRIPT to a word-count
+ * ceiling at WORDS_PER_MINUTE=150 — one English speaking-rate ESTIMATE,
+ * applied identically to a script this reactor may have just written in
+ * Spanish, French, or any other language (draftScript's languageLine, wave
+ * 52). AgentTalkingHeadReel's BODY window is a hard
+ * `<Video trimBefore={0} trimAfter={BODY}>` crop with no TPAD — unlike the
+ * separate voiceover_url (snake) lane, nothing extends this composition when
+ * the avatar track runs long, so an estimate that undershoots for a
+ * particular language's cadence is a SILENT mid-sentence crop. This turns the
+ * silence into a measurement once D-ID reports the render's own actual
+ * duration (poll-did-videos `data.duration`), so it moves — §2, "a count
+ * that moves is the finding" — instead of vanishing.
+ *
+ * PURE. `toleranceSeconds` absorbs D-ID's own lead-in/tail silence and
+ * rounding — the same reasoning NARRATION_HEADROOM already gives the
+ * pre-synthesis budget, applied here to the post-render comparison.
+ * Null/non-finite inputs (no budget recorded, or a project this reactor never
+ * touched) return 0 — "not measurable" is not "overran".
+ */
+export function avatarDurationOverrunSeconds(
+  actualSeconds: number | null | undefined,
+  budgetSeconds: number | null | undefined,
+  toleranceSeconds = 1,
+): number {
+  if (typeof actualSeconds !== "number" || !Number.isFinite(actualSeconds)) return 0
+  if (typeof budgetSeconds !== "number" || !Number.isFinite(budgetSeconds)) return 0
+  const over = actualSeconds - budgetSeconds - toleranceSeconds
+  return over > 0 ? Number(over.toFixed(1)) : 0
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE READER FOR `stillOverBudget` (§1 — build the missing half)
 // ═══════════════════════════════════════════════════════════════════════════

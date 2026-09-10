@@ -165,6 +165,7 @@ export function AgentLifetimeCustomersPanel({
                         detected_at: change.detected_at,
                         contacts: change.contacts,
                       }}
+                      compact={true}
                     />
                     {change.contacts && (
                       <Link href={`/crm/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">

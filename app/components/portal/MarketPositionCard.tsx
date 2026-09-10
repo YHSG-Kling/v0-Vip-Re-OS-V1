@@ -30,6 +30,10 @@ interface MarketPositionCardProps {
   report: NeighborhoodReport | null
   comparison: "above" | "below" | "at" | null
   listPrice: number | null
+  /** optional by design: the skeleton branch below is for a future
+   *  client-driven refresh — the only caller, seller-home.tsx, is a Server
+   *  Component that awaits its data before rendering, so it is never mid-load
+   *  when this card renders. */
   isLoading?: boolean
 }
 

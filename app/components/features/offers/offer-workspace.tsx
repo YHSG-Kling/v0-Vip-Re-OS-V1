@@ -64,6 +64,10 @@ interface OfferWorkspaceProps {
   agentId:  string
   brokerageId: string
   buyerPath: string   // e.g. /crm/contacts/{id}
+  // BUILT wave 53 — the brokerage's REAL commission rate (percent, e.g. 6 for
+  // 6%), resolved server-side via getDefaultCommissionStructure. Forwarded to
+  // NetSheetView, which otherwise falls back to a hardcoded 6% placeholder.
+  commissionRate?: number
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -76,6 +80,7 @@ export function OfferWorkspace({
   agentId,
   brokerageId,
   buyerPath,
+  commissionRate,
 }: OfferWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<"details" | "net-sheet" | "history" | "documents" | "copilot">("details")
   const [isPending, startTrans]   = useTransition()
@@ -421,6 +426,7 @@ export function OfferWorkspace({
               closingCostContribution={offer.closing_cost_contribution ?? null}
               earnestMoney={offer.earnest_money ?? null}
               sellerNetEstimate={offer.seller_net_estimate ?? null}
+              commissionRate={commissionRate}
             />
           </div>
         )}

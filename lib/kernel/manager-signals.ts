@@ -3499,6 +3499,48 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed a gated offer-comparison message to the seller (gate message ${res.id})` : null
   },
+
+  // ── D-sedecies (wave 53, 2026-09-10, FINAL tranche) — ONE HANDLED consumer for the
+  // kernel-event census round 10 readers (lib/kernel/event-reactor.ts, tranche 8 of
+  // scripts/kernel-event-census-z1.ts). The other 27 readers built this wave are feed_only.
+
+  // Recruiting Manager → Campaign Orchestrator: an agent EARNED a gamification badge
+  // (app/actions/gamification.ts awardBadge — the agent is already notified directly in the
+  // same call via a `notifications` insert). Propose a GATED social-proof post celebrating
+  // it — the exact shape certification_issued already established for the sibling
+  // onboarding-achievement moment. Idempotent per badge award (post_brief carries the
+  // agent_badges id). The agent name is sanitized before it enters client-facing copy.
+  "campaign_orchestrator:gamification_badge_awarded": async (signal, ctx) => {
+    const badgeAwardId = signal.entityId
+    const agentRowId = (signal.payload?.agent_id as string | undefined) ?? null
+    const badgeName = (signal.payload?.badge_name as string | undefined) ?? null
+    if (!badgeAwardId || !agentRowId || !badgeName) return null
+
+    const brief = `GAMIFICATION BADGE SOCIAL PROOF — badge:${badgeAwardId}`
+    const { data: prior } = await ctx.supabase.from("social_posts").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("agent_id", agentRowId).ilike("post_brief", `${brief}%`).limit(1).maybeSingle()
+    if (prior) return "badge social-proof post already proposed"
+
+    // Agent display name via agents.user_id → users, sanitized for client-facing copy.
+    const { sanitizeProperNoun } = await import("@/lib/compliance/client-text-guard")
+    let name = "our agent"
+    const { data: ag } = await ctx.supabase.from("agents").select("user_id").eq("id", agentRowId).maybeSingle()
+    const uid = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await ctx.supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+      const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+      name = sanitizeProperNoun(full, 60) ?? "our agent"
+    }
+    const badge = sanitizeProperNoun(badgeName, 80) ?? "a new badge"
+
+    const { error } = await ctx.supabase.from("social_posts").insert({
+      brokerage_id: ctx.brokerageId, agent_id: agentRowId, platform: "all", post_type: "custom",
+      content: `Congratulations to ${name} on earning the ${badge} badge! Celebrating the wins that keep our clients in great hands. 🏆`,
+      status: "draft", approval_status: "pending", ai_generated: true,
+      post_brief: `${brief} — gated social proof for ${name}'s ${badge}; review before it posts.`,
+    })
+    return error ? null : `proposed a gated social-proof post for the ${badge} badge`
+  },
 }
 
 /**

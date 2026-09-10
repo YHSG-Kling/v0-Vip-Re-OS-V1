@@ -1951,6 +1951,7 @@ export function VendorDirectoryClient({
                 id="new-vendor-category"
                 value={newVendorCategory}
                 onChange={setNewVendorCategory}
+                disabled={isPending}
               />
             </div>
 
@@ -2045,6 +2046,7 @@ export function VendorDirectoryClient({
                 id="edit-vendor-category"
                 value={editCategory}
                 onChange={setEditCategory}
+                disabled={isPending}
               />
             </div>
 

@@ -30,6 +30,8 @@ export interface Offer {
 export interface OfferStatusCardProps {
   offers: Offer[]
   contactId: string
+  /** optional by design: style-override passthrough onto the root element; no
+   *  current caller needs a non-default look. */
   className?: string
 }
 

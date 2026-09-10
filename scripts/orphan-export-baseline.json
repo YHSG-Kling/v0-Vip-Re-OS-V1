@@ -17,6 +17,7 @@
     "app/components/command-palette-items.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
     "app/components/shared/ManagerChip.tsx": 2,
+    "hooks/use-click-outside.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 2,
@@ -434,7 +435,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9425,
+  "census": 9422,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2361,10 +2362,6 @@
     "app/dashboard/videos/board/video-recommendations-card.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
     "app/dashboard/videos/components/BrollPicker.tsx": 1,
-    "app/dashboard/videos/components/business-context/listing-video-mode-card.tsx": 1,
-    "app/dashboard/videos/components/business-context/seller-update-video-mode-card.tsx": 1,
-    "app/dashboard/videos/components/business-context/video-business-purpose-picker.tsx": 1,
-    "app/dashboard/videos/components/business-context/video-context-picker.tsx": 1,
     "app/dashboard/videos/components/business-context.tsx": 5,
     "app/dashboard/videos/create/teammate-explainer-card.tsx": 1,
     "app/dashboard/videos/templates/template-form-client.tsx": 1,
@@ -4138,7 +4135,7 @@
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 9,
-    "lib/video/script-structure.ts": 11,
+    "lib/video/script-structure.ts": 12,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 10,
     "lib/video/video-identity.ts": 1,
@@ -12251,18 +12248,6 @@
     ],
     "app/dashboard/videos/components/BrollPicker.tsx": [
       "BrollPicker"
-    ],
-    "app/dashboard/videos/components/business-context/listing-video-mode-card.tsx": [
-      "ListingVideoModeCard"
-    ],
-    "app/dashboard/videos/components/business-context/seller-update-video-mode-card.tsx": [
-      "SellerUpdateVideoModeCard"
-    ],
-    "app/dashboard/videos/components/business-context/video-business-purpose-picker.tsx": [
-      "VideoBusinessPurposePicker"
-    ],
-    "app/dashboard/videos/components/business-context/video-context-picker.tsx": [
-      "VideoContextPicker"
     ],
     "app/dashboard/videos/components/business-context.tsx": [
       "VideoBusinessPurposePicker",
@@ -20802,6 +20787,7 @@
       "spokenWords",
       "spokenSentences",
       "fitNarrationToBudget",
+      "avatarDurationOverrunSeconds",
       "fitNarrationWithOneRedraft",
       "narrationOverrunRedraftDirective",
       "narrationMaxTokens",
@@ -21375,5 +21361,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }

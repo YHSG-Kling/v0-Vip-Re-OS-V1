@@ -289,6 +289,64 @@ export const STATIC_ROUTES: Record<string, { from: ManagerKey; to: ManagerKey }>
   // (a data-ingestion moment, same class as system_sync_completed).
   market_insight_generated:          { from: "listing_concierge",  to: "campaign_orchestrator" },
   market_data_refreshed:             { from: "data_steward",       to: "listing_concierge" },
+
+  // ── D-sedecies (wave 53, kernel-event census tranche 8, FINAL tranche, 2026-09-10) ──────
+  // AI-learning-loop ledger writes (prediction outcome / raw agent feedback) — FROM Data
+  // Steward (the ledger owner, same family as offer_ai_extracted/lead_conversion_recorded) TO
+  // Cron Manager, the ops seat that runs the weekly ai-metrics/prompt-calibration crons this
+  // ledger feeds. The cron-triggered AGGREGATE computations run the reverse direction.
+  prediction_outcome_recorded:       { from: "data_steward",       to: "cron_manager" },
+  ai_feedback_received:              { from: "data_steward",       to: "cron_manager" },
+  ai_metrics_computed:               { from: "cron_manager",       to: "data_steward" },
+  prompt_calibration_updated:        { from: "cron_manager",       to: "data_steward" },
+  // an agent earned a gamification badge — Recruiting Manager (owns agent_badges) hands the
+  // achievement to Campaign Orchestrator, mirroring certification_issued exactly.
+  gamification_badge_awarded:        { from: "recruiting_manager",  to: "campaign_orchestrator" },
+  // a cron run completed successfully — the success counterpart of the existing cron_failed
+  // pair (cron_manager -> data_steward).
+  cron_completed_success:            { from: "cron_manager",       to: "data_steward" },
+  // the equity-trigger wealth scan — FROM Data Steward (the scan owner, same class as
+  // deal_health_score_updated/buyer_fatigue_detected) TO Sphere of Influence (owns
+  // lifetime/past-client relationships).
+  equity_milestone:                  { from: "data_steward",       to: "sphere_of_influence" },
+  refinance_opportunity:             { from: "data_steward",       to: "sphere_of_influence" },
+  // a lender-portal action updated a transaction's journey — FROM Data Steward (the
+  // vendor/lender portal-action log, same family as vendor_assigned_to_transaction) TO Deal
+  // Coordinator (owns the transaction).
+  journey_stage_updated:             { from: "data_steward",       to: "deal_coordinator" },
+  // an agent published a response to a client review — FROM Sphere of Influence (owns
+  // reviews/reputation, the review_received precedent) TO Campaign Orchestrator.
+  review_response_published:         { from: "sphere_of_influence", to: "campaign_orchestrator" },
+  // vendor-bench roster intake/assignment — FROM Data Steward (same family as
+  // vendor_assigned_to_transaction/business_card_uploaded) TO Listing Concierge (draws on the
+  // bench when booking services for a listing).
+  vendor_record_created:             { from: "data_steward",       to: "listing_concierge" },
+  vendor_record_updated:             { from: "data_steward",       to: "listing_concierge" },
+  vendor_assigned_to_listing:        { from: "data_steward",       to: "listing_concierge" },
+  vendor_deliverable_attached:       { from: "data_steward",       to: "listing_concierge" },
+  // an accounting integration was deactivated — FROM Finance Manager (owns back-office
+  // integrations) TO Data Steward, mirroring subscription_cancelled exactly.
+  integration_deactivated:           { from: "finance_manager",    to: "data_steward" },
+  // an accounting sync run started — FROM Data Steward (the sync-run ledger writer) TO
+  // Finance Manager, the START counterpart of the existing system_sync_completed pair.
+  system_sync_triggered:             { from: "data_steward",       to: "finance_manager" },
+  // a vendor sent a portal message about a transaction — same family as journey_stage_updated.
+  message_created:                   { from: "data_steward",       to: "deal_coordinator" },
+  // a single offer finished AI analysis — FROM Data Steward (same family as
+  // offer_ai_extracted) TO Listing Concierge.
+  offer_os_ai_analyzed:              { from: "data_steward",       to: "listing_concierge" },
+  // a second offer-comparison writer's own visibility line (lib/kernel/offers.ts
+  // compareOffersForListing) — same FROM/TO shape as the already-HANDLED
+  // offer_comparison_generated (lib/offers/offer-analyzer.ts), feed_only so the two writers
+  // never double-propose a gated message.
+  offer_os_ai_compared:              { from: "listing_concierge",  to: "campaign_orchestrator" },
+  // offer negotiation lifecycle — FROM Deal Coordinator (owns negotiation,
+  // negotiation_strategy_drafted's own domain) TO Compliance Officer's audit trail, the SAME
+  // FROM/TO shape negotiation_strategy_drafted already uses.
+  offer_os_countered:                { from: "deal_coordinator",   to: "compliance_officer" },
+  offer_os_counter_responded:        { from: "deal_coordinator",   to: "compliance_officer" },
+  offer_os_rejected:                 { from: "deal_coordinator",   to: "compliance_officer" },
+  offer_os_withdrawn:                { from: "deal_coordinator",   to: "compliance_officer" },
 }
 
 /**
@@ -313,6 +371,20 @@ export const BRANCHING_EVENTS: Record<string, { from: ManagerKey; candidates: Ma
   // pattern-detection scan owner, same class as deal_health_score_updated/
   // listing_health_score_updated/buyer_fatigue_detected) to the side-appropriate manager.
   behavioral_pattern_detected: { from: "data_steward", candidates: ["shopping_agent", "listing_concierge", "deal_coordinator"], reason: "branches on the detection's entity_type: buyer -> Shopping Agent, seller -> Listing Concierge, negotiation -> Deal Coordinator" },
+  // D-sedecies (wave 53, FINAL tranche): the pattern-detector's own companion prediction
+  // artifact — same discriminator as its sibling behavioral_pattern_detected's entity_type,
+  // but "contact" | "listing" (fetchEntitySignals' own values), not buyer/seller/negotiation.
+  prediction_created: { from: "data_steward", candidates: ["ai_isa", "listing_concierge"], reason: "branches on the pattern-detector's own entityType: contact -> AI ISA, listing -> Listing Concierge" },
+  // portal-engagement moments (contact accessed the portal / sent a message / viewed an
+  // education lesson) branch on the contact's own contact_type — one DB lookup, one dynamic
+  // toManager, unresolved/unset publishes nothing rather than guessing.
+  portal_accessed: { from: "data_steward", candidates: ["listing_concierge", "shopping_agent"], reason: "branches on the contact's contact_type; unresolved/unset publishes nothing" },
+  client_portal_message_sent: { from: "data_steward", candidates: ["listing_concierge", "shopping_agent"], reason: "branches on the contact's contact_type; unresolved/unset publishes nothing" },
+  portal_education_viewed: { from: "data_steward", candidates: ["listing_concierge", "shopping_agent"], reason: "branches on the contact's contact_type; unresolved/unset publishes nothing" },
+  // portal_module_viewed's TWO emitters carry their own discriminator directly (no DB lookup
+  // needed): app/actions/portal-seller.ts entityType "contact" (a seller-portal module view)
+  // vs app/actions/vendor-portal.ts entityType "vendor_job" (a vendor's own job-note module).
+  portal_module_viewed: { from: "data_steward", candidates: ["listing_concierge", "deal_coordinator"], reason: "branches on the emitter's own entityType: contact -> Listing Concierge, vendor_job -> Deal Coordinator (owns the tied transaction)" },
 }
 
 /**

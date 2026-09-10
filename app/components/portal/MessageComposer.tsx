@@ -19,6 +19,10 @@ const MAX_CHARS = 2000
 interface MessageComposerProps {
   onSend: (message: string, channel: string) => Promise<void>
   placeholder?: string
+  /** optional by design: the send control already disables itself on empty
+   *  input and while sending (`disabled || status === "sending"` below); the
+   *  one caller, messages-client.tsx, has no read-only/archived conversation
+   *  state to feed in yet. */
   disabled?: boolean
   showChannelSelector?: boolean
   initialValue?: string
