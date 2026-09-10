@@ -1,0 +1,11 @@
+{
+  "a": [
+    "app/api/cron/lead-scraping/route.ts::ingestRawSourceBatch"
+  ],
+  "b": [
+    "app/actions/listing-lifecycle.ts::scheduleClosingGift",
+    "lib/recruiting/leaderboard.ts::isoWeekLabel",
+    "lib/remotion/render-coordinator.ts::estimateCompositionCost"
+  ],
+  "e": []
+}

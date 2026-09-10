@@ -928,6 +928,7 @@ export const RemotionRoot: React.FC = () => {
             primaryColor:  "#0F172A",
             accentColor:   "#F59E0B",
             brokerageName: "Your Brokerage",
+            showEhoMark:   true,
           },
         }}
       />

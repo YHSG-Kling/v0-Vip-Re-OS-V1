@@ -2306,9 +2306,36 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     return error ? null : "proposed a gated welcome social-proof post for the newly onboarded agent"
   },
 
-  // Data Steward → Sphere of Influence: a scanned business card was approved into a real
-  // contact — propose the warm first-touch intro.
+  // Data Steward → Sphere of Influence: a scanned business card was classified
+  // SPHERE or CONTACT (wave 48, owner ruling 2026-09-10 — never ASSUMED). A
+  // 'contact' card has a real contacts row and gets the original gated portal
+  // warm-intro; a 'sphere' card deliberately has NO contacts row (the ruling's
+  // point), so there is no gated portal recipient — Sphere instead reminds the
+  // SCANNING agent to make the personal reach-out themselves, which is the
+  // whole nature of a sphere-of-influence relationship (personal, not a
+  // template).
   "sphere_of_influence:business_card_approved": async (signal, ctx) => {
+    if (signal.entityType === "business_card") {
+      const scanId = signal.entityId
+      if (!scanId) return null
+      const { data: scan } = await ctx.supabase.from("business_card_scans")
+        .select("agent_id, extracted_data").eq("id", scanId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      if (!scan) return null
+      const s = scan as { agent_id: string | null; extracted_data: Record<string, unknown> | null }
+      if (!s.agent_id) return null
+      const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", s.agent_id).maybeSingle()
+      const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+      if (!userId) return null
+      const ed = (s.extracted_data ?? {}) as Record<string, unknown>
+      const name = [ed.first_name, ed.last_name].filter(Boolean).join(" ") || "the card you scanned"
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: userId, brokerage_id: ctx.brokerageId, type: "sphere_reach_out",
+        title: `Sphere of influence: ${name}`,
+        body: `You scanned ${name}'s card and classified them sphere of influence — a personal reach-out (not a template) keeps that relationship warm.`,
+        entity_type: "business_card", entity_id: scanId, priority: "low", is_read: false,
+      })
+      return error ? null : "reminded the scanning agent to make a personal sphere-of-influence reach-out"
+    }
     const contactId = signal.entityId
     if (!contactId) return null
     const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
@@ -2327,6 +2354,88 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       channel: "portal",
     }, ctx.supabase)
     return res.ok ? `proposed a warm intro message to the new contact (gate message ${res.id})` : null
+  },
+
+  // Data Steward → AI ISA: a scanned business card was classified a POTENTIAL
+  // contact (wave 48) — propose ONE gated first-touch through the canonical
+  // consent-gated engagement. No outbound send: proposeClientMessage stages a
+  // GATED message a human approves before it dispatches.
+  "ai_isa:business_card_potential_contact_candidate": async (signal, ctx) => {
+    if (signal.entityType !== "contact" || !signal.entityId) return null
+    const contactId = signal.entityId
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "ai_isa", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject: `Great meeting you, ${firstName}!`,
+      body: `Hi ${firstName} — it was great connecting! Whenever you're ready to talk about buying or selling, I'm here — no pressure at all.`,
+      rationale: "A business card was scanned and classified a potential contact — a gated first-touch, no outbound send until approved.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated first-touch to the potential contact (gate message ${res.id})` : null
+  },
+
+  // Data Steward → Recruiting Manager: a scanned business card was classified
+  // AGENT (wave 48, owner rule "other agents are users") — surface the fresh
+  // recruiting prospect to the recruiter who scanned it.
+  "recruiting_manager:business_card_recruit_candidate": async (signal, ctx) => {
+    const recruitId = signal.entityId
+    if (!recruitId) return null
+    const { data: recruit } = await ctx.supabase.from("recruits")
+      .select("first_name, last_name, recruiter_agent_id, current_brokerage")
+      .eq("id", recruitId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!recruit) return null
+    const r = recruit as { first_name: string | null; last_name: string | null; recruiter_agent_id: string | null; current_brokerage: string | null }
+    if (!r.recruiter_agent_id) return null
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", r.recruiter_agent_id).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return null
+    const name = [r.first_name, r.last_name].filter(Boolean).join(" ") || "the agent you scanned"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "recruit_prospect",
+      title: `New recruiting prospect: ${name}`,
+      body: `You scanned ${name}'s card${r.current_brokerage ? ` from ${r.current_brokerage}` : ""} — they're now on your recruiting pipeline as a prospect.`,
+      entity_type: "recruit", entity_id: recruitId, priority: "low", is_read: false,
+    })
+    return error ? null : "surfaced the new recruiting prospect to the recruiter"
+  },
+
+  // Data Steward → Asset Manager: a scanned business card was classified VENDOR
+  // (wave 48) — surface a fresh bench candidate. Most vendor families a card
+  // actually names (photographer/videographer/drone_pilot/3d_tour) ARE Asset
+  // Manager's own content-creation supply chain; other trades still land on the
+  // vendor book regardless — this is the cue, not the gate.
+  "asset_manager:business_card_vendor_candidate": async (signal, ctx) => {
+    const vendorId = signal.entityId
+    if (!vendorId) return null
+    const { data: vendor } = await ctx.supabase.from("vendors").select("name, category")
+      .eq("id", vendorId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!vendor) return null
+    const v = vendor as { name: string | null; category: string | null }
+    const scanId = (signal.payload?.scanId as string | undefined) ?? null
+    let userId: string | null = null
+    if (scanId) {
+      const { data: scan } = await ctx.supabase.from("business_card_scans").select("agent_id").eq("id", scanId).maybeSingle()
+      const scanAgentId = (scan as { agent_id?: string | null } | null)?.agent_id ?? null
+      if (scanAgentId) {
+        const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", scanAgentId).maybeSingle()
+        userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+      }
+    }
+    if (!userId) return "vendor bench candidate recorded — no scanning agent could be resolved to notify"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "vendor_bench_candidate",
+      title: `New vendor bench candidate: ${v.name ?? "unnamed vendor"}`,
+      body: `A scanned business card added a pending ${v.category ?? "vendor"} to the bench — verify before booking.`,
+      entity_type: "vendor", entity_id: vendorId, priority: "low", is_read: false,
+    })
+    return error ? null : "surfaced the vendor bench candidate"
   },
 
   // Data Steward → Deal Coordinator: a task is due within 24h — remind the assigned
@@ -2415,6 +2524,225 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       return `website-visitor newsletter enrollment failed: ${e instanceof Error ? e.message : String(e)}`
     }
     return null
+  },
+
+  // ── Wave 48 (2026-09-10, lane EF round 5, kernel-event census D-undecies) ──
+
+  // AI ISA → Compliance Officer: TCPA consent was captured on a lead-first track
+  // (handleConsentReceived) — record it as a low-priority audit notification. The
+  // contact-side sibling (contact_consent_events) already has its own writer; this is the
+  // lead-side moment, before conversion.
+  "compliance_officer:consent_received": async (signal, ctx) => {
+    const leadId = signal.entityId
+    if (!leadId) return null
+    const { data: officers } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("user_type", "compliance_officer").limit(25)
+    const ids = ((officers ?? []) as { id: string }[]).map((o) => o.id)
+    if (ids.length === 0) return "TCPA consent captured — no compliance officer seat to notify"
+    const rows = ids.map((id) => ({
+      user_id: id, brokerage_id: ctx.brokerageId, type: "consent_received",
+      title: "TCPA consent captured on a lead",
+      body: "A lead consented to contact — logged for the compliance audit trail.",
+      entity_type: "lead", entity_id: leadId, priority: "low", is_read: false,
+    }))
+    const { error } = await ctx.supabase.from("notifications").insert(rows)
+    return error ? null : `logged TCPA consent capture to ${ids.length} compliance officer(s)`
+  },
+
+  // AI ISA → Sphere of Influence: a lead converted to a real contact (handleLeadAssigned,
+  // same call as lead_assigned below) — propose the warm welcome message, the
+  // lifetime-relationship owner's first touch on every new client (mirrors deal_closed).
+  "sphere_of_influence:lead_converted_to_contact": async (signal, ctx) => {
+    const leadId = signal.entityId
+    if (!leadId) return null
+    const { data: lead } = await ctx.supabase.from("leads").select("contact_id")
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const contactId = (lead as { contact_id?: string | null } | null)?.contact_id ?? null
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject: `Welcome, ${firstName}!`,
+      body: `Hi ${firstName} — welcome! I'm here to help with anything real-estate related, now or down the road.`,
+      rationale: "A lead just converted to a contact — the lifetime relationship's first welcome touch.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a welcome message to the new contact (gate message ${res.id})` : null
+  },
+
+  // Data Steward → Deal Coordinator: a represented buyer went under contract
+  // (offer-bridge.ts) — open a gated closing-prep task for the deal's agent.
+  "deal_coordinator:buyer_under_contract": async (signal, ctx) => {
+    const transactionId = signal.entityId
+    if (!transactionId) return null
+    const { data: tx } = await ctx.supabase.from("transactions")
+      .select("agent_id, buyer_contact_id, contact_id, property_address")
+      .eq("id", transactionId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const row = tx as { agent_id?: string | null; buyer_contact_id?: string | null; contact_id?: string | null; property_address?: string | null } | null
+    if (!row?.agent_id) return "buyer under contract but no assigned agent could be resolved"
+    const where = row.property_address ? ` on ${row.property_address}` : ""
+    const { error } = await ctx.supabase.from("tasks").insert({
+      brokerage_id: ctx.brokerageId, transaction_id: transactionId,
+      contact_id: row.buyer_contact_id ?? row.contact_id ?? null,
+      assigned_to_agent_id: row.agent_id,
+      title: `Buyer went under contract${where}`,
+      description: "Confirm earnest money + inspection deadlines with the buyer and kick off the closing checklist.",
+      due_date: new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10),
+      assignee_type: "agent", source: "buyer_under_contract", status: "pending",
+    })
+    return error ? null : "opened a gated closing-prep task for the buyer's agent"
+  },
+
+  // Data Steward → Finance Manager: an earnest money milestone completed
+  // (transaction-inspections.ts) — propose a gated buyer confirmation message.
+  "finance_manager:earnest_money_milestone_completed": async (signal, ctx) => {
+    const transactionId = signal.entityId
+    if (!transactionId) return null
+    const { data: tx } = await ctx.supabase.from("transactions")
+      .select("buyer_contact_id, contact_id").eq("id", transactionId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const row = tx as { buyer_contact_id?: string | null; contact_id?: string | null } | null
+    const contactId = row?.buyer_contact_id ?? row?.contact_id ?? null
+    if (!contactId) return "earnest money milestone completed but no buyer contact could be resolved"
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const firstName = (contact as { first_name?: string | null } | null)?.first_name || "there"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "finance_manager", entityType: "transaction",
+      entityId: transactionId, recipientContactId: contactId, audience: "buyer",
+      subject: "Your earnest money has been received",
+      body: `Hi ${firstName} — good news: your earnest money has been received and processed. One more box checked toward closing!`,
+      rationale: "The earnest_money_due milestone completed — a gated money-moment confirmation.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed an earnest-money confirmation to the buyer (gate message ${res.id})` : null
+  },
+
+  // Recruiting Manager → Compliance Officer: an agent submitted a license for verification
+  // (onboarding/license.ts) — record the pending review on the compliance ledger, the same
+  // ledger license_lapsing uses, so a submitted-but-unverified license is tracked rather
+  // than silently pending. Resolves compliance_flags.agent_id from the onboarding row.
+  "compliance_officer:agent_license_submitted": async (signal, ctx) => {
+    const onboardingId = signal.entityId
+    if (!onboardingId) return null
+    const { data: onboarding } = await ctx.supabase.from("agent_onboarding").select("agent_id")
+      .eq("id", onboardingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const agentId = (onboarding as { agent_id?: string | null } | null)?.agent_id ?? null
+    if (!agentId) return null
+    const { data: existing } = await ctx.supabase.from("compliance_flags").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("agent_id", agentId)
+      .eq("violation_type", "license_pending_review").eq("status", "flagged").limit(1).maybeSingle()
+    if (existing) return "license pending-review already on the compliance ledger (open)"
+    const { data: license } = await ctx.supabase.from("agent_licenses")
+      .select("license_number, license_state").eq("agent_id", agentId)
+      .eq("verification_status", "pending").order("created_at", { ascending: false }).limit(1).maybeSingle()
+    const l = license as { license_number?: string | null; license_state?: string | null } | null
+    const { error } = await ctx.supabase.from("compliance_flags").insert({
+      brokerage_id: ctx.brokerageId, agent_id: agentId,
+      violation_type: "license_pending_review", content_type: "agent_license",
+      flagged_content: `Agent submitted license ${l?.license_number ?? ""} (${l?.license_state ?? "?"}) — awaiting verification.`,
+      severity: "low", status: "flagged", detected_at: new Date().toISOString(),
+    })
+    return error ? null : "recorded the submitted license on the compliance ledger for review"
+  },
+
+  // Data Steward → Listing Concierge: an AI CMA finished generating (ai-cma-engine.ts) —
+  // propose a gated seller message sharing the fresh comps-grounded valuation.
+  "listing_concierge:cma_generated": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { data: listing } = await ctx.supabase.from("listings")
+      .select("seller_contact_id, list_price, address")
+      .eq("id", listingId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const row = listing as { seller_contact_id?: string | null; list_price?: number | null; address?: string | null } | null
+    if (!row?.seller_contact_id) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name")
+      .eq("id", row.seller_contact_id).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const firstName = (contact as { first_name?: string | null } | null)?.first_name || "there"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "listing",
+      entityId: listingId, recipientContactId: row.seller_contact_id, audience: "seller",
+      subject: "A fresh market analysis is ready",
+      body: `Hi ${firstName} — I just ran a fresh comps-grounded market analysis for your home${row.address ? ` at ${row.address}` : ""}. Let's go over it together.`,
+      rationale: "A CMA finished generating for the seller's listing.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated CMA-ready message to the seller (gate message ${res.id})` : null
+  },
+
+  // Data Steward → Sphere of Influence: a referral was received (referral-actions.ts) —
+  // propose a warm welcome message to the referred contact (referral_reciprocity stays the
+  // separate partner-payback signal, not this one).
+  "sphere_of_influence:referral_received": async (signal, ctx) => {
+    const contactId = signal.contactId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts").select("first_name, contact_type")
+      .eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject: `Great to meet you, ${firstName}!`,
+      body: `Hi ${firstName} — you were referred to me and I'm looking forward to helping however I can, now or down the road.`,
+      rationale: "A referral was received — the warm first-touch welcome.",
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a welcome message to the referred contact (gate message ${res.id})` : null
+  },
+
+  // Data Steward → AI ISA: a lead was auto-assigned to an agent (handleLeadAssigned) —
+  // notify the resolved agent directly so the assignment reaches them beyond the queue.
+  "ai_isa:lead_assigned": async (signal, ctx) => {
+    const leadId = signal.entityId
+    if (!leadId) return null
+    const { data: lead } = await ctx.supabase.from("leads").select("agent_id")
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const agentId = (lead as { agent_id?: string | null } | null)?.agent_id ?? null
+    if (!agentId) return null
+    const { data: agentRow } = await ctx.supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+    const userId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+    if (!userId) return "lead assigned but the agent's user account could not be resolved"
+    const { error } = await ctx.supabase.from("notifications").insert({
+      user_id: userId, brokerage_id: ctx.brokerageId, type: "lead_assigned",
+      title: "A new lead was assigned to you", body: "Reach out soon — first response speed matters.",
+      entity_type: "lead", entity_id: leadId, priority: "medium", is_read: false,
+    })
+    return error ? null : "notified the assigned agent of the new lead"
+  },
+
+  // Data Steward → Deal Coordinator: a vendor was assigned to a transaction
+  // (vendor-marketplace.ts) — open a gated confirm-scope task for the deal's agent.
+  "deal_coordinator:vendor_assigned_to_transaction": async (signal, ctx) => {
+    const assignmentId = signal.entityId
+    const transactionId = (signal.payload?.transaction_id as string | undefined) ?? null
+    const agentId = (signal.payload?.assigned_by_agent_id as string | undefined) ?? null
+    const assignmentType = (signal.payload?.assignment_type as string | undefined) ?? "vendor"
+    if (!agentId) return "vendor assigned but no agent could be resolved for a task"
+    const { data: existing } = await ctx.supabase.from("tasks").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("source", "vendor_assigned_to_transaction")
+      .eq("transaction_id", transactionId).eq("status", "pending").limit(1).maybeSingle()
+    if (existing) return "vendor confirm-scope task already open (deduped)"
+    const { error } = await ctx.supabase.from("tasks").insert({
+      brokerage_id: ctx.brokerageId, transaction_id: transactionId,
+      assigned_to_agent_id: agentId,
+      title: `Confirm scope with the newly assigned ${assignmentType} vendor`,
+      description: `A vendor was assigned to this transaction (assignment ${assignmentId ?? "n/a"}). Confirm scope + timeline with them.`,
+      due_date: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
+      assignee_type: "agent", source: "vendor_assigned_to_transaction", status: "pending",
+    })
+    return error ? null : "opened a gated vendor confirm-scope task for the deal's agent"
   },
 }
 

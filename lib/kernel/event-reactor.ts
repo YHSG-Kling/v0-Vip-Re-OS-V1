@@ -21,6 +21,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { enrollMatchingSequences, writePortalUpdate } from "@/lib/kernel/event-fanout"
 import { resolveEventContacts } from "@/lib/kernel/resolve-event-contacts"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // Valid KernelEvent string values — used to gate sequence enrollment + portal so a non-KernelEvent
@@ -815,7 +816,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   if (params.brokerageId) {
     // 1/2 — deal-health scan (app/api/cron/deal-health-scan/route.ts). Fires per scored
     // transaction; only signal when the score is not healthy, so a clean scan doesn't
-    // spam Deal Coordinator's inbox every 6 hours.
+    // spam Deal Coordinator's inbox every 6 hours. CADENCE, not an edge trigger — fires on
+    // every scan of this transaction while unhealthy (see D-undecies #1 deal_health_changed,
+    // the TIER-TRANSITION edge sibling, for the full three-way relationship with
+    // DEAL_AT_RISK_DETECTED below).
     if (params.event === KernelEvent.DEAL_HEALTH_SCORE_UPDATED) {
       const riskLevel = (params.metadata as { risk_level?: string } | undefined)?.risk_level
       if (riskLevel && riskLevel !== "healthy") {
@@ -1244,18 +1248,66 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 19 — a scanned business card was approved into a real CONTACT (app/actions/
-    // business-card/business-card-actions.ts). HANDLED — Sphere of Influence (lifetime
-    // relationship owner) proposes the warm first-touch intro so a card scanned at an
-    // event doesn't sit as a silent row.
+    // 19 — a scanned business card was APPROVED (app/actions/business-card/
+    // business-card-actions.ts). Wave 48 (owner ruling 2026-09-10, verbatim): "the
+    // kernel events scanned business card shouldn't be assumed contact ... sphere of
+    // influence/other agent/potential contact ... card reader or agents notes can
+    // determine." Wave 47's original body here ALWAYS routed to Sphere assuming a
+    // contacts row existed — exactly the assumption this ruling forbids. Now routed
+    // by metadata.card_subject_type (lib/contacts/card-classifier.ts classifyCardSubject,
+    // folded with the action's own existing-user/contact/vendor match + review-surface
+    // picker), one signal_type per class, each addressed to the manager that owns that
+    // relationship shape:
+    //   sphere / contact  → Sphere of Influence  (warm first-touch intro — unchanged)
+    //   potential_contact → AI ISA               (gated first-touch, no outbound send)
+    //   agent             → Recruiting Manager    (a recruiting prospect, never a CRM contact)
+    //   vendor            → Asset Manager         (a bench candidate — most vendor families a
+    //                                              card names, photographer/videographer/
+    //                                              drone_pilot/3d_tour foremost, ARE Asset
+    //                                              Manager's own content-creation supply chain)
+    //   unknown           → Sphere of Influence, FEED-ONLY (ask the agent to classify — never
+    //                                              silently treated as any of the above)
     if (params.event === KernelEvent.BUSINESS_CARD_APPROVED) {
       try {
+        const meta = (params.metadata ?? {}) as { card_subject_type?: string | null }
+        // Pre-wave-48 emitters (if any survive in a queued/replayed event) carried no
+        // classification at all — NOT the same as a card the wave-48 action classified
+        // 'unknown'; treat that absence as the legacy always-a-contact shape so an old
+        // event still reaches Sphere, never a wrong new manager.
+        const subjectType = meta.card_subject_type ?? "contact"
+        const ROUTE: Record<string, { toManager: ManagerKey; signalType: string; message: string }> = {
+          sphere: {
+            toManager: "sphere_of_influence", signalType: "business_card_approved",
+            message: "A scanned business card was classified SPHERE OF INFLUENCE — a warm first-touch intro, not a CRM contact.",
+          },
+          contact: {
+            toManager: "sphere_of_influence", signalType: "business_card_approved",
+            message: "A scanned business card was approved into a contact.",
+          },
+          potential_contact: {
+            toManager: "ai_isa", signalType: "business_card_potential_contact_candidate",
+            message: "A scanned business card was classified a POTENTIAL contact — propose a gated first-touch (no outbound send).",
+          },
+          agent: {
+            toManager: "recruiting_manager", signalType: "business_card_recruit_candidate",
+            message: "A scanned business card was classified AGENT (a fellow real-estate agent) — a recruiting prospect, never a CRM contact.",
+          },
+          vendor: {
+            toManager: "asset_manager", signalType: "business_card_vendor_candidate",
+            message: "A scanned business card was classified VENDOR — a bench candidate for the content-creation vendors (photographer/videographer/drone/3D-tour) Asset Manager sources.",
+          },
+          unknown: {
+            toManager: "sphere_of_influence", signalType: "business_card_classification_needed",
+            message: "A scanned business card could not be classified from the reader or the agent's notes — classify it on the card review surface.",
+          },
+        }
+        const picked = ROUTE[subjectType] ?? ROUTE.unknown
         await publishManagerSignal({
           brokerageId: params.brokerageId,
           fromManager: "data_steward",
-          toManager:   "sphere_of_influence",
-          signalType:  "business_card_approved",
-          message:     "A scanned business card was approved into a contact.",
+          toManager:   picked.toManager,
+          signalType:  picked.signalType,
+          message:     picked.message,
           entityType:  params.entityType,
           entityId:    params.entityId,
           contactId:   params.entityType === "contact" ? params.entityId : (params.contactId ?? null),
@@ -1543,6 +1595,493 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           message:     "A scheduled job failed.",
           entityType:  params.entityType,
           entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // (D-undecies) CROSS-MANAGER SIGNALS — kernel-event census round 5 (2026-09-10, wave 48,
+  // lane EF). scripts/kernel-event-census-z1.ts classified these TWENTY-FIVE KernelEvent
+  // members "emitted only" after wave 47's twenty (D-decies) — a real emitter fires each
+  // (verified against its call site below), lifecycle_events records it, but nothing
+  // downstream ever reacted. Same ruling as D-octies/D-decies (CLAUDE.md §1.2 + the owner's
+  // "every capability should run autonomously"): each publishes a manager_signals row
+  // addressed to the manager whose domain should act on it. TEN are HANDLED — a real
+  // SIGNAL_HANDLERS consumer proposes a gated deliverable (a client portal message, a
+  // transaction task, a compliance-ledger/notification record) through the SAME existing
+  // gated primitives the rest of this file uses — never an outbound send, never spend. The
+  // rest are feed_only, same shape as most of D-octies/D-decies. Every block is best-effort
+  // and independently caught; publishManagerSignal's own (toManager, signalType, entityId)
+  // dedupe makes a retried/re-emitted event never double an inbox.
+  //
+  // Three events census flagged as emitted-only are DELIBERATELY NOT wired here because the
+  // capability already exists under a different name (CLAUDE.md §1.3 — functionality already
+  // lives elsewhere, no new signal minted to avoid a second spelling): OFFER_AI_EXTRACTED
+  // (lib/offers/offer-extractor.ts) already publishes offers_compare_handoff synchronously
+  // right after this same emit — a reader here would double that inbox. OFFER_COMPARISON_
+  // GENERATED (lib/offers/offer-analyzer.ts) is the RESULT of that same offers_compare_handoff
+  // handler running runOfferNetSheets, which already proposes the gated seller comparison — a
+  // reader here would propose it twice. HOME_VALUE_CONTACT_CREATED (#13 below) is the one
+  // exception that reuses rather than skips: it is the SAME "homeowner requested a value"
+  // moment as the public lead-magnet's home_value_seller_intent (lib/intelligence/
+  // inbound-seller-intent-runner.ts), just reached through the authenticated portal tool
+  // instead of the anonymous form — so it publishes the EXISTING signal type onto the
+  // EXISTING listing_concierge:home_value_seller_intent handler rather than mint a twin.
+  if (params.brokerageId) {
+    // 1 — deal-health TIER TRANSITION (lib/deal-health/health-scorer.ts:967, `if
+    // (tierChanged)`). CADENCE RESOLUTION (CLAUDE.md §6 — flagged overlap with
+    // DEAL_HEALTH_SCORE_UPDATED, already read by D-octies #1): these are two MOMENTS, not
+    // two spellings. SCORE_UPDATED fires every scan (gated to "not healthy" before it
+    // signals); DEAL_AT_RISK_DETECTED (also D-octies) fires every scan while AT the bad
+    // state; DEAL_HEALTH_CHANGED fires ONLY on the tier actually flipping, in EITHER
+    // direction — the only one of the three that reports a RECOVERY. Feed-only: Deal
+    // Coordinator already runs the deal-save huddle / stand-down directly off this same
+    // tierChanged branch (lib/kernel/deal-save-huddle.ts) — this signal is the visibility
+    // trail of the tier-flip moment itself, not a second trigger for that huddle.
+    if (params.event === KernelEvent.DEAL_HEALTH_CHANGED) {
+      try {
+        const meta = (params.metadata as { previous_risk_level?: string; new_risk_level?: string } | null | undefined) ?? {}
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "deal_health_changed",
+          message:     `A transaction's health tier changed${meta.previous_risk_level && meta.new_risk_level ? ` (${meta.previous_risk_level} → ${meta.new_risk_level})` : ""}.`,
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── HANDLED — a real SIGNAL_HANDLERS consumer proposes a gated deliverable ──
+
+    // 2 — TCPA consent captured on a lead-first track (lib/kernel/lead-acquisition-
+    // handlers.ts:319, handleConsentReceived). HANDLED — Compliance Officer records the
+    // consent capture as a low-priority audit notification (the contact-side sibling,
+    // contact_consent_events, already has its own writer; this is the lead-side moment).
+    if (params.event === KernelEvent.CONSENT_RECEIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "compliance_officer",
+          signalType:  "consent_received",
+          message:     "TCPA consent was captured on a lead.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 3 — a lead converted to a real CONTACT (lib/kernel/lead-acquisition-handlers.ts:585,
+    // handleLeadAssigned — fires alongside LEAD_ASSIGNED from the same auto-assignment call).
+    // HANDLED — Sphere of Influence proposes the warm welcome message, the lifetime-
+    // relationship owner's first touch on every new client (mirrors deal_closed).
+    if (params.event === KernelEvent.LEAD_CONVERTED_TO_CONTACT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "sphere_of_influence",
+          signalType:  "lead_converted_to_contact",
+          message:     "A lead converted to a contact.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 4 — the buyer-side "you're under contract" moment (lib/transactions/offer-
+    // bridge.ts:614, only when we represent the buyer). HANDLED — Deal Coordinator opens a
+    // gated closing-prep task for the deal's agent (earnest money + inspection deadlines).
+    if (params.event === KernelEvent.BUYER_UNDER_CONTRACT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "buyer_under_contract",
+          message:     "A buyer went under contract.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 5 — earnest money milestone completed (app/actions/transaction-inspections.ts:602).
+    // HANDLED — Finance Manager proposes a gated buyer confirmation message ("your earnest
+    // money was received and processed") — a real money moment the buyer should hear about.
+    if (params.event === KernelEvent.EARNEST_MONEY_MILESTONE_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "earnest_money_milestone_completed",
+          message:     "An earnest money milestone was completed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 6 — an agent submitted their license for onboarding (app/actions/onboarding/
+    // license.ts:396). HANDLED — Compliance Officer records the pending review on the
+    // compliance ledger (compliance_flags), same ledger license_lapsing already uses, so a
+    // submitted-but-not-yet-verified license is tracked rather than silently pending.
+    if (params.event === KernelEvent.AGENT_LICENSE_SUBMITTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "agent_license_submitted",
+          message:     "An agent submitted a license for verification.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 7 — an AI CMA finished generating (lib/cma/ai-cma-engine.ts:238). HANDLED — Listing
+    // Concierge proposes a gated seller message sharing the fresh comps-grounded valuation.
+    if (params.event === KernelEvent.CMA_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "cma_generated",
+          message:     "A CMA finished generating for a listing.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 8 — a referral was received (app/actions/referrals/referral-actions.ts:264). HANDLED —
+    // Sphere of Influence proposes a warm welcome message to the referred contact (mirrors
+    // business_card_approved; referral_reciprocity stays the separate partner-payback signal).
+    if (params.event === KernelEvent.REFERRAL_RECEIVED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "sphere_of_influence",
+          signalType:  "referral_received",
+          message:     "A referral was received.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 9 — a lead was auto-assigned to an agent (lib/kernel/lead-acquisition-
+    // handlers.ts:445-449, fires alongside LEAD_CONVERTED_TO_CONTACT from the same call).
+    // HANDLED — AI ISA notifies the resolved agent directly (the handler resolves leads.
+    // agent_id → agents.user_id) so the assignment reaches them beyond the queue view.
+    if (params.event === KernelEvent.LEAD_ASSIGNED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_assigned",
+          message:     "A lead was auto-assigned to an agent.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 10 — a vendor was assigned to a transaction (app/actions/vendor-marketplace.ts:1329).
+    // HANDLED — Deal Coordinator opens a gated confirm-scope task for the deal's agent.
+    if (params.event === KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "vendor_assigned_to_transaction",
+          message:     "A vendor was assigned to a transaction.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 11 — an existing portal contact requested an in-app AI home valuation (app/actions/
+    // home-value.ts:616). REUSES the existing home_value_seller_intent signal type + its
+    // listing_concierge handler (see header note above) rather than minting a near-duplicate
+    // spelling — the same strongest-inbound-seller-signal moment, a different entry door.
+    if (params.event === KernelEvent.HOME_VALUE_CONTACT_CREATED && params.contactId) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "listing_concierge",
+          signalType:  "home_value_seller_intent",
+          message:     "A homeowner requested a home value estimate.",
+          entityType:  "contact",
+          entityId:    params.contactId,
+          contactId:   params.contactId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // ── feed_only from here — visibility for the owning manager, same shape as most of
+    // D-octies/D-decies. No automated consumer by design (see each `what` in signal-registry.ts).
+
+    // 12 — an agent manually claimed an unclaimed lead (lib/lead-assignment/assignment-
+    // engine.ts:256, distinct from the auto-assignment LEAD_ASSIGNED above).
+    if (params.event === KernelEvent.LEAD_CLAIMED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_claimed",
+          message:     "An agent claimed a lead.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 13 — a lead cleared consent and is ready for the assignment engine (lib/kernel/
+    // lead-acquisition-handlers.ts:346). Visibility only — the assignment engine already
+    // acts off this same event (mirrors the D-decies lead_scored precedent).
+    if (params.event === KernelEvent.LEAD_READY_FOR_ASSIGNMENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "lead_ready_for_assignment",
+          message:     "A lead is ready for assignment.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 14 — a transaction inspection was marked complete (app/actions/transaction-
+    // inspections.ts:261, kept separate from the generic MILESTONE_COMPLETED alias).
+    if (params.event === KernelEvent.INSPECTION_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "deal_coordinator",
+          signalType:  "inspection_completed",
+          message:     "A transaction inspection was completed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 15 — an agent's submitted license was verified (lib/onboarding/license-verifier.ts:394)
+    // — closes the loop #6 opened; visibility only (the compliance_flags row from #6 is not
+    // auto-resolved here, left for a human review to close deliberately).
+    if (params.event === KernelEvent.AGENT_LICENSE_VERIFIED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "recruiting_manager",
+          toManager:   "compliance_officer",
+          signalType:  "agent_license_verified",
+          message:     "An agent's license was verified.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 16 — a governance sweep found a lead going stale (lib/lead-governance/stale-lead-
+    // processor.ts:205-217, a DIFFERENT module from the AI ISA's own ghost-detection loop —
+    // wave 47 ruled GHOST_LEAD_DETECTED a double-signal duplicate of REENGAGEMENT_STARTED;
+    // this is the governance-side dwell alert, not a second outreach trigger, so it stays
+    // feed_only rather than proposing a second automated touch on the same lead).
+    if (params.event === KernelEvent.STALE_LEAD_ALERT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "ai_isa",
+          signalType:  "stale_lead_alert",
+          message:     "A lead has gone stale.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 17 — the predictive-pricing engine flagged a listing's list price vs its AI-predicted
+    // price (lib/pricing/predictive-pricing.ts:210-224). Listing Concierge sees the
+    // price-strategy signal (mirrors listing_stall_predicted's early-warning shape).
+    if (params.event === KernelEvent.PRICE_ALERT_TRIGGERED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "price_alert_triggered",
+          message:     "A predictive-pricing alert fired for a listing.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 18 — a seller started the listing-agreement paperwork stage (app/actions/seller-
+    // listing/execution-engine.ts:515).
+    if (params.event === KernelEvent.LISTING_AGREEMENT_INITIATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "listing_agreement_initiated",
+          message:     "A listing agreement was initiated.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 19 — a buyer requested a showing from the public listing landing page (app/actions/
+    // listing-landing.ts:840).
+    if (params.event === KernelEvent.SHOWING_REQUESTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "showing_requested",
+          message:     "A showing was requested from a listing page.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 20 — an e-sign envelope was requested for a form submission (lib/kernel/
+    // forms.ts:715, provider-resolved per wave-47's "never assume dotloop" ruling).
+    if (params.event === KernelEvent.ESIGN_ENVELOPE_REQUESTED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "compliance_officer",
+          signalType:  "esign_envelope_requested",
+          message:     "An e-sign envelope was requested.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:477).
+    if (params.event === KernelEvent.MARKETING_CAMPAIGN_ENDED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "marketing_campaign_ended",
+          message:     "A marketing campaign ended.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 22 — an accounting sync run completed (app/api/accounting/sync/route.ts:176).
+    if (params.event === KernelEvent.SYSTEM_SYNC_COMPLETED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "finance_manager",
+          signalType:  "system_sync_completed",
+          message:     "An accounting sync run completed.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 23 — a human agent claimed an AI-ISA qualified contact from the handoff queue
+    // (app/actions/ai-isa/claim-handoff.ts:75).
+    if (params.event === KernelEvent.AI_ISA_HANDOFF_TO_AGENT) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "deal_coordinator",
+          signalType:  "ai_isa_handoff_to_agent",
+          message:     "AI ISA handed a qualified contact off to an agent.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          contactId:   params.contactId ?? null,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 24 — an AI concierge session escalated to a human (lib/intelligence/multi-agent-
+    // router.ts:378-391, which already writes its own smart_assistant_suggestions row for
+    // the assigned agent — this is the cross-manager visibility trail beside it).
+    if (params.event === KernelEvent.AGENT_ESCALATED_TO_HUMAN) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "ai_isa",
+          toManager:   "deal_coordinator",
+          signalType:  "agent_escalated_to_human",
+          message:     "An AI concierge session escalated to a human.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
+        }, svc)
+      } catch { /* best-effort */ }
+    }
+
+    // 25 — an AI neighborhood report finished generating for a listing (app/actions/
+    // neighborhood-reports.ts:497).
+    if (params.event === KernelEvent.NEIGHBORHOOD_REPORT_GENERATED) {
+      try {
+        await publishManagerSignal({
+          brokerageId: params.brokerageId,
+          fromManager: "data_steward",
+          toManager:   "listing_concierge",
+          signalType:  "neighborhood_report_generated",
+          message:     "A neighborhood report finished generating.",
+          entityType:  params.entityType,
+          entityId:    params.entityId,
+          payload:     params.metadata ?? {},
         }, svc)
       } catch { /* best-effort */ }
     }

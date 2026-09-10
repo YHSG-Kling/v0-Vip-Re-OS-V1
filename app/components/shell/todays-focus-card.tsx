@@ -17,7 +17,7 @@ import Link from "next/link"
 import { useRef, useState, useTransition } from "react"
 import {
   Sparkles, RefreshCw, AlertCircle, AlertTriangle, ShieldAlert,
-  Play, Pause, Loader2, Volume2,
+  Pause, Loader2, Volume2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"

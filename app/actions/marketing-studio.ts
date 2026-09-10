@@ -38,7 +38,6 @@ import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
-import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
 // ★ ACT-AS SEAM — TWO ENTRY POINTS ★ resolveWriteContext mints QR rows;
 // resolveActingContext renders a preview image (renderQrImageAction).
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
@@ -902,9 +901,16 @@ export async function updateTaskStatus(
   return { success: true }
 }
 
-// ─── CONTENT REGISTRY (delegated to campaign-registry) ───────────────────────
-
-export { getCampaignRegistry, registerCampaignSource }
+// TOMBSTONE (hidden-wire census, category b — orphan doctrine §1.3) — this file
+// used to re-export getCampaignRegistry and registerCampaignSource, importing
+// them from lib/marketing/campaign-registry.ts for the sole purpose of passing
+// them back through. Nothing imported this door: every caller (measured —
+// app/dashboard/marketing/studio/marketing-studio-client.tsx) already imports
+// both directly `from "@/lib/marketing/campaign-registry"`, which is ITSELF a
+// `"use server"` file and so was already a public server action on its own —
+// this re-export was a second, unused public HTTP door onto the identical
+// function (CLAUDE.md §4). Survivor: lib/marketing/campaign-registry.ts
+// (getCampaignRegistry, registerCampaignSource) — import from there.
 
 // ─── AI CONTENT GENERATION WITH BRAND VOICE ──────────────────────────────────
 

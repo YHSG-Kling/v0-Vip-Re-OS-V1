@@ -181,6 +181,38 @@ async function main() {
   check("resolveEnvelopeBrokerageId is exported (webhooks have no session/tenant context to hand the core)",
     /export\s+async\s+function\s+resolveEnvelopeBrokerageId\s*\(/.test(coreSrcRaw))
 
+  // ── AMBIGUOUS ENVELOPE ID — carried note, lane FA wave 47 → wave 48 ────────
+  // resolveEnvelopeBrokerageId ASSUMES provider envelope ids are globally
+  // unique; these verify the guard that fires when that assumption is wrong.
+  // Structural checks against stripped source, matching this file's OWN
+  // established pattern for lib/forms/esign-execution-loop.ts (it carries
+  // `import "server-only"`, which throws under tsx outside webpack's server
+  // graph — the same friction scripts/calendar-sync-adapter-simulator.ts's
+  // header documents — so this file has never imported the core live; every
+  // I/O-shaped claim about it is proved this way, not just this one).
+  console.log("\n[resolveEnvelopeBrokerageId — the cross-tenant ambiguity guard]")
+  const resolveSrc = coreSrcStripped.split("export async function resolveEnvelopeBrokerageId")[1] ?? ""
+  check("resolveEnvelopeBrokerageId reads { data, error } per table — not `data` alone (the exact §3 trap: .maybeSingle() silently refuses on >1 row and a data-only destructure cannot tell that from zero)",
+    /distinctBrokeragesFor[\s\S]{0,200}const\s*\{\s*data,\s*error\s*\}\s*=\s*await\s+supabase/.test(coreSrcStripped))
+  check("multiple rows for one envelope id are DEDUPED by brokerage_id (new Set) before judging ambiguity — two rows, same tenant, is not a collision",
+    /new Set\(\(data \?\? \[\]\)\.map/.test(coreSrcStripped))
+  check("exactly one distinct brokerage_id resolves normally (ids.length === 1)",
+    /ids\.length === 1\) return ids\[0\]/.test(resolveSrc))
+  check("more than one distinct brokerage_id REFUSES (returns null) rather than picking one",
+    /ids\.length > 1\) \{[\s\S]{0,120}return null/.test(resolveSrc))
+  check("the refusal path signals compliance_officer with a stable dedupe key (entityId: envelopeId), not silence",
+    /toManager:\s*"compliance_officer"/.test(coreSrcStripped)
+    && /signalType:\s*"esign_envelope_id_ambiguous"/.test(coreSrcStripped)
+    && /entityId:\s*envelopeId/.test(coreSrcStripped))
+  check("a table read that itself errors is logged and skipped (`continue`), not treated as a global abort — the other three tables still get a chance",
+    /if \(refused\) continue/.test(resolveSrc))
+  check("genuinely zero matches anywhere still falls through to `return null` (unchanged behavior for the common case)",
+    /\n\s*return null\s*\n\}/.test(resolveSrc))
+  check("control · the ambiguity-refusal regex correctly stays SILENT on the OLD buggy shape (.maybeSingle(), data-only destructure, first-match-wins)",
+    !/ids\.length > 1\) \{[\s\S]{0,120}return null/.test(
+      'const { data: offer } = await supabase.from("offers").select("brokerage_id").eq("provider_envelope_id", envelopeId).maybeSingle()\nif ((offer as any)?.brokerage_id) return (offer as any).brokerage_id',
+    ))
+
   report()
 }
 

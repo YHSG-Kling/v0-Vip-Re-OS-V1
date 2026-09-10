@@ -40,6 +40,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
   { path: "/api/cron/notification-delivery-escalation", schedule: "*/30 * * * *" }, // notification_log reconciliation (readerless-write-census)
   { path: "/api/cron/vendor-follow-up-cadence",        schedule: "0 14 * * *" },    // vendor_communications.sent_at cadence (readerless-write-census)
+  // Sphere handoff safety net: a CLOSED listing whose linked transaction never
+  // reaches its own terminal stage gets no deal_closed welcome from either
+  // existing producer (lib/transactions/stale-listing-sphere-sweep.ts).
+  { path: "/api/cron/stale-listing-sphere-sweep",      schedule: "0 7 * * *" },
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },
   { path: "/api/cron/brokerage-intelligence-mine",    schedule: "12 4 * * *" }, // (staggered r43)

@@ -10,7 +10,6 @@
     "app/actions/lead-intelligence.ts:scrapeSocialSignalsWithZenRows",
     "app/actions/lead-intelligence.ts:trackBehavior",
     "app/actions/lead-intelligence.ts:trackExternalActivity",
-    "app/actions/listings.ts:getListingById",
-    "app/actions/workflows.ts:logUserActivity"
+    "app/actions/listings.ts:getListingById"
   ]
 }

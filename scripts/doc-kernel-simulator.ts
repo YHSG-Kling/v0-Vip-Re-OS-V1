@@ -3374,14 +3374,14 @@ async function main() {
       src("lib/kernel/client-welcome.ts").includes("generatePersonaCopy")
       && src("lib/kernel/client-welcome.ts").includes("{ body: fallback.body }")
       && src("lib/kernel/client-welcome.ts").includes("Journey step"))
-    const { classifyCardTarget } = await import("../lib/contacts/card-classifier")
+    const { classifyCardSubject } = await import("../lib/contacts/card-classifier")
     check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
-      classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).target === "vendor"
-      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "inspector"
-      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "lender"
-      && classifyCardTarget({ title: null, company: null }).target === "contact"
+      classifyCardSubject({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).subjectType === "vendor"
+      && classifyCardSubject({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "inspector"
+      && classifyCardSubject({ title: "Loan Officer NMLS 12345", company: null }).category === "lender"
+      && classifyCardSubject({ title: null, company: null }).subjectType === "unknown" /* 2026-09-10 owner ruling: a blank card is never assumed a contact */
       && src("app/actions/business-card/business-card-actions.ts").includes('status: "pending"')
-      && src("app/actions/business-card/business-card-actions.ts").includes("classifyCardTarget")
+      && src("app/actions/business-card/business-card-actions.ts").includes("classifyCardSubject")
       && src("app/actions/business-card/business-card-actions.ts").includes("From their card:"))
     const { composeLocalLifestyle } = await import("../lib/kernel/local-lifestyle")
     const nearby = composeLocalLifestyle([
@@ -3397,7 +3397,7 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("card_vendor_routing:")
       && src("lib/kernel/manager-registry.ts").includes("local_lifestyle_poi:"))
     check("CARD TRIAGE IS THREE-WAY (owner rule: 'other agents are users') — a realtor's card routes to the RECRUITING pipeline (status 'prospect', live CHECK), never the client CRM; the QBR has a SPOKEN TWIN on the same loader (keep-one), principal-gated by voice too",
-      classifyCardTarget({ title: "Realtor", company: "Sunrise Realty" }).target === "recruit"
+      classifyCardSubject({ title: "Realtor", company: "Sunrise Realty" }).subjectType === "agent"
       && src("app/actions/business-card/business-card-actions.ts").includes('from("recruits")')
       && src("app/actions/business-card/business-card-actions.ts").includes('status: "prospect"')
       && src("lib/voice/team-command-names.ts").includes('"quarterly_review"')

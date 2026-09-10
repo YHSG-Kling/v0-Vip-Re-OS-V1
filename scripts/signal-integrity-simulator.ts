@@ -102,6 +102,12 @@ const HANDOFF_ANNOUNCEMENTS = new Set<string>([
   "listing_marketing_ready", // the kernel-event fanout enrolls the marketing sequences; this only announces
   "offer_docs_ready",        // the runner notifies the Deal Coordinator + agent INLINE; signal is the record
   "stage_advance_candidate", // resolved by the HUMAN on the feed (approveStageAdvanceAction / dismiss) — the buttons ARE the consumer; verified by test:doc-kernel
+  // Wave 48 (kernel-event census D-undecies) — three more verified visible-announcements:
+  // the claim/assignment/hand-off ITSELF already happened, synchronously, in the emitting
+  // code below; the bus signal is the record on the feed, not a second action to perform.
+  "lead_claimed",            // lib/lead-assignment/assignment-engine.ts already did the atomic claim UPDATE before emitting
+  "lead_ready_for_assignment", // lib/kernel/lead-acquisition-handlers.ts's own assignment engine runs off this same event
+  "ai_isa_handoff_to_agent", // app/actions/ai-isa/claim-handoff.ts already stamped assigned_to_agent_id before emitting
 ])
 
 function main() {

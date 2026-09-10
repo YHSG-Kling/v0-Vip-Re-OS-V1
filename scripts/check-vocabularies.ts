@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 435 tables, 767 columns.
+ * MEASURED AT GENERATION: 435 tables, 769 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-07
+ * generated: 2026-09-10
  * source: public.live_check_constraints_json()
- * body-sha256: 639bff5a609b8310ea801260d5e4f7381a67765bfee60f2f7ee7c9fda1af9dfa
+ * body-sha256: 9b326501e95e543809dab2d0dae9542bd2fca2f705562c0934374d8db5a1a590
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -333,6 +333,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["active", "archived", "cancelled", "suspended"],
   },
   business_card_scans: {
+    card_subject_type: ["agent", "contact", "potential_contact", "sphere", "unknown", "vendor"],
+    classified_by: ["default", "match", "notes", "picker", "reader"],
     review_status: ["approved", "pending", "rejected"],
   },
   buyer_behavior_log: {

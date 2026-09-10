@@ -249,6 +249,26 @@ async function finalizeMatchingOffer(
   if (matchedOffer.transaction_id) return  // already converted — idempotent
   if (matchedOffer.esign_status === "fully_signed") return  // already past this step
 
+  // REDELIVERY GUARD (carried note, lane FA wave 47 → wave 48) — the
+  // buyer-first branch below was NOT idempotent the way the counter-executed
+  // branch already is. `esign_status === "fully_signed"` above stops a
+  // redelivered COUNTER-completed webhook cold, but a redelivered BUYER-FIRST
+  // webhook (the common e-sign-provider "at least once" delivery guarantee —
+  // DocuSign/Dotloop/etc. retry on anything but a clean 200) would sail past
+  // both guards, since esign_status only reaches "partially_signed" on the
+  // buyer-first path and seller_signed_at is still null either way. Every
+  // redelivery would then re-run the buyer-first branch below: re-insert the
+  // "Buyer signed the offer" audit activity, re-insert
+  // OFFER_EVENT.SUBMITTED, re-run the packet-completeness scan — silent
+  // duplication on the agent's own feed, not a corrupted offer, but a false
+  // audit trail is still a false audit trail. The guard mirrors the shape of
+  // the one two lines up: nothing has changed since the LAST time this
+  // function did anything for this row (still buyer-first, still no seller
+  // response) is exactly "already past this step, once" — a genuine seller
+  // counter arriving in between sets seller_signed_at, which turns this OFF
+  // and lets the (now counter-executed) branch below run for real.
+  if (matchedOffer.esign_status === "partially_signed" && !matchedOffer.seller_signed_at) return
+
   // Counter case: when seller_signed_at is already set, the buyer's signature
   // landing means BOTH sides have signed → the counter is FULLY EXECUTED.
   // No separate "seller signs back" step. The combined original offer +

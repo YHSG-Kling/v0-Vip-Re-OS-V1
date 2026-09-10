@@ -88,31 +88,104 @@ const NOT_FOUND: EvaluateEnvelopeExecutionResult = {
 /**
  * resolveEnvelopeBrokerageId — a webhook has an envelope/loop id and nothing
  * else (no session, no tenant context). Provider-assigned envelope ids are
- * effectively globally unique, so this looks the id up UNSCOPED across the
- * four tables evaluateEnvelopeExecution itself matches against, and returns
- * whichever row's brokerage_id it finds first. Null when nothing matches at
- * all — the caller's cue that there is genuinely nothing to gate or finalize
- * (same as today: the underlying finalize helpers would find zero rows too).
+ * ASSUMED globally unique so this looks the id up UNSCOPED across the four
+ * tables evaluateEnvelopeExecution itself matches against — an assumption
+ * documented rather than silently relied on (carried note, lane FA wave 47 →
+ * wave 48), because none of the four provider webhooks (Dotloop/DocuSign/
+ * SkySlope/Authentisign) carries an account/brokerage hint in its payload
+ * that this function could disambiguate against if the assumption ever broke.
+ *
+ * WHAT "BROKE" WOULD LOOK LIKE, AND WHY IT WAS INVISIBLE (§3 trap, verbatim):
+ * the original version used `.maybeSingle()` per table and destructured ONLY
+ * `data`, discarding `error`. PostgREST's own `Accept:
+ * application/vnd.pgrst.object+json` header — what `.maybeSingle()` sends —
+ * REFUSES a query that matches more than one row, but a caller that never
+ * reads `error` cannot tell that refusal from "zero rows found": both come
+ * back with `data: null`, and the old code just fell through to the NEXT
+ * table, silently. If two brokerages' rows ever collided on one envelope id,
+ * this function would return the WRONG brokerage's id from whichever OTHER
+ * table happened to match next — or null — and every downstream write in
+ * evaluateEnvelopeExecution and finalize-packet.ts runs on whatever tenant
+ * this function names, exactly the IDOR shape CLAUDE.md §4 keeps finding.
+ *
+ * FAIL CLOSED INSTEAD (§4): each table is queried for EVERY matching row, not
+ * `.maybeSingle()`. Two rows sharing one brokerage_id are not ambiguous (the
+ * same deal legitimately tracked twice — see finalize-packet.ts's own
+ * "documents row AND offers row" convergence note) and resolve normally. Two
+ * or more DISTINCT brokerage_ids sharing one envelope id ARE ambiguous —
+ * REFUSED (null, so no caller ever finalizes or gates against a guessed
+ * tenant) with a manager signal to compliance_officer, deduped on the
+ * envelope id so a redelivered webhook does not re-alarm. A table read that
+ * itself errors is logged and treated as "this table found nothing" (the
+ * other three still get a chance) rather than aborting resolution outright —
+ * the SAME resilience the four-table fallback already had, just no longer
+ * blind to the one shape that actually matters.
  */
+async function distinctBrokeragesFor(
+  supabase: AnySupabase,
+  table: string,
+  column: string,
+  envelopeId: string,
+): Promise<{ ids: string[]; refused: boolean }> {
+  const { data, error } = await supabase.from(table).select("brokerage_id").eq(column, envelopeId)
+  if (error) {
+    console.error(`[resolveEnvelopeBrokerageId] ${table}.${column} read refused for envelope ${envelopeId}:`, error.message)
+    return { ids: [], refused: true }
+  }
+  const ids = [...new Set((data ?? []).map((r: any) => r.brokerage_id as string).filter(Boolean))]
+  return { ids, refused: false }
+}
+
+async function refuseAmbiguousEnvelope(
+  supabase: AnySupabase,
+  table: string,
+  envelopeId: string,
+  brokerageIds: string[],
+): Promise<void> {
+  console.error(
+    `[resolveEnvelopeBrokerageId] AMBIGUOUS envelope ${envelopeId} in ${table}: ${brokerageIds.length} distinct brokerages (${brokerageIds.join(", ")}) — refusing rather than guessing.`,
+  )
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    // No single brokerage owns an envelope id that collides across tenants, so
+    // this is filed under the FIRST id found (a stable, deterministic choice —
+    // not a claim that tenant is at fault) purely so the signal has a row to
+    // land on; the message names every id involved.
+    await publishManagerSignal({
+      brokerageId: brokerageIds[0],
+      fromManager: "deal_coordinator",
+      toManager: "compliance_officer",
+      signalType: "esign_envelope_id_ambiguous",
+      entityType: "esign_envelope",
+      entityId: envelopeId,
+      message: `E-sign envelope ${envelopeId} matches ${table} rows in ${brokerageIds.length} different brokerages (${brokerageIds.join(", ")}) — every automated write against this envelope is refused until this is investigated.`,
+    }, supabase as any)
+  } catch (err) {
+    console.error("[resolveEnvelopeBrokerageId] ambiguity signal failed to publish:", err)
+  }
+}
+
 export async function resolveEnvelopeBrokerageId(
   supabase: AnySupabase,
   envelopeId: string,
 ): Promise<string | null> {
-  const { data: offer } = await supabase
-    .from("offers").select("brokerage_id").eq("provider_envelope_id", envelopeId).maybeSingle()
-  if ((offer as any)?.brokerage_id) return (offer as any).brokerage_id
-
-  const { data: txn } = await supabase
-    .from("transactions").select("brokerage_id").eq("external_provider_transaction_id", envelopeId).maybeSingle()
-  if ((txn as any)?.brokerage_id) return (txn as any).brokerage_id
-
-  const { data: agreement } = await supabase
-    .from("listing_agreements").select("brokerage_id").eq("provider_ref", envelopeId).maybeSingle()
-  if ((agreement as any)?.brokerage_id) return (agreement as any).brokerage_id
-
-  const { data: listing } = await supabase
-    .from("listings").select("brokerage_id").eq("external_provider_transaction_id", envelopeId).maybeSingle()
-  return (listing as any)?.brokerage_id ?? null
+  const sources: Array<[table: string, column: string]> = [
+    ["offers", "provider_envelope_id"],
+    ["transactions", "external_provider_transaction_id"],
+    ["listing_agreements", "provider_ref"],
+    ["listings", "external_provider_transaction_id"],
+  ]
+  for (const [table, column] of sources) {
+    const { ids, refused } = await distinctBrokeragesFor(supabase, table, column, envelopeId)
+    if (refused) continue // this table's own read failed — try the others, same resilience as before
+    if (ids.length === 1) return ids[0]
+    if (ids.length > 1) {
+      await refuseAmbiguousEnvelope(supabase, table, envelopeId, ids)
+      return null
+    }
+    // ids.length === 0 — genuinely nothing in this table, move on
+  }
+  return null
 }
 
 /**

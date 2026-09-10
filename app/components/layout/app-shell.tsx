@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { useAuth } from '@/lib/auth/client'
+import { logUserActivity } from '@/app/actions/workflows'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
@@ -79,6 +80,47 @@ export function AppShell({ children }: AppShellProps) {
     const timer = setTimeout(() => setAuthTimedOut(true), AUTH_TIMEOUT_MS)
     return () => clearTimeout(timer)
   }, [isLoading])
+
+  // SESSION-STARTED ACTIVITY LOG (carried note, lane FA wave 47 → wave 48).
+  // logUserActivity (app/actions/workflows.ts) has been the RULED survivor of
+  // three separate consolidations — services/supabaseService.ts's own
+  // logUserActivity (wave 47), logAuditEvent/logAuditEventService (lane E2)
+  // and the UserActivity type (lane CB) all carry tombstones naming it as
+  // "the one live, properly-scoped home for session-derived user activity" —
+  // but the wave-47 tombstone says outright that it "still awaits a real
+  // caller." Deleting it now would orphan three tombstones that already point
+  // at it as a survivor, so it is WIRED here rather than removed (§1: no
+  // duplicate exists, the capability is wanted, three lanes already said so).
+  // AppShell is the one mount point every authenticated dashboard route
+  // renders through, so it is the natural place for a GENERIC "a session
+  // started" audit row — distinct from the ~15 call sites that already write
+  // their own DOMAIN-specific audit_log rows inline (an offer accepted, a
+  // subscription changed, …), and distinct from the engagement/churn-risk
+  // radar's own choice to read auth.users.last_sign_in_at directly for ITS
+  // purpose (app/dashboard/superadmin/engagement/page.tsx) — this is a
+  // separate consumer (an investigable audit trail), not a duplicate signal.
+  // Fires once per browser session per signed-in user (sessionStorage guard,
+  // survives navigation across this same shell, resets on a fresh tab/reload
+  // or a different user signing in) — never on every route change, and never
+  // more than best-effort: logUserActivity itself already swallows its own
+  // failures rather than let a logging hiccup break navigation.
+  useEffect(() => {
+    if (!user?.id) return
+    try {
+      const key = `activity-logged:session-started:${user.id}`
+      if (sessionStorage.getItem(key)) return
+      sessionStorage.setItem(key, '1')
+      void logUserActivity(undefined, 'session_started', { path: pathname })
+    } catch {
+      // sessionStorage can throw in a locked-down browser context (private
+      // mode, storage disabled) — activity logging is best-effort, never
+      // worth surfacing to the user or retrying.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pathname is read
+    // once, at whatever route the session happened to start on; re-running
+    // this effect on every navigation would fight the sessionStorage guard
+    // above for no benefit.
+  }, [user?.id])
 
   // Handle redirect in useEffect to avoid setState during render
   const needsAuth = !isLoading && !user && !userContext && !shouldBypass && !pathname.startsWith('/login')

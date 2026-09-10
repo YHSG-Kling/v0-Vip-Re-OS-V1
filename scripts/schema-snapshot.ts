@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 701 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 700 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-09
+ * generated: 2026-09-10
  * source: public.live_schema_json()
- * body-sha256: 074148d674f0d4fbbae6f35dc033c8921353355ac7a64a46e0b567d1178b0bcf
+ * body-sha256: 277a9508f66d277b4972e59df60706912cc9f9edfc74ccaedc62917a49fd90c2
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -148,7 +148,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   brokerage_settings: ["brokerage_id", "created_at", "dotloop_access_token", "esign_api_key", "esign_provider", "ghl_api_key", "google_calendar_token", "id", "idx_api_key", "review_request_delay_days", "settings", "social_accounts", "updated_at"],
   brokerages: ["about_text", "address", "address_line2", "ai_isa_system_user_id", "archived_at", "auto_provision_phone_numbers", "billing_metadata", "bio_text", "brokerage_on_platform", "cancelled_at", "cda_onboarding_at", "city", "created_at", "dba", "default_assignment_method", "default_cap_amount", "default_cap_anniversary_basis", "default_isa_voice_id", "deleted_at", "direct_mail_size_prefs", "email", "farm_mail_enabled", "farm_mail_max_per_week", "id", "is_active", "is_demo", "license_number", "license_state", "lob_fallback_template_id", "logo_url", "name", "non_cda_payout_default", "offers_cda", "offers_medical_benefits", "offers_retirement_benefits", "onboarding_status", "phone", "plan_tier", "primary_color", "recruiting_monthly_fee", "recruiting_pitch", "recruiting_split_to_agent", "recruiting_value_props", "require_financial_verification_for_showings", "revenue_share_default_percent", "revenue_share_duration_months", "revenue_share_enabled", "revenue_share_flat_cents", "revenue_share_rate_type", "revenue_share_source_of_funds", "signup_source", "slug", "state", "status", "suspended_at", "tax_assistance_enabled", "team_on_platform", "trial_ends_at", "twilio_subaccount_sid", "twins_require_approval", "updated_at", "website", "widget_enabled", "zip"],
   budgets: ["agent_id", "brokerage_id", "budget_data", "created_at", "id", "income_goal", "updated_at", "year"],
-  business_card_scans: ["agent_id", "brokerage_id", "confidence_score", "contact_id", "created_at", "extracted_data", "id", "raw_image_url", "review_status", "reviewed_at", "reviewed_by"],
+  business_card_scans: ["agent_id", "brokerage_id", "card_subject_type", "classified_by", "confidence_score", "contact_id", "created_at", "extracted_data", "id", "raw_image_url", "review_status", "reviewed_at", "reviewed_by", "subject_notes", "subject_user_id"],
   business_expenses: ["agent_id", "amount", "brokerage_id", "category", "created_at", "description", "expense_date", "id", "receipt_url", "team_id"],
   buyer_behavior_log: ["agent_id", "bathrooms", "bedrooms", "brokerage_id", "city", "contact_id", "created_at", "id", "list_price", "listing_id", "metadata", "mls_number", "property_address", "property_type", "session_id", "signal_type", "signal_value", "source", "sqft", "zip"],
   buyer_behavior_predictions: ["agent_id", "ai_reasoning", "brokerage_id", "confidence", "confidence_score", "contact_id", "days_to_predicted_offer", "engagement_score", "engagement_velocity", "expires_at", "generated_at", "id", "predicted_fatigue_risk", "predicted_next_action", "predicted_price_max", "predicted_price_min", "predicted_property_type", "predicted_ready_to_offer", "predicted_timeline_days", "prediction_factors"],
@@ -676,7 +676,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   usage_counters: ["brokerage_id", "created_at", "id", "metric", "period_end", "period_start", "updated_at", "value"],
   usage_events: ["agent_id", "brokerage_id", "contact_id", "cost_cents", "created_at", "feature", "id", "metadata", "metric", "quantity", "session_ref", "team_id", "user_id"],
   usage_logs: ["agent_id", "brokerage_id", "cost_cents", "id", "metadata", "recorded_at", "units_used", "usage_type"],
-  user_activity: ["activity_type", "created_at", "description", "id", "metadata_json", "user_id"],
   user_invitations: ["accepted_at", "accepted_user_id", "brokerage_id", "created_at", "email", "expires_at", "first_name", "id", "invited_by", "last_name", "status", "team_id", "updated_at", "user_type"],
   user_profiles: ["avatar_url", "bio", "brokerage_id", "created_at", "email_verified", "id", "phone_verified", "updated_at", "user_id"],
   user_role_assignments: ["agent_id", "brokerage_id", "created_at", "id", "role", "team_id", "updated_at", "user_id", "vendor_id"],

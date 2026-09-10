@@ -36,6 +36,15 @@ export interface NewsletterDigestVideoProps {
     accentColor:   string
     logoUrl?:      string
     brokerageName: string
+    /** Equal Housing Opportunity mark on the outro. Defaults true. This is
+     *  MARKET/listing-facing content (median price, inventory, DOM figures)
+     *  mailed to every recipient's inbox, so it carries the same fair-housing
+     *  mark every other listing/market reel in remotion/** renders (JustListedReel,
+     *  MarketUpdateReel, CMAReel, …) — this composition was the one video-shaped
+     *  composition in the registry with no showEhoMark prop at all (found in the
+     *  wave-48 assembly audit; scripts/video-assembly-simulator.ts §branding
+     *  asserts every MARKETING/CHART_REEL composition declares + renders it). */
+    showEhoMark?:  boolean
   }
   voiceoverUrl?:  string
   /** Tracked outro QR PNG data URL (lib/video/video-qr.ts). Optional +
@@ -143,6 +152,7 @@ const SectionHighlights: React.FC<{ titles: string[]; brand: NewsletterDigestVid
 const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, qrCaption }) => {
   const frame = useCurrentFrame()
   const opacity = interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const showEho = brand.showEhoMark ?? true
   return (
     <AbsoluteFill style={{ padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (
@@ -154,6 +164,12 @@ const OutroCta: React.FC<NewsletterDigestVideoProps> = ({ brand, qrCodeDataUrl, 
       <p style={{ color: brand.accentColor, fontSize: 48, marginTop: 16, fontWeight: 600 }}>
         for this week's full digest
       </p>
+      <div style={{
+        position: "absolute", bottom: 26, left: 0, right: 0,
+        textAlign: "center", fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5, color: "#fff",
+      }}>
+        {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
+      </div>
       <QrOutroBadge
         qrCodeDataUrl={qrCodeDataUrl}
         caption={qrCaption ?? "Scan to read"}

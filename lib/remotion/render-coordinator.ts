@@ -266,11 +266,21 @@ export async function finalizeCoordinatedRender(
     const musicRow = await pickStockAsset(svc, intent, "music", intent.musicMood ?? null)
     if (musicRow?.video_url) {
       try {
+        // THE LENGTH OF THE VIDEO IN HAND — same fact + same reasoning as the
+        // narration pad above (compositionSeconds + bookendSeconds, counted
+        // only once a bookend concat has actually landed). Times the fade-OUT
+        // against the real end of `working` rather than the main cut's own
+        // duration_frames, which by this point may already be shorter than
+        // `working` (an applied intro/outro bookend). See
+        // lib/remotion/music-mixer.ts buildMusicTrackFilter for why an unknown
+        // length fades in only, never a fade-out timed against a guess.
+        const musicVideoSeconds = compositionSeconds(composition) + bookendSeconds
         const mixed = await mixBackgroundMusic({
           videoBuffer:        working,
           musicUrl:           musicRow.video_url,
           musicVolumePct:     musicRow.music_volume_pct ?? 20,
           loop:               musicRow.music_loop ?? true,
+          videoSeconds:       musicVideoSeconds,
         })
         if (mixed.ok && mixed.outputBuffer.length > 0) {
           working = mixed.outputBuffer

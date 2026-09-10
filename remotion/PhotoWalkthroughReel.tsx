@@ -40,6 +40,7 @@ import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { kenBurnsPlan, type KenBurnsClip } from "../lib/video/ken-burns-plan"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface PhotoWalkthroughReelProps {
@@ -92,13 +93,19 @@ const OUTRO_FRAMES = 90
 export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props) => {
   const { durationInFrames, fps } = useVideoConfig()
 
-  // The tour occupies the middle. Guard tiny durations so the body window is
-  // always positive even at minimal registered lengths.
-  const coverFrames = Math.min(COVER_FRAMES, Math.floor(durationInFrames * 0.15))
-  const outroFrames = Math.min(OUTRO_FRAMES, Math.floor(durationInFrames * 0.2))
-  const bodyStart = coverFrames
-  const bodyFrames = Math.max(1, durationInFrames - coverFrames - outroFrames)
-  const outroStart = bodyStart + bodyFrames
+  // The tour occupies the middle. lib/video/assembly-timeline.ts derives the
+  // split from the composition's OWN durationInFrames (never a literal) so
+  // the same component works at any registered length, and it guarantees
+  // intro + body + outro === durationInFrames exactly — no gap, no overrun —
+  // even at a pathologically short registration (scripts/video-assembly-
+  // simulator.ts §sums proves this against every registered geometry).
+  const timeline = computeAssemblyTimeline({
+    durationInFrames,
+    introFrames: COVER_FRAMES,
+    outroFrames: OUTRO_FRAMES,
+  })
+  const { from: bodyStart, durationInFrames: bodyFrames } = timeline.body
+  const { from: outroStart, durationInFrames: outroFrames } = timeline.outro
 
   // Plan the Ken Burns tour from the photo set. Empty photos → [] (honest).
   const clips = kenBurnsPlan(props.imageUrls, bodyFrames, {
@@ -110,7 +117,7 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
     <AbsoluteFill style={{ backgroundColor: "#0b0b0c" }}>
       {props.voiceoverUrl && <Audio src={props.voiceoverUrl} />}
 
-      <Sequence from={0} durationInFrames={coverFrames}>
+      <Sequence from={0} durationInFrames={timeline.intro.durationInFrames}>
         <CoverFrame {...props} />
       </Sequence>
 

@@ -51,7 +51,7 @@ import {
 } from "../lib/kernel/vendor-categories"
 import { VENDOR_CATEGORIES as RANKING_VENDOR_CATEGORIES } from "../lib/marketing/vendor-ranking"
 import { STAGE_VENDOR_NEEDS } from "../lib/kernel/vendor-coverage-forecast"
-import { classifyCardTarget } from "../lib/contacts/card-classifier"
+import { classifyCardSubject } from "../lib/contacts/card-classifier"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { stripComments } from "./strip-comments"
 
@@ -213,12 +213,13 @@ console.log("\n── downstream consumers still speak the same spelling ──"
     ["Mortgage Loan Officer — appraisal coordination", "lender"],
   ]
   for (const [title, expected] of cards) {
-    const cls = classifyCardTarget({ title, company: null })
+    const cls = classifyCardSubject({ title, company: null })
     check(`a card reading "${title}" files as ${expected}`,
-      cls.target === "vendor" && cls.category === expected && isVendorCategory(cls.category))
+      cls.subjectType === "vendor" && cls.category === expected && isVendorCategory(cls.category))
   }
   check("a fellow agent's card is never filed as a vendor",
-    classifyCardTarget({ title: "REALTOR®, Broker Associate", company: null }).category === null)
+    classifyCardSubject({ title: "REALTOR®, Broker Associate", company: null }).category === null
+    && classifyCardSubject({ title: "REALTOR®, Broker Associate", company: null }).subjectType === "agent")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

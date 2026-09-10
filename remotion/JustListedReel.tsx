@@ -28,6 +28,7 @@ import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { evenShotSlots } from "../lib/video/assembly-timeline"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface JustListedReelProps {
@@ -142,15 +143,20 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
 const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   const frame = useCurrentFrame()
   // The window is divided across however many images actually arrived — the
-  // same idiom as JustListedReelSquare/Horizontal's `perPhoto`. This used to be
-  // a fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
+  // same idiom as JustListedReelSquare/Horizontal's `perPhoto`, now the ONE
+  // shared implementation (lib/video/assembly-timeline.ts evenShotSlots, §6)
+  // rather than a fifth inline copy of "window / count". This used to be a
+  // fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
   // slide's crossfade-out clamped opacity to 0 and the remaining seconds of the
   // 16s window rendered EMPTY (gradient over the #111 background) while the
   // voiceover kept narrating.
   const windowFrames = FRAMES.IMAGES_END - FRAMES.IMAGES_START
-  const slideFrames = images.length > 0 ? windowFrames / images.length : windowFrames
-  const idx = Math.min(images.length - 1, Math.floor(frame / slideFrames))
-  const localFrame = frame - idx * slideFrames
+  const slots = evenShotSlots(windowFrames, images.length)
+  const idxFound = slots.findIndex((s) => frame < s.from + s.durationInFrames)
+  const idx = idxFound >= 0 ? idxFound : Math.max(0, slots.length - 1)
+  const activeSlot = slots[idx] ?? { from: 0, durationInFrames: windowFrames }
+  const slideFrames = activeSlot.durationInFrames
+  const localFrame = frame - activeSlot.from
   // Ken-burns: subtle scale + drift over each slide
   const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
@@ -158,7 +164,24 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
     extrapolateRight: "clamp",
   })
   const url = images[idx]
-  if (!url) return null
+  // HONEST EMPTY (found in the wave-48 assembly audit). Zero images used to
+  // fall through this `!url` guard into a bare-null render — no message, no
+  // card, just the root #111 background showing through for the whole 16s
+  // window while the voiceover kept narrating over nothing. Every sibling
+  // that shares this "divide the window by however many photos arrived"
+  // idiom (JustListedReelSquare/Horizontal, JustSoldReelSquare) already
+  // shows this exact card on the zero-image path; this was the one that did
+  // not. §6 — one message, not a fourth wording of it.
+  if (!url) {
+    return (
+      <AbsoluteFill style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "#fff", fontSize: 36, opacity: 0.55,
+      }}>
+        Photos coming soon
+      </AbsoluteFill>
+    )
+  }
   return (
     <AbsoluteFill>
       <SafeImg

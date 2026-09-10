@@ -1575,8 +1575,11 @@ export const supabaseService = {
   // and rejected `user_activity` as an activity source for exactly this
   // reason). Session-derived activity logging's one live, properly-scoped
   // home is app/actions/workflows.ts:936 logUserActivity (writes audit_log,
-  // identity from getAgentContext()) — that function itself still awaits a
-  // real caller; see the wave-47 wired-surface-guard report.
+  // identity from getAgentContext()) — WIRED (wave 48, hidden-wire census
+  // part 2.iii): app/components/layout/app-shell.tsx fires it once per
+  // browser session for every authenticated dashboard route, as a generic
+  // "session_started" audit row distinct from the ~15 call sites that already
+  // write their own domain-specific audit_log rows inline.
 
   // =====================================================
   // GENERIC OPERATIONS

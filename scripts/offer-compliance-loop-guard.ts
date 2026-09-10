@@ -116,6 +116,25 @@ check("…and stamps each only where empty (a leg a human recorded is never over
   && /fully_signed_contract_received_at:\s*\(matchedOffer as any\)\.fully_signed_contract_received_at \?\? now/.test(ESIGN_CORE))
 check("…reading the write's error before entering the loop", /offerStampError/.test(ESIGN_CORE) && /!offerStampError && /.test(ESIGN_CORE))
 
+console.log("\n── 7 · buyer-first webhook redelivery is idempotent (carried note, lane FA wave 47 → wave 48) ──")
+// finalizeMatchingOffer's counter-executed branch was already idempotent —
+// `esign_status === "fully_signed"` stops a redelivered webhook cold. The
+// buyer-first branch was NOT: a provider redelivering the same "envelope
+// completed" webhook (the common at-least-once guarantee) would re-run the
+// whole buyer-first branch every time, re-inserting the audit activity and
+// the OFFER_EVENT.SUBMITTED lifecycle row on every retry.
+const FINAL_MATCHING = FINAL.split("async function finalizeMatchingOffer")[1] ?? ""
+check("a redelivered buyer-first webhook (esign_status already partially_signed, no seller response since) is refused before re-processing",
+  /esign_status === "partially_signed" && !matchedOffer\.seller_signed_at\) return/.test(FINAL_MATCHING))
+check("…and that guard sits AFTER the transaction/fully_signed early-returns, never replacing them",
+  /esign_status === "fully_signed"\) return[\s\S]{0,400}esign_status === "partially_signed" && !matchedOffer\.seller_signed_at\) return/.test(FINAL_MATCHING))
+check("…but a GENUINE seller counter (seller_signed_at newly set) is NOT blocked by the redelivery guard — isCounterFullyExecuted is computed from the same column, after the guard",
+  /esign_status === "partially_signed" && !matchedOffer\.seller_signed_at\) return[\s\S]{0,600}const isCounterFullyExecuted = !!matchedOffer\.seller_signed_at/.test(FINAL_MATCHING))
+check("POSITIVE CONTROL: the redelivery-guard finder correctly stays SILENT on the pre-fix shape (only the fully_signed early-return existed)",
+  !/esign_status === "partially_signed" && !matchedOffer\.seller_signed_at\) return/.test(
+    'if (!matchedOffer) return\nif (matchedOffer.transaction_id) return\nif (matchedOffer.esign_status === "fully_signed") return\nconst isCounterFullyExecuted = !!matchedOffer.seller_signed_at',
+  ))
+
 console.log("\n── CONTROLS ──")
 check("POSITIVE CONTROL: the trigger finder sees a wired call",
   wired('await runOfferComplianceLoop(db, { brokerageId, offerId, trigger: "document_uploaded" })', "document_uploaded"))

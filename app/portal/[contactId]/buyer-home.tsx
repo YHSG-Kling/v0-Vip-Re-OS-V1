@@ -27,9 +27,7 @@ import { Card, CardContent } from "@/app/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import {
   Home,
-  Search,
   Calendar,
-  FileText,
   MessageSquare,
   BookOpen,
   ArrowRight,

@@ -1,27 +1,53 @@
 /**
  * lib/contacts/card-classifier.ts
  *
- * BUSINESS-CARD TARGET CLASSIFIER — a scanned card is not always a lead:
- * the inspector at the open house, the stager, the lender rep hand out
- * cards too, and those belong in the VENDOR book (owner directive: "scan
- * business cards and pull in as new vendor contact"). PURE keyword
- * classifier over the card's extracted title/company; the category maps
- * ONTO the live vendors.category CHECK vocabulary (Lender / Inspector /
- * Title Company / Contractor / Stager / Other — verified live). A fellow
- * REAL-ESTATE AGENT'S card stays a contact (a co-op agent is a
- * relationship, not a vendor). Default: contact — when in doubt, the CRM
- * path (which a human reviews) is the safe landing. The scanner UI can
- * override either way. NOT server-only (simulator-driven).
+ * BUSINESS-CARD SUBJECT CLASSIFIER — wave 48 (owner ruling 2026-09-10, verbatim):
+ * "the kernel events scanned business card shouldn't be assumed contact since it
+ * is a business card from an event, sphere of influence/other agent/potential
+ * contact so should be a userid user type and card reader or agents notes can
+ * determine." A card handed over at an open house or a conference is not a lead
+ * by default — it might be someone the agent already knows (SPHERE), a fellow
+ * agent at another shop (AGENT — a recruiting prospect, never a CRM contact), a
+ * genuine prospective client (POTENTIAL_CONTACT), a vendor/trade (VENDOR), an
+ * already-qualified CONTACT, or simply UNKNOWN until a human says otherwise.
+ *
+ * ONE VOCABULARY (§6): this REPLACES the earlier three-way CardTarget/
+ * classifyCardTarget ('contact' | 'vendor' | 'recruit') — that classifier's
+ * silent fallthrough to 'contact' whenever the reader had no signal is EXACTLY
+ * the assumption the ruling forbids, and 'recruit' is renamed 'agent' to match
+ * the owner's own words ("other agents are users"). TOMBSTONE: the old export
+ * classifyCardTarget/CardTarget (3-way) is retired onto classifyCardSubject/
+ * CardSubjectType (6-way) below — same file, same VENDOR_FAMILIES table, no
+ * duplicate left behind. Every caller (app/actions/business-card/
+ * business-card-actions.ts) was updated in the same change.
+ *
+ * DETERMINATION ORDER (pure half — the database-backed "existing match" tier
+ * lives in the caller, which alone can query users/contacts/vendors):
+ *   1. the card READER's own extracted fields (title/company) — objective,
+ *      printed by the subject, outranks anything the scanning agent typed.
+ *   2. the scanning agent's free-text NOTES on the card.
+ *   3. (caller-only) an existing match against users/contacts/vendors by
+ *      email/phone — the ONLY tier that can attach a real subject_user_id.
+ *   4. an explicit PICKER on the card-review surface always wins outright,
+ *      applied by the caller after this function returns.
+ *   5. default: UNKNOWN — never 'contact'. See the note on the final return.
+ *
+ * PURE (no I/O) — simulator-driven (scripts/business-card-classification-
+ * simulator.ts), not server-only.
  */
 
 import type { VendorCategory } from "@/lib/kernel/vendor-categories"
 
-export type CardTarget = "contact" | "vendor" | "recruit"
+export type CardSubjectType = "sphere" | "agent" | "potential_contact" | "contact" | "vendor" | "unknown"
 
-export interface CardClassification {
-  target: CardTarget
-  /** vendors.category CHECK value — set only when target is vendor. */
+export interface CardSubjectClassification {
+  subjectType: CardSubjectType
+  /** vendors.category CHECK value — set only when subjectType === "vendor". */
   category: VendorCategory | null
+  /** which determination tier decided it. 'match' (existing-user/contact/vendor
+   *  lookup) and 'picker' (explicit review-surface override) are stamped by the
+   *  caller — this pure function only ever returns 'reader' | 'notes' | 'default'. */
+  source: "picker" | "reader" | "notes" | "match" | "default"
 }
 
 // These are STEMS, matched at a word boundary on the LEFT only — the way the
@@ -43,7 +69,7 @@ export interface CardClassification {
 // `surveyor`), and the classifier fills them: a scanned
 // card lands on the trade it actually names, which is what makes the widened
 // bench bookable rather than merely spellable.
-const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern: RegExp }> = [
+const VENDOR_FAMILIES: Array<{ category: CardSubjectClassification["category"]; pattern: RegExp }> = [
   // ── transaction side ──
   { category: "refinance_lender", pattern: /\b(refinanc|refi\b)/ },
   { category: "lender", pattern: /\b(lender|mortgage|loan officer|nmls|home loans|lending)/ },
@@ -122,18 +148,57 @@ const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern
   { category: "other", pattern: /\b(locksmith)/ },
 ]
 
-/** a fellow agent's card is a RECRUIT — agents are USERS of this platform
- *  (owner rule), so their card lands in the recruiting pipeline, never the
- *  client CRM and never the vendor book. */
+/** a fellow agent's card is AGENT — agents are USERS of this platform
+ *  (owner rule: "other agents are users"), so their card is a recruiting
+ *  prospect, never the client CRM and never the vendor book. */
 const REAL_ESTATE_AGENT = /\b(realtor|real estate agent|broker associate|listing agent|buyer'?s agent|realty|brokerage)\b/
 
-/** PURE: where does this card belong? */
-export function classifyCardTarget(input: { title?: string | null; company?: string | null }): CardClassification {
-  const hay = [input.title ?? "", input.company ?? ""].join(" ").toLowerCase()
-  if (!hay.trim()) return { target: "contact", category: null }
-  if (REAL_ESTATE_AGENT.test(hay)) return { target: "recruit", category: null }
-  for (const fam of VENDOR_FAMILIES) {
-    if (fam.pattern.test(hay)) return { target: "vendor", category: fam.category }
+// ── notes free-text cues — priority-2 tier, only consulted when the reader's own
+// fields (title/company) gave no signal. Order matters the same way the vendor
+// table does: a narrower phrase sits above a looser one it would otherwise also
+// match ("potential client" above the bare "client" stem).
+const NOTES_SPHERE = /\b(sphere(\s+of\s+influence)?|personal (friend|contact)|old friend|family (friend|member)|\bfriend\b|neighbor|knew (them|him|her) (from|before)|social (contact|connection))\b/
+const NOTES_AGENT = /\b(fellow agent|another agent|co-?op agent|competitor'?s? agent|works? (at|for) (a |another )?(different )?brokerage|other side'?s agent)\b/
+const NOTES_VENDOR = /\b(vendor|service provider|trade (contact|professional))\b/
+const NOTES_POTENTIAL = /\b(potential (client|buyer|seller|lead)|maybe (buying|selling)|interested in (buying|selling)|thinking (about|of) (buying|selling)|might (buy|sell)|prospect(ive)?)\b/
+const NOTES_CONTACT = /\b(client|buyer|seller|ready to (buy|sell)|signed|under contract)\b/
+
+/** PURE: what is this card, from the reader's fields and the agent's notes alone
+ *  (the database-backed existing-match tier and any explicit picker are applied
+ *  by the caller — see the module doc). */
+export function classifyCardSubject(input: {
+  title?: string | null
+  company?: string | null
+  notes?: string | null
+}): CardSubjectClassification {
+  const readerHay = [input.title ?? "", input.company ?? ""].join(" ").toLowerCase()
+
+  // Priority 1 — the card reader's own printed fields.
+  if (readerHay.trim()) {
+    if (REAL_ESTATE_AGENT.test(readerHay)) return { subjectType: "agent", category: null, source: "reader" }
+    for (const fam of VENDOR_FAMILIES) {
+      if (fam.pattern.test(readerHay)) return { subjectType: "vendor", category: fam.category, source: "reader" }
+    }
   }
-  return { target: "contact", category: null }
+
+  // Priority 2 — the scanning agent's free-text notes.
+  const notesHay = (input.notes ?? "").toLowerCase()
+  if (notesHay.trim()) {
+    if (NOTES_SPHERE.test(notesHay)) return { subjectType: "sphere", category: null, source: "notes" }
+    if (NOTES_AGENT.test(notesHay)) return { subjectType: "agent", category: null, source: "notes" }
+    if (NOTES_VENDOR.test(notesHay)) return { subjectType: "vendor", category: null, source: "notes" }
+    if (NOTES_POTENTIAL.test(notesHay)) return { subjectType: "potential_contact", category: null, source: "notes" }
+    if (NOTES_CONTACT.test(notesHay)) return { subjectType: "contact", category: null, source: "notes" }
+  }
+
+  // Default: UNKNOWN, never 'contact'. Owner ruling 2026-09-10, verbatim: "the
+  // kernel events scanned business card shouldn't be assumed contact since it
+  // is a business card from an event, sphere of influence/other agent/
+  // potential contact ... card reader or agents notes can determine." Before
+  // this ruling the fallthrough here was 'contact' — the exact assumption the
+  // ruling forbids — and every card where BOTH the reader and the notes were
+  // silent (the common case: a stranger's card with just a name and a number)
+  // was auto-filed as a CRM contact. The caller still gets one more chance (an
+  // existing-user/contact/vendor match by email/phone) before settling here.
+  return { subjectType: "unknown", category: null, source: "default" }
 }

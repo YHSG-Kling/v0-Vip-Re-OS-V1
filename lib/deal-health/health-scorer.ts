@@ -962,6 +962,20 @@ export async function calculateDealHealth(params: {
   // emitKernelEvent does BOTH the lifecycle_events insert AND fans into the reactor (staff
   // notifications + marketing-trigger enrollment + canonical campaign_sequences enrollment +
   // client-portal cards). Bare lifecycle_events inserts silently dropped all four channels.
+  //
+  // CADENCE vs DEAL_HEALTH_SCORE_UPDATED (census wave 48 — CLAUDE.md §6 review): these are
+  // TWO MOMENTS, not two spellings of one. DEAL_HEALTH_SCORE_UPDATED (app/actions/
+  // deal-health-actions.ts, app/api/cron/deal-health-scan/route.ts) fires on EVERY scan of
+  // THIS SAME calculateDealHealth run, unconditionally — a cadence pulse the reactor
+  // (D-octies) already gates to "not healthy" before signaling deal_coordinator.
+  // DEAL_HEALTH_CHANGED fires HERE ONLY, and only `if (tierChanged)` — an edge trigger on
+  // the risk TIER flipping in EITHER direction, including a RECOVERY (critical → healthy)
+  // that DEAL_HEALTH_SCORE_UPDATED's "not healthy" gate never reports and DEAL_AT_RISK_
+  // DETECTED (fired below, only on worsening INTO danger) never reports either. So the three
+  // together read as: SCORE_UPDATED = "a scan happened", AT_RISK_DETECTED = "still bad",
+  // CHANGED = "the tier just moved, any direction" — kept as three distinct signals rather
+  // than merged, because a reader that only wants the edge (this one) would otherwise have
+  // to re-derive it by diffing consecutive SCORE_UPDATED rows itself.
   if (tierChanged) {
     await emitKernelEvent({
       event:        KernelEvent.DEAL_HEALTH_CHANGED,

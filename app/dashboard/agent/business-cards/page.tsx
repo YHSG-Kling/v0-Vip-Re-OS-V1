@@ -7,6 +7,28 @@ import { createPartner, createReferral } from "@/app/actions/referrals/referral-
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
+import type { CardSubjectType } from "@/lib/contacts/card-classifier"
+
+// wave 48 (owner ruling 2026-09-10): the picker on the card review surface —
+// "Auto-detect" (undefined) leaves the reader/notes/existing-match classifier
+// in charge; any other choice is an EXPLICIT override that wins outright.
+const SUBJECT_TYPE_OPTIONS: Array<{ value: CardSubjectType | ""; label: string }> = [
+  { value: "", label: "Auto-detect" },
+  { value: "sphere", label: "Sphere of influence (someone I know)" },
+  { value: "agent", label: "Fellow agent (recruiting prospect)" },
+  { value: "potential_contact", label: "Potential client" },
+  { value: "contact", label: "Contact (ready client)" },
+  { value: "vendor", label: "Vendor / service provider" },
+]
+
+const SUBJECT_TYPE_LABEL: Record<CardSubjectType, string> = {
+  sphere: "Sphere of influence",
+  agent: "Fellow agent — recruiting prospect",
+  potential_contact: "Potential client",
+  contact: "Contact created",
+  vendor: "Vendor bench candidate",
+  unknown: "Unclassified — needs a human to pick",
+}
 
 type PostScanContact = {
   id: string
@@ -35,6 +57,9 @@ type ScanRow = {
   reviewed_by: string | null
   /** When the viability gate ran. */
   reviewed_at: string | null
+  cardSubjectType: CardSubjectType | null
+  subjectUserId: string | null
+  classifiedBy: "picker" | "reader" | "notes" | "match" | "default" | null
 }
 
 type ScanResult = {
@@ -43,6 +68,8 @@ type ScanResult = {
   viable: boolean
   extracted?: Record<string, string>
   confidence?: number
+  cardSubjectType?: CardSubjectType
+  subjectUserId?: string | null
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
@@ -69,6 +96,11 @@ export default function BusinessCardsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
+
+  // wave 48 — card review surface: free-text notes (priority-2 classification
+  // source) + an explicit picker (wins outright over the auto-classifier).
+  const [cardNotes, setCardNotes] = useState("")
+  const [cardSubjectPick, setCardSubjectPick] = useState<CardSubjectType | "">("")
 
   // Post-scan sheet state
   const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
@@ -153,7 +185,11 @@ export default function BusinessCardsPage() {
         "image/jpeg"
       ) as "image/jpeg" | "image/png" | "image/webp"
 
-      const res = await uploadBusinessCard({ imageBase64: base64, mimeType, agentId, brokerageId })
+      const res = await uploadBusinessCard({
+        imageBase64: base64, mimeType, agentId, brokerageId,
+        notes: cardNotes.trim() || undefined,
+        subjectType: cardSubjectPick || undefined,
+      })
 
       // Reload history
       const history = await getRecentScans({ agentId, brokerageId, limit: 20 })
@@ -167,6 +203,9 @@ export default function BusinessCardsPage() {
         extracted,
         confidence: newScan?.confidence_score,
       })
+      // Reset the review-surface inputs for the next scan.
+      setCardNotes("")
+      setCardSubjectPick("")
 
       // Trigger post-scan sheet only on viable scans that produced a contact
       if (res.viable && res.contactId) {
@@ -189,7 +228,7 @@ export default function BusinessCardsPage() {
     } finally {
       setScanning(false)
     }
-  }, [agentId, brokerageId])
+  }, [agentId, brokerageId, cardNotes, cardSubjectPick])
 
   const dismissSheet = () => {
     setShowNextSteps(false)
@@ -290,6 +329,45 @@ export default function BusinessCardsPage() {
     <main className="max-w-3xl mx-auto p-6 space-y-8">
       <h1 className="text-2xl font-semibold text-foreground">Business Card Scanner</h1>
 
+      {/* Card review surface (wave 48): a card is never assumed a contact —
+          classify it from context before (or after) you scan. Auto-detect
+          reads the printed title/company, then these notes, then an existing
+          match; picking a class here overrides all of that. */}
+      <section className="space-y-3 rounded-xl border border-border p-4">
+        <div>
+          <label htmlFor="card-notes" className="block text-xs font-medium text-foreground mb-1">
+            Notes on this card (optional)
+          </label>
+          <textarea
+            id="card-notes"
+            value={cardNotes}
+            onChange={(e) => setCardNotes(e.target.value)}
+            rows={2}
+            placeholder="e.g. &quot;old friend from the block party&quot;, &quot;fellow agent at another shop&quot;, &quot;interested in selling next year&quot;..."
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+        <div>
+          <label htmlFor="card-subject-type" className="block text-xs font-medium text-foreground mb-1">
+            Who is this?
+          </label>
+          <select
+            id="card-subject-type"
+            value={cardSubjectPick}
+            onChange={(e) => setCardSubjectPick(e.target.value as CardSubjectType | "")}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {SUBJECT_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            A scanned card is never assumed a client — it might be someone you know, a fellow agent, or just met.
+            Auto-detect reads the card and your notes; picking a class here overrides it.
+          </p>
+        </div>
+      </section>
+
       {/* Upload zone */}
       <section
         className={`border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${
@@ -340,7 +418,11 @@ export default function BusinessCardsPage() {
                   <span className="text-sm font-medium text-foreground">Extraction confidence</span>
                   {result.confidence !== undefined && <ConfidenceBadge score={result.confidence} />}
                 </div>
-                <span className="text-xs text-green-700 bg-green-100 px-2 py-1 rounded font-medium">Contact created</span>
+                <span className={`text-xs px-2 py-1 rounded font-medium ${
+                  result.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-700"
+                }`}>
+                  {result.cardSubjectType ? SUBJECT_TYPE_LABEL[result.cardSubjectType] : "Contact created"}
+                </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -440,7 +522,11 @@ export default function BusinessCardsPage() {
                       </td>
                       <td className="px-4 py-3">
                         {s.review_status === "approved" ? (
-                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded font-medium">Contact created</span>
+                          <span className={`text-xs px-2 py-0.5 rounded font-medium ${
+                            s.cardSubjectType === "unknown" ? "bg-yellow-100 text-yellow-800" : "bg-green-100 text-green-800"
+                          }`}>
+                            {s.cardSubjectType ? SUBJECT_TYPE_LABEL[s.cardSubjectType] : "Contact created"}
+                          </span>
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
