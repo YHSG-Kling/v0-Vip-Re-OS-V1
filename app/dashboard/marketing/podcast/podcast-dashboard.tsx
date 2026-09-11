@@ -17,7 +17,6 @@ import {
   getPodcastEpisodes,
   getPodcastTemplates,
   getDistributionChannels,
-  createPodcastTemplate,
 } from "@/app/actions/podcast-generation"
 
 interface Episode {
@@ -74,10 +73,14 @@ export function PodcastDashboard({
   const [channels, setChannels] = useState<DistributionChannel[]>([])
   const [loading, setLoading] = useState(initialEpisodes.length === 0)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
-  const [isCreateTemplateOpen, setIsCreateTemplateOpen] = useState(false)
-  const [newTemplateName, setNewTemplateName] = useState("")
-  const [newTemplateDesc, setNewTemplateDesc] = useState("")
-  const [creatingTemplate, setCreatingTemplate] = useState(false)
+  // TOMBSTONE (§1, wave 56 dead-code sweep): isCreateTemplateOpen /
+  // newTemplateName / newTemplateDesc / creatingTemplate stood here with no
+  // dialog ever reading them — survivor:
+  // app/dashboard/marketing/podcast/components/templates-tab.tsx, which
+  // already owns a fuller create-AND-edit template dialog (its own form
+  // state, calls createPodcastTemplate/updatePodcastTemplate, then
+  // onUpdate() back to this file's handleTemplateUpdated) reached via the
+  // header's "New Template" button → setActiveTab("setup") below.
   const [activeTab, setActiveTab] = useState("my-show")
 
   // Wire `?episode=<uuid>` from voice/Copilot stage_podcast_episode tool.
@@ -139,25 +142,9 @@ export function PodcastDashboard({
     loadData()
   }
 
-  async function handleCreateTemplate() {
-    if (!newTemplateName.trim()) return
-    setCreatingTemplate(true)
-    try {
-      const result = await createPodcastTemplate({
-        name: newTemplateName.trim(),
-        description: newTemplateDesc.trim() || undefined,
-        templateType: "standard",
-      })
-      if (result.success) {
-        setIsCreateTemplateOpen(false)
-        setNewTemplateName("")
-        setNewTemplateDesc("")
-        loadData()
-      }
-    } finally {
-      setCreatingTemplate(false)
-    }
-  }
+  // TOMBSTONE (§1, wave 56 dead-code sweep): handleCreateTemplate stood
+  // here, never called — same survivor as the state block above,
+  // templates-tab.tsx.
 
   function handleChannelUpdated() {
     loadData()

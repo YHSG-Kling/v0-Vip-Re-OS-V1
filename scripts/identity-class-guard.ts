@@ -862,11 +862,17 @@ console.log("\n═══ 3f. Every write into a users-class agent_id, enumerated
     /agent_id: agent\.id,/.test(cda) &&
     (cda.match(/agent_id:\s+txn\.agent_id,/g) ?? []).length >= 2)
 
+  // Wave 56: listing-media's own ai_video_projects creator was merged onto the
+  // CANONICAL creator (app/actions/video/create-video-project.ts) and deleted with
+  // a tombstone — so the agents-class rule is asserted where the write now lives:
+  // the survivor resolves the caller's users id → agents id ONCE (projectAgentId)
+  // and writes THAT, never the users id, and listing-media no longer inserts the row.
   const lm = code("app/actions/listing-media.ts")
-  // FLIPPED BY m366: the column is agents-class now, so the AGENTS id this file
-  // already resolved is finally the value it should be writing.
-  ok("listing-media writes the resolved AGENTS id to ai_video_projects",
-    /agent_id:            agentRecordId,/.test(lm) && !/agent_id:            user\.id,/.test(lm))
+  const cvp = code("app/actions/video/create-video-project.ts")
+  ok("listing-media no longer writes ai_video_projects itself (merged onto the canonical creator)",
+    !/from\("ai_video_projects"\)\s*\.insert\(/.test(lm))
+  ok("the canonical creator writes the RESOLVED agents id to ai_video_projects, never the users id",
+    /agent_id: projectAgentId,/.test(cvp) && !/agent_id: params\.agentUserId,/.test(cvp))
 
   const mk = code("lib/kernel/marketing.ts")
   // FLIPPED BY m366. Both tables are agents-class now, so ctx.userId is exactly

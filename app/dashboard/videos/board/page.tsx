@@ -149,7 +149,10 @@ export default function VideoKanbanBoard() {
     open: false,
     video: null,
   })
-  const [publishing, setPublishing] = useState(false)
+  // TOMBSTONE (§1, wave 56 dead-code sweep): `publishing` state stood here —
+  // its only reader/writer was `handlePublish`, deleted above at the same
+  // tombstone. Survivor: `distributing` below, which the real publish path
+  // (handleDistribute) already uses.
 
   // Distribution state
   const [distributing, setDistributing] = useState(false)
@@ -386,33 +389,19 @@ export default function VideoKanbanBoard() {
     }
   }
 
-  async function handlePublish(video: VideoProject) {
-    setPublishing(true)
-
-    try {
-      const { error } = await supabase
-        .from("ai_video_projects")
-        .update({
-          status: "published",
-          video_metadata: {
-            published_by: user?.id,
-            published_at: new Date().toISOString(),
-          },
-        })
-        .eq("id", video.id)
-
-      if (error) throw error
-
-      setPreviewDialog({ open: false, video: null })
-      toast.success("Video published")
-      await loadVideos()
-    } catch (error: any) {
-      console.error("Error publishing video:", error)
-      toast.error(error.message || "Failed to publish video")
-    } finally {
-      setPublishing(false)
-    }
-  }
+  // TOMBSTONE (§1, wave 56 dead-code sweep): `handlePublish` stood here,
+  // never called — a direct CLIENT-SIDE write flipping ai_video_projects.status
+  // to 'published', bypassing the tenant gate the video kernel functions were
+  // hardened behind (lib/kernel/manager-registry.ts:video_generation_lane_tenant_gate
+  // — wiring this as written would have reopened the exact cross-tenant hole
+  // that entry describes closing). It is also a functional duplicate: the
+  // SAME dialog's already-wired handleDistribute("post_now"/"schedule")
+  // below already reaches lib/kernel/video.ts:distributeVideoProject, which
+  // sets `status: "published"` itself on success (lib/kernel/video.ts:634-646,
+  // "'published' is POST-terminal and still counts as a FINISHED video") —
+  // gated, server-side, through app/actions/video/distribute-video.ts. That
+  // is the survivor — see the disabled= props on the distribute buttons
+  // below, which read `distributing`, not the now-deleted `publishing`.
 
   async function handleDistribute(
     video: VideoProject,

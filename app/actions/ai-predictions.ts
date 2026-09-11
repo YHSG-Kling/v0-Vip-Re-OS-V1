@@ -1926,49 +1926,16 @@ Generate PERFECT search criteria based on learned behavior:
 // AI CMA GENERATOR (State-Compliant)
 // ============================================
 
-async function getStateAppraisalGuidelines(state: string) {
-  const guidelines: Record<string, any> = {
-    TX: {
-      name: "Texas USPAP Guidelines",
-      maxDaysSold: 90,
-      maxDistanceMiles: 1,
-      requirements: [
-        "Must use sales within 90 days",
-        "Must be within 1 mile radius",
-        "Minimum 3 comparable sales required",
-        "Document all adjustments",
-        "Include market conditions statement",
-      ],
-    },
-    CA: {
-      name: "California USPAP Guidelines",
-      maxDaysSold: 90,
-      maxDistanceMiles: 1,
-      requirements: [
-        "Must use sales within 90 days",
-        "Must be within 1 mile radius",
-        "Minimum 3 comparable sales required",
-        "Include seismic disclosure",
-        "Document all adjustments",
-      ],
-    },
-    FL: {
-      name: "Florida USPAP Guidelines",
-      maxDaysSold: 90,
-      maxDistanceMiles: 1,
-      requirements: [
-        "Must use sales within 90 days",
-        "Must be within 1 mile radius",
-        "Minimum 3 comparable sales required",
-        "Include flood zone disclosure",
-        "Document all adjustments",
-      ],
-    },
-  }
-
-  return guidelines[state] || guidelines.TX
-}
-
+// TOMBSTONE (§1, wave 56 dead-code sweep): `getStateAppraisalGuidelines`
+// stood here — a static 3-state (TX/CA/FL) hardcoded "90 days / 1 mile"
+// USPAP guess with no caller since pass 14 removed its only consumer,
+// `_legacyGenerateAICMA` (see the note below this tombstone). The
+// functionality it stood for — state-specific comp-selection/adjustment
+// rules for a CMA — lives on for real now at lib/cma/state-adjustment-rates.ts
+// (`computeCompAdjustments`, published state appraiser adjustment rates, not
+// model-authored — CLAUDE.md §5) and is what the canonical CMA generator,
+// app/actions/ai-cma.ts, actually calls.
+//
 // pass 14: the deprecated _legacyGenerateAICMA (wrote the phantom ai_generated_cmas
 // table, zero callers) was REMOVED — the canonical generateAICMA in ./ai-cma saves
 // to the real cma_reports.

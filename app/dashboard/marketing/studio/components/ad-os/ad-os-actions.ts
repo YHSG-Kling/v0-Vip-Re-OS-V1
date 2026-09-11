@@ -74,6 +74,19 @@ function toExecutionChannel(value: string): ExecutionChannel | null {
     : null
 }
 
+// UNRESOLVED (§1, wave 56 dead-code sweep): `toGateContentType` is never
+// called. Its only plausible destination, the exported `checkContentCompliance`
+// below (~line 608, "thin wrapper so client components can call the
+// compliance gate"), is ITSELF never called by anything in the tree either —
+// that gap is a separate, larger finding (an exported action, out of this
+// item's non-exported-function scope) that needs its own client caller built
+// or its own tombstone, and this function's fate should follow whatever that
+// resolves to rather than be guessed at here. The readiness chain in
+// buildReadinessInput above (systems 4.2→4.3→4.5) uses a DIFFERENT
+// compliance surface, lib/compliance-rules:evaluateContentCompliance, with
+// its own (wider) content-type vocabulary that this converter does not
+// target — so wiring toGateContentType into that chain would be the wrong
+// fix, not a real one. Left in place rather than deleted or force-wired.
 /** Compliance content_type vocabulary accepted by runComplianceGate. */
 function toGateContentType(
   value: ReadinessContentType

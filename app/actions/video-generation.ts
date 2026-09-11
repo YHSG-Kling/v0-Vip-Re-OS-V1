@@ -69,19 +69,12 @@ import { targetWordCount } from "@/lib/video/script-structure"
 // lib/auth/require-caller.ts:requireCaller (this lane's fold-in of the
 // 2026-09-03 wave-26 survivor)
 
-// Resolve caller's agents.id (some video tables use agent_id which is
-// agents.id, not auth.users.id). Returns null if caller isn't a registered
-// agent (e.g. brokerage admin) — callers handle that case.
-async function resolveAgentIdForCaller(userId: string, brokerageId: string): Promise<string | null> {
-  const svc = createServiceClient()
-  const { data } = await svc
-    .from("agents")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
-  return data?.id ?? null
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `resolveAgentIdForCaller` stood
+// here, never called — an exact duplicate of
+// lib/auth/require-caller.ts:187 requireCallerWithAgent, which already
+// resolves agents.id via agents.user_id off the SESSION-derived caller
+// (never a parameter) and returns it as `.agentId`. Nothing here that the
+// survivor lacks; delete rather than wire a second identity resolver.
 
 // ============================================
 // VIDEO SCRIPT LIBRARY — CANONICAL TABLE

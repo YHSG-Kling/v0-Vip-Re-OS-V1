@@ -101,6 +101,14 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   new_movers: 0.014,
 }
 
+// UNRESOLVED (§1, wave 56 dead-code sweep): never called — this file has no
+// color-valued field anywhere (grepped: no `color`/`Color`/`backgroundColor`
+// prop or state exists in this dialog outside this function's own body), so
+// there is nothing here for it to sanitize, and no duplicate sanitizer exists
+// elsewhere in the tree to name as a survivor either. Left in place rather
+// than deleted or guess-wired to an invented color field — a future lane
+// adding brand-color customization to this dialog should reuse this
+// function rather than write a second one.
 function sanitizeCssColor(value: unknown): string {
   if (typeof value !== "string") return "#000000"
   // Only allow safe color values — hex, rgb/rgba, hsl/hsla, or named colors

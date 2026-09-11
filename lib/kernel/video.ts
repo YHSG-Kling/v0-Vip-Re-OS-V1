@@ -1,7 +1,24 @@
 // lib/kernel/video.ts
-// Video Generation Kernel - 9 canonical commands following Kernel OS architecture
+// Video Generation Kernel - 8 canonical commands following Kernel OS architecture
 // All operations route through this layer with explicit input/output contracts
 // No escape paths for direct provider calls
+//
+// TOMBSTONE (wave 56, lane OC, Task C duplicates sweep): command "1. CREATE
+// VIDEO PROJECT" (createVideoProject, CreateVideoProjectInput,
+// CreateVideoProjectOutput) was DELETED from here — a raw ai_video_projects
+// insert with no tenant gate, no compliance hold, no provider resolution, and
+// (verified) ZERO callers anywhere in the repo; not even lib/kernel/index.ts's
+// barrel named this file's version (it re-exports a DIFFERENT, same-named
+// createVideoProject from lib/kernel/marketing.ts). SURVIVOR:
+// app/actions/video/create-video-project.ts:306 createVideoProject — called
+// "the CANONICAL creator" throughout the codebase (app/api/internal/ai-chat,
+// app/api/video/projects/route.ts, lib/repurpose/actions.ts,
+// lib/wizard-staging/content-staging.ts, app/actions/video-generation.ts,
+// app/actions/link-to-video.ts, app/actions/cma-presentation/…) — it holds on
+// a Fair Housing red flag, tenant-gates from the session (not a body
+// argument), and is the one door app/actions/video.ts:150's own comment
+// records an EARLIER duplicate ("createVideoProjectAction") as having been
+// collapsed onto. Numbering above renumbered 9→8 canonical commands.
 
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -15,27 +32,10 @@ import { generateTextRouted } from "@/lib/ai/models"
 // requests actually go out. Removing the import removes the escape hatch the
 // header forbids.
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
-import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 
 // ============================================================================
 // TYPES & CONTRACTS
 // ============================================================================
-
-export interface CreateVideoProjectInput {
-  agentId: string
-  brokerageId: string
-  title: string
-  description?: string
-  campaignId?: string
-  sourceType: "property" | "campaign" | "manual"
-  sourceId?: string
-}
-
-export interface CreateVideoProjectOutput {
-  projectId: string
-  status: CanonicalVideoStatus
-  createdAt: string
-}
 
 export interface GenerateVideoScriptInput {
   projectId: string
@@ -163,55 +163,11 @@ export interface LoadVideoPerformanceOutput {
 }
 
 // ============================================================================
-// KERNEL COMMANDS (9 total)
+// KERNEL COMMANDS (8 total)
 // ============================================================================
 
 /**
- * 1. CREATE VIDEO PROJECT
- * Input: CreateVideoProjectInput { agentId, brokerageId, title, ... }
- * Output: CreateVideoProjectOutput { projectId, status, createdAt }
- * Database: INSERT into ai_video_projects
- */
-export async function createVideoProject(
-  input: CreateVideoProjectInput
-): Promise<CreateVideoProjectOutput> {
-  const supabase = await createClient()
-
-  const { data: project, error } = await supabase
-    .from("ai_video_projects")
-    .insert({
-      agent_id: input.agentId,
-      brokerage_id: input.brokerageId,
-      title: input.title,
-      // ai_video_projects has no description/source_type/source_id columns — these
-      // fold into the video_metadata jsonb. campaign_id is the canonical FK
-      // marketing_campaign_id.
-      marketing_campaign_id: input.campaignId,
-      video_metadata: {
-        description: input.description,
-        source_type: input.sourceType,
-        source_id: input.sourceId,
-      },
-      status: "draft",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select()
-    .maybeSingle()
-
-  if (error || !project) {
-    throw new Error(`Failed to create video project: ${error?.message}`)
-  }
-
-  return {
-    projectId: project.id,
-    status: project.status,
-    createdAt: project.created_at,
-  }
-}
-
-/**
- * 2. GENERATE VIDEO SCRIPT
+ * 1. GENERATE VIDEO SCRIPT
  * Input: GenerateVideoScriptInput { projectId, contentStrategy, tone, duration }
  * Output: GenerateVideoScriptOutput { scriptText, scenes, aiConfidence }
  * Database: UPDATE ai_video_projects with script
@@ -291,7 +247,7 @@ export async function generateVideoScript(
 }
 
 /**
- * 3. UPDATE VIDEO GENERATION SETTINGS
+ * 2. UPDATE VIDEO GENERATION SETTINGS
  * Input: UpdateVideoGenerationSettingsInput { projectId, voiceProfileId, ... }
  * Output: UpdateVideoGenerationSettingsOutput { settingsApplied, updatedAt }
  * Database: UPDATE ai_video_projects provider_metadata
@@ -329,7 +285,7 @@ export async function updateVideoGenerationSettings(
 }
 
 /**
- * 4. SUBMIT VIDEO GENERATION JOB
+ * 3. SUBMIT VIDEO GENERATION JOB
  * Input: SubmitVideoGenerationJobInput { projectId, scriptText, voiceProfileId, ... }
  * Output: SubmitVideoGenerationJobOutput { jobId, status, estimatedCompletionMinutes }
  * Database: UPDATE ai_video_projects with provider_job_id
@@ -477,7 +433,7 @@ export async function submitVideoGenerationJob(
 }
 
 /**
- * 5. LOAD VIDEO GENERATION STATE
+ * 4. LOAD VIDEO GENERATION STATE
  * Input: LoadVideoGenerationStateInput { projectId }
  * Output: LoadVideoGenerationStateOutput { full project state }
  * Database: SELECT from ai_video_projects
@@ -513,7 +469,7 @@ export async function loadVideoGenerationState(
 }
 
 /**
- * 6. PREVIEW VIDEO PROJECT
+ * 5. PREVIEW VIDEO PROJECT
  * Input: PreviewVideoProjectInput { projectId }
  * Output: PreviewVideoProjectOutput { streamUrl, duration, thumbnail }
  * Database: SELECT from ai_video_projects
@@ -541,7 +497,7 @@ export async function previewVideoProject(
 }
 
 /**
- * 7. DISTRIBUTE VIDEO PROJECT
+ * 6. DISTRIBUTE VIDEO PROJECT
  * Input: DistributeVideoProjectInput { projectId, channels, title, description }
  * Output: DistributeVideoProjectOutput { distributions array with status }
  * Database: INSERT into social_posts, UPDATE ai_video_projects
@@ -660,7 +616,7 @@ export async function distributeVideoProject(
 }
 
 /**
- * 8. REPURPOSE VIDEO OUTPUT
+ * 7. REPURPOSE VIDEO OUTPUT
  * Input: RepurposeVideoOutputInput { projectId, formats }
  * Output: RepurposeVideoOutputOutput { artifacts array }
  * Database: UPDATE ai_video_projects with repurposed URLs
@@ -677,7 +633,7 @@ export async function repurposeVideoOutput(
 }
 
 /**
- * 9. LOAD VIDEO PERFORMANCE
+ * 8. LOAD VIDEO PERFORMANCE
  * Input: LoadVideoPerformanceInput { projectId }
  * Output: LoadVideoPerformanceOutput { analytics }
  * Database: SELECT from ai_video_projects, aggregated from social_posts

@@ -775,6 +775,28 @@ export function BuyerOverviewClient({
                       Next tour: {new Date(nextTour.tour_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
                     </p>
                   )}
+                  {/* Financial-verification gate notice — built (present in
+                      this file, unmounted) under §1 wave 56: `blockers`
+                      already surfaces "Financial verification required" as
+                      plain text in the left-rail stage progress, but
+                      `openTourGate`'s persona-aware modal (with a CTA that
+                      scrolls straight to the verification panel) had no
+                      caller anywhere. This does not remove the scheduling
+                      buttons below — an agent may still act — it only makes
+                      the requirement actionable from the same card the
+                      buttons live in, mirroring the Offer section's
+                      "What's required?" pattern below. */}
+                  {!verified && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+                      <p className="text-[11px] text-amber-800">Financial verification not yet complete</p>
+                      <button
+                        onClick={openTourGate}
+                        className="text-[11px] font-medium text-amber-900 underline underline-offset-2 shrink-0"
+                      >
+                        What&apos;s required?
+                      </button>
+                    </div>
+                  )}
                   <div className="flex gap-2 flex-wrap">
                     <Link href={`/crm/contacts/${buyerId}/tours`}>
                       <Button size="sm" className="text-xs">Open Tour Planner</Button>

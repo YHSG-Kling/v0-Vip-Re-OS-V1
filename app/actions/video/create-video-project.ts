@@ -113,6 +113,22 @@ export interface CreateVideoProjectParams {
   captionsEnabled: boolean
   listingId?: string
   /**
+   * MERGED FROM app/actions/listing-media.ts:createVideoProject (wave 56, orphan
+   * doctrine §1.1 — the listing media panel's own creator, deleted with a
+   * tombstone there). That path carried three things this one lacked:
+   *   · templateId → ai_video_projects.provider_template_id (a video_templates row
+   *     the agent picked in the listing media panel; lib/kernel/marketing.ts:1049
+   *     writes the same column for campaign videos — one column, one meaning).
+   *   · audienceType → ai_video_projects.audience_type. Listing videos are
+   *     customer-facing by default and must pass compliance at distribute time.
+   *   · brandComplianceCheck → after the row lands, lib/kernel/brand-compliance.ts
+   *     checkBrandCompliance queues the BRAND check (distinct from the fair-housing
+   *     render hold above, which runs BEFORE the row exists).
+   */
+  templateId?: string
+  audienceType?: "customer_facing" | "internal"
+  brandComplianceCheck?: boolean
+  /**
    * CAMPAIGN ATTRIBUTION — moved here from lib/kernel/video.ts:createVideoProject,
    * which was the only path that carried it. Verified against the live schema:
    *
@@ -468,6 +484,8 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       video_type: params.videoType,
       provider_avatar_id: params.avatarId ?? null,
       provider_voice_id: params.voiceId ?? null,
+      provider_template_id: params.templateId ?? null,
+      audience_type: params.audienceType ?? null,
       background_type: params.backgroundType,
       background_url: params.backgroundUrl ?? null,
       video_metadata: Object.keys(videoMetadata).length > 0 ? videoMetadata : null,
@@ -534,6 +552,17 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
     entityType: "video_project",
     entityId: project.id,
   }).catch(() => {})
+
+  // Brand compliance (merged from listing-media.ts:createVideoProject) — the
+  // BRAND check on the stored row, queued after the fair-housing hold above.
+  if (params.brandComplianceCheck) {
+    const { checkBrandCompliance } = await import("@/lib/kernel/brand-compliance")
+    await checkBrandCompliance({
+      contentType: "video",
+      contentId: project.id,
+      brokerageId: params.brokerageId,
+    }).catch((e: unknown) => console.error("[create-video-project] brand compliance queue failed:", e))
+  }
 
   revalidatePath("/dashboard/videos")
   revalidatePath("/dashboard/videos/create")

@@ -14,7 +14,10 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { createSocialPost, approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+import { approveSocialPost, deleteSocialPost } from "@/app/actions/listing-media"
+// createSocialPost moved to the compliance-gated survivor (wave 56, lane OC,
+// Task C duplicates sweep) — see tombstone at app/actions/listing-media.ts.
+import { createSocialPost } from "@/app/actions/social-publishing"
 import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
 import { shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import {
@@ -136,19 +139,29 @@ export function SocialPanel({ listingId, brokerageId, agentId, sellerContactId, 
   const handleCreate = () => {
     if (!form.content.trim()) return
     startTransition(async () => {
-      const result = await createSocialPost({
-        listingId,
-        brokerageId,
-        platform:        form.platform,
-        postType:        form.postType,
+      // The compliance-gated survivor takes multi-platform + a scheduledFor
+      // that defaults server-side to "now" is NOT assumed here — it requires
+      // one, same as the retired duplicate's optional field meant "draft".
+      // A thrown error and a returned { success:false } are the SAME outcome to
+      // this screen — both are read below before anything claims "Post created".
+      const result: any = await createSocialPost({
+        linkedListingId: listingId,
+        platforms:       [form.platform],
+        contentType:     form.postType,
         content:         form.content.trim(),
         hashtags:        form.hashtags.split(",").map(h => h.trim()).filter(Boolean),
         mediaUrls:       form.mediaUrls.split(",").map(u => u.trim()).filter(Boolean),
-        scheduledFor:    form.scheduledFor || undefined,
+        scheduledFor:    form.scheduledFor || new Date().toISOString(),
         socialAccountId: form.socialAccountId || undefined,
-      })
-      if (result.error) {
-        toast({ title: "Error creating post", description: result.error, variant: "destructive" })
+      }).catch((e: any) => ({ success: false, error: e?.message ?? String(e) }))
+      if (result?.complianceBlocked) {
+        toast({ title: "Held for compliance review", description: result.message ?? "This post needs a human look before it can go out.", variant: "destructive" })
+        return
+      }
+      // The survivor answers success:false for a refused insert / missing tenant
+      // too — a screen must never claim "Post created" over a refusal (§3).
+      if (!result?.success) {
+        toast({ title: "Error creating post", description: result?.error ?? result?.message ?? "The post was not created.", variant: "destructive" })
         return
       }
       if (pushToSellerPortal && sellerContactId) {

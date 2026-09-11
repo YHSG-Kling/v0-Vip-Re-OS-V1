@@ -61,6 +61,13 @@ export interface EquityReportReelProps {
   agentPhotoUrl?: string | null
   /** D-ID + ElevenLabs narration for the whole reel. Null → photo/monogram PIP. */
   avatarVideoUrl?: string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the WHOLE avatar clip
+   * the three STAT windows cut into (lib/video/avatar-render-orchestrator.ts,
+   * wave 56 realism ruling). Optional + additive — see
+   * remotion/components/AvatarPIP.tsx's freeze/fade guard.
+   */
+  avatarDurationSeconds?: number | null
   brandColors:    EquityReportReelBrand
   /** The past client's home — shown on the cover. Falls back to "your home". */
   address?:       string | null
@@ -221,7 +228,7 @@ const SceneChip: React.FC<{ label: string; accentColor: string }> = ({ label, ac
 export const EquityReportReel: React.FC<EquityReportReelProps> = ({
   agentName, agentPhotoUrl, avatarVideoUrl, brandColors,
   address, estimatedValue, purchasePrice, appreciation, appreciationPct,
-  estimatedEquity, yearsHeld, qrCodeDataUrl, qrCaption,
+  estimatedEquity, yearsHeld, qrCodeDataUrl, qrCaption, avatarDurationSeconds,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brandColors.upColor   ?? "#22C55E"
@@ -241,6 +248,8 @@ export const EquityReportReel: React.FC<EquityReportReelProps> = ({
     endFrame:   start + STAT,
     accentColor: brandColors.accentColor,
     primaryColor: brandColors.primaryColor,
+    avatarDurationSeconds,
+    fps: FPS,
   })
 
   return (

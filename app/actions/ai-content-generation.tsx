@@ -1570,79 +1570,18 @@ OUTPUT FORMAT (JSON):
 }`
 }
 
-function buildSocialPostPrompt(params: any, brandVoice: any): string {
-  const platformGuidance = getPlatformGuidance(params.platform, params.postType)
-
-  return `${platformGuidance}
-
-${brandVoice ? `BRAND VOICE: ${brandVoice.tone} tone, ${brandVoice.style} style` : ""}
-
-TARGET PERSONA: ${params.targetPersona || "general"}
-
-CONTEXT: ${params.context || "General real estate content"}
-
-Generate engaging ${params.platform} post following platform best practices.
-
-OUTPUT FORMAT (JSON):
-{
-  "post_text": "Main post content",
-  "hashtags": ["hashtag1", "hashtag2"],
-  "character_count": 280,
-  "cta": "Call to action",
-  "image_suggestions": ["suggestion1"],
-  "best_posting_time": "9:00 AM",
-  "variations": [{"text": "variation 1"}, {"text": "variation 2"}]
-}`
-}
-
-function buildEmailPrompt(params: any, contactData: any, brandVoice: any): string {
-  return `You are an expert email copywriter for real estate professionals.
-
-CREATE: ${params.emailType} email
-
-RECIPIENT PROFILE:
-${contactData ? `- Name: ${contactData.first_name} ${contactData.last_name}
-- Persona: ${contactData.buyer_persona || params.targetPersona}` : `- Persona: ${params.targetPersona || "general"}`}
-
-${brandVoice ? `BRAND VOICE: ${brandVoice.tone}, ${brandVoice.style}` : ""}
-
-URGENCY: ${params.urgency || "medium"}
-
-EMAIL COMPONENTS TO GENERATE:
-
-1. SUBJECT LINE (5 variations):
-   - 40-50 characters optimal
-   - Personalization when possible
-   - Avoid spam triggers
-
-2. PREVIEW TEXT (40-50 characters)
-
-3. EMAIL BODY:
-   - Personalized greeting
-   - 3-4 short paragraphs
-   - Single clear CTA
-
-4. P.S. LINE
-
-COMPLIANCE:
-- No discriminatory language
-- Unsubscribe link required
-
-OUTPUT FORMAT (JSON):
-{
-  "subject_lines": [
-    {"text": "...", "type": "question", "predicted_open_rate": 0.24}
-  ],
-  "preview_text": "...",
-  "email_body_html": "<html>...</html>",
-  "email_body_plain_text": "...",
-  "ps_line": "...",
-  "cta_button_text": "...",
-  "estimated_read_time": 2,
-  "spam_score": 0.3,
-  "mobile_friendly": true
-}`
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `buildSocialPostPrompt` and
+// `buildEmailPrompt` stood here, never called by anything — generateSocialPost
+// (line ~1174) and generateEmail (below) both moved to the "consolidated
+// content generation service" (generateContent, content_type "social_post" /
+// "email") before this file's export list was trimmed, and these two
+// per-type builders were left behind as the old path's leftovers.
+// `buildListingDescriptionPrompt` and `buildBlogPostPrompt` are NOT part of
+// this tombstone — both are still called (lines ~1059, ~1430) by actions
+// that never migrated to the consolidated service, so they stay live.
+// Survivor for the social/email prompt-building capability:
+// lib/content-generation/content-generator.ts (case "social_post" ~line 292;
+// content_type "email" handling ~line 498).
 
 function buildBlogPostPrompt(params: any, brandVoice: any): string {
   return `You are an expert real estate content writer.
@@ -1701,35 +1640,10 @@ function getNeighborhoodGuidance(persona?: string): string {
   return "Emphasize: Community, convenience"
 }
 
-function getPlatformGuidance(platform: string, postType: string): string {
-  const guidance: Record<string, string> = {
-    facebook: `Create Facebook post for ${postType}
-SPECS: 40-80 characters optimal, questions drive engagement
-STRUCTURE: Question opening, 2-4 paragraphs, 1-3 hashtags
-TONE: Conversational, community-focused`,
-
-    linkedin: `Create LinkedIn post for ${postType}
-SPECS: 150-300 words, professional tone
-STRUCTURE: Strong hook, professional insight, 3-5 hashtags
-TONE: Professional but authentic`,
-
-    twitter: `Create Twitter post for ${postType}
-SPECS: 280 chars max, 120-160 optimal
-STRUCTURE: Hook, value, 1-2 hashtags
-TONE: Direct, valuable, concise`,
-
-    tiktok: `Create TikTok caption for ${postType}
-SPECS: Up to 2,200 chars, first 1-2 lines critical
-STRUCTURE: Hook, context, value, CTA, 3-5 hashtags
-TONE: Casual, energetic, authentic`,
-
-    instagram: `Create Instagram post for ${postType}
-SPECS: Up to 2,200 chars, first line critical
-STRUCTURE: Hook, story, CTA, hashtags (20-30)
-TONE: Visual-first, authentic`,
-  }
-  return guidance[platform] || "Create engaging social media post"
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `getPlatformGuidance` stood here —
+// its only caller was `buildSocialPostPrompt`, deleted above in the same
+// sweep (tombstone at this file, ~line 1573). Same survivor:
+// lib/content-generation/content-generator.ts.
 
 // ============================================
 // AUTO-HASHTAG GENERATION

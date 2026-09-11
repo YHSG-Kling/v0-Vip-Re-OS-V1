@@ -29,6 +29,8 @@
 // prefix + JSON blob, decoded by the executor cron via decodeCallbackNote
 // below. One idiom, not a second one (CLAUDE.md §6).
 
+import { resolveSpokenDate } from "@/lib/voice/spoken-values"
+
 export interface CallbackNote {
   /** E.164-ish as given; the executor re-validates before dialing. */
   phone: string
@@ -146,12 +148,10 @@ export function regexParseCallbackPhrase(phrase: string, nowMs: number): string 
     return new Date(nowMs + n * unitMs).toISOString()
   }
 
-  // day offset: today / tonight (0), tomorrow (1) — else undetermined
-  let dayOffset: number | null = null
-  if (/\btomorrow\b/.test(text)) dayOffset = 1
-  else if (/\b(today|tonight|this (morning|afternoon|evening))\b/.test(text)) dayOffset = 0
-
-  // vague part-of-day → a fixed, sane clock time (never "sometime")
+  // vague part-of-day → a fixed, sane clock time (never "sometime"). Computed
+  // BEFORE day offset below so a named weekday is only trusted when the
+  // phrase also carries a real time signal — see the weekday branch's
+  // comment for why that gate matters.
   let minutesOfDay: number | null = null
   if (/\bmorning\b/.test(text)) minutesOfDay = 9 * 60
   else if (/\bafternoon\b/.test(text)) minutesOfDay = 14 * 60
@@ -160,6 +160,35 @@ export function regexParseCallbackPhrase(phrase: string, nowMs: number): string 
   // an explicit clock time overrides the vague part-of-day guess
   const clock = parseClockToMinutes(text)
   if (clock !== null) minutesOfDay = clock
+
+  // day offset: today / tonight (0), tomorrow (1), a named weekday (n), else
+  // undetermined
+  let dayOffset: number | null = null
+  if (/\btomorrow\b/.test(text)) dayOffset = 1
+  else if (/\b(today|tonight|this (morning|afternoon|evening))\b/.test(text)) dayOffset = 0
+  else if (minutesOfDay !== null) {
+    // BUG FIX (wave 56 capability check, scripts/ai-callback-loop-simulator.ts
+    // §1b): a bare weekday name ("Friday morning") was previously matched by
+    // NEITHER the tomorrow/today branch NOR anything else — "Friday" was
+    // silently dropped, dayOffset stayed null, and the function fell through
+    // to the "no day named" default (today, rolling to tomorrow if the vague
+    // time had already passed), landing on the WRONG day with no error and no
+    // degrade. Gated on minutesOfDay !== null (a real time signal already
+    // present) so a bare day name with NO time ("sometime after my shift
+    // ends Thursday") still returns null below and defers to the gateway
+    // rather than guessing a default 9am for a day whose time was never
+    // given — same conservative rule this function uses everywhere else.
+    // Reuses the ONE canonical weekday resolver (lib/voice/spoken-values.ts
+    // resolveSpokenDate — already used by parse-team-command.ts and the voice
+    // backends) instead of writing a second day-of-week regex (§6).
+    const todayISO = new Date(nowMs).toISOString().slice(0, 10)
+    const spokenDate = resolveSpokenDate(text, todayISO)
+    if (spokenDate) {
+      const todayMidnightMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+      const spokenMidnightMs = new Date(`${spokenDate}T00:00:00Z`).getTime()
+      dayOffset = Math.round((spokenMidnightMs - todayMidnightMs) / 86_400_000)
+    }
+  }
 
   if (dayOffset === null && minutesOfDay === null) return null // needs real NLU
   const targetDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + (dayOffset ?? 0)))

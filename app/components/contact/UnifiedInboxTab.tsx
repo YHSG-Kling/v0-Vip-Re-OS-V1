@@ -408,6 +408,17 @@ export default function UnifiedInboxTab({
                     {entry.direction}
                   </span>
 
+                  {/* Missed/busy/failed CALL icon — built (present in this
+                      file, unmounted) under §1 wave 56: statusChip below
+                      already renders `status` as text ("no answer", "busy"),
+                      but a phone row otherwise looks identical to a completed
+                      call at a glance. directionIcon adds the distinct red
+                      PhoneMissed glyph next to the arrow badge for exactly
+                      the three non-connected call statuses; it returns null
+                      for every other channel/status so this is additive. */}
+                  {(entry.channel === "phone" || entry.channel === "voice") &&
+                    directionIcon(entry.direction, entry.status)}
+
                   {statusChip(entry.status)}
 
                   {entry.aiAuthored && entry.source === "message" && (

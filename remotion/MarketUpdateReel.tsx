@@ -70,6 +70,13 @@ export interface MarketUpdateReelProps {
   /** D-ID narration video for the whole reel. */
   avatarVideoUrl: string | null
   agentPhotoUrl:  string | null
+  /**
+   * D-ID's OWN measured render duration in seconds for the WHOLE avatar clip
+   * the three STAT windows cut into (lib/video/avatar-render-orchestrator.ts,
+   * wave 56 realism ruling). Optional + additive — see
+   * remotion/components/AvatarPIP.tsx's freeze/fade guard.
+   */
+  avatarDurationSeconds?: number | null
   brand: {
     primaryColor:   string
     accentColor:    string
@@ -196,7 +203,7 @@ const AreaChip: React.FC<{ areaName: string; period: string; accentColor: string
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,
   avatarVideoUrl, agentPhotoUrl, brand, captionsCues, captionScript,
-  qrCodeDataUrl, qrCaption, mlsClean,
+  qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brand.upColor   ?? "#22C55E"
@@ -250,6 +257,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+            avatarDurationSeconds, fps: FPS,
             startFrame: COVER, endFrame: COVER + STAT }} />
           <StatCard stat={stats[0]} index={1} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
@@ -262,6 +270,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+            avatarDurationSeconds, fps: FPS,
             startFrame: COVER + STAT, endFrame: COVER + STAT * 2 }} />
           <StatCard stat={stats[1]} index={2} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />
@@ -274,6 +283,7 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           <AreaChip areaName={areaName} period={period} accentColor={brand.accentColor} />
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
+            avatarDurationSeconds, fps: FPS,
             startFrame: COVER + STAT * 2, endFrame: COVER + STAT * 3 }} />
           <StatCard stat={stats[2]} index={3} accentColor={brand.accentColor}
             upColor={upColor} downColor={downColor} />

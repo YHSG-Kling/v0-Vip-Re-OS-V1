@@ -62,13 +62,21 @@ export function buildDealRoomReelProps(
     cards.push({ value: f.nextDeadline.date, label: `NEXT: ${f.nextDeadline.label.toUpperCase()}`, sub: "we're already on it", kind: "compliance" })
   }
 
-  const spoken: string[] = [
-    `Hi${p.clientFirstName ? ` ${p.clientFirstName}` : ""}, ${p.agentName} here with your weekly update on ${f.address}.`,
-  ]
-  if (f.clearedThisWeek.length > 0) spoken.push(`Great news this week — ${f.clearedThisWeek.join(" and ")} cleared.`)
-  if (f.daysToClose != null && f.daysToClose >= 0) spoken.push(`We're ${f.daysToClose} day${f.daysToClose === 1 ? "" : "s"} from closing${f.stage ? `, currently in ${f.stage.replace(/_/g, " ").toLowerCase()}` : ""}.`)
-  if (f.activityCount7d > 0) spoken.push(`The team logged ${f.activityCount7d} action${f.activityCount7d === 1 ? "" : "s"} on your deal this week.`)
-  if (f.nextDeadline) spoken.push(`Next up is the ${f.nextDeadline.label.toLowerCase()} on ${f.nextDeadline.date} — we're already on it.`)
+  // Wave 56 realism (owner ruling) — lead with the fact, not a self-intro
+  // ("Hi X, Y here with your update" is the #1 AI-tell the research names).
+  // The personal greeting still plays — just as line TWO, after the hook,
+  // rather than the opener — so the update still feels addressed to the
+  // client without sounding like a canned check-in template.
+  const factLines: string[] = []
+  if (f.clearedThisWeek.length > 0) factLines.push(`Great news this week — ${f.clearedThisWeek.join(" and ")} cleared.`)
+  if (f.daysToClose != null && f.daysToClose >= 0) factLines.push(`We're ${f.daysToClose} day${f.daysToClose === 1 ? "" : "s"} from closing${f.stage ? `, currently in ${f.stage.replace(/_/g, " ").toLowerCase()}` : ""}.`)
+  if (f.activityCount7d > 0) factLines.push(`The team logged ${f.activityCount7d} action${f.activityCount7d === 1 ? "" : "s"} on your deal this week.`)
+  if (f.nextDeadline) factLines.push(`Next up is the ${f.nextDeadline.label.toLowerCase()} on ${f.nextDeadline.date} — we're already on it.`)
+
+  const greeting = `Hi${p.clientFirstName ? ` ${p.clientFirstName}` : ""}, ${p.agentName} here with your update on ${f.address}.`
+  const spoken: string[] = factLines.length > 0
+    ? [factLines[0], greeting, ...factLines.slice(1)]
+    : [greeting]
   spoken.push(`Questions? Just reply — I'm here.`)
 
   return {

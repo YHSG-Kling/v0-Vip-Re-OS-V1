@@ -93,6 +93,7 @@
     "lib/cma/customer-facing-guard.ts": 1,
     "lib/commission/cda-discrepancy.ts": 2,
     "lib/commission/ledger-sync.ts": 5,
+    "lib/commission/payment-tracker.ts": 1,
     "lib/compliance/federal-holidays.ts": 1,
     "lib/compliance/phone-scrub-runner.ts": 1,
     "lib/compliance/trid-disclosure-clock.ts": 2,
@@ -435,7 +436,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9435,
+  "census": 9433,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -653,7 +654,7 @@
     "app/actions/credit-copilot.ts": 8,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
-    "app/actions/crm.ts": 10,
+    "app/actions/crm.ts": 9,
     "app/actions/cron-kernel.ts": 5,
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
@@ -743,7 +744,7 @@
     "app/actions/listing-landing.ts": 9,
     "app/actions/listing-lifecycle-core.ts": 9,
     "app/actions/listing-lifecycle.ts": 15,
-    "app/actions/listing-media.ts": 16,
+    "app/actions/listing-media.ts": 14,
     "app/actions/listing-promo-manual-trigger.ts": 1,
     "app/actions/listing-risk-agent.ts": 1,
     "app/actions/listing-video.ts": 3,
@@ -2871,7 +2872,7 @@
     "lib/commission/engine.ts": 1,
     "lib/commission/finalization.ts": 2,
     "lib/commission/ledger-sync.ts": 7,
-    "lib/commission/payment-tracker.ts": 3,
+    "lib/commission/payment-tracker.ts": 4,
     "lib/commission/reconcile-tracking.ts": 5,
     "lib/commission/revenue-share-model.ts": 4,
     "lib/commission/team-lead-split.ts": 5,
@@ -3523,7 +3524,7 @@
     "lib/kernel/vendor-verification.ts": 4,
     "lib/kernel/vendors.ts": 8,
     "lib/kernel/video-coordination.ts": 4,
-    "lib/kernel/video.ts": 10,
+    "lib/kernel/video.ts": 9,
     "lib/kernel/voice-delegation.ts": 18,
     "lib/kernel/warm-handoff-runner.ts": 1,
     "lib/kernel/warm-handoff.ts": 3,
@@ -4133,7 +4134,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 1,
+    "lib/video/realism-profile.ts": 2,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -5665,7 +5666,6 @@
     ],
     "app/actions/crm.ts": [
       "updateContact",
-      "createContact",
       "deleteContact",
       "getContacts",
       "getContactById",
@@ -6282,11 +6282,9 @@
       "runComplianceCheck",
       "getVideoProjects",
       "getVideoTemplates",
-      "createVideoProject",
       "deleteVideoProject",
       "getSocialPosts",
       "getSocialAccounts",
-      "createSocialPost",
       "approveSocialPost",
       "deleteSocialPost"
     ],
@@ -14523,6 +14521,7 @@
       "syncAgentLedgerToStamp"
     ],
     "lib/commission/payment-tracker.ts": [
+      "syncAgentYtdStats",
       "markCommissionPaid",
       "markDistributionPaid",
       "getCommissionPaymentStatus"
@@ -17822,7 +17821,6 @@
       "publishVideoCoordinationSignals"
     ],
     "lib/kernel/video.ts": [
-      "createVideoProject",
       "generateVideoScript",
       "updateVideoGenerationSettings",
       "submitVideoGenerationJob",
@@ -20774,7 +20772,8 @@
       "computeDaysOnMarket"
     ],
     "lib/video/realism-profile.ts": [
-      "scanForAiTells"
+      "scanForAiTells",
+      "avatarPipWindowFade"
     ],
     "lib/video/reel-brand.ts": [
       "resolveReelBrand",

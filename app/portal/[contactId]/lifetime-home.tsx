@@ -236,8 +236,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           />
         )}
 
-        {/* 3. Equity Estimate Card */}
+        {/* 3. Equity Estimate Card — id target for LifetimeMilestoneLine's
+               "See savings" CTA → #refinance (anchor-census 4a) */}
         {plan.showWealthStory && (
+        <div id="refinance">
         <EquityEstimateCard
           estimatedValueMid={homeValueEstimate?.estimated_value_mid}
           estimatedValueLow={homeValueEstimate?.estimated_value_low}
@@ -248,6 +250,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           closeDate={transaction?.close_date}
           valueSeries={homeValueSeries}
         />
+        </div>
         )}
 
         {/* 4. Neighborhood Activity */}
@@ -312,8 +315,9 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                 team scoping + audience filtering. */}
         <ContactVendorToolkitCard contactId={contactId} portalView="lifetime" />
 
-        {/* 6. Preferred Vendors (compact) */}
-        <Card>
+        {/* 6. Preferred Vendors (compact) — id target for
+               LifetimeMilestoneLine's "Vendors" CTA → #vendors (anchor-census 4a) */}
+        <Card id="vendors">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-2">
               <Wrench className="h-5 w-5 text-orange-600" />

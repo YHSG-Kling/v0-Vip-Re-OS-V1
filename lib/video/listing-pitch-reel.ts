@@ -71,8 +71,16 @@ export function buildListingPitchReelProps(
     weekLabel: p.address,
     cards,
     oneAsk: `Let's put this team to work on ${p.address}`,
+    // Wave 56 realism (owner ruling: the finished video must not read as a
+    // canned AI creation) — SPOKEN_REALISM_DIRECTIVE rule 5 ("open with the
+    // fact, never a self-introduction") applies just as much to an AUTHORED
+    // template as a model draft: "Hi, I'm X with Y" is the exact self-intro
+    // opener the research names as the #1 tell, even though scanForAiTells'
+    // pattern (built for model-drafted "from" openers) never saw it here — the
+    // agent's identity is already on screen via the composition's own chrome,
+    // so the spoken line leads with the hook instead of restating it.
     narration: [
-      `Hi, I'm ${p.agentName} with ${p.brand.brokerageName}. Here's what listing ${p.address} with us looks like.`,
+      `Here's what listing ${p.address} with ${p.brand.brokerageName} actually looks like.`,
       `From day one, an AI team works your listing around the clock — every inquiry answered, every showing followed up.`,
       p.roi.attributedGciCents > 0
         ? `In the last ${p.roi.periodDays} days, our marketing produced ${compactCentsMoney(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`

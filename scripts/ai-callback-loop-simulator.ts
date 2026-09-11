@@ -95,6 +95,38 @@ const NOW = Date.UTC(2026, 8, 9, 10, 0, 0)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+console.log("\n═══ 1b. regexParseCallbackPhrase — wave 56 capability-check fixtures ═══")
+{
+  // "call me back tomorrow at 3pm" — the ordinary case (day word + explicit
+  // clock time), phrased the way a caller actually talks rather than the
+  // terse "3pm"/"tomorrow" fragments above.
+  check("'call me back tomorrow at 3pm' → tomorrow at 15:00 UTC",
+    regexParseCallbackPhrase("call me back tomorrow at 3pm", NOW) === new Date(Date.UTC(2026, 8, 10, 15, 0, 0)).toISOString())
+
+  // "try me Friday morning" — BUG FIX (see lib/ai-isa/callback-task.ts): a
+  // named weekday with no "tomorrow"/"today" was previously silently
+  // dropped, landing on today-rolled-to-tomorrow (2026-09-10, a Thursday)
+  // instead of the actually-named Friday (2026-09-11). NOW is Wed 2026-09-09;
+  // Friday is 2 days out.
+  check("'try me Friday morning' → the ACTUAL next Friday at 09:00 UTC, not tomorrow",
+    regexParseCallbackPhrase("try me friday morning", NOW) === new Date(Date.UTC(2026, 8, 11, 9, 0, 0)).toISOString())
+
+  // POSITIVE CONTROL — "next week sometime" carries neither a resolvable day
+  // (no tomorrow/today/weekday name) nor a resolvable time (no morning/
+  // afternoon/evening/clock) — must still defer to the gateway, never guess.
+  check("POSITIVE CONTROL: 'next week sometime' → null (no day AND no time signal — needs real NLU)",
+    regexParseCallbackPhrase("next week sometime", NOW) === null)
+
+  // POSITIVE CONTROL — the weekday-resolution fix must stay gated on an
+  // actual time signal being present: a weekday name with NO time word must
+  // still degrade to null rather than guess a default 9am for a day whose
+  // time was never given (mirrors the existing "sometime after my shift ends
+  // Thursday" control above, phrased as a bare weekday name this time).
+  check("POSITIVE CONTROL: 'friday' alone (day named, no time) → null, not a guessed 9am",
+    regexParseCallbackPhrase("friday", NOW) === null)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 console.log("\n═══ 2. resolveCallbackDueDate — never drops a request ═══")
 {
   await (async () => {

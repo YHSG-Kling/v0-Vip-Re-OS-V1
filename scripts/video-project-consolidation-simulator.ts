@@ -246,21 +246,26 @@ function supersetLayer() {
     /event_type\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(eventInsert) &&
     /processKernelEvent\(\{\s*event\s*:\s*KernelEvent\.VIDEO_GENERATION_REQUESTED/.test(body.replace(/\s*\n\s*/g, " ")))
 
-  // The kernel creator's own shape is the reference for "nothing lost". If the
-  // kernel ever writes a column this survivor does not, this file is stale.
-  // Compared COLUMN-TO-COLUMN: the whole-body test passed for brokerage_id and
-  // title on the strength of the lifecycle_events insert, which is not the row.
-  const kernelCreate = kernel.slice(kernel.search(/export\s+async\s+function\s+createVideoProject\s*\(/))
-  const kernelColumns = topLevelKeys(insertObject(kernelCreate, "ai_video_projects"))
-  check("the kernel creator's own insert object was located — it is the reference",
-    kernelColumns.length > 0)
-  for (const col of ["marketing_campaign_id", "video_metadata", "agent_id", "brokerage_id", "title"]) {
-    if (kernelColumns.includes(col)) {
-      check(`kernel wrote the column ${col} — so does the survivor`, projectColumns.includes(col))
-    } else {
-      check(`kernel is still the reference for ${col} (it writes it)`, false)
-    }
+  // The kernel creator's own shape WAS the reference for "nothing lost" while it
+  // existed. Wave 56 (lane OC, orphan doctrine §1.1) deleted lib/kernel/video.ts's
+  // createVideoProject outright — every column it wrote had already been merged
+  // onto the survivor (wave 42 merge, re-asserted here), and it had zero callers.
+  // So the reference is now the RECORDED set of columns the kernel used to write,
+  // asserted against the survivor — and the kernel file must carry the tombstone
+  // naming the survivor rather than a second creator (a resurrected one would
+  // reopen the duplicate this proof exists to keep closed).
+  const KERNEL_WROTE = ["marketing_campaign_id", "video_metadata", "agent_id", "brokerage_id", "title"]
+  check("lib/kernel/video.ts no longer defines createVideoProject (merged onto the survivor, wave 56)",
+    !/export\s+async\s+function\s+createVideoProject\s*\(/.test(kernel))
+  check("lib/kernel/video.ts carries the tombstone naming the survivor",
+    // A tombstone IS a comment (§2: never a call site) — so this one check reads RAW source on purpose.
+    /create-video-project/.test(readFileSync(KERNEL, "utf8")) && /(DELETED|TOMBSTONE|SURVIVOR)/i.test(readFileSync(KERNEL, "utf8")))
+  for (const col of KERNEL_WROTE) {
+    check(`the kernel used to write ${col} — the survivor still does`, projectColumns.includes(col))
   }
+  // Positive control: a column the kernel never wrote must NOT be claimed as carried.
+  check("[control] a made-up column is correctly reported absent from the survivor's insert",
+    !projectColumns.includes("column_that_never_existed"))
 }
 
 // ── 3. ERROR IS DESTRUCTURED — supabase-js RESOLVES A REFUSED WRITE ─────────

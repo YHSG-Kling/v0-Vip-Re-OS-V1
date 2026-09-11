@@ -68,6 +68,14 @@ export async function logStageTransition(
       readiness_passed: event.readinessChecksPassed ?? [],
       readiness_failed: event.readinessChecksFailed ?? [],
       notes:            event.notes,
+      // BUILT (§1, wave 56 dead-code sweep): buildTransitionDescription
+      // (below) had no caller — lifecycle_events carries no free-text
+      // description column of its own, so the human-readable string it
+      // builds (admin-override framing, reason, skipped stages, readiness
+      // results) had nowhere to land. metadata is the one flexible surface
+      // this table offers; folded in here rather than reconstructing the
+      // same sentence from raw fields at every future reader.
+      description:      buildTransitionDescription(event),
     },
   })
   return { activityId: result.activityId }
@@ -198,6 +206,9 @@ export async function getLifecycleHistory(
   userId: string
   isOverride: boolean
   notes: string | null
+  /** Human-readable framing built by buildTransitionDescription at write
+   *  time — null for rows written before this field existed. */
+  description: string | null
 }>> {
   // `const { data }` here returned `data ?? []`, so a REFUSED read was
   // indistinguishable from a listing with no history — and the caller that
@@ -223,6 +234,7 @@ export async function getLifecycleHistory(
     userId:     e.actor_user_id,
     isOverride: e.metadata?.is_override ?? false,
     notes:      e.metadata?.notes ?? null,
+    description: e.metadata?.description ?? null,
   }))
 }
 

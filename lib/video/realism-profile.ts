@@ -112,7 +112,7 @@
  * cannot silently degrade into a no-op.
  */
 
-import { spokenWords } from "./script-structure"
+import { spokenWords, avatarFadeOutFrame } from "./script-structure"
 export { avatarFadeOutFrame } from "./script-structure"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +170,25 @@ export const ELEVENLABS_REALISM_VOICE_SETTINGS: ElevenLabsRealismVoiceSettings =
 export const ELEVENLABS_TEXT_NORMALIZATION: "auto" = "auto"
 
 // ─────────────────────────────────────────────────────────────────────────────
+// § BRAND BOOKEND LENGTH CAP (wave 56)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// lib/video/composite-attribution.ts's concatIntroOutro stitches a brokerage-
+// curated stock intro/outro clip (video_assets, selected upstream) onto the
+// avatar/voiceover video with NO length cap — a brokerage that uploaded a
+// long corporate sting (8-10s of logo animation before anything real-estate-
+// specific plays) had that whole clip prepended/appended to every video, which
+// is exactly the "reads as a canned corporate video, not a person" tell the
+// owner's realism ruling names. Research (cloudpano.com / lilachbullock.com's
+// AI-avatar-video production guides, both cited in this file's header) puts a
+// branded bookend at 2-3 seconds before it starts costing watch-through on a
+// social-length reel; 2.5s is the midpoint this file already uses for other
+// realism numbers (the fade lead, the pad_audio settle). ONE constant (§6) —
+// concatIntroOutro trims each bookend segment to this before the concat, the
+// main video segment is NEVER trimmed by it.
+export const MAX_BRAND_BOOKEND_SECONDS = 2.5
+
+// ─────────────────────────────────────────────────────────────────────────────
 // § SPOKEN-DELIVERY SCRIPT REALISM DIRECTIVE
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -210,8 +229,14 @@ const AI_TELL_SELF_REFERENCE_PATTERNS: RegExp[] = [
 
 const AI_TELL_ROBOTIC_OPENER_PATTERNS: RegExp[] = [
   // "Hi, I'm Jordan from Century Realty" — the self-intro every researched
-  // guide names as the #1 attention-killer AND AI tell.
-  /^\s*hi[,!]?\s+i'?m\s+[a-z][a-z .'-]{0,40}\bfrom\b/i,
+  // guide names as the #1 attention-killer AND AI tell. Wave 56: broadened
+  // from|with — an AUTHORED template ("Hi, I'm X with Y") is the identical
+  // tell, just a different preposition, and was slipping past the original
+  // from-only pattern (found auditing lib/video/listing-pitch-reel.ts).
+  /^\s*hi[,!]?\s+i'?m\s+[a-z][a-z .'-]{0,40}\b(?:from|with)\b/i,
+  // "Hi Sarah, Jordan here with your update" — the SAME self-intro tell in
+  // the "X here" register (found auditing lib/kernel/deal-room-reel.ts).
+  /^\s*hi\b[^.!?]{0,30},\s+[a-z][a-z'-]*\s+here\b/i,
   /^\s*hey (?:guys|everyone|there)[,!]/i,
   /^\s*welcome (?:back )?to (?:my|this) (?:channel|video)/i,
 ]
@@ -337,6 +362,18 @@ export const AI_TELL_POSITIVE_CONTROLS: ReadonlyArray<{ label: string; text: str
     text: "Hi, I'm Jordan Ellis from Century Realty Group, and today I'm going to talk about the local market.",
   },
   {
+    // Wave 56 — the "with" preposition variant this file's own header note
+    // documents finding in an AUTHORED (not model-drafted) template.
+    label: "robotic_opener_with",
+    text: "Hi, I'm Jordan Ellis with Century Realty Group. Here's what listing your home with us looks like.",
+  },
+  {
+    // Wave 56 — the "X here" register variant found in the deal-room reel's
+    // authored opener.
+    label: "robotic_opener_here",
+    text: "Hi Sarah, Jordan here with your weekly update on 214 Maple.",
+  },
+  {
     label: "formal_transition",
     text: "Furthermore, it is worth noting that inventory remains low across the county this quarter.",
   },
@@ -365,7 +402,130 @@ export const AI_TELL_NEGATIVE_CONTROL =
   "The kitchen's been redone — quartz counters, new appliances, opens right onto the deck. " +
   "If you want a private showing before the weekend, just text me back."
 
+/**
+ * FIVE MORE NEGATIVE CONTROLS (wave 56 capability check, owner ruling
+ * "check to make sure all capabilities are working properly"). One negative
+ * control alone can't rule out a scanner that only happens to pass its own
+ * single fixture — these cover five different spoken-delivery shapes
+ * (open-house recap, price-change update, portal welcome, market/neighborhood
+ * update, anniversary check-in) so a scanner that overfits one script's
+ * phrasing shows up as a false positive on at least one of the other four.
+ * Every entry is written to the SPOKEN_REALISM_DIRECTIVE rules above
+ * (contractions throughout, short one-idea sentences, no self-intro, no
+ * formal transitions, no canned sign-off) and MUST produce zero findings —
+ * asserted in scripts/avatar-pipeline-hardening-simulator.ts alongside the
+ * single AI_TELL_NEGATIVE_CONTROL above.
+ */
+export const AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS: ReadonlyArray<{ label: string; text: string }> = [
+  {
+    label: "open_house_recap",
+    text: "We had forty people through the open house Saturday. Three showings are already booked for this week. " +
+      "If you're thinking about listing before spring, now's the time to talk.",
+  },
+  {
+    label: "price_change_update",
+    text: "Good news on Maple Street — we just dropped the price by ten thousand. It's priced right for today's buyers. " +
+      "Let's get you in this weekend before it's gone.",
+  },
+  {
+    label: "portal_welcome",
+    text: "Welcome to your new portal, Sarah. I've already loaded five homes that match what you're looking for. " +
+      "Take a look and let me know which ones catch your eye.",
+  },
+  {
+    label: "neighborhood_market_update",
+    text: "Three homes sold on Birchwood last month, all above asking. That tells you where this market's heading. " +
+      "Want me to run the numbers on your place?",
+  },
+  {
+    label: "anniversary_checkin",
+    text: "Happy one year in your home! I hope the kitchen's still your favorite spot. " +
+      "If you ever need anything, you know where to find me.",
+  },
+]
+
 // The avatar-track hold/freeze guard (avatarFadeOutFrame) lives in
 // lib/video/script-structure.ts, beside avatarDurationOverrunSeconds — its
 // direct sibling in the same wave-53 measurement family — and is re-exported
 // above so every realism concern still has ONE front door.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// § THE WINDOWED PIP FREEZE GUARD (wave 56)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// avatarFadeOutFrame assumes the avatar <Video> plays its source from frame 0
+// (AgentTalkingHeadReel: `trimBefore={0} trimAfter={BODY}`, one window, one
+// clip). remotion/components/AvatarPIP.tsx is a DIFFERENT shape: EquityReportReel,
+// MarketUpdateReel, and (after this wave) AgentExplainerReel each cut THREE
+// separate Sequence windows into ONE continuous D-ID clip, passing ABSOLUTE
+// `trimBefore={startFrame} trimAfter={endFrame}` per window (COVER, COVER+STAT,
+// COVER+STAT*2, …). A clip that measures shorter than the composition's fixed
+// geometry does not just freeze its OWN last frame once — every LATER window
+// whose startFrame is already past the clip's real end asks `<Video>` to play a
+// slice that does not exist at all, which is the same freeze risk multiplied by
+// the window count.
+//
+// avatarPipWindowFade adapts avatarFadeOutFrame to this windowed shape instead
+// of re-deriving the arithmetic (§6): the real seconds of source LEFT once this
+// window's own startFrame is subtracted out is exactly the "local actual
+// duration" avatarFadeOutFrame already knows how to fade against. A window that
+// starts entirely past the clip's measured end (`hasRealContent: false`) gets no
+// fade frame at all — there is nothing to fade FROM — so the caller must skip
+// the <Video> for that window and fall back to the photo/monogram rather than
+// hold whatever frame a naive trimAfter would freeze on.
+
+export interface AvatarPipWindowFade {
+  /** false when this window's slice starts AFTER the measured avatar clip
+   *  ended — there is NO real video content in this window at all. The caller
+   *  must render the photo/monogram fallback instead of the <Video>, or it
+   *  freezes on the clip's own last rendered frame for the whole window. */
+  hasRealContent: boolean
+  /** Local frame (0-based, relative to THIS window's own Sequence — the same
+   *  frame space useCurrentFrame() reads inside a <Sequence>) at which the
+   *  avatar should start fading out. Null when the window is fully covered by
+   *  real content (no fade needed) OR when there is no measurement at all
+   *  (additive/opt-in — an older render row with no avatarDurationSeconds
+   *  renders EXACTLY as before, full opacity throughout). */
+  fadeFrame: number | null
+}
+
+/**
+ * The per-window fade/skip decision for one AvatarPIP Sequence slice of a
+ * SINGLE continuous avatar clip. PURE — no I/O, safe for a simulator.
+ *
+ * `avatarDurationSeconds` is the MEASURED D-ID duration for the WHOLE clip
+ * (ai_video_projects.duration_seconds, threaded by
+ * lib/video/avatar-render-orchestrator.ts into every composition's input_props
+ * — not composition-specific, so this reads the same number
+ * AgentTalkingHeadReel's single-window fade already reads).
+ * `startFrame`/`endFrame` are this window's ABSOLUTE frame offsets into that
+ * same clip (what the caller already passes to `<Video trimBefore trimAfter>`).
+ */
+export function avatarPipWindowFade(
+  avatarDurationSeconds: number | null | undefined,
+  startFrame: number,
+  endFrame: number,
+  fps: number,
+  fadeFrames = 12,
+): AvatarPipWindowFade {
+  // No measurement at all ⇒ render exactly as before this wave: full opacity,
+  // every window, for the whole window. Never treat "unmeasured" as "empty".
+  if (typeof avatarDurationSeconds !== "number" || !Number.isFinite(avatarDurationSeconds)) {
+    return { hasRealContent: true, fadeFrame: null }
+  }
+  if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame) || !Number.isFinite(fps) || fps <= 0) {
+    return { hasRealContent: true, fadeFrame: null }
+  }
+  const windowFrames = endFrame - startFrame
+  if (windowFrames <= 0) return { hasRealContent: true, fadeFrame: null }
+
+  // Seconds of REAL clip left once this window's own start is subtracted —
+  // the "local actual duration" avatarFadeOutFrame's contract already expects.
+  const localActualSeconds = avatarDurationSeconds - startFrame / fps
+  if (localActualSeconds <= 0) return { hasRealContent: false, fadeFrame: null }
+
+  return {
+    hasRealContent: true,
+    fadeFrame: avatarFadeOutFrame(localActualSeconds, windowFrames, fps, fadeFrames),
+  }
+}

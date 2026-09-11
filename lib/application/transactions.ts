@@ -2627,6 +2627,7 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     teamContacts,
     requestedDocuments,
     health,
+    costBreakdown,
   ] = await Promise.all([
     // Client-visible milestones
     supabase
@@ -2635,10 +2636,16 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       .eq("transaction_id", transactionId)
       .order("target_date", { ascending: true })
       .then(r => r.data || []),
-    // Client-friendly updates
+    // Client-friendly updates. ai_generated/sent_via ADDED (§1, wave 56
+    // dead-code sweep): both columns were written by the insert sites above
+    // and read by nothing once getRecentUpdates (a dead duplicate of THIS
+    // query) was deleted — readerless-write-census went 43→45 the moment the
+    // dead reader stopped masking it. Selected here and surfaced on
+    // combinedUpdates below so the portal can label AI-authored updates the
+    // same way UnifiedInboxTab already does for messages.
     supabase
       .from("client_friendly_updates")
-      .select("id, update_text, update_type, tone, created_at, read_at")
+      .select("id, update_text, update_type, tone, created_at, read_at, ai_generated, sent_via")
       .eq("transaction_id", transactionId)
       .order("created_at", { ascending: false })
       .limit(15)
@@ -2703,6 +2710,13 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       .then(r => r.data || []),
     // Transaction health
     getTransactionHealth(transactionId),
+    // Cost breakdown — BUILT (§1 wave 56 dead-code sweep): getCostBreakdown
+    // stood below, never called, while lib/transactions/offer-bridge.ts:504-506
+    // already names this exact gap in its own comment ("the client portal's
+    // transaction detail reads transaction_cost_breakdown — writer-less until
+    // now, so every client's cost panel rendered empty") and has written this
+    // table since. The writer existed; the reader just never ran.
+    getCostBreakdown(transactionId),
   ])
   
   const personaConfig = getPersonaConfig(persona, transaction.deal_type || "buyer")
@@ -2758,6 +2772,10 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       /** Unread as of the moment this page was opened — see the read-receipt
        *  note above. Lets the portal badge genuinely-new updates. */
       is_new: updateWasUnread.has(u.id),
+      // AI-authored, labeled — never ambiguous (same disclosure convention
+      // as app/components/contact/UnifiedInboxTab.tsx's aiAuthored badge).
+      ai_generated: u.ai_generated ?? false,
+      sent_via: u.sent_via ?? null,
     })),
     ...transparencyUpdates.map((u: any) => ({
       id: u.id,
@@ -2829,6 +2847,11 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     earnestMoney: earnestMoneyStatus,
     checklistSummary,
     delayInfo,
+    // buyer_costs / seller_costs jsonb, each provenance-marked ("contract" vs
+    // "estimate" — see lib/transactions/offer-bridge.ts:507-509). {} when the
+    // deal predates m-whatever added this table or offer acceptance hasn't
+    // run yet — never thrown, matching every other optional panel here.
+    costBreakdown,
     updates: combinedUpdates,
     // THE CLIENT'S VIEW OF THE ROSTER, REDACTED AT THE SAME BOUNDARY THE
     // TRANSACTION-CREATED NOTICE USES (lib/notifications/transaction-parties-packet.ts).
@@ -3102,15 +3125,12 @@ export async function autoProgressMilestone(transactionId: string, completedMile
 // PRIVATE HELPERS
 // ============================================
 
-async function getClientTimeline(transactionId: string) {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from("transaction_milestones")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .order("target_date", { ascending: true })
-  return data || []
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `getClientTimeline` stood here,
+// never called — loadClientDashboard's own Promise.all (~line 2632) already
+// queries transaction_milestones directly with a leaner client-safe column
+// list (id, milestone_name, target_date, status, completed_at, notes vs this
+// function's bare `select("*")`), same order-by. That inline query is the
+// survivor.
 
 async function getCostBreakdown(transactionId: string) {
   const supabase = await createClient()
@@ -3122,16 +3142,12 @@ async function getCostBreakdown(transactionId: string) {
   return data || {}
 }
 
-async function getRecentUpdates(transactionId: string) {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from("client_friendly_updates")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .order("created_at", { ascending: false })
-    .limit(10)
-  return data || []
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `getRecentUpdates` stood here,
+// never called — loadClientDashboard's own Promise.all (~line 2639) already
+// queries client_friendly_updates directly (id, update_text, update_type,
+// tone, created_at, read_at, limit 15 vs this function's bare `select("*")`
+// limit 10) and feeds it into `combinedUpdates`. That inline query is the
+// survivor.
 
 async function getTransactionHealth(transactionId: string) {
   const supabase = await createClient()
@@ -3143,14 +3159,12 @@ async function getTransactionHealth(transactionId: string) {
   return { overall_health: transaction?.health_score || 75 }
 }
 
-async function getTeamContacts(transactionId: string) {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from("transaction_participants")
-    .select("*, agents(*)")
-    .eq("transaction_id", transactionId)
-  return data || []
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `getTeamContacts` stood here,
+// never called — loadClientDashboard's own Promise.all (~line 2691) already
+// queries transaction_participants directly with a lean, client-safe column
+// list (id, role, name, company, email, phone, no `agents(*)` embed — the
+// redaction the header at ~line 2833 requires happens on THAT shape) and
+// feeds it through rosterForPrincipal. That inline query is the survivor.
 
 async function calculatePipeline(transactions: any[], brokerageId: string) {
   // Same PIPELINE_COLUMN_STATUSES the kanban uses — lib/transactions/transaction-status.ts:83.

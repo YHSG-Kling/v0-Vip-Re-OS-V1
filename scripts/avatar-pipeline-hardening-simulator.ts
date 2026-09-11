@@ -66,8 +66,10 @@ import {
   scanForAiTells,
   AI_TELL_POSITIVE_CONTROLS,
   AI_TELL_NEGATIVE_CONTROL,
+  AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS,
   DID_TALK_REALISM_CONFIG,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
+  avatarPipWindowFade,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -755,6 +757,16 @@ function realismSection() {
   // that fires on nothing).
   check("CONTROL: a script that follows SPOKEN_REALISM_DIRECTIVE (contractions, short sentences, no self-reference) produces ZERO findings",
     scanForAiTells(AI_TELL_NEGATIVE_CONTROL).length === 0)
+  // FIVE MORE NEGATIVE CONTROLS (wave 56 capability check) — five different
+  // spoken-delivery shapes (open house, price change, portal welcome, market
+  // update, anniversary), each written to the same directive. One passing
+  // fixture proves nothing about a scanner tuned to that one script's
+  // phrasing; five different shapes catch a false positive the single
+  // control above would miss.
+  for (const c of AI_TELL_ADDITIONAL_NEGATIVE_CONTROLS) {
+    check(`CONTROL: the "${c.label}" realistic script produces ZERO findings (false-positive check)`,
+      scanForAiTells(c.text).length === 0)
+  }
 
   // POSITIVE CONTROLS (§2) — the avatar-freeze guard
   check("CONTROL: a clip that fills its whole window returns null (no fade — nothing to fix)",
@@ -763,6 +775,136 @@ function realismSection() {
     avatarFadeOutFrame(8, 300, 30) === 228)
   check("CONTROL: no measurement (null/undefined duration) returns null — additive/opt-in, never a spurious fade on an older render row",
     avatarFadeOutFrame(null, 300, 30) === null && avatarFadeOutFrame(undefined, 300, 30) === null)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §avatarPipWindow — wave 56: the MULTI-WINDOW freeze risk in
+// remotion/components/AvatarPIP.tsx (EquityReportReel / MarketUpdateReel /
+// AgentExplainerReel each cut THREE Sequence windows into ONE continuous D-ID
+// clip via absolute startFrame/endFrame trims — a shape avatarFadeOutFrame's
+// single-window BODY-from-0 contract does not cover on its own).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function avatarPipWindowSection() {
+  console.log("\n── §avatarPipWindow — the windowed multi-PIP freeze guard (wave 56) ──")
+  const avatarPip = readStripped("remotion/components/AvatarPIP.tsx")
+  const explainer = readStripped("remotion/AgentExplainerReel.tsx")
+  const equity = readStripped("remotion/EquityReportReel.tsx")
+  const marketUpdate = readStripped("remotion/MarketUpdateReel.tsx")
+
+  check("the shared AvatarPIP component reads avatarDurationSeconds and calls avatarPipWindowFade (one vocabulary, §6 — not a second arithmetic re-implemented in the component)",
+    /avatarDurationSeconds/.test(avatarPip) && /avatarPipWindowFade\(/.test(avatarPip))
+  check("a window with no real content (hasRealContent === false) falls through to the photo/monogram instead of rendering the <Video> at all",
+    /avatarVideoUrl && hasRealContent/.test(avatarPip))
+  check("a window that DOES have real content still applies the fade as opacity on the <Video>, never a hold",
+    /opacity\s*\}\s*\/>/.test(avatarPip) || /style=\{\{ width: "100%", height: "100%", opacity \}\}/.test(avatarPip))
+
+  // AgentExplainerReel: the private duplicate is GONE (tombstoned) and the
+  // survivor is imported + threaded through all three PIP windows with a
+  // real avatarDurationSeconds, not a dropped prop.
+  check("AgentExplainerReel imports the shared AvatarPIP (its private duplicate is tombstoned, not a second copy)",
+    /import \{ AvatarPIP \} from "\.\/components\/AvatarPIP"/.test(explainer) &&
+    !/const AvatarPIP: React\.FC/.test(explainer))
+  check("AgentExplainerReel declares avatarDurationSeconds on its own props (the D-ID measurement can actually reach the component)",
+    /avatarDurationSeconds\?:\s*number \| null/.test(explainer))
+  check("all THREE PIP windows in AgentExplainerReel thread avatarDurationSeconds through (not just one of three — a partial thread leaves two windows still freeze-risked)",
+    (explainer.match(/avatarDurationSeconds, fps: FPS, size: 360, position: "top-left", ringWidth: 6/g) ?? []).length === 3)
+
+  // EquityReportReel / MarketUpdateReel: already imported the survivor
+  // (round-4 census); wave 56 adds the SAME avatarDurationSeconds thread so
+  // their own three-window shape gets the identical fix, not a fix that only
+  // landed on the newest caller.
+  check("EquityReportReel's pipFor helper threads avatarDurationSeconds (one thread point covers all three of its STAT windows)",
+    /avatarDurationSeconds,\s*\n\s*fps: FPS,/.test(equity))
+  check("MarketUpdateReel threads avatarDurationSeconds on all THREE STAT windows",
+    (marketUpdate.match(/avatarDurationSeconds, fps: FPS,\s*\n\s*startFrame:/g) ?? []).length === 3)
+
+  // POSITIVE CONTROLS (§2) — avatarPipWindowFade itself, against AgentExplainerReel's
+  // OWN real geometry (BULLET1 frames 90-180, BULLET2 180-300, BULLET3 300-450 —
+  // see remotion/AgentExplainerReel.tsx's COVER/B1/B2/B3 constants) and a clip
+  // that measured only 8.5s (255 frames) against the full 18s/540-frame
+  // composition — the exact historical shape this closes: a D-ID render that
+  // came in shorter than the fixed geometry, sliced into three windows.
+  const fps = 30
+  const clipSeconds = 8.5 // 255 frames — ends partway through BULLET 2's window
+  // BULLET 1 (frames 90-180): still 5.5s of clip left at this window's own
+  // start (165 frames > the window's 90), so it is fully covered — no fade.
+  const b1 = avatarPipWindowFade(clipSeconds, 90, 180, fps)
+  check("CONTROL: a window fully covered by real content gets no fade at all (fadeFrame null, hasRealContent true — never a spurious fade on content that's actually there)",
+    b1.hasRealContent === true && b1.fadeFrame === null)
+  // BULLET 2 (frames 180-300): only 2.5s (75 frames) of clip left at this
+  // window's own start, against a 120-frame window — the clip's real end
+  // (absolute frame 255) falls INSIDE this window, so it must fade partway
+  // through at local frame 63 (75 - 12 lead), not play the whole window.
+  const b2 = avatarPipWindowFade(clipSeconds, 180, 300, fps)
+  check("CONTROL: a window whose slice straddles the measured clip's real end has real content AND a fade frame inside the window (matches the clip's own real end, not the window's)",
+    b2.hasRealContent === true && b2.fadeFrame === 63)
+  // BULLET 3 (frames 300-450): this window's own absolute start (300) is
+  // already PAST the clip's measured end (255) — zero real content anywhere
+  // in this window. Must fall back entirely, never freeze on BULLET 2's tail.
+  const b3 = avatarPipWindowFade(clipSeconds, 300, 450, fps)
+  check("CONTROL: a window whose absolute start is already past the measured clip's end has NO real content (must fall back, not freeze)",
+    b3.hasRealContent === false && b3.fadeFrame === null)
+  // No measurement at all — every current render row before this wave, and
+  // every composition that never requested duration_seconds.
+  const noMeasurement = avatarPipWindowFade(null, 180, 300, fps)
+  check("CONTROL: no measurement (null) renders EXACTLY as before — full content, no fade, additive/opt-in",
+    noMeasurement.hasRealContent === true && noMeasurement.fadeFrame === null)
+  // A clip measured LONGER than the whole composition — no window is ever
+  // starved, so nothing should ever fade or drop.
+  const overlong = avatarPipWindowFade(30, 300, 450, fps)
+  check("CONTROL: a clip measured longer than the composition's total geometry never fades any window",
+    overlong.hasRealContent === true && overlong.fadeFrame === null)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// §advancedRealism — wave 56 additions surfaced by the reel-producer audit:
+// two AUTHORED (non-model-drafted) narration templates opened with the exact
+// self-intro tell the research names, undetected by the original scanner
+// (built for "from", not "with"/"X here"); the brand-bookend concat had no
+// length cap. Task item 3.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function advancedRealismSection() {
+  console.log("\n── §advancedRealism — reel-producer openers + brand-bookend length cap (wave 56) ──")
+  const listingPitch = readStripped("lib/video/listing-pitch-reel.ts")
+  const dealRoom = readStripped("lib/kernel/deal-room-reel.ts")
+  const attribution = readStripped("lib/video/composite-attribution.ts")
+
+  check("listing-pitch-reel's narration no longer opens with a self-introduction (\"Hi, I'm X with Y\")",
+    !/narration:\s*\[\s*\n\s*`Hi, I'?m/.test(listingPitch))
+  check("listing-pitch-reel's opener leads with the hook (the address/brokerage fact), matching SPOKEN_REALISM_DIRECTIVE rule 5",
+    /Here's what listing \$\{p\.address\} with \$\{p\.brand\.brokerageName\} actually looks like/.test(listingPitch))
+  check("deal-room-reel's greeting is no longer the FIRST spoken line — a fact leads when any fact is available",
+    /factLines\.length > 0\s*\n\s*\? \[factLines\[0\], greeting, \.\.\.factLines\.slice\(1\)\]/.test(dealRoom))
+
+  check("the broadened AI-tell opener pattern catches the \"with\" preposition variant, not just \"from\"",
+    /\(\?:from\|with\)/.test(readStripped("lib/video/realism-profile.ts")))
+  check("the broadened AI-tell opener pattern also catches the \"X here\" register",
+    /hi\\b\[\^\.\!\?\]/.test(readStripped("lib/video/realism-profile.ts")))
+
+  check("MAX_BRAND_BOOKEND_SECONDS is the ONE cap (§6), defined in the realism home",
+    /export const MAX_BRAND_BOOKEND_SECONDS = 2\.5/.test(readStripped("lib/video/realism-profile.ts")))
+  check("concatIntroOutro imports the cap rather than a stray literal",
+    /import \{ MAX_BRAND_BOOKEND_SECONDS \} from "@\/lib\/video\/realism-profile"/.test(attribution))
+  check("only bookend inputs (intro/outro) are trimmed — the mainIdx is excluded from bookendIdx",
+    /bookendIdx = new Set\(inputs\.map\(\(_, i\) => i\)\.filter\(\(i\) => i !== mainIdx\)\)/.test(attribution))
+  check("both the video AND audio filter chains apply the trim for a bookend segment (a video-only trim would desync audio on concat)",
+    /vTrim = isBookend \? `trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(attribution) &&
+    /aTrim = isBookend \? `atrim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\}/.test(attribution))
+  check("the trim is conditional on isBookend — a clip that is NOT a bookend (the main video) gets an empty trim string, never truncated",
+    /const vTrim = isBookend \? `trim=duration=\$\{MAX_BRAND_BOOKEND_SECONDS\},setpts=PTS-STARTPTS,` : ""/.test(attribution))
+
+  // CONTROL: the historical shape (no isBookend distinction at all — every
+  // input scaled/padded identically with no trim) is correctly recognised as
+  // lacking the cap.
+  const noTrimSnippet = `
+    inputs.forEach((_, i) => {
+      normalised.push(\`[\${i}:v]scale=\${W}:\${H}:force_original_aspect_ratio=decrease,pad=\${W}:\${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v\${i}]\`)
+    })
+  `
+  check("CONTROL: a concat filter graph with no bookend trim is correctly recognised as uncapped",
+    !/isBookend/.test(noTrimSnippet))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -784,6 +926,8 @@ async function main() {
   anniversarySection()
   durationOverrunSection()
   realismSection()
+  avatarPipWindowSection()
+  advancedRealismSection()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -791,6 +935,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All thirteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55), each with a positive control.")
+  console.log(" ✅ All fifteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55 + §avatarPipWindow/§advancedRealism from wave 56), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

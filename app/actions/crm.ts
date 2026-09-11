@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import {
-  createContact as createContactService,
   updateContact as updateContactService,
   deleteContact as deleteContactService,
   getContact,
@@ -66,26 +65,36 @@ export async function updateContact(contactId: string, agentId: string, updates:
   })
 }
 
-export async function createContact(contact: {
-  first_name: string
-  last_name: string
-  email?: string
-  phone?: string
-  contact_type?: string
-  contact_persona?: string
-  source?: string
-  agent_id: string
-}) {
-  return createContactService({
-    agentId: contact.agent_id,
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || '',
-    phone: contact.phone,
-    source: contact.source || 'manual',
-    status: 'active'
-  })
-}
+// ── DELETED: createContact (wave 56, lane OC, Task C duplicates sweep) ──────
+//
+// SURVIVOR: app/actions/contacts.ts:211 createContact (delegates to
+// createContactManually in lib/kernel/crm.ts).
+//
+// This was a SECOND, THINNER parallel implementation. It delegated to
+// lib/services/contact-management.service.ts:createContact, which: (a) took
+// agent_id DIRECTLY FROM THE REQUEST BODY with no session-derived tenant
+// check — the exact body-supplied-identity IDOR shape CLAUDE.md §4 names
+// ("Body-supplied brokerageId on a service client is the IDOR shape found
+// repeatedly here" — here it is agent_id, same category); (b) enforced no
+// lead-source vocabulary (the survivor's normalizeLeadSource gate, added
+// after quick-capture's `lead_source`→`source` field-mismatch defect —
+// see manager-registry.ts vendor_tenancy_lead_source — did not exist here);
+// (c) ran no dedup/enrichment-queue/activity-creation/agent-notification —
+// the kernel-level side effects the survivor's createContactManually
+// performs and this comment block below it (line ~203) already documents
+// were "not duplicated here" for a REASON: the kernel does it once.
+//
+// Zero live callers: every product import of createContact (app/crm/page.tsx,
+// app/crm/contacts/new/page.tsx, app/dashboard/acquisition/acquisition-quick-capture.tsx)
+// already named "@/app/actions/contacts", never "@/app/actions/crm". Nothing
+// repointed because nothing pointed here.
+//
+// lib/services/contact-management.service.ts:createContact (the function this
+// wrapper called) is left in place — it is still named by the lib/services
+// barrel (lib/services/index.ts) and is not itself the duplicate; only this
+// thinner "use server" wrapper is retired. Its remaining direct callers in
+// this file (updateContact/deleteContact/getContacts/mergeContacts →
+// contact-management.service.ts) are untouched.
 
 /**
  * Soft-delete a contact. Verifies ownership (agent_id) or admin role before

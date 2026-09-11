@@ -72,6 +72,9 @@ const RESOLVER = "lib/commission/cap-resolver.ts"
 const BROKERAGE = "app/actions/settings/brokerage-identity.ts"
 const TEAM = "app/actions/team-branding.ts"
 const AGENTS = "app/actions/agents.ts"
+// Wave 56: the YTD ratchet (agents.ytd_gci / ytd_transactions) moved out of agents.ts
+// into the commission payment tracker, where markCommissionPaid now calls it.
+const PAYMENT_TRACKER = "lib/commission/payment-tracker.ts"
 const AGENT360 = "app/actions/admin/agent-360.ts"
 const SETTINGS_PAGE = "app/dashboard/settings/page.tsx"
 const CDA_PAGE = "app/dashboard/transactions/[id]/cda/page.tsx"
@@ -558,6 +561,7 @@ interface Sources {
   brokerage: string
   team: string
   agents: string
+  paymentTracker: string
   agent360: string
   settingsPage: string
   /** The four surfaces that read a cap OUTSIDE settings and admin. */
@@ -680,8 +684,12 @@ const SOURCE_PROBES: SourceProbe[] = [
       // The lookahead sits INSIDE the whitespace class on purpose: `\s*(?!…)`
       // backtracks to zero-width and then succeeds against the space itself,
       // which made this check pass for free.
+      const tracker = stripComments(s.paymentTracker)
       return !/cap_progress:(?!\s*_dropped)/.test(code)
         && !/\.select\("[^"]*cap_(?:amount|progress)[^"]*"\)/.test(code)
+        // the ratchet's new home (wave 56) must not have picked the dead column back up
+        && !/cap_progress:/.test(tracker)
+        && /ytd_transactions: ytdTransactions/.test(tracker)
     },
   },
   {
@@ -1153,7 +1161,7 @@ const SOURCE_MUTATIONS: Array<{ name: string; probe: string; mutate: (s: Sources
     probe: "S11",
     mutate: (s) => ({
       ...s,
-      agents: s.agents.replace("      ytd_transactions: ytdTransactions,\n      updated_at:", "      ytd_transactions: ytdTransactions,\n      cap_progress: 0,\n      updated_at:"),
+      paymentTracker: s.paymentTracker.replace("      ytd_transactions: ytdTransactions,\n      updated_at:", "      ytd_transactions: ytdTransactions,\n      cap_progress: 0,\n      updated_at:"),
     }),
   },
   {
@@ -1329,6 +1337,7 @@ async function main() {
     brokerage: src(BROKERAGE),
     team: src(TEAM),
     agents: src(AGENTS),
+    paymentTracker: src(PAYMENT_TRACKER),
     agent360: src(AGENT360),
     settingsPage: src(SETTINGS_PAGE),
     cdaPage: src(CDA_PAGE),

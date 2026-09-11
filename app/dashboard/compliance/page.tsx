@@ -542,7 +542,10 @@ export default async function ComplianceDashboardPage() {
         <div className="space-y-6">
           <MissingDisclosuresPanel missingDisclosures={missingDisclosures} />
           <ExceptionReviewPanelWrapper exceptions={exceptions} />
-          <CdaReviewPanel />
+          {/* id target for command-palette-items.ts "View pending CDAs" → /dashboard/compliance#cda-queue (anchor-census 4a) */}
+          <div id="cda-queue">
+            <CdaReviewPanel />
+          </div>
         </div>
 
         {/* Right Column: Audit Feed + AI Review + Reporting */}

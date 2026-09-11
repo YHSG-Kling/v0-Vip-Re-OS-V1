@@ -659,49 +659,14 @@ export async function updateCommissionStatus(
   return { data }
 }
 
-async function updateAgentYTDStats(agentId: string) {
-  const supabase = await createClient()
-
-  const currentYear = new Date().getFullYear()
-  const startDate = `${currentYear}-01-01`
-  const endDate = `${currentYear}-12-31`
-
-  // Get YTD commissions
-  const { data: commissions } = await supabase
-    .from("agent_commissions")
-    .select("agent_commission")
-    .eq("agent_id", agentId)
-    .eq("status", "paid")
-    .gte("close_date", startDate)
-    .lte("close_date", endDate)
-
-  const ytdGci = commissions?.reduce((sum, c) => sum + (c.agent_commission || 0), 0) || 0
-  const ytdTransactions = commissions?.length || 0
-
-  // ── cap_progress IS NO LONGER COMPUTED OR WRITTEN HERE ────────────────────
-  //
-  // It was `min(ytdGci / agents.cap_amount * 100, 100)` — and that is not what a
-  // cap measures. A cap is a ceiling on what the BROKERAGE COLLECTS from the
-  // agent (`07-apply-cap.ts`: "Cap tracks brokerage's cumulative earnings, NOT
-  // agent's"); `ytdGci` here is the sum of `agent_commissions.agent_commission`,
-  // which is what the AGENT KEPT. So the third copy of cap state was not merely
-  // duplicated, it was measuring the opposite side of the split — an agent on a
-  // 70/30 with a $100k cap would have read as "capped" while the brokerage had
-  // collected roughly $43k of it.
-  //
-  // The canonical answer is `agent_cap_tracking.cap_paid_to_date / cap_amount`,
-  // advanced by the commission engine on every disbursement, and that is what
-  // app/actions/admin/agent-360.ts now reads. `agents.cap_progress` is dropped
-  // in m463; nothing here keeps feeding it in the meantime.
-  await supabase
-    .from("agents")
-    .update({
-      ytd_gci: ytdGci,
-      ytd_transactions: ytdTransactions,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", agentId)
-}
+// TOMBSTONE (§1, wave 56 dead-code sweep): `updateAgentYTDStats` stood here,
+// never called by anything (not exported, no in-file caller) — agents.ytd_gci
+// and ytd_transactions were seeded 0/0 at agent creation (line ~323 above)
+// and never touched again, despite being read live on agent-360, admin
+// stats, mentorship matching, the brokerage roster and the CDA. Survivor:
+// lib/commission/payment-tracker.ts:syncAgentYtdStats — same computation,
+// now called from markCommissionPaid so every payment-marking caller gets
+// the refresh instead of relying on this file to remember to invoke it.
 
 // ==================== EXPENSES ====================
 

@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
+import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 // resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
 // no longer imported here: its only user, handleContentApproved, was deleted
 // onto approveSocialPost, which now carries the import.
@@ -278,11 +279,19 @@ export async function createSocialPost(params: {
    *  gate — used by AUTONOMOUS posters (e.g. GBP auto-posts) so nothing reaches a
    *  public feed without passing the Command Center release gate. */
   forceApprovalPending?: boolean
+  /** social_accounts.id this post is scheduled through, when the caller already
+   *  knows which connected account to use (merged in from the listing-media
+   *  duplicate — see tombstone at app/actions/listing-media.ts). */
+  socialAccountId?: string
 }) {
   const caller = await resolveCaller()
   if (!caller.ok) throw new Error("Unauthorized")
 
   const supabase = createServiceClient()
+  // agent_id (nullable — a non-agent staffer, e.g. broker_admin, may post) —
+  // merged in from the listing-media duplicate, which set this and this
+  // function did not.
+  const agentId = await resolveAgentIdInBrokerage(supabase as any, caller.userId, caller.brokerageId)
 
   // Compliance gate — hard stop if content violates real-estate rules
   const gate = await runComplianceGate({
@@ -298,6 +307,7 @@ export async function createSocialPost(params: {
       .from("social_posts")
       .insert({
         user_id: caller.userId,
+        agent_id: agentId,
         brokerage_id: caller.brokerageId,
         content: params.content,
         media_urls: params.mediaUrls ?? [],
@@ -306,6 +316,7 @@ export async function createSocialPost(params: {
         platform: params.platforms?.[0] ?? "facebook",
         post_type: params.contentType ?? "custom",
         listing_id: params.linkedListingId ?? null,
+        social_account_id: params.socialAccountId ?? null,
         ai_generated: params.generatedByAi ?? false,
         post_brief: params.aiPrompt ?? null,
         status: "draft",
@@ -329,6 +340,7 @@ export async function createSocialPost(params: {
     .from("social_posts")
     .insert({
       user_id: caller.userId,
+      agent_id: agentId,
       brokerage_id: caller.brokerageId,
       content: params.content,
       media_urls: params.mediaUrls ?? [],
@@ -337,6 +349,7 @@ export async function createSocialPost(params: {
       platform: params.platforms?.[0] ?? "facebook",
       post_type: params.contentType ?? "custom",
       listing_id: params.linkedListingId ?? null,
+      social_account_id: params.socialAccountId ?? null,
       ai_generated: params.generatedByAi ?? false,
       post_brief: params.aiPrompt ?? null,
       status: "scheduled",
