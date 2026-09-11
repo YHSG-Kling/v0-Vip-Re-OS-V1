@@ -112,7 +112,7 @@
  * cannot silently degrade into a no-op.
  */
 
-import { spokenWords, spokenSentences, avatarFadeOutFrame } from "./script-structure"
+import { spokenWords, spokenSentences, avatarFadeOutFrame, estimateDurationSeconds } from "./script-structure"
 export { avatarFadeOutFrame } from "./script-structure"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1189,3 +1189,31 @@ export const KEN_BURNS_REALISM_AUDIT_NOTE =
 export const COVER_CTA_CONTENT_BEAT_RULING =
   "COVER/CTA tiles (2-3s) are CONTENT (price/address/agent/QR/compliance text), not a stock bookend — " +
   "MAX_BRAND_BOOKEND_SECONDS already caps the separate concern (a brokerage-uploaded stock intro/outro clip). Left as is."
+
+// ─── Avatar render cost estimate (wave 58, avatar-provider doc suggestion 3) ──
+//
+// `dispatchVideoViaDID` (lib/providers/dispatch.ts) used to log a flat
+// `estimatedCost: 0.3` per render. D-ID bills per SECOND of generated video
+// and ElevenLabs per CHARACTER of synthesised text, so a flat number
+// undercounts any script longer than ~6 s and overcounts a two-line welcome.
+// §5 (CLAUDE.md): the usage ledger feeds meter_readings and the overage
+// projection — "a wrong number there is a wrong invoice". These are the
+// published list rates recorded in docs/avatar-provider-recommendation-2026-09.md
+// (D-ID ≈ $0.05/sec on the API plan; ElevenLabs Creator/Pro ≈ $0.10 per 1k
+// chars for multilingual_v2 and v3 alike). They are ESTIMATES: committed-tier
+// pricing differs per account, and the true amount is what the provider
+// invoices. Keep the rates here (one vocabulary) — never inline a second copy.
+const DID_USD_PER_VIDEO_SECOND = 0.05
+const ELEVENLABS_USD_PER_1K_CHARS = 0.1
+
+/**
+ * Estimated USD for one avatar render of `script`: ElevenLabs characters +
+ * D-ID seconds at WORDS_PER_MINUTE pace (script-structure.ts). Minimum 1 s of
+ * video so an empty/whitespace script still records the fixed per-call floor.
+ */
+export function estimateAvatarRenderCostUsd(script: string): number {
+  const chars = script.length
+  const seconds = Math.max(1, estimateDurationSeconds(spokenWords(script).length))
+  const usd = (chars / 1000) * ELEVENLABS_USD_PER_1K_CHARS + seconds * DID_USD_PER_VIDEO_SECOND
+  return Math.round(usd * 10000) / 10000
+}

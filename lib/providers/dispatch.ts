@@ -53,6 +53,7 @@ import {
   ELEVENLABS_REALISM_VOICE_SETTINGS,
   ELEVENLABS_TEXT_NORMALIZATION,
   elevenLabsModelForLane,
+  estimateAvatarRenderCostUsd,
   withNaturalPauses,
 } from "@/lib/video/realism-profile"
 import { presenterTypeForTwin } from "@/lib/did/agent-presenter"
@@ -1418,7 +1419,11 @@ async function dispatchVideoViaDID({
     vendorName: "did",
     usageType: "video_renders",
     unitCount: 1,
-    estimatedCost: 0.3, // D-ID + ElevenLabs ~$0.30/render combined
+    // WAVE 58: derived from the script (ElevenLabs chars + D-ID seconds at
+    // list rates in lib/video/realism-profile.ts) instead of the former flat
+    // 0.3 guess — a render longer than ~6 s undercounted, a two-line welcome
+    // overcounted, and the ledger feeds the overage invoice (§5).
+    estimatedCost: estimateAvatarRenderCostUsd(pacedScript),
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,

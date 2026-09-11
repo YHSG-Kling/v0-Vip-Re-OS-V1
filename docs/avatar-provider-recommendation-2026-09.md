@@ -50,9 +50,22 @@ the owner requires. But nothing in this research shows D-ID has become
 option for exactly the async render-and-deliver shape this OS uses, and nothing
 found justifies a mid-migration provider swap this wave.
 
-**Concrete next-step suggestions, in priority order, none applied in this task:**
+**Owner ruling (2026-09-11, wave 58): "no need to add HeyGen at this time if
+what we have is advanced."** Suggestion 1 below is therefore CLOSED, not
+pending — the realism budget went into the existing stack instead: Eleven v3
+per lane with natural pauses (`lib/video/realism-profile.ts`), D-ID V4
+Expressive via `/expressives` (`lib/providers/dispatch.ts`), D-ID Express v4
+live agent on website/widget/portal (`lib/did/agents.ts`), sidechain music
+ducking (`lib/remotion/music-mixer.ts`), and the AI-image realism prompt.
+Suggestion 4 (D-ID V4) is DONE for the expressive presenter path; the
+`/talks` + `/clips` question is recorded as resolved-by-`/expressives`.
+Suggestion 2 is DONE (`elevenLabsModelForLane`). Suggestion 3 is DONE
+(`estimateAvatarRenderCostUsd` in `lib/video/realism-profile.ts`, rates
+`DID_USD_PER_VIDEO_SECOND` / `ELEVENLABS_USD_PER_1K_CHARS`; the flat 0.3 is gone).
 
-1. **Add HeyGen as a second provider, behind a per-brokerage/per-tier flag**,
+**Concrete next-step suggestions, in priority order, as written at research time:**
+
+1. **~~Add HeyGen as a second provider, behind a per-brokerage/per-tier flag~~** (CLOSED by owner ruling above),
    for sends where realism is the deciding factor (e.g. the first welcome
    video a new lead ever sees). This is additive, not a switch — D-ID keeps
    serving the default/high-volume path. See adapter shape below.

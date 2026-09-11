@@ -81,6 +81,7 @@ import {
   PAUSE_MARKUP_ALIGNMENT_FIXTURE,
   PAUSE_MARKUP_ALIGNMENT_FIXTURE_EXPECTED_TEXT,
   PLAIN_ALIGNMENT_FIXTURE,
+  estimateAvatarRenderCostUsd,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -305,6 +306,21 @@ function failureSection() {
 
 function costSection() {
   console.log("\n── §cost — ai_tool_usage gets a real number or none, never an invented one ──")
+  // WAVE 58 (avatar-provider doc suggestion 3): dispatchVideoViaDID's vendor
+  // ledger line derives its estimate from the script, not a flat 0.3 guess.
+  {
+    const dispatch = readStripped("lib/providers/dispatch.ts")
+    check("dispatch.ts's D-ID vendor-usage line calls estimateAvatarRenderCostUsd(pacedScript) (no flat estimatedCost: 0.3 remains)",
+      /estimatedCost:\s*estimateAvatarRenderCostUsd\(pacedScript\)/.test(dispatch) && !/estimatedCost:\s*0\.3\b/.test(dispatch))
+    const short = estimateAvatarRenderCostUsd("Hi Dana, thanks for stopping by the open house today.")
+    const long = estimateAvatarRenderCostUsd(Array(40).fill("This neighborhood has walkable schools, two parks and a farmers market every Saturday.").join(" "))
+    check("a two-line welcome estimates well under the old flat $0.30 and a ~3.5-minute script well over it (cost scales with the script)",
+      short > 0 && short < 0.3 && long > 3 && long > short * 10, `short=${short} long=${long}`)
+    check("an empty script still records the fixed per-call floor (never $0 for a call that was billed)", estimateAvatarRenderCostUsd("") > 0)
+    // positive control: the finder still recognises the defect it was written for
+    check("§cost positive control: a flat `estimatedCost: 0.3` specimen IS caught by the same regex",
+      /estimatedCost:\s*0\.3\b/.test("  estimatedCost: 0.3, // guess"))
+  }
   const reactor = readStripped("lib/video/intro-video-reactor.ts")
   const generate = readStripped("app/api/did/generate-video/route.ts")
   const generateRaw = readRaw("app/api/did/generate-video/route.ts")
