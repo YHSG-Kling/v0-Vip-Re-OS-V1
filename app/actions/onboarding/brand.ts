@@ -15,6 +15,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
+import { sanitizeCssColor } from "@/lib/format/style"
 
 // TRUE ADMIN GATE (operational: branding/onboarding) — repointed to the ONE
 // tenant roster (isAdminOrBroker below). 'superadmin'/'super_admin' were dead:
@@ -205,13 +206,19 @@ export async function saveBrandColors(
 
     const supabase = auth.db
 
+    // MOUNTED (§1 orphan doctrine, wave 58 carried item): sanitizeCssColor —
+    // an unvalidated color string here is a CSS-injection surface on every
+    // brand-facing render, not merely a cosmetic risk.
+    const primaryColor = sanitizeCssColor(data.primaryColor)
+    const secondaryColor = sanitizeCssColor(data.secondaryColor)
+
     // Upsert global_settings
     const { error: settingsError } = await supabase
       .from("global_settings")
       .upsert({
         brokerage_id: brokerageId,
-        primary_color: data.primaryColor,
-        secondary_color: data.secondaryColor,
+        primary_color: primaryColor,
+        secondary_color: secondaryColor,
         app_logo_url: data.logoUrl || null,
         updated_at: new Date().toISOString(),
       }, {

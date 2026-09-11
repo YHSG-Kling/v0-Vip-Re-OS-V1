@@ -38,7 +38,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
-import { leadsAgentsTeam, resolveLedTeamId } from "@/lib/teams/team-scope"
+import { leadsAgentsTeam } from "@/lib/teams/team-scope"
+import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 
 const COMMISSION_CATEGORY = "commission_agreement"
 

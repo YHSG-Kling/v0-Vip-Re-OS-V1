@@ -51,6 +51,15 @@ export function EmbedWidget(props: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  // TWO markers, sent independently the first time each becomes true — see
+  // /api/did/custom-llm's header. Before this, NOTHING was sent until after
+  // lead capture, and /api/did/custom-llm REQUIRED a contactId marker on every
+  // turn: an anonymous visitor's very first message always 400'd, so
+  // "after_first_message" capture mode could never even reach the point where
+  // it opens the capture form (chat() threw first). The embedSessionId marker
+  // gives the brain a tenant to answer from — brokerage FAQ/knowledge base,
+  // never contact-specific data — for every visitor from message one.
+  const sessionMarkerSentRef = useRef(false)
   const ctxMarkerSentRef = useRef(false)
 
   type Phase = "boot" | "ready" | "capturing" | "closed"
@@ -252,11 +261,18 @@ export function EmbedWidget(props: Props) {
     // After-first-message capture mode triggers on the visitor's first message.
     const willCaptureAfterFirst =
       leadCaptureMode === "after_first_message" && !contactId
-    // Once we have a contactId, prefix the context marker so the brain has CRM context.
-    const payload = contactId && !ctxMarkerSentRef.current
-      ? `[[CTX:contactId=${contactId}]] ${t}`
-      : t
-    if (contactId) ctxMarkerSentRef.current = true
+    // Markers are sent ONCE each, then ride along in D-ID's own message
+    // history — never resent, never dropped.
+    const markers: string[] = []
+    if (!sessionMarkerSentRef.current && sessionIdRef.current) {
+      markers.push(`[[CTX:embedSessionId=${sessionIdRef.current}]]`)
+      sessionMarkerSentRef.current = true
+    }
+    if (contactId && !ctxMarkerSentRef.current) {
+      markers.push(`[[CTX:contactId=${contactId}]]`)
+      ctxMarkerSentRef.current = true
+    }
+    const payload = markers.length ? `${markers.join(" ")} ${t}` : t
     try {
       await managerRef.current.chat(payload)
     } catch (e) {

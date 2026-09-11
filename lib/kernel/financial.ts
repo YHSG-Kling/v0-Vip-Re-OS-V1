@@ -468,7 +468,11 @@ export async function loadFinancialWorkspace(
     // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
     const isSuperadmin = isPlatformSuperadminIdentity(ctx.userType, platformRole)
 
-    const ledTeamId = await resolveLedTeamId(supabase, ctx.userId)
+    // resolveLedTeamId returns { ok: false, error } on a REFUSED read (§1 merge,
+    // 2026-09-11) — fail CLOSED to "personal" scope on a refusal, same as
+    // "leads nothing": a refusal must never be read as permission to widen.
+    const ledOf = await resolveLedTeamId(supabase, ctx.userId)
+    const ledTeamId = ledOf.ok ? ledOf.teamId : null
 
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
     if (ledTeamId) accessLevel = "team"

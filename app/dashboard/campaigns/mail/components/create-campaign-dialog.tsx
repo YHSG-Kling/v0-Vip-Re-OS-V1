@@ -101,22 +101,13 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   new_movers: 0.014,
 }
 
-// UNRESOLVED (§1, wave 56 dead-code sweep): never called — this file has no
-// color-valued field anywhere (grepped: no `color`/`Color`/`backgroundColor`
-// prop or state exists in this dialog outside this function's own body), so
-// there is nothing here for it to sanitize, and no duplicate sanitizer exists
-// elsewhere in the tree to name as a survivor either. Left in place rather
-// than deleted or guess-wired to an invented color field — a future lane
-// adding brand-color customization to this dialog should reuse this
-// function rather than write a second one.
-function sanitizeCssColor(value: unknown): string {
-  if (typeof value !== "string") return "#000000"
-  // Only allow safe color values — hex, rgb/rgba, hsl/hsla, or named colors
-  if (/^(#[0-9a-fA-F]{3,8}|rgb[a]?\([^)]+\)|hsl[a]?\([^)]+\)|[a-zA-Z]+)$/.test(value.trim())) {
-    return value.trim()
-  }
-  return "#000000"
-}
+// TOMBSTONE (§1 orphan doctrine, wave 58 carried item, 2026-09-11):
+// sanitizeCssColor used to live here — never called, since this dialog has
+// no color-valued field. MOUNTED at the real brand-color acceptance points
+// instead: lib/format/style.ts::sanitizeCssColor, called from
+// app/actions/onboarding/brand.ts::saveBrandColors and
+// app/actions/settings/update-global-settings.ts, which is where an
+// unvalidated color string was actually being accepted and written.
 
 export function CreateCampaignDialog({
   open,

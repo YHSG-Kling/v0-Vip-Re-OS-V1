@@ -75,3 +75,90 @@ export function buildMusicMixFilterGraph(input: MusicFilterGraphInput): string {
     `[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
   ].join(";")
 }
+
+// ── SIDECHAIN DUCKING (wave 58, video-realism audit) ────────────────────────
+// TOMBSTONE-ADJACENT NOTE (not a tombstone — nothing is deleted here): the
+// realism-profile.ts research header (MUSIC / DUCKING section) named this gap
+// explicitly: "This repo's mixer applies one constant level for the whole
+// track rather than a sidechain... attack/release has no analog here —
+// recorded as a real gap." `buildMusicDuckFilterGraph` below is that gap
+// closed. It reuses `buildMusicTrackFilter` UNCHANGED (loop/volume/fades — the
+// pre-gain "bed" level, the SAME musicVolumePct a caller already resolves, own
+// row value or MUSIC_DUCK_VOLUME_PCT fallback) and adds ONE new stage:
+// `sidechaincompress` keyed off the NARRATION track at [0:a] — the same
+// channel `buildMusicMixFilterGraph` already mixes against, and by the time
+// this runs in render-coordinator.ts it already carries the mixed-in
+// narration (mixNarrationVoiceover runs before the music pass). The bed
+// volume is unchanged; what changes is that the bed now dips FURTHER while
+// speech is present and returns to that same bed level in the gaps, instead
+// of sitting at one flat scale for the whole track — "ducks under speech"
+// becomes a real per-sample decision instead of a constant multiply.
+//
+// Tuning (lib/video/realism-profile.ts MUSIC_SIDECHAIN_DUCK_SETTINGS,
+// research-derived — see that file's header) sits inside ffmpeg's own
+// documented `sidechaincompress` ranges (threshold 0.00097563-1 linear,
+// ratio 1-20, attack/release in ms, makeup 1-64 linear) — every value below
+// is clamped to that filter's actual accepted range so an out-of-range
+// constant cannot silently produce a filter ffmpeg refuses to run.
+
+/** dB → linear amplitude (the unit ffmpeg's audio filters — volume=,
+ *  sidechaincompress's threshold/makeup — actually take). PURE arithmetic,
+ *  no filter-specific clamping (callers clamp to the filter's own range). */
+export function dbToLinearAmplitude(db: number): number {
+  return Math.pow(10, db / 20)
+}
+
+export interface SidechainDuckSettings {
+  /** dB (negative). Sidechain (narration) level above which ducking starts. */
+  thresholdDb: number
+  /** 1-20. Compression ratio applied once the narration crosses threshold. */
+  ratio: number
+  /** ms. How fast the music dips once speech starts. */
+  attackMs: number
+  /** ms. How fast the music returns to the bed level once speech stops. */
+  releaseMs: number
+  /** dB. Gain restored after compression. 0 = no makeup (the default — avoids
+   *  the ducked-then-boosted track reading louder than the bed level chosen). */
+  makeupDb?: number
+}
+
+export interface MusicDuckFilterGraphInput extends MusicFilterGraphInput {
+  duck: SidechainDuckSettings
+}
+
+/** ffmpeg's own accepted ranges for `sidechaincompress` (libavfilter/
+ *  af_sidechaincompress.c) — clamped to here so a bad constant cannot produce
+ *  a filter string ffmpeg refuses to run at spawn time. */
+const SIDECHAIN_THRESHOLD_RANGE: [number, number] = [0.00097563, 1]
+const SIDECHAIN_RATIO_RANGE: [number, number] = [1, 20]
+const SIDECHAIN_ATTACK_MS_RANGE: [number, number] = [0.01, 2000]
+const SIDECHAIN_RELEASE_MS_RANGE: [number, number] = [0.01, 9000]
+const SIDECHAIN_MAKEUP_RANGE: [number, number] = [1, 64]
+const clamp = (v: number, [lo, hi]: [number, number]) => Math.max(lo, Math.min(hi, v))
+
+/**
+ * The DYNAMIC-ducking `-filter_complex` graph: the same bed-level track chain
+ * as `buildMusicMixFilterGraph` (loop/volume/fade-in/fade-out, unchanged), then
+ * `sidechaincompress` driven by the NARRATION at [0:a] pulls the bed down
+ * further while speech is present, then `amix` mixes it back against [0:a].
+ *
+ * PURE — no ffmpeg, no I/O. The caller (music-mixer.ts) chooses THIS graph
+ * only when it knows [0:a] actually carries narration (the video-buffer-in-
+ * hand had a narration mux land on it this render); otherwise it falls back to
+ * `buildMusicMixFilterGraph`'s constant level — sidechaining against a silent
+ * or non-speech channel would never trigger and would just waste a filter
+ * stage, so the caller's `usedVoiceover` fact IS the availability check.
+ */
+export function buildMusicDuckFilterGraph(input: MusicDuckFilterGraphInput): string {
+  const threshold = clamp(dbToLinearAmplitude(input.duck.thresholdDb), SIDECHAIN_THRESHOLD_RANGE)
+  const ratio = clamp(input.duck.ratio, SIDECHAIN_RATIO_RANGE)
+  const attack = clamp(input.duck.attackMs, SIDECHAIN_ATTACK_MS_RANGE)
+  const release = clamp(input.duck.releaseMs, SIDECHAIN_RELEASE_MS_RANGE)
+  const makeup = clamp(dbToLinearAmplitude(input.duck.makeupDb ?? 0), SIDECHAIN_MAKEUP_RANGE)
+  return [
+    buildMusicTrackFilter(input),
+    `[a1][0:a]sidechaincompress=threshold=${threshold.toFixed(6)}:ratio=${ratio.toFixed(2)}:` +
+      `attack=${attack.toFixed(2)}:release=${release.toFixed(2)}:makeup=${makeup.toFixed(2)}[a1d]`,
+    `[0:a][a1d]amix=inputs=2:duration=first:dropout_transition=0[aout]`,
+  ].join(";")
+}

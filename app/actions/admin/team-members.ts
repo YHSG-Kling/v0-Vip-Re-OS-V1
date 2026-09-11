@@ -10,7 +10,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { validateTeamMember, agentFundedTotal, isSourceOfFunds, isTeamRole, type SourceOfFunds, type TeamRole } from "@/lib/teams/membership"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
-import { resolveLedTeamId } from "@/lib/teams/team-scope"
+import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 
 
 export interface TeamMemberRow {

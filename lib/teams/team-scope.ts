@@ -1,5 +1,6 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveLedTeamId } from "@/lib/kernel/resolve-user-team"
 
 /**
  * TEAM SCOPE — the app half of m473's rule, ONE vocabulary with the database.
@@ -28,23 +29,17 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** The team this user LEADS (`teams.team_lead_id`), or null — same one query as SQL. */
-export async function resolveLedTeamId(
-  svc: Svc,
-  userId: string,
-): Promise<{ ok: true; teamId: string | null } | { ok: false; error: string }> {
-  // DESTRUCTURE THE ERROR: supabase-js resolves a refused query, and "the read
-  // was refused" must not be reported as "you lead nothing".
-  const { data, error } = await svc
-    .from("teams")
-    .select("id")
-    .eq("team_lead_id", userId)
-    .is("deleted_at", null)
-    .limit(1)
-    .maybeSingle()
-  if (error) return { ok: false, error: `Could not resolve your team: ${error.message}` }
-  return { ok: true, teamId: data?.id ?? null }
-}
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 3, 2026-09-11): resolveLedTeamId
+// used to live here, doing the SAME job as lib/kernel/resolve-user-team.ts's
+// function of the same name — same `teams.team_lead_id` fact, same purpose,
+// two spellings. That survivor fixed a DIFFERENT bug this copy did not
+// (multiple led teams answered non-deterministically); this copy's own fix — a
+// REFUSED read must report `{ ok: false, error }`, never collapse to "leads
+// nobody" — is now merged ONTO the survivor at lib/kernel/resolve-user-team.ts:139,
+// which returns exactly the `{ ok, teamId } | { ok: false, error }` shape this
+// file used to. All three callers (commission-agreement.ts, team-members.ts,
+// qr-management.ts) now import the survivor directly; nothing in the tree
+// imports resolveLedTeamId from this file anymore.
 
 /**
  * Does this user LEAD the team the target agent is on?

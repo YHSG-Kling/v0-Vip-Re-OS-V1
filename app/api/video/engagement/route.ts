@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
@@ -9,6 +9,20 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 // ============================================
 // LAYER 8.5 VIDEO ENGAGEMENT TRACKING API
 // ============================================
+//
+// GET TOMBSTONE (§1.3 orphan doctrine — scripts/handler-parity-census.ts,
+// 2026-09-11): the GET handler that used to sit above the ADJUDICATED note
+// below is DELETED — it had zero in-tree callers (distinct from POST, which
+// this file's own G1 adjudication below correctly kept). Its four read
+// modes (per video_asset_id, per video_project_id, per contact_id, per
+// brokerage aggregate) are ALL already served by
+// app/actions/video-generation.ts's getVideoEngagementEvents (same filters,
+// same table, session-derived brokerageId) and getVideoPerformanceStats
+// (the aggregate/topPerforming rollup) — /dashboard/videos/analytics/page.tsx
+// already reads through those two, per its own tombstone naming them as the
+// survivor for the sibling reader getVideoPerformanceTracking. POST is
+// UNTOUCHED: it remains the strictest of three video_engagement_events
+// writers and the portal player's only door, exactly as adjudicated below.
 //
 // ── ADJUDICATED, NOT DELETED (lane G1, 2026-08-28) ──────────────────────────
 // The census reports this route under 6b: nothing in the tree addresses it. It
@@ -80,110 +94,6 @@ const PERFORMANCE_THRESHOLDS = {
     maxCompletionRate: 20,
     maxClickThroughRate: 1,
   },
-}
-
-// GET: Fetch video engagement events and performance tracking (requires auth)
-export async function GET(request: NextRequest) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
-
-  try {
-    const { searchParams } = new URL(request.url)
-    const videoAssetId = searchParams.get("videoAssetId")
-    const videoProjectId = searchParams.get("videoProjectId")
-    const contactId = searchParams.get("contactId")
-    // Always use session-resolved brokerage — never trust caller-supplied value
-    const brokerageId = auth.brokerageId
-
-    // If specific video asset requested, return its engagement events
-    if (videoAssetId) {
-      const { data: events, error: eventsError } = await supabase
-        .from("video_engagement_events")
-        .select("*")
-        .eq("video_asset_id", videoAssetId)
-        .order("timestamp", { ascending: false })
-        .limit(100)
-
-      if (eventsError) throw eventsError
-
-      // Get aggregate tracking data
-      const { data: tracking, error: trackingError } = await supabase
-        .from("video_performance_tracking")
-        .select("*")
-        .eq("video_asset_id", videoAssetId)
-        .maybeSingle()
-
-      if (trackingError) throw trackingError
-
-      return NextResponse.json({
-        success: true,
-        events: events || [],
-        tracking: tracking || null,
-      })
-    }
-
-    // If video project requested, return its performance data
-    if (videoProjectId) {
-      const { data: tracking, error: trackingError } = await supabase
-        .from("video_performance_tracking")
-        .select("*")
-        .eq("video_project_id", videoProjectId)
-        .maybeSingle()
-
-      if (trackingError) throw trackingError
-
-      return NextResponse.json({
-        success: true,
-        tracking: tracking || null,
-      })
-    }
-
-    // If contact requested, return their engagement events
-    if (contactId) {
-      const { data: events, error: eventsError } = await supabase
-        .from("video_engagement_events")
-        .select(`
-          *,
-          video_assets(id, title, category)
-        `)
-        .eq("contact_id", contactId)
-        .order("timestamp", { ascending: false })
-        .limit(50)
-
-      if (eventsError) throw eventsError
-
-      return NextResponse.json({
-        success: true,
-        events: events || [],
-      })
-    }
-
-    // If brokerage requested, return aggregate performance data
-    if (brokerageId) {
-      const { data: tracking, error: trackingError } = await supabase
-        .from("video_performance_tracking")
-        .select("*")
-        .eq("brokerage_id", brokerageId)
-        .order("total_views", { ascending: false })
-        .limit(50)
-
-      if (trackingError) throw trackingError
-
-      return NextResponse.json({
-        success: true,
-        videos: tracking || [],
-      })
-    }
-
-    return NextResponse.json(
-      { success: false, error: "videoAssetId, videoProjectId, contactId, or brokerageId is required" },
-      { status: 400 }
-    )
-  } catch (error: any) {
-    console.error("[v0] Error fetching video engagement:", error)
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 })
-  }
 }
 
 // POST: Record a video engagement event and update aggregates

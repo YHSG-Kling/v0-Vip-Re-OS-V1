@@ -179,5 +179,10 @@ export async function deliverBoardPacketReels(svc: any, now: Date = new Date()):
     notificationType: "board_packet_ready",
     title: "Your board packet video is ready",
     bodyIntro: "Your AI team presents the month on camera — production, the receipts, and the compliance line.",
+    // Wave 58 — the video-loop audit: board_packet's domain owner
+    // (lib/kernel/manager-registry.ts) is finance_manager (owner-facing
+    // reporting), so the delivered reel's outcome signal announces there.
+    toManager: "finance_manager",
+    signalType: "board_packet_reel_delivered",
   })
 }

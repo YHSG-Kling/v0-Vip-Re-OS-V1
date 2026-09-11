@@ -413,7 +413,7 @@
     "lib/video/composite-attribution.ts": 1,
     "lib/video/director-content.ts": 10,
     "lib/video/director-eval-harness.ts": 2,
-    "lib/video/format-learning.ts": 2,
+    "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
@@ -437,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9442,
+  "census": 9445,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -655,7 +655,7 @@
     "app/actions/credit-copilot.ts": 8,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
-    "app/actions/crm.ts": 8,
+    "app/actions/crm.ts": 7,
     "app/actions/cron-kernel.ts": 5,
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
@@ -1126,6 +1126,7 @@
     "app/api/cron/deadline-watcher/route.ts": 1,
     "app/api/cron/deal-health-scan/route.ts": 2,
     "app/api/cron/deal-killer-radar/route.ts": 1,
+    "app/api/cron/did-agent-sync/route.ts": 1,
     "app/api/cron/director-reel-render/route.ts": 1,
     "app/api/cron/dispatch/route.ts": 1,
     "app/api/cron/distribute-podcast-episodes/route.ts": 1,
@@ -1282,8 +1283,8 @@
     "app/api/did/create-avatar/route.ts": 1,
     "app/api/did/custom-llm/route.ts": 1,
     "app/api/did/generate-video/route.ts": 1,
-    "app/api/education/progress/route.ts": 2,
-    "app/api/education/resources/route.ts": 2,
+    "app/api/education/progress/route.ts": 1,
+    "app/api/education/resources/route.ts": 1,
     "app/api/elevenlabs/tts/route.ts": 1,
     "app/api/elevenlabs/voice-clone/route.ts": 1,
     "app/api/embed/capture/route.ts": 1,
@@ -1372,14 +1373,14 @@
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
-    "app/api/video/engagement/route.ts": 2,
+    "app/api/video/engagement/route.ts": 1,
     "app/api/video/projects/[projectId]/generate/route.ts": 2,
     "app/api/video/projects/[projectId]/preview/route.ts": 1,
     "app/api/video/projects/[projectId]/publish/route.ts": 1,
     "app/api/video/projects/[projectId]/script/route.ts": 1,
     "app/api/video/projects/[projectId]/video-action-http.ts": 1,
     "app/api/video/projects/route.ts": 2,
-    "app/api/video-scripts/route.ts": 4,
+    "app/api/video-scripts/route.ts": 1,
     "app/api/videos/listing-voiceover/route.ts": 1,
     "app/api/videos/route.ts": 1,
     "app/api/voice/end-call/route.ts": 1,
@@ -1432,6 +1433,7 @@
     "app/auth/logout/route.ts": 2,
     "app/blog/[slug]/page.tsx": 1,
     "app/compliance/reports/export-report-button.tsx": 1,
+    "app/compliance/violations/resolve-violation-button.tsx": 1,
     "app/components/ApprovalsBanner.tsx": 1,
     "app/components/action-framework/action-confirm-sheet.tsx": 1,
     "app/components/action-framework/next-step-router.tsx": 1,
@@ -3002,7 +3004,7 @@
     "lib/deal-health/category-weights.ts": 2,
     "lib/deal-health/health-scorer.ts": 1,
     "lib/did/agent-presenter.ts": 4,
-    "lib/did/agents.ts": 2,
+    "lib/did/agents.ts": 3,
     "lib/did/avatar-completion.ts": 4,
     "lib/did/consent.ts": 4,
     "lib/did/contract.ts": 8,
@@ -3064,6 +3066,7 @@
     "lib/education/skill-freshness.ts": 2,
     "lib/elevenlabs/conv-ai.ts": 4,
     "lib/email/orchestrate-email-preset-send.ts": 1,
+    "lib/embed/resolve-site-embed.ts": 1,
     "lib/embed/widget-modes.ts": 4,
     "lib/enrichment/contact-enrichment-core.ts": 6,
     "lib/enrichment/deal-suppression.ts": 3,
@@ -3142,7 +3145,7 @@
     "lib/format/ordinal.ts": 2,
     "lib/format/stats.ts": 1,
     "lib/format/strings.ts": 2,
-    "lib/format/style.ts": 1,
+    "lib/format/style.ts": 2,
     "lib/forms/esign-anchor-adapters.ts": 4,
     "lib/forms/esign-anchor-eval.ts": 2,
     "lib/forms/esign-anchor-plan.ts": 1,
@@ -3934,7 +3937,7 @@
     "lib/remotion/composition-geometry.ts": 2,
     "lib/remotion/content-contract.ts": 6,
     "lib/remotion/media-host.ts": 1,
-    "lib/remotion/music-filter-graph.ts": 2,
+    "lib/remotion/music-filter-graph.ts": 4,
     "lib/remotion/music-mixer.ts": 1,
     "lib/remotion/registry.ts": 7,
     "lib/remotion/render-cache.ts": 6,
@@ -4017,7 +4020,7 @@
     "lib/support/ticket-constants.ts": 2,
     "lib/tasks/task-presentation.ts": 3,
     "lib/teams/membership.ts": 4,
-    "lib/teams/team-scope.ts": 2,
+    "lib/teams/team-scope.ts": 1,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
     "lib/them-first/empathy-library.ts": 4,
@@ -4121,7 +4124,7 @@
     "lib/video/director-content.ts": 16,
     "lib/video/director-eval-harness.ts": 5,
     "lib/video/finish-spec.ts": 1,
-    "lib/video/format-learning.ts": 7,
+    "lib/video/format-learning.ts": 9,
     "lib/video/intro-video-reactor.ts": 2,
     "lib/video/ken-burns-plan.ts": 1,
     "lib/video/language-vocabulary.ts": 3,
@@ -4172,9 +4175,10 @@
     "lib/voice/outbound-call-gates.ts": 1,
     "lib/voice/parse-team-command.ts": 1,
     "lib/voice/platform-reception.ts": 7,
-    "lib/voice/reception-brain.ts": 8,
+    "lib/voice/reception-brain.ts": 9,
     "lib/voice/reception-inventory.ts": 3,
     "lib/voice/recording-playback-path.ts": 1,
+    "lib/voice/render-voice-drop.ts": 1,
     "lib/voice/showing-request.ts": 1,
     "lib/voice/sms-inbound.ts": 5,
     "lib/voice/spoken-values.ts": 3,
@@ -5669,7 +5673,6 @@
     ],
     "app/actions/crm.ts": [
       "deleteContact",
-      "getContacts",
       "getContactById",
       "searchContacts",
       "mergeContacts",
@@ -8248,7 +8251,7 @@
       "POST"
     ],
     "app/api/compliance/flags/route.ts": [
-      "GET",
+      "POST",
       "PATCH"
     ],
     "app/api/contacts/[contactId]/brief/route.ts": [
@@ -8437,6 +8440,9 @@
       "POST"
     ],
     "app/api/cron/deal-killer-radar/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/did-agent-sync/route.ts": [
       "GET"
     ],
     "app/api/cron/director-reel-render/route.ts": [
@@ -8920,12 +8926,10 @@
       "POST"
     ],
     "app/api/education/progress/route.ts": [
-      "GET",
-      "POST"
+      "GET"
     ],
     "app/api/education/resources/route.ts": [
-      "GET",
-      "POST"
+      "GET"
     ],
     "app/api/elevenlabs/tts/route.ts": [
       "POST"
@@ -9196,7 +9200,6 @@
       "POST"
     ],
     "app/api/video/engagement/route.ts": [
-      "GET",
       "POST"
     ],
     "app/api/video/projects/[projectId]/generate/route.ts": [
@@ -9220,9 +9223,6 @@
       "POST"
     ],
     "app/api/video-scripts/route.ts": [
-      "GET",
-      "POST",
-      "PATCH",
       "DELETE"
     ],
     "app/api/videos/listing-voiceover/route.ts": [
@@ -9386,6 +9386,9 @@
     ],
     "app/compliance/reports/export-report-button.tsx": [
       "ExportComplianceReportButton"
+    ],
+    "app/compliance/violations/resolve-violation-button.tsx": [
+      "ResolveViolationButton"
     ],
     "app/components/ApprovalsBanner.tsx": [
       "ApprovalsBanner"
@@ -15097,6 +15100,7 @@
     ],
     "lib/did/agents.ts": [
       "ensureDIDAgent",
+      "syncDIDAgent",
       "issueClientKey"
     ],
     "lib/did/avatar-completion.ts": [
@@ -15384,6 +15388,9 @@
     ],
     "lib/email/orchestrate-email-preset-send.ts": [
       "orchestrateEmailPresetSend"
+    ],
+    "lib/embed/resolve-site-embed.ts": [
+      "resolveSiteLiveAgentEmbed"
     ],
     "lib/embed/widget-modes.ts": [
       "isEmbedMode",
@@ -15796,7 +15803,8 @@
       "getTimeOfDayGreeting"
     ],
     "lib/format/style.ts": [
-      "marginColorClass"
+      "marginColorClass",
+      "sanitizeCssColor"
     ],
     "lib/forms/esign-anchor-adapters.ts": [
       "anchorsForProvider",
@@ -19854,7 +19862,9 @@
     ],
     "lib/remotion/music-filter-graph.ts": [
       "buildMusicTrackFilter",
-      "buildMusicMixFilterGraph"
+      "buildMusicMixFilterGraph",
+      "dbToLinearAmplitude",
+      "buildMusicDuckFilterGraph"
     ],
     "lib/remotion/music-mixer.ts": [
       "mixBackgroundMusic"
@@ -20240,7 +20250,6 @@
       "agentFundedTotal"
     ],
     "lib/teams/team-scope.ts": [
-      "resolveLedTeamId",
       "leadsAgentsTeam"
     ],
     "lib/territory/metrics-aggregator.ts": [
@@ -20709,7 +20718,9 @@
       "loadFormatOutcomes",
       "scoreHookOutcomes",
       "recommendHookWinner",
-      "loadHookExperiment"
+      "loadHookExperiment",
+      "pickPluralityAngle",
+      "recommendPreferredAngleForKind"
     ],
     "lib/video/intro-video-reactor.ts": [
       "dispatchAssignmentIntroVideo",
@@ -20985,7 +20996,8 @@
       "appendTranscript",
       "twimlGatherTurn",
       "twimlTransfer",
-      "twimlHangup"
+      "twimlHangup",
+      "twimlPlay"
     ],
     "lib/voice/reception-inventory.ts": [
       "extractAddressHints",
@@ -20994,6 +21006,9 @@
     ],
     "lib/voice/recording-playback-path.ts": [
       "recordingPlaybackPath"
+    ],
+    "lib/voice/render-voice-drop.ts": [
+      "renderVoiceDrop"
     ],
     "lib/voice/showing-request.ts": [
       "voiceRequestShowing"

@@ -275,6 +275,12 @@ export const CRON_REGISTRY: CronEntry[] = [
   // time." Every 5 minutes: a callback promised "in an hour" should not slip
   // by a full task-due cycle before the ISA actually dials.
   { path: "/api/cron/ai-callback-dispatch"                , schedule: "*/5 * * * *" },
+  // Wave 58 — the "updated" half of the D-ID Agents live-avatar ruling: a
+  // twin/voice edit propagates to the already-created D-ID Agent record
+  // autonomously (never a button-only path). Modest cadence — a PATCH is
+  // idempotent and cheap, this is eventual-consistency maintenance, not a
+  // latency-sensitive loop.
+  { path: "/api/cron/did-agent-sync"                      , schedule: "0 */4 * * *" },
   { path: "/api/cron/message-needs-response"               , schedule: "35 * * * *" }, // MESSAGE_NEEDS_RESPONSE had live notification_rules and no emitter (lane CB, 2026-09-08)
   // ── Wave 26: five runners that existed, were proved, and had NO trigger ────
   // Each was reachable only from its own simulator; the capability had never run

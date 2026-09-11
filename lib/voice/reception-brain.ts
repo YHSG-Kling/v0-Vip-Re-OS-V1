@@ -199,3 +199,14 @@ export function twimlTransfer(say: string, forwardNumber: string, voice = "Polly
 export function twimlHangup(say: string, voice = "Polly.Joanna-Neural"): string {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${voice}">${xmlEscape(say)}</Say><Hangup/></Response>`
 }
+
+/** PURE: play a pre-rendered audio clip (a hostRenderedMedia public mp3 URL —
+ *  Twilio's <Play> verb fetches it UNAUTHENTICATED, so it must be that public
+ *  URL, never the tenant-scoped recording-playback proxy) then end the call.
+ *  wave 58: the AMD-voicemail path plays a realistic ElevenLabs-rendered
+ *  clip instead of Twilio-native <Say> when one was rendered — see
+ *  lib/voice/render-voice-drop.ts and its caller in
+ *  app/api/voice/twilio/outbound/route.ts. */
+export function twimlPlay(audioUrl: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Play>${xmlEscape(audioUrl)}</Play><Hangup/></Response>`
+}

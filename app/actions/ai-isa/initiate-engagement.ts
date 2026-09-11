@@ -589,6 +589,10 @@ async function dispatchToChannel(
       contactName:  lead.first_name ?? contactRow.first_name ?? null,
       firstMessage: callContext.firstMessage ?? null,
       systemPrompt: callContext.systemPrompt ?? null,
+      // WAVE 58: reach the answer webhook's ConversationRelay/voice-drop path
+      // with the SAME resolved agent-clone voice buildCallContext picked —
+      // see OutboundCallBrief.elevenlabsVoiceId.
+      elevenlabsVoiceId: callContext.voiceConfig?.voiceId ?? null,
       // ARMS THE AUTONOMY GATE — unattended qualification dial on a raw lead.
       // `leadId` is passed too so the suppression and de-conflict gates can key
       // on the LEAD as well as the contact row minted for it: this path calls

@@ -118,6 +118,45 @@ check("?phase=deliver sweeps completed shows Monday afternoon (route branch + di
 check("KEEP-ONE delivery sweep: both reels share deliverCompletedReels (no second sweep)",
   pm.includes("deliverCompletedReels") && src("lib/kernel/board-packet-reel.ts").includes("deliverCompletedReels"))
 
+// ── THE OUTCOME SIGNAL (wave 58, video-loop audit) — deliverCompletedReels
+// used to notify leadership and STOP: no asset_manager announcement onto the
+// inter-manager bus, unlike every ai_video_projects-linked render (which
+// lib/kernel/video-coordination.ts signals on completion). Both reels render
+// through the SAME registry rail (recordRenderQueued) and retry through the
+// SAME generic composition-render-queue auto-requeue, so the missing half was
+// exactly this one step — now built into the shared sweep. ─────────────────
+{
+  // §2 — stripped: a comment naming "asset_manager" or a manager key (this
+  // block's own doc comments do, extensively) must not count as the code token.
+  const reelBrandSrc = stripComments(src("lib/video/reel-brand.ts"))
+  const boardPacketSrc = stripComments(src("lib/kernel/board-packet-reel.ts"))
+  const pmStripped = stripComments(pm)
+  check("deliverCompletedReels publishes an OUTCOME signal (asset_manager → caller-supplied toManager) per delivered render",
+    reelBrandSrc.includes('fromManager:  "asset_manager"') && reelBrandSrc.includes("toManager:    p.toManager")
+    && /publishManagerSignal\(\{/.test(reelBrandSrc))
+  check("the signal is deduped on the RENDER's own id (entity_id), independent of the notification dedup above it",
+    /entityId:\s*ren\.id/.test(reelBrandSrc))
+  check("partners_meeting's outcome signal routes to its OWN domain owner (campaign_orchestrator, manager-registry.ts), not a shared default",
+    pmStripped.includes('toManager: "campaign_orchestrator"') && pmStripped.includes('signalType: "partners_meeting_reel_delivered"'))
+  check("board_packet's outcome signal routes to ITS OWN domain owner (finance_manager), a DIFFERENT manager than partners_meeting — proves toManager is threaded per-caller, not hardcoded once in the shared sweep",
+    boardPacketSrc.includes('toManager: "finance_manager"') && boardPacketSrc.includes('signalType: "board_packet_reel_delivered"'))
+  // CONTROL: fromManager is never the same string as either toManager literal —
+  // publishManagerSignal's validSignalRoute refuses from===to, so a copy-paste
+  // that pointed either reel's outcome signal at asset_manager itself would
+  // silently never publish. Caught here at the SOURCE level rather than only at
+  // runtime.
+  check("CONTROL: neither outcome signal's toManager literal collides with fromManager ('asset_manager') — a self-route would silently refuse to publish",
+    !pmStripped.includes('toManager: "asset_manager"') && !boardPacketSrc.includes('toManager: "asset_manager"'))
+  // Not just a string-absence check — prove the REAL refusal behavior the
+  // control above relies on, and that both actual chosen routes are VALID.
+  check("REAL validSignalRoute: asset_manager → campaign_orchestrator (partners_meeting's route) is a valid, distinct pair",
+    validSignalRoute("asset_manager", "campaign_orchestrator"))
+  check("REAL validSignalRoute: asset_manager → finance_manager (board_packet's route) is a valid, distinct pair",
+    validSignalRoute("asset_manager", "finance_manager"))
+  check("CONTROL: validSignalRoute REALLY refuses a self-route (asset_manager → asset_manager) — the fact the checks above rely on",
+    !validSignalRoute("asset_manager", "asset_manager"))
+}
+
 console.log("\n[6 · WHO FRONTS THE VIDEO — the owner's identity rule, structural]")
 import { buildListingPitchReelProps } from "../lib/video/listing-pitch-reel"
 import { composeRoiHeadline } from "../lib/intelligence/roi-ledger"
@@ -540,6 +579,7 @@ console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")
 import { ASSISTANT_EXPRESSIVE_AVATARS } from "../lib/video/assistant-options"
 import { sentimentForSituation } from "../lib/video/video-director"
 import { stripComments } from "./strip-comments"
+import { validSignalRoute } from "../lib/kernel/manager-signals"
 {
   check("expressive presenter options exist and every id carries the @avt_ marker lib/did routes to /expressives",
     ASSISTANT_EXPRESSIVE_AVATARS.length >= 1

@@ -7,6 +7,7 @@
 // impersonated seat's own users row instead of the staff row (NULL brokerage).
 import { resolveWriteContext } from '@/lib/platform/acting-context';
 import { updateGlobalSettings as kernelUpdateGlobalSettings } from '@/lib/kernel';
+import { sanitizeCssColor } from '@/lib/format/style';
 
 // Non-secret fields the settings forms are allowed to write. SMTP + API keys are
 // handled by dedicated hardened actions, never here.
@@ -49,6 +50,11 @@ export async function updateGlobalSettings(updates: Record<string, unknown>) {
     for (const key of ALLOWED_FIELDS) {
       if (updates[key] !== undefined) clean[key] = updates[key];
     }
+    // MOUNTED (§1 orphan doctrine, wave 58 carried item): sanitizeCssColor —
+    // BrandingForm.tsx's color inputs are free text, and an unvalidated
+    // string here is a CSS-injection surface on every brand-facing render.
+    if (clean.primary_color !== undefined) clean.primary_color = sanitizeCssColor(clean.primary_color);
+    if (clean.secondary_color !== undefined) clean.secondary_color = sanitizeCssColor(clean.secondary_color);
 
     await kernelUpdateGlobalSettings({ userId: ctx.userId, db: ctx.db, updates: clean as any });
     return { data: true };

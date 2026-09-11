@@ -70,8 +70,12 @@ export default async function TeamFinancialsPage() {
     (profile as { platform_role?: string | null } | null)?.platform_role === "superadmin"
 
   // The FACT first: resolved once here and reused as the team id below, so the
-  // gate and the data can never be answered differently.
-  const ledTeamId = await resolveLedTeamId(supabase, user.id)
+  // gate and the data can never be answered differently. resolveLedTeamId
+  // returns { ok: false } on a REFUSED read (§1 merge, 2026-09-11 — the
+  // survivor's shape) — fail CLOSED on that too, same as "leads nothing":
+  // a refusal must never be read as permission.
+  const led = await resolveLedTeamId(supabase, user.id)
+  const ledTeamId = led.ok ? led.teamId : null
 
   if (!ledTeamId && !isSuperadmin && !["broker", "admin"].includes(userRole)) {
     redirect("/dashboard/financials/agent")

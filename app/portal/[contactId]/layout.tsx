@@ -242,26 +242,37 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode.
-  // Schema: agent_voice_profiles.agent_id (NOT user_id — old name from earlier
-  // migrations). Previously this select silently returned null and the DID
-  // chat widget never lit up.
-  // Prefer the trained did_avatar_id (presenter id from D-ID — reusable) when
-  // set; the photo/video URLs are the source assets used by talks/clips fallback.
+  // Whether the "Live: <agent>" button is offered — a REAL, setting-derived
+  // gate, not "any row exists" (CLAUDE.md §4 — no fabricated flag). Twin
+  // Studio twins (agent_avatar_assets) go through the brokerage's OWN
+  // approval workflow (brokerages.twins_require_approval → each twin's
+  // approval_status), the exact gate /api/did/agents/session already
+  // enforces at call time with a 409 — this used to just check "does ANY
+  // did_avatar_id/photo/video exist" on the LEGACY agent_voice_profiles
+  // table, so a portal client could see a live-looking button for a twin
+  // that was still training or awaiting brokerage sign-off, tap it, and get
+  // a 409 — an affordance describing a capability the session route was
+  // about to refuse. Prefer the default twin's real readiness; fall back to
+  // the legacy table's existence check ONLY for agents who have not migrated
+  // to Twin Studio at all (that table carries no separate approval column).
   let agentHasDIDAvatar = false
-  let agentDIDPhotoUrl: string | null = null
-  let agentDIDVideoUrl: string | null = null
-  let agentDIDAvatarId: string | null = null
   if (contact?.agent_id) {
-    const { data: voiceProfile } = await supabase
-      .from("agent_voice_profiles")
-      .select("did_photo_url, did_video_url, did_avatar_id")
+    const { data: defaultTwin } = await supabase
+      .from("agent_avatar_assets")
+      .select("status, approval_status")
       .eq("agent_id", contact.agent_id)
+      .eq("is_default", true)
       .maybeSingle()
-    agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
-    agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
-    agentDIDAvatarId = voiceProfile?.did_avatar_id ?? null
-    agentHasDIDAvatar = !!(agentDIDAvatarId || agentDIDPhotoUrl || agentDIDVideoUrl)
+    if (defaultTwin) {
+      agentHasDIDAvatar = defaultTwin.status === "ready" && defaultTwin.approval_status === "approved"
+    } else {
+      const { data: voiceProfile } = await supabase
+        .from("agent_voice_profiles")
+        .select("did_photo_url, did_video_url, did_avatar_id")
+        .eq("agent_id", contact.agent_id)
+        .maybeSingle()
+      agentHasDIDAvatar = !!(voiceProfile?.did_avatar_id || voiceProfile?.did_photo_url || voiceProfile?.did_video_url)
+    }
   }
 
   // Unread notification count for bell badge

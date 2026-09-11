@@ -76,11 +76,14 @@ import { brollSlots, type BrollClip } from "../remotion/_BrollLayer"
 import {
   buildMusicTrackFilter,
   buildMusicMixFilterGraph,
+  buildMusicDuckFilterGraph,
+  dbToLinearAmplitude,
   DEFAULT_MUSIC_FADE_IN_SECONDS,
   DEFAULT_MUSIC_FADE_OUT_SECONDS,
 } from "../lib/remotion/music-filter-graph"
 import {
   MUSIC_DUCK_VOLUME_PCT,
+  MUSIC_SIDECHAIN_DUCK_SETTINGS,
   IMAGE_SCENE_REALISM_PROMPT_BLOCK,
   AI_IMAGE_TELL_CHECKLIST,
   FILM_GRAIN_OVERLAY_OPACITY,
@@ -641,6 +644,81 @@ function musicSection() {
   const musicWantingCount = Object.values(VIDEO_FINISH_SPEC).filter((f) => f.music).length
   check(`finish-spec declares music for ${musicWantingCount} composition(s), and the mixer that serves them exists + fades both edges`,
     musicWantingCount > 0 && filterGraphSrc.includes("afade"))
+
+  // ── §music sidechain — REAL ducking driven by the narration track (wave 58) ──
+  // The wave-57 research header recorded "constant level for the whole track
+  // ... attack/release has no analog here" as an unresolved gap. These checks
+  // prove that gap is closed: a real sidechaincompress stage exists, is tuned
+  // inside ffmpeg's own accepted ranges, is keyed off [0:a] (the narration
+  // channel), and the CONSTANT-level graph remains reachable as the fallback
+  // (never deleted, never bypassed-by-default).
+  check("dbToLinearAmplitude converts 0dB to unity gain (POSITIVE CONTROL for the dB->linear helper every sidechain param goes through)",
+    Math.abs(dbToLinearAmplitude(0) - 1) < 1e-9)
+  check("dbToLinearAmplitude(-30) is materially quieter than unity (a real attenuation, not a no-op formula)",
+    dbToLinearAmplitude(-30) > 0 && dbToLinearAmplitude(-30) < 0.05)
+
+  const duckGraph = buildMusicDuckFilterGraph({
+    loop: true, volume: 0.12, videoSeconds: 20, duck: MUSIC_SIDECHAIN_DUCK_SETTINGS,
+  })
+  check("sidechain duck graph builds a sidechaincompress stage",
+    /sidechaincompress=/.test(duckGraph))
+  check("sidechain duck graph keys the compressor off the NARRATION channel [0:a] as the sidechain input, not the music track itself",
+    /\[a1\]\[0:a\]sidechaincompress=/.test(duckGraph))
+  check("sidechain duck graph still mixes the ducked bed back against [0:a] (amix), same as the constant-level graph",
+    /\[0:a\]\[a1d\]amix=inputs=2:duration=first:dropout_transition=0\[aout\]/.test(duckGraph))
+  check("sidechain duck graph keeps the SAME bed-level chain (loop/volume/fades) as the constant graph — only ONE thing changes: dynamic ducking added on top",
+    duckGraph.startsWith(buildMusicTrackFilter({ loop: true, volume: 0.12, videoSeconds: 20 })))
+
+  // Tuning sits inside ffmpeg's OWN documented sidechaincompress ranges —
+  // a bad constant must not silently produce a filter ffmpeg refuses to run.
+  const thresholdMatch = duckGraph.match(/sidechaincompress=threshold=([\d.]+):ratio=([\d.]+):attack=([\d.]+):release=([\d.]+):makeup=([\d.]+)/)
+  check("sidechain filter string parses out threshold/ratio/attack/release/makeup (the exact params ffmpeg's sidechaincompress accepts)",
+    !!thresholdMatch)
+  if (thresholdMatch) {
+    const [, thresholdStr, ratioStr, attackStr, releaseStr, makeupStr] = thresholdMatch
+    const threshold = Number(thresholdStr), ratio = Number(ratioStr), attack = Number(attackStr), release = Number(releaseStr), makeup = Number(makeupStr)
+    check(`threshold (${threshold}) is inside ffmpeg's accepted linear range (0.00097563-1)`, threshold >= 0.00097563 && threshold <= 1)
+    check(`ratio (${ratio}) is inside ffmpeg's accepted range (1-20)`, ratio >= 1 && ratio <= 20)
+    check(`attack (${attack}ms) is inside ffmpeg's accepted range (0.01-2000ms)`, attack >= 0.01 && attack <= 2000)
+    check(`release (${release}ms) is inside ffmpeg's accepted range (0.01-9000ms)`, release >= 0.01 && release <= 9000)
+    check(`makeup (${makeup}) is inside ffmpeg's accepted range (1-64 linear)`, makeup >= 1 && makeup <= 64)
+    // §2 positive control: threshold/ratio/attack/release actually MOVE the
+    // string when the constant changes — proves the builder reads the
+    // researched constants rather than emitting a hardcoded literal.
+    const retunedGraph = buildMusicDuckFilterGraph({
+      loop: true, volume: 0.12, videoSeconds: 20,
+      duck: { thresholdDb: -18, ratio: 4, attackMs: 80, releaseMs: 600, makeupDb: 3 },
+    })
+    check("CONTROL: re-tuning MUSIC_SIDECHAIN_DUCK_SETTINGS' fields actually moves the emitted filter string (the builder reads the constants, not a hardcoded literal)",
+      retunedGraph !== duckGraph && /ratio=4\.00/.test(retunedGraph) && /attack=80\.00/.test(retunedGraph) && /release=600\.00/.test(retunedGraph))
+  }
+
+  // Researched attack/release ARE sidechaincompress's own ffmpeg defaults
+  // (20ms/250ms) — asserted against the research note's own claim, not
+  // re-typed as a bare literal here.
+  check(`MUSIC_SIDECHAIN_DUCK_SETTINGS.attackMs (${MUSIC_SIDECHAIN_DUCK_SETTINGS.attackMs}) matches sidechaincompress's own ffmpeg default (20ms) — the research converges on the tool's own default, not a re-typed guess`,
+    MUSIC_SIDECHAIN_DUCK_SETTINGS.attackMs === 20)
+  check(`MUSIC_SIDECHAIN_DUCK_SETTINGS.releaseMs (${MUSIC_SIDECHAIN_DUCK_SETTINGS.releaseMs}) matches sidechaincompress's own ffmpeg default (250ms)`,
+    MUSIC_SIDECHAIN_DUCK_SETTINGS.releaseMs === 250)
+  check(`MUSIC_SIDECHAIN_DUCK_SETTINGS.ratio (${MUSIC_SIDECHAIN_DUCK_SETTINGS.ratio}:1) is inside the researched 4-8:1 convergence`,
+    MUSIC_SIDECHAIN_DUCK_SETTINGS.ratio >= 4 && MUSIC_SIDECHAIN_DUCK_SETTINGS.ratio <= 8)
+  check(`MUSIC_SIDECHAIN_DUCK_SETTINGS.thresholdDb (${MUSIC_SIDECHAIN_DUCK_SETTINGS.thresholdDb}dB) is inside the researched -20..-30dB convergence`,
+    MUSIC_SIDECHAIN_DUCK_SETTINGS.thresholdDb <= -20 && MUSIC_SIDECHAIN_DUCK_SETTINGS.thresholdDb >= -30)
+
+  // CONSTANT-level graph remains reachable — the required fallback, not
+  // silently replaced by the sidechain path.
+  check("the ORIGINAL constant-level graph builder (buildMusicMixFilterGraph) is UNCHANGED and still reachable — the required fallback when sidechain is unavailable",
+    /\[0:a\]\[a1\]amix=inputs=2:duration=first:dropout_transition=0\[aout\]/.test(graphWithLength) && !graphWithLength.includes("sidechaincompress"))
+
+  // music-mixer.ts wiring: the sidechain attempt is opt-in per render
+  // (duckToNarration), attempted before the constant fallback, and a failed
+  // sidechain attempt falls back rather than failing the whole mix.
+  check("music-mixer only attempts the sidechain graph when the caller says narration is on [0:a] this render (duckToNarration)",
+    mixerSrc.includes("if (input.duckToNarration)") && /buildMusicDuckFilterGraph\(\{/.test(mixerSrc))
+  check("music-mixer falls back to the constant-level graph when the sidechain attempt is not requested OR fails at ffmpeg",
+    /if \(!ducked\)/.test(mixerSrc) && /runMix\(constantFilter\)/.test(mixerSrc))
+  check("render-coordinator threads usedVoiceover (whether [0:a] carries narration THIS render) into duckToNarration — not a guess, the actual mux fact",
+    /duckToNarration:\s*usedVoiceover/.test(coordinatorSrc))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -5,7 +5,6 @@ import { revalidatePath } from "next/cache"
 import {
   deleteContact as deleteContactService,
   getContact,
-  getContacts as getContactsService,
   mergeContacts as mergeContactsService
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
@@ -126,10 +125,19 @@ export async function deleteContact(contactId: string, agentId: string) {
   return deleteContactService(contactId, agentId)
 }
 
-export async function getContacts(agentId: string, filters?: { status?: string; temperature?: string; search?: string }) {
-  return getContactsService(agentId, filters)
-}
-
+// TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 3, 2026-09-11): getContacts
+// used to live here as a thin "use server" wrapper over
+// lib/services/contact-management.service.ts's getContacts(agentId, filters)
+// — zero in-tree callers (the tombstone at this file's top already flagged it
+// as one of the "remaining direct callers... untouched" siblings of the
+// createContact wrapper removed in that pass). The SURVIVOR is
+// app/actions/contacts.ts:94's getContacts(params) — session-derived
+// brokerage_id (never an agentId parameter, per CLAUDE.md §4: tenant comes
+// from the session), pagination, search and contact_type filtering, and it is
+// the getContacts every live page imports (app/crm/page.tsx,
+// app/credit-pipeline/page.tsx, app/dashboard/forms/FormsLibraryClient.tsx).
+// This file's other service delegates (getContactById, mergeContacts) are
+// untouched — only the exact-duplicate name/purpose pair is resolved here.
 export async function getContactById(contactId: string) {
   const { agentId } = await getAgentContext()
   if (!agentId) return { success: false, error: "Not authenticated" }

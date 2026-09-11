@@ -19,6 +19,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createContactManually } from "@/lib/kernel/crm"
 import { resolveWidgetNotificationTarget } from "@/lib/integrations/widget/resolve-notification-target"
+import { createCallbackTask } from "@/lib/ai-isa/callback-task"
 
 export async function POST(request: NextRequest) {
   const body = await request.json()
@@ -101,6 +102,27 @@ export async function POST(request: NextRequest) {
     : { success: false, contactId: undefined }
 
   const contactId = contactResult.contactId ?? null
+
+  // THE DURABLE HALF — owner ruling (wave 55): a callback ask must become a
+  // real task with an autonomous executor, not just a notification a human
+  // might miss. /api/cron/ai-callback-dispatch places the call through the
+  // same gated outbound door every other ISA dial uses, regardless of
+  // whether the notification below is ever read.
+  if (phone) {
+    const callback = await createCallbackTask(supabase, {
+      brokerageId,
+      contactId,
+      phone,
+      whenPhrase: bestTime?.trim() || "as soon as possible",
+      reason: "Requested a callback from the website chat widget",
+      voiceCallId: null,
+      assigneeType: "ai_isa",
+      assignedToAgentId: agentId,
+    })
+    if (!callback.ok) {
+      console.error("[widget/live-agent-request] callback task write refused:", callback.error)
+    }
+  }
 
   // Send notification to scoped recipient
   if (recipient?.user_id) {

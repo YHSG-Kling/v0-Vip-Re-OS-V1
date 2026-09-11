@@ -29,6 +29,21 @@ export interface OutboundCallBrief {
   contactName?: string | null
   firstMessage?: string | null
   systemPrompt?: string | null
+  /** WAVE 58 — the resolved ElevenLabs voice id (buildCallContext's
+   *  voiceConfig.voiceId — lib/ai-isa/build-call-context.ts) this call should
+   *  speak in. That voiceConfig used to stop at buildCallContext's return
+   *  value: callers threaded firstMessage/systemPrompt into placeOutboundAiCall
+   *  but never voiceConfig, so the resolved agent-clone voice never reached
+   *  the ANSWER webhook that actually speaks — the ConversationRelay transport
+   *  switch and the AMD voice-drop <Play> both fell back to the number's own
+   *  generic ai_identity_profiles cascade (resolveInboundContext) instead of
+   *  the call-purpose-specific voice buildCallContext resolved. This field is
+   *  the wire: encoded into ai_notes at dial time, decoded at answer time, and
+   *  PREFERRED over the number's own cascade wherever a voice is chosen for
+   *  THIS call (see app/api/voice/twilio/outbound/route.ts). Optional/omittable
+   *  — a caller that never resolved one (or isn't AI-ISA) leaves the number's
+   *  own cascade as the only source, exactly as before this field existed. */
+  elevenlabsVoiceId?: string | null
 }
 
 /** PURE: serialize the brief into ai_notes (capped — it rides a text column). */
@@ -39,6 +54,7 @@ export function encodeOutboundBrief(brief: OutboundCallBrief): string {
     contactName: brief.contactName?.slice(0, 80) ?? null,
     firstMessage: brief.firstMessage?.slice(0, 300) ?? null,
     systemPrompt: brief.systemPrompt?.slice(0, 2000) ?? null,
+    elevenlabsVoiceId: brief.elevenlabsVoiceId?.slice(0, 100) ?? null,
   })
 }
 
@@ -55,6 +71,7 @@ export function decodeOutboundBrief(aiNotes: string | null | undefined): Outboun
       contactName: typeof p.contactName === "string" ? p.contactName : null,
       firstMessage: typeof p.firstMessage === "string" ? p.firstMessage : null,
       systemPrompt: typeof p.systemPrompt === "string" ? p.systemPrompt : null,
+      elevenlabsVoiceId: typeof p.elevenlabsVoiceId === "string" ? p.elevenlabsVoiceId : null,
     }
   } catch {
     return null
@@ -93,6 +110,11 @@ export interface PlaceOutboundParams {
   contactName?: string | null
   firstMessage?: string | null
   systemPrompt?: string | null
+  /** The resolved ElevenLabs voice id for THIS call — see OutboundCallBrief's
+   *  own field for the full wiring note. Typically buildCallContext's
+   *  voiceConfig?.voiceId. Omit to leave the number's own ai_identity_profiles
+   *  cascade as the only voice source (unchanged pre-wave-58 behavior). */
+  elevenlabsVoiceId?: string | null
   transactional?: boolean
   /** Unconverted LEAD origin, when the dial came from a lead rather than a
    *  promoted contact — gives the lead the same over-touch protection
@@ -238,6 +260,7 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
       contactName: params.contactName ?? null,
       firstMessage: params.firstMessage ?? null,
       systemPrompt: params.systemPrompt ?? null,
+      elevenlabsVoiceId: params.elevenlabsVoiceId ?? null,
     }),
   }).select("id").single()
   if (insErr) {

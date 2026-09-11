@@ -202,7 +202,36 @@ export async function generateListingVideo(params: {
       // The hook A/B arm — see the param doc. Idempotent per (listing, kind) via
       // the experiment_id the Director derives; a re-run reuses the experiment.
       const { commissionVideoExperiment } = await import('@/lib/video/video-director')
-      const experiment = await commissionVideoExperiment(situation, commissionOpts, { variants: 3 })
+
+      // CLOSE THE HOOK-LEARNING LOOP (wave 58 — lib/video/format-learning.ts
+      // recommendPreferredAngleForKind). commissionVideoExperiment's
+      // preferredAngle param has existed since the A/B shipped, built to receive
+      // exactly this; nothing ever called it, so every new experiment always
+      // started curiosity-first even after this brokerage's PAST photo_walkthrough
+      // experiments had already crowned a different angle repeatedly. Best-effort
+      // and honest on thin data: "testing" leaves preferredAngle undefined,
+      // byte-identical to the pre-existing default-order behavior.
+      let preferredAngle: import('@/lib/video/video-director').HookAngle | undefined
+      let preferredAngleWhy: string | undefined
+      try {
+        // No client passed — the SSR `supabase` client above is a different
+        // shape than the service client this reads through; recommendPreferredAngleForKind
+        // mints its own (read-only, brokerage-scoped) when omitted.
+        const { recommendPreferredAngleForKind } = await import('@/lib/video/format-learning')
+        const rec = await recommendPreferredAngleForKind(videoBrokerageId, situation.kind)
+        if (rec.status === 'learned' && rec.angle) {
+          preferredAngle = rec.angle as import('@/lib/video/video-director').HookAngle
+          preferredAngleWhy = rec.why
+        }
+      } catch (e) {
+        console.warn('[generateListingVideo] preferred-angle lookup failed; using default angle order:', (e as Error).message)
+      }
+
+      const experiment = await commissionVideoExperiment(
+        situation,
+        { ...commissionOpts, preferredAngle, preferredAngleWhy },
+        { variants: 3 },
+      )
       if (!experiment.ok) {
         return { success: false, error: experiment.reason ?? 'The hook experiment could not be commissioned' }
       }

@@ -286,6 +286,14 @@ export async function finalizeCoordinatedRender(
           musicVolumePct:     musicRow.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT,
           loop:               musicRow.music_loop ?? true,
           videoSeconds:       musicVideoSeconds,
+          // Wave 58: real sidechain ducking, keyed off [0:a] on `working` —
+          // which carries narration THIS render iff `usedVoiceover` is true
+          // (either the composition plays its own in-frame voice, e.g. a D-ID
+          // avatar clip, or the mux above just landed an external mp3 onto
+          // it). A silent render has nothing to sidechain against, so the
+          // constant MUSIC_DUCK_VOLUME_PCT level stays the fallback there —
+          // see lib/remotion/music-mixer.ts's duckToNarration doc.
+          duckToNarration:    usedVoiceover,
         })
         if (mixed.ok && mixed.outputBuffer.length > 0) {
           working = mixed.outputBuffer
@@ -293,6 +301,11 @@ export async function finalizeCoordinatedRender(
           musicTrackUrl = musicRow.video_url
           musicVolumePct = musicRow.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT
           musicLoop = musicRow.music_loop ?? true
+          if (usedVoiceover) {
+            console.info(
+              `[render-coordinator] music ${mixed.ducked ? "sidechain-ducked under" : "mixed at the constant level under (sidechain attempt fell back)"} narration for ${composition.composition_id}`,
+            )
+          }
         }
       } catch (e) {
         console.warn("[render-coordinator] music mix failed; continuing:", (e as Error).message)

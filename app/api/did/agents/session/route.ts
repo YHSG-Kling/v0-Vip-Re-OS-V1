@@ -181,11 +181,18 @@ export async function POST(request: NextRequest) {
     presenterId,
     elevenLabsVoiceId: voiceId,
     personality,
+    greeting,
     agentName: [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ") || "Agent",
   })
 
   if (!ensured.ok) {
     return NextResponse.json({ error: ensured.error }, { status: 502 })
+  }
+  // Realism scan on the greeting is ADVISORY (CLAUDE.md §5 — warnings pass
+  // through, never a silent block) — logged for whoever reads the deploy
+  // console rather than blocking a live session over a redraftable line.
+  if (ensured.realismWarnings?.length) {
+    console.warn(`[did/agents/session] AI-tell findings on twin ${twinId ?? agentRow.id} greeting:`, ensured.realismWarnings)
   }
 
   // ── Issue client key locked to our portal origin ─────────────────────────

@@ -417,5 +417,11 @@ export async function deliverPartnersMeetingReels(supabase: Svc, now: Date = new
     notificationType: "partners_meeting",
     title: "This week's show is ready — your AI team on camera",
     bodyIntro: "The Partners' Meeting as a branded video: the week's plays, the money booked, and the compliance disposition.",
+    // Wave 58 — the video-loop audit: partners_meeting's domain owner
+    // (lib/kernel/manager-registry.ts) is campaign_orchestrator, so the
+    // delivered reel's outcome signal announces there, never to asset_manager
+    // itself (a self-route publishManagerSignal refuses).
+    toManager: "campaign_orchestrator",
+    signalType: "partners_meeting_reel_delivered",
   })
 }

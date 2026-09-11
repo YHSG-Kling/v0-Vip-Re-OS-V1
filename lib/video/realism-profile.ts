@@ -320,12 +320,26 @@ export const ELEVENLABS_TEXT_NORMALIZATION: "auto" = "auto"
 //     companion section further down this file for the finding (already
 //     wired elsewhere in this repo, not a fit for THIS config object).
 
-export type ElevenLabsLane = "avatar_narration" | "reel_narration" | "phone_realtime"
+export type ElevenLabsLane = "avatar_narration" | "reel_narration" | "phone_realtime" | "voice_drop"
 
-/** model_id for the two NARRATION lanes (avatar email-video + reel
- *  voiceover) — v3, timestamped and plain. Word-synced captions need
- *  alignment, which v3 is expected to support (see the research block above);
- *  every caller already falls back to plain synthesis on any failure. */
+/** model_id for the three NARRATION lanes (avatar email-video, reel
+ *  voiceover, and voice-drop voicemail) — v3, timestamped and plain.
+ *  Word-synced captions need alignment, which v3 is expected to support (see
+ *  the research block above); every caller already falls back to plain
+ *  synthesis on any failure.
+ *
+ *  WAVE 58 — "voice_drop" ADDED (renderVoiceDrop, lib/voice/render-voice-drop.ts):
+ *  a voicemail drop is SCRIPTED and PRE-RENDERED, never a live back-and-forth —
+ *  it is read once, to an audience that cannot interrupt or ask it to slow
+ *  down — which is exactly the "someone reading from a script" register v3
+ *  and this file's ELEVENLABS_REALISM_VOICE_SETTINGS were tuned for (see the
+ *  stability-band note above), and exactly UNLIKE "phone_realtime" (a live,
+ *  interruptible <ConversationRelay> turn, where v3's own docs rule it out:
+ *  "not suitable for real-time... higher latency"). Grouped with the
+ *  narration lanes rather than the phone lane on that distinction, not on
+ *  "does this happen to ride a phone call" — the phone lane's speed
+ *  requirement is about interruptibility, and a voice drop is never
+ *  interrupted. */
 export const ELEVENLABS_NARRATION_MODEL_ID = "eleven_v3"
 
 /** model_id for the PHONE lane — Flash v2.5, ElevenLabs' own real-time
@@ -355,6 +369,13 @@ export function elevenLabsModelForLane(lane: ElevenLabsLane, languageCode?: stri
   void languageCode
   return lane === "phone_realtime" ? ELEVENLABS_PHONE_MODEL_ID : ELEVENLABS_NARRATION_MODEL_ID
 }
+
+/** `withNaturalPauses` honours "voice_drop" for free: it dispatches on the
+ *  resolved MODEL id, not the lane name, and "voice_drop" resolves to the
+ *  same eleven_v3 model id as the other narration lanes
+ *  (NATURAL_PAUSE_AUDIO_TAG_MODELS below is keyed by model). No lane-specific
+ *  branch needed here — asserted by the positive control alongside
+ *  withNaturalPauses' other controls further down this file. */
 
 // ─── Natural pauses ───────────────────────────────────────────────────────────
 //
@@ -975,13 +996,27 @@ export function avatarPipWindowFade(
 //      DEFAULT_MUSIC_FADE_OUT_SECONDS=1.5, lib/remotion/music-filter-graph.ts)
 //      sit inside every researched range ("a couple of seconds", "an outro
 //      fade over the last second or two") — AUDITED, not changed.
-//    · Attack/release: the research's sidechain numbers (attack ~30-50ms,
-//      release ~500-800ms) describe DYNAMIC ducking (music drops only while
-//      speech is present, swells in gaps). This repo's mixer applies one
-//      constant level for the whole track rather than a sidechain, so
-//      attack/release has no analog here — recorded as a real gap (an
-//      unresolved item, not silently matched) rather than invented as a
-//      constant nothing reads.
+//    · GAP CLOSED (wave 58, ffmpeg-cookbook.com "Automatically Duck BGM Under
+//      Narration with sidechaincompress" 2026-04-11, ayosec.github.io ffmpeg
+//      9.0 sidechaincompress filter reference, capcut.com "Audio Ducking for
+//      Clear Voiceover" 2026-08-11, infinitecreation.io "Ducking Music Under
+//      Dialogue", all fetched 2026-09-11): the wave-57 audit above recorded
+//      "this repo's mixer applies one constant level for the whole track
+//      rather than a sidechain... attack/release has no analog here" as an
+//      unresolved gap. `buildMusicDuckFilterGraph` (lib/remotion/
+//      music-filter-graph.ts) closes it — a real `sidechaincompress` stage
+//      keyed off the narration track, not a second constant. Researched
+//      ranges converge tightly around ffmpeg's OWN filter defaults: threshold
+//      -20..-30dB (podcast/video sources), ratio 4-8:1, attack 10-80ms (one
+//      source's "5ms" outlier is for near-instant dialogue-detect, not music
+//      ducking), release 200-700ms — MUSIC_SIDECHAIN_DUCK_SETTINGS below picks
+//      the conservative middle of that convergence (threshold -30dB, ratio 8,
+//      attack 20ms, release 250ms — the last two ARE literally
+//      sidechaincompress's own ffmpeg defaults). The pre-gain "bed" level is
+//      UNCHANGED — same musicVolumePct a caller already resolved (brokerage's
+//      own row, or MUSIC_DUCK_VOLUME_PCT) — sidechaining only makes that bed
+//      dip further while speech plays and RETURN to it in the gaps, instead of
+//      sitting at one flat scale for the whole track.
 //
 // CAPTIONS — cross-checked against lib/video/caption-plan.ts + remotion/
 // components/CaptionLayer.tsx (already built, wave-prior): word-timed cues
@@ -1027,6 +1062,36 @@ export function avatarPipWindowFade(
  *  than any source recommends). A brokerage's own stock row that already sets
  *  `music_volume_pct` is UNCHANGED by this — it is a fallback, not a cap. */
 export const MUSIC_DUCK_VOLUME_PCT = 12
+
+/** THE SIDECHAIN DUCK TUNING (wave 58 — see the MUSIC/DUCKING research note
+ *  above for sourcing). Drives `buildMusicDuckFilterGraph`'s `sidechaincompress`
+ *  stage, keyed off the narration track — used whenever the render-coordinator
+ *  knows [0:a] carries narration this render (the sidechain path); when it does
+ *  not, MUSIC_DUCK_VOLUME_PCT's flat constant level above is the fallback, not
+ *  this. `attackMs`/`releaseMs` ARE sidechaincompress's own ffmpeg defaults
+ *  (20/250) — the research converges on the same numbers as the filter's
+ *  out-of-the-box behaviour, so nothing here fights the tool's own defaults.
+ *  `thresholdDb`/`ratio` are picked at the conservative-but-audible end of the
+ *  researched range (-20..-30dB threshold, 4-8:1 ratio) so quiet room-tone or a
+ *  breath does not falsely trigger a duck, while normalized narration speech
+ *  (~-14 LUFS, per ELEVENLABS_REALISM_VOICE_SETTINGS' companion research)
+ *  reliably crosses it. `makeupDb: 0` — no post-compression gain restore, so a
+ *  ducked-then-boosted track cannot end up reading louder than the bed level
+ *  the caller chose. */
+export interface SidechainDuckTuning {
+  thresholdDb: number
+  ratio: number
+  attackMs: number
+  releaseMs: number
+  makeupDb: number
+}
+export const MUSIC_SIDECHAIN_DUCK_SETTINGS: SidechainDuckTuning = {
+  thresholdDb: -30,
+  ratio: 8,
+  attackMs: 20,
+  releaseMs: 250,
+  makeupDb: 0,
+}
 
 /** Additive realism directive appended to every AI-image-generation prompt
  *  (lib/ai/image-generation.ts buildBrandAwarePrompt) — the "no text in

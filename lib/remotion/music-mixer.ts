@@ -46,7 +46,8 @@ import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildMusicMixFilterGraph } from "./music-filter-graph"
+import { buildMusicMixFilterGraph, buildMusicDuckFilterGraph } from "./music-filter-graph"
+import { MUSIC_SIDECHAIN_DUCK_SETTINGS } from "@/lib/video/realism-profile"
 
 // Re-exported unchanged so every existing caller of these names (including
 // this file's own mixBackgroundMusic below) is unaffected by the split —
@@ -56,9 +57,13 @@ import { buildMusicMixFilterGraph } from "./music-filter-graph"
 export {
   buildMusicTrackFilter,
   buildMusicMixFilterGraph,
+  buildMusicDuckFilterGraph,
+  dbToLinearAmplitude,
   DEFAULT_MUSIC_FADE_IN_SECONDS,
   DEFAULT_MUSIC_FADE_OUT_SECONDS,
   type MusicFilterGraphInput,
+  type MusicDuckFilterGraphInput,
+  type SidechainDuckSettings,
 } from "./music-filter-graph"
 
 let FFMPEG_BIN: string | null = null
@@ -87,6 +92,17 @@ export interface MixBackgroundMusicInput {
   videoSeconds?:  number | null
   fadeInSeconds?: number
   fadeOutSeconds?: number
+  /**
+   * REAL sidechain ducking (wave 58): true when the caller knows [0:a] on
+   * `videoBuffer` carries narration THIS render (render-coordinator's
+   * `usedVoiceover` fact, not a guess) — the music then ducks dynamically
+   * under the speech (sidechaincompress, MUSIC_SIDECHAIN_DUCK_SETTINGS) and
+   * returns to the same bed level in the gaps, instead of sitting at one flat
+   * scale for the whole track. Defaults to false — the ORIGINAL constant-level
+   * behaviour — so every caller that does not opt in (or a video with no
+   * narration to sidechain against) is byte-for-byte unaffected.
+   */
+  duckToNarration?: boolean
 }
 
 export interface MixBackgroundMusicResult {
@@ -94,6 +110,11 @@ export interface MixBackgroundMusicResult {
   outputBuffer: Buffer
   skippedReason?: string
   error?:       string
+  /** true when the SIDECHAIN graph actually rendered (not just requested) —
+   *  the caller-visible fact for the audit trail / cache identity. false on
+   *  the constant-level path, whether by choice or because the sidechain
+   *  attempt fell back after an ffmpeg error (see the retry below). */
+  ducked?:      boolean
 }
 
 export async function mixBackgroundMusic(
@@ -127,20 +148,7 @@ export async function mixBackgroundMusic(
     const musicBuf = Buffer.from(await musicRes.arrayBuffer())
     await fs.writeFile(musicPath, musicBuf)
 
-    // Build the filter graph — loop (optional) → volume → fade-in → fade-out
-    // (see buildMusicMixFilterGraph header). `amix` with duration=first locks
-    // the mixed audio to the VIDEO's length regardless of the music track's
-    // own length or the fade math above; the loop on the music stream means
-    // short tracks fill long videos without an audible tail-cut.
-    const filter = buildMusicMixFilterGraph({
-      loop: input.loop,
-      volume,
-      videoSeconds: input.videoSeconds ?? null,
-      fadeInSeconds: input.fadeInSeconds,
-      fadeOutSeconds: input.fadeOutSeconds,
-    })
-
-    const exit = await new Promise<number>((resolve, reject) => {
+    const runMix = (filter: string) => new Promise<void>((resolve, reject) => {
       const proc = spawn(FFMPEG_BIN as string, [
         "-y",
         "-i", videoPath,
@@ -159,13 +167,57 @@ export async function mixBackgroundMusic(
       proc.on("error", reject)
       proc.on("close", (code) => {
         if (code !== 0) reject(new Error(`ffmpeg amix exit ${code}: ${stderr.slice(-512)}`))
-        else resolve(code ?? 0)
+        else resolve()
       })
     })
-    void exit
+
+    // Constant-level graph — loop (optional) → volume → fade-in → fade-out
+    // (see buildMusicMixFilterGraph header). `amix` with duration=first locks
+    // the mixed audio to the VIDEO's length regardless of the music track's
+    // own length or the fade math above; the loop on the music stream means
+    // short tracks fill long videos without an audible tail-cut. Built
+    // unconditionally — it is BOTH the historical default path AND the
+    // fallback the sidechain attempt below retries with on failure.
+    const constantFilter = buildMusicMixFilterGraph({
+      loop: input.loop,
+      volume,
+      videoSeconds: input.videoSeconds ?? null,
+      fadeInSeconds: input.fadeInSeconds,
+      fadeOutSeconds: input.fadeOutSeconds,
+    })
+
+    let ducked = false
+    if (input.duckToNarration) {
+      // REAL sidechain ducking (wave 58) — the SAME bed-level chain as
+      // constantFilter, plus sidechaincompress keyed off the narration at
+      // [0:a]. Attempted FIRST when the caller says [0:a] carries narration
+      // this render; on ANY ffmpeg failure (an unusual audio layout, a codec
+      // ffmpeg-static can't sidechain against) we fall back to the constant
+      // level rather than shipping a silent/failed render — "keeping the
+      // constant level as the fallback when sidechain unavailable" per the
+      // task brief, covering both "no narration to key off" (caller never
+      // sets duckToNarration) and "sidechain attempt itself failed" (here).
+      const duckFilter = buildMusicDuckFilterGraph({
+        loop: input.loop,
+        volume,
+        videoSeconds: input.videoSeconds ?? null,
+        fadeInSeconds: input.fadeInSeconds,
+        fadeOutSeconds: input.fadeOutSeconds,
+        duck: MUSIC_SIDECHAIN_DUCK_SETTINGS,
+      })
+      try {
+        await runMix(duckFilter)
+        ducked = true
+      } catch (e) {
+        console.warn("[music-mixer] sidechain duck failed; falling back to constant level:", (e as Error).message)
+      }
+    }
+    if (!ducked) {
+      await runMix(constantFilter)
+    }
 
     const outBuf = await fs.readFile(outPath)
-    return { ok: true, outputBuffer: outBuf }
+    return { ok: true, outputBuffer: outBuf, ducked }
   } catch (e) {
     return { ok: false, outputBuffer: input.videoBuffer, error: (e as Error).message }
   } finally {

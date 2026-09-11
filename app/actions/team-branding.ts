@@ -677,9 +677,13 @@ async function gate(): Promise<Gate | { ok: false; error: string }> {
     return { ok: false, error: "Not authenticated." }
   }
   const supabase = await createClient()
-  // THE FACT, not the label. resolveLedTeamId reads teams.team_lead_id and logs
-  // a refused read rather than reporting it as "leads nobody".
-  const ledTeamId = await resolveLedTeamId(supabase, ctx.userId)
+  // THE FACT, not the label. resolveLedTeamId reads teams.team_lead_id and
+  // returns { ok: false, error } on a REFUSED read rather than reporting it as
+  // "leads nobody" (§1 merge, 2026-09-11 — the survivor's shape, adopted from
+  // the duplicate that used to live at lib/teams/team-scope.ts).
+  const led = await resolveLedTeamId(supabase, ctx.userId)
+  if (!led.ok) return { ok: false, error: led.error }
+  const ledTeamId = led.teamId
   const admin = isBrokerageAdmin(ctx.userType ?? ctx.role ?? "")
   const access: TeamBrandAccess = ledTeamId ? "lead" : admin ? "admin" : "none"
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, ledTeamId, admin, access, supabase }

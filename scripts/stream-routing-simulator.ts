@@ -218,13 +218,18 @@ console.log("\n[(d) #187 closures — anonymous turns metered, history estimated
   // GAP 3 — did/custom-llm fails CLOSED: no resolvable tenant, no stream.
   const did = read("app/api/did/custom-llm/route.ts")
   const callAt = firstCodeHit(did, "streamTextRouted(")
-  const markerGate = firstCodeHit(did, "if (!contactId)")
-  const tenantGate = firstCodeHit(did, "if (!ctx || !ctx.brokerageId)")
+  // Wave 58: the route accepts TWO context markers (contactId for the portal,
+  // embedSessionId for anonymous website/widget visitors) — the marker gate now
+  // refuses only when NEITHER is present, and the tenant gate resolves the
+  // brokerage from whichever context loaded. Both still fire BEFORE the stream.
+  const markerGate = firstCodeHit(did, "if (!markerContactId && !embedSessionId)")
+  const sessionGate = firstCodeHit(did, "if (!embedCtx) return NextResponse.json({ error: \"unresolvable session\" }, { status: 403 })")
+  const tenantGate = firstCodeHit(did, "if (!brokerageId) {")
   check("did/custom-llm: a turn without the context marker is refused with a 4xx BEFORE the stream call",
     markerGate !== -1 && callAt !== -1 && markerGate < callAt &&
     /status: 400/.test(did.slice(markerGate, markerGate + 220)))
   check("did/custom-llm: an unresolvable contact or tenant is refused with a 4xx BEFORE the stream call",
-    tenantGate !== -1 && callAt !== -1 && tenantGate < callAt &&
+    tenantGate !== -1 && sessionGate !== -1 && callAt !== -1 && tenantGate < callAt && sessionGate < callAt &&
     /status: 403/.test(did.slice(tenantGate, tenantGate + 220)))
   check("did/custom-llm: the fail-open lane is gone — no mutable null ledger identity can reach the stream",
     codeHits(did, "let ledgerBrokerageId") === 0 && codeHits(did, "let ledgerUserId") === 0)

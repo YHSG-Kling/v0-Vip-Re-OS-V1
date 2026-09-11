@@ -34,7 +34,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
 import { resolveAgentIdInBrokerage } from '@/lib/kernel/agent-identity'
-import { resolveLedTeamId } from '@/lib/teams/team-scope'
+import { resolveLedTeamId } from '@/lib/kernel/resolve-user-team'
 
 const BROKERAGE_SCOPE_ROLES = new Set(['broker', 'broker_owner', 'broker_admin', 'admin'])
 

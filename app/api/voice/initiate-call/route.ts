@@ -186,6 +186,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         : "AI ISA outreach: understand where this person is in their journey (timeline, motivation) and offer to book time with the agent.",
     firstMessage: callCtx.firstMessage ?? null,
     systemPrompt: callCtx.systemPrompt ?? null,
+    // WAVE 58: the resolved agent-clone voice reaches the answer webhook's
+    // ConversationRelay transport + AMD voice-drop <Play> — see
+    // OutboundCallBrief.elevenlabsVoiceId's own note for the full wiring gap.
+    elevenlabsVoiceId: callCtx.voiceConfig?.voiceId ?? null,
   })
   if (!placed.ok) {
     // Honest failure — blocked (TCPA/budget) or no tenant number/creds.

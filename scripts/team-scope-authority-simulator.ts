@@ -76,6 +76,13 @@ function literalHits(src: string, needle: string): number {
 }
 
 const HELPER = read("lib/teams/team-scope.ts")
+// resolveLedTeamId itself MERGED onto lib/kernel/resolve-user-team.ts (§1
+// orphan doctrine, DUPLICATES ROUND 3, 2026-09-11) — team-scope.ts carried a
+// second copy of the same name/purpose and now just tombstones the survivor.
+// leadsAgentsTeam (checked below) still lives in HELPER; the resolver checks
+// read RESOLVER instead so this simulator follows the survivor, not the
+// waypoint (CLAUDE.md §2 — never pin an assertion to a location that moved).
+const RESOLVER = read("lib/kernel/resolve-user-team.ts")
 const PROFILE = read("app/actions/admin/agent-profile.ts")
 const AGREEMENT = read("app/actions/admin/commission-agreement.ts")
 const MEMBERS = read("app/actions/admin/team-members.ts")
@@ -83,9 +90,12 @@ const MIGRATION = read("supabase/migrations/m473-a-team-is-a-mini-brokerage-and-
 
 console.log("\n[the helper — one vocabulary with the database]")
 check("resolveLedTeamId asks teams.team_lead_id — the FACT, one query, same as the SQL",
-  /\.from\("teams"\)[\s\S]{0,200}?\.eq\("team_lead_id", userId\)/.test(HELPER))
+  /\.from\("teams"\)[\s\S]{0,200}?\.eq\("team_lead_id", userId\)/.test(RESOLVER))
 check("...and destructures the read error (a refusal is not 'you lead nothing')",
-  /const \{ data, error \} = await svc/.test(HELPER))
+  /const \{ data, error \} = await client/.test(RESOLVER))
+check("team-scope.ts carries a TOMBSTONE naming the survivor, not a second copy",
+  /TOMBSTONE/.test(HELPER) && /lib\/kernel\/resolve-user-team\.ts:139/.test(HELPER) &&
+  codeHits(HELPER, "export async function resolveLedTeamId") === 0)
 check("membership is answered by the DATABASE's OWN resolver, not a re-implementation",
   codeHits(HELPER, 'rpc("agent_team_id"') === 1)
 check("...so the helper contains NO copy of the four-step resolution order",

@@ -781,6 +781,10 @@ async function dispatchContactChannel(
       contactName: contact.first_name ?? null,
       firstMessage: callContext.firstMessage ?? null,
       systemPrompt: callContext.systemPrompt ?? null,
+      // WAVE 58: reach the answer webhook's ConversationRelay/voice-drop path
+      // with the SAME resolved agent-clone voice buildCallContext picked —
+      // see OutboundCallBrief.elevenlabsVoiceId.
+      elevenlabsVoiceId: callContext.voiceConfig?.voiceId ?? null,
       // ARMS THE AUTONOMY GATE — unattended re-engagement dial. 'ghost_recovery'
       // and 'ai_isa' both map to the ai_isa manager; the trigger reason decides
       // which, so the ledger records why the contact was called.

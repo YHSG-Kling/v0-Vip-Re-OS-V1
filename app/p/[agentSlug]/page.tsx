@@ -74,7 +74,7 @@ async function loadProfile(slug: string): Promise<{
   listings: ListingItem[]
   reviews: ReviewItem[]
   averageRating: number
-  chat: { brokerageSlug: string | null; widgetEnabled: boolean; assistantName: string | null }
+  chat: { brokerageSlug: string | null; widgetEnabled: boolean; assistantName: string | null; livePublicId: string | null }
 } | null> {
   const svc = createServiceClient()
 
@@ -114,6 +114,13 @@ async function loadProfile(slug: string): Promise<{
   const { data: agentIdentity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_type", "agent").eq("scope_id", agent.id).maybeSingle()
 
+  // D-ID Express v4 live agent AS AN OPTION on the agent's own public profile
+  // (owner ruling, wave 58) — prefers an embed scoped to THIS agent so it is
+  // their own twin/voice, never another agent's borrowed by a brokerage-wide
+  // fallback (lib/embed/resolve-site-embed.ts).
+  const { resolveSiteLiveAgentEmbed } = await import("@/lib/embed/resolve-site-embed")
+  const liveEmbed = await resolveSiteLiveAgentEmbed(svc, { brokerageId: agent.brokerage_id, agentId: agent.id }).catch(() => null)
+
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "Your Agent"
   const reviewArr = reviews ?? []
   const averageRating =
@@ -149,6 +156,7 @@ async function loadProfile(slug: string): Promise<{
       brokerageSlug: (brokerage as any)?.slug ?? null,
       widgetEnabled: (brokerage as any)?.widget_enabled !== false,
       assistantName: (agentIdentity as any)?.assistant_name ?? null,
+      livePublicId: liveEmbed?.publicId ?? null,
     },
   }
 }
@@ -429,6 +437,7 @@ export default async function AgentPublicProfilePage({
           accentColor={profile.primaryColor ?? "#0f172a"}
           assistantLabel={chat.assistantName}
           widgetQuery={`agent=${agentSlug}`}
+          livePublicId={chat.livePublicId}
         />
       )}
 

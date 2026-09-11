@@ -570,8 +570,12 @@ export function defaultHookForSituation(kind: SituationKind): string {
  *   urgency      — the window is closing ("Before it's gone").
  *   value        — the concrete payoff up front ("What your home is worth").
  */
-// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
-type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
+// EXPORTED (wave 58) — was module-private (lane Q, 2026-09-07) until
+// lib/video/format-learning.ts recommendPreferredAngleForKind needed to hand a
+// crowned cross-entity winner back into CommissionExperimentOpts.preferredAngle
+// (app/actions/listing-video.ts) — the FIRST real external consumer. See that
+// function's header for why this loop needed closing.
+export type HookAngle = "curiosity" | "social_proof" | "urgency" | "value"
 
 /** The fixed angle ORDER the A/B draws from — curiosity first (the strongest
  *  scroll-stopper), then social-proof, urgency, value. hookVariants(…, n) takes the

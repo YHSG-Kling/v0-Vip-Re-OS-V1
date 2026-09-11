@@ -159,32 +159,27 @@ async function synthVoicemail(args: {
   }
   if (!voiceId) return null
 
-  // Call ElevenLabs TTS → buffer → Supabase `media` → public URL.
-  try {
-    const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-    const result = await synthesizeSpeech({
-      text:        args.script,
-      voiceId,
-      brokerageId: args.brokerageId,
-    })
-    if (!result.success || !result.audioBuffer) return null
-    // Was @vercel/blob's put(). Survivor:
-    // lib/remotion/media-host.ts#hostRenderedMedia into `media`, which
-    // lib/storage/document-buckets.ts names for exactly this: "Voice/MMS audio
-    // a telephony carrier fetches UNAUTHENTICATED at delivery time".
-    const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
-    const { createServiceClient } = await import("@/lib/supabase/service")
-    return await hostRenderedMedia(
-      createServiceClient(),
-      `voicedrops/${args.brokerageId}/${Date.now()}.mp3`,
-      result.audioBuffer,
-      "audio/mpeg",
-      "media",
-    )
-  } catch (e) {
-    console.error("[voicedrop] synth failed:", (e as Error).message)
+  // ORPHAN DOCTRINE (§1 — DUPLICATE, MERGED). This used to call ElevenLabs
+  // directly with NO modelId (silently defaulting to synthesizeSpeech's
+  // oldest fallback, `eleven_monolingual_v1` — never touched by the wave
+  // 55/57 realism upgrades) and re-implement the "buffer → hostRenderedMedia"
+  // upload inline. SURVIVOR: lib/voice/render-voice-drop.ts#renderVoiceDrop —
+  // built for wave 58's AMD-voicemail <Play> path and merged onto here so the
+  // ringless-drop rail gets the SAME eleven_v3 model + natural-pause pacing,
+  // not a second hand-rolled synth+host implementation (§6: one vocabulary
+  // for "synthesize a voicemail and host it").
+  const { renderVoiceDrop } = await import("@/lib/voice/render-voice-drop")
+  const rendered = await renderVoiceDrop({
+    script: args.script,
+    voiceId,
+    brokerageId: args.brokerageId,
+    storageKeyHint: `preset-${Date.now()}`,
+  })
+  if (!rendered.ok) {
+    console.error("[voicedrop] synth failed:", rendered.error)
     return null
   }
+  return rendered.audioUrl
 }
 
 export async function orchestrateVoicedropSend(

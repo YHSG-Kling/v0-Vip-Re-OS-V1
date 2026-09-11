@@ -560,7 +560,9 @@ export async function pushTeamPnlToQuickBooksAction(periodLabel: string): Promis
   // this user LEAD", so a member cannot export their team's books and nobody can
   // name someone else's team.
   const { resolveLedTeamId } = await import("@/lib/kernel/resolve-user-team")
-  const teamId = await resolveLedTeamId(supabase as never, user.id)
+  const led = await resolveLedTeamId(supabase as never, user.id)
+  if (!led.ok) return { ok: false, error: led.error }
+  const teamId = led.teamId
   if (!teamId) return { ok: false, error: "Only a team lead can export the team's books." }
 
   const { pushTeamPnlToQuickBooks } = await import("@/lib/finance/scoped-accounting-export")

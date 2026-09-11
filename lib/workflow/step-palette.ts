@@ -148,7 +148,13 @@ export const STEP_PALETTE: ReadonlyArray<StepTypeSpec> = [
   },
   {
     channel: "ai_call", label: "AI Call", group: "deliver", icon: "PhoneCall", flagKey: null,
-    description: "Places a live outbound AI call. Never runs for an unconsented lead.",
+    // WAVE 58 (owner: "wire it as an autonomous option... never a second dial
+    // door"): if the callee's voicemail answers, the SAME outbound door
+    // (placeOutboundAiCall → app/api/voice/twilio/outbound/route.ts) now plays
+    // a pre-rendered, agent-voiced clip instead of a robotic read-aloud
+    // whenever ElevenLabs is configured (lib/voice/render-voice-drop.ts) —
+    // autonomous by construction, nothing to configure per step.
+    description: "Places a live outbound AI call. Never runs for an unconsented lead. If voicemail answers, plays a realistic pre-rendered greeting in the agent's own voice when ElevenLabs is configured, instead of a robotic read-aloud.",
     fields: [
       { name: "body", label: "Call objective", type: "textarea", required: true, help: "What the AI should accomplish on the call." },
     ],

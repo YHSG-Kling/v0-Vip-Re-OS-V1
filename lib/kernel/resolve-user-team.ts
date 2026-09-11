@@ -134,12 +134,28 @@ function isCurrentMembership(row: { is_active?: boolean | null; effective_to?: s
  * NULL is fail-closed here for the reason set out in this module's header: an
  * unresolved TEAM must never widen anybody to their brokerage. A refused read is
  * logged loudly because supabase-js RESOLVES it, and NULL cannot distinguish
- * "permission denied" from "leads nobody".
+ * "permission denied" from "leads nobody" — which is exactly the ambiguity the
+ * return shape below now makes the CALLER'S problem to handle, not this
+ * function's to swallow.
+ *
+ * MERGED (§1, orphan doctrine, DUPLICATES ROUND 3, 2026-09-11): this function
+ * used to return bare `string | null`, and lib/teams/team-scope.ts carried a
+ * SECOND `resolveLedTeamId` with the SAME name and the SAME purpose that
+ * returned `{ ok: true; teamId } | { ok: false; error }` instead — because its
+ * three callers (commission-agreement, team-members, qr-management) are
+ * authorization gates that must tell a REFUSED read apart from "leads nothing"
+ * in the message they show the caller, not just in a server log line. Neither
+ * copy was a strict superset of the other: this one fixed the multi-led-team
+ * ambiguity (below), the other fixed the swallowed-refusal ambiguity. The
+ * survivor now does both — the `{ ok, error }` shape is ADOPTED from the
+ * duplicate; team-scope.ts's copy is deleted with a tombstone naming this
+ * file:line. See resolveLedTeamId's two other callers (team-branding.ts,
+ * dashboard/financials/team/page.tsx) for the pre-merge call shape.
  */
 export async function resolveLedTeamId(
   client: SupabaseClient<any, any, any>,
   userId: string,
-): Promise<string | null> {
+): Promise<{ ok: true; teamId: string | null } | { ok: false; error: string }> {
   // TWO ROWS ARE FETCHED, NOT ONE, and the order is explicit.
   //
   // MEASURED: `teams` has NO unique index on team_lead_id, and nothing in the
@@ -167,7 +183,7 @@ export async function resolveLedTeamId(
 
   if (error) {
     console.error(`[resolve-user-team] teams read REFUSED for ${userId}: ${error.message}`)
-    return null
+    return { ok: false, error: `Could not resolve your team: ${error.message}` }
   }
 
   const rows = (data ?? []) as Array<{ id?: string }>
@@ -179,7 +195,7 @@ export async function resolveLedTeamId(
         `surfaces will show only that team until this is designed for.`,
     )
   }
-  return rows[0]?.id ?? null
+  return { ok: true, teamId: rows[0]?.id ?? null }
 }
 
 /**
@@ -203,9 +219,12 @@ export async function resolveUserTeam(
   agentId?: string | null,
 ): Promise<UserTeam> {
   // Step 1 IS the lead-link question, so it is the same call resolveLedTeamId()
-  // makes rather than a second copy of that query written out here.
+  // makes rather than a second copy of that query written out here. A REFUSED
+  // read here falls through to the remaining steps rather than aborting —
+  // resolveUserTeam has three more sources to try, and the caller's own log
+  // line already recorded the refusal.
   const ledOf = await resolveLedTeamId(client, userId)
-  if (ledOf) return pickUserTeam(ledOf, null, null, null)
+  if (ledOf.ok && ledOf.teamId) return pickUserTeam(ledOf.teamId, null, null, null)
 
   const { data: userRow, error: userErr } = await client
     .from("users")

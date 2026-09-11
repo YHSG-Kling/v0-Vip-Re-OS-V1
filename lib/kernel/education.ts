@@ -4,6 +4,12 @@
 // Writes progress to activities (activity_type = 'education').
 // No side effects beyond DB writes; does NOT log compliance events.
 
+// ── TOMBSTONES (wave 58, scripts/handler-parity-census.ts) — HTTP doors folded onto this module ──
+// app/api/education/progress/route.ts POST (assign/complete over learning_assignments) → the
+//   education-kernel server actions that wrap the functions in this file (app/actions/education-kernel.ts).
+// app/api/education/resources/route.ts POST (createEducationalResource) → app/actions/education-kernel.ts
+//   createResourceAction. Both routes keep their GET; the un-gated POSTs were the duplicates.
+
 import { createClient } from "@/lib/supabase/server"
 import type { EducationFormat, JourneyPhase, Persona } from "./types"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"

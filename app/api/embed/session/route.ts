@@ -124,7 +124,7 @@ export async function POST(request: NextRequest) {
   // Load the twin's full config for ensureDIDAgent
   const { data: twin } = await supabase
     .from("agent_avatar_assets")
-    .select("agent_id, did_avatar_id, voice_id, personality, status, approval_status, label")
+    .select("agent_id, did_avatar_id, voice_id, personality, status, approval_status, label, greeting")
     .eq("id", twinId)
     .maybeSingle()
 
@@ -148,10 +148,14 @@ export async function POST(request: NextRequest) {
     presenterId: twin.did_avatar_id,
     elevenLabsVoiceId: twin.voice_id,
     personality: twin.personality,
+    greeting: twin.greeting,
     agentName: twin.label ?? "Agent",
   })
   if (!ensured.ok) {
     return NextResponse.json({ error: ensured.error }, { status: 502 })
+  }
+  if (ensured.realismWarnings?.length) {
+    console.warn(`[embed/session] AI-tell findings on twin ${twinId} greeting:`, ensured.realismWarnings)
   }
 
   // The embed runs cross-origin; client_key needs allowed_origins to include
