@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -89,17 +90,27 @@ function MentorLiftCard({ lift }: { lift: MentorLift }) {
 }
 
 export function MentorshipClient({ agentId, brokerageId, initialMentor, graduation, sessions, sessionsError, mentorLift = null }: Props) {
+  const router = useRouter()
   const [mentor, setMentor] = useState<MentorData | null>(initialMentor)
   const [matching, setMatching] = useState(false)
+
+  // `useState(initialMentor)` only seeds the first render — handleFindMentor
+  // used to work around that by hard-reloading the whole page
+  // (window.location.reload()) instead of ever calling setMentor
+  // (unread-state-census). router.refresh() re-fetches the server page's
+  // full mentor profile as a new `initialMentor` prop; this effect is what
+  // actually gets it into state, without the jarring full-page reload.
+  useEffect(() => {
+    setMentor(initialMentor)
+  }, [initialMentor])
 
   async function handleFindMentor() {
     setMatching(true)
     try {
       const result = await matchMentor(agentId)
       if (result.success) {
-        toast.success("Mentor matched! Refresh to see your mentor's details.")
-        // Reload to get full mentor profile
-        window.location.reload()
+        toast.success("Mentor matched!")
+        router.refresh()
       } else {
         toast.error(result.error ?? "Could not find a mentor match right now.")
       }

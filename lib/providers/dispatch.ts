@@ -52,7 +52,10 @@ import {
   DID_NATURAL_DRIVER_URL,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
   ELEVENLABS_TEXT_NORMALIZATION,
+  elevenLabsModelForLane,
+  withNaturalPauses,
 } from "@/lib/video/realism-profile"
+import { presenterTypeForTwin } from "@/lib/did/agent-presenter"
 
 /** True when a governed manager is sending unattended (arms the Fair-Housing content backstop's
  *  hard-block; human-approved sends are flagged-but-allowed). */
@@ -1241,9 +1244,14 @@ async function dispatchVideoViaDID({
     return { success: false, providerKey, error: "Voice clone not set up. The agent must complete Settings → Voice & Avatar before videos can be generated." }
   }
 
+  // WAVE 57: `did_avatar_id` added to the select — see this file's realism-
+  // profile.ts companion note (§ D-ID V4 EXPRESSIVE — REACHABILITY FINDING).
+  // Without it this call could never see that an agent has upgraded to a V4
+  // Expressive presenter (an "@avt_"-marked id) and would silently keep using
+  // the older /talks or /clips path for every outreach video regardless.
   const { data: didProfile } = await supabase
     .from("agent_voice_profiles")
-    .select("elevenlabs_voice_id, did_photo_url, did_video_url, default_expression, expression_intensity")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url, did_avatar_id, default_expression, expression_intensity")
     .eq("agent_id", agentRecordId)
     .maybeSingle()
 
@@ -1283,6 +1291,19 @@ async function dispatchVideoViaDID({
   // sounds real" (§6). `apply_text_normalization: "auto"` is ElevenLabs'
   // documented middle ground for spelling out prices/dates correctly without
   // paying the latency cost on every short avatar-video line.
+  //
+  // WAVE 57 UPGRADE: model_id is now `elevenLabsModelForLane("avatar_narration",
+  // …)` (lib/video/realism-profile.ts — eleven_v3, same billed rate as
+  // multilingual_v2, see that file's research header) instead of a hardcoded
+  // "eleven_multilingual_v2" literal — the exact §6 "second spelling of a
+  // model choice" this repo's own doctrine forbids. withNaturalPauses inserts
+  // v3 audio-tag pacing at sentence/paragraph boundaries — safe here because
+  // this call has NO caption/subtitle consumer (script.type is "audio", so
+  // D-ID never derives subtitles from renderedScript; captions for this
+  // outreach-email video, if any, are a separate concern this dispatch does
+  // not touch).
+  const avatarTtsModel = elevenLabsModelForLane("avatar_narration", params.ttsLanguageCode)
+  const pacedScript = withNaturalPauses(renderedScript, avatarTtsModel)
   const ttsRes = await callConnector<Buffer>({
     connector: "elevenlabs",
     baseUrl: "https://api.elevenlabs.io",
@@ -1292,18 +1313,19 @@ async function dispatchVideoViaDID({
     headers: { Accept: "audio/mpeg" },
     responseType: "arraybuffer",
     body: {
-      text: renderedScript,
-      model_id: "eleven_multilingual_v2",
+      text: pacedScript,
+      model_id: avatarTtsModel,
       voice_settings: ELEVENLABS_REALISM_VOICE_SETTINGS,
       apply_text_normalization: ELEVENLABS_TEXT_NORMALIZATION,
       // `language_code` is DELIBERATELY NEVER sent here (wave 52 research
-      // finding, DispatchVideoParams.ttsLanguageCode doc above): ElevenLabs
-      // only enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5;
-      // eleven_multilingual_v2 either 400s or silently ignores it depending on
-      // endpoint. renderedScript is already IN the target language (the caller
+      // finding, DispatchVideoParams.ttsLanguageCode doc above, reconfirmed
+      // for v3 in realism-profile.ts's wave-57 header): ElevenLabs only
+      // enforces language_code on eleven_turbo_v2_5 / eleven_flash_v2_5 — v3,
+      // like multilingual_v2 before it, either 400s or silently ignores it.
+      // renderedScript is already IN the target language (the caller
       // translated it — translateReelScript / generatePersonaCopy's `language`
-      // directive), so eleven_multilingual_v2's own text auto-detection is what
-      // actually selects the language, with nothing extra to pass here.
+      // directive), so the model's own text auto-detection selects the
+      // language, with nothing extra to pass here.
     },
   })
 
@@ -1345,7 +1367,26 @@ async function dispatchVideoViaDID({
   // get the SAME base config; `driver_url` and `driver_expressions` stay
   // per-branch/per-agent, which is a genuine difference (a custom driver video
   // needs no driver bank pick) and not a realism-setting drift.
-  const didPayload = isVideoSource
+  // WAVE 57: V4 EXPRESSIVE branch. presenterTypeForTwin (lib/did/agent-
+  // presenter.ts — the ONE "@avt_" detector, §6, already used by
+  // lib/did/index.ts's generateVideo()) tells us when this agent's
+  // did_avatar_id is a V4 digital-twin presenter rather than a bare photo/
+  // driver-video source. DID_TALK_REALISM_CONFIG (stitch/fluent/pad_audio) is
+  // a TalksConfig shape that does not exist on V4's /expressives request at
+  // all — see this file's realism-profile.ts companion note — so it is
+  // deliberately NOT spread into this branch; only `result_format` carries
+  // over, which is the one V4 config field this repo's research confirmed.
+  const isV4Expressive = presenterTypeForTwin(didProfile.did_avatar_id) === "expressive"
+  const expressiveSentimentFor: Record<string, string> = { happy: "happy", neutral: "neutral", serious: "serious", surprise: "surprise" }
+
+  const didPayload = isV4Expressive
+    ? {
+        avatar_id: (didProfile as { did_avatar_id?: string }).did_avatar_id,
+        script: { type: "audio", audio_url: audioUrl },
+        sentiment_id: expressiveSentimentFor[expression] ?? "neutral",
+        config: { result_format: DID_TALK_REALISM_CONFIG.result_format },
+      }
+    : isVideoSource
     ? {
         source_url: sourceUrl,
         script: { type: "audio", audio_url: audioUrl },
@@ -1361,7 +1402,7 @@ async function dispatchVideoViaDID({
   const didRes = await callConnector<{ id?: string }>({
     connector: "did",
     baseUrl: "https://api.d-id.com",
-    path: isVideoSource ? "/clips" : "/talks",
+    path: isV4Expressive ? "/expressives" : isVideoSource ? "/clips" : "/talks",
     method: "POST",
     auth: { style: "basic", username: didApiKey, password: "" },
     body: didPayload,
@@ -1384,7 +1425,7 @@ async function dispatchVideoViaDID({
     leadId: params.leadId,
     metadata: {
       did_talk_id: didData.id,
-      mode: isVideoSource ? "clip" : "talk",
+      mode: isV4Expressive ? "expressive" : isVideoSource ? "clip" : "talk",
       recipient_email: params.recipientEmail,
       provider_key: "did",
       ...(params.metadata ?? {}),

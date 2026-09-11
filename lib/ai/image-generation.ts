@@ -30,6 +30,7 @@ import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import sharp from "sharp"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { IMAGE_SCENE_REALISM_PROMPT_BLOCK } from "@/lib/video/realism-profile"
 
 export type ImageSize = "1024x1024" | "1792x1024" | "1024x1792"
 export type ImageQuality = "standard" | "hd"
@@ -537,6 +538,13 @@ function buildBrandAwarePrompt(input: GenerateImageInput): string {
       "No text or watermarks in the image. No real-estate logos. No fake people. " +
       "Photorealistic unless the brand tone explicitly calls for illustration."
   )
+
+  // Wave 57 realism audit — owner ruling "this includes ai created videos":
+  // any generated scene that ends up in a video (b-roll, image-carousel
+  // slide) must read as real, not as an obvious AI creation. ONE spelling
+  // (§6) — lib/video/realism-profile.ts, appended for every ImagePurpose
+  // rather than duplicated per call site.
+  lines.push(IMAGE_SCENE_REALISM_PROMPT_BLOCK)
 
   return lines.join("\n")
 }

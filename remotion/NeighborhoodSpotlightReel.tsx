@@ -114,7 +114,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           When no clips are passed, the layer returns null and the
           brand background carries through. */}
       {brollClips.length > 0 && (
-        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop />
+        <BrollLayer clips={brollClips} totalFrames={TOTAL} overlayColor={overlay} loop filmGrain />
       )}
 
       {/* COVER — 0-3s. Neighborhood name + tagline. */}
@@ -253,7 +253,9 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + BODY} />
     </AbsoluteFill>
   )
 }

@@ -48,6 +48,7 @@ import { pickStockAsset } from "./stock-pick"
 import { computeArtifactKey, type FinishInputs } from "./composition-cache"
 import { stagesVoiceover } from "./content-contract"
 import { shouldApplyBookends, outputExtension, outputContentType } from "./render-decision"
+import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
 
 export interface RenderIntent {
   brokerageId:     string
@@ -278,7 +279,11 @@ export async function finalizeCoordinatedRender(
         const mixed = await mixBackgroundMusic({
           videoBuffer:        working,
           musicUrl:           musicRow.video_url,
-          musicVolumePct:     musicRow.music_volume_pct ?? 20,
+          // Wave 57 realism audit: MUSIC_DUCK_VOLUME_PCT (12% ≈ -18.4dB below
+          // the voice) replaces the prior 20% (≈ -14dB) fallback, which sat
+          // outside every researched -18..-25dB duck range. See
+          // lib/video/realism-profile.ts's header for the research.
+          musicVolumePct:     musicRow.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT,
           loop:               musicRow.music_loop ?? true,
           videoSeconds:       musicVideoSeconds,
         })
@@ -286,7 +291,7 @@ export async function finalizeCoordinatedRender(
           working = mixed.outputBuffer
           musicAssetId = musicRow.id
           musicTrackUrl = musicRow.video_url
-          musicVolumePct = musicRow.music_volume_pct ?? 20
+          musicVolumePct = musicRow.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT
           musicLoop = musicRow.music_loop ?? true
         }
       } catch (e) {

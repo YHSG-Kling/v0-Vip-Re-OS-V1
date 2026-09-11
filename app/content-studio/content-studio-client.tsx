@@ -30,6 +30,7 @@ import {
   Save,
   Mic,
   User,
+  CalendarDays,
   Loader2,
 } from "lucide-react"
 import {
@@ -43,6 +44,7 @@ import {
   saveContentIdea,
 } from "@/app/actions/content-studio"
 import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
+import { toGateContentType, toReadinessContentType } from "@/lib/campaign-readiness/content-type-vocabulary"
 import { aiWriteNewsletterContent, aiGenerateSubjectLines, getNewsletters } from "@/app/actions/ai-newsletter"
 import { getDirectMailCampaigns } from "@/app/actions/ai-direct-mail"
 import { createMailCampaign } from "@/app/actions/direct-mail"
@@ -56,6 +58,19 @@ import { cn } from "@/lib/utils" // Added for styling
 import { Checkbox } from "@/components/ui/checkbox"
 import { useRouter } from "next/navigation" // Added for client-side navigation
 import { toast } from "sonner"
+
+// Broker-approved direct-mail template catalog. No `direct_mail_templates`
+// table exists (mail_template_id is stored as a bare string everywhere it's
+// referenced — schema-snapshot.ts / lib/workflow/channel-registry.ts), so
+// this literal IS the catalog rather than a cache of one. It was carried as
+// `useState` with a setter nothing ever called (unread-state-census); a
+// setter for a value that has no live source to refresh it from is dead
+// weight, not a missing fetch — moved out of state entirely.
+const DIRECT_MAIL_TEMPLATES = [
+  { id: "listing", name: "Just Listed", preview: "/templates/listing.jpg" },
+  { id: "sold", name: "Just Sold", preview: "/templates/sold.jpg" },
+  { id: "market", name: "Market Update", preview: "/templates/market.jpg" },
+]
 
 interface ContentStudioClientProps {
   userId?: string
@@ -161,11 +176,6 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   const [selectedKeyword, setSelectedKeyword] = useState<any>(null)
   const [selectedCompetitor, setSelectedCompetitor] = useState<any>(null)
   const [selectedOmniChannel, setSelectedOmniChannel] = useState<string[]>([])
-  const [directMailTemplates, setDirectMailTemplates] = useState<any[]>([
-    { id: "listing", name: "Just Listed", preview: "/templates/listing.jpg" },
-    { id: "sold", name: "Just Sold", preview: "/templates/sold.jpg" },
-    { id: "market", name: "Market Update", preview: "/templates/market.jpg" },
-  ])
   const [editingContent, setEditingContent] = useState<any>(null)
 
   useEffect(() => {
@@ -318,9 +328,36 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   // unconditionally, so a send that never happened looked identical to one that
   // did. Every result is read now, and a partial push names the channels that
   // actually went out separately from the ones that did not.
+  //
+  // COMPLIANCE GATE MOUNTED (wave 57, Task C) — this is the one publish path
+  // in this file that ran with NO check at all: handleCreateNewsletter and
+  // handleCreateMail below both gate before creating their campaign, but this
+  // fans arbitrary content straight out to every selected channel with
+  // nothing in between. Gated ONCE on the shared text before the per-channel
+  // loop (the same content goes to every channel), content type resolved
+  // through toReadinessContentType -> toGateContentType so a caller passing a
+  // real idea.content_type (READINESS_CONTENT_TYPES) maps correctly and an
+  // untyped keyword/competitor push still defaults to social_post — the
+  // channels this button actually targets.
   async function handlePushToOmniChannel(content: any, channels: string[]) {
     setIsProcessing(content.id)
     try {
+      const text: string = content.text || content.title || ""
+      if (text.trim() && brokerageId) {
+        const gateType = toGateContentType(toReadinessContentType(content.content_type ?? content.type ?? ""))
+        const compliance = await checkContentCompliance({
+          content: text,
+          brokerageId,
+          contentType: gateType,
+        })
+        if (!compliance.passed) {
+          toast.error(`Push blocked by compliance — ${compliance.blockers.join("; ") || "review content"}`)
+          return
+        }
+        if (compliance.warnings.length > 0) {
+          toast.info(`Compliance warning — ${compliance.warnings.join("; ")}`)
+        }
+      }
       const pushed: string[] = []
       const failed: string[] = []
       for (const channel of channels) {
@@ -836,6 +873,77 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
 
           {/* Content Ideas Tab */}
           <TabsContent value="ideas">
+            {/* Pipeline stats + in-progress calendar — `stats`/`calendar`/
+                `selectedDate` were loaded on mount but never rendered
+                (unread-state-census). getPublishingStats and getContentCalendar
+                both read content_ideas (no separate scheduled_date column
+                exists there — schema-snapshot.ts), so the "calendar" is really
+                the in-progress ideas, filterable by the real date they were
+                created on. */}
+            {stats && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Total</p>
+                  <p className="text-2xl font-semibold">{stats.totalPosts}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Published</p>
+                  <p className="text-2xl font-semibold text-green-600">{stats.published}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">In Progress</p>
+                  <p className="text-2xl font-semibold text-blue-600">{stats.scheduled}</p>
+                </CardContent></Card>
+                <Card><CardContent className="pt-4 pb-3">
+                  <p className="text-xs text-muted-foreground">Drafts</p>
+                  <p className="text-2xl font-semibold text-slate-500">{stats.drafts}</p>
+                </CardContent></Card>
+              </div>
+            )}
+            {calendar.length > 0 && (
+              <Card className="border-2 mb-6">
+                <CardHeader className="bg-slate-100">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <CardTitle className="flex items-center gap-2 text-slate-900">
+                      <CalendarDays className="h-5 w-5 text-blue-600" />
+                      In Progress
+                    </CardTitle>
+                    <input
+                      type="date"
+                      value={selectedDate ? selectedDate.toISOString().slice(0, 10) : ""}
+                      onChange={(e) => setSelectedDate(e.target.value ? new Date(`${e.target.value}T00:00:00`) : undefined)}
+                      className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                    />
+                    {selectedDate && (
+                      <Button size="sm" variant="ghost" onClick={() => setSelectedDate(undefined)}>
+                        Clear filter
+                      </Button>
+                    )}
+                  </div>
+                  <CardDescription>
+                    {selectedDate ? `Started on ${selectedDate.toLocaleDateString()}` : "Every idea currently in progress"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="pt-4 space-y-2">
+                  {calendar
+                    .filter((item: any) => {
+                      if (!selectedDate || !item.created_at) return true
+                      return new Date(item.created_at).toDateString() === selectedDate.toDateString()
+                    })
+                    .map((item: any) => (
+                      <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border p-2.5">
+                        <div>
+                          <p className="text-sm font-medium">{item.title}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.content_type} · {new Date(item.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <Badge variant="secondary" className="capitalize">{item.status}</Badge>
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+            )}
             <div className="grid lg:grid-cols-2 gap-6">
               <Card className="border-2 shadow-md">
                 <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b">
@@ -1542,7 +1650,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                   <div className="space-y-6 bg-gradient-to-r from-rose-50 to-pink-50 p-6 rounded-lg border-2 border-rose-200">
                     <h3 className="text-lg font-semibold text-slate-900">Select Broker-Approved Template</h3>
                     <div className="grid md:grid-cols-3 gap-4">
-                      {directMailTemplates.map((template) => (
+                      {DIRECT_MAIL_TEMPLATES.map((template) => (
                         <Card
                           key={template.id}
                           className={cn(

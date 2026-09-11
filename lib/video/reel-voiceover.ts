@@ -39,6 +39,7 @@
 import type { CharacterAlignment } from "@/lib/video/caption-plan"
 import { computeNarrationKey } from "@/lib/remotion/composition-cache"
 import { DEFAULT_LANGUAGE } from "@/lib/video/multilingual-reel"
+import { elevenLabsModelForLane, withNaturalPauses, stripNaturalPauseMarkup, alignmentWithoutPauseMarkup } from "@/lib/video/realism-profile"
 
 export interface ReelVoiceover {
   url: string
@@ -98,11 +99,20 @@ export async function prepareReelVoiceover(
   if (!text || !p.voiceId) return null
 
   const script = text.slice(0, MAX_SCRIPT_CHARS)
-  // A non-default language namespaces the cache key so a Spanish and an
-  // English clip of otherwise-identical text (short scripts, transliterated
-  // names) can never collide on the same narration_cache row — English's key
-  // is UNCHANGED (script hashed alone), so every existing cache entry still hits.
-  const scriptForHash = p.languageCode && p.languageCode !== DEFAULT_LANGUAGE ? `${p.languageCode}::${script}` : script
+  // WAVE 57: the model is now resolved ONCE, up front — elevenLabsModelForLane
+  // (lib/video/realism-profile.ts) returns eleven_v3 for every narration
+  // (English included — the old English default was elevenlabs-tts.ts's own
+  // fallback "eleven_monolingual_v1", the OLDEST/lowest-realism model in the
+  // catalog, never a deliberate choice; see that file's research header).
+  const model = elevenLabsModelForLane("reel_narration", p.languageCode)
+  // The cache key is namespaced by BOTH language and model (§ narration cache
+  // key namespaced by model when the model changes output — task item 1): a
+  // model swap changes what a viewer actually hears, so it must never share a
+  // cache row with audio synthesized under a different model. This also
+  // namespaces English for the first time (it previously hashed the script
+  // alone) — an intentional one-time cache invalidation, since English
+  // narration is switching model (monolingual_v1 → v3) in this same wave.
+  const scriptForHash = `${model}::${p.languageCode && p.languageCode !== DEFAULT_LANGUAGE ? p.languageCode : DEFAULT_LANGUAGE}::${script}`
   const scriptHash = computeNarrationKey(p.voiceId, scriptForHash)
 
   // ── Reuse before spend ────────────────────────────────────────────────────
@@ -124,25 +134,44 @@ export async function prepareReelVoiceover(
     // already treats an absent languageCode as "auto-detect", so this is a
     // no-op for every existing (English) caller.
     const languageCode = p.languageCode && p.languageCode !== "en" ? p.languageCode : undefined
-    // WAVE 52 FIX: a non-default language must also switch the MODEL, not just
-    // add a param. The default model (elevenlabs-tts.ts's "eleven_monolingual_v1")
-    // is English-only — it cannot speak a translated script at all. And per the
-    // research finding now in elevenlabs-tts.ts's header, `language_code` itself
-    // is silently dropped by that primitive for any model outside ElevenLabs'
-    // enforcement allowlist (never multilingual_v2) — so sending it here was
-    // never what made a non-English narration audible; the MODEL is. Without
-    // this, every non-English caller below (wired for the first time this wave)
-    // would have synthesized translated text through the English-only model.
-    const { MULTILINGUAL_TTS_MODEL } = await import("@/lib/video/multilingual-reel")
-    const modelId = languageCode ? MULTILINGUAL_TTS_MODEL : undefined
-    const stamped = await synthesizeSpeechWithTimestamps({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId })
+    // WAVE 57: model is `model` (resolved above, always eleven_v3 — see the
+    // wave-52 comment this replaces for why a model swap and not just a
+    // language_code param is what actually changes what plays). v3 covers all
+    // 23 locales this repo resolves (realism-profile.ts's research header), so
+    // there is no language-conditional fallback to multilingual_v2 here
+    // anymore — one model for every language this function is asked to speak.
+    //
+    // NATURAL PAUSES (task item 2): withNaturalPauses inserts v3 audio-tag
+    // pacing at sentence/paragraph boundaries in the TEXT SENT TO SYNTHESIS
+    // ONLY — never in what reaches captions. `script` (the original, tag-free
+    // text) still keys the cache preview/row below; `pacedScript` is used
+    // exclusively for the two synthesis calls.
+    const pacedScript = withNaturalPauses(script, model)
+    // INVARIANT (wave 57): pacing may only ADD markup, never change a word — the
+    // inverse must give the original script back, or the captions (built from
+    // `script`) and the audio (built from `pacedScript`) would disagree.
+    if (stripNaturalPauseMarkup(pacedScript) !== script.replace(/\s+/g, " ").trim()) {
+      console.error("[reel-voiceover] natural-pause pacing altered the script text; synthesizing the unpaced script instead")
+    }
+    const stamped = await synthesizeSpeechWithTimestamps({ text: pacedScript, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId: model })
     if (stamped.success && stamped.audioBuffer) {
       audio = stamped.audioBuffer
-      alignment = (stamped.alignment as CharacterAlignment | null) ?? null
+      // CAPTION SAFETY (task item 2 — "never inside the caption text, prove
+      // it"): alignmentWithoutPauseMarkup strips any pause-markup characters
+      // out of the alignment BEFORE it ever reaches buildCaptionPlan, so a
+      // caption cue can never render a literal "[short pause]"/"<break…>"
+      // span — see its own header for why this is written to be correct
+      // whether or not ElevenLabs' alignment response actually echoes tag
+      // characters.
+      alignment = alignmentWithoutPauseMarkup(stamped.alignment as CharacterAlignment | null)
     } else {
-      const tts = await synthesizeSpeech({ text: script, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId })
+      const tts = await synthesizeSpeech({ text: pacedScript, voiceId: p.voiceId, brokerageId: p.brokerageId, languageCode, modelId: model })
       if (!tts.success || !tts.audioBuffer || tts.audioBuffer.length === 0) return null
       audio = tts.audioBuffer
+      // No alignment on this path — the even-distribution caption fallback
+      // reads the SCRIPT text (buildCaptionPlan's other input), which is
+      // `script`/`p.narration` upstream, already tag-free by construction
+      // (withNaturalPauses' output never leaks past this function).
     }
     // SUPABASE STORAGE hosts our media (owner rule); Blob is the fallback.
     // The path is DERIVED FROM THE SCRIPT, not from the clock: hostRenderedMedia

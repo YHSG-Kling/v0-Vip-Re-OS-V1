@@ -143,10 +143,12 @@ export const PhotoWalkthroughReel: React.FC<PhotoWalkthroughReelProps> = (props)
 
       {props.brand.showEhoMark && <EqualHousingMark variant="badge" fontFamily={FONT} />}
 
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile. */}
       <CaptionLayer
         cues={props.captionsCues}
         script={props.captionScript}
         accentColor={props.brand.accentColor}
+        hiddenFromFrame={outroStart}
       />
     </AbsoluteFill>
   )

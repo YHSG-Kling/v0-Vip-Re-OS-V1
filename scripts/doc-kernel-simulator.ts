@@ -2112,7 +2112,17 @@ async function main() {
           && !src("lib/education/skill-freshness-radar.ts").includes('from("agent_courses")')
           && src("app/actions/video-generation.ts").includes('toLibraryScriptType("custom")')
           && src("app/actions/video/generate-script.ts").includes("toLibraryScriptType(params.videoType)")
-          && src("app/actions/video-content.ts").includes("toLibraryScriptType(params.video_type)")
+          // video-content.ts's generateVideoScript (the third writer named in the
+          // prose above) was DELETED wave 57 (Task B duplicates round 2) as a
+          // zero-caller duplicate of app/actions/video/generate-script.ts's — see
+          // that file's tombstone. Asserting the RULE rather than re-pinning a
+          // waypoint (CLAUDE.md §2): a script_type writer must route through
+          // toLibraryScriptType, so (a) the deleted writer must not have come
+          // back as a raw, unmapped insert, and (b) the mapper's other current
+          // live writer (lib/video/script-compliance.ts, shared by the
+          // compliance-gated generators) rides it too.
+          && !src("app/actions/video-content.ts").includes("script_type:")
+          && src("lib/video/script-compliance.ts").includes("toLibraryScriptType(params.videoType)")
           && !src("app/actions/video-generation.ts").includes('script_type: "video"'))
       }
 

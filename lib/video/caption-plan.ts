@@ -301,3 +301,48 @@ export function activeCueIndex(cues: CaptionCue[], frame: number): number {
   }
   return -1
 }
+
+/**
+ * clipCaptionCuesBeforeFrame — wave 57 realism audit ("this includes ai
+ * created videos" — b-roll/imagery, music, CAPTIONS, intro/outro/branding).
+ *
+ * THE DEFECT THIS CLOSES. Every reel that mounts `<CaptionLayer>` mounts it
+ * ONCE, at the composition root, over the ENTIRE timeline (remotion/
+ * MarketUpdateReel.tsx and eight siblings — AgentExplainerReel,
+ * ExplainerAnimReel, JustListedReel, JustListedReelSquare, JustSoldReelSquare,
+ * NeighborhoodSpotlightReel, PartnersMeetingReel, PhotoWalkthroughReel,
+ * TeammateExplainerReel). Every one of those reels ALSO ends on a branding/CTA
+ * tile — brokerage name, the Equal Housing Opportunity mark, a QR code — drawn
+ * in the SAME lower-third band `CaptionLayer`'s default `bottomPercent` (78)
+ * occupies. A caption cue whose window reaches into that tile draws ON TOP of
+ * the compliance mark and the QR code — legible burned-in captions over a
+ * video's own branding card is not how a real, professionally-edited
+ * real-estate video reads; an un-clipped caption track is a tell that nobody
+ * looked at the composite, the opposite of the owner's realism ruling.
+ *
+ * THE FIX. Cut the caption track off at the frame the branding tile starts —
+ * never trim mid-cue into a half-visible phrase, never leave a cue dangling
+ * past the timeline. `CaptionLayer`'s `hiddenFromFrame` prop calls this.
+ *
+ * PURE. Drops any cue that starts AT or AFTER `cutoffFrame` entirely, and
+ * SHORTENS a cue that starts before the cutoff but would otherwise still be
+ * showing when it arrives (never lets a cue's window cross the boundary).
+ * `cutoffFrame` null/undefined/non-finite → returns `cues` unchanged (opt-in,
+ * same posture as every other additive prop on this layer).
+ */
+export function clipCaptionCuesBeforeFrame(
+  cues: CaptionCue[],
+  cutoffFrame: number | null | undefined,
+): CaptionCue[] {
+  if (typeof cutoffFrame !== "number" || !Number.isFinite(cutoffFrame)) return cues
+  const cutoff = Math.max(0, Math.floor(cutoffFrame))
+  const out: CaptionCue[] = []
+  for (const c of cues) {
+    if (c.fromFrame >= cutoff) continue
+    const end = c.fromFrame + c.durationFrames
+    const durationFrames = end > cutoff ? cutoff - c.fromFrame : c.durationFrames
+    if (durationFrames <= 0) continue
+    out.push({ text: c.text, fromFrame: c.fromFrame, durationFrames })
+  }
+  return out
+}

@@ -17,7 +17,7 @@ import {
   getGenerationHistory,
   getGenerationStats,
 } from "@/app/actions/content-generation-engine"
-import { getDidAvatars, createTalkingPhotoVideo, type AvatarOption } from "@/app/actions/avatar-voice-catalog"
+import { getDidAvatars, createTalkingPhotoVideo, listElevenLabsVoices, type AvatarOption, type VoiceOption } from "@/app/actions/avatar-voice-catalog"
 import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
@@ -70,6 +70,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const [avatars, setAvatars] = useState<AvatarOption[]>([])
   const [avatarsLoading, setAvatarsLoading] = useState(false)
   const [selectedAvatar, setSelectedAvatar] = useState<string>('')
+  const [voices, setVoices] = useState<VoiceOption[]>([])
   const [selectedVoice, setSelectedVoice] = useState<string>('')
   const [videoScript, setVideoScript] = useState('')
   const [videoJobId, setVideoJobId] = useState<string | null>(null)
@@ -90,6 +91,11 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       setAvatars(list)
       setAvatarsLoading(false)
     })
+    // ElevenLabs stock voices, alongside the D-ID avatar list — `selectedVoice`
+    // had no picker (unread-state-census: setSelectedVoice was never called),
+    // so every avatar video generated with the D-ID default voice regardless
+    // of what the agent picked in Settings.
+    listElevenLabsVoices().then(({ voices: list }) => setVoices(list))
   }, [tab])
 
   useEffect(() => {
@@ -559,6 +565,9 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <RefreshCw className="h-4 w-4 animate-spin" />
                 Processing video — checking every 10s…
+                {photoVideoJobId && (
+                  <span className="font-mono text-xs opacity-60">(job {photoVideoJobId})</span>
+                )}
               </div>
             )}
             {photoVideoStatus === 'completed' && photoVideoUrl && (
@@ -629,6 +638,23 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
                     ))}
                   </div>
                 </div>
+                {voices.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Voice</label>
+                    <select
+                      value={selectedVoice}
+                      onChange={e => setSelectedVoice(e.target.value)}
+                      className="w-full border rounded px-3 py-2 text-sm"
+                    >
+                      <option value="">Default</option>
+                      {voices.map(v => (
+                        <option key={v.voice_id} value={v.voice_id}>
+                          {v.name}{v.gender ? ` (${v.gender})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium mb-1">Video Script</label>
                   <textarea
@@ -649,6 +675,9 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <RefreshCw className="h-4 w-4 animate-spin" />
                     Processing video — checking every 10s…
+                    {videoJobId && (
+                      <span className="font-mono text-xs opacity-60">(job {videoJobId})</span>
+                    )}
                   </div>
                 )}
                 {videoStatus === 'completed' && videoUrl && (

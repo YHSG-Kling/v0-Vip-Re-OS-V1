@@ -326,9 +326,12 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
       </Sequence>
 
       {/* WORD-SYNCED CAPTIONS — whole-timeline overlay, muted-feed readable.
-          Sits above the progress dots, clear of the presenter PIP. */}
+          Sits above the progress dots, clear of the presenter PIP. NO CAPTION
+          OVER BRANDING (wave 57) — clipped before the outro's brokerage name/
+          EHO mark/QR tile. */}
       {captionsCues && captionsCues.length > 0 && (
-        <CaptionLayer cues={captionsCues} accentColor={brand.accentColor} bottomPercent={84} />
+        <CaptionLayer cues={captionsCues} accentColor={brand.accentColor} bottomPercent={84}
+          hiddenFromFrame={durationInFrames - OUTRO} />
       )}
     </AbsoluteFill>
   )

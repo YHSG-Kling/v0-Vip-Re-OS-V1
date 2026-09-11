@@ -422,7 +422,9 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + DIAGRAM} />
     </AbsoluteFill>
   )
 }

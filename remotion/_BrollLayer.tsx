@@ -30,6 +30,7 @@ import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from "remo
 import { SafeImg } from "./components/SafeImg"
 import { selectBrollPlan } from "../lib/video/broll-plan"
 import { isVideoUrl } from "../lib/video/broll-url"
+import { FILM_GRAIN_BACKGROUND_IMAGE, FILM_GRAIN_OVERLAY_OPACITY, VIGNETTE_BACKGROUND_IMAGE } from "../lib/video/realism-profile"
 
 export interface BrollClip {
   /** Either an image URL OR a video URL. The helper detects by
@@ -85,6 +86,19 @@ export interface BrollLayerProps {
    *  true — the cost of looping is zero and it prevents black
    *  flashes if the composer mis-sizes the clip count. */
   loop?:               boolean
+  /**
+   * WAVE 57 REALISM AUDIT — subtle film grain + vignette over every clip in
+   * this layer, opt-in and false by default (no change to any existing
+   * render). Real footage carries a sensor noise floor; a still photo or a
+   * generated scene arrives unnaturally clean, which is one of the tells the
+   * owner's realism ruling targets (see lib/video/realism-profile.ts's
+   * research header). CSS-only — a tiled SVG noise data URI + a radial-
+   * gradient vignette, both pre-built constants, no asset fetch, no extra
+   * render pass, cheap enough that this wave wires it on for every BrollLayer
+   * call site (ComingSoonReel, NeighborhoodSpotlightReel, AgentTalkingHeadReel
+   * — the B-roll-heavy formats that most read as "stock footage" without
+   * it). */
+  filmGrain?:          boolean
 }
 
 /**
@@ -353,7 +367,7 @@ export function brollDrawAt(
 }
 
 export const BrollLayer: React.FC<BrollLayerProps> = ({
-  clips, totalFrames, crossfadeFrames, overlayColor, loop,
+  clips, totalFrames, crossfadeFrames, overlayColor, loop, filmGrain,
 }) => {
   const frame   = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -372,6 +386,22 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
           spanFrames={d.spanFrames}
         />
       ))}
+      {/* WAVE 57 REALISM — subtle grain + vignette over the WHOLE layer (not
+          per-clip) so a crossfade never doubles the texture's opacity. Opt-in,
+          CSS-only, no extra render pass. */}
+      {filmGrain && (
+        <AbsoluteFill
+          style={{
+            backgroundImage: FILM_GRAIN_BACKGROUND_IMAGE,
+            backgroundRepeat: "repeat",
+            opacity: FILM_GRAIN_OVERLAY_OPACITY,
+            mixBlendMode: "overlay",
+          }}
+        />
+      )}
+      {filmGrain && (
+        <AbsoluteFill style={{ backgroundImage: VIGNETTE_BACKGROUND_IMAGE }} />
+      )}
     </AbsoluteFill>
   )
 }

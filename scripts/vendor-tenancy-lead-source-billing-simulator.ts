@@ -377,8 +377,12 @@ function sourceLeadSourceWiring() {
     /normalizeLeadSource\s*\(/.test(contactsAction))
   check("LW2 …and REFUSES an unrecognised value rather than persisting it verbatim",
     /if\s*\(\s*!\s*source\s*\)/.test(contactsAction) && /Unknown lead source/.test(contactsAction))
-  check("LW3 the second writer of contacts.source folds through the SAME function, so the two cannot disagree (§6)",
-    /normalizeLeadSource\s*\(/.test(service) && /Unknown lead source/.test(service))
+  // Wave 57: the second writer (contact-management.service.ts createContact) was
+  // merged onto app/actions/contacts.ts and deleted with a tombstone — there is now
+  // ONE writer of contacts.source, so §6 is satisfied by absence, and the service
+  // must never grow a contacts insert back.
+  check("LW3 the second writer of contacts.source is gone (merged onto app/actions/contacts.ts) — the service no longer inserts contacts",
+    !/from\("contacts"\)\s*\.insert\(/.test(service) && /SURVIVOR: app\/actions\/contacts\.ts createContact/.test(readFileSync(CONTACT_SERVICE, "utf8")))
 
   // The write must use the CANONICAL value, not the raw body string.
   check("LW4 the kernel is handed the canonical value, not the raw request field",
@@ -402,7 +406,7 @@ function sourceLeadSourceWiring() {
 
   // A survivor with only dead importers is the state this lane found. Assert
   // the RULE: at least one file imports it AND references it in its body.
-  const importers = [CONTACTS_ACTION, CONTACT_SERVICE, "app/crm/contacts/new/page.tsx",
+  const importers = [CONTACTS_ACTION, "app/crm/contacts/new/page.tsx",
                      "app/dashboard/acquisition/acquisition-quick-capture.tsx"]
   const liveUsers = importers.filter((f) => {
     const s = src(f)

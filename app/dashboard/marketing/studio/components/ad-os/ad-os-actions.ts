@@ -32,8 +32,15 @@ import type { ContentType } from "@/lib/content/performance-predictor"
 import type {
   ReadinessInput,
   ExecutionChannel,
-  ContentType as ReadinessContentType,
 } from "@/lib/campaign-readiness/readiness-evaluator"
+// MOVED to lib/campaign-readiness/content-type-vocabulary.ts (wave 57, Task
+// C, use-server-export-guard fix): a "use server" file may only export
+// async functions, and these two are deliberately synchronous pure
+// converters. toGateContentType is now the converter
+// content-studio-client.tsx's handlePushToOmniChannel uses directly (the one
+// publish path in that file that ran with NO compliance gate at all — see
+// checkContentCompliance below, which that same handler now also calls).
+import { toReadinessContentType } from "@/lib/campaign-readiness/content-type-vocabulary"
 
 // ─── READINESS INPUT BUILDER ──────────────────────────────────────────────────
 // Systems 4.2 (compliance) → 4.3 (approval) → 4.5 (readiness) are a chain.
@@ -46,12 +53,6 @@ import type {
 //      failed, and EVERY pre-launch check in the Studio came back BLOCKED with
 //      'Content approval status is auto_approved, not approved'.
 
-/** Readiness ContentType vocabulary (lib/campaign-readiness/readiness-evaluator). */
-const READINESS_CONTENT_TYPES = [
-  "email", "sms", "social_post", "ad", "newsletter", "blog_post",
-  "listing_description", "video_script", "direct_mail", "image_prompt",
-] as const
-
 /** ExecutionChannel vocabulary (lib/campaign-readiness/readiness-evaluator). */
 const EXECUTION_CHANNELS = [
   "email", "sms", "direct_mail", "facebook", "instagram", "linkedin", "twitter",
@@ -59,46 +60,10 @@ const EXECUTION_CHANNELS = [
   "listing_website",
 ] as const
 
-function toReadinessContentType(value: string): ReadinessContentType {
-  if ((READINESS_CONTENT_TYPES as readonly string[]).includes(value)) {
-    return value as ReadinessContentType
-  }
-  // Predictor vocabulary → readiness vocabulary
-  if (value === "ad_creative") return "ad"
-  return "social_post"
-}
-
 function toExecutionChannel(value: string): ExecutionChannel | null {
   return (EXECUTION_CHANNELS as readonly string[]).includes(value)
     ? (value as ExecutionChannel)
     : null
-}
-
-// UNRESOLVED (§1, wave 56 dead-code sweep): `toGateContentType` is never
-// called. Its only plausible destination, the exported `checkContentCompliance`
-// below (~line 608, "thin wrapper so client components can call the
-// compliance gate"), is ITSELF never called by anything in the tree either —
-// that gap is a separate, larger finding (an exported action, out of this
-// item's non-exported-function scope) that needs its own client caller built
-// or its own tombstone, and this function's fate should follow whatever that
-// resolves to rather than be guessed at here. The readiness chain in
-// buildReadinessInput above (systems 4.2→4.3→4.5) uses a DIFFERENT
-// compliance surface, lib/compliance-rules:evaluateContentCompliance, with
-// its own (wider) content-type vocabulary that this converter does not
-// target — so wiring toGateContentType into that chain would be the wrong
-// fix, not a real one. Left in place rather than deleted or force-wired.
-/** Compliance content_type vocabulary accepted by runComplianceGate. */
-function toGateContentType(
-  value: ReadinessContentType
-): "social_post" | "ad" | "listing_remarks" | "comment_reply" | "newsletter" | "blog" {
-  switch (value) {
-    case "ad": return "ad"
-    case "newsletter":
-    case "email": return "newsletter"
-    case "blog_post": return "blog"
-    case "listing_description": return "listing_remarks"
-    default: return "social_post"
-  }
 }
 
 async function buildReadinessInput(params: {

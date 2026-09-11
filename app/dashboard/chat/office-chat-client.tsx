@@ -890,6 +890,11 @@ export function OfficeChatClient({
           </ScrollArea>
 
           {/* Input */}
+          {brandVoice?.tone && (
+            <p className="text-xs text-muted-foreground mb-1">
+              AI replies use your brand voice — tone: {brandVoice.tone}
+            </p>
+          )}
           <div className="flex gap-2">
             <Input
               placeholder="Type your message..."

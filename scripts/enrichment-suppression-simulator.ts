@@ -334,7 +334,11 @@ function sourceLayer() {
     "lib/kernel/lead-magnets.ts",                // lead-magnet download capture
     "lib/kernel/listings.ts",                    // seller contact on a new listing
     "lib/contact-promotion/contact-creator.ts",  // lead → contact promotion
-    "lib/services/contact-management.service.ts",// CRM manual add
+    // CRM manual add: lib/services/contact-management.service.ts's createContact was
+    // merged onto app/actions/contacts.ts → lib/kernel/crm.ts createContactManually
+    // (wave 57, tombstone in the service file); the kernel path queues through
+    // enrichContactAfterIntake → queueContactEnrichment in this file.
+    "lib/kernel/crm.ts",                         // CRM manual add (survivor)
   ]) {
     check(`direct door still queues enrichment: ${door}`,
       /queueContactEnrichment\s*\(/.test(code(door)))

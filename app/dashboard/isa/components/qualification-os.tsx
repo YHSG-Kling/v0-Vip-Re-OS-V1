@@ -41,6 +41,8 @@ import {
   ArrowRight,
   Brain,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Eye,
   Ghost,
@@ -260,25 +262,37 @@ export function ConversationIntelligencePanel({
     <div className="space-y-3">
       {conversations.map((conv) => (
         <Card key={conv.id} className="overflow-hidden">
-          <CardHeader className="pb-2 px-4 pt-3">
-            <div className="flex items-start justify-between gap-2 flex-wrap">
-              <div>
-                <p className="font-semibold text-sm">{conv.contactName}</p>
-                <p className="text-xs text-muted-foreground">{relativeTime(conv.createdAt)}</p>
+          <button
+            type="button"
+            onClick={() => setExpanded(expanded === conv.id ? null : conv.id)}
+            className="w-full text-left"
+          >
+            <CardHeader className="pb-2 px-4 pt-3 hover:bg-muted/30">
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div>
+                  <p className="font-semibold text-sm">{conv.contactName}</p>
+                  <p className="text-xs text-muted-foreground">{relativeTime(conv.createdAt)}</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge
+                    variant="outline"
+                    className={`text-xs capitalize ${sentimentColor(conv.sentiment)}`}
+                  >
+                    {conv.sentiment}
+                  </Badge>
+                  <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">
+                    {conv.confidenceScore}% confidence
+                  </Badge>
+                  {expanded === conv.id ? (
+                    <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge
-                  variant="outline"
-                  className={`text-xs capitalize ${sentimentColor(conv.sentiment)}`}
-                >
-                  {conv.sentiment}
-                </Badge>
-                <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200">
-                  {conv.confidenceScore}% confidence
-                </Badge>
-              </div>
-            </div>
-          </CardHeader>
+            </CardHeader>
+          </button>
+          {expanded === conv.id && (
           <CardContent className="px-4 pb-4 space-y-3">
             <p className="text-sm text-muted-foreground leading-relaxed">{conv.transcriptSummary}</p>
 
@@ -346,6 +360,7 @@ export function ConversationIntelligencePanel({
               </Link>
             </div>
           </CardContent>
+          )}
         </Card>
       ))}
     </div>

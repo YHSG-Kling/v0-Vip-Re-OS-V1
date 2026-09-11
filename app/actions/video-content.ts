@@ -1,35 +1,6 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-// TOMBSTONE (dead-import tranche): `agentIdForUser` (lib/agents/agent-for-user.ts:13)
-// was imported here and never called. Survivor: `resolveAgentId`
-// (lib/kernel/agent-identity.ts:43), which runs the identical query and is the
-// safer one (`.order().limit(1)` rather than `.maybeSingle()`, which ERRORS when
-// a user has more than one agents row).
-// UPDATE (wave 26): this file no longer calls `resolveAgentId` directly either —
-// its one site needed the agent profile to EXIST, so it now uses
-// `requireAgentId` (lib/kernel/agent-identity.ts:113), the throwing wrapper over
-// that same resolver, instead of re-implementing the throw inline (§6).
-import { toLibraryScriptType } from "@/app/types/video-generation"
-import { logScriptGenerated } from "@/lib/events"
-import { generateAIResponse } from "@/lib/ai"
-import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
-// was imported and never called — this file dispatches no provider itself. The
-// VIDEO provider is resolved by `resolveVideoProvider`
-// (lib/marketing/video-provider-resolver.ts, called from
-// app/actions/video/create-video-project.ts:669) and the AI provider is chosen
-// inside `generateAIResponse` (lib/ai). Nothing was lost.
-import { requireAgentId } from "@/lib/kernel/agent-identity"
-// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
-// imported and never called. This file's lifecycle emission goes through
-// `logScriptGenerated` (lib/events/event-helpers.ts, renamed from
-// logVideoGenerated D-quindecies 2026-09-10 — this action inserts a SCRIPT into
-// video_scripts_library, not a rendered video, and the old name fired
-// KernelEvent.VIDEO_GENERATION_COMPLETED with a video_scripts_library id where
-// the completed-side coordinator expects an ai_video_projects id, silently
-// no-opping every time; it now emits KernelEvent.SCRIPT_GENERATED, the vocabulary
-// app/api/video-scripts/route.ts already uses for this same table).
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
@@ -39,116 +10,37 @@ import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenan
 // AI-powered video script and content creation
 // =====================================================
 
-// Map a free-form video_type onto the video_scripts_library.script_type CHECK
-// (property_tour|buyer_education|market_update|agent_intro|listing_presentation).
-// KEEP-ONE: mapScriptType moved to @/app/types/video-generation (toLibraryScriptType)
-// so every video_scripts_library writer shares ONE vocabulary map.
-
-export async function generateVideoScript(params: {
-  video_type: string
-  context_type: string
-  context_id?: string
-  audience_segment?: string
-  tone?: string
-  key_points?: string[]
-}) {
-  const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
-  if (!profile?.brokerage_id) throw new Error("No brokerage found")
-
-  // Resolve agent ID - never use user.id for agent_id column.
-  // ONE VOCABULARY (§6): this was `resolveAgentId` + a hand-rolled throw, which
-  // is exactly what requireAgentId (lib/kernel/agent-identity.ts:113) IS. Two
-  // spellings of "the agent profile is required here" existed and neither could
-  // be found from the other; merged onto the survivor.
-  const agentId = await requireAgentId(supabase, user.id)
-
-  // ── THE TIER GATE ──────────────────────────────────────────────────────────
-  //
-  // BUILT, not tidied. `canAccessFeature` / `incrementFeatureUsage` were
-  // imported by this file and called by NOTHING, so the only AI-spending entry
-  // in it ran with no entitlement check and left no usage row — the counter the
-  // per-tier overage projection reads. Every sibling AI action in this tree is
-  // gated this way (app/actions/ai-newsletter.ts:122,
-  // app/actions/podcast-generation.ts:72, app/actions/direct-mail.ts:118).
-  //
-  // The key is `video_generation`, the spelling already in force at
-  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904 — NOT the
-  // second `ai_video_generation` row that also exists in feature_flags, which no
-  // code names (§6: one vocabulary per function; that row is a separate finding).
-  // Verified against the live database: feature_flags.video_generation is
-  // enabled with access true and limit NULL on all four tiers, so this gate
-  // refuses nobody today and is in place for the day a tier limit is set.
-  const access = await canAccessFeature(user.id, "video_generation")
-  if (!access.allowed) {
-    throw new Error(access.reason ?? "Video generation is not available on your plan")
-  }
-
-  // Generate script using AI
-  const scriptResponse = await generateAIResponse({
-    prompt: `Generate a ${params.video_type} video script for ${params.audience_segment || "general audience"}.
-    
-Tone: ${params.tone || "professional and friendly"}
-Key points to cover: ${params.key_points?.join(", ") || "none specified"}
-Context: ${params.context_type}
-
-Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
-    metadata: {
-      userId: user.id,
-      brokerageId: profile.brokerage_id,
-      agentId: agentId,
-      feature: "video_script_generation",
-    },
-  })
-
-  const script = scriptResponse.text
-
-  // Persist the AI script in video_scripts_library (the canonical AI-script home).
-  // video_assets is the brokerage stock-clip library — a different concept.
-  const { data: video, error } = await supabase
-    .from("video_scripts_library")
-    .insert({
-      brokerage_id: profile.brokerage_id,
-      agent_id: agentId,
-      script_type: toLibraryScriptType(params.video_type),
-      title: `${params.video_type} script${params.context_type ? ` (${params.context_type})` : ""}`,
-      script_content: script,
-      listing_id: params.context_type === "listing" ? params.context_id : null,
-      contact_id: params.context_type === "contact" ? params.context_id : null,
-      brand_voice_tone: params.tone ?? null,
-      approval_status: "draft",
-      created_by: user.id,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  await logScriptGenerated({
-    brokerage_id: profile.brokerage_id,
-    user_id: user.id,
-    script_id: video.id,
-    video_type: params.video_type,
-    listing_id: params.context_type === "listing" ? params.context_id : undefined,
-  })
-
-  // Counted AFTER the work succeeded, never before — the same order every other
-  // gated action in this tree uses (incrementFeatureUsage's own header says so).
-  // Destructured: a refused counter write must not read as a counted use, or the
-  // per-tier overage projection under-reports.
-  const counted = await incrementFeatureUsage(user.id, "video_generation")
-  if (!counted.success) {
-    console.error("[video-content] feature_usage_tracking increment failed:", counted.error)
-  }
-
-  return { success: true, video, script }
-}
+// ── DELETED: generateVideoScript (wave 57, Task B duplicates round 2) ──────
+//
+// SURVIVOR: app/actions/video/generate-script.ts:141 generateVideoScript —
+// the canonical Video Studio generator (behind /dashboard/videos/create),
+// documented by lib/kernel/manager-registry.ts video_script_compliance /
+// video_repurpose_render_writers as the most complete of the FIVE audited
+// generateVideoScript implementations: compliance gate before AND after
+// generation (lib/video/script-compliance.ts — brand voice, ThemFirst, Fair
+// Housing), saveToLibrary, nine video types mapped through
+// toLibraryScriptType against the live five-value CHECK. This was a SIXTH,
+// unaudited copy — scripts/video-script-compliance-guard.ts's enumerated
+// five never named it, so it carried NO compliance gate at all on
+// agent-facing marketing copy, the exact hole §5's "compliance-first" ruling
+// exists to close.
+//
+// Zero live callers: reachable only through lib/orchestrator/internal.ts's
+// dynamic import of this module, and that import names
+// handleVideoGenerated / approveAndGenerateVideo / handleVideoPublished /
+// handleHighEngagement (all four kept below — real event-reactor handlers) —
+// never generateVideoScript. No page, component, or route named it.
+//
+// NOT BLINDLY MERGED: this copy carried a feature-tier gate
+// (canAccessFeature/incrementFeatureUsage on the "video_generation" key,
+// verified live as enabled/unlimited on all four tiers today — a no-op
+// currently) that the survivor does not have of its own; the survivor's
+// AI call instead routes through generateAIResponse -> resolveAIModel,
+// which the survivor's own comment says "applies brokerage tier caps
+// automatically" — whether that is an equivalent control or a real gap is
+// UNRESOLVED (needs a follow-up read of resolveAIModel's tier-cap logic
+// against feature_flags before touching the most-used video action in the
+// tree without the full guard chain to verify against).
 
 // =====================================================
 // EVENT HANDLERS - Called by orchestrator

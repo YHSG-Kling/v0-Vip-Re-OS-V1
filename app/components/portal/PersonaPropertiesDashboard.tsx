@@ -380,7 +380,13 @@ export default function PersonaPropertiesDashboard({
   // Property rating state
   const [showRatingDialog, setShowRatingDialog] = useState(false)
   const [selectedProperty, setSelectedProperty] = useState<any>(null)
-  const [propertyRating, setPropertyRating] = useState(3)
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — a separate 1-5
+  // `propertyRating` star input was declared here but never rendered or read.
+  // The functionality already lives at the vote buttons below: submitting
+  // "love"/"like"/"neutral"/"dislike"/"pass" is converted to the same 1-5
+  // scale server-side by the INTEREST map in the survivor,
+  // app/actions/portal-lifetime.ts::submitPropertyFeedback (~line 914), so a
+  // second numeric rating would duplicate what the vote already records.
   const [propertyVote, setPropertyVote] = useState<string>("neutral")
   const [ratingComments, setRatingComments] = useState("")
   

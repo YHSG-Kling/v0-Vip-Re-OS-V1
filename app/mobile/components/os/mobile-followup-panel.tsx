@@ -50,7 +50,12 @@ export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [noteContent, setNoteContent] = useState("")
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — `activeTaskId` /
+  // setActiveTaskId was never read. Each Sheet is already scoped per-task
+  // inside the .map() below, and "Mark as Complete" calls
+  // handleCompleteTask(task.id) from that closure directly — the loop
+  // variable already IS the "which task is open" tracking, so a mirrored
+  // state var added nothing.
 
   const pendingTasks = tasks
     .filter((t) => t.status !== "completed")
@@ -80,7 +85,6 @@ export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
       if (result.success) {
         toast.success("Follow-up completed")
         setNoteContent("")
-        setActiveTaskId(null)
         router.refresh()
       } else {
         toast.error("Failed to complete follow-up")
@@ -223,7 +227,6 @@ export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
                     <Button
                       size="sm"
                       className="flex-1 h-8 bg-green-600 hover:bg-green-700"
-                      onClick={() => setActiveTaskId(task.id)}
                     >
                       <CheckCircle className="h-3 w-3 mr-1" />
                       Done

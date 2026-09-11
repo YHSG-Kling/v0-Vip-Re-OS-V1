@@ -3,19 +3,38 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
 import { buildReceptionPrompt, twimlGatherTurn, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
 import { isPlatformNumber, resolvePlatformReceptionContext, buildPlatformReceptionPrompt } from "@/lib/voice/platform-reception"
-import { relayConfigured, twimlConnectRelay } from "@/lib/voice/conversation-relay"
+import { relayConfigured, twimlConnectRelay, conversationRelayTtsAttrs } from "@/lib/voice/conversation-relay"
 
 export const dynamic = "force-dynamic"
 
 const xml = (body: string, status = 200) => new NextResponse(body, { status, headers: { "Content-Type": "text/xml" } })
 
-/** TRANSPORT SWITCH: ConversationRelay (streaming, sub-second) when the
- *  companion is configured; the serverless <Gather> lane otherwise. Same
- *  brain, same disclosed greeting — only the transport differs. */
-const answerTwiml = (firstMessage: string, turnUrl: string) =>
-  relayConfigured()
-    ? twimlConnectRelay(process.env.CONVERSATION_RELAY_WSS_URL!, firstMessage, undefined, process.env.TWILIO_INTELLIGENCE_SERVICE_SID)
-    : twimlGatherTurn(firstMessage, turnUrl)
+/**
+ * TRANSPORT SWITCH: ConversationRelay (streaming, sub-second) when the
+ * companion is configured; the serverless <Gather> lane otherwise. Same
+ * brain, same disclosed greeting — only the transport differs.
+ *
+ * WAVE 57: the ConversationRelay leg now speaks ElevenLabs (the resolved
+ * brokerage/team/agent clone id when one exists, else ElevenLabs' own stock
+ * voice) instead of always defaulting to Twilio-native Google — see
+ * lib/voice/conversation-relay.ts's file header for the full research and
+ * why this is a wire-the-existing-resolution fix, not a new setting.
+ * `elevenlabsVoiceId` is optional/omittable (the PLATFORM scope has none) —
+ * conversationRelayTtsAttrs falls back to the stock ElevenLabs voice, never
+ * to Google, unless ElevenLabs itself is unreachable.
+ */
+const answerTwiml = (firstMessage: string, turnUrl: string, elevenlabsVoiceId?: string | null) => {
+  if (!relayConfigured()) return twimlGatherTurn(firstMessage, turnUrl)
+  const tts = conversationRelayTtsAttrs(elevenlabsVoiceId)
+  return twimlConnectRelay(
+    process.env.CONVERSATION_RELAY_WSS_URL!,
+    firstMessage,
+    tts.voice,
+    process.env.TWILIO_INTELLIGENCE_SERVICE_SID,
+    tts.ttsProvider,
+    tts.elevenlabsTextNormalization,
+  )
+}
 
 /**
  * TWILIO VOICE — INBOUND (the Twilio-native lane; no Vapi). The number's
@@ -236,5 +255,5 @@ export async function POST(request: NextRequest) {
   }
 
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`
-  return xml(answerTwiml(firstMessage, turnUrl))
+  return xml(answerTwiml(firstMessage, turnUrl, ctx.identity.elevenlabsVoiceId))
 }

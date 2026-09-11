@@ -34,6 +34,7 @@ import { AbsoluteFill, Easing, interpolate, useCurrentFrame, useVideoConfig } fr
 import {
   buildCaptionPlan,
   activeCueIndex,
+  clipCaptionCuesBeforeFrame,
   type CaptionCue,
   type CaptionSource,
   type BuildCaptionPlanOptions,
@@ -53,19 +54,32 @@ export interface CaptionLayerProps {
   accentColor?: string
   /** Tuning forwarded to buildCaptionPlan when planning from `script`. */
   planOptions?: BuildCaptionPlanOptions
+  /**
+   * NO CAPTION OVER BRANDING (wave 57 realism audit). The composition-absolute
+   * frame its own branding/CTA tile starts — brokerage name, the Equal Housing
+   * Opportunity mark, a QR code. When set, no caption cue is shown at or after
+   * this frame (a cue straddling the boundary is shortened, never cut mid-cue
+   * into the tile). See lib/video/caption-plan.ts clipCaptionCuesBeforeFrame
+   * for why this exists. Optional — absent renders EXACTLY as before (additive/
+   * opt-in, same posture as every other prop here).
+   */
+  hiddenFromFrame?: number
 }
 
 /**
  * Resolve the cue list: explicit cues win; else plan from the script using THIS
  * composition's duration + fps. Returns [] when there is nothing to show.
+ * `hiddenFromFrame` (when set) clips the resolved list so no cue reaches into
+ * the composition's own branding/CTA tile — see clipCaptionCuesBeforeFrame.
  */
 function useResolvedCues(props: CaptionLayerProps): CaptionCue[] {
   const { durationInFrames, fps } = useVideoConfig()
-  if (props.cues && props.cues.length > 0) return props.cues
-  if (props.script != null && props.script !== "") {
-    return buildCaptionPlan(props.script, durationInFrames, fps, props.planOptions).cues
-  }
-  return []
+  const resolved = props.cues && props.cues.length > 0
+    ? props.cues
+    : props.script != null && props.script !== ""
+      ? buildCaptionPlan(props.script, durationInFrames, fps, props.planOptions).cues
+      : []
+  return clipCaptionCuesBeforeFrame(resolved, props.hiddenFromFrame)
 }
 
 export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {

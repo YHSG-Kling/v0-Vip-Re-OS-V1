@@ -293,6 +293,25 @@ export default function AnalyticsDashboard() {
             </div>
           </div>
 
+          {/* Value-aggregation warning — today's value_delivered_daily refresh
+              (aggregateValueDelivered, above) failed. Dashboard still renders
+              with whatever value_delivered_daily already held, so this is a
+              dismissible notice, not a page-blocking error (unread-state-census). */}
+          {aggregateError && (
+            <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <Activity className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+              <p className="text-sm text-amber-900 leading-relaxed flex-1">
+                Today's value metrics could not be refreshed: {aggregateError}. Numbers below may be stale.
+              </p>
+              <button
+                onClick={() => setAggregateError(null)}
+                className="shrink-0 text-amber-400 hover:text-amber-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
           {/* AI Summary banner — shown after request */}
           {aiSummary && (
             <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3">

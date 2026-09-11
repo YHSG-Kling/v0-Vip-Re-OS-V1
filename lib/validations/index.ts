@@ -103,17 +103,20 @@ export function isValidEmail(email: string | null | undefined): boolean {
 }
 
 // Alias for consistency with imports
-export const validateEmail = isValidEmail
+// DELETED: validateEmail alias (wave 57) — its last callers (app/actions/crm.ts createContact,
+// lib/services/contact-management.service.ts) were merged onto app/actions/contacts.ts,
+// which validates through the SURVIVOR isValidEmail (this file) directly.
 
 // Phone Validation
-function isValidPhone(phone: string | null | undefined): boolean {
+export function isValidPhone(phone: string | null | undefined): boolean {
   if (!phone) return false
   const phoneRegex = /^\+?1?\d{10,14}$/
   return phoneRegex.test(phone.replace(/[\s\-\(\)]/g, ""))
 }
 
 // Alias for consistency with imports
-export const validatePhone = isValidPhone
+// DELETED: validatePhone alias (wave 57) — survivor isValidPhone (this file), called by
+// app/actions/contacts.ts createContact.
 
 // URL Validation — isValidURL REMOVED (orphan burn-down, lane O). See the
 // header: app/actions/tenant-webhooks.ts is the survivor and returns the reason.

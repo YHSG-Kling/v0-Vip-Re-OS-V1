@@ -79,6 +79,11 @@ export {
   languageName,
   LANGUAGE_OPTIONS,
 } from "@/lib/video/language-vocabulary"
+// elevenLabsModelForLane (lib/video/realism-profile.ts) is the ONE model_id
+// selector (§6) — used below in place of the bare MULTILINGUAL_TTS_MODEL
+// literal so the video_metadata this function stamps stays honest about
+// which model actually renders the audio (wave 57).
+import { elevenLabsModelForLane } from "@/lib/video/realism-profile"
 
 // ─── resolveContactLanguage — THE ONE LANGUAGE RESOLVER (§6) ─────────────────
 
@@ -489,7 +494,15 @@ export async function commissionMultilingualReel(
           locale,
           script_content: translatedScript,
           video_metadata: {
-            tts_model:         MULTILINGUAL_TTS_MODEL,
+            // WAVE 57: descriptive metadata only (reel-voiceover.ts derives
+            // its OWN model via elevenLabsModelForLane rather than reading
+            // this field back — see that file's header). Kept in sync with
+            // the model actually used so this row never describes a model
+            // the render no longer runs under (elevenLabsModelForLane("reel_
+            // narration", …) is eleven_v3 for every locale — see lib/video/
+            // realism-profile.ts's research header for why MULTILINGUAL_TTS_
+            // MODEL is no longer that model).
+            tts_model:         elevenLabsModelForLane("reel_narration", ttsLanguageCode),
             tts_language_code: ttsLanguageCode,
             translated_captions: translation.translatedCaptions ?? [],
             source_locale:     DEFAULT_LANGUAGE,

@@ -155,6 +155,18 @@ export async function generateVideoScript(
   const brokerageId = auth.brokerageId
   const userId = auth.userId
 
+  // ENTITLEMENT + USAGE (wave 57, merged from the retired app/actions/video-content.ts
+  // copy of this action). resolveAIModel's "tier caps" only pick WHICH MODEL a tier
+  // may use — they are not an entitlement gate and count nothing. canAccessFeature is
+  // the per-tier feature_flags gate (access + solo/team limits) and incrementFeatureUsage
+  // is the counter that feeds the per-tier overage projection; both are the same key
+  // app/actions/link-to-video.ts and app/actions/video-generation.ts already use.
+  const { canAccessFeature, incrementFeatureUsage } = await import("@/lib/kernel/0.1-feature-access")
+  const access = await canAccessFeature(userId, "video_generation")
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Video script generation is not available on your plan" }
+  }
+
   const supabase = await createClient()
   const duration = params.targetDurationSeconds ?? 60
   const wordTarget = targetWordCount(duration)
@@ -501,6 +513,10 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
       : unevaluated ? "unknown"
         : advisory.length > 0 ? "advisory"
           : "clean"
+
+  // Count the generation against the tier only once a script actually exists.
+  const counted = await incrementFeatureUsage(userId, "video_generation")
+  if (!counted.success) console.error("[generate-script] feature usage not counted:", counted.error)
 
   return {
     success: true,

@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { isValidUUID } from "@/lib/validations"
@@ -175,91 +174,29 @@ Calculate and explain:
   }
 }
 
-/**
- * Generate property highlight video script
- */
-export async function generateVideoScript(params: {
-  agentId: string
-  listingId: string
-  videoType: "walkthrough" | "highlight" | "neighborhood" | "aerial"
-  duration?: number
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", params.listingId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
-
-    const { object: script } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        title: z.string(),
-        hook: z.string(),
-        scenes: z.array(z.object({
-          sceneNumber: z.number(),
-          location: z.string(),
-          duration: z.number(),
-          narration: z.string(),
-          visualDirection: z.string(),
-          bRoll: z.array(z.string()),
-          textOverlay: z.string().optional()
-        })),
-        callToAction: z.object({
-          narration: z.string(),
-          contactInfo: z.string(),
-          urgencyElement: z.string()
-        }),
-        musicSuggestions: z.array(z.object({
-          genre: z.string(),
-          mood: z.string(),
-          example: z.string()
-        })),
-        socialMediaCuts: z.array(z.object({
-          platform: z.string(),
-          duration: z.number(),
-          focusScenes: z.array(z.number()),
-          hashtags: z.array(z.string())
-        })),
-        totalDuration: z.number()
-      }),
-      prompt: `Create a video script for this listing:
-
-Property:
-${JSON.stringify(listing || {}, null, 2)}
-
-Video Type: ${params.videoType}
-Target Duration: ${params.duration || 60} seconds
-
-Create:
-1. Attention-grabbing hook
-2. Scene-by-scene breakdown with narration
-3. Visual direction for each scene
-4. Strong call to action
-5. Music suggestions
-6. Social media cut variations`
-    })
-
-    return {
-      success: true,
-      script
-    }
-  } catch (error) {
-    console.error("[v0] Generate video script error:", error)
-    return handleError(error, "generateVideoScript")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `generateVideoScript` was DELETED (wave 57, Task B duplicates
+ * round 2 — one of SEVEN functions named generateVideoScript found repo-wide).
+ *
+ * SURVIVOR: app/actions/video/generate-script.ts:141 generateVideoScript, the
+ * canonical Video Studio generator behind /dashboard/videos/create —
+ * compliance-gated (lib/video/script-compliance.ts: brand voice, ThemFirst,
+ * Fair Housing, before AND after generation) and one of the FIVE generators
+ * lib/kernel/manager-registry.ts video_script_compliance already documents
+ * as audited and reachable.
+ *
+ * This copy was NEVER in that audited five and had NO compliance gate at
+ * all — it dispatched straight to generateObject/resolveModel("openai/
+ * gpt-4o"), a SECOND, ungoverned AI call path bypassing even the standard
+ * generateAIResponse gateway the rest of this file's siblings use, on
+ * agent-facing marketing copy describing a real listing. Exactly the hole
+ * §5's "compliance-first" ruling exists to close, and it never had a chance
+ * to fire: zero callers anywhere in the tree. Nothing else in this file
+ * (generateListingPresentation, generateSellerNetSheet) called it, and no
+ * page/component imported it — presentation-assembler.ts's own
+ * `generateVideoScript` at line 435 is an unrelated LOCAL, unexported,
+ * synchronous function with the same name, not a caller of this one.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * TOMBSTONE — `generateBrochureContent` was REMOVED (orphan burn-down, Lane A).

@@ -68,6 +68,11 @@ export const CRON_REGISTRY: CronEntry[] = [
   // construction, and a refused remove is rarely transient enough to be worth
   // hammering hourly.
   { path: "/api/cron/storage-orphan-sweep",           schedule: "48 4 * * *" },
+  // Identity orphan sweep — the batch half of public.reconcile_orphaned_users()
+  // (m266); the per-request path only catches a collision at invite time
+  // (hidden-wire census (d), wave 57). Daily, off-peak, distinct minute from
+  // the storage sweep above.
+  { path: "/api/cron/identity-orphan-sweep",          schedule: "20 5 * * *" },
   // Esign document sync — the autonomous half of app/actions/forms-kernel.ts:
   // syncEsignDocsAction (m614, deal_coordinator). Every 4 hours, offset from
   // the storage sweep above.

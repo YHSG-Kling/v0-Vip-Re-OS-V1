@@ -1,8 +1,8 @@
 // ─── CONTACT MANAGEMENT ───────────────────────────────────────────────────────
-export type { CreateContactParams, UpdateContactParams } from "./contact-management.service"
+// createContact / updateContact DELETED (wave 57, Task B duplicates round 2)
+// — see the tombstones in ./contact-management.service.ts naming their
+// survivors in app/actions/contacts.ts.
 export {
-  createContact,
-  updateContact,
   deleteContact,
   getContact,
   getContacts,

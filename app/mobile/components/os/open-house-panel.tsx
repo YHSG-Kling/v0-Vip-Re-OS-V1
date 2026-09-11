@@ -73,7 +73,11 @@ export function OpenHousePanel({ events }: OpenHousePanelProps) {
     email: "",
     phone: "",
   })
-  const [activeEventId, setActiveEventId] = useState<string | null>(null)
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — `activeEventId` /
+  // setActiveEventId was never read, same shape as the sibling panel's
+  // `activeTaskId` (app/mobile/components/os/mobile-followup-panel.tsx):
+  // each Sheet is scoped per-event in the .map() below, and "Check In"
+  // calls handleAddVisitor(event.id) from that closure directly.
 
   const todaysEvents = events.filter((e) => {
     const eventDate = e.event_date?.split("T")[0]
@@ -99,7 +103,6 @@ export function OpenHousePanel({ events }: OpenHousePanelProps) {
       if (result.success) {
         toast.success(`${visitorForm.firstName} ${visitorForm.lastName} checked in`)
         setVisitorForm({ firstName: "", lastName: "", email: "", phone: "" })
-        setActiveEventId(null)
       } else {
         toast.error("Failed to add visitor")
       }
@@ -240,7 +243,6 @@ export function OpenHousePanel({ events }: OpenHousePanelProps) {
                     <Button
                       size="sm"
                       className="flex flex-col items-center gap-1 h-auto py-2 bg-purple-600 hover:bg-purple-700"
-                      onClick={() => setActiveEventId(event.id)}
                     >
                       <UserPlus className="h-4 w-4" />
                       <span className="text-xs">Add Visitor</span>

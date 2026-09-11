@@ -44,6 +44,7 @@ import {
 } from "./composition-cache"
 import { resolveCodeRevision } from "./code-revision"
 import { shouldApplyBookends } from "./render-decision"
+import { MUSIC_DUCK_VOLUME_PCT } from "@/lib/video/realism-profile"
 import { compositionSeconds } from "./composition-geometry"
 
 export { RENDER_CACHE_LEAK_SIGNAL }
@@ -82,7 +83,8 @@ export async function predictFinishInputs(
       const music = await pickStockAsset(svc, scope, "music", opts.musicMood ?? null)
       if (music?.video_url) {
         finish.musicTrackUrl = music.video_url
-        finish.musicVolumePct = music.music_volume_pct ?? 20
+        // Wave 57 realism audit — same fallback as render-coordinator.ts (§6).
+        finish.musicVolumePct = music.music_volume_pct ?? MUSIC_DUCK_VOLUME_PCT
         finish.musicLoop = music.music_loop ?? true
       }
     }

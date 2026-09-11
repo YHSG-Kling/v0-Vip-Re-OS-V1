@@ -111,10 +111,12 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
       {props.brand.showEhoMark && <EqualHousingMark variant="badge" />}
 
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
       <CaptionLayer
         cues={props.captionsCues}
         script={props.captionScript}
         accentColor={props.brand.accentColor}
+        hiddenFromFrame={FRAMES.CTA_START}
       />
     </AbsoluteFill>
   )

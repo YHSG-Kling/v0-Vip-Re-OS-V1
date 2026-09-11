@@ -162,6 +162,7 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
         preApprovalExpiresAt: preApprovalExpiresAt || undefined,
         downPaymentPercent: downPaymentPercent ? Number(downPaymentPercent) : undefined,
         downPaymentAmount: downPaymentAmount ? Number(downPaymentAmount) : undefined,
+        agentNotes: agentNotes || undefined,
       })
       if (result.success) {
         toast.success("Financial profile saved.")
@@ -413,6 +414,17 @@ ${agentName ?? "[Agent Name]"}`
                     className="h-8 mt-1"
                   />
                 </div>
+              </div>
+
+              <div>
+                <Label className="text-xs">Agent notes</Label>
+                <Textarea
+                  value={agentNotes}
+                  onChange={(e) => setAgentNotes(e.target.value)}
+                  placeholder="Private notes on this buyer's financing — not shown to the buyer."
+                  className="mt-1 text-sm"
+                  rows={3}
+                />
               </div>
 
               {/* Lender Selection — userId-based, not free text */}

@@ -134,3 +134,91 @@ export function resolveThumbnailProps(
   }
   return undefined
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTONOMOUS FAILED-RENDER RE-QUEUE (wave 57)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// THE GAP. `restart_failed_render` (m171, app/api/internal/remotion/render-
+// composition/route.ts) already does the RIGHT thing — it refuses a "doomed"
+// retry via missingContentProps rather than burning a render slot on a row
+// that will fail the same way again — but the ONLY caller is
+// executeAssetManagerAction, itself only reachable through
+// approveAssetManagerAction (app/actions/asset-manager-resolutions.ts), a
+// "use server" action a HUMAN calls from the dashboard
+// (app/dashboard/admin/asset-manager-actions/client.tsx). A composition-
+// render-queue drain never retries a failure on its own (its own header said
+// so, verbatim, before this wave). Owner ruling: "this OS runs autonomous
+// loops; every capability should run autonomously (manager signal / cron /
+// kernel event) rather than waiting for a button." A render that failed on a
+// transient cause (Chromium hiccup, a momentary stock-asset fetch failure)
+// should not sit waiting for a broker to click "restart" in a dashboard they
+// may not open for days.
+//
+// THE FIX. `shouldAutoRequeueFailedRender` is the SAME judgment
+// `restart_failed_render` already makes (doomed retry → refuse; retries
+// remaining + content-contract satisfied → requeue), reusable by a cron with
+// no human in the loop. `MAX_AUTO_REQUEUE_ATTEMPTS` bounds it — the same
+// "bounded, not infinite" shape app/api/cron/poll-did-videos/route.ts already
+// uses for its own persist-retry loop (MAX_PERSIST_ATTEMPTS) — so a
+// permanently-broken composition fails loudly after a handful of ticks rather
+// than spinning forever; the row then still carries its `failed` status for a
+// human (or the weekly Asset Manager digest) to see, exactly as before this
+// wave for anything that exhausts its auto-retries.
+
+/** How many times the autonomous loop will re-queue the SAME failed render
+ *  row before leaving it `failed` for a human to look at. Small and bounded
+ *  by design — see the header above. */
+export const MAX_AUTO_REQUEUE_ATTEMPTS = 2
+
+/** The minimal shape `shouldAutoRequeueFailedRender` needs from a
+ *  `remotion_composition_renders` row. */
+export interface FailedRenderRow {
+  render_status: string
+  /** NULL on a row from before this column existed — treated as 0 attempts. */
+  retry_count:   number | null | undefined
+}
+
+export interface AutoRequeueDecision {
+  requeue: boolean
+  /** Human-readable reason, logged either way — a skip is not silent. */
+  reason:  string
+}
+
+/**
+ * Should the autonomous loop flip this failed render back to 'queued'?
+ *
+ * PURE — no DB, no fetch. The caller supplies `missingProps`
+ * (missingContentProps(row.composition_id, row.input_props) — content-
+ * contract.ts is DB-free but does its own registry lookup, which this
+ * function stays free of so it is testable with a bare array).
+ *
+ * Refuses (never requeues) when:
+ *   · the row is not actually `failed` (already requeued by someone else, or
+ *     never failed at all — no-op, not an error);
+ *   · MAX_AUTO_REQUEUE_ATTEMPTS is already spent;
+ *   · the render is DOOMED — the same content the row failed with is still
+ *     missing required props, so a retry fails the identical way.
+ */
+export function shouldAutoRequeueFailedRender(
+  row: FailedRenderRow,
+  missingProps: string[],
+): AutoRequeueDecision {
+  if (row.render_status !== "failed") {
+    return { requeue: false, reason: `render is '${row.render_status}', not 'failed' — nothing to requeue` }
+  }
+  const attempts = row.retry_count ?? 0
+  if (attempts >= MAX_AUTO_REQUEUE_ATTEMPTS) {
+    return {
+      requeue: false,
+      reason: `already auto-retried ${attempts}/${MAX_AUTO_REQUEUE_ATTEMPTS} times — needs a human look, not another blind retry`,
+    }
+  }
+  if (missingProps.length > 0) {
+    return {
+      requeue: false,
+      reason: `doomed retry — still missing required content props (${missingProps.join(", ")}); requeueing would fail identically`,
+    }
+  }
+  return { requeue: true, reason: `transient failure, content-contract satisfied, ${MAX_AUTO_REQUEUE_ATTEMPTS - attempts} auto-retr${MAX_AUTO_REQUEUE_ATTEMPTS - attempts === 1 ? "y" : "ies"} remaining` }
+}

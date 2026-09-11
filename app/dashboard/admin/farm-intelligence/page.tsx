@@ -62,6 +62,7 @@ export default function FarmIntelligencePage() {
   const [trend, setTrend] = useState<TrendRow[]>([])
   const [selectedZip, setSelectedZip] = useState<string | null>(null)
   const [filterAgent, setFilterAgent] = useState("")
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({})
   const [filterTerritory, setFilterTerritory] = useState("")
   const [showTerritoryModal, setShowTerritoryModal] = useState(false)
   const [editTerritory, setEditTerritory] = useState<FarmTerritory | null>(null)
@@ -140,7 +141,23 @@ export default function FarmIntelligencePage() {
       .select("id,name,zip_codes,is_active,marketing_budget_monthly,agent_id")
       .eq("brokerage_id", bid)
       .order("name")
-    setTerritories((terrData ?? []) as FarmTerritory[])
+    const terrRows = (terrData ?? []) as FarmTerritory[]
+    setTerritories(terrRows)
+
+    // Names for the agent filter below — territories only carry agent_id.
+    // `filterAgent` had no picker at all (unread-state-census: setFilterAgent
+    // was never called), so an admin could see WHICH zip a territory covers
+    // but never narrow the choropleth down to one agent's book.
+    const agentIds = Array.from(new Set(terrRows.map((t) => t.agent_id).filter((id): id is string => !!id)))
+    if (agentIds.length > 0) {
+      // users has first_name/last_name, not full_name (schema-drift guard, wave 57).
+      const { data: agentUsers } = await supabase.from("users").select("id,first_name,last_name").in("id", agentIds)
+      const names: Record<string, string> = {}
+      for (const u of (agentUsers ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+        names[u.id] = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.id.slice(0, 8)
+      }
+      setAgentNames(names)
+    }
 
     setLoading(false)
   }
@@ -204,11 +221,16 @@ export default function FarmIntelligencePage() {
     await load()
   }
 
-  // Filter metrics by territory zip list if filter selected
+  // Filter metrics by territory zip list, and/or by the zips of every
+  // territory a given agent owns, if either filter is selected.
   const filteredMetrics = metrics.filter((m) => {
     if (filterTerritory) {
       const terr = territories.find((t) => t.id === filterTerritory)
       if (terr && terr.zip_codes.length > 0 && !terr.zip_codes.includes(m.zip_code)) return false
+    }
+    if (filterAgent) {
+      const agentZips = new Set(territories.filter((t) => t.agent_id === filterAgent).flatMap((t) => t.zip_codes))
+      if (agentZips.size > 0 && !agentZips.has(m.zip_code)) return false
     }
     return true
   })
@@ -393,6 +415,16 @@ export default function FarmIntelligencePage() {
           <option value="">All Territories</option>
           {territories.map((t) => (
             <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        <select
+          value={filterAgent}
+          onChange={(e) => setFilterAgent(e.target.value)}
+          className="px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground"
+        >
+          <option value="">All Agents</option>
+          {Object.entries(agentNames).map(([id, name]) => (
+            <option key={id} value={id}>{name}</option>
           ))}
         </select>
       </div>

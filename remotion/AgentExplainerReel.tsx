@@ -235,7 +235,9 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + B1 + B2 + B3} />
     </AbsoluteFill>
   )
 }

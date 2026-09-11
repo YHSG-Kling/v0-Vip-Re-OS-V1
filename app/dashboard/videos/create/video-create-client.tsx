@@ -60,7 +60,6 @@ import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
 import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
-import { getAgentSettings } from "@/app/actions/agent-settings"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -284,7 +283,15 @@ export default function VideoCreatePage() {
   // itself is the "Ready library avatars" grid at video-create-client.tsx:1671,
   // which maps over `readyAssets`. Nothing merged: the deleted pair carried no
   // value the D-ID asset-row selection does not.
-  const [selectedVoice, setSelectedVoice] = useState<string>("")
+  //
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — `selectedVoice` /
+  // setSelectedVoice stood here too, read nowhere. Its one writer
+  // (agentSettings.voiceId, below) directly contradicted the documented
+  // decision on the real picker's own default-selection comment a few lines
+  // down ("No clone yet -> left unset so the assistant-voice picker below is
+  // a real choice rather than a silent substitution of someone else's
+  // voice"). SURVIVOR: `selectedElevenLabsVoiceId` (this file) is the value
+  // every generation call actually sends (elevenlabs_voice_id).
   // D-ID-specific selections
   const [selectedElevenLabsVoiceId, setSelectedElevenLabsVoiceId] = useState<string | null>(null)
   const [selectedDIDAvatarSource, setSelectedDIDAvatarSource] = useState<"photo" | "video" | null>(null)
@@ -442,7 +449,6 @@ export default function VideoCreatePage() {
           .eq("user_id", user?.id)
           .maybeSingle()
 
-        let clonedVoiceProfiles: GenerationVoiceOption[] = []
         if (agentData?.id) {
           setResolvedAgentId(agentData.id)
 
@@ -452,7 +458,6 @@ export default function VideoCreatePage() {
           // could not reach step 3 at all.
           const options = await getVoiceOptionsForGeneration(agentData.id)
           setVoiceOptions(options)
-          clonedVoiceProfiles = options.voiceClones
 
           // Load D-ID profile for the agent (used when platform provider = "did").
           // Server action rather than a client select: it also scopes the row to
@@ -510,12 +515,6 @@ export default function VideoCreatePage() {
         // Avatar selection for the D-ID engine is driven by didAvatarAssets below;
         // the legacy avatar list is no longer fetched (HeyGen removed).
         if (user?.id) {
-          const agentSettings = await getAgentSettings(user.id)
-          // Pre-select configured voice ID if no cloned voice profiles exist
-          if (agentSettings.voiceId && clonedVoiceProfiles.length === 0) {
-            setSelectedVoice(agentSettings.voiceId)
-          }
-
           // Load connected social platforms for repurpose destination indicators
           const { data: socialData } = await supabase
             .from("social_media_accounts")

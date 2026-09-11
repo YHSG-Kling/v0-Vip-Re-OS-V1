@@ -417,6 +417,7 @@
     "lib/video/listing-pitch-reel.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/promo-composition.ts": 1,
+    "lib/video/realism-profile.ts": 2,
     "lib/video/script-compliance.ts": 1,
     "lib/video/video-director.ts": 6,
     "lib/video/video-plays.ts": 2,
@@ -436,7 +437,7 @@
     "remotion/_BrollLayer.tsx": 4,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9433,
+  "census": 9442,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -524,7 +525,7 @@
     "app/actions/ai-lead-scoring.ts": 3,
     "app/actions/ai-listing-intake.ts": 9,
     "app/actions/ai-listing-packet.ts": 5,
-    "app/actions/ai-listing-presentation.ts": 3,
+    "app/actions/ai-listing-presentation.ts": 2,
     "app/actions/ai-market-intelligence.ts": 3,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-newsletter.ts": 13,
@@ -654,7 +655,7 @@
     "app/actions/credit-copilot.ts": 8,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
-    "app/actions/crm.ts": 9,
+    "app/actions/crm.ts": 8,
     "app/actions/cron-kernel.ts": 5,
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
@@ -994,7 +995,7 @@
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
     "app/actions/video/memory-video.ts": 2,
-    "app/actions/video-content.ts": 5,
+    "app/actions/video-content.ts": 4,
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
@@ -1149,6 +1150,7 @@
     "app/api/cron/geo-reel-autopublish/route.ts": 1,
     "app/api/cron/ghost-detection/route.ts": 1,
     "app/api/cron/health-check/route.ts": 2,
+    "app/api/cron/identity-orphan-sweep/route.ts": 1,
     "app/api/cron/idle-hands/route.ts": 1,
     "app/api/cron/intent-campaign/route.ts": 1,
     "app/api/cron/intro-video-email-backfill/route.ts": 1,
@@ -2833,6 +2835,7 @@
     "lib/buyer-search/search-engine.ts": 2,
     "lib/buyer-search/search-logger.ts": 4,
     "lib/buyer-search/written-criteria-alert.ts": 1,
+    "lib/campaign-readiness/content-type-vocabulary.ts": 2,
     "lib/campaign-readiness/readiness-evaluator.ts": 5,
     "lib/campaign-readiness/readiness-logger.ts": 6,
     "lib/campaign-sequences/ab-variant.ts": 2,
@@ -3161,6 +3164,7 @@
     "lib/home-value/report-email.ts": 1,
     "lib/identity/ensure-agent-context.ts": 1,
     "lib/identity/get-agent-context.ts": 2,
+    "lib/identity/orphan-reconciliation.ts": 1,
     "lib/identity/policy-scope.ts": 2,
     "lib/identity/resolve-contact-owner.ts": 1,
     "lib/inbound-mail/deal-doc-intake.ts": 1,
@@ -3935,7 +3939,7 @@
     "lib/remotion/registry.ts": 7,
     "lib/remotion/render-cache.ts": 6,
     "lib/remotion/render-coordinator.ts": 1,
-    "lib/remotion/render-decision.ts": 9,
+    "lib/remotion/render-decision.ts": 10,
     "lib/remotion/stock-pick.ts": 1,
     "lib/remotion/stock-scope.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 2,
@@ -3968,7 +3972,7 @@
     "lib/seller-equity/move-readiness.ts": 1,
     "lib/seller-equity/scenarios.ts": 2,
     "lib/services/communication.service.tsx": 6,
-    "lib/services/contact-management.service.ts": 8,
+    "lib/services/contact-management.service.ts": 6,
     "lib/services/content-generation.service.ts": 2,
     "lib/services/lead-management.service.ts": 6,
     "lib/services/social-publishing.service.ts": 5,
@@ -4072,7 +4076,7 @@
     "lib/usage/period.ts": 2,
     "lib/usage.ts": 2,
     "lib/utils.ts": 1,
-    "lib/validations/index.ts": 5,
+    "lib/validations/index.ts": 6,
     "lib/vendor/assignment-access.ts": 2,
     "lib/vendor-governance/attribution.ts": 2,
     "lib/vendor-governance/budget-eval.ts": 4,
@@ -4108,7 +4112,7 @@
     "lib/video/broll-picker.ts": 1,
     "lib/video/broll-plan.ts": 1,
     "lib/video/broll-url.ts": 1,
-    "lib/video/caption-plan.ts": 2,
+    "lib/video/caption-plan.ts": 3,
     "lib/video/chapter-video-generator.ts": 1,
     "lib/video/cma-reel-orchestrator.ts": 1,
     "lib/video/commission-situation.ts": 1,
@@ -4134,7 +4138,7 @@
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
     "lib/video/promo-composition.ts": 6,
-    "lib/video/realism-profile.ts": 2,
+    "lib/video/realism-profile.ts": 8,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 1,
     "lib/video/repurpose-planner.ts": 3,
@@ -4158,7 +4162,7 @@
     "lib/voice/call-recording.ts": 5,
     "lib/voice/campaign-command.ts": 1,
     "lib/voice/command-coverage.ts": 3,
-    "lib/voice/conversation-relay.ts": 7,
+    "lib/voice/conversation-relay.ts": 8,
     "lib/voice/deal-decision.ts": 4,
     "lib/voice/elevenlabs-tts.ts": 4,
     "lib/voice/inbound-number-binding.ts": 2,
@@ -4803,8 +4807,7 @@
     ],
     "app/actions/ai-listing-presentation.ts": [
       "generateListingPresentation",
-      "generateSellerNetSheet",
-      "generateVideoScript"
+      "generateSellerNetSheet"
     ],
     "app/actions/ai-market-intelligence.ts": [
       "generateMarketReport",
@@ -5665,7 +5668,6 @@
       "getCrmStatusAction"
     ],
     "app/actions/crm.ts": [
-      "updateContact",
       "deleteContact",
       "getContacts",
       "getContactById",
@@ -7954,7 +7956,6 @@
       "saveMemoryVideoDictationAction"
     ],
     "app/actions/video-content.ts": [
-      "generateVideoScript",
       "handleVideoGenerated",
       "approveAndGenerateVideo",
       "handleVideoPublished",
@@ -8509,6 +8510,9 @@
     ],
     "app/api/cron/health-check/route.ts": [
       "POST",
+      "GET"
+    ],
+    "app/api/cron/identity-orphan-sweep/route.ts": [
       "GET"
     ],
     "app/api/cron/idle-hands/route.ts": [
@@ -14330,6 +14334,10 @@
     "lib/buyer-search/written-criteria-alert.ts": [
       "proposeWrittenCriteriaAlert"
     ],
+    "lib/campaign-readiness/content-type-vocabulary.ts": [
+      "toReadinessContentType",
+      "toGateContentType"
+    ],
     "lib/campaign-readiness/readiness-evaluator.ts": [
       "evaluateCampaignReadiness",
       "batchEvaluateCampaignReadiness",
@@ -15892,6 +15900,9 @@
     "lib/identity/get-agent-context.ts": [
       "getAgentContext",
       "requireSessionAgentId"
+    ],
+    "lib/identity/orphan-reconciliation.ts": [
+      "reconcileOrphanedIdentities"
     ],
     "lib/identity/policy-scope.ts": [
       "resolvePolicyScopeAccess",
@@ -19877,7 +19888,8 @@
       "buildRenderIntent",
       "resolveInputProps",
       "needsThumbnailPass",
-      "resolveThumbnailProps"
+      "resolveThumbnailProps",
+      "shouldAutoRequeueFailedRender"
     ],
     "lib/remotion/stock-pick.ts": [
       "pickStockAsset"
@@ -20037,8 +20049,6 @@
       "sendAnniversaryMessage"
     ],
     "lib/services/contact-management.service.ts": [
-      "createContact",
-      "updateContact",
       "deleteContact",
       "getContact",
       "getContacts",
@@ -20476,6 +20486,7 @@
     "lib/validations/index.ts": [
       "isValidUUID",
       "isValidEmail",
+      "isValidPhone",
       "validateContact",
       "validateProperty",
       "validateTransaction"
@@ -20641,7 +20652,8 @@
     ],
     "lib/video/caption-plan.ts": [
       "buildCaptionPlan",
-      "activeCueIndex"
+      "activeCueIndex",
+      "clipCaptionCuesBeforeFrame"
     ],
     "lib/video/chapter-video-generator.ts": [
       "generatePropertyChapterVideos"
@@ -20772,8 +20784,14 @@
       "computeDaysOnMarket"
     ],
     "lib/video/realism-profile.ts": [
+      "elevenLabsModelForLane",
+      "withNaturalPauses",
+      "stripNaturalPauseMarkup",
+      "alignmentWithoutPauseMarkup",
       "scanForAiTells",
-      "avatarPipWindowFade"
+      "avatarPipWindowFade",
+      "PAUSE_MARKUP_ALIGNMENT_FIXTURE",
+      "PLAIN_ALIGNMENT_FIXTURE"
     ],
     "lib/video/reel-brand.ts": [
       "resolveReelBrand",
@@ -20908,6 +20926,7 @@
     ],
     "lib/voice/conversation-relay.ts": [
       "relayConfigured",
+      "conversationRelayTtsAttrs",
       "twimlConnectRelay",
       "parseRelayFrame",
       "relaySpeak",

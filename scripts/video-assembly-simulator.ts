@@ -79,6 +79,16 @@ import {
   DEFAULT_MUSIC_FADE_IN_SECONDS,
   DEFAULT_MUSIC_FADE_OUT_SECONDS,
 } from "../lib/remotion/music-filter-graph"
+import {
+  MUSIC_DUCK_VOLUME_PCT,
+  IMAGE_SCENE_REALISM_PROMPT_BLOCK,
+  AI_IMAGE_TELL_CHECKLIST,
+  FILM_GRAIN_OVERLAY_OPACITY,
+  KEN_BURNS_REALISM_AUDIT_NOTE,
+  COVER_CTA_CONTENT_BEAT_RULING,
+} from "../lib/video/realism-profile"
+import { clipCaptionCuesBeforeFrame, type CaptionCue } from "../lib/video/caption-plan"
+import { shouldAutoRequeueFailedRender, MAX_AUTO_REQUEUE_ATTEMPTS } from "../lib/remotion/render-decision"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const readStripped = (rel: string): string => stripComments(readFileSync(join(root, rel), "utf8"))
@@ -581,14 +591,27 @@ function musicSection() {
   check("music volume is clamped to <= 1.00 even when the stock row supplies more", overVolume.includes("volume=1.00"))
   check("music volume is clamped to >= 0.00 even when the stock row supplies less", underVolume.includes("volume=0.00"))
 
-  // Ducking: the render-coordinator's default puts music at 20% while the
-  // voice channel [0:a] is passed through UNSCALED in the amix graph — so the
-  // music sits under the narration by construction, not by accident.
+  // Ducking: the render-coordinator's default puts the music at
+  // MUSIC_DUCK_VOLUME_PCT (lib/video/realism-profile.ts, wave 57 — research-
+  // derived, replaces the pre-wave-57 literal 20%) while the voice channel
+  // [0:a] is passed through UNSCALED in the amix graph — so the music sits
+  // under the narration by construction, not by accident. §2 — asserts the
+  // RULE (references the named constant, not a re-typed literal) so a future
+  // re-tuning of MUSIC_DUCK_VOLUME_PCT cannot silently drift this check out
+  // of sync with the number actually shipped.
   const coordinatorSrc = readStripped("lib/remotion/render-coordinator.ts")
-  const defaultVolumeMatch = /musicVolumePct:\s*musicRow\.music_volume_pct\s*\?\?\s*(\d+)/.exec(coordinatorSrc)
-  check("render-coordinator's default music volume is a DUCKED level (<=30%), not near-parity with the voice",
-    !!defaultVolumeMatch && Number(defaultVolumeMatch[1]) <= 30,
-    defaultVolumeMatch ? `default is ${defaultVolumeMatch[1]}%` : "no default found")
+  const defaultVolumeMatch = /musicVolumePct:\s*musicRow\.music_volume_pct\s*\?\?\s*MUSIC_DUCK_VOLUME_PCT/.test(coordinatorSrc)
+  check("render-coordinator's default music volume falls back to the named MUSIC_DUCK_VOLUME_PCT constant (§6 — one spelling), not a re-typed literal",
+    defaultVolumeMatch)
+  check(`MUSIC_DUCK_VOLUME_PCT (${MUSIC_DUCK_VOLUME_PCT}%) is a DUCKED level (<=30%), not near-parity with the voice`,
+    MUSIC_DUCK_VOLUME_PCT > 0 && MUSIC_DUCK_VOLUME_PCT <= 30)
+  // The research (lib/video/realism-profile.ts header) converges on the music
+  // sitting 18-25dB below the (unscaled, 0dB) voice channel; the task's own
+  // framing narrows that to -18..-22 LUFS. 20*log10(pct/100) converts the
+  // linear ffmpeg volume= multiplier to dB relative to full scale.
+  const duckDb = 20 * Math.log10(MUSIC_DUCK_VOLUME_PCT / 100)
+  check(`MUSIC_DUCK_VOLUME_PCT converts to ${duckDb.toFixed(1)}dB below the voice — inside the researched -18..-25dB duck range`,
+    duckDb <= -18 && duckDb >= -25)
   check("the mix graph passes the voice channel [0:a] through UNSCALED (no volume filter on 0:a) — ducking is the music's job, not the voice's",
     /\[0:a\]\[a1\]amix/.test(graphWithLength))
 
@@ -833,6 +856,117 @@ function avatarSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// §aiVideoRealism — wave 57: the NON-avatar parts of every automated video
+// (b-roll/imagery, music duck level, captions kept off branding, the
+// autonomous failed-render requeue). Every absence assertion below carries a
+// positive control (§2).
+// ═══════════════════════════════════════════════════════════════════════════
+
+function aiVideoRealismSection() {
+  console.log("\n── §aiVideoRealism — b-roll/imagery, captions off branding, autonomous requeue (wave 57) ──")
+
+  // ── Captions never draw over a composition's own branding/CTA tile ───────
+  const CAPTION_HOSTS = [
+    "MarketUpdateReel", "AgentExplainerReel", "ExplainerAnimReel", "JustListedReel",
+    "JustListedReelSquare", "JustSoldReelSquare", "NeighborhoodSpotlightReel",
+    "PartnersMeetingReel", "PhotoWalkthroughReel", "TeammateExplainerReel",
+  ]
+  for (const id of CAPTION_HOSTS) {
+    const file = VIDEO_COMPOSITION_FILES[id]
+    if (!file) { check(`${id}: composition file is registered in this simulator's file map`, false); continue }
+    const src = readStripped(file)
+    check(`${id}: <CaptionLayer> passes hiddenFromFrame so captions never draw over the branding/CTA tile`,
+      /<CaptionLayer[\s\S]{0,400}hiddenFromFrame=/.test(src))
+  }
+
+  // PURE — clipCaptionCuesBeforeFrame itself. POSITIVE CONTROL: a cue that
+  // starts inside the cutoff window must be dropped or shortened; a cue
+  // entirely before it must survive untouched (the negative-control half —
+  // a clipper that drops EVERYTHING is exactly as broken as one that drops
+  // nothing).
+  const cues: CaptionCue[] = [
+    { text: "before", fromFrame: 0, durationFrames: 10 },     // fully before cutoff(20) — survives
+    { text: "straddles", fromFrame: 15, durationFrames: 10 }, // 15-25 straddles cutoff — shortened to 15-20
+    { text: "after", fromFrame: 25, durationFrames: 5 },      // fully after cutoff — dropped
+  ]
+  const clipped = clipCaptionCuesBeforeFrame(cues, 20)
+  check("CONTROL: clipCaptionCuesBeforeFrame keeps a cue entirely before the cutoff untouched",
+    clipped.some((c) => c.text === "before" && c.fromFrame === 0 && c.durationFrames === 10))
+  check("clipCaptionCuesBeforeFrame shortens a straddling cue so it ends exactly AT the cutoff, never past it",
+    clipped.some((c) => c.text === "straddles" && c.fromFrame === 15 && c.durationFrames === 5))
+  check("clipCaptionCuesBeforeFrame drops a cue that starts at/after the cutoff entirely",
+    !clipped.some((c) => c.text === "after"))
+  check("CONTROL: an undefined cutoff leaves the cue list byte-identical (opt-in, not forced)",
+    clipCaptionCuesBeforeFrame(cues, undefined).length === cues.length)
+
+  // ── Music duck level — covered in musicSection() above; cross-referenced
+  //    here so §aiVideoRealism reads as the complete realism story in one
+  //    place without re-asserting the same fact twice (§6).
+
+  // ── Ken Burns bounds — AUDITED, not changed (documented, not re-derived
+  //    here to avoid a second copy of the same numeric contract §6; the real
+  //    bound lives in lib/video/ken-burns-plan.ts and is exercised by
+  //    scripts/photo-walkthrough-simulator.ts). Source-check that the file
+  //    still declares the researched-safe cap.
+  const kenBurnsSrc = readStripped("lib/video/ken-burns-plan.ts")
+  check("Ken Burns zoom is capped at <=1.12 (12% max push) — inside every researched range for a subtle, non-fake-reading move",
+    /Math\.min\(opts\.maxZoom,\s*0\.12\)/.test(kenBurnsSrc))
+  check("Ken Burns pan offsets stay at <=3% of frame (PAN_MOVES) — small enough the subject never leaves frame at max scale",
+    /\[-3,\s*0\]|\[3,\s*0\]/.test(kenBurnsSrc))
+  check("KEN_BURNS_REALISM_AUDIT_NOTE records the audit finding (why no change was made) rather than leaving it unstated",
+    /lib\/video\/ken-burns-plan\.ts/.test(KEN_BURNS_REALISM_AUDIT_NOTE) && /AUDITED/.test(KEN_BURNS_REALISM_AUDIT_NOTE))
+  check("COVER_CTA_CONTENT_BEAT_RULING records the owner's content-vs-bookend distinction (task item 4) rather than leaving it unstated",
+    /CONTENT/.test(COVER_CTA_CONTENT_BEAT_RULING) && /MAX_BRAND_BOOKEND_SECONDS/.test(COVER_CTA_CONTENT_BEAT_RULING))
+
+  // ── AI-image realism prompt block — reaches every ImagePurpose via the
+  //    ONE shared prompt builder (§6), not pasted per purpose.
+  const imageGenSrc = readStripped("lib/ai/image-generation.ts")
+  check("image-generation.ts's buildBrandAwarePrompt appends IMAGE_SCENE_REALISM_PROMPT_BLOCK to every generated-image prompt",
+    /lines\.push\(IMAGE_SCENE_REALISM_PROMPT_BLOCK\)/.test(imageGenSrc))
+  check("IMAGE_SCENE_REALISM_PROMPT_BLOCK names the researched top AI-image tells (no in-image text, natural lighting, no artefacts)",
+    /no legible text/.test(IMAGE_SCENE_REALISM_PROMPT_BLOCK) &&
+    /natural unstaged lighting/.test(IMAGE_SCENE_REALISM_PROMPT_BLOCK) &&
+    /distorted hands/.test(IMAGE_SCENE_REALISM_PROMPT_BLOCK))
+  check(`AI_IMAGE_TELL_CHECKLIST is a real, non-empty checklist (${AI_IMAGE_TELL_CHECKLIST.length} items) — not a placeholder`,
+    AI_IMAGE_TELL_CHECKLIST.length >= 5)
+  check("FILM_GRAIN_OVERLAY_OPACITY is SUBTLE (<=0.10) — meant to read as 'shot on a camera', not as a visible texture effect",
+    FILM_GRAIN_OVERLAY_OPACITY > 0 && FILM_GRAIN_OVERLAY_OPACITY <= 0.10)
+
+  // ── Film grain wired into every BrollLayer call site, not left as a dead
+  //    constant (§1 orphan doctrine — an unreferenced constant is a defect).
+  const brollLayerFiles = ["remotion/ComingSoonReel.tsx", "remotion/NeighborhoodSpotlightReel.tsx", "remotion/AgentTalkingHeadReel.tsx"]
+  for (const f of brollLayerFiles) {
+    const src = readStripped(f)
+    check(`${f}: <BrollLayer> passes filmGrain (the constant this wave added is a live call site, not orphaned)`,
+      /<BrollLayer[\s\S]{0,200}filmGrain/.test(src))
+  }
+
+  // ── Autonomous failed-render requeue — shouldAutoRequeueFailedRender ─────
+  const composeContractProps = { agentPhotoUrl: "https://x/y.jpg" } // arbitrary — only shape matters below
+  const notFailed = shouldAutoRequeueFailedRender({ render_status: "queued", retry_count: 0 }, [])
+  check("CONTROL: a row that is NOT 'failed' is never requeued (no-op, not an error)", !notFailed.requeue)
+  const exhausted = shouldAutoRequeueFailedRender({ render_status: "failed", retry_count: MAX_AUTO_REQUEUE_ATTEMPTS }, [])
+  check(`a failed row that already spent all ${MAX_AUTO_REQUEUE_ATTEMPTS} auto-retries is left for a human, never requeued again`,
+    !exhausted.requeue)
+  const doomed = shouldAutoRequeueFailedRender({ render_status: "failed", retry_count: 0 }, ["agentName", "price"])
+  check("CONTROL: a DOOMED retry (missing required content props) is refused — requeueing would fail identically",
+    !doomed.requeue && /missing required content props/.test(doomed.reason))
+  const healthy = shouldAutoRequeueFailedRender({ render_status: "failed", retry_count: 0 }, [])
+  check("a transient failure (content-contract satisfied, retries remaining) IS requeued", healthy.requeue)
+  void composeContractProps
+
+  // Wired into the cron, not just defined — the missing autonomous half the
+  // task named explicitly ("confirm... that a failed render re-queues").
+  const cronSrc = readStripped("app/api/cron/composition-render-queue/route.ts")
+  check("composition-render-queue cron calls shouldAutoRequeueFailedRender (the autonomous half is MOUNTED, not just built)",
+    /shouldAutoRequeueFailedRender\(/.test(cronSrc))
+  check("the cron's auto-requeue path is content-contract-gated (missingContentProps), same judgment as the human-approved restart",
+    /missingContentProps\(/.test(cronSrc))
+  check("the cron's auto-requeue sweep is wrapped in try/catch — a pre-migration environment (no retry_count column yet) degrades to a no-op, never breaks the queue drain",
+    /catch \(e\) \{[\s\S]{0,200}auto-requeue sweep failed/.test(cronSrc))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════")
@@ -843,6 +977,7 @@ async function main() {
   musicSection()
   brandingSection()
   avatarSection()
+  aiVideoRealismSection()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

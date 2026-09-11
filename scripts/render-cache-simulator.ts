@@ -384,8 +384,11 @@ console.log("\n═══ 11. The narration clock is gone ═══")
   const keyAt = vo.indexOf("computeNarrationKey(p.voiceId, scriptForHash)")
   ok("the script is capped BEFORE hashing so two scripts differing past the cap share a clip",
     capAt !== -1 && namespaceAt !== -1 && keyAt !== -1 && capAt < namespaceAt && namespaceAt < keyAt)
-  ok("a non-default language namespaces the narration key; the default-language key is the bare script (existing rows still hit)",
-    vo.includes("p.languageCode !== DEFAULT_LANGUAGE ? `${p.languageCode}::${script}` : script"))
+  // Wave 57: the key is now model::language::script — a v3 clip and a multilingual_v2
+  // clip of the same text can never collide, and the language segment is always
+  // present (DEFAULT_LANGUAGE for English) so the namespace shape is one, not two.
+  ok("the narration key is namespaced by TTS model and language (model::lang::script), language defaulting to DEFAULT_LANGUAGE",
+    vo.includes("const scriptForHash = `${model}::${p.languageCode && p.languageCode !== DEFAULT_LANGUAGE ? p.languageCode : DEFAULT_LANGUAGE}::${script}`"))
   ok("the cache row upserts on the unique key (two producers can race)",
     vo.includes('onConflict: "brokerage_id,voice_id,script_hash"'))
   ok("alignment is cached too, so a reused clip still gets word-accurate captions",

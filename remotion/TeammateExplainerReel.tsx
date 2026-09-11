@@ -296,7 +296,9 @@ export const TeammateExplainerReel: React.FC<TeammateExplainerReelProps> = ({
       </Sequence>
 
       {/* Sound-off captions across the whole reel (default-off when absent). */}
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the outro/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={INTRO + BODY} />
     </AbsoluteFill>
   )
 }

@@ -74,11 +74,13 @@ export default function LinkToVideoGenerator() {
       setOrganizations(orgs)
       if (orgs.length > 0) setSelectedOrg(orgs[0])
       setVideoQueue(queue)
+      return queue
     } catch (error) {
       console.error("[v0] Load data error:", error)
       setOrganizations([{ id: "default-org", name: "Default Organization", type: "brokerage" }])
       setSelectedOrg({ id: "default-org", name: "Default Organization", type: "brokerage" })
       setVideoQueue([])
+      return []
     }
   }
 
@@ -89,6 +91,7 @@ export default function LinkToVideoGenerator() {
     }
 
     setIsGenerating(true)
+    setCompliance(null)
     try {
       const result = await generateVideoScript({
         url,
@@ -110,7 +113,17 @@ export default function LinkToVideoGenerator() {
         } else {
           toast.success("Script generated successfully!")
         }
-        loadData()
+        // `result.videoQueue` is the row as INSERTed, before checkCompliance()
+        // and the kernel-flag merge above wrote compliance_check_passed /
+        // compliance_flags onto it — the badge needs the row AFTER those
+        // writes, so pull it back from the just-refreshed queue rather than
+        // from the stale local object (unread-state-census: `compliance` had
+        // no writer at all).
+        const refreshed = await loadData()
+        const withCompliance = refreshed.find((v: any) => v.id === result.videoQueue.id)
+        if (withCompliance) {
+          setCompliance({ passed: withCompliance.compliance_check_passed, flags: withCompliance.compliance_flags ?? [] })
+        }
       } else {
         toast.error(result.error || "Failed to generate script")
       }
@@ -135,7 +148,11 @@ export default function LinkToVideoGenerator() {
         return
       }
       toast.success("Script updated and re-checked for compliance")
-      loadData()
+      const refreshed = await loadData()
+      const withCompliance = refreshed.find((v: any) => v.id === currentVideoId)
+      if (withCompliance) {
+        setCompliance({ passed: withCompliance.compliance_check_passed, flags: withCompliance.compliance_flags ?? [] })
+      }
     } catch (error) {
       toast.error("Failed to update script")
     }

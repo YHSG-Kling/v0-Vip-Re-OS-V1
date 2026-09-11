@@ -107,8 +107,11 @@ export default function VideoAssistantPage() {
     setGeneratedOptions([])
     
     try {
-      // Generate 3 different variations with slightly different tones
-      const tones = ["friendly", "professional", "energetic"]
+      // Generate 3 different variations with slightly different tones — the
+      // agent's chosen Primary Tone leads (and therefore becomes scripts[0],
+      // the "Auto-select first option" below), the other two fill out the
+      // remaining slots for comparison.
+      const tones = [selectedTone, ...["friendly", "professional", "energetic"].filter((t) => t !== selectedTone)]
       const promises = tones.map(tone =>
         generateVideoScript({
           purpose: selectedPurpose,
@@ -314,6 +317,24 @@ export default function VideoAssistantPage() {
                         </select>
                       </div>
                       
+                      <div>
+                        {/* `selectedTone` was carried in state and never had a
+                            picker (unread-state-census) — handleGenerateScript
+                            always generated the SAME three tones in the SAME
+                            order ("friendly" first, every time), so this had
+                            no way to steer which one leads the three variants. */}
+                        <Label className="text-xs font-medium text-slate-700 mb-1.5 block">Primary Tone</Label>
+                        <select
+                          value={selectedTone}
+                          onChange={(e) => setSelectedTone(e.target.value)}
+                          className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        >
+                          <option value="friendly">Friendly</option>
+                          <option value="professional">Professional</option>
+                          <option value="energetic">Energetic</option>
+                        </select>
+                      </div>
+
                       <div>
                         <Label className="text-xs font-medium text-slate-700 mb-1.5 block">Video Length</Label>
                         <select

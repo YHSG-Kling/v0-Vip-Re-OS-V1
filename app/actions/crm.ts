@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import {
-  updateContact as updateContactService,
   deleteContact as deleteContactService,
   getContact,
   getContacts as getContactsService,
@@ -56,14 +55,17 @@ import { bestEffort } from "@/lib/db/best-effort"
 // Deliberately NOT touched on the way out: nothing here read or wrote
 // `contacts.timeline`, so no timeline vocabulary moved with it.
 
-// Re-export consolidated service functions for backward compatibility
-export async function updateContact(contactId: string, agentId: string, updates: any) {
-  return updateContactService({
-    contactId,
-    agentId,
-    updates
-  })
-}
+// ── DELETED: updateContact (wave 57, Task B duplicates round 2) ────────────
+//
+// SURVIVOR: app/actions/contacts.ts:333 updateContact (session-derived
+// tenancy, delegates to lib/kernel/crm.ts updateContactRecord).
+//
+// This was a thin re-export of lib/services/contact-management.service.ts's
+// updateContact (deleted the same wave, tombstone there names the same
+// survivor) — that implementation took agentId directly from the caller
+// with no session check, the exact body-supplied-identity IDOR shape
+// CLAUDE.md §4 names. Zero live callers: every product import of
+// updateContact already named "@/app/actions/contacts".
 
 // ── DELETED: createContact (wave 56, lane OC, Task C duplicates sweep) ──────
 //

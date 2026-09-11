@@ -189,17 +189,33 @@ function testCaptionSeam() {
   // video_metadata so the render cron can pass them to the Remotion CaptionLayer.
   // We verify the SHAPE is as documented (no live call needed — wiring proof).
 
-  // Simulate what the patch step produces:
+  // Simulate what the patch step produces (everything EXCEPT tts_model, which
+  // is now checked against REAL source below rather than a self-referential
+  // literal — see that check's own comment for why).
   const fakeMeta = {
-    tts_model: MULTILINGUAL_TTS_MODEL,
     tts_language_code: localeToElevenLabsLanguage("es"),
     translated_captions: ["Just Listed", "Tres habitaciones", "Vista a la bahía"],
     source_locale: "en",
     target_locale: "es",
   }
 
-  check("tts_model carries MULTILINGUAL_TTS_MODEL",
-    fakeMeta.tts_model === MULTILINGUAL_TTS_MODEL)
+  // WAVE 57: tts_model is no longer MULTILINGUAL_TTS_MODEL at the real write
+  // site (lib/video/multilingual-reel.ts now calls elevenLabsModelForLane for
+  // it — see realism-profile.ts's research header for why v3 replaced
+  // multilingual_v2). The OLD version of this check compared a locally
+  // hand-built `fakeMeta.tts_model` against the SAME imported constant it was
+  // set from — a tautology that could never fail no matter what the real
+  // write site did. Read REAL stripped source instead (§2).
+  const multilingualReelSrc = stripComments(readFileSync(`${process.cwd()}/lib/video/multilingual-reel.ts`, "utf8"))
+  check("tts_model is written via elevenLabsModelForLane(\"reel_narration\", …) at the real commissionMultilingualReel write site, not a bare MULTILINGUAL_TTS_MODEL literal",
+    /tts_model:\s*elevenLabsModelForLane\("reel_narration",\s*ttsLanguageCode\)/.test(multilingualReelSrc))
+  // CONTROL: the pre-fix shape (the literal this test used to assert, byte for
+  // byte) is correctly recognised as the OLD wiring, not the current one.
+  const oldFixture = "tts_model:         MULTILINGUAL_TTS_MODEL,"
+  check("[control] the pre-fix `tts_model: MULTILINGUAL_TTS_MODEL` literal is correctly rejected by the new pattern",
+    !/tts_model:\s*elevenLabsModelForLane\("reel_narration",\s*ttsLanguageCode\)/.test(oldFixture) &&
+    /tts_model:\s*MULTILINGUAL_TTS_MODEL/.test(oldFixture))
+
   check("tts_language_code from locale map ('es')",
     fakeMeta.tts_language_code === "es")
   check("translated_captions is an array",

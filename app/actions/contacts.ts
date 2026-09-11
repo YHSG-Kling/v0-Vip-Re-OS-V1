@@ -1,5 +1,7 @@
 "use server"
 
+import { isValidEmail, isValidPhone } from "@/lib/validations"
+
 /**
  * app/actions/contacts.ts
  * ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +266,15 @@ export async function createContact(contactData: {
     // path passes — the trap that made wiring the old 10-value list impossible.
     const rawSource = contactData.source ?? "manual"
     const source = normalizeLeadSource(rawSource)
+    // Format validation merged from the retired crm.ts / contact-management.service.ts
+    // creators (wave 57): a malformed email or phone is refused BEFORE the insert
+    // (the survivors of the deleted validateEmail/validatePhone aliases).
+    if (contactData.email && !isValidEmail(contactData.email)) {
+      return { success: false, error: "Enter a valid email address" }
+    }
+    if (contactData.phone && !isValidPhone(contactData.phone)) {
+      return { success: false, error: "Enter a valid phone number" }
+    }
     if (!source) {
       return {
         success: false,

@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-09-10
+ * generated: 2026-09-11
  * source: public.live_schema_json()
- * body-sha256: 14d986b9ce40a69b69b6d371c758d43b14069789680734a3cdcc895a0394f258
+ * body-sha256: 55d65f2a793ec8e19ef999a5c216aa932d0bbd1bb417d61fcc14d913e44e9b1e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -549,7 +549,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   referral_payouts: ["amount_cents", "basis", "created_at", "fee_percent", "id", "note", "period", "posted_at", "posted_by", "prospect_id", "received_at", "received_by", "recipient_brokerage_id", "recipient_email", "referrer", "status", "updated_at"],
   referrals: ["agent_id", "brokerage_id", "closed_at", "commission_amount", "commission_potential", "converted_at", "created_at", "gift_sent", "gift_sent_at", "id", "notes", "partner_id", "referral_fee_pct", "referral_name", "referral_source", "referred_by", "referred_contact_id", "referred_lead_id", "referrer_contact_id", "referring_agent_id", "source_contact_name", "status", "thank_you_sent", "thank_you_sent_at", "updated_at", "value_estimate"],
   reg_change_observations: ["affected_surfaces", "brokerage_id", "change_signature", "created_at", "effective_date", "escalated_at", "id", "observed_at", "period", "severity_tier", "source", "surface_detail", "title", "url"],
-  remotion_composition_renders: ["agent_user_id", "artifact_key", "brokerage_id", "cache_hit", "completed_at", "composition_id", "created_at", "entity_id", "entity_type", "error_message", "facts", "facts_key", "frame_key", "id", "input_props", "is_published", "living_kind", "output_url", "public_slug", "published_at", "refreshed_from_render_id", "render_status", "requested_via", "scope_id", "scope_type", "served_from_render_id", "thumbnail_url", "used_did_avatar", "used_intro_asset_id", "used_music_asset_id", "used_outro_asset_id", "used_voiceover"],
+  remotion_composition_renders: ["agent_user_id", "artifact_key", "brokerage_id", "cache_hit", "completed_at", "composition_id", "created_at", "entity_id", "entity_type", "error_message", "facts", "facts_key", "frame_key", "id", "input_props", "is_published", "living_kind", "output_url", "public_slug", "published_at", "refreshed_from_render_id", "render_status", "requested_via", "retry_count", "scope_id", "scope_type", "served_from_render_id", "thumbnail_url", "used_did_avatar", "used_intro_asset_id", "used_music_asset_id", "used_outro_asset_id", "used_voiceover"],
   remotion_compositions: ["asset_manager_notes", "category", "composition_id", "created_at", "display_name", "duration_frames", "fps", "height", "is_active", "last_rendered_at", "orientation", "requires_did_avatar", "requires_voiceover", "seo_description", "seo_title", "stock_intro_category", "stock_outro_category", "supports_bookends", "thumbnail_composition_id", "tier_access", "updated_at", "width"],
   repurpose_pipelines: ["agent_user_id", "brokerage_id", "created_at", "created_by", "id", "is_active", "output_config", "pipeline_name", "source_type", "team_id", "updated_at", "visibility_scope"],
   repurposed_content_log: ["approval_status", "brokerage_id", "created_at", "created_by", "id", "notes", "output_ref_id", "output_ref_table", "output_type", "platform_target", "source_id", "source_type", "status"],

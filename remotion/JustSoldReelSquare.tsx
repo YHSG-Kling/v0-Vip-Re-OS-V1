@@ -248,7 +248,9 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + PHOTOS} />
     </AbsoluteFill>
   )
 }

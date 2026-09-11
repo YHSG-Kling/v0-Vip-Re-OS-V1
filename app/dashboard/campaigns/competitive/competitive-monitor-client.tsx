@@ -3,7 +3,7 @@
 // app/dashboard/campaigns/competitive/competitive-monitor-client.tsx
 // Layer 9.4 — Competitive Ad + Post Monitor Dashboard
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -151,6 +151,15 @@ export function CompetitiveMonitorClient({
   const [selectedAd, setSelectedAd] = useState<CompetitorAd | null>(null)
   const [selectedPost, setSelectedPost] = useState<CompetitorPost | null>(null)
   const [trackOpen, setTrackOpen] = useState(false)
+
+  // `useState(initialInsights)` only seeds the first render; handleGenerateInsights
+  // below writes new rows server-side and calls router.refresh() to pull them,
+  // but a prop change alone never re-runs useState's initializer, so `insights`
+  // stayed frozen at whatever the page held on mount (unread-state-census:
+  // setInsights was never called). Every panel below read the stale list.
+  useEffect(() => {
+    setInsights(initialInsights)
+  }, [initialInsights])
 
   // Group insights by type
   const groupedInsights = insights.reduce(

@@ -46,12 +46,20 @@ export function ISACampaignsPanel({ campaigns: initialCampaigns, brokerageId }: 
   const { toast } = useToast()
 
   async function handleToggleCampaign(campaignId: string, currentStatus: string) {
-    const result = await toggleCampaignStatus(campaignId, currentStatus as any)
-    if ((result as any).success) {
-      toast({ title: "Campaign updated" })
-      router.refresh()
-    } else {
-      toast({ title: "Failed to update campaign", description: (result as any).error ?? "Please try again.", variant: "destructive" })
+    // `toggling` gated the Switch's `disabled` prop but was never SET
+    // (unread-state-census) — a second click before router.refresh() landed
+    // could fire a second toggle on the same campaign.
+    setToggling(campaignId)
+    try {
+      const result = await toggleCampaignStatus(campaignId, currentStatus as any)
+      if ((result as any).success) {
+        toast({ title: "Campaign updated" })
+        router.refresh()
+      } else {
+        toast({ title: "Failed to update campaign", description: (result as any).error ?? "Please try again.", variant: "destructive" })
+      }
+    } finally {
+      setToggling(null)
     }
   }
 

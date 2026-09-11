@@ -2,29 +2,12 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { isValidUUID, validateEmail, validatePhone, validateContact } from "@/lib/validations"
-// `LEAD_SOURCES` was imported here and NEVER USED — a dead import that made the
-// vocabulary look enforced at this write seam while `source: params.source ||
-// "manual"` below let any string through. It is now genuinely used, via
-// normalizeLeadSource: the same fold the other contacts.source writer uses
-// (app/actions/contacts.ts createContact), so the two writers cannot disagree.
-import { LEAD_SOURCES, normalizeLeadSource } from "@/lib/constants"
+import { isValidUUID } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
-import { calculateLeadScore } from "./lead-management.service"
-import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 import {
   threeSidedContactTransactionFilter,
   deriveTransactionRollup,
 } from "@/lib/contacts/transaction-rollup"
-// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
-// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
-// `server-only` (it holds the service client and the paid PeopleData/OSINT
-// clients), and a static import here would pull that into every module graph
-// that reaches this file — including the plain `tsx` guard simulators, which are
-// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
-// already used the dynamic form for exactly this reason; these call sites were
-// the inconsistency. The queue call is best-effort and already awaited/voided,
-// so deferring the import costs nothing.
 
 // ============================================
 // UNIFIED CONTACT MANAGEMENT SERVICE
@@ -32,257 +15,56 @@ import {
 // Replaces duplicates in: crm.ts, portal-settings.ts, credit-copilot.ts
 // ============================================
 
-export interface CreateContactParams {
-  agentId: string
-  firstName: string
-  lastName?: string
-  email: string
-  phone?: string
-  source?: string
-  status?: string
-  budgetMin?: number
-  budgetMax?: number
-  preferredCities?: string[]
-  notes?: string
-  tags?: string[]
-}
+// ── DELETED: CreateContactParams, createContact (wave 57, Task B duplicates round 2) ────────────
+//
+// SURVIVOR: app/actions/contacts.ts createContact — the canonical, actively
+// used agent-facing create path (app/crm/page.tsx,
+// app/crm/contacts/new/page.tsx,
+// app/dashboard/acquisition/acquisition-quick-capture.tsx), which already
+// runs the same normalizeLeadSource fold this function did (both writers
+// were fixed together in the vendor_tenancy_lead_source wave — see
+// lib/services/lead-management.service.ts's comment naming both).
+//
+// This copy carried the SAME body-supplied-identity shape its sibling
+// updateContact (deleted immediately above, same wave) did: `agentId`
+// arrives as a plain params field with no session-derived check, used
+// directly as the owning agent AND as the dedupe/brokerage-resolution key —
+// CLAUDE.md §4's IDOR shape. Reachable only through the lib/services barrel
+// (lib/services/index.ts), which itself has zero importers anywhere in
+// app/, lib/ or components/. Zero live callers found it a second time:
+// app/actions/crm.ts's own createContact re-export of this exact function
+// was already deleted in wave 56 (tombstone directly below the deleted
+// updateContact re-export in that file) — that earlier fix removed the ONE
+// path that ever reached this implementation and left the implementation
+// itself behind. Nothing to merge onto the survivor: the survivor already
+// dedupes, resolves brokerage_id from the agent, folds the lead-source
+// vocabulary, queues enrichment and calculates the initial lead score — the
+// same steps this function performed, on the same tables.
 
-export interface UpdateContactParams {
-  contactId: string
-  agentId: string
-  updates: Partial<CreateContactParams>
-}
-
-/**
- * Create a new contact
- */
-export async function createContact(params: CreateContactParams) {
-  try {
-
-
-    // Validate inputs.
-    //
-    // PRESENCE first, then FORMAT through the shared validator. validateContact
-    // (lib/validations/index.ts:133) runs the same three checks this function
-    // used to inline one by one — uuid on agent_id, format on email, format on
-    // phone — but it collects EVERY failure instead of throwing on the first, so
-    // a caller who got both the email and the phone wrong is told both times
-    // instead of being sent round the loop twice. It was imported here and never
-    // called; the inline trio was the second spelling of it (CLAUDE.md §6).
-    //
-    // The required-email rule is NOT delegated: validateContact treats email as
-    // optional (`if (data.email && …)`), so folding the presence check into it
-    // would have let a contact through with no email at all — the field this
-    // function immediately dedupes on.
-    if (!params.email) {
-      throw new ValidationError("Email is required")
-    }
-
-    const contactCheck = validateContact({
-      email: params.email,
-      phone: params.phone,
-      agent_id: params.agentId,
-    })
-    if (!contactCheck.valid) {
-      throw new ValidationError(contactCheck.errors.join("; "))
-    }
-
-    const supabase = await createClient()
-
-    // Check for duplicates
-    const { data: existing } = await supabase
-      .from("contacts")
-      .select("id")
-      .eq("agent_id", params.agentId)
-      .eq("email", params.email)
-      .maybeSingle()
-
-    if (existing) {
-      throw new ValidationError("Contact with this email already exists")
-    }
-
-    // Resolve the owning brokerage from the agent. contacts has no
-    // brokerage_id auto-denorm trigger, so it must be stamped explicitly
-    // (business rule: brokerage_id required on every contact row).
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", params.agentId)
-      .maybeSingle()
-    if (!agentRow?.brokerage_id) {
-      throw new ValidationError("Agent is not associated with a brokerage")
-    }
-
-    // Lead-source vocabulary, enforced at the write rather than by the type.
-    // contacts.source carries NO CHECK constraint (measured live 2026-08-25), so
-    // an unrecognised value would otherwise persist verbatim and no scorer could
-    // match it (§6). "manual" is the canonical default and is IN the vocabulary.
-    const source = normalizeLeadSource(params.source ?? "manual")
-    if (!source) {
-      throw new ValidationError(
-        `Unknown lead source "${params.source}". Expected one of: ${LEAD_SOURCES.join(", ")}.`
-      )
-    }
-
-    // Create contact. NOTE: contacts has no full_name/lead_score/
-    // preferred_cities/tags columns — those are intentionally omitted.
-    const { data: contact, error } = await supabase
-      .from("contacts")
-      .insert({
-        agent_id: params.agentId,
-        brokerage_id: agentRow.brokerage_id,
-        first_name: params.firstName,
-        last_name: params.lastName,
-        email: params.email,
-        phone: params.phone,
-        source,   // canonical — see the vocabulary gate above
-        // OWNER RULING: a contact cannot be BORN qualified — "any other new contacts
-        // coming in from forms, lead magnets, other real estate sites, etc. haven't
-        // been qualified yet." `params.status` is caller-supplied and this path is
-        // reachable from a "use server" export (a public HTTP endpoint, §4), so the
-        // refusal has to live here and not in a dropdown. 'qualified' is earned by
-        // the lead→contact CONVERSION alone and stamped in exactly one place,
-        // lib/portal/portal-invite-core.ts:77 stampQualifiedIfLeadConverted. The
-        // fallback below is this path's OWN prior default, so no other status moves.
-        status: statusForNewContact(params.status, "active"),
-        lead_temperature: "cold",
-        budget_min: params.budgetMin,
-        budget_max: params.budgetMax,
-        notes: params.notes,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) {
-      throw new DatabaseError("Failed to create contact", error)
-    }
-
-    // ENRICH AS SOON AS THE CONTACT COMES IN (owner's ruling). This is the CRM
-    // manual-add service and it emits no CONTACT_CREATED, so the event-reactor
-    // lane never saw an agent-typed contact. Voided — the add must not fail
-    // because of enrichment. Live-deal suppression, the freshness check and the
-    // already-pending check are all inside queueContactEnrichment.
-    //
-    // Queued rather than enriched inline: enrichment makes two paid vendor calls
-    // and this runs on the request path. app/api/contacts/create/route.ts used
-    // to fire an un-awaited enrichContact() here, which on a serverless runtime
-    // is a coin-flip — the response returns, the function freezes, and the work
-    // may never finish. A queue row survives that.
-    void import("@/lib/enrichment/contact-enrichment-core")
-      .then((m) =>
-        m.queueContactEnrichment({
-          contactId: contact.id,
-          brokerageId: agentRow.brokerage_id as string,
-          triggerType: "crm_manual_add",
-        }),
-      )
-      .catch(() => {})
-
-    // Calculate initial lead score
-    await calculateLeadScore({
-      id: contact.id,
-      agentId: params.agentId,
-    })
-
-    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted from this site —
-    // /dashboard/crm has no page.tsx and never had one; the survivor is /crm
-    // (app/crm/page.tsx), already revalidated on the next line.
-    revalidatePath("/crm")
-
-    return { success: true, contact }
-  } catch (error) {
-    return handleError(error, "createContact")
-  }
-}
-
-/**
- * Update an existing contact
- */
-export async function updateContact(params: UpdateContactParams) {
-  try {
-    console.log("[v0] Updating contact:", params.contactId)
-
-    if (!isValidUUID(params.contactId)) {
-      throw new ValidationError("Invalid contact ID")
-    }
-
-    if (!isValidUUID(params.agentId)) {
-      throw new ValidationError("Invalid agent ID")
-    }
-
-    // Validate email if updating
-    if (params.updates.email && !validateEmail(params.updates.email)) {
-      throw new ValidationError("Invalid email address")
-    }
-
-    // Validate phone if updating
-    if (params.updates.phone && !validatePhone(params.updates.phone)) {
-      throw new ValidationError("Invalid phone number")
-    }
-
-    const supabase = await createClient()
-
-    // Verify ownership
-    const { data: existing } = await supabase
-      .from("contacts")
-      .select("id")
-      .eq("id", params.contactId)
-      .eq("agent_id", params.agentId)
-      .single()
-
-    if (!existing) {
-      throw new NotFoundError("Contact not found or access denied")
-    }
-
-    // Build update object
-    const updateData: any = {
-      ...params.updates,
-      updated_at: new Date().toISOString(),
-    }
-
-    // Update full_name if first or last name changed
-    if (params.updates.firstName || params.updates.lastName) {
-      const { data: current } = await supabase.from("contacts").select("first_name, last_name").eq("id", params.contactId).single()
-
-      updateData.full_name = `${params.updates.firstName || current?.first_name} ${params.updates.lastName || current?.last_name || ""}`.trim()
-    }
-
-    // Update contact
-    const { data: contact, error } = await supabase
-      .from("contacts")
-      .update(updateData)
-      .eq("id", params.contactId)
-      .select()
-      .single()
-
-    if (error) {
-      throw new DatabaseError("Failed to update contact", error)
-    }
-
-    // Recalculate lead score if significant fields changed
-    const significantFields = ["budget_min", "budget_max", "status", "preferred_cities"]
-    const hasSignificantChanges = significantFields.some((field) => field in params.updates)
-
-    if (hasSignificantChanges) {
-      await calculateLeadScore({
-        id: params.contactId,
-        agentId: params.agentId,
-        recalculate: true,
-      })
-    }
-
-    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted from this site —
-    // /dashboard/crm has no page.tsx and never had one; the survivor is /crm
-    // (app/crm/page.tsx), already revalidated on the next line.
-    revalidatePath("/crm")
-    revalidatePath(`/crm/contacts/${params.contactId}`)
-
-    return { success: true, contact }
-  } catch (error) {
-    return handleError(error, "updateContact")
-  }
-}
+// ── DELETED: updateContact (wave 57, Task B duplicates round 2) ────────────
+//
+// SURVIVOR: app/actions/contacts.ts:333 updateContact (session-derived
+// tenancy via resolveWriteContext, delegates to lib/kernel/crm.ts's
+// updateContactRecord — actorUserId/userType-aware, writes
+// contacts.preferred_language, the ONE path manager-registry.ts
+// multilingual_reels already documents as canonical).
+//
+// This was the SECOND, older implementation, reached only through
+// app/actions/crm.ts's thin re-export (also deleted, same wave — see its
+// tombstone). It took `agentId` DIRECTLY FROM THE CALLER with no
+// session-derived tenant/ownership check — CLAUDE.md §4's body-supplied-
+// identity IDOR shape, verified live: `.eq("agent_id", params.agentId)` is
+// the ENTIRE ownership check, so any caller naming another agent's id could
+// read/write that agent's contact. It also wrote `full_name` on UPDATE, a
+// column createContact right above this one (in the same file) explicitly
+// documents contacts does NOT have — the update path had silently drifted
+// from the insert path's own schema knowledge.
+//
+// Zero live callers: every product import of updateContact
+// (app/crm/components/os/buyer-match-panel.tsx,
+// app/crm/components/contact-header-card.tsx) already named
+// "@/app/actions/contacts", never "@/app/actions/crm" or this service.
+// Nothing repointed because nothing pointed here.
 
 /**
  * Delete a contact (soft delete)

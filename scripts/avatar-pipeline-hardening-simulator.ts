@@ -70,6 +70,17 @@ import {
   DID_TALK_REALISM_CONFIG,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
   avatarPipWindowFade,
+  elevenLabsModelForLane,
+  ELEVENLABS_NARRATION_MODEL_ID,
+  ELEVENLABS_PHONE_MODEL_ID,
+  ELEVENLABS_PHONE_MODEL_ID_DEPRECATED_SYNONYM,
+  withNaturalPauses,
+  stripNaturalPauseMarkup,
+  alignmentWithoutPauseMarkup,
+  NATURAL_PAUSES_FIXTURE_SCRIPT,
+  PAUSE_MARKUP_ALIGNMENT_FIXTURE,
+  PAUSE_MARKUP_ALIGNMENT_FIXTURE_EXPECTED_TEXT,
+  PLAIN_ALIGNMENT_FIXTURE,
 } from "../lib/video/realism-profile"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -545,13 +556,15 @@ function reelProducersSection() {
   const boardPacket = readStripped("lib/kernel/board-packet-reel.ts")
   const partnersMeeting = readStripped("lib/intelligence/partners-meeting.ts")
 
-  // prepareReelVoiceover itself: the languageCode param now also selects the
-  // MODEL (not just a param the API would silently drop for the default
-  // model) — the wave-52 fix this whole section depends on.
-  check("prepareReelVoiceover switches to MULTILINGUAL_TTS_MODEL when a non-default languageCode is resolved (not just forwarding the code to the English-only default model)",
-    /const modelId = languageCode \? MULTILINGUAL_TTS_MODEL : undefined/.test(reelVoiceover))
-  check("both TTS calls (with-timestamps AND the plain fallback) receive modelId — a fallback that dropped it would silently revert to the English-only model",
-    (reelVoiceover.match(/,\s*languageCode,\s*modelId\s*\}\)/g) ?? []).length === 2)
+  // prepareReelVoiceover itself: the languageCode param feeds
+  // elevenLabsModelForLane — WAVE 57 upgrade from the wave-52 fix this
+  // section originally proved (a per-language MULTILINGUAL_TTS_MODEL swap).
+  // Now EVERY language (English included) resolves through the same one
+  // selector, always eleven_v3 — see realism-profile.ts's research header.
+  check("prepareReelVoiceover resolves its model via elevenLabsModelForLane(\"reel_narration\", …) — the ONE selector (§6), not a hand-rolled MULTILINGUAL_TTS_MODEL ternary",
+    /const model = elevenLabsModelForLane\("reel_narration", p\.languageCode\)/.test(reelVoiceover))
+  check("both TTS calls (with-timestamps AND the plain fallback) receive modelId: model — a fallback that dropped it would silently revert to elevenlabs-tts.ts's own default model",
+    (reelVoiceover.match(/,\s*languageCode,\s*modelId:\s*model\s*\}\)/g) ?? []).length === 2)
 
   const contactFacing: Array<[string, string]> = [
     ["listing-pitch-reel.ts (seller-facing pitch video)", listingPitch],
@@ -908,6 +921,142 @@ function advancedRealismSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// §v3 — WAVE 57: model-per-lane, natural pauses never reach captions,
+//   language_code rules unchanged, phone lane uses the low-latency model.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function v3Section() {
+  console.log("\n── §v3 — ElevenLabs model per lane + natural pauses (wave 57) ──")
+
+  // ── model-per-lane ──────────────────────────────────────────────────────
+  check("elevenLabsModelForLane(\"avatar_narration\") is eleven_v3",
+    elevenLabsModelForLane("avatar_narration") === "eleven_v3")
+  check("elevenLabsModelForLane(\"reel_narration\") is ALSO eleven_v3 — one model for both narration lanes",
+    elevenLabsModelForLane("reel_narration") === "eleven_v3")
+  check("elevenLabsModelForLane(\"phone_realtime\") is Flash v2.5, NOT v3 (ElevenLabs: v3 'not suitable for real-time')",
+    elevenLabsModelForLane("phone_realtime") === "eleven_flash_v2_5")
+  check("elevenLabsModelForLane never returns the deprecated Turbo v2.5 synonym for the phone lane",
+    elevenLabsModelForLane("phone_realtime") !== ELEVENLABS_PHONE_MODEL_ID_DEPRECATED_SYNONYM)
+  check("the exported model-id constants agree with the selector's own output (no drifting second literal)",
+    ELEVENLABS_NARRATION_MODEL_ID === elevenLabsModelForLane("avatar_narration") &&
+    ELEVENLABS_PHONE_MODEL_ID === elevenLabsModelForLane("phone_realtime"))
+
+  const dispatch = readStripped("lib/providers/dispatch.ts")
+  const reelVoiceover = readStripped("lib/video/reel-voiceover.ts")
+  const conversationRelay = readStripped("lib/voice/conversation-relay.ts")
+
+  check("dispatch.ts's avatar-video TTS leg resolves its model via elevenLabsModelForLane(\"avatar_narration\", …), not a hardcoded \"eleven_multilingual_v2\" literal",
+    /elevenLabsModelForLane\("avatar_narration",\s*params\.ttsLanguageCode\)/.test(dispatch) &&
+    !/model_id:\s*"eleven_multilingual_v2"/.test(dispatch))
+  check("reel-voiceover.ts resolves its model via elevenLabsModelForLane(\"reel_narration\", …) for EVERY language, English included (no more implicit fallback to elevenlabs-tts.ts's own eleven_monolingual_v1 default)",
+    /const model = elevenLabsModelForLane\("reel_narration", p\.languageCode\)/.test(reelVoiceover))
+  check("reel-voiceover.ts's narration-cache key is namespaced by the resolved model (a model swap must invalidate old cached audio, not silently reuse it)",
+    /const scriptForHash = `\$\{model\}::/.test(reelVoiceover))
+  check("conversation-relay.ts's phone-lane voice attribute derives the model suffix from elevenLabsModelForLane(\"phone_realtime\") — the SAME selector, not a second \"flash_v2_5\" string",
+    /twilioElevenLabsModelSuffix\(elevenLabsModelForLane\("phone_realtime"\)\)/.test(conversationRelay))
+
+  // CONTROL: the pre-fix dispatch.ts shape (the literal this section replaced,
+  // byte for byte) is correctly recognised as the OLD wiring.
+  const oldDispatchFixture = 'model_id: "eleven_multilingual_v2",'
+  check("[control] the pre-fix dispatch.ts model_id literal is correctly rejected by the new pattern",
+    !/elevenLabsModelForLane\("avatar_narration",\s*params\.ttsLanguageCode\)/.test(oldDispatchFixture) &&
+    /model_id:\s*"eleven_multilingual_v2"/.test(oldDispatchFixture))
+
+  // ── language_code enforcement rules are UNCHANGED by v3's adoption ───────
+  const elevenlabsTts = readStripped("lib/voice/elevenlabs-tts.ts")
+  check("LANGUAGE_ENFORCEMENT_MODELS still names only turbo_v2_5/flash_v2_5 — eleven_v3 is NOT added to the enforcement allowlist (v3 auto-detects from text, exactly like multilingual_v2 before it)",
+    /LANGUAGE_ENFORCEMENT_MODELS = new Set\(\["eleven_turbo_v2_5", "eleven_flash_v2_5"\]\)/.test(elevenlabsTts))
+
+  // ── natural pauses: inserted ONLY for models that honour them ────────────
+  const pacedV3 = withNaturalPauses(NATURAL_PAUSES_FIXTURE_SCRIPT, "eleven_v3")
+  check("withNaturalPauses inserts v3 audio-tag pacing for eleven_v3 (sentence boundary)",
+    pacedV3.includes("[short pause]"))
+  check("withNaturalPauses inserts v3 audio-tag pacing for eleven_v3 (paragraph boundary)",
+    pacedV3.includes("[long pause]"))
+  const pacedMultilingual = withNaturalPauses(NATURAL_PAUSES_FIXTURE_SCRIPT, "eleven_multilingual_v2")
+  check("withNaturalPauses inserts SSML <break> pacing for eleven_multilingual_v2 instead (v3's own tags are NOT honoured there)",
+    /<break time="[\d.]+s" \/>/.test(pacedMultilingual) && !pacedMultilingual.includes("[short pause]"))
+  check("CONTROL: withNaturalPauses is a NO-OP for the phone lane's model (Flash v2.5) — neither mechanism is confirmed honoured there",
+    withNaturalPauses(NATURAL_PAUSES_FIXTURE_SCRIPT, ELEVENLABS_PHONE_MODEL_ID) === NATURAL_PAUSES_FIXTURE_SCRIPT)
+  check("CONTROL: withNaturalPauses is a NO-OP for an unrecognised model id (fails closed to unchanged text, never guesses a mechanism)",
+    withNaturalPauses(NATURAL_PAUSES_FIXTURE_SCRIPT, "some_future_model") === NATURAL_PAUSES_FIXTURE_SCRIPT)
+  check("withNaturalPauses never inserts a TRAILING pause after the script's last sentence (dead air)",
+    !pacedV3.trim().endsWith("[short pause]") && !pacedV3.trim().endsWith("[long pause]"))
+
+  // ── stripNaturalPauseMarkup is the exact inverse ─────────────────────────
+  const stripped = stripNaturalPauseMarkup(pacedV3)
+  check("stripNaturalPauseMarkup removes every inserted audio tag",
+    !stripped.includes("[short pause]") && !stripped.includes("[long pause]"))
+  check("stripNaturalPauseMarkup reconstructs the original wording (modulo whitespace/paragraph joins)",
+    stripped.replace(/\s+/g, " ") === NATURAL_PAUSES_FIXTURE_SCRIPT.replace(/\s+/g, " "))
+  check("stripNaturalPauseMarkup also removes SSML <break> markup",
+    !stripNaturalPauseMarkup(pacedMultilingual).includes("<break"))
+
+  // ── THE CAPTION-SAFETY PROOF (task item 2 — "prove it") ──────────────────
+  check("POSITIVE CONTROL: alignmentWithoutPauseMarkup strips tag characters out of an alignment that DOES include them",
+    !alignmentWithoutPauseMarkup(PAUSE_MARKUP_ALIGNMENT_FIXTURE)!.characters.join("").includes("["))
+  check("...and reconstructs exactly the tag-free spoken text",
+    alignmentWithoutPauseMarkup(PAUSE_MARKUP_ALIGNMENT_FIXTURE)!.characters.join("") === PAUSE_MARKUP_ALIGNMENT_FIXTURE_EXPECTED_TEXT)
+  check("...and the three parallel arrays stay the SAME length after stripping (no orphaned timestamp)",
+    (() => {
+      const a = alignmentWithoutPauseMarkup(PAUSE_MARKUP_ALIGNMENT_FIXTURE)!
+      return a.characters.length === a.character_start_times_seconds.length &&
+        a.characters.length === a.character_end_times_seconds.length
+    })())
+  check("NEGATIVE CONTROL: alignmentWithoutPauseMarkup is a true no-op on an alignment with NO tag characters (not a function that always shortens)",
+    (() => {
+      const a = alignmentWithoutPauseMarkup(PLAIN_ALIGNMENT_FIXTURE)!
+      return a.characters.join("") === PLAIN_ALIGNMENT_FIXTURE.characters.join("") &&
+        a.characters.length === PLAIN_ALIGNMENT_FIXTURE.characters.length
+    })())
+  check("alignmentWithoutPauseMarkup(null) is null, never a throw",
+    alignmentWithoutPauseMarkup(null) === null)
+
+  check("reel-voiceover.ts feeds withNaturalPauses' OUTPUT (pacedScript) to synthesis, never the raw script",
+    /const pacedScript = withNaturalPauses\(script, model\)/.test(reelVoiceover) &&
+    /text:\s*pacedScript/.test(reelVoiceover))
+  check("reel-voiceover.ts sanitizes the RETURNED alignment through alignmentWithoutPauseMarkup before it can reach a caller (buildCaptionPlan never sees raw stamped.alignment)",
+    /alignment = alignmentWithoutPauseMarkup\(stamped\.alignment as CharacterAlignment \| null\)/.test(reelVoiceover))
+  check("dispatch.ts's avatar-video TTS leg also runs its script through withNaturalPauses before synthesis",
+    /const pacedScript = withNaturalPauses\(renderedScript, avatarTtsModel\)/.test(dispatch))
+
+  // ── phone lane: low-latency model, wired behind the existing seam ────────
+  check("conversation-relay.ts's conversationRelayTtsAttrs sets ttsProvider=\"ElevenLabs\" with the resolved/fallback voice id when an API key is configured",
+    /ttsProvider: "ElevenLabs"/.test(conversationRelay) && /FALLBACK_VOICE_ID/.test(conversationRelay))
+  check("...and falls back to Twilio-native Google ONLY when ElevenLabs is unreachable (no vendor-preference branch)",
+    /ttsProvider: "Google"/.test(conversationRelay) && /ELEVENLABS_API_KEY/.test(conversationRelay))
+  check("...and sets elevenlabsTextNormalization=\"on\" explicitly (ConversationRelay's own \"auto\"-means-\"off\" quirk, documented in the file header)",
+    /elevenlabsTextNormalization: "on"/.test(conversationRelay))
+
+  const inboundRoute = readStripped("app/api/voice/twilio/inbound/route.ts")
+  check("the inbound webhook actually calls conversationRelayTtsAttrs and threads its output into twimlConnectRelay (wired, not just defined)",
+    /conversationRelayTtsAttrs\(elevenlabsVoiceId\)/.test(inboundRoute) &&
+    /tts\.ttsProvider,\s*\n?\s*tts\.elevenlabsTextNormalization,/.test(inboundRoute))
+  check("the tenant-scope call site passes ctx.identity.elevenlabsVoiceId — the value resolveInboundContext ALREADY resolved and previously discarded",
+    /answerTwiml\(firstMessage, turnUrl, ctx\.identity\.elevenlabsVoiceId\)/.test(inboundRoute))
+
+  // ── D-ID V4 Expressive: reachable via the ALREADY-WIRED /expressives path,
+  //    not as an addition to DID_TALK_REALISM_CONFIG (structurally incompatible
+  //    request shape) — see realism-profile.ts's own reachability-finding header.
+  check("dispatch.ts imports presenterTypeForTwin — the ONE '@avt_' detector (§6) — rather than re-implementing the regex",
+    /import \{ presenterTypeForTwin \} from "@\/lib\/did\/agent-presenter"/.test(dispatch))
+  check("dispatch.ts's agent_voice_profiles select now includes did_avatar_id — the column it silently ignored before this wave",
+    /select\("elevenlabs_voice_id, did_photo_url, did_video_url, did_avatar_id, default_expression, expression_intensity"\)/.test(dispatch))
+  check("dispatch.ts branches to D-ID's /expressives endpoint for a V4-marked avatar, /clips or /talks otherwise",
+    /path: isV4Expressive \? "\/expressives" : isVideoSource \? "\/clips" : "\/talks"/.test(dispatch))
+  check("the V4 branch does NOT spread DID_TALK_REALISM_CONFIG (a TalksConfig shape /expressives does not accept) — only result_format carries over",
+    /config: \{ result_format: DID_TALK_REALISM_CONFIG\.result_format \}/.test(dispatch))
+  check("DID_TALK_REALISM_CONFIG is a TalksConfig shape realism-profile.ts's own D-ID V4 header explicitly says does NOT apply to /expressives — asserted so nobody 'fixes' this by spreading it in",
+    !/config: \{ \.\.\.DID_TALK_REALISM_CONFIG, .*avatar_id/.test(readRaw("lib/providers/dispatch.ts")))
+
+  // CONTROL: the pre-fix select (missing did_avatar_id) is correctly
+  // recognised as unable to detect a V4 Expressive avatar at all.
+  const oldSelectFixture = 'select("elevenlabs_voice_id, did_photo_url, did_video_url, default_expression, expression_intensity")'
+  check("[control] the pre-fix select without did_avatar_id is correctly rejected by the new pattern",
+    !/select\("elevenlabs_voice_id, did_photo_url, did_video_url, did_avatar_id, default_expression, expression_intensity"\)/.test(oldSelectFixture))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("══════════════════════════════════════════════════════════════")
@@ -928,6 +1077,7 @@ async function main() {
   realismSection()
   avatarPipWindowSection()
   advancedRealismSection()
+  v3Section()
   console.log("\n────────────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {
@@ -935,6 +1085,6 @@ async function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ All fifteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55 + §avatarPipWindow/§advancedRealism from wave 56), each with a positive control.")
+  console.log(" ✅ All sixteen avatar-pipeline hardening properties hold (seven from wave 50 + §language from wave 51 + §research/§reelProducers/§anniversary/§durationOverrun from wave 52-53 + §realism from wave 55 + §avatarPipWindow/§advancedRealism from wave 56 + §v3 from wave 57), each with a positive control.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

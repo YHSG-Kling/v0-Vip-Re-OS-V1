@@ -2377,6 +2377,25 @@ export function TransactionDetailClient({
                 ) : (
                   <p className="text-sm text-green-700 dark:text-green-300">On track — no delays recorded</p>
                 )}
+                {/* transparency_updates history — fetched alongside `delays`
+                    but never rendered (unread-state-census). The audit trail
+                    of what this client was actually told, and when. */}
+                {transparencyUpdates.length > 0 && (
+                  <div className="mt-3 pt-3 border-t space-y-1.5">
+                    <p className="text-xs font-medium text-muted-foreground">Update history</p>
+                    {transparencyUpdates.map((u: any) => (
+                      <div key={u.id} className="text-xs flex items-start justify-between gap-2">
+                        <span className={u.is_visible_to_client ? "" : "text-muted-foreground italic"}>
+                          {u.message}
+                          {!u.is_visible_to_client && " (internal only)"}
+                        </span>
+                        <span className="text-muted-foreground whitespace-nowrap">
+                          {new Date(u.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 

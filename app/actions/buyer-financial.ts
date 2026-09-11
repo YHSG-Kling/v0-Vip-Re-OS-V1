@@ -84,6 +84,10 @@ export async function upsertFinancialProfile(params: {
    *  percent could never inform the closing-cost estimate. */
   downPaymentAmount?: number
   estimatedMonthlyBudget?: number
+  /** buyer_financial_profiles.agent_notes had a READER (the verification
+   *  panel loaded it into state on mount) and no writer anywhere in the
+   *  tree, so a note could never actually be saved — unread-state-census. */
+  agentNotes?: string
 }): Promise<{ success: boolean; profileId?: string; error?: string }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok) return { success: false, error: access.error }
@@ -107,6 +111,7 @@ export async function upsertFinancialProfile(params: {
         down_payment_percent:         params.downPaymentPercent ?? null,
         down_payment_amount:          params.downPaymentAmount ?? null,
         estimated_monthly_budget:     params.estimatedMonthlyBudget ?? null,
+        agent_notes:                  params.agentNotes ?? null,
         updated_at:                   new Date().toISOString(),
       },
       { onConflict: "contact_id" }

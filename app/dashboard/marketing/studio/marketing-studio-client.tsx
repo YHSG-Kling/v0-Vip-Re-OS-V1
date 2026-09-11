@@ -279,7 +279,11 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
   const [isCreateAssetOpen, setIsCreateAssetOpen] = useState(false)
   const [isCreateEventOpen, setIsCreateEventOpen] = useState(false)
-  const [isRegistryOpen, setIsRegistryOpen] = useState(false)
+  // TOMBSTONE (orphan doctrine §1.3, unread-state-census) — `isRegistryOpen`
+  // was never read: the registry is not a dialog, it is the "registry"
+  // TabsContent below (survivor: the `activeTab === "registry"` tab, ~line
+  // 3392), and linking a registry item to a campaign happens inline there
+  // via the per-item <Select>, not a modal this flag could have gated.
   const [isQrLinkOpen, setIsQrLinkOpen] = useState(false)
   const [selectedAssetForQr, setSelectedAssetForQr] = useState<string | null>(null)
   const [qrLinkError, setQrLinkError] = useState<string | null>(null)
@@ -1370,7 +1374,6 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       assetName: item.title,
     })
     if (result.success) {
-      setIsRegistryOpen(false)
       loadAssets()
     }
   }

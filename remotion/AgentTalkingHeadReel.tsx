@@ -189,6 +189,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
               clips={brollClips!}
               totalFrames={BODY}
               overlayColor={`${brand.primaryColor}59`}
+              filmGrain
             />
           )}
           {avatarVideoUrl ? (

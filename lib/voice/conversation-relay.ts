@@ -20,6 +20,50 @@
 //   {type:"interrupt"...}, {type:"dtmf"...}, {type:"error"...}.
 // (Server → Twilio): {type:"text", token, last} to speak,
 //   {type:"end"} (with optional handoffData) to end the session.
+//
+// ── WAVE 57: TTS PROVIDER (owner ruling, verbatim: "if voice between
+// ── elevenlabs or twilio") ───────────────────────────────────────────────────
+// RESEARCH (Exa, 2026-09-11): docs.twilio.com/voice/twiml/connect/
+// conversationrelay and docs.twilio.com/voice/conversationrelay/
+// voice-configuration — <ConversationRelay> takes `ttsProvider` ("Google" |
+// "Amazon" | "ElevenLabs") and `voice`. ElevenLabs' own voice id is used
+// directly; ElevenLabs-specific tuning rides IN the voice string itself, one
+// hyphen-joined suffix: `<voiceId>-<model>-<speed>_<stability>_<similarity>`
+// (docs' own worked example: "XrExE9yKIg1WjnnlVkGX-1.2_0.6_0.8" sets speed
+// 1.2/stability 0.6/similarity 0.8; a model id can be inserted before the
+// numbers — "ZF6FPAbjXT4488VcRRnw-flash_v2_5-1.2_1.0_1.0", from Twilio's own
+// ElevenLabs-integration blog, 2025-05-29). Supported model suffixes:
+// `flash_v2`, `turbo_v2_5`, `turbo_v2`, and the default `flash_v2_5` — the
+// SAME model elevenLabsModelForLane("phone_realtime") already selects
+// (lib/video/realism-profile.ts), so conversationRelayTtsAttrs derives the
+// Twilio-format suffix from that ONE selector rather than a second hardcoded
+// "flash_v2_5" string (§6). `elevenlabsTextNormalization` (on/auto/off,
+// TwiML default "off") has a ConversationRelay-SPECIFIC quirk the direct
+// ElevenLabs API does not share: "auto has the same effect as off for
+// Conversation Relay voice calls" — so this file sets it to "on" explicitly
+// (a real-estate call speaks prices/dates/addresses that need normalizing),
+// rather than forwarding this repo's direct-API ELEVENLABS_TEXT_NORMALIZATION
+// ("auto") which would silently mean OFF here.
+//
+// ElevenLabs is this repo's ONLY storable voice_provider (the live CHECK
+// constraint — scripts/vendor-retirement-guard.ts: "voice_provider vocabulary
+// is ElevenLabs only, matching the live CHECK") — so this is not a per-tenant
+// choice to wire, only a missing WIRE: InboundIdentity.elevenlabsVoiceId was
+// already resolved from ai_identity_profiles by lib/voice/twilio-voice.ts's
+// resolveInboundContext, but nothing downstream ever read it — the phone
+// lane spoke Twilio-native Google/Amazon voices regardless. The ONLY runtime
+// fallback to Google is when ElevenLabs itself is unreachable (no
+// ELEVENLABS_API_KEY) — never a vendor preference.
+
+import { elevenLabsModelForLane, ELEVENLABS_REALISM_VOICE_SETTINGS } from "@/lib/video/realism-profile"
+
+/** Platform STOCK ElevenLabs voice (Rachel) — the SAME id as FALLBACK_VOICE_ID
+ *  in lib/voice/elevenlabs-tts.ts, duplicated here (established pattern —
+ *  see lib/video/module-voice.ts's STOCK_VIDEO_VOICE_ID for the identical
+ *  reasoning) because that module `import "server-only"`s and this one is
+ *  imported by plain-tsx simulators (scripts/voice-lane-simulator.ts) that
+ *  are not run inside Next's server runtime. */
+const FALLBACK_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 
 const xmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 
@@ -28,14 +72,76 @@ export function relayConfigured(env: { CONVERSATION_RELAY_WSS_URL?: string; RELA
   return !!(env.CONVERSATION_RELAY_WSS_URL ?? "").startsWith("wss://") && !!(env.RELAY_SHARED_SECRET ?? "").trim()
 }
 
+/** The pre-wave-57 default voice — kept as the ONE fallback literal (§6) so
+ *  twimlConnectRelay's own default param and conversationRelayTtsAttrs' no-
+ *  ElevenLabs-key fallback can never drift into two different spellings. */
+export const DEFAULT_CONVERSATION_RELAY_GOOGLE_VOICE = "en-US-Journey-O"
+
+export interface ConversationRelayTtsAttrs {
+  ttsProvider: "ElevenLabs" | "Google"
+  voice: string
+  /** Present only when ttsProvider is "ElevenLabs" — Google has no such attribute. */
+  elevenlabsTextNormalization?: "on"
+}
+
+/** speed multiplier inside the ElevenLabs voice-string suffix. 1.0 = ElevenLabs'
+ *  own default (unchanged) — no research basis found to deviate for phone. */
+const CONVERSATION_RELAY_ELEVENLABS_SPEED = 1.0
+
+/** Strip the "eleven_" prefix — Twilio's ElevenLabs voice-string model suffix
+ *  omits it ("flash_v2_5", not "eleven_flash_v2_5"). PURE. */
+function twilioElevenLabsModelSuffix(modelId: string): string {
+  return modelId.replace(/^eleven_/, "")
+}
+
+/**
+ * conversationRelayTtsAttrs — PURE. The ttsProvider/voice[/elevenlabsText
+ * Normalization] TwiML attributes for <ConversationRelay> — see the file
+ * header for the full research. ElevenLabs (the resolved brokerage/team/
+ * agent clone id, else the same stock ElevenLabs voice every other realism-
+ * tuned caller falls back to — lib/voice/elevenlabs-tts.ts's FALLBACK_VOICE_ID,
+ * never a second literal) when an ElevenLabs API key is configured; Twilio-
+ * native Google otherwise — the ONE runtime fallback, gated on reachability,
+ * never a vendor preference.
+ */
+export function conversationRelayTtsAttrs(
+  elevenlabsVoiceId: string | null | undefined,
+  env: { ELEVENLABS_API_KEY?: string } = process.env as any,
+): ConversationRelayTtsAttrs {
+  if (!(env.ELEVENLABS_API_KEY ?? "").trim()) {
+    return { ttsProvider: "Google", voice: DEFAULT_CONVERSATION_RELAY_GOOGLE_VOICE }
+  }
+  const voiceId = (elevenlabsVoiceId ?? "").trim() || FALLBACK_VOICE_ID
+  const model = twilioElevenLabsModelSuffix(elevenLabsModelForLane("phone_realtime"))
+  const { stability, similarity_boost: similarity } = ELEVENLABS_REALISM_VOICE_SETTINGS
+  return {
+    ttsProvider: "ElevenLabs",
+    voice: `${voiceId}-${model}-${CONVERSATION_RELAY_ELEVENLABS_SPEED}_${stability}_${similarity}`,
+    elevenlabsTextNormalization: "on",
+  }
+}
+
 /** PURE: TwiML that hands the call to the relay companion. The welcome
  *  greeting carries the SAME disclosed first message as the Gather lane —
  *  the legal shield is transport-independent. An Intelligence Service sid
  *  (Twilio Conversational Intelligence) attaches native transcription +
- *  language operators to the session — env-gated, never fabricated. */
-export function twimlConnectRelay(wssUrl: string, welcomeGreeting: string, voice = "en-US-Journey-O", intelligenceServiceSid?: string | null): string {
+ *  language operators to the session — env-gated, never fabricated.
+ *  `ttsProvider`/`elevenlabsTextNormalization` are ADDITIVE and OPTIONAL — a
+ *  caller that omits them (as every pre-wave-57 caller does) gets the exact
+ *  same XML shape as before; pass conversationRelayTtsAttrs' output to opt a
+ *  call into ElevenLabs. */
+export function twimlConnectRelay(
+  wssUrl: string,
+  welcomeGreeting: string,
+  voice = DEFAULT_CONVERSATION_RELAY_GOOGLE_VOICE,
+  intelligenceServiceSid?: string | null,
+  ttsProvider?: string | null,
+  elevenlabsTextNormalization?: "on" | "off" | null,
+): string {
   const intel = (intelligenceServiceSid ?? "").trim()
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><ConversationRelay url="${xmlEscape(wssUrl)}" welcomeGreeting="${xmlEscape(welcomeGreeting.slice(0, 500))}" voice="${xmlEscape(voice)}" dtmfDetection="true" interruptible="true"${intel ? ` intelligenceService="${xmlEscape(intel)}"` : ""}/></Connect></Response>`
+  const provider = (ttsProvider ?? "").trim()
+  const norm = (elevenlabsTextNormalization ?? "").trim()
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><ConversationRelay url="${xmlEscape(wssUrl)}" welcomeGreeting="${xmlEscape(welcomeGreeting.slice(0, 500))}" voice="${xmlEscape(voice)}"${provider ? ` ttsProvider="${xmlEscape(provider)}"` : ""}${norm ? ` elevenlabsTextNormalization="${xmlEscape(norm)}"` : ""} dtmfDetection="true" interruptible="true"${intel ? ` intelligenceService="${xmlEscape(intel)}"` : ""}/></Connect></Response>`
 }
 
 // ── Companion-side protocol (pure — unit-tested here, executed by the relay) ─

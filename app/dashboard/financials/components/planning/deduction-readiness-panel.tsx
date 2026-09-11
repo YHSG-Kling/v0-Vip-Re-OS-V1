@@ -89,6 +89,17 @@ export function DeductionReadinessPanel({
 
   const receiptCompleteness = expenses.length > 0 ? (withReceipts / expenses.length) * 100 : 0
 
+  // `taxCategories` was fetched and never consulted (unread-state-census) — the
+  // breakdown below grouped by the expense's own free-form `category` string
+  // with no link at all to the brokerage's IRS Schedule C mapping. Case-
+  // insensitive match on category_name so "Advertising" and "advertising" both
+  // resolve to the tax code the brokerage configured.
+  const taxCodeByCategory = new Map<string, string>(
+    taxCategories
+      .filter((c) => c.category_name && c.tax_code)
+      .map((c) => [String(c.category_name).toLowerCase(), String(c.tax_code)]),
+  )
+
   const handleExportForTaxPrep = async () => {
     setGenerating(true)
     try {
@@ -237,18 +248,29 @@ export function DeductionReadinessPanel({
 
         {/* Category breakdown */}
         <div className="space-y-2">
-          <p className="text-sm font-medium">Category Breakdown</p>
-          {Object.entries(expensesByCategory).map(([category, data]) => (
-            <div key={category} className="flex items-center justify-between p-2 rounded bg-muted/30">
-              <div className="flex items-center gap-2">
-                <span className="text-sm">{category}</span>
-                <Badge variant="secondary" className="text-xs">
-                  {data.count}
-                </Badge>
+          <p className="text-sm font-medium flex items-center gap-1.5">
+            Category Breakdown
+            {loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          </p>
+          {Object.entries(expensesByCategory).map(([category, data]) => {
+            const taxCode = taxCodeByCategory.get(category.toLowerCase())
+            return (
+              <div key={category} className="flex items-center justify-between p-2 rounded bg-muted/30">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">{category}</span>
+                  <Badge variant="secondary" className="text-xs">
+                    {data.count}
+                  </Badge>
+                  {taxCode && (
+                    <Badge variant="outline" className="text-xs text-muted-foreground">
+                      {taxCode}
+                    </Badge>
+                  )}
+                </div>
+                <span className="text-sm font-medium">{formatCurrency(data.total)}</span>
               </div>
-              <span className="text-sm font-medium">{formatCurrency(data.total)}</span>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* Missing receipts expandable */}

@@ -318,7 +318,10 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57): clip the track before the CTA
+          tile's EHO mark + QR code — see CaptionLayer.hiddenFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        hiddenFromFrame={COVER + STAT * 3} />
     </AbsoluteFill>
   )
 }
