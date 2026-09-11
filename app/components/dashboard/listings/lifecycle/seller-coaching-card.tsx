@@ -313,10 +313,20 @@ function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUs
 }
 
 // ── Public export (wrapped in error boundary) ─────────────────────────────────
-export function SellerCoachingCard(props: SellerCoachingCardProps) {
+// Props are passed through BY NAME (not `{...props}`): the hidden-wire census
+// (scripts/hidden-wire-census.ts, category c "passed-never-read") attributes
+// SellerCoachingCardProps to this exported signature, and a bare spread reads
+// none of them by name — it filed all four as passed-never-read phantoms
+// (wave 54). Naming them keeps the census honest without a scanner special case.
+export function SellerCoachingCard({ listingId, listingStage, brokerageId, agentUserId }: SellerCoachingCardProps) {
   return (
     <CoachingErrorBoundary>
-      <SellerCoachingCardInner {...props} />
+      <SellerCoachingCardInner
+        listingId={listingId}
+        listingStage={listingStage}
+        brokerageId={brokerageId}
+        agentUserId={agentUserId}
+      />
     </CoachingErrorBoundary>
   )
 }

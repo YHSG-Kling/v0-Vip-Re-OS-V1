@@ -8,36 +8,41 @@ import Link from "next/link"
 
 interface MobileCommandStripProps {
   agentId: string
-  onQuickCall?: () => void
-  onQuickText?: () => void
-  onVoiceAssistant?: () => void
 }
 
-export function MobileCommandStrip({
-  agentId,
-  onQuickCall,
-  onQuickText,
-  onVoiceAssistant,
-}: MobileCommandStripProps) {
+// BUILD (wave 54, orphan doctrine §1): onQuickCall/onQuickText/onVoiceAssistant
+// used to be optional callback props that BOTH mount points
+// (app/mobile/assistant/page.tsx, app/mobile/voice/page.tsx) are Server
+// Components and can never actually supply — a plain closure cannot cross the
+// Server->Client prop boundary, so all three sat declared and permanently
+// unpassed. This strip has no specific contact in scope to call/text, so the
+// real capability is "send the agent to the surface that already does this":
+// Call/Text now land on FieldQuickActions' Recent Contacts list
+// (app/mobile/components/os/field-quick-actions.tsx:120, wired with real
+// contacts by app/mobile/assistant/page.tsx), which has working tel:/sms:
+// buttons per contact. onVoiceAssistant is a pure DELETE — the "Voice" tile's
+// own `href: "/mobile/voice"` below already navigates to the real voice
+// command surface (app/mobile/voice/page.tsx, VoiceSessionButton); the
+// callback was a duplicate path to the same destination.
+export function MobileCommandStrip({ agentId }: MobileCommandStripProps) {
   const [expanded, setExpanded] = useState(false)
 
   const primaryActions = [
     {
       icon: Phone,
       label: "Call",
-      action: onQuickCall,
+      href: "/mobile/assistant#quick-note",
       color: "bg-green-500 hover:bg-green-600 text-white",
     },
     {
       icon: MessageSquare,
       label: "Text",
-      action: onQuickText,
+      href: "/mobile/assistant#quick-note",
       color: "bg-blue-500 hover:bg-blue-600 text-white",
     },
     {
       icon: Mic,
       label: "Voice",
-      action: onVoiceAssistant,
       href: "/mobile/voice",
       color: "bg-purple-500 hover:bg-purple-600 text-white",
     },
@@ -112,29 +117,19 @@ export function MobileCommandStrip({
       {/* Primary Command Strip */}
       <div className="px-4 py-3">
         <div className="flex items-center justify-between gap-2">
-          {primaryActions.map((action) => {
-            const content = (
+          {primaryActions.map((action) => (
+            // All four primary tiles are now href-driven — see the BUILD note
+            // above the primaryActions declaration.
+            <Link key={action.label} href={action.href} className="flex-1">
               <Button
-                key={action.label}
                 size="sm"
-                className={cn("flex-1 flex flex-col items-center gap-1 h-auto py-2", action.color)}
-                onClick={action.action}
+                className={cn("w-full flex flex-col items-center gap-1 h-auto py-2", action.color)}
               >
                 <action.icon className="h-5 w-5" />
                 <span className="text-xs font-medium">{action.label}</span>
               </Button>
-            )
-
-            if (action.href) {
-              return (
-                <Link key={action.label} href={action.href} className="flex-1">
-                  {content}
-                </Link>
-              )
-            }
-
-            return content
-          })}
+            </Link>
+          ))}
 
           {/* Expand Toggle */}
           <Button

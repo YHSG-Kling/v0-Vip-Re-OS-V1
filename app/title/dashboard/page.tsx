@@ -14,7 +14,12 @@ import {
   ExternalBatchActionsPanel,
 } from '../../(external-portal)/components/os'
 import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
-import { getTitleTransactionDetail } from '@/app/actions/title-portal'
+import {
+  getTitleTransactionDetail,
+  batchConfirmTitleMilestones,
+  batchSendTitleMilestonesToSettlement,
+  batchUpdateTitleMilestoneStatus,
+} from '@/app/actions/title-portal'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,7 +43,7 @@ export default async function TitleDashboardPage() {
   const { data: vendor } = titleVendorId
     ? await supabase
         .from('vendors')
-        .select('id')
+        .select('id, name')
         .eq('id', titleVendorId)
         .eq('category', VENDOR_CATEGORY_TITLE)
         .maybeSingle()
@@ -56,6 +61,10 @@ export default async function TitleDashboardPage() {
     .select('id, property_address, status, close_date, client_name, transaction_type:deal_type')
     .order('close_date', { ascending: true })
     .limit(20)
+
+  // Shared with the stats grid below AND ExternalPartnerCommandStrip's
+  // pendingActions badge, so the two numbers can never drift apart.
+  const pendingOrders = (transactions || []).filter((t: any) => t.status === 'pending').length
 
   const upcoming = (transactions || []).filter((t: any) => {
     if (!t.close_date) return false
@@ -97,7 +106,7 @@ export default async function TitleDashboardPage() {
   // 'uploaded' is the honest status — the loader does not select
   // transaction_documents.status, and nothing models per-doc requiredness, so
   // `required` stays false rather than inventing a checklist.
-  const titleDocuments = titleDetails.flatMap((d) =>
+  const titleDocuments = titleDetails.flatMap((d, i) =>
     ((d?.documents || []) as any[]).map((doc) => ({
       id: doc.id,
       name: doc.file_name || doc.document_type,
@@ -106,6 +115,10 @@ export default async function TitleDashboardPage() {
       required: false,
       uploadedAt: doc.created_at,
       fileUrl: doc.file_url || undefined,
+      // Per-doc transaction, correlated by index (titleDetails preserves
+      // titleUserRows' order) — lets ExternalDocStatusPanel's upload default
+      // send the title company to the RIGHT deal's upload page.
+      transactionId: (titleUserRows || [])[i]?.transaction_id as string | undefined,
     }))
   )
 
@@ -150,7 +163,12 @@ export default async function TitleDashboardPage() {
 
       {/* OS Command Strip */}
       <TitleCommandStrip titleCompanyId={titleCompanyId} />
-      <ExternalPartnerCommandStrip partnerType="title" partnerId={titleCompanyId} />
+      <ExternalPartnerCommandStrip
+        partnerType="title"
+        partnerId={titleCompanyId}
+        partnerName={vendor?.name ?? undefined}
+        pendingActions={pendingOrders}
+      />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -162,7 +180,7 @@ export default async function TitleDashboardPage() {
             {[
               { label: 'Total Orders', value: transactions?.length || 0, icon: Package, color: 'text-blue-600' },
               { label: 'Closing This Week', value: upcoming.length, icon: Calendar, color: 'text-orange-600' },
-              { label: 'Pending', value: (transactions || []).filter((t: any) => t.status === 'pending').length, icon: Clock, color: 'text-yellow-600' },
+              { label: 'Pending', value: pendingOrders, icon: Clock, color: 'text-yellow-600' },
               { label: 'Completed', value: (transactions || []).filter((t: any) => t.status === 'closed').length, icon: CheckCircle2, color: 'text-green-600' },
             ].map((stat) => (
               <Card key={stat.label}>
@@ -218,7 +236,13 @@ export default async function TitleDashboardPage() {
         <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={titleDocuments} />
       </div>
 
-      <ExternalBatchActionsPanel partnerType="title" items={titleBatchItems} />
+      <ExternalBatchActionsPanel
+        partnerType="title"
+        items={titleBatchItems}
+        onBatchConfirm={batchConfirmTitleMilestones}
+        onBatchSend={batchSendTitleMilestonesToSettlement}
+        onBatchUpdate={batchUpdateTitleMilestoneStatus}
+      />
 
       <div className="grid grid-cols-3 gap-3">
         {[

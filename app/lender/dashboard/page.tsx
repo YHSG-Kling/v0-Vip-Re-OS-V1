@@ -14,7 +14,7 @@ import {
   ExternalDocStatusPanel,
   ExternalCommunicationPanel,
 } from '../../(external-portal)/components/os'
-import { getLenderTransactionDetail } from '@/app/actions/lender-portal-actions'
+import { getLenderTransactionDetail, sendLenderMessageToAgent } from '@/app/actions/lender-portal-actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,8 +52,9 @@ export default async function LenderDashboardPage() {
   // (loan commitment / appraisal / CD / loan conditions) for every deal this
   // lender is assigned to. Capped at the first 5 active files because the loader
   // runs several queries per transaction.
+  const lenderTxWindow = active.slice(0, 5)
   const lenderDetails = await Promise.all(
-    active.slice(0, 5).map(async (t: any) => {
+    lenderTxWindow.map(async (t: any) => {
       try {
         return await getLenderTransactionDetail(t.id)
       } catch {
@@ -67,7 +68,7 @@ export default async function LenderDashboardPage() {
   // Loader already aliases the columns (file_name ← doc_label, file_url ← storage_url).
   // Its select does not include transaction_documents.status, and requiredness is not
   // modelled, so status is the honest 'uploaded' and `required` stays false.
-  const lenderDocuments = lenderDetails.flatMap((d) =>
+  const lenderDocuments = lenderDetails.flatMap((d, i) =>
     ((d?.documents || []) as any[]).map((doc) => ({
       id: doc.id,
       name: doc.file_name || doc.document_type,
@@ -76,6 +77,10 @@ export default async function LenderDashboardPage() {
       required: false,
       uploadedAt: doc.created_at,
       fileUrl: doc.file_url || undefined,
+      // Per-doc transaction, correlated by index (lenderDetails preserves
+      // lenderTxWindow's order) — lets ExternalDocStatusPanel's upload
+      // default send the lender to the RIGHT deal's upload page.
+      transactionId: lenderTxWindow[i]?.id as string | undefined,
     }))
   )
 
@@ -101,7 +106,12 @@ export default async function LenderDashboardPage() {
 
       {/* OS Command Strip */}
       <LenderCommandStrip lenderId={lenderId} />
-      <ExternalPartnerCommandStrip partnerType="lender" partnerId={lenderId} />
+      <ExternalPartnerCommandStrip
+        partnerType="lender"
+        partnerId={lenderId}
+        partnerName={lenderPortal?.lender_company ?? undefined}
+        pendingActions={closing.length}
+      />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -184,10 +194,20 @@ export default async function LenderDashboardPage() {
         <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={lenderDocuments} />
       </div>
 
-      {/* Honestly empty: the lender portal WRITES messages (flagLenderIssue,
-          issueClearToClose) but no loader reads a lender's thread back — every
-          client_portal_messages reader in the codebase is contact- or agent-scoped. */}
-      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} messages={[]} />
+      {/* Reading a lender's own thread back still has no reader anywhere in the
+          codebase (every client_portal_messages reader is contact- or
+          agent-scoped) — messages stays [] until that's built. Sending is now
+          real: transactionId is the most recent active deal (an aggregate
+          dashboard has no single "current" transaction otherwise), and
+          onSendMessage posts through sendLenderMessageToAgent — the same
+          client_portal_messages lane flagLenderIssue already uses. */}
+      <ExternalCommunicationPanel
+        partnerType="lender"
+        partnerId={lenderId}
+        transactionId={lenderTxWindow[0]?.id as string | undefined}
+        messages={[]}
+        onSendMessage={sendLenderMessageToAgent}
+      />
     </div>
   )
 }

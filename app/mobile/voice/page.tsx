@@ -360,8 +360,18 @@ export default async function MobileVoicePage({
           </Card>
         </section>
 
-        {/* Mobile OS Quick Contact Panel */}
-        <QuickContactPanel contacts={(recentContacts ?? []) as any} />
+        {/* Mobile OS Quick Contact Panel — recentActivityContactIds surfaces the
+            contacts this agent's session has actually touched recently (the
+            `recentCalls` ledger read above, agent-scoped from getAgentContext,
+            never a body param) into the panel's own "Recent Activity" star
+            section; it was declared and read here but no caller ever passed
+            it, so that section could never render. */}
+        <QuickContactPanel
+          contacts={(recentContacts ?? []) as any}
+          recentActivityContactIds={Array.from(
+            new Set((recentCalls ?? []).map((c) => c.contact_id).filter((id): id is string => !!id)),
+          )}
+        />
       </main>
     </div>
   )

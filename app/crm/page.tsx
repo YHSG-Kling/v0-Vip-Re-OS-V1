@@ -171,6 +171,9 @@ interface Contact {
   tcpa_consent?: boolean | null
   source?: string | null
   source_family?: string | null
+  // Present on the detail row (getContactById's select("*")) — not in
+  // getContacts' list projection, same caveat as the opt-out fields above.
+  preferred_channel?: string | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -271,6 +274,12 @@ export default function CRMPage() {
   const [fatigueData, setFatigueData] = useState<any>(null)
   const [relatedListing, setRelatedListing] = useState<any>(null)
   const [relatedTransaction, setRelatedTransaction] = useState<any>(null)
+  // Feeds TimelineContextPanel.transactionHistory — every transaction this
+  // contact has been on (buyer or seller side), newest first. relatedTransaction
+  // above stays as-is (a different card elsewhere reads only the latest one).
+  const [transactionHistory, setTransactionHistory] = useState<
+    { id: string; address: string; status: string; closeDate?: string | null }[]
+  >([])
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
@@ -866,6 +875,7 @@ export default function CRMPage() {
     if (!selectedContactId || !selectedContact) {
       setRelatedListing(null)
       setRelatedTransaction(null)
+      setTransactionHistory([])
       return
     }
 
@@ -904,6 +914,26 @@ export default function CRMPage() {
       .maybeSingle()
       .then(({ data }: { data: any | null }) => setRelatedTransaction(data ?? null))
       .catch(() => setRelatedTransaction(null))
+
+    // Full transaction history for TimelineContextPanel — same predicate as
+    // relatedTransaction above, without the limit(1)/maybeSingle collapse.
+    supabase
+      .from("transactions")
+      .select("id, property_address, status, close_date")
+      .or(`buyer_contact_id.eq.${selectedContactId},seller_contact_id.eq.${selectedContactId}`)
+      .order("created_at", { ascending: false })
+      .limit(10)
+      .then(({ data }: { data: any[] | null }) =>
+        setTransactionHistory(
+          (data ?? []).map((t) => ({
+            id: t.id,
+            address: t.property_address ?? "Address unavailable",
+            status: t.status,
+            closeDate: t.close_date,
+          }))
+        )
+      )
+      .catch(() => setTransactionHistory([]))
   }, [selectedContactId, selectedContact])
 
   // Server-side search: debounce input and call getContacts with the search term.
@@ -2065,6 +2095,7 @@ export default function CRMPage() {
                         originalLeadSource={selectedContact.lead_source}
                         createdAt={selectedContact.created_at}
                         isaHandoffContext={isaHandoffContext}
+                        transactionHistory={transactionHistory}
                       />
                     </div>
                   </TabsContent>
@@ -2536,6 +2567,15 @@ export default function CRMPage() {
                       agentId={agentId || ""}
                       contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
                       contactPersona={selectedContact.contact_persona}
+                      channel={
+                        selectedContact.preferred_channel === "sms" || selectedContact.preferred_channel === "text"
+                          ? "sms"
+                          : selectedContact.preferred_channel === "chat"
+                          ? "chat"
+                          : selectedContact.preferred_channel === "email"
+                          ? "email"
+                          : undefined
+                      }
                     />
 
                     {agentId && (

@@ -93,6 +93,22 @@
  *     component signature falls back to a corpus-wide search only when the
  *     component name is unique — otherwise it too is skipped. Both skip counts
  *     are published on the (c) report line. See resolveComponentFile() above.
+ *     TWO MORE (c) BLIND SPOTS FIXED (wave 54): the attribute tokenizer used
+ *     for "declared but never passed" only ever recognised `name=value`
+ *     attributes — JSX BOOLEAN SHORTHAND (`<Foo enabled />`, no `=`) was
+ *     invisible, false-positiving BuyerOfferRequestsList.showLinkToContact,
+ *     HealthScoreRing.showLabel, SignatureStatusBadge.compact and
+ *     BuyerHome.embedded as never-passed when every one of them IS passed,
+ *     exactly this way, at its real call site. `attrNamesAtDepth0` now
+ *     tokenizes the opening tag at brace-depth 0 so a bare identifier counts
+ *     as passed while an identifier hiding at depth ≥ 1 — an object-literal
+ *     shorthand key inside another attribute's own `{{ }}` value, or a
+ *     spread's local binding — is correctly left alone. Separately, a
+ *     non-self-closing call site's NESTED CONTENT (`<Tag>…</Tag>`) was never
+ *     counted as passing `children` at all, false-positiving AppShell.children,
+ *     SettingsCard.children and AgentFinancialsClient.children; every call
+ *     site whose opening tag does not end in `/>` now counts as passing
+ *     `children`. Both fixes have positive controls in runControls() below.
  *   · (d): a dynamically-built `.rpc(variable)` name is invisible. A function
  *     created outside supabase/migrations/*.sql (dashboard-authored, or by an
  *     extension) false-positives as "missing a migration". Trigger and
@@ -714,6 +730,66 @@ const categoryCDeclared: CDeclaredNeverPassed[] = []
 const categoryCUnread: CPassedNeverRead[] = []
 const EXEMPT_UNREAD = new Set(["children", "className"])
 
+/**
+ * Find the index of the `>` that CLOSES a JSX opening tag starting at
+ * `tagStart` — brace-depth aware so a `{` inside an attribute expression
+ * (`onSave={() => x > 1}`) never reads as the tag's own close. Shared by the
+ * call-site scan below and its own positive control, so the "where does the
+ * opening tag end" logic is tested once rather than re-typed at each site.
+ * Returns -1 if the tag never closes (malformed/truncated source).
+ */
+function findOpenTagEnd(text: string, tagStart: number): number {
+  let depth = 0
+  for (let i = tagStart; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === "{") depth++
+    else if (ch === "}") depth--
+    else if (ch === ">" && depth === 0) return i
+  }
+  return -1
+}
+
+/**
+ * ATTRIBUTE TOKENIZER (wave 54 fix) — replaces a single `/([A-Za-z_][\w-]*)\s*=/g`
+ * sweep of the raw attribute text, which only ever recognised `name=value`
+ * attributes and was structurally blind to JSX BOOLEAN SHORTHAND
+ * (`<Foo enabled />`, no `=` at all) — `enabled` was never added to `attrs`,
+ * so a caller passing it this way read as never having passed it. Confirmed
+ * live false positives this fix clears: BuyerOfferRequestsList.showLinkToContact,
+ * HealthScoreRing.showLabel, SignatureStatusBadge.compact, BuyerHome.embedded —
+ * all four are passed as bare boolean shorthand at their real call sites.
+ *
+ * Walks `attrText` tracking BRACE DEPTH ONLY (an attribute value's `{...}` is
+ * the one JSX construct that can hide an identifier that is NOT this
+ * component's own prop) and only reads an identifier as an attribute name
+ * when depth is 0 — since JSX syntax never allows a bare identifier at the
+ * top level of an opening tag except as an attribute name (a value is always
+ * quoted or `{`-wrapped), every depth-0 identifier found this way IS an
+ * attribute name, whether or not it is followed by `=`. This is also why a
+ * spread's local binding (`{...rest}`) and an object-literal shorthand key
+ * inside an attribute's own value (`style={{ a, b }}`) are correctly EXCLUDED
+ * without a special case: both `rest` and `a`/`b` sit at depth ≥ 1.
+ */
+function attrNamesAtDepth0(attrText: string): Set<string> {
+  const names = new Set<string>()
+  let depth = 0
+  let i = 0
+  while (i < attrText.length) {
+    const ch = attrText[i]
+    if (ch === "{") { depth++; i++; continue }
+    if (ch === "}") { depth = Math.max(0, depth - 1); i++; continue }
+    if (depth === 0 && /[A-Za-z_]/.test(ch)) {
+      let j = i + 1
+      while (j < attrText.length && /[A-Za-z0-9_-]/.test(attrText[j])) j++
+      names.add(attrText.slice(i, j))
+      i = j
+      continue
+    }
+    i++
+  }
+  return names
+}
+
 // Pre-scan all JSX call sites once, resolving EACH ONE through the calling file's
 // actual import (see IMPORT-RESOLUTION ATTRIBUTION above) so a same-named
 // component declared in more than one file never pools its callers' props
@@ -732,13 +808,7 @@ for (const file of TSX_FILES) {
     totalJsxCallSites++
     const tagStart = tm.index
     // find the end of the opening tag: first '>' at brace-depth 0 from tagStart
-    let depth = 0, end = -1
-    for (let i = tagStart; i < m2.length; i++) {
-      const ch = m2[i]
-      if (ch === "{") depth++
-      else if (ch === "}") depth--
-      else if (ch === ">" && depth === 0) { end = i; break }
-    }
+    const end = findOpenTagEnd(m2, tagStart)
     if (end === -1) continue
     const resolved = resolveComponentFile(file, name)
     if (!resolved) { skippedUnresolvedCallSites++; continue } // unresolvable/external — never attributed to any file
@@ -747,9 +817,13 @@ for (const file of TSX_FILES) {
     const agg = callSiteAgg.get(key) ?? { attrs: new Set<string>(), hasSpread: false, count: 0 }
     agg.count++
     if (/\.\.\./.test(attrText)) agg.hasSpread = true
-    const attrRe = /([A-Za-z_][A-Za-z0-9_-]*)\s*=/g
-    let am: RegExpExecArray | null
-    while ((am = attrRe.exec(attrText))) agg.attrs.add(am[1])
+    for (const n of attrNamesAtDepth0(attrText)) agg.attrs.add(n)
+    // NESTED-CHILDREN fix (wave 54): a non-self-closing call site (`<Tag>…</Tag>`,
+    // opening tag does not end in `/>`) renders whatever sits between the tags as
+    // `children` — that was never counted as "passing children" before, so every
+    // wrapper component whose only real caller nests content (AppShell, SettingsCard,
+    // AgentFinancialsClient) read as declaring `children` and never being passed it.
+    if (m2[end - 1] !== "/") agg.attrs.add("children")
     callSiteAgg.set(key, agg)
   }
 }
@@ -1038,6 +1112,49 @@ function runControls(): string[] {
     const found = optionalByDesignProps(src)
     ok("(c) optional-by-design control: the documented prop is recognised", found.has("previewMode"))
     ok("(c) optional-by-design control: the UNDOCUMENTED sibling prop is not swept in", !found.has("required"))
+  }
+
+  // (c) BOOLEAN-SHORTHAND ATTRIBUTE control (wave 54) — the exact shape that let
+  // BuyerOfferRequestsList.showLinkToContact, HealthScoreRing.showLabel,
+  // SignatureStatusBadge.compact and BuyerHome.embedded false-positive as
+  // "declared but never passed": each is passed as bare JSX shorthand
+  // (`<Foo enabled />`, no `=`) at its real call site. A depth-0 bare
+  // identifier must be picked up; an identifier hiding at depth ≥ 1 — an
+  // object-literal shorthand key inside another attribute's own `{{ }}` value,
+  // or a spread's local binding — must NOT be mistaken for one of THIS
+  // component's props.
+  {
+    const attrText = ' enabled style={{ a, b }} {...rest} data-x="y" onSave={fn}'
+    const names = attrNamesAtDepth0(attrText)
+    ok("(c) boolean-shorthand control: a bare attribute with no `=` is recognised as passed",
+      names.has("enabled"))
+    ok("(c) boolean-shorthand control: object-literal shorthand keys inside another attr's {{ }} value are NOT picked up",
+      !names.has("a") && !names.has("b"))
+    ok("(c) boolean-shorthand control: a spread's local binding is NOT picked up as an attribute",
+      !names.has("rest"))
+    ok("(c) boolean-shorthand control: a hyphenated attribute name is still recognised",
+      names.has("data-x"))
+    ok("(c) boolean-shorthand control: an ordinary name=value attribute is still recognised (no regression)",
+      names.has("style") && names.has("onSave"))
+  }
+
+  // (c) NESTED-CHILDREN control (wave 54) — the AppShell/SettingsCard/
+  // AgentFinancialsClient shape: `<Tag>…</Tag>` (opening tag does not end in
+  // `/>`) renders whatever sits between the tags as `children`, which must now
+  // count as "passed"; a genuinely self-closing `<Tag />` must NOT.
+  {
+    const openSrc = '<Widget title="x">\n  <span>hi</span>\n</Widget>\n'
+    const selfCloseSrc = '<Widget title="x" />\n'
+    const openMasked = blankStrings(openSrc)
+    const selfCloseMasked = blankStrings(selfCloseSrc)
+    const openTagStart = openMasked.indexOf("<Widget")
+    const selfCloseTagStart = selfCloseMasked.indexOf("<Widget")
+    const openEnd = findOpenTagEnd(openMasked, openTagStart)
+    const selfCloseEnd = findOpenTagEnd(selfCloseMasked, selfCloseTagStart)
+    ok("(c) nested-children control: a non-self-closing opening tag is found and does NOT end in `/`",
+      openEnd !== -1 && openMasked[openEnd - 1] !== "/")
+    ok("(c) nested-children control: a genuinely self-closing opening tag DOES end in `/`",
+      selfCloseEnd !== -1 && selfCloseMasked[selfCloseEnd - 1] === "/")
   }
 
   // (c) IMPORT-RESOLUTION ATTRIBUTION control (wave 50, owner report 2026-09-10) —

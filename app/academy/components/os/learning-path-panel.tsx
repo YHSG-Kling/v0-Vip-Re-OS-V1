@@ -17,7 +17,10 @@ interface LearningPathPanelProps {
   focusAreas?: string[]
 }
 
-const FOCUS_AREAS = [
+// Exported (via ./index.ts) so the page can derive a real initial
+// `focusAreas` from the same vocabulary this panel renders, instead of
+// growing a second, drifting list of focus-area ids (§6).
+export const FOCUS_AREAS = [
   { id: "buyer_conversion", label: "Buyer Conversion" },
   { id: "seller_listing", label: "Seller Listing" },
   { id: "marketing", label: "Marketing" },

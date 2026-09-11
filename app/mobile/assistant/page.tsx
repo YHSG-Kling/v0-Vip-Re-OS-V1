@@ -221,7 +221,10 @@ export default async function MobileAssistantPage() {
         {/* Mobile OS Field Quick Actions — the Quick Note box lives here; the
             command strip's "Quick Note" tile targets this id. */}
         <div id="quick-note">
-          <FieldQuickActions agentId={agentId ?? ""} />
+          {/* BUILD (wave 54): recentContacts was already fetched above (agent-scoped,
+              from the session's agentId, never a body param) and never passed anywhere —
+              FieldQuickActions.contacts renders its own empty state forever without it. */}
+          <FieldQuickActions agentId={agentId ?? ""} contacts={(recentContacts ?? []) as any} />
         </div>
 
         {/* Section 2: Quick Actions Grid */}

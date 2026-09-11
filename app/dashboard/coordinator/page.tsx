@@ -379,6 +379,10 @@ export default async function CoordinatorDashboard({
             property_address: t.property_address ?? "",
             stage: t.stage,
             deal_type: t.deal_type,
+            // BUILD (wave 54): the buyer/seller contact tied to this transaction row —
+            // getCoordinatorDashboard's `select("*")` already reads it, only the map
+            // below was narrowing it away before it reached TaskNoteCreator.contactId.
+            contact_id: t.buyer_contact_id ?? t.seller_contact_id ?? t.contact_id ?? null,
           }))}
           agentId={user.id}
           brokerageId={brokerageId || ""}

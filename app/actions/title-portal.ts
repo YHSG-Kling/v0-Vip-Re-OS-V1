@@ -550,3 +550,93 @@ export async function sendTitleMessageToAgent(data: {
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
 }
+
+// ─── BATCH MILESTONE ACTIONS ──────────────────────────────────────────────────
+// Backs ExternalBatchActionsPanel on /title/dashboard (title/dashboard/page.tsx
+// mounts it on titleBatchItems — title-visible transaction_milestones, one row
+// per assigned deal). The panel's three buttons are real title-order lifecycle
+// stages, not a bespoke batch primitive: each one calls the SAME
+// updateTitleStatus this file already exports and gates (kernel fan-out +
+// milestone completion included), once per DISTINCT transaction behind the
+// selected items — never a second status writer.
+//
+// No titleUserId is threaded in from the page: a title_company_users row is
+// scoped to ONE transaction (see getTitleTransactionDetail's own comment), so
+// there is no single company-wide id for an aggregate, multi-deal batch. This
+// resolves the caller's OWN title_company_users row per transaction instead —
+// updateTitleStatus's requireTitleActor call still re-verifies every one.
+async function batchSetTitleTransactionStatus(
+  milestoneIds: string[],
+  newStatus: TitleStatus,
+): Promise<{ success: boolean; count: number; error?: string }> {
+  if (!milestoneIds?.length) return { success: true, count: 0 }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, count: 0, error: "Not authenticated" }
+
+  const { data: rows, error: readError } = await supabase
+    .from("transaction_milestones")
+    .select("transaction_id")
+    .in("id", milestoneIds)
+  if (readError) return { success: false, count: 0, error: readError.message }
+
+  const transactionIds = [...new Set((rows ?? []).map((r) => r.transaction_id))]
+  if (transactionIds.length === 0) return { success: true, count: 0 }
+
+  const { data: titleUserRows } = await supabase
+    .from("title_company_users")
+    .select("id, transaction_id")
+    .eq("user_id", user.id)
+    .in("transaction_id", transactionIds)
+
+  let count = 0
+  let lastError: string | undefined
+  for (const row of titleUserRows ?? []) {
+    const result = await updateTitleStatus({
+      transactionId: row.transaction_id,
+      titleUserId: row.id,
+      newStatus,
+    })
+    if (result.success) count++
+    else lastError = result.error
+  }
+
+  if (count === 0) {
+    return { success: false, count: 0, error: lastError ?? "Not assigned to any of the selected transactions" }
+  }
+  return { success: true, count, error: count < transactionIds.length ? lastError : undefined }
+}
+
+/** "Confirm Orders" — the title company acknowledges the selected orders. */
+export async function batchConfirmTitleMilestones(
+  milestoneIds: string[],
+): Promise<{ success: boolean; count: number; error?: string }> {
+  return batchSetTitleTransactionStatus(milestoneIds, "commitment_issued")
+}
+
+/** "Send to Settlement" — moves the underlying deal(s) to closing-ready. */
+export async function batchSendTitleMilestonesToSettlement(
+  milestoneIds: string[],
+): Promise<{ success: boolean; count: number; error?: string }> {
+  return batchSetTitleTransactionStatus(milestoneIds, "closing_ready")
+}
+
+/**
+ * "Mark Closed" — ExternalBatchActionsPanel's generic onBatchUpdate, which
+ * the panel today only ever calls with the item-status word "completed" (its
+ * own pending/ready/completed vocabulary, not TitleStatus). Mapped onto the
+ * one TitleStatus value that means the same thing rather than growing a
+ * second status vocabulary (§6); any TitleStatus value passed through
+ * verbatim otherwise.
+ */
+export async function batchUpdateTitleMilestoneStatus(
+  milestoneIds: string[],
+  newStatus: string,
+): Promise<{ success: boolean; count: number; error?: string }> {
+  const TITLE_STATUSES: readonly string[] = ["title_search", "commitment_issued", "closing_ready", "closed"]
+  const mapped: TitleStatus = newStatus === "completed"
+    ? "closed"
+    : (TITLE_STATUSES.includes(newStatus) ? (newStatus as TitleStatus) : "closed")
+  return batchSetTitleTransactionStatus(milestoneIds, mapped)
+}

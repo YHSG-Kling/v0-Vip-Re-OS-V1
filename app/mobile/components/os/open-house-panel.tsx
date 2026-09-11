@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -37,7 +38,6 @@ interface OpenHouseEvent {
 
 interface OpenHousePanelProps {
   events: OpenHouseEvent[]
-  onEventSelect?: (eventId: string) => void
 }
 
 /** The scannable code itself, drawn locally from the qrcode package — the same
@@ -64,7 +64,8 @@ function QRCanvas({ url }: { url: string }) {
   return <canvas ref={canvasRef} aria-label={`QR code for ${url}`} />
 }
 
-export function OpenHousePanel({ events, onEventSelect }: OpenHousePanelProps) {
+export function OpenHousePanel({ events }: OpenHousePanelProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [visitorForm, setVisitorForm] = useState({
     firstName: "",
@@ -158,6 +159,19 @@ export function OpenHousePanel({ events, onEventSelect }: OpenHousePanelProps) {
     window.open(`https://maps.google.com/maps?daddr=${encodedAddress}`, "_blank")
   }
 
+  // BUILD (wave 54, orphan doctrine §1): onEventSelect used to be an optional
+  // callback nobody called INSIDE this file and no mount point
+  // (app/mobile/assistant/page.tsx, a Server Component that cannot hand a
+  // closure across the Server->Client prop boundary) could ever supply either
+  // — the tap-to-open-detail capability the name promises never existed. The
+  // existing detail route for an open house event is keyed on its LISTING,
+  // not the event row: app/dashboard/listings/[id]/open-house/page.tsx. Only
+  // an event that resolved to a real listing can navigate anywhere real.
+  const handleEventSelect = (event: OpenHouseEvent) => {
+    if (!event.listing_id) return
+    router.push(`/dashboard/listings/${event.listing_id}/open-house`)
+  }
+
   if (todaysEvents.length === 0) {
     return (
       <Card>
@@ -199,7 +213,12 @@ export function OpenHousePanel({ events, onEventSelect }: OpenHousePanelProps) {
               key={event.id}
               className="p-3 rounded-lg border bg-purple-50/50 border-purple-100"
             >
-              <div className="flex items-start justify-between mb-2">
+              <div
+                className={`flex items-start justify-between mb-2 ${event.listing_id ? "cursor-pointer active:opacity-70" : ""}`}
+                onClick={() => handleEventSelect(event)}
+                role={event.listing_id ? "button" : undefined}
+                tabIndex={event.listing_id ? 0 : undefined}
+              >
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{address}</p>
                   <div className="flex items-center gap-2 mt-1">

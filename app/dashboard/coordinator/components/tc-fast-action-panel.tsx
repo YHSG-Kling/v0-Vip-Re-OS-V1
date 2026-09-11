@@ -23,7 +23,13 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 interface TcFastActionPanelProps {
-  transactions: Array<{ id: string; property_address: string; stage?: string; deal_type?: string }>
+  transactions: Array<{
+    id: string
+    property_address: string
+    stage?: string
+    deal_type?: string
+    contact_id?: string | null
+  }>
   agentId: string
   brokerageId: string
   userRole: string
@@ -125,6 +131,7 @@ export function TcFastActionPanel({
             {/* Log Activity — TaskNoteCreator manages its own sheet */}
             <TaskNoteCreator
               agentId={agentId}
+              contactId={selectedTxn?.contact_id ?? undefined}
               transactionId={selectedTxnId}
               defaultType="note"
               onCreated={() => router.refresh()}
@@ -133,6 +140,7 @@ export function TcFastActionPanel({
             {/* Create Task — separate TaskNoteCreator instance */}
             <TaskNoteCreator
               agentId={agentId}
+              contactId={selectedTxn?.contact_id ?? undefined}
               transactionId={selectedTxnId}
               defaultType="task"
               onCreated={() => router.refresh()}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -31,10 +32,22 @@ interface FollowupTask {
 
 interface MobileFollowupPanelProps {
   tasks: FollowupTask[]
-  onTaskComplete?: (taskId: string) => void
 }
 
-export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPanelProps) {
+// BUILD (wave 54, orphan doctrine §1): onTaskComplete was an optional
+// notify-the-parent callback that neither mount point
+// (app/mobile/assistant/page.tsx) could ever supply — it is a Server
+// Component, and a plain closure cannot cross the Server->Client prop
+// boundary, so it sat declared and permanently unpassed while the completed
+// task kept rendering in the list until a manual reload. The real capability
+// this callback existed for — "the list should drop the task once it's done"
+// — is built in directly below with `router.refresh()` (same self-refresh
+// pattern as app/dashboard/coordinator/components/tc-fast-action-panel.tsx's
+// `onCreated={() => router.refresh()}`, just internal since there is no
+// caller that can hand it in from outside): the page's server read re-filters
+// on `status = "pending"`, so a completed task drops out of `tasks` for real.
+export function MobileFollowupPanel({ tasks }: MobileFollowupPanelProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [noteContent, setNoteContent] = useState("")
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
@@ -68,7 +81,7 @@ export function MobileFollowupPanel({ tasks, onTaskComplete }: MobileFollowupPan
         toast.success("Follow-up completed")
         setNoteContent("")
         setActiveTaskId(null)
-        onTaskComplete?.(taskId)
+        router.refresh()
       } else {
         toast.error("Failed to complete follow-up")
       }

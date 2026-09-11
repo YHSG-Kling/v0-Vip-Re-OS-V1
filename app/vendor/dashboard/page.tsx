@@ -51,6 +51,12 @@ export default async function VendorDashboardPage() {
   // change is only about the read; it is called out rather than absorbed.
   const vendorId = (vendorGrant?.vendor_id as string | null) || user.id
 
+  // Vendor's own display name for ExternalPartnerCommandStrip's badge — the
+  // role-grant read above only carries vendor_id, never the vendors row.
+  const { data: vendorRow } = vendorGrant?.vendor_id
+    ? await supabase.from('vendors').select('name').eq('id', vendorGrant.vendor_id).maybeSingle()
+    : { data: null }
+
   let bookings: any[] = []
   try {
     const result = await getAllVendorBookings()
@@ -169,7 +175,12 @@ export default async function VendorDashboardPage() {
 
       {/* OS Command Strip */}
       <VendorCommandStrip vendorId={vendorId} />
-      <ExternalPartnerCommandStrip partnerType="vendor" partnerId={vendorId} />
+      <ExternalPartnerCommandStrip
+        partnerType="vendor"
+        partnerId={vendorId}
+        partnerName={vendorRow?.name ?? undefined}
+        pendingActions={pending.length}
+      />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">

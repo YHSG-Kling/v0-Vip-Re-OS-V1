@@ -427,3 +427,74 @@ export async function updateLenderLoanStatus(data: {
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
 }
+
+// ─── SEND MESSAGE TO AGENT ───────────────────────────────────────────────────
+// Backs ExternalCommunicationPanel.onSendMessage on /lender/dashboard. Vendor
+// and title each already have a sendXMessageToAgent (vendor-portal.ts,
+// title-portal.ts); the lender lane had only flagLenderIssue and
+// issueClearToClose — both a specific, structured event, not a free-text
+// message box. This is the missing general lane, gated and shaped exactly
+// like flagLenderIssue's own client_portal_messages insert (contact_id =
+// the transaction's buyer contact, agent_id = the transaction's agent — the
+// column's own FK class, no users.id resolution exists for this table).
+//
+// Signature matches ExternalCommunicationPanel's onSendMessage exactly so it
+// can be passed as the prop directly — the panel supplies `transactionId` in
+// `context` from whatever the mount passed it as a panel prop.
+export async function sendLenderMessageToAgent(
+  body: string,
+  context: { partnerId: string; partnerType: string; transactionId?: string },
+): Promise<{ success: boolean; error?: string }> {
+  if (!context.transactionId) {
+    return { success: false, error: "No active transaction to message — open a specific deal to send a message." }
+  }
+  let actor
+  try {
+    actor = await requireLenderVendorActor(context.transactionId)
+  } catch (err) {
+    if (err instanceof PortalAuthError) return { success: false, error: err.message }
+    throw err
+  }
+
+  const supabase = await createClient()
+  const { data: transaction } = await supabase
+    .from("transactions")
+    .select("id, property_address, agent_id, buyer_contact_id, brokerage_id")
+    .eq("id", context.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
+    .maybeSingle()
+
+  if (!transaction) return { success: false, error: "Transaction not found in your brokerage" }
+  if (!transaction.agent_id || !transaction.buyer_contact_id) {
+    return { success: false, error: "This transaction has no agent/buyer thread to message yet" }
+  }
+
+  const { error: messageError } = await supabase.from("client_portal_messages").insert({
+    brokerage_id: actor.brokerageId,
+    contact_id: transaction.buyer_contact_id,
+    agent_id: transaction.agent_id,
+    transaction_id: context.transactionId,
+    direction: "client_to_agent",
+    channel: "portal",
+    body: `[LENDER] ${actor.lenderCompany ?? "Lender"} re: ${transaction.property_address ?? "transaction"}:\n\n${body}`,
+    metadata: { type: "lender_message", vendor_id: actor.vendorId },
+    created_at: new Date().toISOString(),
+  })
+  if (messageError) return { success: false, error: messageError.message }
+
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.MESSAGE_CREATED,
+      brokerageId: actor.brokerageId,
+      entityId:    context.transactionId,
+      actorUserId: actor.userId,
+      metadata: { actor_role: "lender", lender_company: actor.lenderCompany },
+    })
+  } catch (err) {
+    console.error("[sendLenderMessageToAgent] fan-out failed (non-blocking)", err)
+  }
+
+  revalidatePath(`/portal/lender/${context.transactionId}`)
+  return { success: true }
+}

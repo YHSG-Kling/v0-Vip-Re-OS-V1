@@ -25,7 +25,7 @@ import {
   addTemplateFeedback,
   getTemplateFeedback,
 } from "@/app/actions/academy"
-import { generateLearningPath } from "@/app/actions/ai-training-coaching"
+import { generateLearningPath, analyzeAgentPerformance } from "@/app/actions/ai-training-coaching"
 import { getAgentPointsAndTier } from "@/app/actions/gamification"
 import { getAcademyViewer, getFeaturedModule, getMyLearningProgress } from "@/app/actions/academy-learning"
 import { useRouter } from "next/navigation"
@@ -37,7 +37,33 @@ import {
   TrainingProgressPanel,
   AiTutorPanel,
   EmbeddedLeaderboardWidget,
+  FOCUS_AREAS,
 } from "./components/os"
+
+// Turns analyzeAgentPerformance's free-text improvements/critical_gaps into
+// LearningPathPanel's typed focus-area ids — one keyword pass over the SAME
+// FOCUS_AREAS vocabulary the panel itself renders (§6: no second list).
+function deriveFocusAreas(performanceData: any | null): string[] {
+  if (!performanceData) return []
+  const text = ([...(performanceData.critical_gaps ?? []), ...(performanceData.improvements ?? [])])
+    .join(" ")
+    .toLowerCase()
+  if (!text) return []
+  const KEYWORDS: Record<string, string[]> = {
+    buyer_conversion: ["buyer"],
+    seller_listing: ["listing", "seller"],
+    marketing: ["market"],
+    communication: ["communicat", "follow-up", "follow up", "response time"],
+    financial_literacy: ["financ"],
+    compliance: ["complian", "disclosure", "fair housing"],
+    leadership: ["leader"],
+    technology: ["tech", "crm", "software"],
+  }
+  const ids = FOCUS_AREAS.map((a) => a.id).filter((id) =>
+    (KEYWORDS[id] ?? []).some((kw) => text.includes(kw))
+  )
+  return ids
+}
 
 export default function AcademyPage() {
   const [searchQuery, setSearchQuery] = useState("")
@@ -59,6 +85,10 @@ export default function AcademyPage() {
   // Real learner progress from learning_assignments (was hardcoded empty).
   const [completedContent, setCompletedContent] = useState<any[]>([])
   const [inProgressContent, setInProgressContent] = useState<any[]>([])
+  // Preloaded readiness analysis — feeds ReadinessRadar.performanceData
+  // directly (was a click-to-analyze cold start) and, via deriveFocusAreas,
+  // LearningPathPanel.focusAreas and AiTutorPanel.currentContext.
+  const [performanceData, setPerformanceData] = useState<any | null>(null)
   // "My Templates" toggle — flips the marketplace grid to the user's own authored templates
   const [showMineOnly, setShowMineOnly] = useState(false)
 
@@ -145,6 +175,11 @@ export default function AcademyPage() {
             }
           } catch (error) {
             console.error("Error loading gamification data:", error)
+          }
+          try {
+            setPerformanceData(await analyzeAgentPerformance({ agentId: viewer.agentId, timeframe: "30_days" }))
+          } catch (error) {
+            console.error("Error loading readiness analysis:", error)
           }
         }
       }
@@ -467,9 +502,13 @@ export default function AcademyPage() {
         {/* My Path Tab */}
         <TabsContent value="mypath" className="space-y-6">
           <div className="grid md:grid-cols-2 gap-6">
-            <LearningPathPanel agentId={agentId} experienceLevel="intermediate" />
+            <LearningPathPanel
+              agentId={agentId}
+              experienceLevel="intermediate"
+              focusAreas={deriveFocusAreas(performanceData)}
+            />
             <div className="space-y-6">
-              <ReadinessRadar agentId={agentId} />
+              <ReadinessRadar agentId={agentId} performanceData={performanceData} />
               <TrainingProgressPanel
                 completedContent={completedContent}
                 inProgressContent={inProgressContent}
@@ -481,7 +520,17 @@ export default function AcademyPage() {
 
         {/* AI Tutor Tab */}
         <TabsContent value="tutor">
-          <AiTutorPanel agentId={agentId} brokerageId={brokerageId} />
+          <AiTutorPanel
+            agentId={agentId}
+            brokerageId={brokerageId}
+            currentContext={
+              performanceData
+                ? `Agent readiness: ${performanceData.readiness_score ?? "unknown"}%. Areas needing improvement: ${
+                    [...(performanceData.improvements ?? []), ...(performanceData.critical_gaps ?? [])].join("; ") || "none flagged"
+                  }.`
+                : undefined
+            }
+          />
         </TabsContent>
       </Tabs>
         </div>
