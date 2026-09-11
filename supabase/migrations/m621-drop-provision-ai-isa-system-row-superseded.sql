@@ -30,8 +30,8 @@
 -- shape. Nothing to merge onto the survivor: it already does everything this
 -- function did, plus the two steps this function structurally cannot do.
 --
--- Not applied here — the integrator runs this after confirming (per §1)
--- that no other lane or in-flight code path still names this function.
+-- Applied by the integrator after confirming (per §1) that no other lane
+-- or in-flight code path still names this function.
 -- rg 'provision_ai_isa_system_row' across app/ + lib/ turns up nothing but
 -- comments describing this same supersession.
 

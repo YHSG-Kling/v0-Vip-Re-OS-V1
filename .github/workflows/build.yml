@@ -323,7 +323,26 @@ jobs:
       # vercel.json still carries 10240 DELIBERATELY: Vercel's standard build
       # container is smaller than this runner and has no swap step, so raising
       # it there is a separate measurement, not a copy-paste.
-      NODE_OPTIONS: "--max-old-space-size=11264"
+      # ── 2026-09-11, run 34548154185 attempts 1+2 (commit 844546ce): 11264 RAN
+      # OUT, the same way 10240 did on 2026-08-27. Two consecutive heap aborts at
+      # ONE commit, both "Ineffective mark-compacts near heap limit":
+      #   attempt 1 — died ~8m05s in, last GC 9157.6 used / 10197.6 committed = 90.5% of cap
+      #   attempt 2 — died ~8m in, same message (SIGABRT from the build worker)
+      # Commit 361ca2f8 (one wave earlier) went GREEN on this exact config and
+      # 00b9229f (two waves earlier) aborted once and recovered — the knife-edge
+      # pattern the 10240 entry describes, now at 11264. Compile demand has
+      # moved 8.7 GB → 9.16 GB used across waves 51-55 (kernel-event readers,
+      # signal-routing, the offer-intent and callback loops, the realism
+      # profile: all first-party TS in the graph).
+      # SAME ONE-STEP REMEDY AS 2026-08-27, for the same reason it was safe
+      # then: the compile runs in ONE sequential build worker and the 8 GiB
+      # swapfile below absorbs the post-compile RSS spike (attempt 1 shows both
+      # swapfiles mounted: /swapfile 3G + /mnt/swapfile-ci 8G). 12288 gives an
+      # effective abort ceiling of ~11.0 GB against 10.2 GB committed ≈ 8%
+      # headroom, where 11264 gave ~0% and lost it. If THIS aborts twice at one
+      # commit, the lever is the runner (costed above), not 13312.
+      # vercel.json still carries 10240 deliberately (no swap there).
+      NODE_OPTIONS: "--max-old-space-size=12288"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
       # It read: "NO max-old-space-size override: `next build` uses Turbopack
